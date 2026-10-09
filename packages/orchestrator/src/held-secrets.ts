@@ -151,6 +151,10 @@ export type HeldLookups = {
   /** The key names of a Secret a `valueFrom.secretKeyRef` names, or undefined when it does not
    * exist in the namespace (R10). */
   secretKeys?: (name: string) => readonly string[] | undefined;
+  /** The length in characters of one key's value in a Secret a `valueFrom.secretKeyRef` names —
+   * never the value — or undefined when it is not known. An Effect secret shorter than 8 characters
+   * is refused by it as a literal is (ADR-0068). */
+  valueLength?: (name: string, key: string) => number | undefined;
   /** Every model specifier a carried Agent definition names (`anthropic/claude-sonnet-4-6`) — R9's
    * evidence that a provider's turns will reach its host. */
   models?: readonly string[];

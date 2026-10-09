@@ -12,6 +12,7 @@ import type { CarriedEffect, WorkspacePod } from "../src/parts.ts";
 import {
   refuseEffectSecrets,
   secretPlacementsOf,
+  storedValueLength,
   type PlacedEffect,
   type PlacementWalk,
 } from "../src/secret-placement.ts";
@@ -200,6 +201,34 @@ test("an Effect secret shorter than 8 characters is refused, and says why", () =
       walk({ workspaces: [ws({ secrets: ["K"] })] }),
     ),
   );
+});
+
+test("a valueFrom Effect secret shorter than 8 characters is refused as a literal is, by its length alone", () => {
+  const config: JR2Config = { secrets: [{ name: "jira", valueFrom: { secretKeyRef: { name: "team", key: "jira" } } }] };
+  const effects = [httpEffect("c", ["jira"])];
+  const lookups = (length: number) => ({ secretKeys: () => ["jira"], valueLength: () => length });
+  assert.throws(
+    () => secretPlacementsOf(config, walk({ effects }), lookups(7)),
+    /secrets\[0\] \(jira\) is an Effect secret shorter than 8 characters.*match ordinary text/,
+  );
+  assert.doesNotThrow(() => secretPlacementsOf(config, walk({ effects }), lookups(8)));
+  // A Held-only reference is not scrubbed by an Effector: the rule is the Effect secret's.
+  assert.doesNotThrow(() =>
+    secretPlacementsOf(
+      { secrets: [{ name: "K", valueFrom: { secretKeyRef: { name: "team", key: "k" } }, hosts: ["a.example"] }] },
+      walk({ workspaces: [ws({ secrets: ["K"] })] }),
+      { secretKeys: () => ["k"], valueLength: () => 3 },
+    ),
+  );
+});
+
+test("a stored value is measured as the Effector reads its file: bytes, one trailing newline off", () => {
+  const b64 = (s: string) => Buffer.from(s).toString("base64");
+  assert.equal(storedValueLength(b64("1234567")), 7);
+  assert.equal(storedValueLength(b64("1234567\n")), 7, "kubectl --from-file keeps the newline; the Effector drops it");
+  assert.equal(storedValueLength(b64("1234567\r\n")), 7);
+  assert.equal(storedValueLength(b64("1234567\n\n")), 8, "only one");
+  assert.equal(storedValueLength(b64("é1234567")), 9, "bytes, as Go's len");
 });
 
 test("an Effect that names a secret the list does not hold is refused with the line to add", () => {

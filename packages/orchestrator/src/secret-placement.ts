@@ -102,18 +102,19 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
   heldPodsOf(config, walk, new Set(entries.map((e) => e.name)));
   for (const e of entries) {
     // An empty value is refused later with the list's own rule (`sourceOf`): it is an unset variable.
-    if (namedBy.has(e.name) && e.value) shortRefusal(e, e.value);
+    if (namedBy.has(e.name) && e.value) shortRefusal(e, e.value.length);
   }
 }
 
 /**
  * Read where each secret goes, or throw the first refusal. `walk` is what the registered Machines
- * name; `lookups.secretKeys` is R10's read of the user's Secrets.
+ * name; `lookups.secretKeys` is R10's read of the user's Secrets, and `lookups.valueLength` the
+ * length of a `valueFrom` Effect secret's value there, which is refused when short as a literal is.
  */
 export function secretPlacementsOf(
   config: JR2Config,
   walk: PlacementWalk,
-  lookups: Pick<HeldLookups, "secretKeys"> = {},
+  lookups: Pick<HeldLookups, "secretKeys" | "valueLength"> = {},
 ): SecretPlacements {
   const { entries, namedBy, http } = namesOf(config, walk);
   const { pods, redundant } = heldPodsOf(config, walk, new Set(entries.map((e) => e.name)));
@@ -129,8 +130,12 @@ export function secretPlacementsOf(
       const source = sourceOf(e, lookups);
       if (source.kind === "literal") {
         const value = e.value as string;
-        shortRefusal(e, value);
+        shortRefusal(e, value.length);
         values[e.name] = value;
+      } else {
+        // The user's Secret holds the value; `jr2 up` measures it there and keeps only the length.
+        const length = lookups.valueLength?.(source.secret, source.key);
+        if (length !== undefined) shortRefusal(e, length);
       }
       secrets.push({ name: e.name, source });
     }
@@ -280,8 +285,20 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
 }
 
 /** An Effect secret shorter than 8 characters is refused, and the refusal says why. */
-function shortRefusal(e: { at: string; name: string }, value: string): void {
-  if (value.length >= EFFECT_SECRET_MIN_LENGTH) return;
+/**
+ * The length of a value a Kubernetes Secret holds (its `data`, base64), measured as the Effector
+ * measures the file it mounts: in bytes, with one trailing "\n" and then one "\r" taken off. Only the
+ * length leaves; `jr2 up` keeps no value of the user's Secret (ADR-0068).
+ */
+export function storedValueLength(base64: string): number {
+  let bytes = Buffer.from(base64, "base64");
+  if (bytes.at(-1) === 0x0a) bytes = bytes.subarray(0, -1);
+  if (bytes.at(-1) === 0x0d) bytes = bytes.subarray(0, -1);
+  return bytes.length;
+}
+
+function shortRefusal(e: { at: string; name: string }, length: number): void {
+  if (length >= EFFECT_SECRET_MIN_LENGTH) return;
   throw new Error(
     `${e.at} (${e.name}) is an Effect secret shorter than ${EFFECT_SECRET_MIN_LENGTH} characters — the ` +
       "Effector replaces every match of a secret in what it returns, and a value this short would match " +

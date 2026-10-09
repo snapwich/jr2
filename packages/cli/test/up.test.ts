@@ -3003,7 +3003,9 @@ test("the Instance Effector's digest is a function of its secret inputs: the sam
     w.kube.set("myinst", "secret", "jr2-instance", {
       data: { JR2_INSTANCE_TOKEN: b64("tok"), JR2_SIGNING_KEY: b64(signing) },
     } as never);
-    w.kube.set("myinst", "secret", "team", { data: { jira: b64("team-jira-value-0123"), other: b64("x") } } as never);
+    w.kube.set("myinst", "secret", "team", {
+      data: { jira: b64("team-jira-value-0123"), other: b64("team-other-value-4567") },
+    } as never);
     assert.equal(await up(["--yes"], w.io), 0);
     const list = w.kube.applied.find(
       (m) => m.includes(`"name":"jr2-instance-effector"`) && m.includes(`"kind":"Deployment"`),
@@ -3051,6 +3053,32 @@ test("an Effect secret shorter than 8 characters is refused before anything is b
   );
   assert.deepEqual(w.built, [], "nothing was built");
   assert.deepEqual(w.kube.applied, [], "nothing was applied");
+});
+
+test("a valueFrom Effect secret shorter than 8 characters in the user's Secret is refused before the instance is applied, value unshown (ADR-0068)", async () => {
+  const root = await withHttpEffect(
+    await mkInstance(
+      `export default { name: "myinst", secrets: [{ name: "jira", valueFrom: { secretKeyRef: { name: "team", key: "jira" } } }] };\n`,
+    ),
+  );
+  const w = mkWorld(root);
+  // A trailing newline (`kubectl create secret --from-file`) is not counted, as the Effector drops it.
+  w.kube.set("myinst", "secret", "team", { data: { jira: Buffer.from("tiny-7c\n").toString("base64") } } as never);
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      assert.match(err.message, /secrets\[0\] \(jira\) is an Effect secret shorter than 8 characters/);
+      assert.ok(!err.message.includes("tiny-7c"), "the value itself is not shown");
+      return true;
+    },
+  );
+  assert.ok(!w.kube.applied.some((m) => m.includes(`"name":"jr2-instance-effector"`)), "no Effector is applied");
+  // Long enough, the same reference converges.
+  const ok = mkWorld(root);
+  ok.kube.set("myinst", "secret", "team", {
+    data: { jira: Buffer.from("team-jira-value-0123").toString("base64") },
+  } as never);
+  assert.equal(await up(["--yes"], ok.io), 0);
 });
 
 test("an Effect that names a secret the list does not hold is refused before anything is built or applied, naming the line to add (ADR-0050)", async () => {

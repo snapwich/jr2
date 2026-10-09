@@ -71,6 +71,7 @@ import {
   workspacePodsOf,
   refuseEffectSecrets,
   secretPlacementsOf,
+  storedValueLength,
   effectorKey,
   targetText,
   harnessTokenDigest,
@@ -858,9 +859,10 @@ export async function up(args: string[], io: Io): Promise<number> {
   const caPem = await readCaBundle(root, config);
 
   // --- secrets (ADR-0059, ADR-0068): resolved HERE, host-side, where `.env` exists --------------
-  // R10: a Secret an entry references must exist with its key. Read once per Secret — key NAMES,
-  // never values — for both placements.
-  const referenced = new Map<string, string[] | undefined>();
+  // R10: a Secret an entry references must exist with its key. Read once per Secret — each key's
+  // NAME and the LENGTH of its value, never the value — for both placements. The length is B3.5's:
+  // an Effect secret shorter than 8 characters is refused wherever its value is kept (ADR-0068).
+  const referenced = new Map<string, Map<string, number> | undefined>();
   for (const entry of config.secrets ?? []) {
     const ref = entry.valueFrom?.secretKeyRef.name;
     if (ref === undefined || referenced.has(ref)) continue;
@@ -870,14 +872,21 @@ export async function up(args: string[], io: Io): Promise<number> {
       namespace,
       ...ctx,
     });
-    referenced.set(ref, found ? Object.keys(found.data ?? {}) : undefined);
+    referenced.set(
+      ref,
+      found ? new Map(Object.entries(found.data ?? {}).map(([k, b64]) => [k, storedValueLength(b64)])) : undefined,
+    );
   }
-  const secretKeys = (secret: string) => referenced.get(secret);
+  const secretKeys = (secret: string) => {
+    const keys = referenced.get(secret);
+    return keys && [...keys.keys()];
+  };
+  const valueLength = (secret: string, key: string) => referenced.get(secret)?.get(key);
   // Where each secret goes (ADR-0059, ADR-0068): read off the list and what names it, never
   // declared — each Harness pod gets the Held secrets something in it names, the Instance Effector
   // what its Effects name. The walk's refusals ran above; a `valueFrom` the user's Secrets do not
   // hold is refused here, before the instance objects are applied.
-  const placements = secretPlacementsOf(config, placementWalk, { secretKeys });
+  const placements = secretPlacementsOf(config, placementWalk, { secretKeys, valueLength });
   for (const line of placements.report) activity(io, line);
   for (const warning of placements.warnings) activity(io, `warning: ${warning}`);
   const held = await resolveHeld(io, kube, {

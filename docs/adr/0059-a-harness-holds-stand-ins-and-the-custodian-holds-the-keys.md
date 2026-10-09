@@ -227,7 +227,7 @@ decision generalizes that container. It holds every credential the Harness in it
   brings the GPL and a poor CVE record. Both would be a fourth image.
 - **Envoy's `credential_injector`, or the value in a bootstrap Secret with `request_headers_to_add`.** Rejected: the
   first is alpha and fails on a trailing newline; both replace a header without seeing the Stand-in, and the second
-  cannot hold a `secretKeyRef` value, which `jr2 up` never reads.
+  cannot hold a `secretKeyRef` value, which `jr2 up` never copies.
 - **Intercept every host.** Rejected for the iron-proxy reason: a tool that does not trust the jr2 CA would then fail on
   every host, not only on bound ones.
 
