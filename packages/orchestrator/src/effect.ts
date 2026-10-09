@@ -139,7 +139,7 @@ export type CommandOutput = ExecOutcome | Unknown;
  */
 export type EffectRow =
   | { state: "intent"; kind: "command"; slot: string; endpoint: string; placement: string; at: string }
-  /** An http Effect's intent names its placement and no replica (B2.4): a restore asks every
+  /** An http Effect's intent names its placement and no replica (ADR-0068): a restore asks every
    * replica. `idempotent` is the author's mark, which the restore rule reads. */
   | { state: "intent"; kind: "http"; slot: string; placement: "instance"; idempotent: boolean; at: string }
   | { state: "settled"; kind: EffectParts["kind"]; slot: string; output: unknown; at: string }

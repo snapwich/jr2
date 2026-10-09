@@ -86,7 +86,7 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest, built map[stri
 	for _, name := range slices.Sorted(maps.Keys(req.Headers)) {
 		value := r.fill(req.Headers[name])
 		header.Set(name, value)
-		// A header filled from a secret is something the Effector built from it (B3.2): its value,
+		// A header filled from a secret is something the Effector built from it: its value,
 		// and every encoding of that value, are scrubbed by the secret's name.
 		if carries := firstSecret(req.Headers[name], ""); carries != "" {
 			built[value] = carries
@@ -139,7 +139,7 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest, built map[stri
 }
 
 // target builds the url: the definition's, its secrets filled (percent-encoded), each path
-// segment encoded and appended. The host must be one an Effect placed here names (B5.2).
+// segment encoded and appended. The host must be one an Effect placed here names.
 func (r *Runner) target(req *wire.StartRequest, built map[string]string) (*url.URL, error) {
 	var raw strings.Builder
 	var first string
@@ -262,7 +262,7 @@ func (r *Runner) client() *http.Client {
 
 // response reads the answer: every header, and the body when it is text — scrubbed as it streams
 // and bounded to maxBody bytes. A body that is not text is never returned: its size and its
-// content type are (B3.6).
+// content type are.
 func (r *Runner) response(resp *http.Response, maxBody int, built map[string]string) *wire.Response {
 	headers := map[string]string{}
 	for name, values := range resp.Header {

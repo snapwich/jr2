@@ -2,7 +2,7 @@
 // the pick enters a child state that runs an `http` Effect in the Instance Effector, and the Turn
 // stays open; the default answer — the Effect's output — comes back to the Agent on the same tool
 // call. The echo server returns the Bearer the Effector built in every encoding, so the answer the
-// MODEL reads is where B3's claim is proved for the Agent: `[secret:echo-token]`, never the value.
+// MODEL reads is where ADR-0068's scrubbing claim is proved for the Agent: `[secret:echo-token]`, never the value.
 
 import { z } from "zod";
 import {

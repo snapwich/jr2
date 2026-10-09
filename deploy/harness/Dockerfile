@@ -171,7 +171,7 @@ RUN set -eux; \
 
 # ---------------------------------------------------------------------------------------------
 # effector stage — discarded. The Effector (ADR-0068): jr2's own process in the container that runs
-# the Effects holding an Effect secret. It rides /opt/jr2 like rg and work-acl (B4.2): a container
+# the Effects holding an Effect secret. It rides /opt/jr2 like rg and work-acl: a container
 # becomes an Effector by running /opt/jr2/bin/effector as its command, in this image (the Instance
 # Effector) or in an image the author chose, so it is STATIC and owes no glibc floor. The
 # uploadpack stage's reasons hold: the BUILD platform, cross-compiled; the standard library only,

@@ -159,9 +159,9 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
-  value (B3) — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built
+  value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built
   (`Bearer <value>`, a Basic pair, the url, a header) cannot pass as clean; two replicas and an Orchestrator restart
-  during a call, and a rollout during a call, must give one send (B2.4).
+  during a call, and a rollout during a call, must give one send.
 - **Open gap: the Orchestrator's Role reads Effect secrets.** Its Role can get and list every Secret in its namespace
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), `jr2-instance-effector` and every user Secret a
   `valueFrom` names among them. So a fault that gives code execution in the Orchestrator reaches the Effect secrets

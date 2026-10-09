@@ -1,6 +1,6 @@
 // Package secrets reads what one Effector holds (ADR-0068): every Effect secret as a file in its
-// own mount, `/run/jr2/secrets/<name>` (B4.8), and the placement's config `jr2 up` wrote — which
-// hosts its Effects may call, and with which secrets (B5.2). Read once, at start: a change rolls
+// own mount, `/run/jr2/secrets/<name>`, and the placement's config `jr2 up` wrote — which
+// hosts its Effects may call, and with which secrets. Read once, at start: a change rolls
 // the pod (the digest on its template), as a Custodian's values do (ADR-0059).
 package secrets
 
@@ -19,7 +19,7 @@ import (
 // Read loads every secret under dir, by file name. A name that starts with "." is the kubelet's
 // own (`..data`) and is skipped. One trailing "\n" or "\r\n" is taken off, as the Custodian does.
 // An empty value, or one shorter than scrub.MinLength, stops the start with a line that names it
-// (B3.5): `jr2 up` refuses a short literal, and this is where a value from the user's own Secret
+// (ADR-0068): `jr2 up` refuses a short literal, and this is where a value from the user's own Secret
 // is first seen.
 func Read(dir string) (map[string]string, error) {
 	entries, err := os.ReadDir(dir)

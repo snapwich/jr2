@@ -159,7 +159,7 @@ func TestSigtermFinishesTheEffectInFlightAndRefusesNewOnes(t *testing.T) {
 	}
 	must(t, e.cmd.Process.Signal(syscall.SIGTERM))
 	// A new id each time: a POST that lands before the signal is handled starts its Effect, and a
-	// second POST with that id would only attach to it (B2.1), never get the refusal this waits for.
+	// second POST with that id would only attach to it, never get the refusal this waits for.
 	// An Effect started that way is in flight too; its outcome is read below.
 	var started []string
 	deadline := time.Now().Add(5 * time.Second)

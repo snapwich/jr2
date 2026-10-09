@@ -165,7 +165,7 @@ Feature: a workspace() run drives a real Sandbox on kind
     ADR-0068. The kind instance's `echo-token` is an Effect secret: the `called` and `asked`
     workflows name it with `secret("echo-token")`, so `jr2 up` places it in the Instance Effector and
     in no other pod. The echo server in the seed namespace answers with every header and the url it
-    received, each in the encodings the Effector scrubs, so what comes back is B3's proof: the
+    received, each in the encodings the Effector scrubs, so what comes back is the scrubbing proof: the
     Bearer the Effector built, base64(user:password), the url with the secret in its path, a header
     it filled from the secret — each named, never the value — in the run's snapshot, its feed, and
     the answer the model reads. A step decodes every base64 and percent-encoded run it reads and
@@ -193,7 +193,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's status shows "done"
 
   Rule: an http Effect is sent once, across an orchestrator restart and an Effector rollout
-    ADR-0068's B2.4. The intent row names the placement and no replica: after a restart the
+    ADR-0068. The intent row names the placement and no replica: after a restart the
     Orchestrator asks every replica for the Effect's id and follows the one that holds it. A rollout
     surges: the new replica takes new Effects while the old one finishes the one in flight and stays
     until its outcome is read. The echo counts each request by the run's marker.

@@ -3009,7 +3009,7 @@ test("no Effect placed there: no Instance Effector, and a stale one is deleted (
   }
 });
 
-test("an Effect secret shorter than 8 characters is refused before anything is built or applied (B3.5)", async () => {
+test("an Effect secret shorter than 8 characters is refused before anything is built or applied (ADR-0068)", async () => {
   const root = await withHttpEffect(
     await mkInstance(`export default { name: "myinst", secrets: [{ name: "jira", value: "short" }] };\n`),
   );

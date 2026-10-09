@@ -8,14 +8,14 @@
 //
 // Pure and host-side, like `heldSecretsOf`: only `jr2 up` has the `.env` values. It refuses an
 // Effect that names a secret the list does not hold, and an Effect secret shorter than 8 characters
-// (B3.5): the Effector replaces every match of a secret in what it returns, and a short one would
+// (ADR-0068): the Effector replaces every match of a secret in what it returns, and a short one would
 // match ordinary text.
 
 import { isHeld, sourceOf, type HeldBinding, type HeldLookups } from "./held-secrets.ts";
 import type { JR2Config } from "./config.ts";
 import type { CarriedEffect } from "./parts.ts";
 
-/** The shortest Effect secret jr2 accepts (B3.5) — the Effector refuses a shorter file at start. */
+/** The shortest Effect secret jr2 accepts (ADR-0068) — the Effector refuses a shorter file at start. */
 export const EFFECT_SECRET_MIN_LENGTH = 8;
 
 /** One Effect secret in one placement: a literal `jr2 up` writes, or a key of the user's Secret. */
@@ -157,7 +157,7 @@ function namesOf(config: JR2Config, effects: readonly PlacedEffect[]) {
   return { entries, namedBy, http };
 }
 
-/** B3.5: an Effect secret shorter than 8 characters is refused, and the refusal says why. */
+/** An Effect secret shorter than 8 characters is refused, and the refusal says why. */
 function shortRefusal(e: { at: string; name: string }, value: string): void {
   if (value.length >= EFFECT_SECRET_MIN_LENGTH) return;
   throw new Error(

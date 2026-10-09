@@ -68,7 +68,7 @@ export type HttpResponse = {
  */
 export type HttpOutput = HttpResponse | { outcome: "unreachable" | "refused" | "unknown"; reason: string };
 
-/** The replica that holds an Effect, and where to poll it (B2.4). */
+/** The replica that holds an Effect, and where to poll it. */
 export type Replica = { name: string; address: string };
 
 /** Every answer of `POST` and `GET /effects/<id>`. */
@@ -180,7 +180,7 @@ export interface EffectorPort {
   start(id: string, req: StartRequest, signal: AbortSignal): Promise<EffectState>;
   /** GET on the replica that holds it: settled, still running after the hold, or `unknown`. */
   poll(replica: Replica, id: string, signal: AbortSignal): Promise<EffectState>;
-  /** Ask every replica (B2.4): the state of the one that holds it, or undefined when every replica
+  /** Ask every replica: the state of the one that holds it, or undefined when every replica
    * answered that it holds no such Effect. Rejects when a replica could not answer. */
   find(id: string, signal: AbortSignal): Promise<EffectState | undefined>;
 }
@@ -256,7 +256,7 @@ export function createEffectorClient(opts: {
         }
         if (answer.status === 202 || answer.status === 200) return state(answer, "a start");
         if (answer.status === 503) {
-          // A stopping replica started nothing (B2.4): another may take it.
+          // A stopping replica started nothing: another may take it.
           last = new EffectorNotSent(`the Effector replica at ${address} is stopping`);
           continue;
         }
@@ -326,7 +326,7 @@ function shuffle<T>(items: T[]): T[] {
 /**
  * The real transport: the placement's headless Service, `host:port`. Its replicas are the
  * addresses its name resolves to — every pod, a stopping one included, because the Service
- * publishes addresses that are not ready (B2.4: a stopping replica still answers for the Effects
+ * publishes addresses that are not ready (a stopping replica still answers for the Effects
  * it finishes). A request goes to one pod's address over plain HTTP: the signature, not TLS, is
  * what an answer is trusted by.
  */

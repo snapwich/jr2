@@ -94,7 +94,7 @@ type StartRequest struct {
 	MaxBody   int             `json:"maxBody"`
 }
 
-// Replica names the pod that holds an Effect, and where to poll it (B2.4).
+// Replica names the pod that holds an Effect, and where to poll it.
 type Replica struct {
 	Name    string `json:"name"`
 	Address string `json:"address"`

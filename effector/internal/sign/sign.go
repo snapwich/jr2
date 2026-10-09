@@ -1,4 +1,4 @@
-// Package sign is the Effector's authentication (ADR-0068, B2.2): signed requests and signed
+// Package sign is the Effector's authentication (ADR-0068): signed requests and signed
 // responses, and no bearer. The key is the placement's, `HMAC(signing key, "effector:" +
 // placement)`, which the Orchestrator derives and the Effector reads from a file in its own mount.
 //

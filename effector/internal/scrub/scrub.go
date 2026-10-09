@@ -1,4 +1,4 @@
-// Package scrub takes secret values out of what the Effector returns (ADR-0068, B3). It runs
+// Package scrub takes secret values out of what the Effector returns (ADR-0068). It runs
 // last, before an answer is signed, over every string that leaves: an http body, its headers,
 // error text.
 //
@@ -23,7 +23,7 @@ import (
 	"unicode/utf16"
 )
 
-// MinLength is the shortest Effect secret `jr2 up` and the Effector accept (B3.5): a shorter one
+// MinLength is the shortest Effect secret `jr2 up` and the Effector accept: a shorter one
 // would match ordinary text, and every match of it would be scrubbed.
 const MinLength = 8
 

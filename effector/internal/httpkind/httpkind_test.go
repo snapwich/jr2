@@ -49,7 +49,7 @@ func request(base string) *wire.StartRequest {
 	return &wire.StartRequest{Kind: "http", Method: "GET", URL: wire.Text{text(base)}, TimeoutMs: 5000, MaxBody: 65536}
 }
 
-// The echo server of the B3 proof: it returns every header it got and the url, in each encoding.
+// The echo server of the scrubbing proof: it returns every header it got and the url, in each encoding.
 func echo() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var b strings.Builder
@@ -89,7 +89,7 @@ func TestABearerRequestAndItsEchoComeBackScrubbed(t *testing.T) {
 			t.Fatalf("a form of the secret came back: %q in %q", leak, body)
 		}
 	}
-	// The whole header it built is one form (B3.2): it is replaced whole.
+	// The whole header it built is one form: it is replaced whole.
 	if !strings.Contains(body, "Authorization: [secret:jira]") || out.Response.Headers["x-echo-auth"] != "[secret:jira]" {
 		t.Fatalf("the Authorization header is not named: %q / %q", body, out.Response.Headers["x-echo-auth"])
 	}
@@ -124,7 +124,7 @@ func TestBasicAuthAndASecretInTheUrlPathComeBackScrubbed(t *testing.T) {
 	}
 }
 
-// A definition header filled from a secret is something the Effector built from it (B3.2): the
+// A definition header filled from a secret is something the Effector built from it: the
 // header value, and every encoding of it, come back named. Base64 of "Tok <secret>" holds no
 // base64 form of the secret alone, so only the built value catches it.
 func TestADefinitionHeaderWithASecretComesBackScrubbed(t *testing.T) {

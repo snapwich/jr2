@@ -1,7 +1,7 @@
 // The kind tier's HTTP workflow (ADR-0068): an `http` Effect in the Instance Effector, with no Agent
 // and no Workspace. The echo server the suite serves in-cluster (`steps/seed.ts`) answers with every
 // header and the url it received, each in the encodings the Effector scrubs — so what comes back is
-// the B3 proof: the Bearer it built, base64(user:password), the url with the secret in its path, and
+// the scrubbing proof (ADR-0068): the Bearer it built, base64(user:password), the url with the secret in its path, and
 // a header it filled from the secret, each named `[secret:echo-token]` and never the value. The
 // body's final output IS the Effect's.
 //

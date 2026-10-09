@@ -1,10 +1,10 @@
-// Package server is the Effector's wire (ADR-0068, B2): `POST /effects/<id>` starts an Effect and
+// Package server is the Effector's wire (ADR-0068): `POST /effects/<id>` starts an Effect and
 // answers at once; a second POST with the same id starts nothing and attaches to the one that
 // runs. `GET /effects/<id>` long-polls for its outcome. Every request is verified before anything
 // else — an unsigned, mis-signed or replayed request gets 401 and an empty body, so it learns
 // nothing, not even whether an Effect exists — and every answer is scrubbed, then signed.
 //
-// Replica-aware (B2.4): an answer names the replica (its pod) that holds the Effect, and a poll to
+// Replica-aware: an answer names the replica (its pod) that holds the Effect, and a poll to
 // a replica that does not hold it says so (`state: unknown`, with that replica's name). A replica
 // that is stopping refuses new Effects (503), finishes the ones in flight, and stays up until each
 // outcome was read or its drain time is spent. A result nobody polls is dropped after a while: there
@@ -37,10 +37,10 @@ type Runner interface {
 type Options struct {
 	Verifier *sign.Verifier
 	Runner   Runner
-	// Scrubber is the last pass over every answer's bytes before it is signed (B3.1).
+	// Scrubber is the last pass over every answer's bytes before it is signed.
 	Scrubber *scrub.Scrubber
 	Replica  wire.Replica
-	// Hold is how long a poll waits for an outcome before it answers `running` (about 25 s, B2.1).
+	// Hold is how long a poll waits for an outcome before it answers `running` (about 25 s).
 	Hold time.Duration
 	// Retain is how long a settled outcome is kept for a poll that has not come.
 	Retain time.Duration
@@ -157,7 +157,7 @@ func (s *Server) start(_ context.Context, reply func(int, any), id string, body 
 
 	s.mu.Lock()
 	if e, ok := s.effects[id]; ok {
-		// A second POST with the same id starts nothing: it attaches (B2.1).
+		// A second POST with the same id starts nothing: it attaches.
 		state := s.stateOf(id, e)
 		s.mu.Unlock()
 		reply(http.StatusOK, state)
@@ -197,7 +197,7 @@ func (s *Server) poll(ctx context.Context, reply func(int, any), id string) {
 	e, ok := s.effects[id]
 	s.mu.Unlock()
 	if !ok {
-		// Not here: the Effect is another replica's, or this one restarted (B2.4).
+		// Not here: the Effect is another replica's, or this one restarted.
 		reply(http.StatusNotFound, wire.EffectState{Effect: id, Replica: s.opts.Replica, State: wire.StateUnknown})
 		return
 	}

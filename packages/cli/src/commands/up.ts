@@ -270,7 +270,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     }
   }
   // An Effect that names a secret the `secrets` list does not hold, and a literal Effect secret too
-  // short to scrub (B3.5), are refused HERE, off the walk and the config alone — before anything is
+  // short to scrub (ADR-0068), are refused HERE, off the walk and the config alone — before anything is
   // built or applied (ADR-0050, ADR-0068). A secret read from the user's Secret is placed below,
   // once the cluster is reached.
   const placedEffects = workflows.flatMap((w) =>

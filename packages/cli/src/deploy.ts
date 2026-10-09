@@ -935,14 +935,14 @@ export const ANNOTATION_EFFECTOR_DIGEST = "jr2.dev/effector-digest";
  * has one container. The group a Sandbox's and the Instance Harness's pods use (ADR-0005). */
 const INSTANCE_EFFECTOR_FS_GROUP = 2000;
 
-/** Where the Effector reads what it holds (ADR-0068, B4.8): its secrets, one file each; its key and
+/** Where the Effector reads what it holds (ADR-0068): its secrets, one file each; its key and
  * its config. Its scratch is `$HOME`. */
 const EFFECTOR_SECRETS_DIR = "/run/jr2/secrets";
 const EFFECTOR_OWN_DIR = "/run/jr2/effector";
 const EFFECTOR_SCRATCH = "/run/jr2/scratch";
 
 /** How much more than the longest Effect timeout a stopping replica is given: room for the
- * Orchestrator's next poll to read the outcome it finished (B2.4). */
+ * Orchestrator's next poll to read the outcome it finished. */
 export const EFFECTOR_READ_MARGIN_SECONDS = 30;
 
 /** The Secret's key of one literal Effect secret: prefixed, so no secret's name is `key` or
@@ -955,11 +955,11 @@ export const effectorGraceSeconds = (plan: EffectorPlan): number =>
   Math.ceil(plan.longestTimeoutMs / 1000) + EFFECTOR_READ_MARGIN_SECONDS;
 
 /**
- * The Instance Effector (ADR-0068, B5.2): the objects `jr2 up` converges when a registered Machine
+ * The Instance Effector (ADR-0068): the objects `jr2 up` converges when a registered Machine
  * places an Effect there — an `http` Effect — and deletes otherwise.
  *
  * - A Deployment, not a StatefulSet: a rollout must run the new pod beside the old one (surge), so
- *   the old one finishes an Effect in flight while the new one takes new Effects (B2.4). The Kit's
+ *   the old one finishes an Effect in flight while the new one takes new Effects. The Kit's
  *   `jr2-harness` image with `/opt/jr2/bin/effector` as its command; hardened, non-root, a read-only
  *   root filesystem, an emptyDir scratch as `$HOME`. Its grace period is the longest timeout among
  *   the Effects placed there, plus a margin for the outcome to be read.
@@ -1063,7 +1063,7 @@ export function instanceEffectorObjects(opts: {
       spec: {
         replicas: 1,
         selector: { matchLabels: { app: INSTANCE_EFFECTOR } },
-        // Surge, never a gap: the new replica starts before the old one stops (B2.4).
+        // Surge, never a gap: the new replica starts before the old one stops.
         strategy: { type: "RollingUpdate", rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } },
         template: {
           metadata: {

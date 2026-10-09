@@ -1,6 +1,6 @@
 // The Effector (ADR-0068): jr2's own process, in an image the author chose (the jr2-harness Kit
 // image for the Instance Effector), that runs for a Machine the Effects that hold an Effect secret.
-// A container becomes an Effector by running /opt/jr2/bin/effector as its command (B4.2).
+// A container becomes an Effector by running /opt/jr2/bin/effector as its command.
 //
 // Its env names only where its own mount holds things — never a value:
 //
@@ -125,7 +125,7 @@ func run(logger *log.Logger) error {
 	case <-stop:
 	}
 	// SIGTERM: refuse new Effects, finish the ones in flight, and stay until each outcome was read
-	// or the drain time is spent — the pod's grace period carries this (B2.4).
+	// or the drain time is spent — the pod's grace period carries this.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(drain)*time.Second)
 	defer cancel()
 	srv.Drain(ctx)

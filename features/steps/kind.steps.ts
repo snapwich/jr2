@@ -2367,7 +2367,7 @@ AfterAll(function (): void {
 const ECHO_NAMESPACE = "jr2-e2e-seed";
 const INSTANCE_EFFECTOR = "jr2-instance-effector";
 
-/** Every form B3 names for one value: exact, base64 (both alphabets, padded and not), percent, JSON. */
+/** Every form ADR-0068 scrubs for one value: exact, base64 (both alphabets, padded and not), percent, JSON. */
 function formsOf(value: string): string[] {
   const raw = Buffer.from(value);
   return [
@@ -2446,7 +2446,7 @@ Then("the http Effect's answer is a response from the echo", async function (thi
 });
 
 /**
- * B3's proof: the echo returned every header and the url in every encoding, and not one form of the
+ * The scrubbing proof (ADR-0068): the echo returned every header and the url in every encoding, and not one form of the
  * value is in what came back — the run's snapshot (`jr2 status`), its feed, the answer's headers.
  * What came back names the secret instead.
  */
@@ -2477,7 +2477,7 @@ Then("the run's feed carries no form of the echo token", async function (this: E
   assert.equal(leak, undefined, `the echo token reached the feed: ${leak}`);
 });
 
-/** The Agent's half of B3: the tool result the MODEL read on the next request carries the named
+/** The Agent's half of the scrubbing proof: the tool result the MODEL read on the next request carries the named
  * secret and no form of its value. */
 Then(
   "the model was shown the echo's answer with the token named {string} and no form of its value",
@@ -2520,11 +2520,11 @@ Then("the echo has received the run's call", async function (this: E2EWorld): Pr
 });
 
 Then("the echo received the run's call exactly once", async function (this: E2EWorld): Promise<void> {
-  assert.equal(await echoCount(this), 1, "one send, across what restarted (B2.4)");
+  assert.equal(await echoCount(this), 1, "one send, across what restarted");
 });
 
 Given("the Instance Effector runs {int} replicas", async function (this: E2EWorld, n: number): Promise<void> {
-  // No replica count in config yet (B2.4): the tier scales the Deployment `jr2 up` converged.
+  // No replica count in config yet: the tier scales the Deployment `jr2 up` converged.
   await kubectl(this, ["scale", `deployment/${INSTANCE_EFFECTOR}`, `--replicas=${n}`]);
   await kubectl(this, ["rollout", "status", `deployment/${INSTANCE_EFFECTOR}`, "--timeout=180s"]);
   const pods = await kubectl(this, ["get", "pods", "-l", `app=${INSTANCE_EFFECTOR}`, "-o", "name"]);
@@ -2538,7 +2538,7 @@ When("the orchestrator restarts while the Effect runs", async function (this: E2
 });
 
 /** A rollout of the Instance Effector: the new pod starts beside the old one (surge), and the old
- * one finishes the Effect in flight before it stops (B2.4). Not waited on here: the run's answer is
+ * one finishes the Effect in flight before it stops. Not waited on here: the run's answer is
  * what the scenario reads. */
 When("the Instance Effector rolls out", async function (this: E2EWorld): Promise<void> {
   await kubectl(this, ["rollout", "restart", `deployment/${INSTANCE_EFFECTOR}`]);

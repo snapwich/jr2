@@ -40,12 +40,12 @@ const HTTP_IMAGE = "nginx:1.27-alpine";
 const NODE_IMAGE = "node:24-alpine";
 
 /**
- * The echo server an `http` Effect calls (ADR-0068's B3 proof): it answers with every header it
+ * The echo server an `http` Effect calls (ADR-0068's scrubbing proof): it answers with every header it
  * received and the url, each in the encodings the Effector scrubs — raw, base64 in both alphabets,
  * percent-encoded, JSON-escaped — and repeats the Authorization and the url in response headers.
  * `/slow/<marker>/<seconds>` holds the answer that long, and every request that carries a
  * `m-…` segment is counted by it: `/count/<marker>` answers how many arrived, which is how a step
- * proves one send across an Orchestrator restart or an Effector rollout (B2.4). Its own port is
+ * proves one send across an Orchestrator restart or an Effector rollout. Its own port is
  * 8080; nothing about it is secret, and it holds no state but the counts.
  */
 export const ECHO_SCRIPT = [

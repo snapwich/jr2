@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// The golden fixtures (ADR-0068, B1) live in effector/testdata/wire, one file per request shape
+// The golden fixtures (ADR-0068) live in effector/testdata/wire, one file per request shape
 // and per outcome. Go decodes each request and encodes each response; the TypeScript tests in
 // @jr2/orchestrator do the reverse over the same files.
 const fixtures = "../../testdata/wire"
