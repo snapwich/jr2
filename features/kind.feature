@@ -161,6 +161,59 @@ Feature: a workspace() run drives a real Sandbox on kind
       # run would have appended a second mark before either printed.
       Then the command's tail is "x"
 
+  Rule: an http Effect runs in the Instance Effector, which returns no form of a secret it holds
+    ADR-0068. The kind instance's `echo-token` is an Effect secret: the `called` and `asked`
+    workflows name it with `secret("echo-token")`, so `jr2 up` places it in the Instance Effector and
+    in no other pod. The echo server in the seed namespace answers with every header and the url it
+    received, each in the encodings the Effector scrubs, so what comes back is B3's proof: the
+    Bearer the Effector built, base64(user:password), the url with the secret in its path — each
+    named, never the value — in the run's snapshot, its feed, and the answer the model reads.
+
+    Scenario: a Bearer call's echo comes back with the secret named, in every form
+      Given the kind instance is serving
+      When I start the "called" workflow in mode "bearer" detached
+      Then the http Effect's answer is a response from the echo
+      And no form of the echo token reached the run, and the answer names it "[secret:echo-token]"
+      And the run's feed carries no form of the echo token
+
+    Scenario: a secret in the url's path and in a Basic pair comes back named, in every form
+      Given the kind instance is serving
+      When I start the "called" workflow in mode "inpath" detached
+      Then the http Effect's answer is a response from the echo
+      And no form of the echo token reached the run, and the answer names it "[secret:echo-token]"
+
+    Scenario: the answer an Agent reads is scrubbed
+      Given the kind instance is serving
+      When I start the "asked" workflow detached
+      And the model answers "call_echo" with summary "now"
+      Then the model was shown the echo's answer with the token named "[secret:echo-token]" and no form of its value
+      When the model answers "advise" with summary "done"
+      Then the run's status shows "done"
+
+  Rule: an http Effect is sent once, across an orchestrator restart and an Effector rollout
+    ADR-0068's B2.4. The intent row names the placement and no replica: after a restart the
+    Orchestrator asks every replica for the Effect's id and follows the one that holds it. A rollout
+    surges: the new replica takes new Effects while the old one finishes the one in flight and stays
+    until its outcome is read. The echo counts each request by the run's marker.
+
+    Scenario: two replicas and an orchestrator restart during the call give one send
+      Given the kind instance is serving
+      And the Instance Effector runs 2 replicas
+      When I start the "called" workflow in mode "slow" detached
+      Then the echo has received the run's call
+      When the orchestrator restarts while the Effect runs
+      Then the http Effect's answer is a response from the echo
+      And the echo received the run's call exactly once
+
+    Scenario: a rollout during the call gives one send, and the old replica answers it
+      Given the kind instance is serving
+      When I start the "called" workflow in mode "slow" detached
+      Then the echo has received the run's call
+      When the Instance Effector rolls out
+      Then the http Effect's answer is a response from the echo
+      And the echo received the run's call exactly once
+      And the Instance Effector's rollout completes
+
   Rule: a Sandbox reaped while the orchestrator is down is never silently re-provisioned
 
     Scenario: the restored body is told its workspace is lost

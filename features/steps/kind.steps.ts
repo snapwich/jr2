@@ -2361,3 +2361,155 @@ AfterAll(function (): void {
     );
   }
 });
+
+// --- an http Effect in the Instance Effector (ADR-0068) -------------------------------------------
+
+const ECHO_NAMESPACE = "jr2-e2e-seed";
+const INSTANCE_EFFECTOR = "jr2-instance-effector";
+
+/** Every form B3 names for one value: exact, base64 (both alphabets, padded and not), percent, JSON. */
+function formsOf(value: string): string[] {
+  const raw = Buffer.from(value);
+  return [
+    value,
+    raw.toString("base64"),
+    raw.toString("base64").replace(/=+$/, ""),
+    raw.toString("base64url"),
+    encodeURIComponent(value),
+    JSON.stringify(value).slice(1, -1),
+  ];
+}
+
+/** Start `called` in a mode, with a marker of this scenario's own that the echo counts. */
+When(
+  "I start the {string} workflow in mode {string} detached",
+  async function (this: E2EWorld, wf: string, mode: string): Promise<void> {
+    this.marker = `m-${randomBytes(6).toString("hex")}`;
+    await this.runCli(["run", wf, "--detach", "--input", JSON.stringify({ mode, marker: this.marker })]);
+    this.runId = this.resultJson<{ runId: string }>().runId;
+  },
+);
+
+/** The run's final output — the http Effect's — waited for long enough to outlast a slow call and
+ * a restart or a rollout under it. */
+async function httpOutput(world: E2EWorld): Promise<Record<string, unknown>> {
+  let last: WsStatus | undefined;
+  for (let i = 0; i < 360; i++) {
+    last = await wsStatus(world);
+    if (last.status === "done" || last.status === "error") break;
+    await sleep(500);
+  }
+  assert.equal(last?.status, "done", `the run settled ${last?.status} (${JSON.stringify(last?.context)})`);
+  return (last!.context.output ?? {}) as Record<string, unknown>;
+}
+
+Then("the http Effect's answer is a response from the echo", async function (this: E2EWorld): Promise<void> {
+  const output = await httpOutput(this);
+  assert.equal(output.outcome, "response", JSON.stringify(output));
+  assert.equal(output.status, 200);
+  assert.equal(typeof output.body, "string", "a text body comes back, bounded and scrubbed");
+});
+
+/**
+ * B3's proof: the echo returned every header and the url in every encoding, and not one form of the
+ * value is in what came back — the run's snapshot (`jr2 status`), its feed, the answer's headers.
+ * What came back names the secret instead.
+ */
+Then(
+  "no form of the echo token reached the run, and the answer names it {string}",
+  async function (this: E2EWorld, named: string): Promise<void> {
+    assert.ok(this.echoToken, "setupKind made this scenario's echo token");
+    const output = await httpOutput(this);
+    const status = await this.runCli(["status", this.runId!]);
+    const seen = JSON.stringify(output) + status.stdout;
+    for (const form of formsOf(this.echoToken)) {
+      assert.ok(!seen.includes(form), `a form of the echo token (${form.length} chars) reached the run`);
+    }
+    assert.ok(String(output.body).includes(named), `the answer names the secret ${named}: ${String(output.body)}`);
+    const headers = (output.headers ?? {}) as Record<string, string>;
+    assert.ok(
+      !headers["x-echo-authorization"]?.includes(this.echoToken),
+      "the echoed Authorization header is scrubbed",
+    );
+  },
+);
+
+/** The run's feed as `jr2 logs` replays it (ADR-0009): what an operator reads after the run. */
+Then("the run's feed carries no form of the echo token", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.echoToken);
+  const feed = await this.runCli(["logs", this.runId!]);
+  assert.equal(feed.code, 0, `jr2 logs failed: ${feed.stderr}`);
+  for (const form of formsOf(this.echoToken)) {
+    assert.ok(!(feed.stdout + feed.stderr).includes(form), "a form of the echo token reached the feed");
+  }
+});
+
+/** The Agent's half of B3: the tool result the MODEL read on the next request carries the named
+ * secret and no form of its value. */
+Then(
+  "the model was shown the echo's answer with the token named {string} and no form of its value",
+  async function (this: E2EWorld, named: string): Promise<void> {
+    assert.ok(this.provider && this.echoToken);
+    const provider = this.provider;
+    for (let i = 0; i < 240 && !provider.calls.some((c) => c.stream && c.raw.includes(named)); i++) await sleep(500);
+    assert.ok(
+      provider.calls.some((c) => c.stream && c.raw.includes(named)),
+      `no provider request carried ${named}`,
+    );
+    for (const form of formsOf(this.echoToken)) {
+      assert.ok(!provider.calls.some((c) => c.raw.includes(form)), "a form of the echo token reached the model");
+    }
+  },
+);
+
+/** How many requests carrying this scenario's marker the echo received — asked inside its pod. */
+async function echoCount(world: E2EWorld): Promise<number> {
+  const { stdout } = await exec("kubectl", [
+    "--namespace",
+    ECHO_NAMESPACE,
+    "exec",
+    "deploy/echo",
+    "--",
+    "wget",
+    "-qO-",
+    `http://127.0.0.1:8080/count/${world.marker}`,
+  ]);
+  return Number(stdout.trim());
+}
+
+Then("the echo has received the run's call", async function (this: E2EWorld): Promise<void> {
+  for (let i = 0; i < 120; i++) {
+    if ((await echoCount(this)) >= 1) return;
+    await sleep(500);
+  }
+  throw new Error(`the echo never received a request for ${this.marker}`);
+});
+
+Then("the echo received the run's call exactly once", async function (this: E2EWorld): Promise<void> {
+  assert.equal(await echoCount(this), 1, "one send, across what restarted (B2.4)");
+});
+
+Given("the Instance Effector runs {int} replicas", async function (this: E2EWorld, n: number): Promise<void> {
+  // No replica count in config yet (B2.4): the tier scales the Deployment `jr2 up` converged.
+  await kubectl(this, ["scale", `deployment/${INSTANCE_EFFECTOR}`, `--replicas=${n}`]);
+  await kubectl(this, ["rollout", "status", `deployment/${INSTANCE_EFFECTOR}`, "--timeout=180s"]);
+  const pods = await kubectl(this, ["get", "pods", "-l", `app=${INSTANCE_EFFECTOR}`, "-o", "name"]);
+  assert.equal(pods.trim().split("\n").filter(Boolean).length, n);
+});
+
+/** An Orchestrator restart with no Sandbox to capture first: the Effect runs in the Effector. */
+When("the orchestrator restarts while the Effect runs", async function (this: E2EWorld): Promise<void> {
+  await scaleOrchestrator(this, 0);
+  await scaleOrchestrator(this, 1);
+});
+
+/** A rollout of the Instance Effector: the new pod starts beside the old one (surge), and the old
+ * one finishes the Effect in flight before it stops (B2.4). Not waited on here: the run's answer is
+ * what the scenario reads. */
+When("the Instance Effector rolls out", async function (this: E2EWorld): Promise<void> {
+  await kubectl(this, ["rollout", "restart", `deployment/${INSTANCE_EFFECTOR}`]);
+});
+
+Then("the Instance Effector's rollout completes", async function (this: E2EWorld): Promise<void> {
+  await kubectl(this, ["rollout", "status", `deployment/${INSTANCE_EFFECTOR}`, "--timeout=300s"]);
+});

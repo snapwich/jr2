@@ -11,7 +11,7 @@
 // its body — an answer bound to this request. An unsigned or mis-signed answer is not the Effector's.
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { resolve4 } from "node:dns/promises";
+import { lookup } from "node:dns/promises";
 import { z } from "zod";
 
 // --- The request (POST /effects/<id>) ------------------------------------------------------------
@@ -326,7 +326,9 @@ export function nodeEffectorTransport(service: string, fetchImpl: typeof fetch =
   const host = service.slice(0, cut);
   const port = service.slice(cut + 1);
   return {
-    replicas: async () => (await resolve4(host)).map((ip) => `${ip}:${port}`),
+    // `lookup` (getaddrinfo), not `resolve4`: it reads the pod's resolv.conf search list, so the
+    // namespace-relative name resolves as every other in-cluster address the Orchestrator dials.
+    replicas: async () => (await lookup(host, { all: true, family: 4 })).map((a) => `${a.address}:${port}`),
     send: async (address, method, path, headers, body, signal) => {
       const res = await fetchImpl(`http://${address}${path}`, {
         method,

@@ -146,6 +146,11 @@ export class E2EWorld {
   /** The key the scripted model wants (ADR-0059) — this scenario's `harness.provider.apiKey`, which
    * the Custodian holds and the Harness container must not. */
   providerKey?: string;
+  /** This scenario's Effect secret (ADR-0068): the kind instance's `echo-token`, which only the
+   * Instance Effector holds. The steps look for every form of it in what came back. */
+  echoToken?: string;
+  /** The `m-…` segment a `called` run sends, which the echo counts (B2.4's one-send proof). */
+  marker?: string;
   /** The unbound echo's url, as a pod reaches it. */
   echoUrl?: string;
   /** The scripted model's base url, as a pod reaches it. */
@@ -191,6 +196,10 @@ export class E2EWorld {
     this.providerUrl = `https://${address}:${this.provider.port}/v1`;
     this.extraEnv.JR2_FAKE_PROVIDER_URL = this.providerUrl;
     this.extraEnv.JR2_FAKE_PROVIDER_KEY = this.providerKey;
+    // The kind instance's one Effect secret (ADR-0068), per scenario like the provider key: the
+    // `called` and `asked` workflows name it, so every converge places it in the Instance Effector.
+    this.echoToken = `echo-${randomBytes(12).toString("hex")}`;
+    this.extraEnv.JR2_ECHO_TOKEN = this.echoToken;
     this.echoUrl = `https://${address}:${this.provider.echo.port}/`;
   }
 

@@ -34,9 +34,37 @@ export const SEED_URL = "http://seed.jr2-e2e-seed.svc/app.git";
 
 const NAMESPACE = "jr2-e2e-seed";
 
-/** Pinned tags, both multi-arch: `docker manifest inspect` resolves each. */
+/** Pinned tags, all multi-arch: `docker manifest inspect` resolves each. */
 const GIT_IMAGE = "alpine/git:v2.47.2";
 const HTTP_IMAGE = "nginx:1.27-alpine";
+const NODE_IMAGE = "node:24-alpine";
+
+/**
+ * The echo server an `http` Effect calls (ADR-0068's B3 proof): it answers with every header it
+ * received and the url, each in the encodings the Effector scrubs — raw, base64 in both alphabets,
+ * percent-encoded, JSON-escaped — and repeats the Authorization and the url in response headers.
+ * `/slow/<marker>/<seconds>` holds the answer that long, and every request that carries a
+ * `m-…` segment is counted by it: `/count/<marker>` answers how many arrived, which is how a step
+ * proves one send across an Orchestrator restart or an Effector rollout (B2.4). Its own port is
+ * 8080; nothing about it is secret, and it holds no state but the counts.
+ */
+export const ECHO_SCRIPT = [
+  `const http=require("http");const counts={};`,
+  `const forms=(v)=>[["raw",v],["b64",Buffer.from(v).toString("base64")],`,
+  `["b64url",Buffer.from(v).toString("base64url")],["pct",encodeURIComponent(v)],`,
+  `["json",JSON.stringify(v).slice(1,-1)]];`,
+  `http.createServer((req,res)=>{`,
+  `const segs=req.url.split("?")[0].split("/");`,
+  `if(segs[1]==="count"){res.end(String(counts[segs[2]]||0));return;}`,
+  `const marker=segs.find((s)=>s.startsWith("m-"));if(marker)counts[marker]=(counts[marker]||0)+1;`,
+  `const wait=segs[1]==="slow"?Number(segs[3]||0)*1000:0;`,
+  `let body="";req.on("data",(d)=>body+=d);req.on("end",()=>setTimeout(()=>{`,
+  `const lines=[];for(const [k,v] of Object.entries(req.headers))for(const [f,x] of forms(String(v)))lines.push("header "+k+" "+f+" "+x);`,
+  `for(const [f,x] of forms(req.url))lines.push("url "+f+" "+x);lines.push("body "+body);`,
+  `res.setHeader("content-type","text/plain");res.setHeader("x-echo-authorization",req.headers.authorization||"");`,
+  `res.setHeader("x-echo-url",req.url);res.end(lines.join("\\n")+"\\n");},wait));`,
+  `}).listen(8080);`,
+].join("");
 
 /**
  * The init container's script: make each served repository under `srv` from a work tree at `work`.
@@ -146,6 +174,40 @@ spec:
   ports:
     - port: 80
       targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+        - name: echo
+          image: ${NODE_IMAGE}
+          command: ["node", "-e", ${JSON.stringify(ECHO_SCRIPT)}]
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: echo
+  ports:
+    - port: 80
+      targetPort: 8080
 `;
 
 let seeded: Promise<void> | undefined;
@@ -168,6 +230,7 @@ async function seed(): Promise<void> {
   // rendezvous, and it is idempotent for all four.
   await kubectl(["apply", "-f", "-"], MANIFEST, /* tolerate */ /AlreadyExists/);
   await kubectl(["--namespace", NAMESPACE, "rollout", "status", "deployment/seed", "--timeout=300s"]);
+  await kubectl(["--namespace", NAMESPACE, "rollout", "status", "deployment/echo", "--timeout=300s"]);
 }
 
 function kubectl(args: string[], stdin?: string, tolerate?: RegExp): Promise<void> {

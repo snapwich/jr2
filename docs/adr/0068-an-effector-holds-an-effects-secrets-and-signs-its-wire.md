@@ -138,3 +138,7 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
   common encodings.
 - An `unknown` outcome is the Machine's to route. jr2 sends an `http` call again only when the author marked it
   `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once.md)).
+- The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
+  the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
+  value (B3); two replicas and an Orchestrator restart during a call, and a rollout during a call, must give one send
+  (B2.4).

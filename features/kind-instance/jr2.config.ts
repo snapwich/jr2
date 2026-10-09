@@ -23,6 +23,11 @@ import { defineConfig } from "@jr2/orchestrator";
 export default defineConfig({
   name: "jr2-e2e-kind",
   git: { credentials: [{ match: "seed.jr2-e2e-seed.svc/" }] },
+  // The tier's one Effect secret (ADR-0068): the `called` and `asked` workflows' http Effects name
+  // it, so it is placed in the Instance Effector and nowhere else — no `hosts`, so no Custodian
+  // holds it. Per scenario, from env like the provider key; in-cluster it reads undefined, which is
+  // safe: the Orchestrator never sees an Effect secret.
+  secrets: [{ name: "echo-token", value: process.env.JR2_ECHO_TOKEN }],
   // The Size of every Sandbox this tier provisions (ADR-0060): below the kit default, because jr2
   // reserves the whole Size and the tier runs four scenarios at once on ONE kind node — at 2Gi and
   // one cpu each, beside every scenario's kit-sized control pods, a 4-core runner leaves Sandboxes
