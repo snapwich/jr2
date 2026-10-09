@@ -40,20 +40,22 @@ func TestEachFormIsScrubbed(t *testing.T) {
 }
 
 // A server echoes a secret in its own encoder's spelling. Each spelling below is what a common
-// encoder writes for the value; each one is a form the scrubber removes.
+// encoder writes for the value; each one is a form the scrubber removes. Each spelling is written
+// out with its escapes, and none of them is the value itself.
 func TestEachCommonEncodersSpellingIsScrubbed(t *testing.T) {
-	const value = `s3cr3t/Tok+en=v&x!'(é)<q>`
-	goJSON, err := json.Marshal(value) // Go's default: <, >, & as <, >, &
+	const value = "s3cr3t/Tok+en=v&x!'(\u00e9)<q>"
+	goJSON, err := json.Marshal(value) // Go's default: <, >, & as \u003c, \u003e, \u0026
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := New(map[string]string{"tok": value, "k": "ab!cd+ef/gh&ij"})
 	spellings := map[string]string{
 		"JSON, Go encoding/json default":     strings.Trim(string(goJSON), `"`),
-		"JSON, PHP json_encode (\\/)":        `s3cr3t\/Tok+en=v&x!'(é)<q>`,
-		"JSON, Python json.dumps (\\u00e9)":  `s3cr3t/Tok+en=v&x!'(é)<q>`,
-		"JSON, upper-case \\u hex":           `s3cr3t/Tok+en=v&x!'(é)<q>`,
-		"JSON, \\/ and HTML-escaped":         `s3cr3t\/Tok+en=v&x!'(é)<q>`,
+		"JSON, PHP json_encode (\\/)":        "s3cr3t\\/Tok+en=v&x!'(\u00e9)<q>",
+		"JSON, Python json.dumps (\\u00e9)":  `s3cr3t/Tok+en=v&x!'(\u00e9)<q>`,
+		"JSON, upper-case \\u hex":           `s3cr3t/Tok+en=v&x!'(\u00E9)<q>`,
+		"JSON, \\/ and HTML-escaped":         "s3cr3t\\/Tok+en=v\\u0026x!'(\u00e9)\\u003cq\\u003e",
+		"JSON, HTML-escaped, upper-case hex": "s3cr3t/Tok+en=v\\u0026x!'(\u00e9)\\u003Cq\\u003E",
 		"percent, encodeURIComponent":        `s3cr3t%2FTok%2Ben%3Dv%26x!'(%C3%A9)%3Cq%3E`,
 		"percent, encodeURIComponent, lower": `s3cr3t%2fTok%2ben%3dv%26x!'(%c3%a9)%3cq%3e`,
 		"percent, encodeURI":                 `s3cr3t/Tok+en=v&x!'(%C3%A9)%3Cq%3E`,
@@ -63,13 +65,44 @@ func TestEachCommonEncodersSpellingIsScrubbed(t *testing.T) {
 		"percent, form (URLSearchParams)":    `s3cr3t%2FTok%2Ben%3Dv%26x%21%27%28%C3%A9%29%3Cq%3E`,
 		"percent, the verifier's value":      `ab!cd%2Bef%2Fgh%26ij`,
 		"percent, its value in lower hex":    `ab%21cd%2bef%2fgh%26ij`,
-		"JSON, its value with \\/":           `ab!cd+ef\/gh&ij`,
-		"JSON, its value HTML-escaped":       `ab!cd+ef/gh&ij`,
+		"JSON, its value with \\/":           "ab!cd+ef\\/gh&ij",
+		"JSON, its value HTML-escaped":       "ab!cd+ef/gh\\u0026ij",
 	}
 	for name, f := range spellings {
 		t.Run(name, func(t *testing.T) {
+			if f == value || f == "ab!cd+ef/gh&ij" {
+				t.Fatalf("the spelling %q is the value itself, so it tests no encoding", f)
+			}
 			got := s.String("before " + f + " after")
 			if got != "before [secret:tok] after" && got != "before [secret:k] after" {
+				t.Fatalf("%q came back as %q", f, got)
+			}
+		})
+	}
+}
+
+// The JSON escapes a common encoder writes for control characters, the line separators and a rune
+// outside the Basic Multilingual Plane: each spelling is a form the scrubber removes.
+func TestEachJSONEscapeOfAControlOrSeparatorIsScrubbed(t *testing.T) {
+	const value = "ctl\b\f|\u2028|\u2029|\U0001F600-end"
+	goJSON, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(map[string]string{"ctl": value})
+	spellings := map[string]string{
+		"Go encoding/json (U+2028 and U+2029 escaped)":       strings.Trim(string(goJSON), `"`),
+		"JavaScript JSON.stringify (\\b, \\f; U+2028 as is)": "ctl\\b\\f|\u2028|\u2029|\U0001F600-end",
+		"\\u0008 and \\u000c, U+2028 escaped":                "ctl\\u0008\\u000c|\\u2028|\\u2029|\U0001F600-end",
+		"Python json.dumps (every non-ASCII rune escaped)":   "ctl\\b\\f|\\u2028|\\u2029|\\ud83d\\ude00-end",
+		"Python json.dumps, upper-case hex":                  "ctl\\b\\f|\\u2028|\\u2029|\\uD83D\\uDE00-end",
+	}
+	for name, f := range spellings {
+		t.Run(name, func(t *testing.T) {
+			if f == value {
+				t.Fatalf("the spelling %q is the value itself, so it tests no encoding", f)
+			}
+			if got := s.String("before " + f + " after"); got != "before [secret:ctl] after" {
 				t.Fatalf("%q came back as %q", f, got)
 			}
 		})

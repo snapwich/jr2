@@ -70,12 +70,12 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   one spelling, and a server echoes in its own encoder's, so each common spelling is a form: percent-encoding that
   leaves only the unreserved characters, or also `/` (Python's `quote`), or `!'()*` (`encodeURIComponent`), or the
   reserved ones (`encodeURI`), or a path's characters, a form's `+` for a space, Go's query and path escapes, each in
-  upper and lower hex; JSON with or without `\/`, with or without `<`, `>`, `&` as `<`, `>`, `&`, with or without every
-  non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u` forms, ` ` and ` ` escaped or not, and `\u` hex in either
-  case. A match becomes `[secret:<name>]`. A body is scrubbed as it streams, across chunk borders, with a window one
-  byte shorter than the longest form. The Effector refuses to start with a secret shorter than 8 characters, and names
-  it: a shorter one would match ordinary text. A literal is refused earlier, by `jr2 up`; a value from the user's own
-  Secret is first seen here.
+  upper and lower hex; JSON with or without `\/`, with or without `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026`, with or
+  without every non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u` forms, U+2028 and U+2029 as `\u2028` and
+  `\u2029` or as they are, and `\u` hex in either case. A match becomes `[secret:<name>]`. A body is scrubbed as it
+  streams, across chunk borders, with a window one byte shorter than the longest form. The Effector refuses to start
+  with a secret shorter than 8 characters, and names it: a shorter one would match ordinary text. A literal is refused
+  earlier, by `jr2 up`; a value from the user's own Secret is first seen here.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
   trailing `\n` or `\r\n` is taken off, as the Custodian does.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,

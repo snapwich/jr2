@@ -144,11 +144,11 @@ func percentEncoded(value, keep string, spacePlus bool, hex string) string {
 // JSON spellings: each bit is one choice a common JSON encoder makes differently.
 const (
 	jsonSlash   = 1 << iota // `/` as `\/` (PHP's json_encode)
-	jsonHTML                // `<`, `>`, `&` as <, >, & (Go's encoding/json)
+	jsonHTML                // `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026` (Go's encoding/json)
 	jsonASCII               // every non-ASCII rune as \uXXXX (Python's json.dumps)
 	jsonUpper               // \u hex in upper case
 	jsonShort               // \b and \f rather than \u0008 and \u000c (JavaScript's JSON.stringify)
-	jsonLineSep             // U+2028 and U+2029 as   and   (Go's encoding/json)
+	jsonLineSep             // U+2028 and U+2029 as `\u2028` and `\u2029` (Go's encoding/json)
 	jsonAll     = 1 << iota
 )
 
@@ -187,7 +187,7 @@ func jsonEscaped(value string, opts int) string {
 			b.WriteString(`\/`)
 		case (r == '<' || r == '>' || r == '&') && opts&jsonHTML != 0:
 			u(r)
-		case (r == ' ' || r == ' ') && (opts&jsonLineSep != 0 || opts&jsonASCII != 0):
+		case (r == '\u2028' || r == '\u2029') && (opts&jsonLineSep != 0 || opts&jsonASCII != 0):
 			u(r)
 		case r > 0x7f && opts&jsonASCII != 0:
 			if r > 0xffff {
