@@ -4,7 +4,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { EffectStateShape } from "@jr2/orchestrator";
 import { noticeText } from "../src/briefing.ts";
 import {
   answerText,
@@ -229,6 +233,42 @@ test("an answer that left the Agent's state ends the Turn; the answer's words na
     answerText({ kind: "answer", value: { url: "https://p.example/1" } }),
     'Its answer: {"url":"https://p.example/1"}',
   );
+});
+
+test("an http Effect's outcome reads as its output, decoded off the wire as the Orchestrator decodes it (ADR-0068)", () => {
+  // The golden fixtures (effector/testdata/wire/) are what the Effector answers; the default answer
+  // renders the output whole, so these are the texts the model reads for each outcome.
+  const fixtures = fileURLToPath(new URL("../../../effector/testdata/wire/", import.meta.url));
+  const read = (name: string) =>
+    answerText({
+      kind: "output",
+      actor: "comment",
+      output: EffectStateShape.parse(JSON.parse(readFileSync(join(fixtures, name), "utf8"))).output,
+    });
+  const want: Record<string, string> = {
+    "response.settled-response-text.json":
+      'Its answer: the output of `comment`: {"outcome":"response","status":201,"headers":{"content-type":' +
+      '"application/json; charset=utf-8","x-echo-auth":"[secret:jira]"},"contentType":"application/json; ' +
+      'charset=utf-8","size":57,"body":"{\\"id\\":\\"10042\\",\\"self\\":\\"https://jira.example.com/comment/10042\\"}"}.',
+    "response.settled-response-binary.json":
+      'Its answer: the output of `comment`: {"outcome":"response","status":200,"headers":{"content-type":' +
+      '"application/pdf"},"contentType":"application/pdf","size":1048576}.',
+    "response.settled-response-truncated.json":
+      'Its answer: the output of `comment`: {"outcome":"response","status":500,"headers":{},"contentType":"",' +
+      '"size":200000,"body":"<html>érror","truncated":true}.',
+    "response.settled-refused.json":
+      'Its answer: the output of `comment`: {"outcome":"refused","reason":"path segment 1 is \\"..\\", which a ' +
+      'path may not hold; nothing was sent"}.',
+    "response.settled-unreachable.json":
+      'Its answer: the output of `comment`: {"outcome":"unreachable","reason":"dial tcp 10.0.0.9:443: connect: ' +
+      'connection refused; nothing was sent"}.',
+    "response.settled-unknown.json":
+      'Its answer: the output of `comment`: {"outcome":"unknown","reason":"the timeout passed; the request may ' +
+      'have reached the host, and no answer came"}.',
+  };
+  const settled = readdirSync(fixtures).filter((f) => f.startsWith("response.settled-"));
+  assert.deepEqual(settled.sort(), Object.keys(want).sort(), "every settled fixture has its text here");
+  for (const [name, text] of Object.entries(want)) assert.equal(read(name), text, name);
 });
 
 test('a guard straight back alone reads "moved; nothing ran"; a move to a mode reads as the plain receipt', () => {

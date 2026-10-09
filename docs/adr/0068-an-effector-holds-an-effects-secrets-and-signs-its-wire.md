@@ -98,6 +98,13 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
     can cause it, so it is output, not a fault), or a host and secrets that no Effect placed there names. The
     Orchestrator settles a start longer than 4 MiB `refused` the same way, before it sends anything.
   - `unknown`: the connection was made and no answer came (the timeout, a reset): the host may have acted.
+
+  Each outcome other than `response` carries a `reason` in words. A pick that runs an `http` Effect is answered, by
+  default, with that output whole, as the kit renders an Effect's output
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): the Agent reads
+  ``Its answer: the output of `<slot>`: <the output's JSON>.``, already scrubbed. An `answer` action shapes it instead
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
+
 - **The host is fixed, in the Effector.** The Effector's config (`effector.json`, written by `jr2 up` from the Effects'
   plain data) lists each scheme, host and port an Effect placed there names, with the secrets that Effect names. A
   request to another target, or with another secret, is `refused`. A redirect is the response and is never followed: it

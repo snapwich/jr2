@@ -422,3 +422,65 @@ test("fromPick into an http Effect: the pick's params fill its input by name; a 
   const wide = defineEvent({ name: "comment_on_ticket", input: z.object({ body: z.string(), cc: z.string() }) });
   assert.throws(() => build(wide as never), /"cc"/);
 });
+
+test("a pick that runs an http Effect is answered with the Effector's output as it came — each outcome the Agent reads", async () => {
+  // What the model reads is `answerText` over this answer (the Harness's own test renders each
+  // outcome); this pins that the run host hands the Effector's scrubbed output through whole.
+  const comment = defineEvent({ name: "comment_on_ticket", input: z.object({ body: z.string() }) });
+  const fake = new FakeEffector();
+  const coder = new MockFlueClient();
+  const post = httpWith((target) => createEffectorClient({ key: target.key, transport: fake.transport }), commentDef());
+  const machine = jr2Setup({
+    types: {} as { context: { ticket: string } },
+    events: [comment],
+    actors: { coder: agentActorWith(() => coder, coderDefinition), post },
+  }).createMachine({
+    id: "wf",
+    context: { ticket: "PROJ-7" },
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: "http://harness.invalid", continue: true } },
+        initial: "rest",
+        states: {
+          rest: {},
+          comment_on_ticket: {
+            invoke: {
+              src: "post",
+              input: fromPick(comment, ({ context }: { context: { ticket: string } }) => ({
+                key: context.ticket,
+              })) as never,
+            },
+          },
+        },
+        on: { comment_on_ticket: ".comment_on_ticket" },
+      },
+    },
+  });
+  const host = new RunHost({ store: await mkStore(), ...effector });
+  host.register({ name: "fx", machine, provide: () => ({}) });
+  await host.start("fx");
+  await waitFor(() => coder.admits.length === 1);
+  const iid = coder.admits[0]!.instanceId;
+  const outputs: HttpOutput[] = [
+    {
+      outcome: "response",
+      status: 201,
+      headers: { "x-echo-auth": "[secret:jira]" },
+      contentType: "application/json",
+      size: 2,
+      body: "{}",
+    },
+    { outcome: "refused", reason: 'path segment 1 is "..", which a path may not hold; nothing was sent' },
+    { outcome: "unreachable", reason: "dial tcp 10.0.0.9:443: connect: connection refused; nothing was sent" },
+    { outcome: "unknown", reason: "the timeout passed; the request may have reached the host, and no answer came" },
+  ];
+  for (const [i, output] of outputs.entries()) {
+    const pick = host.sendToAgent(iid, { type: "comment_on_ticket", body: `try ${i}` });
+    assert.equal(pick.outstanding, true, "held while the Effect runs");
+    await waitFor(() => fake.starts.length === i + 1);
+    fake.settle(output);
+    const answered = await host.awaitDelivery(iid, pick.deliveryId);
+    assert.deepEqual(answered?.answer, { kind: "output", actor: "post", output }, output.outcome);
+  }
+});
