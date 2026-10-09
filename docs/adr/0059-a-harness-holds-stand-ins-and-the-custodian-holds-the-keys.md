@@ -260,9 +260,12 @@ decision generalizes that container. It holds every credential the Harness in it
   instead.
 - **Rotation of a value** reaches a live Sandbox only when its pod is replaced.
 - **The walk reads definitions, not Turns.** A pod's model keys come from the models its Agents' definitions name. A
-  Turn whose invocation overrides the model with another provider's (`AgentTurnInput.model`) finds no binding for that
-  provider in its pod: its calls carry the Stand-in and fail with 401. The fix is a definition that names the provider,
-  or the key under the `workspace()`'s `secrets`.
+  Turn whose invocation overrides the model with another provider's (`AgentTurnInput.model`) finds no key for that
+  provider in its pod: the Harness container gets a Stand-in only for the names in its own pod's manifest, so that
+  provider's key variable is not set at all. The call then has no key (a catalog provider) or sends the custom
+  provider's placeholder `unused`, and it fails. This holds in a Workspace and in the Instance Harness alike. The fix is
+  a definition that names the provider; in a Workspace, the key under the `workspace()`'s `secrets` also works. The
+  Instance Harness has no such list: its pod holds only the model keys of the `"none"` Agents it hosts.
 - **TLS-only bindings.** A key for a plain-HTTP endpoint is refused (R7). A LAN `llama-server --api-key` needs TLS and
   its CA in `caBundle`, or no key.
 - **No proxy chaining.** The Custodian cannot forward to a corporate proxy. R11 says so rather than fail silently.

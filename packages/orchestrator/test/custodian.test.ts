@@ -236,6 +236,24 @@ test("composition, nothing held: the Harness gets the Custodian's address and th
   assert.deepEqual(instance.harnessMounts, [{ name: "ca", mountPath: "/etc/jr2/ca", readOnly: true }]);
 });
 
+test("a pod's Harness gets a Stand-in for its own manifest's names only — a provider no definition there names has no variable", () => {
+  // ADR-0059 "The walk reads definitions, not Turns": a Turn that overrides the model with another
+  // provider's finds that provider's key variable absent, in a Workspace and the Instance Harness
+  // alike — never a Stand-in that fails with 401.
+  const anthropicOnly: HeldManifest = { version: 1, secrets: [TWO.secrets[0]!] };
+  for (const pod of [
+    { pod: "ws-0123456789abcdef", token: { secret: "ws-1-token", key: "JR2_SANDBOX_TOKEN" }, sandbox: "ws-1" },
+    { pod: "instance", token: { secret: "jr2-instance", key: "JR2_INSTANCE_HARNESS_TOKEN" } },
+  ]) {
+    const c = custodianComposition(anthropicOnly, { image: "envoy:c1", caBundle: false, ...pod });
+    const standIns = c.harnessEnv.filter((e) => e.value?.startsWith("jr2-held-")).map((e) => e.name);
+    assert.deepEqual(standIns, ["JR2_SANDBOX_TOKEN", "ANTHROPIC_API_KEY"], pod.pod);
+    for (const other of ["OPENAI_API_KEY", "JR2_PROVIDER_API_KEY"]) {
+      assert.ok(!c.harnessEnv.some((e) => e.name === other), `${pod.pod}: no ${other} at all`);
+    }
+  }
+});
+
 test("the rendered config is JSON a ConfigMap can carry, and names no value", () => {
   const text = JSON.stringify(custodianBootstrap(TWO, ORCH));
   assert.ok(text.length < 64 * 1024);
