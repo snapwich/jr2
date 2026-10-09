@@ -17,11 +17,16 @@
 //
 // What this module adds to the Effect's restart safety (effect.ts) for this kind:
 //
-//   - THE RESTORE RULE. The intent row names the placement and no replica (B2.4). After an
+//   - THE RESTORE RULE. The intent row names the placement and no replica. After an
 //     Orchestrator restart, or a start whose answer never came, the Effect asks EVERY replica for
 //     its id: one that holds it is followed; when none does, an Effect the author marked
 //     `idempotent` is sent again, and any other settles `unknown`. A start that certainly never
 //     reached a replica (no connection, a stopping replica) is sent again either way.
+//   - A FORGED ANSWER. An answer the placement's key does not verify is not the Effector's: a key
+//     that differs from the Effector's, or another process on its address. A poll's is read as a
+//     replica gone (its address may be stale), so every replica is asked; when asking every
+//     replica gets one, the Effect settles `unknown` and is not sent again — no retry changes the
+//     key the answer is checked with, and such a process can make the call fail, never answer it.
 //   - D1. When its state exits, the Orchestrator stops polling and records the abort, "outcome
 //     unknown", on the ledger and the feed. There is no cancel route: the Effector finishes the call
 //     and drops an outcome nobody reads.
@@ -32,6 +37,8 @@ import type { z } from "zod";
 import type { Duration, EffectLogic, EffectMarker, EffectRow, EffectSnapshot, HttpParts, Unknown } from "./effect.ts";
 import {
   createEffectorClient,
+  EffectorForged,
+  EffectorMalformed,
   EffectorNotSent,
   EffectorRefused,
   HTTP_METHODS,
@@ -393,12 +400,28 @@ async function drive<I, O>(
     );
   }
   const port = portFactory(target);
+  /** Ask every replica. Undefined when an answer was forged: the Effect is settled then. */
+  const findAll = async (): Promise<{ found: EffectState | undefined } | undefined> => {
+    try {
+      return { found: await retrying(() => port.find(id, signal), signal) };
+    } catch (err) {
+      if (signal.aborted || !(err instanceof EffectorForged)) throw err;
+      settle(
+        unknown(
+          `${err.message}: the Orchestrator's key for this Effector is not the Effector's, or another process ` +
+            "answered; not sent again",
+        ),
+      );
+      return undefined;
+    }
+  };
 
   if (row?.state === "intent") {
-    // In flight at an Orchestrator restart (B2.4): ask every replica, follow the one that holds it,
-    // and when none does, send it again only if the author marked it idempotent.
-    const found = await retrying(() => port.find(id, signal), signal);
-    if (signal.aborted) return;
+    // In flight at an Orchestrator restart: ask every replica, follow the one that holds it, and
+    // when none does, send it again only if the author marked it idempotent.
+    const asked = await findAll();
+    if (!asked || signal.aborted) return;
+    const { found } = asked;
     if (found) {
       await follow(found);
       return;
@@ -469,11 +492,12 @@ async function drive<I, O>(
         state = await port.start(id, req, signal);
       } catch (err) {
         if (signal.aborted) return;
-        if (err instanceof EffectorRefused) throw err;
+        if (err instanceof EffectorRefused || err instanceof EffectorMalformed) throw err;
         if (!(err instanceof EffectorNotSent)) {
-          // It may have started: ask every replica before anything else.
-          const found = await retrying(() => port.find(id, signal), signal);
-          if (signal.aborted) return;
+          // It may have started — a lost answer, or a forged one: ask every replica first.
+          const asked = await findAll();
+          if (!asked || signal.aborted) return;
+          const { found } = asked;
           if (found) {
             await follow(found);
             return;
@@ -503,8 +527,9 @@ async function drive<I, O>(
         return;
       }
       if (state.state === "unknown") {
-        const found = await retrying(() => port.find(id, signal), signal);
-        if (signal.aborted) return;
+        const asked = await findAll();
+        if (!asked || signal.aborted) return;
+        const { found } = asked;
         if (!found) {
           if (parts.idempotent) {
             await send(requestFor());
@@ -521,8 +546,9 @@ async function drive<I, O>(
         state = await port.poll(replica, id, signal);
       } catch (err) {
         if (signal.aborted) return;
-        if (err instanceof EffectorRefused) throw err;
-        // The replica did not answer: the next pass asks every replica.
+        if (err instanceof EffectorRefused || err instanceof EffectorMalformed) throw err;
+        // The replica did not answer, or not with the Effector's signature (its address may be
+        // stale): the next pass asks every replica.
         state = { effect: id, replica, state: "unknown" };
       }
       if (signal.aborted) return;
@@ -577,7 +603,15 @@ async function retrying<T>(call: () => Promise<T>, signal: AbortSignal): Promise
     try {
       return await call();
     } catch (err) {
-      if (signal.aborted || err instanceof EffectorRefused) throw err;
+      // A refusal and a malformed answer are defects; a forged one would be forged again.
+      if (
+        signal.aborted ||
+        err instanceof EffectorRefused ||
+        err instanceof EffectorMalformed ||
+        err instanceof EffectorForged
+      ) {
+        throw err;
+      }
       await sleep(wait, signal);
       if (signal.aborted) throw err;
     }

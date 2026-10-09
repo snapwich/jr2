@@ -270,6 +270,49 @@ test("the replica that held it restarted while it was followed: not sent again, 
   assert.equal(fake.starts.length, 1);
 });
 
+test("an Effector whose key is not the Orchestrator's: every answer is forged, so the call settles `unknown` — never a wait without end, idempotent or not", async () => {
+  for (const idempotent of [false, true]) {
+    const fake = new FakeEffector(["a", "b"], "a-key-the-orchestrator-does-not-derive");
+    const rig = await started(fake, { idempotent });
+    await waitFor(() => rig.host.status(rig.runId)?.value === "done");
+    const result = (rig.host.status(rig.runId)?.context as Ctx).result as { outcome: string; reason: string };
+    assert.equal(result.outcome, "unknown", `idempotent: ${idempotent}`);
+    assert.match(result.reason, /does not carry the Effector's signature/);
+    assert.match(result.reason, /not sent again/);
+    assert.equal(fake.starts.length, 0, "the Effector verified nothing, so it started nothing");
+    const settled = rig.feed.find((e) => e.kind === "effect" && e.stage === "settled") as
+      | { output: { outcome: string } }
+      | undefined;
+    assert.equal(settled?.output.outcome, "unknown", "the feed says how it ended");
+    const rows = Object.values(await ledger(rig.store, rig.runId));
+    assert.deepEqual(
+      rows.map((r) => r.state),
+      ["settled"],
+    );
+  }
+});
+
+test("a forged answer to a poll is a replica gone: every replica is asked, and the one that holds it is followed", async () => {
+  const fake = new FakeEffector(["a", "b"]);
+  const rig = await started(fake);
+  await waitFor(() => fake.starts.length === 1);
+  fake.forgePolls = 1;
+  await waitFor(() => fake.forgePolls === 0);
+  fake.settle(response);
+  await waitFor(() => rig.host.status(rig.runId)?.value === "done");
+  assert.deepEqual((rig.host.status(rig.runId)?.context as Ctx).result, response);
+  assert.equal(fake.starts.length, 1);
+});
+
+test("a signed answer that is not the wire's shape is a jr2 defect: an error, never output, never retried", async () => {
+  const fake = new FakeEffector();
+  fake.malformed = true;
+  const rig = await started(fake);
+  await waitFor(() => rig.host.status(rig.runId)?.value === "faulted");
+  assert.match((rig.host.status(rig.runId)?.context as Ctx).fault!, /is not the wire's shape/);
+  assert.equal(fake.calls.length, 1, "one start, and nothing after it");
+});
+
 test("an Orchestrator with no Effector, and an input that misses the schema: an error, never output, nothing sent", async () => {
   const fake = new FakeEffector();
   const host = new RunHost({ store: await mkStore() });

@@ -165,8 +165,13 @@ export class EffectorNotSent extends Error {}
 /** The Effector refused the request as malformed (400): a jr2 or config defect, never retried. */
 export class EffectorRefused extends Error {}
 
-/** An answer that is not the Effector's: unsigned, mis-signed, or not the wire's shape. */
+/** An answer that is not the Effector's: unsigned, or signed with another key. No retry changes the
+ * key it is checked with, so the Effect that gets one settles `unknown` (ADR-0068). */
 export class EffectorForged extends Error {}
+
+/** An answer the placement's key verifies that is not the wire's shape: a jr2 defect, never an
+ * outcome, never retried. */
+export class EffectorMalformed extends Error {}
 
 /** The Effector's wire, as an Effect drives it. */
 export interface EffectorPort {
@@ -217,7 +222,7 @@ export function createEffectorClient(opts: {
   };
   const state = (answer: RawAnswer, what: string): EffectState => {
     const parsed = EffectStateShape.safeParse(parseJson(answer.body));
-    if (!parsed.success) throw new EffectorForged(`the Effector's answer to ${what} is not the wire's shape`);
+    if (!parsed.success) throw new EffectorMalformed(`the Effector's answer to ${what} is not the wire's shape`);
     return parsed.data as EffectState;
   };
   const refusal = (answer: RawAnswer): string => {

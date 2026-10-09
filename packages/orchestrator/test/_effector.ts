@@ -35,6 +35,10 @@ export class FakeEffector {
   hold = 30;
   /** When set, the next start is taken by a replica and its answer lost (a reset). */
   loseNextAnswer = false;
+  /** How many of the next polls (GET) get an unsigned answer — another process on a stale address. */
+  forgePolls = 0;
+  /** When set, every signed answer's body is not the wire's shape (a jr2 defect). */
+  malformed = false;
 
   readonly key: string;
 
@@ -77,8 +81,12 @@ export class FakeEffector {
       const nonce = headers[HEADER_NONCE] ?? "";
       const expect = requestMac(this.key, method, path, headers[HEADER_TIME] ?? "", nonce, body);
       if (headers[HEADER_SIGNATURE] !== expect) return { status: 401, headers: {}, body: "" };
+      if (method === "GET" && this.forgePolls > 0) {
+        this.forgePolls--;
+        return { status: 404, headers: {}, body: "" };
+      }
       const answer = (status: number, value: unknown): RawAnswer => {
-        const text = JSON.stringify(value);
+        const text = this.malformed ? JSON.stringify({ not: "the wire" }) : JSON.stringify(value);
         return {
           status,
           headers: { [HEADER_SIGNATURE]: responseMac(this.key, status, method, path, nonce, text) },

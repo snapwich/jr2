@@ -51,7 +51,11 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   `jr2-instance-effector.<namespace>.svc:8082`, and its key from the signing key (`effectorKey`): the Orchestrator
   stores neither. The real transport resolves that name to every replica's address; a start goes to one of them, and to
   the next only when a replica was never reached or answered that it is stopping. An answer without the Effector's
-  signature is not the Effector's: it is treated as a transport failure, never as an outcome.
+  signature is not the Effector's, and never an outcome. To a start it is an answer lost and to a poll a replica gone
+  (its address may be stale): every replica is asked. When asking every replica gets one too, the Effect settles
+  `unknown`, with that reason, and is not sent again, `idempotent` or not: no retry changes the key the answer is
+  checked with. So a key that is not the Effector's, or another process on its address, makes the call fail and never
+  holds the run in its state. A signed answer that is not the wire's shape is a jr2 defect: the Effect errors.
 - **Replica-aware.** Every answer names the replica that holds the Effect — its pod name and its address
   (`POD_IP:port`). A poll to a replica that does not hold the Effect gets 404 with `state: unknown` and that replica's
   name. A replica that gets SIGTERM refuses a new Effect (503, `error: stopping`, which starts nothing), finishes the
