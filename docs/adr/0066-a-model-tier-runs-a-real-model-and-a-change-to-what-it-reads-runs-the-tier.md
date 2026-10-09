@@ -160,13 +160,13 @@ recover, finish — are exercised only one scripted tool call at a time.
     twice. `ask_review` now enters a mode whose `revise` and `submit` are closed, where the Briefing tells a model to
     stop, and a timer then opens them, so the wake asks it with the nudge's text (ADR-0016). The timer has no target: it
     assigns, and the picks' guards read it. A timer that moved the workflow to a mode inside the Agent's state holds
-    Rest (ADR-0024), so `ask_review` would stay outstanding until it fired and its answer would carry the open picks on
-    the same call; no model would stop. The prompt is unchanged: it is the claim's fixed data. What counts is unchanged:
-    the trial is measured at the first ask after the model's `ask_review`, and void without one, and it passes when the
-    first Menu call after that ask is a pick the mode active at the ask allows. The driver reads the modes from the
-    workflow, not from a copy of them, and replays the model's calls through them: a mode with a targetless timer has
-    its picks closed from each entry until the timer fires; the driver takes the timer where a restated Turn part shows
-    that it fired, and follows it at the ask when the wake asked with nothing allowed.
+    Rest (ADR-0024), so `ask_review` would stay outstanding until it fired and its answer would carry the Allowed picks
+    on the same call; no model would stop. The prompt is unchanged: it is the claim's fixed data. What counts is
+    unchanged: the trial is measured at the first ask after the model's `ask_review`, and void without one, and it
+    passes when the first Menu call after that ask is a pick the mode active at the ask allows. The driver reads the
+    modes from the workflow, not from a copy of them, and replays the model's calls through them: a mode with a
+    targetless timer has its picks closed from each entry until the timer fires; the driver takes the timer where a
+    restated Turn part shows that it fired, and follows it at the ask when the wake asked with nothing allowed.
   - `push-wake`, since replaced by `wake`. It measured a Menu-only Turn that started with nothing allowed and picked
     inside the same Submission once a Gate's answer was restated at a step boundary. The step first answered the board
     as soon as the Turn's prompt printed; in two runs, 8 and 9 trials had no restatement, each with one `hold` or

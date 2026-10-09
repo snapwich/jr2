@@ -307,7 +307,7 @@ export function actorPath(ref: AnyActorRef): string[] {
  * instances (two Pool children, whose ids are the items') can never meet.
  *
  * One derivation, two readers, so they cannot drift: `mintIid` builds every iid on it (a fresh
- * Turn adds a random suffix, a burned conversation's successor its epoch), and the Agent actor
+ * Turn adds a random suffix, a burned conversation's successor its epoch), and the Agent's Actor
  * names the conversation it burns with it.
  */
 export function continuedIid(machine: AnyActorRef | undefined, runId: string, agentName: string): string {
@@ -411,7 +411,7 @@ export type RunBinding = {
   instanceHarness?: string;
   /**
    * The Harness bearer for a placement (ADR-0058): `harnessToken(signingKey, placement)`, closed
-   * over the key by the host. The Agent actor asks it for the pod its Turn resolved to; the echo
+   * over the key by the host. The Agent's Actor asks it for the pod its Turn resolved to; the echo
    * attach asks it for the Workspace's. Absent (bare unit-test bindings, the stub path), no bearer
    * is sent — which only a Harness that checks nothing accepts.
    */
@@ -459,7 +459,7 @@ export type RunBinding = {
   releaseNotices?: (ids: readonly string[]) => void;
   /**
    * The pick the Turn now at this address has outstanding, or answered and not yet read (ADR-0024):
-   * what the Agent actor asks when its Harness restarted under a Turn — a Turn whose pick is still
+   * what the Agent's Actor asks when its Harness restarted under a Turn — a Turn whose pick is still
    * out, or whose answer never reached the model, is cut, not faulted (ADR-0031). Read after the host
    * settles its holds, so `answered` is the Rest rule's verdict now. An earlier Turn's pick on the
    * same continued address is not this Turn's: its answer went as a notice. Absent outside a RunHost.
@@ -523,7 +523,7 @@ export type RunBinding = {
    */
   recordEffect?: (effectId: string, row: EffectRow, save?: "now" | "with-transition") => void;
   /**
-   * iid → the abort still in flight for it (ADR-0024). The Agent actor fills this on the way out and
+   * iid → the abort still in flight for it (ADR-0024). The Agent's Actor fills this on the way out and
    * waits on it before admitting, so an abort can never overtake the next turn on the same
    * instance — flue QUEUES per instance, and an abort that lost that race would settle the new
    * submission before it ran. Created on demand: the ordering must hold for ANY binding, not only
@@ -532,7 +532,7 @@ export type RunBinding = {
   pendingAborts?: Map<string, Promise<void>>;
 };
 
-/** A conversation's latest outstanding pick, as the Agent actor reads it (ADR-0024). `answered`: the Machine
+/** A conversation's latest outstanding pick, as the Agent's Actor reads it (ADR-0024). `answered`: the Machine
  * came back to Rest, or left the Agent's state (`turnComplete`); `fetched`: the answer reached the
  * model. */
 export type OutstandingPick = {

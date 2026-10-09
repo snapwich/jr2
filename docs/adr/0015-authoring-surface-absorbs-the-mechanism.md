@@ -107,7 +107,7 @@ sends there, and every case with the Agent's state at Rest.
 **Load checks on modes and audience.** `createMachine` refuses a registered event that no state handles: it is in no
 derived set, so it is on no Menu and no Gate. It refuses a parallel region below a state that invokes an Agent — the
 Agent's state itself being parallel included, since its regions are below it: the shape is reserved for picks the Agent
-does not wait for, which jr2 does not build, and a background task goes above the Agent's state. It warns — the Machine
+does not wait for, which jr2 does not build, and background work goes above the Agent's state. It warns — the Machine
 stays legal, and the doc carries the warning and `jr2 up` prints it — about a mode that nothing enters (not initial, and
 no state the Machine can enter has a transition into it or a state inside it — so neither the mode's own `initial` nor
 its transition into itself counts: its picks are on the Menu and never allowed; a transition into a history state enters

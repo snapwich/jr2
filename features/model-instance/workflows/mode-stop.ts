@@ -9,7 +9,7 @@
 // model (ADR-0016). The timer has NO target: it only assigns the review read, and the picks' guards
 // read it. A timer that moved the workflow to another state inside the Agent's state would hold
 // Rest (ADR-0024): `ask_review` would be outstanding until it fired and its answer would carry the
-// open picks on the same call, so no model would stop. A model still working when the timer fires
+// Allowed picks on the same call, so no model would stop. A model still working when the timer fires
 // hears the change at a step boundary instead and is never asked, so its trial says nothing about
 // the rule (`void`). The tier reads the printed conversation (ADR-0023): the ask prints as its own
 // prompt, and the first Menu call after it is the measurement. The step reads the modes from this

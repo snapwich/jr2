@@ -318,7 +318,7 @@ function stateValueOf(invoker: AnyActorRef | undefined): string | undefined {
   }
 }
 
-/** The Allowed picks (ADR-0029), as the Agent actor's nudge and wake read them too. */
+/** The Allowed picks (ADR-0029), as the Agent's nudge and wake read them too. */
 function allowedOf(reg: Registration): string[] {
   return allowedPicks(reg);
 }
@@ -592,7 +592,7 @@ export type RunHostOptions = {
 };
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs.
- * `agents` is the admission LEDGER (ADR-0016) — iid → durable admission, reported by the Agent actor
+ * `agents` is the admission LEDGER (ADR-0016) — iid → durable admission, reported by the Agent's Actor
  * through the run binding and saved in the same blob (same store, same atomicity). */
 type RunBlob = {
   workflow: string;
@@ -1820,7 +1820,7 @@ export class RunHost {
       sandbox: this.sandbox,
       instanceHarness: this.instanceHarness,
       ...(this.harnessBearer ? { harnessBearer: this.harnessBearer } : {}),
-      // The admission ledger's write half (ADR-0016): the Agent actor reports the durable handle the
+      // The admission ledger's write half (ADR-0016): the Agent's Actor reports the durable handle the
       // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
       // exactly like the persist scheduler's tracked-run guard.
@@ -1870,7 +1870,7 @@ export class RunHost {
       },
       // The run-narrative echo attach (ADR-0023), called from `workspace()`'s registrar.
       echo: (endpoint, placement) => this.attachEcho(record.runId, endpoint, placement),
-      // The outstanding pick of the Turn now at this address, as the Agent actor reads it when its
+      // The outstanding pick of the Turn now at this address, as the Agent's Actor reads it when its
       // Harness restarted (ADR-0024/0031). Settled first, so a hold whose Turn is over reads
       // `turnComplete`: that is an EARLIER Turn's pick (a route left its state, and the answer went as
       // a notice to the next Turn, or nowhere) — never this Turn's, whatever it continues.

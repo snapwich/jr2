@@ -687,7 +687,7 @@ function restWarnings(machine: AnyStateMachine, actors: Record<string, UnknownAc
  * A parallel region below a state that invokes an Agent is refused (ADR-0015). The shape is
  * reserved for picks the Agent does not wait for, which jr2 does not build; a Turn takes one pick
  * at a time. The Agent's state itself being parallel counts: its regions are below it. A
- * background task goes above the Agent's state.
+ * Background work goes above the Agent's state.
  */
 function refuseParallelBelowAgents(machine: AnyStateMachine, actors: Record<string, UnknownActorLogic>): void {
   type Node = AnyStateMachine["root"];
@@ -706,7 +706,7 @@ function refuseParallelBelowAgents(machine: AnyStateMachine, actors: Record<stri
       throw new Error(
         `machine "${machine.id}": state "${parallel.id}" is parallel, at or below Agent "${String(agent)}"'s state ` +
           `"${node.id}" — a parallel region below an Agent's state is reserved for picks the Agent does not wait ` +
-          `for, which jr2 does not build; a background task goes above the Agent's state`,
+          `for, which jr2 does not build; background work goes above the Agent's state`,
       );
     }
     for (const child of Object.values(node.states)) visit(child);

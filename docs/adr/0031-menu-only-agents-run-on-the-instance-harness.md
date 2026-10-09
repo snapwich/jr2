@@ -64,11 +64,11 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   engine's state as an opaque, engine-named part (pi's session through its file-backed session repo today). Rebuilding
   reads jr2's record first; an engine that cannot read the engine part (another engine, another version) continues from
   the history messages. The record is the contract; the engine part is not. A Submission in flight at the restart
-  settles `failed` (the typed error `harness_restarted`, which the Agent actor reads as "Turn lost") on the rebuilt
+  settles `failed` (the typed error `harness_restarted`, which the Agent's Actor reads as "Turn lost") on the rebuilt
   stream, so the Orchestrator reads a Settlement, not a 404, and the conversation's next Turn continues it.
 - **A restart while the Agent's state is busy cuts the Turn and is no fault.** When the Agent's state is not at Rest —
   its pick is outstanding, or work it started in runs below it — or its pick's answer was read and never reached the
-  model, the Agent actor raises no `agent.fault` for a restart: the Machine would route it and stop the work the Turn
+  model, the Agent's Actor raises no `agent.fault` for a restart: the Machine would route it and stop the work the Turn
   did not want stopped (ADR-0024). It waits for Rest, then re-admits the Agent on the same conversation, which the
   rebuilt Harness holds: a jr2 prompt ("Your previous turn was cut: the process that ran you restarted while the
   workflow was busy. The workflow did not stop. Continue your task from here.") with the answer as a `pick-answer`
@@ -147,7 +147,7 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
 
 ## Consequences
 
-- **The Agent actor's resolution grows one arm**: explicit `endpoint` (tests) → `workspace: "none"` → Instance Harness
+- **The Agent's resolution grows one arm**: explicit `endpoint` (tests) → `workspace: "none"` → Instance Harness
   (deterministic Service DNS) → enclosing `workspace()`'s ambient handles → loud error naming the definition's
   `workspace` value.
 - **A `"none"` conversation survives the Instance Harness pod's restart**: the StatefulSet restores the endpoint and the

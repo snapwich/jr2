@@ -602,7 +602,7 @@ test("a parallel region below a state that invokes an Agent is refused at build,
       assert.match(err.message, /"par\.t\.coding" is parallel/);
       assert.match(err.message, /Agent "coder"'s state "par\.t"/);
       assert.match(err.message, /reserved for picks the Agent does not wait for/);
-      assert.match(err.message, /a background task goes above the Agent's state/);
+      assert.match(err.message, /background work goes above the Agent's state/);
       return true;
     },
   );
@@ -628,7 +628,7 @@ test("an Agent's state that is itself parallel is refused: its regions are below
   );
 });
 
-test("a parallel state above an Agent's state is legal: a background task goes there", () => {
+test("a parallel state above an Agent's state is legal: background work goes there", () => {
   const m = jr2Setup({ events: [ev("finish")], actors: { coder: slot() } }).createMachine({
     id: "par",
     type: "parallel",

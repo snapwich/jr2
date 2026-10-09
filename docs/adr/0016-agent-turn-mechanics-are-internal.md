@@ -56,8 +56,8 @@ later adds the third: runaway):
   - **The step boundary.** Inside the Submission, the Harness restates the Turn part when the Allowed picks changed
     since the model last read them (ADR-0029); that message keeps the engine's loop going and costs no Submission. It
     never restates an empty list to a model that stopped.
-  - **The nudge.** The Submission settled with picks left: the Agent actor admits a **nudge** on the same conversation —
-    "Your previous turn ended, and the workflow is still waiting for your pick." — absorbing ADR-0006's "forced final
+  - **The nudge.** The Submission settled with picks left: the Agent's Actor admits a **nudge** on the same conversation
+    — "Your previous turn ended, and the workflow is still waiting for your pick." — absorbing ADR-0006's "forced final
     pick is a Machine-level re-prompt" into the actor.
   - **The wake.** The Submission settled with none left: the model stopped correctly, and the Turn waits on a Gate, a
     child's invoke or a timer — the Allowed picks are empty while the Agent's state is not at Rest (ADR-0024). The actor

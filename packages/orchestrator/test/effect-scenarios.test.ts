@@ -1,4 +1,4 @@
-// The Effect scenarios (ADR-0067), on the real kit: `jr2Setup`, `RunHost`, the Agent actor over a
+// The Effect scenarios (ADR-0067), on the real kit: `jr2Setup`, `RunHost`, the Agent's Actor over a
 // mock port, and `command` over a fake Harness exec. Each is a shape an author writes; each test
 // states what the Machine and the Agent see. (The in-Turn chain with a Gate is pick.test.ts's.)
 //
