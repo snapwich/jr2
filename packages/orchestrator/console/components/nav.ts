@@ -50,7 +50,7 @@ export function Nav(props: {
       h("button", { id: "zoom-out", title: "zoom out", onClick: () => api.zoomOut() }, "−"),
       h("button", { id: "zoom-reset", title: "reset zoom", onClick: () => api.zoomReset() }, `${zoomPct}%`),
       h("button", { id: "zoom-in", title: "zoom in", onClick: () => api.zoomIn() }, "+"),
-      h("button", { id: "zoom-fit", title: "fit to width", onClick: () => api.zoomFit() }, "fit"),
+      h("button", { id: "zoom-fit", title: "fit the whole Machine", onClick: () => api.zoomFit() }, "fit"),
     ),
     h(
       "button",

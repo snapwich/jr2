@@ -139,9 +139,11 @@ export function initCanvas(els: { canvas: HTMLElement; svg: SVGSVGElement }, can
   svg = els.svg;
   hooks = canvasHooks;
   wireCanvasNavigation();
-  addEventListener("resize", () => {
-    if (fitting) fitToWidth();
-  });
+  // The pane changes size with the window AND with the strips above the diagram (a wait, a held
+  // pick, the seats opening) — a fit follows either.
+  new ResizeObserver(() => {
+    if (fitting) fitWhole();
+  }).observe(svg);
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -499,8 +501,8 @@ let layoutSize = { width: 0, height: 0 };
 let scale = 1;
 let panX = 0;
 let panY = 0;
-/** Fit the Machine's width to the canvas, and keep fitting it as the diagram grows — until the
- * reader takes the view into their own hands, after which it is theirs. */
+/** Fit the whole Machine to the canvas, and keep fitting it as the diagram or the pane changes —
+ * until the reader takes the view into their own hands, after which it is theirs. */
 let fitting = true;
 /** The <g> the current render mounted — the transform target; each re-render swaps it in and
  * re-applies the view, so a relayout never resets where the reader was looking. */
@@ -514,11 +516,15 @@ function applyView(): void {
   hooks.onScale(Math.round(scale * 100)); // the nav readout follows every path
 }
 
-/** Scale so the whole width lands in the pane, centered. Never magnifies — a small Machine stays
- * 1:1. */
-function fitToWidth(): void {
-  if (!layoutSize.width || svg.clientWidth <= 0) return applyView();
-  scale = Math.min(1, Math.max(0.2, (svg.clientWidth - FIT_PAD * 2) / layoutSize.width));
+/** Scale so the whole Machine — its width AND its height — lands in the pane, centered across.
+ * Never magnifies (a small Machine stays 1:1), and never below the floor: a Machine larger than the
+ * floor allows pans. Fitting the width alone left a tall Machine's lower states — a `workspace()`
+ * body under the wrapper's chain — below the pane, where no reader looks for them. */
+function fitWhole(): void {
+  if (!layoutSize.width || svg.clientWidth <= 0 || svg.clientHeight <= 0) return applyView();
+  const across = (svg.clientWidth - FIT_PAD * 2) / layoutSize.width;
+  const down = (svg.clientHeight - FIT_PAD * 2) / layoutSize.height;
+  scale = Math.min(1, Math.max(0.2, Math.min(across, down)));
   panX = Math.max(FIT_PAD, (svg.clientWidth - layoutSize.width * scale) / 2);
   panY = FIT_PAD;
   applyView();
@@ -548,7 +554,7 @@ export function zoomReset(): void {
 }
 export function zoomFit(): void {
   fitting = true;
-  fitToWidth();
+  fitWhole();
 }
 
 // ---- Direct navigation: drag pans, wheel zooms --------------------------------------------------
@@ -639,7 +645,7 @@ async function renderMachine(doc: MachineBodyDoc, live: RunChild[]): Promise<voi
   renderEdges(layout, rootG);
   // The fresh <g> becomes the viewport, wearing the view the reader already had (or a fit).
   viewportG = rootG;
-  fitting ? fitToWidth() : applyView();
+  fitting ? fitWhole() : applyView();
 }
 
 // ---- Live runs ----------------------------------------------------------------------------------
