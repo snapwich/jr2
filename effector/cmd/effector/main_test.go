@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -138,28 +139,42 @@ func TestSigtermFinishesTheEffectInFlightAndRefusesNewOnes(t *testing.T) {
 		<-release
 		_, _ = io.WriteString(w, "done")
 	}))
-	defer upstream.Close()
+	// Cleanups run last-registered first: the upstream's handlers are released before it closes, so
+	// a failed assertion below ends the test instead of hanging it.
+	t.Cleanup(upstream.Close)
+	releaseAll := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseAll)
 	e := startEffector(t, upstream.URL)
 	body := fmt.Sprintf(`{"kind":"http","method":"POST","url":[{"text":%q}],"timeoutMs":10000,"maxBody":100}`, upstream.URL)
 	if status, raw := e.call(t, "POST", "/effects/inflight", body); status != 202 {
 		t.Fatalf("got %d %s", status, raw)
 	}
 	must(t, e.cmd.Process.Signal(syscall.SIGTERM))
+	// A new id each time: a POST that lands before the signal is handled starts its Effect, and a
+	// second POST with that id would only attach to it (B2.1), never get the refusal this waits for.
+	// An Effect started that way is in flight too; its outcome is read below.
+	var started []string
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		status, raw := e.call(t, "POST", "/effects/late", body)
+	for i := 0; ; i++ {
+		id := "late-" + strconv.Itoa(i)
+		status, raw := e.call(t, "POST", "/effects/"+id, body)
 		if status == 503 && strings.Contains(raw, "stopping") {
 			break
+		}
+		if status == 202 {
+			started = append(started, id)
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("a new Effect is still taken: %d %s", status, raw)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	close(release)
-	status, raw := e.call(t, "GET", "/effects/inflight", "")
-	if status != 200 || !strings.Contains(raw, `"body":"done"`) {
-		t.Fatalf("got %d %s", status, raw)
+	releaseAll()
+	for _, id := range append([]string{"inflight"}, started...) {
+		status, raw := e.call(t, "GET", "/effects/"+id, "")
+		if status != 200 || !strings.Contains(raw, `"body":"done"`) {
+			t.Fatalf("%s: got %d %s", id, status, raw)
+		}
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- e.cmd.Wait() }()
