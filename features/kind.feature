@@ -187,7 +187,7 @@ Feature: a workspace() run drives a real Sandbox on kind
     Scenario: the answer an Agent reads is scrubbed
       Given the kind instance is serving
       When I start the "asked" workflow detached
-      And the model answers "call_echo" with summary "now"
+      And the model answers "call_echo" with no arguments
       Then the model was shown the echo's answer with the token named "[secret:echo-token]" and no form of its value
       When the model answers "advise" with summary "done"
       Then the run's status shows "done"

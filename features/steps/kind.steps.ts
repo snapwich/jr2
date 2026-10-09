@@ -1550,6 +1550,15 @@ When(
 );
 
 /**
+ * The same release for a pick that takes no params: its Menu schema allows no property
+ * (`additionalProperties: false`), and the engine refuses a call that carries one before it runs.
+ */
+When("the model answers {string} with no arguments", async function (this: E2EWorld, tool: string): Promise<void> {
+  assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+  await this.provider.release(tool, {});
+});
+
+/**
  * ADR-0028's `"none"`, seen on the wire: the turn's request carries this state's one Menu tool and
  * NOT ONE of the Working tools — not read-only, not bash, nothing. The stock Harness under
  * `JR2_MENU_ONLY` is what withholds them, so this is the Instance Harness's own contract, asserted
