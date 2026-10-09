@@ -38,12 +38,31 @@ export type WireAuth = z.infer<typeof WireAuthShape>;
 export const WireBodyShape = z.union([z.strictObject({ json: z.unknown() }), z.strictObject({ text: z.string() })]);
 export type WireBody = z.infer<typeof WireBodyShape>;
 
+/** The headers the Effector sets itself, which a definition may not: they frame or route the
+ * request. A `proxy-*` name is one too. The Go side's `framing` is the same list; the reject
+ * fixtures hold one start per name, which each side refuses. */
+export const FRAMING_HEADERS: ReadonlySet<string> = new Set([
+  "host",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+  "upgrade",
+  "te",
+  "trailer",
+  "keep-alive",
+]);
+const HEADER_NAME = /^[a-z0-9!#$%&'*+.^_`|~-]+$/;
+
+/** A header an Effect may set: a lowercase name that does not frame or route the request. */
+export const isEffectHeader = (name: string): boolean =>
+  HEADER_NAME.test(name) && !FRAMING_HEADERS.has(name) && !name.startsWith("proxy-");
+
 export const StartRequestShape = z.strictObject({
   kind: z.literal("http"),
   method: HttpMethodShape,
   url: z.array(TextPartShape),
   path: z.array(z.string()).optional(),
-  headers: z.record(z.string(), z.array(TextPartShape)).optional(),
+  headers: z.record(z.string().refine(isEffectHeader), z.array(TextPartShape)).optional(),
   auth: WireAuthShape.optional(),
   body: WireBodyShape.optional(),
   timeoutMs: z.number().int(),

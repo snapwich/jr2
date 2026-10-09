@@ -90,10 +90,13 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
   in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
   a `#` is refused by `http()` when the Machine loads, and by the Effector, because a query would read the path's
-  encoding as a different value; `path` segments, each percent-encoded and appended; the definition's headers (a header
-  that frames or routes the request is refused); auth — `bearer` (`Bearer <value>`), `basic`
-  (`Basic base64(user:password)`), or `text` (the whole header) — from the secret files; a JSON or text body; a timeout.
-  Outcomes:
+  encoding as a different value; `path` segments, each percent-encoded and appended after the definition's path, whose
+  one trailing `/` is the joint — with no segment the definition's url is sent as it is written; the definition's
+  headers (one that frames or routes the request is refused: `host`, `content-length`, `transfer-encoding`,
+  `connection`, `upgrade`, `te`, `trailer`, `keep-alive`, and every `proxy-*`; `http()` refuses it when the Machine
+  loads, and the start's zod shape and the Effector refuse it on the wire, with one reject fixture per name); auth —
+  `bearer` (`Bearer <value>`), `basic` (`Basic base64(user:password)`), or `text` (the whole header) — from the secret
+  files; a JSON or text body; a timeout. Outcomes:
   - `response`: the status, every header, the content type, the size, and the body when it is text (a `text/*` type,
     JSON, XML, a form, JavaScript; with no type, what its first bytes sniff as), bounded to a byte limit and marked
     `truncated` past it. A body that is not text is never returned: its size and type are.

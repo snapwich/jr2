@@ -42,6 +42,7 @@ import {
   EffectorNotSent,
   EffectorRefused,
   HTTP_METHODS,
+  isEffectHeader,
   MAX_START_BYTES,
   nodeEffectorTransport,
   type EffectorPort,
@@ -164,8 +165,6 @@ export type HttpInput<S> = S extends z.ZodType ? z.infer<S> : void;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BODY = 65_536;
-const FRAMING = new Set(["host", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer"]);
-const HEADER = /^[a-z0-9!#$%&'*+.^_`|~-]+$/;
 /** How long a re-asked request waits, at most, after a transport failure. */
 const RETRY_MAX_MS = 10_000;
 
@@ -178,7 +177,8 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
   const target = targetOf(url);
   const headers: Record<string, TextPart[]> = {};
   for (const [name, value] of Object.entries(def.headers ?? {})) {
-    if (!HEADER.test(name) || FRAMING.has(name) || name.startsWith("proxy-")) {
+    // The wire's own rule, so a definition the Machine loads is a start the Effector takes.
+    if (!isEffectHeader(name)) {
       throw new Error(
         `http({ headers }): "${name}" is not a header an Effect sets — a lowercase name that does not frame or ` +
           "route the request (ADR-0068)",

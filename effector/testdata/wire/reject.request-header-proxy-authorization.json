@@ -1,0 +1,18 @@
+{
+  "kind": "http",
+  "method": "GET",
+  "url": [
+    {
+      "text": "https://api.example.com/v1"
+    }
+  ],
+  "headers": {
+    "proxy-authorization": [
+      {
+        "text": "x"
+      }
+    ]
+  },
+  "timeoutMs": 1000,
+  "maxBody": 1
+}

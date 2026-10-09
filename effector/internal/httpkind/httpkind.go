@@ -173,8 +173,14 @@ func (r *Runner) target(req *wire.StartRequest, built map[string]string) (*url.U
 	if base.User != nil {
 		return nil, errors.New("the url carries userinfo")
 	}
+	// The definition's path is sent as it is written. Only when segments follow is its one
+	// trailing "/" the joint, written once.
 	var path strings.Builder
-	path.WriteString(strings.TrimSuffix(base.EscapedPath(), "/"))
+	if len(req.Path) > 0 {
+		path.WriteString(strings.TrimSuffix(base.EscapedPath(), "/"))
+	} else {
+		path.WriteString(base.EscapedPath())
+	}
 	for i, seg := range req.Path {
 		if seg == "" || seg == "." || seg == ".." {
 			return nil, fmt.Errorf("path segment %d is %q, which a path may not hold", i, seg)

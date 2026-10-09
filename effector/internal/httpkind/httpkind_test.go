@@ -227,6 +227,38 @@ func TestAPathSegmentIsEncodedAndADotSegmentIsRefusedWithNoSend(t *testing.T) {
 	}
 }
 
+// The definition's url is the one sent: a trailing "/" stays when no segment follows, and is the
+// one joint when segments do.
+func TestTheDefinitionsPathIsSentAsWrittenWhenNoSegmentFollows(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.RequestURI)
+	}))
+	defer srv.Close()
+	r := runner(t, srv)
+	cases := []struct {
+		url  string
+		path []string
+		want string
+	}{
+		{"/echo/", nil, "/echo/"},
+		{"/echo/", []string{}, "/echo/"},
+		{"/echo", nil, "/echo"},
+		{"/echo/?q=1", nil, "/echo/?q=1"},
+		{"/", nil, "/"},
+		{"", nil, "/"},
+		{"/echo/", []string{"a"}, "/echo/a"},
+		{"/echo", []string{"a"}, "/echo/a"},
+	}
+	for _, c := range cases {
+		req := request(srv.URL + c.url)
+		req.Path = c.path
+		out := r.Run(context.Background(), req)
+		if out.Outcome != wire.OutcomeResponse || *out.Response.Body != c.want {
+			t.Errorf("%q with path %q: the server saw %+v, want %q", c.url, c.path, out.Response, c.want)
+		}
+	}
+}
+
 func TestAHostTheDefinitionDidNotFixIsRefusedWithNoSend(t *testing.T) {
 	var sends atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { sends.Add(1) }))

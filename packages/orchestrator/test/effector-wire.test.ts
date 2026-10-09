@@ -124,6 +124,21 @@ test("the request's zod shape, which its type is inferred from, takes every requ
   assert.ok(StartRequestShape.safeParse(JSON.parse(JSON.stringify(encoded))).success);
 });
 
+test("a header the Effector refuses is one the definition refuses when the Machine loads: one reject fixture per name", () => {
+  const rejects = named("reject.request-header-");
+  assert.ok(rejects.length >= 9);
+  for (const name of rejects) {
+    const headers = (fixture(name) as { headers: Record<string, unknown> }).headers;
+    for (const header of Object.keys(headers)) {
+      assert.throws(
+        () => httpParts({ method: "GET", url: "https://api.example.com/v1", headers: { [header]: "x" } }),
+        /is not a header an Effect sets/,
+        `${name}: ${header}`,
+      );
+    }
+  }
+});
+
 test("every answer fixture decodes strictly; every reject fixture is refused", () => {
   for (const name of named("response.")) {
     const shape = name.includes("refusal") ? RefusalShape : EffectStateShape;
