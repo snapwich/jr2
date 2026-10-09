@@ -10,7 +10,8 @@ import { assign, fromPromise, setup } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { customize } from "../src/customize.ts";
-import { open, sandboxPartsOf } from "../src/parts.ts";
+import { open, sandboxPartsOf, workspacePodsOf } from "../src/parts.ts";
+import { workspaceHeldPod } from "../src/held-secrets.ts";
 import {
   leaseDelay,
   workspace,
@@ -105,6 +106,8 @@ class FakeSandbox implements SandboxPort {
   repos: ProvisionedRepo[][] = [];
   /** The Size each provision was handed, as the Machine states it (ADR-0060). */
   sizes: Array<{ resources?: unknown; userResources?: unknown }> = [];
+  /** The `customize()` route each provision was asked for, read off the live actor (ADR-0059). */
+  paths: Array<readonly string[] | undefined> = [];
   /** What each attach was asked to attach — the persisted bindings, as the port sees them. */
   attached: Array<Array<{ slot: string; url: string; ref?: string }>> = [];
 
@@ -117,6 +120,7 @@ class FakeSandbox implements SandboxPort {
     this.images.push(req.image);
     this.composition.push({ user: req.user, workGroup: req.workGroup });
     this.repos.push(req.repos);
+    this.paths.push(req.path);
     this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
     if (!this.holdPlacing) return;
     await new Promise<void>((resolve, reject) => {
@@ -612,6 +616,43 @@ const recorder = jr2Setup({
   initial: "done",
   states: { done: { type: "final", output: ({ context }) => context.handles } },
   output: ({ event }) => (event as { output?: unknown }).output,
+});
+
+test("a provision reads the pod key jr2 up writes, at every route an author can write — an inline invoke included (ADR-0059)", async () => {
+  // `jr2 up` keys each Workspace's held manifest by the walk's route; the provision keys its read by
+  // the route off the live actor. An inline `invoke: { src: ws }` has no slot key on either side —
+  // xstate's generated `xstate.invoke.<n>.<id>` is no route — or the provision finds no manifest.
+  const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
+  const invoking = (id: string, src: unknown, actors: Record<string, unknown> = {}) =>
+    jr2Setup({ events: [], actors: actors as never }).createMachine({
+      id,
+      initial: "x",
+      states: { x: { invoke: { src: src as never, onDone: "done" } }, done: { type: "final" } },
+    });
+  const named = invoking("named", "review", { review: ws });
+  const inline = invoking("inline", ws);
+  const shapes: Record<string, unknown> = {
+    root: ws,
+    named,
+    nested: invoking("nested", "outer", { outer: named }),
+    inline,
+    inlineBelowNamed: invoking("inlineBelowNamed", "mid", { mid: inline }),
+  };
+  for (const [workflow, machine] of Object.entries(shapes)) {
+    const sandbox = new FakeSandbox();
+    const host = new RunHost({ store: await mkStore(), sandbox });
+    host.register({ name: workflow, machine: machine as never, provide: () => ({}) });
+    await host.start(workflow);
+    await waitFor(() => sandbox.paths.length === 1);
+    const walked = workspacePodsOf(machine as never);
+    assert.equal(walked.length, 1, workflow);
+    assert.deepEqual(sandbox.paths[0], walked[0]!.path, `${workflow}: the live route is the walk's`);
+    assert.equal(
+      workspaceHeldPod({ workflow, path: sandbox.paths[0] }),
+      workspaceHeldPod({ workflow, path: walked[0]!.path }),
+      `${workflow}: one pod key`,
+    );
+  }
 });
 
 test("slots resolve in declaration order; the handles are keyed by slot, in that order, and name no workdir", async () => {

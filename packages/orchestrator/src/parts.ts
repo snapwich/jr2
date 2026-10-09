@@ -340,8 +340,10 @@ export function customizeLine(
  * The runtime twin of the walk's `path`: the actor-slot chain from a run's root actor down to
  * `actor` (its own `src` included), read off the live actor tree — each `src` is the slot key it
  * was invoked or spawned as, and a wrapper's transparent body is skipped by the same record
- * ({@link wrapperBodyOf}) the walk skips it by. `undefined` past an inline-invoked actor, whose
- * `src` is the logic itself and names no slot.
+ * ({@link wrapperBodyOf}) the walk skips it by. `undefined` past an inline-invoked actor, as the
+ * walk's `path` is: such an actor names no slot. xstate gives an inline `invoke.src` a generated
+ * string (`xstate.invoke.<n>.<state id>`) that is no key of its parent's `actors`, so the test is
+ * that registry, not the type of `src`; inline logic passed to `spawn` keeps the logic as `src`.
  */
 export function actorSlotPath(actor: AnyActorRef | undefined): string[] | undefined {
   const path: string[] = [];
@@ -349,6 +351,7 @@ export function actorSlotPath(actor: AnyActorRef | undefined): string[] | undefi
     const src = (node as { src?: unknown }).src;
     if (typeof src !== "string") return undefined;
     const parent = asMachine((node._parent as { logic?: unknown }).logic);
+    if (parent && !Object.hasOwn(parent.implementations.actors, src)) return undefined;
     if (!parent || wrapperBodyOf(parent) !== src) path.unshift(src);
   }
   return path;
