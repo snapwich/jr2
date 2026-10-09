@@ -334,7 +334,7 @@ stateDiagram-v2
              nothing before it. Sources: ADR-0019 (one converging command, the current kube context, "if a runbook
              is needed to use jr2, the interface has failed"), ADR-0038 (up builds every image it deploys; kind
              load with no registry, push with one), ADR-0050 (up typechecks first; config holds only reach and
-             credentials), templates/default/jr2.config.ts (the scaffold) plus the two keys every real Instance adds: `registry` and a model credential, held by the Custodian (config.ts HarnessConfig.heldSecrets, ADR-0059), init.ts ("install
+             credentials), templates/default/jr2.config.ts (the scaffold) plus the two keys every real Instance adds: `registry` and a model credential, held by the Custodian (config.ts JR2Config.secrets, ADR-0059, ADR-0068), init.ts ("install
              dependencies, then jr2 up and jr2 run ping"), instance/README.md (the dependencies). -->
         <section class="byoc" data-kicker="agent work belongs off your laptop">
           <h2>bring your own cluster, <em>or use kind</em></h2>
@@ -351,10 +351,8 @@ stateDiagram-v2
                 <div class="tabs"><span class="on">jr2.config.ts</span><span>a typical instance</span></div>
                 <pre><code>export default defineConfig({
   registry: process.env.JR2_REGISTRY,   <s>// unset on kind</s>
-  harness: {
-    heldSecrets: [{ name: "ANTHROPIC_API_KEY",
-                    value: process.env.ANTHROPIC_API_KEY }],
-  },
+  secrets: [{ name: "ANTHROPIC_API_KEY",
+              value: process.env.ANTHROPIC_API_KEY }],
   git: { credentials: [{ match: "*", token: "JR2_GIT_TOKEN" }] },
 });</code></pre>
               </figure>
@@ -967,13 +965,13 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
     api: "openai-completions",
     baseUrl: process.env.JR2_PROVIDER_URL,
   },
-  <s>// keys for the built-in catalog, held</s>
-  <s>// by the Custodian: anthropic, openai, …</s>
-  heldSecrets: [{
-    name: "ANTHROPIC_API_KEY",
-    value: process.env.ANTHROPIC_API_KEY,
-  }],
-},</code></pre>
+},
+<s>// keys for the built-in catalog, held</s>
+<s>// by the Custodian: anthropic, openai, …</s>
+secrets: [{
+  name: "ANTHROPIC_API_KEY",
+  value: process.env.ANTHROPIC_API_KEY,
+}],</code></pre>
             </figure>
             <div>
               <ol class="choose">

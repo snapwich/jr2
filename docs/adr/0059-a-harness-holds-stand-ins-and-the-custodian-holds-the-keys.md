@@ -125,27 +125,31 @@ decision generalizes that container. It holds every credential the Harness uses,
   NetworkPolicy is not enforced. So it is outside Envoy's global connection limit, holds 16 connections at most, and
   closes a connection idle for 5 seconds: a peer's idle connections cannot stop the Menu or the egress.
 - **The config surface** (`jr2.config.ts`,
-  [ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)): `harness.heldSecrets` (a `name`; a
-  `value` or a `valueFrom.secretKeyRef`; `hosts`; `headers`, default `authorization`, `x-api-key`, `x-goog-api-key`,
-  `api-key`; `paths`), and `harness.catalog` (a catalog provider id → `{ baseUrl }`). `harness.provider.apiKey` is a
-  held secret too, `JR2_PROVIDER_API_KEY`, bound to its `baseUrl`'s host. `loadConfig` checks the shape in both worlds.
-  `jr2 up` alone checks the rest (`heldSecretsOf`), host-side, because `.env` values are absent in-cluster:
+  [ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)): the top-level `secrets` list, whose
+  entry is
+  `{ name; value | valueFrom.secretKeyRef; hosts?; headers?, default `authorization`, `x-api-key`, `x-goog-api-key`, `api-key`; paths? }`,
+  and `harness.catalog` (a catalog provider id → `{ baseUrl }`). The list serves both sides
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): an entry with `hosts` — or a known
+  model key, whose hosts default (below) — is a held secret; one an Effect names is an Effect secret.
+  `harness.provider.apiKey` is a held secret too, `JR2_PROVIDER_API_KEY`, bound to its `baseUrl`'s host. `loadConfig`
+  checks the shape in both worlds. `jr2 up` alone checks the rest (`heldSecretsOf`), host-side, because `.env` values
+  are absent in-cluster:
 
-  | #   | Refused                                                                                                                                                                                                                               |
-  | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | R1  | A known model key (`MODEL_KEYS`) in `harness.env`, or as a key of a Secret or ConfigMap `harness.envFrom` names.                                                                                                                      |
-  | R2  | A held-secret name that is `JR2_*` or a proxy or trust variable.                                                                                                                                                                      |
-  | R3  | One name held twice, or held and set by `harness.env`.                                                                                                                                                                                |
-  | R4  | Not exactly one of `value`/`valueFrom`; an empty value; a byte outside `0x20`–`0x7E`; leading or trailing space.                                                                                                                      |
-  | R5  | No `hosts` where no default exists; a wildcard, userinfo, a non-`https` scheme, a bare-host path, a bad port; two secrets on one host in one header.                                                                                  |
-  | R6  | A `headers` entry that is not a lowercase token, or that frames or routes the request; a duplicate.                                                                                                                                   |
-  | R7  | `provider.apiKey` with a non-`https` `baseUrl`; a non-`https` catalog `baseUrl`.                                                                                                                                                      |
-  | R8  | A catalog key that is not a known provider, or that is the custom provider's id.                                                                                                                                                      |
-  | R9  | Explicit `hosts` on a known model key that leave out where a carried Agent's provider sends its calls.                                                                                                                                |
-  | R10 | A `secretKeyRef` whose Secret or key does not exist.                                                                                                                                                                                  |
-  | R11 | While a secret is held: `harness.env` sets a proxy or trust variable.                                                                                                                                                                 |
-  | R12 | A `paths` entry that does not start with `/`, or holds `..`, `;`, `\`, `%2e`, `%2f` or `%5c`.                                                                                                                                         |
-  | R13 | A held value that also reaches the Harness: its Secret loaded by `harness.envFrom`, its key read by a `harness.env` `secretKeyRef`, or its literal set by `harness.env`. A kit Secret (`jr2-instance`, `jr2-held-*`) named by either. |
+  | #   | Refused                                                                                                                                                                                                                                                        |
+  | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | R1  | A known model key (`MODEL_KEYS`) in `harness.env`, or as a key of a Secret or ConfigMap `harness.envFrom` names.                                                                                                                                               |
+  | R2  | A held-secret name that is `JR2_*` or a proxy or trust variable.                                                                                                                                                                                               |
+  | R3  | One name held twice, or held and set by `harness.env`.                                                                                                                                                                                                         |
+  | R4  | Not exactly one of `value`/`valueFrom`; an empty value; a byte outside `0x20`–`0x7E`; leading or trailing space.                                                                                                                                               |
+  | R5  | No `hosts` where no default exists; a wildcard, userinfo, a non-`https` scheme, a bare-host path, a bad port; two secrets on one host in one header.                                                                                                           |
+  | R6  | A `headers` entry that is not a lowercase token, or that frames or routes the request; a duplicate.                                                                                                                                                            |
+  | R7  | `provider.apiKey` with a non-`https` `baseUrl`; a non-`https` catalog `baseUrl`.                                                                                                                                                                               |
+  | R8  | A catalog key that is not a known provider, or that is the custom provider's id.                                                                                                                                                                               |
+  | R9  | Explicit `hosts` on a known model key that leave out where a carried Agent's provider sends its calls.                                                                                                                                                         |
+  | R10 | A `secretKeyRef` whose Secret or key does not exist.                                                                                                                                                                                                           |
+  | R11 | While a secret is held: `harness.env` sets a proxy or trust variable.                                                                                                                                                                                          |
+  | R12 | A `paths` entry that does not start with `/`, or holds `..`, `;`, `\`, `%2e`, `%2f` or `%5c`.                                                                                                                                                                  |
+  | R13 | A held value that also reaches the Harness: its Secret loaded by `harness.envFrom`, its key read by a `harness.env` `secretKeyRef`, or its literal set by `harness.env`. A kit Secret (`jr2-instance`, `jr2-held-*`, `jr2-instance-effector`) named by either. |
 
   Each message names the config path, never a value, and says what to write instead. A SigV4 or ADC credential in
   `harness.env` is warned about, not refused. A known model key with no `hosts` is bound to the host its provider's
@@ -221,9 +225,13 @@ decision generalizes that container. It holds every credential the Harness uses,
   `caBundle` now reaches curl, git and Python, which [ADR-0020](0020-private-ca-trust-is-a-named-concept.md) recorded as
   missing.
 - **Signing credentials cannot be held.** A SigV4 or ADC credential signs the request with the secret, and a Stand-in
-  cannot be swapped into a signature. `jr2 up` warns. The fix is a gateway that holds them, and a held key for the
-  gateway. `ANTHROPIC_OAUTH_TOKEN` is held like a key, but pi sends a Stand-in as `x-api-key`, which an OAuth token
-  cannot ride; hold it as `ANTHROPIC_AUTH_TOKEN` (`Authorization: Bearer`) instead.
+  cannot be swapped into a signature. `jr2 up` warns. The fix is the Effector
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): an Effect secret is the real value, in
+  a container the Agent executes nothing in. Its first kind, `http`, sends a bearer, a Basic pair or a header the author
+  writes; the kind that runs a signing tool there is not built yet, and until it is, a gateway that holds the
+  credential, with a held key for the gateway, is the way. `ANTHROPIC_OAUTH_TOKEN` is held like a key, but pi sends a
+  Stand-in as `x-api-key`, which an OAuth token cannot ride; hold it as `ANTHROPIC_AUTH_TOKEN` (`Authorization: Bearer`)
+  instead.
 - **Rotation of a value** reaches a live Sandbox only when its pod is replaced.
 - **TLS-only bindings.** A key for a plain-HTTP endpoint is refused (R7). A LAN `llama-server --api-key` needs TLS and
   its CA in `caBundle`, or no key.

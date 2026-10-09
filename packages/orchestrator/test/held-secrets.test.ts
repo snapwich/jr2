@@ -25,10 +25,8 @@ function refusal(config: JR2Config, lookups?: HeldLookups): string {
 }
 
 const held = (entry: Record<string, unknown>, extra: JR2Config["harness"] = {}): JR2Config => ({
-  harness: {
-    ...extra,
-    heldSecrets: [{ name: "GATEWAY_KEY", value: SECRET, hosts: ["gw.example.com"], ...entry } as never],
-  },
+  secrets: [{ name: "GATEWAY_KEY", value: SECRET, hosts: ["gw.example.com"], ...entry } as never],
+  harness: { ...extra },
 });
 
 test("the Stand-in: deterministic, public, per name, and never an Anthropic OAuth shape", () => {
@@ -99,17 +97,15 @@ test("the implicit JR2_PROVIDER_API_KEY: bound to the custom provider's own host
 });
 
 test("a known model key with no hosts goes where its provider's calls go: the catalog override, else the table", () => {
-  const table = heldSecretsOf({ harness: { heldSecrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET }] } });
+  const table = heldSecretsOf({ secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET }] });
   assert.deepEqual(
     table.manifest.secrets[0]!.hosts.map((h) => h.host),
     ["api.anthropic.com"],
   );
 
   const gateway = heldSecretsOf({
-    harness: {
-      catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } },
-      heldSecrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET, paths: ["/v1/messages"] }],
-    },
+    secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET, paths: ["/v1/messages"] }],
+    harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } },
   });
   assert.deepEqual(gateway.manifest.secrets[0]!.hosts, [
     { host: "litellm.corp.example", port: 443, leaf: leafStem("litellm.corp.example", 443) },
@@ -117,12 +113,8 @@ test("a known model key with no hosts goes where its provider's calls go: the ca
 
   // An explicit hosts wins over both.
   const explicit = heldSecretsOf({
-    harness: {
-      catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } },
-      heldSecrets: [
-        { name: "ANTHROPIC_API_KEY", value: SECRET, hosts: ["litellm.corp.example", "backup.corp.example"] },
-      ],
-    },
+    secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET, hosts: ["litellm.corp.example", "backup.corp.example"] }],
+    harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } },
   });
   assert.deepEqual(
     explicit.manifest.secrets[0]!.hosts.map((h) => h.host),
@@ -130,10 +122,10 @@ test("a known model key with no hosts goes where its provider's calls go: the ca
   );
 });
 
-test("R1: a known model key in harness.env — value or valueFrom — is refused with the heldSecrets line", () => {
+test("R1: a known model key in harness.env — value or valueFrom — is refused with the secrets line", () => {
   assert.match(
     refusal({ harness: { env: [{ name: "ANTHROPIC_API_KEY", value: SECRET }] } }),
-    /^harness\.env\[0\] sets ANTHROPIC_API_KEY.*heldSecrets: \[\{ name: "ANTHROPIC_API_KEY", value: process\.env\.ANTHROPIC_API_KEY \}\]/,
+    /^harness\.env\[0\] sets ANTHROPIC_API_KEY.*secrets: \[\{ name: "ANTHROPIC_API_KEY", value: process\.env\.ANTHROPIC_API_KEY \}\]/,
   );
   assert.match(
     refusal({
@@ -181,7 +173,7 @@ test("R2: the kit's names are not a held secret's to take", () => {
     "SSL_CERT_FILE",
     "NODE_EXTRA_CA_CERTS",
   ]) {
-    assert.match(refusal(held({ name })), /^harness\.heldSecrets\[0\]\.name .* is the kit's|not an env var name/);
+    assert.match(refusal(held({ name })), /^secrets\[0\]\.name .* is the kit's|not an env var name/);
   }
   assert.match(refusal(held({ name: "lower_case" })), /not an env var name/);
 });
@@ -189,18 +181,17 @@ test("R2: the kit's names are not a held secret's to take", () => {
 test("R3: one name held twice, or held and set by harness.env", () => {
   assert.match(
     refusal({
-      harness: {
-        heldSecrets: [
-          { name: "K", value: SECRET, hosts: ["a.example"] },
-          { name: "K", value: SECRET, hosts: ["b.example"] },
-        ],
-      },
+      secrets: [
+        { name: "K", value: SECRET, hosts: ["a.example"] },
+        { name: "K", value: SECRET, hosts: ["b.example"] },
+      ],
     }),
-    /harness\.heldSecrets\[1\]\.name K is held twice/,
+    /secrets\[1\]\.name K is held twice/,
   );
   assert.match(
     refusal({
-      harness: { env: [{ name: "K", value: "x" }], heldSecrets: [{ name: "K", value: SECRET, hosts: ["a.example"] }] },
+      secrets: [{ name: "K", value: SECRET, hosts: ["a.example"] }],
+      harness: { env: [{ name: "K", value: "x" }] },
     }),
     /also set by harness\.env/,
   );
@@ -219,13 +210,12 @@ test("R4: exactly one source, a present value, and one a header can carry", () =
 });
 
 test("R5: hosts must be given where no default exists, exact, TLS, and one header per host per secret", () => {
-  assert.match(refusal(held({ hosts: undefined })), /hosts is absent, and GATEWAY_KEY has no single default host/);
+  // No hosts on a name with no default: not a Held secret at all (ADR-0068 reads placement), so
+  // nothing is bound — the placement report warns it goes nowhere.
+  assert.deepEqual(heldSecretsOf(held({ hosts: undefined })).manifest.secrets, []);
   assert.match(refusal(held({ hosts: [] })), /hosts is empty/);
   // A known name whose table host is regional has no default either.
-  assert.match(
-    refusal({ harness: { heldSecrets: [{ name: "MOONSHOT_API_KEY", value: SECRET }] } }),
-    /no single default host/,
-  );
+  assert.match(refusal({ secrets: [{ name: "MOONSHOT_API_KEY", value: SECRET }] }), /no single default host/);
   for (const [entry, why] of [
     ["*.example.com", /wildcard/],
     ["http://gw.example.com", /not https/],
@@ -239,12 +229,10 @@ test("R5: hosts must be given where no default exists, exact, TLS, and one heade
   }
   assert.match(
     refusal({
-      harness: {
-        heldSecrets: [
-          { name: "A_KEY", value: SECRET, hosts: ["gw.example.com"], headers: ["authorization", "x-api-key"] },
-          { name: "B_KEY", value: SECRET, hosts: ["https://gw.example.com/other"], headers: ["x-api-key"] },
-        ],
-      },
+      secrets: [
+        { name: "A_KEY", value: SECRET, hosts: ["gw.example.com"], headers: ["authorization", "x-api-key"] },
+        { name: "B_KEY", value: SECRET, hosts: ["https://gw.example.com/other"], headers: ["x-api-key"] },
+      ],
     }),
     /B_KEY and A_KEY are both bound to gw\.example\.com:443 in header x-api-key/,
   );
@@ -298,7 +286,7 @@ test("R8: a catalog key must be a provider with a known key, and not the custom 
 
 test("R9: an explicit hosts that leaves out where a carried Agent's provider sends its calls", () => {
   const config: JR2Config = {
-    harness: { heldSecrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET, hosts: ["litellm.corp.example"] }] },
+    secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET, hosts: ["litellm.corp.example"] }],
   };
   assert.match(
     refusal(config, { models: ["anthropic/claude-sonnet-4-6"] }),
@@ -311,7 +299,7 @@ test("R9: an explicit hosts that leaves out where a carried Agent's provider sen
 test("R10: a referenced Secret or key that does not exist", () => {
   const ref = { name: "team", key: "anthropic" };
   const config: JR2Config = {
-    harness: { heldSecrets: [{ name: "ANTHROPIC_API_KEY", valueFrom: { secretKeyRef: ref } }] },
+    secrets: [{ name: "ANTHROPIC_API_KEY", valueFrom: { secretKeyRef: ref } }],
   };
   assert.match(refusal(config, { secretKeys: () => undefined }), /names Secret "team", which does not exist/);
   assert.match(
@@ -327,10 +315,8 @@ test("R13: a held Secret key that harness.env or harness.envFrom also hands the 
   const ref = { name: "team", key: "gateway" };
   const lookups: HeldLookups = { secretKeys: () => ["gateway"] };
   const config = (extra: JR2Config["harness"]): JR2Config => ({
-    harness: {
-      ...extra,
-      heldSecrets: [{ name: "GATEWAY_KEY", valueFrom: { secretKeyRef: ref }, hosts: ["gw.example.com"] }],
-    },
+    secrets: [{ name: "GATEWAY_KEY", valueFrom: { secretKeyRef: ref }, hosts: ["gw.example.com"] }],
+    harness: { ...extra },
   });
   // The whole Secret, under its own key names: the Agent reads `gateway` from its env.
   assert.match(
@@ -363,7 +349,7 @@ test("R13: a harness.env literal equal to a held literal", () => {
 });
 
 test("R13: the kit's Secrets never reach the Harness, by env or envFrom, whatever is held", () => {
-  for (const secret of ["jr2-instance", "jr2-held-secrets", "jr2-held-tls", "jr2-held-ca"]) {
+  for (const secret of ["jr2-instance", "jr2-held-secrets", "jr2-held-tls", "jr2-held-ca", "jr2-instance-effector"]) {
     assert.match(
       refusal({ harness: { env: [{ name: "X", valueFrom: { secretKeyRef: { name: secret, key: "k" } } }] } }),
       new RegExp(`harness\\.env\\[0\\] \\(X\\) reads Secret "${secret}", which is the kit's`),

@@ -58,9 +58,11 @@ export default defineConfig({
   Every Harness pod gets a Custodian — an Agent without one cannot act (ADR-0013, ADR-0059) — and that is not
   configurable. Agent-runtime concerns live in `harness` (ADR-0018).
 - **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`), the gateways pi's catalog
-  providers call (`catalog`), the credentials the Agents use (`heldSecrets` — e.g. an Anthropic key, read from
-  `process.env`/`.env`, held by the Custodian and never by the Harness, ADR-0059) and any other env — never which model
-  to use; each definition names its own (ADR-0018).
+  providers call (`catalog`) and any other env — never which model to use; each definition names its own (ADR-0018).
+- **`secrets` is the Instance's one list of secrets**
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): the credentials the Agents use — an
+  Anthropic key, read from `process.env`/`.env`, held by the Custodian and never by the Harness (ADR-0059) — and the
+  ones an Effect names, which only its Effector holds. Where each goes is read, never declared.
 - **`registry`** (deployment-varying, resolve from env): absent → images are `kind load`-ed; present → pushed
   (ADR-0019). **`kitRegistry`** (also env) re-homes the published Kit image refs for self-hosted, air-gapped, or
   mirror-only clusters ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)).

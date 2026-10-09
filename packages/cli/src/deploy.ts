@@ -3,10 +3,14 @@
 // namespace are constants (namespace is the identity); every object carries the instance label so
 // ownership is derivable from the cluster — there is no local target state.
 
+import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   CA_CONFIGMAP,
+  CA_MOUNT,
+  EFFECTOR_PORT,
+  INSTANCE_EFFECTOR,
   CONVERSATIONS_DIR,
   CONVERSATIONS_DIR_ENV,
   CONVERSATIONS_VOLUME,
@@ -39,6 +43,7 @@ import {
   REPO_CACHE_HOSTPATH,
   SERVICE_ACCOUNT_CA,
   STATE_PVC,
+  type EffectorPlan,
   type HarnessConfig,
   type HeldManifest,
   type PriorityClasses,
@@ -47,6 +52,7 @@ import {
 import type { Pem } from "./held-pki.ts";
 
 export {
+  INSTANCE_EFFECTOR,
   GIT_SSH_SECRET,
   HARNESS_CONFIGMAP,
   HARNESS_ENV_SECRET,
@@ -142,6 +148,8 @@ export const KIT_POD_SIZES = {
   /** The Instance Harness pod's Custodian: the same 64Mi/50m slice a Sandbox's takes, kit-sized. */
   instanceCustodian: { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } },
   repoCache: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "1Gi" } },
+  /** The Instance Effector (ADR-0068): one http call at a time per Effect, its text body bounded. */
+  instanceEffector: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "128Mi" } },
 } as const;
 
 /** A fresh copy, so no manifest shares an object with another (or with the constant). */
@@ -162,9 +170,10 @@ export function priorityClassNames(classes: PriorityClasses | undefined): { cont
 /**
  * The PriorityClasses `jr2 up` creates, cluster-scoped, beside the CRDs (ADR-0060) — one manifest
  * each, and none for a key `priorityClasses` names, since the cluster then has its own scheme.
- * `jr2-control` preempts lower priorities: the Orchestrator, the operator and the Repo cache agent
- * are small, fixed, and needed by every Sandbox. `jr2-sandbox` never preempts: a waiting Sandbox
- * evicts nobody, and an ordinary pod (priority 0) cannot preempt a live one. Both stay far below the
+ * `jr2-control` preempts lower priorities: the Orchestrator, the operator, the Repo cache agent and the
+ * Instance Effector are small and fixed, and the first three are needed by every Sandbox.
+ * `jr2-sandbox` never preempts: a waiting Sandbox evicts nobody, and an ordinary pod (priority 0)
+ * cannot preempt a live one. Both stay far below the
  * system classes (2000000000+). Shared by every Instance on the cluster, like the operator, so they
  * carry no instance label; a class's value and policy are immutable, and these never change.
  */
@@ -916,4 +925,216 @@ export function instanceHarnessObjects(opts: {
   ];
 
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/** The Instance Effector's pod template digest (ADR-0068): an HMAC over every secret input, so an
+ * edit to one rolls it, as `jr2.dev/held-digest` rolls the Instance Harness (ADR-0059). */
+export const ANNOTATION_EFFECTOR_DIGEST = "jr2.dev/effector-digest";
+
+/** The Instance Effector pod's `fsGroup`: its Secret files are readable by that group, and the pod
+ * has one container. The group a Sandbox's and the Instance Harness's pods use (ADR-0005). */
+const INSTANCE_EFFECTOR_FS_GROUP = 2000;
+
+/** Where the Effector reads what it holds (ADR-0068, B4.8): its secrets, one file each; its key and
+ * its config. Its scratch is `$HOME`. */
+const EFFECTOR_SECRETS_DIR = "/run/jr2/secrets";
+const EFFECTOR_OWN_DIR = "/run/jr2/effector";
+const EFFECTOR_SCRATCH = "/run/jr2/scratch";
+
+/** How much more than the longest Effect timeout a stopping replica is given: room for the
+ * Orchestrator's next poll to read the outcome it finished (B2.4). */
+export const EFFECTOR_READ_MARGIN_SECONDS = 30;
+
+/** The Secret's key of one literal Effect secret: prefixed, so no secret's name is `key` or
+ * `effector.json`. */
+const effectorSecretKey = (name: string): string => `secret.${name}`;
+
+/** The Instance Effector's grace period: the longest timeout among the Effects placed there, plus
+ * the read margin. */
+export const effectorGraceSeconds = (plan: EffectorPlan): number =>
+  Math.ceil(plan.longestTimeoutMs / 1000) + EFFECTOR_READ_MARGIN_SECONDS;
+
+/**
+ * The Instance Effector (ADR-0068, B5.2): the objects `jr2 up` converges when a registered Machine
+ * places an Effect there — an `http` Effect — and deletes otherwise.
+ *
+ * - A Deployment, not a StatefulSet: a rollout must run the new pod beside the old one (surge), so
+ *   the old one finishes an Effect in flight while the new one takes new Effects (B2.4). The Kit's
+ *   `jr2-harness` image with `/opt/jr2/bin/effector` as its command; hardened, non-root, a read-only
+ *   root filesystem, an emptyDir scratch as `$HOME`. Its grace period is the longest timeout among
+ *   the Effects placed there, plus a margin for the outcome to be read.
+ * - A headless Service that publishes addresses that are not ready: "ask every replica" is its
+ *   name's addresses, a stopping replica included.
+ * - A NetworkPolicy of `jr2-sandbox-ingress`'s form: ingress from this Instance's Orchestrator only.
+ *   No egress rule: the pod holds real values and calls the hosts its Effects name.
+ * - The Secret `jr2-instance-effector`: the literal Effect secrets placed here, the placement's key,
+ *   and `effector.json` (the targets). A secret from the user's own Secret is projected from there
+ *   by reference, never copied.
+ */
+export function instanceEffectorObjects(opts: {
+  name: string;
+  namespace: string;
+  /** The resolved `jr2-harness` ref — it carries the binary (ADR-0037). */
+  harnessImage: string;
+  plan: EffectorPlan;
+  /** `effectorKey(signingKey, "instance")`. */
+  key: string;
+  /** The HMAC over every secret input (`effectorDigest`). */
+  digest: string;
+  /** The instance ships a private-CA bundle (ADR-0020): it is mounted and trusted. */
+  caBundle?: boolean;
+  priorityClasses?: PriorityClasses;
+}): string {
+  const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
+  const meta = (): KubeManifest => ({ name: INSTANCE_EFFECTOR, namespace: opts.namespace, labels });
+  const grace = effectorGraceSeconds(opts.plan);
+
+  const literal = opts.plan.secrets.filter((s) => s.source.kind === "literal");
+  const sources: KubeManifest[] = [
+    ...(literal.length
+      ? [
+          {
+            secret: {
+              name: INSTANCE_EFFECTOR,
+              items: literal.map((s) => ({ key: effectorSecretKey(s.name), path: s.name })),
+            },
+          },
+        ]
+      : []),
+    ...opts.plan.secrets.flatMap((s) =>
+      s.source.kind === "secret"
+        ? [{ secret: { name: s.source.secret, items: [{ key: s.source.key, path: s.name }] } }]
+        : [],
+    ),
+  ];
+  const config = { version: 1, placement: opts.plan.placement, targets: opts.plan.targets };
+
+  const container = {
+    name: "effector",
+    image: opts.harnessImage,
+    imagePullPolicy: "IfNotPresent",
+    command: ["/opt/jr2/bin/effector"],
+    ports: [{ containerPort: EFFECTOR_PORT }],
+    env: [
+      { name: "POD_NAME", valueFrom: { fieldRef: { fieldPath: "metadata.name" } } },
+      { name: "POD_IP", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } },
+      { name: "JR2_EFFECTOR_PORT", value: String(EFFECTOR_PORT) },
+      { name: "JR2_EFFECTOR_KEY", value: `${EFFECTOR_OWN_DIR}/key` },
+      { name: "JR2_EFFECTOR_CONFIG", value: `${EFFECTOR_OWN_DIR}/effector.json` },
+      { name: "JR2_EFFECTOR_SECRETS", value: EFFECTOR_SECRETS_DIR },
+      // The drain ends a few seconds before the kubelet's kill, so the replica exits on its own.
+      { name: "JR2_EFFECTOR_DRAIN_SECONDS", value: String(Math.max(grace - 5, 1)) },
+      { name: "HOME", value: EFFECTOR_SCRATCH },
+      ...(opts.caBundle ? [{ name: "JR2_CA_FILE", value: `${CA_MOUNT}/ca.crt` }] : []),
+    ],
+    volumeMounts: [
+      { name: "secrets", mountPath: EFFECTOR_SECRETS_DIR, readOnly: true },
+      { name: "effector", mountPath: EFFECTOR_OWN_DIR, readOnly: true },
+      { name: "scratch", mountPath: EFFECTOR_SCRATCH },
+      ...(opts.caBundle ? [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] : []),
+    ],
+    readinessProbe: { httpGet: { path: "/healthz", port: EFFECTOR_PORT }, periodSeconds: 2, failureThreshold: 3 },
+    resources: sized(KIT_POD_SIZES.instanceEffector),
+    securityContext: {
+      runAsNonRoot: true,
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+      seccompProfile: { type: "RuntimeDefault" },
+    },
+  };
+
+  const items: KubeManifest[] = [
+    {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: meta(),
+      type: "Opaque",
+      stringData: {
+        key: opts.key,
+        "effector.json": JSON.stringify(config, null, 2),
+        ...Object.fromEntries(literal.map((s) => [effectorSecretKey(s.name), opts.plan.values[s.name] ?? ""])),
+      },
+    },
+    {
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: { ...meta(), labels: { ...labels, [LABEL_VERSION]: KIT_VERSION } },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: { app: INSTANCE_EFFECTOR } },
+        // Surge, never a gap: the new replica starts before the old one stops (B2.4).
+        strategy: { type: "RollingUpdate", rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } },
+        template: {
+          metadata: {
+            labels: { ...labels, app: INSTANCE_EFFECTOR },
+            annotations: { [ANNOTATION_EFFECTOR_DIGEST]: opts.digest },
+          },
+          spec: {
+            terminationGracePeriodSeconds: grace,
+            priorityClassName: priorityClassNames(opts.priorityClasses).control,
+            automountServiceAccountToken: false,
+            enableServiceLinks: false,
+            securityContext: {
+              runAsNonRoot: true,
+              seccompProfile: { type: "RuntimeDefault" },
+              fsGroup: INSTANCE_EFFECTOR_FS_GROUP,
+            },
+            containers: [container],
+            volumes: [
+              { name: "secrets", projected: { defaultMode: 0o400, sources } },
+              {
+                name: "effector",
+                secret: {
+                  secretName: INSTANCE_EFFECTOR,
+                  defaultMode: 0o400,
+                  items: [
+                    { key: "key", path: "key" },
+                    { key: "effector.json", path: "effector.json" },
+                  ],
+                },
+              },
+              { name: "scratch", emptyDir: {} },
+              ...(opts.caBundle ? [{ name: "ca", configMap: { name: CA_CONFIGMAP } }] : []),
+            ],
+          },
+        },
+      },
+    },
+    {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: meta(),
+      spec: {
+        clusterIP: "None",
+        // A stopping replica still answers for the Effects it finishes: its address stays listed.
+        publishNotReadyAddresses: true,
+        selector: { app: INSTANCE_EFFECTOR },
+        ports: [{ port: EFFECTOR_PORT, targetPort: EFFECTOR_PORT }],
+      },
+    },
+    {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: meta(),
+      spec: {
+        podSelector: { matchLabels: { app: INSTANCE_EFFECTOR } },
+        policyTypes: ["Ingress"],
+        ingress: [
+          { from: [{ podSelector: { matchLabels: { app: ORCHESTRATOR_SERVICE, [LABEL_INSTANCE]: opts.name } } }] },
+        ],
+      },
+    },
+  ];
+  return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/** The Instance Effector's template digest: an HMAC over every secret input, keyed with the signing
+ * key so the annotation reveals nothing about a value. */
+export function effectorDigest(signingKey: Buffer, plan: EffectorPlan, key: string): string {
+  const mac = createHmac("sha256", signingKey);
+  mac.update(JSON.stringify({ secrets: plan.secrets, targets: plan.targets, longest: plan.longestTimeoutMs }));
+  for (const name of Object.keys(plan.values).sort()) mac.update(`${name}=${plan.values[name]}`);
+  mac.update(key);
+  return mac.digest("base64url").slice(0, 32);
 }

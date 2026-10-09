@@ -111,12 +111,12 @@ image, configured by `jr2 up`. _Avoid_: proxy (the mechanism, and the Handoff's 
 MITM, vault, egress gateway, firewall
 
 **Held secret**: A credential the Harness uses but never holds — a model API key above all, and the Sandbox token.
-`jr2.config.ts` declares it with the hosts it may reach (`harness.heldSecrets`; `harness.provider.apiKey` is one
-implicitly), and `jr2 up` gives its value to the Custodian and to no other container. The Harness container's env
-carries only its Stand-in, and the Custodian puts the value into requests toward those hosts alone (ADR-0059). What the
-Agent can take out of the pod is the Stand-in, which is worth nothing outside it. What it can still do is spend the
-secret, through the Custodian, while its pod lives. _Avoid_: masked secret, injected secret, proxied key, secret
-(unqualified)
+`jr2.config.ts` declares it in the top-level `secrets` list with the hosts it may reach (an entry with `hosts`, or a
+known model key, whose hosts default; `harness.provider.apiKey` is one implicitly), and `jr2 up` gives its value to the
+Custodian and to no other container. The Harness container's env carries only its Stand-in, and the Custodian puts the
+value into requests toward those hosts alone (ADR-0059). What the Agent can take out of the pod is the Stand-in, which
+is worth nothing outside it. What it can still do is spend the secret, through the Custodian, while its pod lives.
+_Avoid_: masked secret, injected secret, proxied key, secret (unqualified)
 
 **Stand-in**: The value a Held secret's env var holds in the Harness container — `jr2-held-<NAME>`, deterministic and
 public. It means something only to the Custodian, and only toward a host the secret is bound to; sent anywhere else, it

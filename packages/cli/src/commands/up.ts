@@ -68,6 +68,8 @@ import {
   machineBodies,
   matchCredential,
   partsOf,
+  secretPlacementsOf,
+  effectorKey,
   targetText,
   harnessTokenDigest,
   formatCpu,
@@ -114,6 +116,10 @@ import {
   INSTANCE_HARNESS_PVC,
   INSTANCE_HARNESS_SERVICE,
   instanceHarnessObjects,
+  instanceEffectorObjects,
+  effectorDigest,
+  effectorGraceSeconds,
+  INSTANCE_EFFECTOR,
   instanceObjects,
   KIT_VERSION,
   LABEL_HASH,
@@ -826,16 +832,42 @@ export async function up(args: string[], io: Io): Promise<number> {
   // touches the file (the path may not exist there); consumers get the ConfigMap.
   const caPem = await readCaBundle(root, config);
 
-  // --- held secrets (ADR-0059): resolved HERE, host-side, where `.env` exists ------------------
+  // --- secrets (ADR-0059, ADR-0068): resolved HERE, host-side, where `.env` exists --------------
+  // R10: a Secret an entry references must exist with its key. Read once per Secret — key NAMES,
+  // never values — for both placements.
+  const referenced = new Map<string, string[] | undefined>();
+  for (const entry of config.secrets ?? []) {
+    const ref = entry.valueFrom?.secretKeyRef.name;
+    if (ref === undefined || referenced.has(ref)) continue;
+    const found = await kube.getJson<KubeObject & { data?: Record<string, string> }>({
+      kind: "secret",
+      name: ref,
+      namespace,
+      ...ctx,
+    });
+    referenced.set(ref, found ? Object.keys(found.data ?? {}) : undefined);
+  }
+  const secretKeys = (secret: string) => referenced.get(secret);
   const held = await resolveHeld(io, kube, {
     config,
     name,
     namespace,
     ctx,
     envFromKeys,
+    secretKeys,
     models: agents.map((a) => a.definition.model).filter((m): m is string => typeof m === "string"),
     caBundle: caPem,
   });
+  // Where each secret goes (ADR-0068): read off the list and the Effects that name it, never
+  // declared — and refused here, before anything is applied, when an Effect names a secret the list
+  // does not hold or an Effect secret is too short to scrub.
+  const placements = secretPlacementsOf(
+    config,
+    workflows.flatMap((w) => partsOf([w.machine]).effects.map((effect) => ({ workflow: w.name, effect }))),
+    { secretKeys },
+  );
+  for (const line of placements.report) activity(io, line);
+  for (const warning of placements.warnings) activity(io, `warning: ${warning}`);
 
   // --- git over ssh: where the key comes from (ADR-0019, ADR-0047) -------------------------------
   // Runs BEFORE the apply, because a missing key source is a converge that must not start, and the
@@ -986,6 +1018,56 @@ export async function up(args: string[], io: Io): Promise<number> {
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_PODS_SERVICE, namespace, ...ctx });
   }
 
+  // --- Instance Effector (ADR-0068): converged when an Effect is placed there, absent otherwise ---
+  // The placement is read off the Machines: an `http` Effect runs there. Its objects carry only the
+  // secrets those Effects name, and the placement's key, derived from the kept signing key — the
+  // key the Orchestrator derives again to sign every call and verify every answer.
+  const effectorPlan = placements.instance;
+  if (effectorPlan) {
+    const names = effectorPlan.secrets.map((s) => `\`${s.name}\``).join(", ") || "none";
+    activity(
+      io,
+      `instance effector: converging (${effectorPlan.effects.join(", ")}; secrets ${names}; grace ` +
+        `${effectorGraceSeconds(effectorPlan)}s)`,
+    );
+    const signing = Buffer.from(signingKey, "base64");
+    const key = effectorKey(signing, "instance");
+    await kube.apply({
+      manifest: instanceEffectorObjects({
+        name,
+        namespace,
+        harnessImage: refs.harness,
+        plan: effectorPlan,
+        key,
+        digest: effectorDigest(signing, effectorPlan, key),
+        caBundle: caPem !== undefined,
+        ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
+      }),
+      ...ctx,
+    });
+    await awaitRollout(kube, {
+      name: INSTANCE_EFFECTOR,
+      namespace,
+      selector: `app=${INSTANCE_EFFECTOR}`,
+      // A rollout waits out the old replica's drain: the longest Effect, and its read.
+      timeoutSeconds: effectorGraceSeconds(effectorPlan) + 180,
+      ...ctx,
+    });
+    await verifyRunningImage(io, kube, {
+      layer: "instance effector",
+      namespace,
+      selector: `app=${INSTANCE_EFFECTOR}`,
+      image: refs.harness,
+      container: "effector",
+      ...ctx,
+    });
+  } else {
+    activity(io, "instance effector: none (no Effect is placed there)");
+    for (const kind of ["deployment", "service", "networkpolicy", "secret"]) {
+      await kube.deleteObject({ kind, name: INSTANCE_EFFECTOR, namespace, ...ctx });
+    }
+  }
+
   await reportOlderWorkspaces(io, kube, namespace, ctx, converged);
   await sweepAfterConverge(io, { build, kube, context, ctx, converged, instanceImage: tag, previous });
   noteDeferred(io, carried.repos);
@@ -1097,6 +1179,8 @@ async function resolveHeld(
     namespace: string;
     ctx: { context?: string };
     envFromKeys: Map<string, string[]>;
+    /** R10's read of the user's Secrets: key NAMES, never values. */
+    secretKeys: (secret: string) => readonly string[] | undefined;
     models: string[];
     /** The user's `caBundle` (ADR-0020): trusted upstream, and by the Harness beside the jr2 CA. */
     caBundle?: string;
@@ -1107,17 +1191,9 @@ async function resolveHeld(
   const decode = (data: Record<string, string> | undefined, key: string): string | undefined =>
     data?.[key] === undefined ? undefined : Buffer.from(data[key], "base64").toString("utf8");
 
-  // R10: a referenced Secret and key must exist. Read once per Secret — key NAMES, never values.
-  const referenced = new Map<string, string[] | undefined>();
-  for (const s of config.harness?.heldSecrets ?? []) {
-    const ref = s.valueFrom?.secretKeyRef.name;
-    if (ref === undefined || referenced.has(ref)) continue;
-    const found = await kube.getJson<Data>({ kind: "secret", name: ref, namespace, ...ctx });
-    referenced.set(ref, found ? Object.keys(found.data ?? {}) : undefined);
-  }
   const { manifest, values, warnings } = heldSecretsOf(config, {
     envFromKeys: opts.envFromKeys,
-    secretKeys: (secret) => referenced.get(secret),
+    secretKeys: opts.secretKeys,
     models: opts.models,
   });
   for (const warning of warnings) activity(io, `warning: ${warning}`);

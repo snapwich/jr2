@@ -20,6 +20,13 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   `jr2-instance-harness`. This is the same name the registration records as its delivery scope
   ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)), so one name scopes both
   directions. The Custodian there may speak for the Turn's picks, and only this bearer may drive the conversation there.
+- **A key per Effector placement, derived the same way**
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
+  `effectorKey(key, placement) = HMAC(signing key, "effector:" + placement)` signs every request the Orchestrator sends
+  an Effector and every answer it takes back; `placement` is `instance` for the Instance Effector. The `effector:`
+  prefix keeps it apart from every Harness bearer and Sandbox token. Unlike a Harness, an Effector holds the key itself
+  — it must sign its answers — in a Secret only its own pod mounts, which `jr2 up` writes from the kept signing key; the
+  Orchestrator stores nothing and derives it again after a restart.
 - **The Harness holds only the digest.** Its env carries `JR2_HARNESS_TOKEN_SHA256 = sha256(bearer)`. The Agent can read
   that env, and a digest inverts to nothing. So a Harness can verify its own bearer, and it can mint none, for itself or
   for another pod. The HMAC key never leaves the Orchestrator's Secret.
@@ -38,7 +45,8 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   instance namespace. `jr2-sandbox-ingress` selects every pod that has the operator's `sandbox.jr2.dev/name` label.
   `jr2-instance-harness-ingress` selects `app: jr2-instance-harness`. Both admit ingress only from this instance's
   Orchestrator pods (`app: jr2-orchestrator`, `jr2.dev/instance: <name>`). They are converged unconditionally, so a
-  Harness pod is never created before its policy exists.
+  Harness pod is never created before its policy exists. The Instance Effector gets a third of the same form,
+  `jr2-instance-effector`, applied with it in one List (ADR-0068).
 - **Starting a run needs the Instance token.** `POST /workflows/:name/runs` moves from `authenticated` to
   `instanceOnly`. The scope of a Sandbox token is its own agent surface. The Custodian's route allowlist does not
   forward this route, but that is not a control.

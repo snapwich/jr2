@@ -41,6 +41,12 @@ built.
   Sandbox's is ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), so its Custodian holds
   the same held secrets and carries the Instance Harness's model calls the same way. Defense-in-depth is the bonus, not
   the reason.
+- **The Instance Effector is the second Instance-level pod, beside it**
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), on the same convention: `jr2 up`
+  converges it when a registered Machine places an Effect there — an `http` Effect — and deletes it otherwise. It runs
+  the same `jr2-harness` image with `/opt/jr2/bin/effector` as its command, holds no conversation and runs no Agent, and
+  is a Deployment, not a StatefulSet: it keeps nothing, and a rollout must run the new pod beside the old one. No config
+  key names, sizes, addresses, or enables it.
 - **No image config at all.** The Harness image was once configured as `sandbox.image` because the Sandbox pod was the
   only place a Harness ran — a misnomer once the Instance Harness exists, and config is the wrong seat regardless:
   `jr2 up` builds and resolves every image it deploys ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)), and

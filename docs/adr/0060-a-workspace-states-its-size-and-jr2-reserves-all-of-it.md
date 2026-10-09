@@ -52,19 +52,21 @@ unchanged.
   pod and loses `/work` (T12). Disk is not part of the Size: Substrate's template size is cpu and memory only.
 - **Priority.** `jr2 up` creates two cluster-scoped PriorityClasses beside the CRDs: `jr2-control` (100000,
   PreemptLowerPriority) for the Orchestrator, the operator and the Repo cache agent — small, fixed and needed by every
-  Sandbox; `jr2-sandbox` (1000, preemptionPolicy `Never`) for Sandboxes and the Instance Harness — a pod of ordinary
-  priority cannot preempt a live Workspace, and a waiting Sandbox evicts nobody. Both stay far below the system classes.
-  A cluster with its own scheme names its classes in `priorityClasses: { control?, sandbox? }`.
+  Sandbox — and the Instance Effector ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)),
+  small and fixed; `jr2-sandbox` (1000, preemptionPolicy `Never`) for Sandboxes and the Instance Harness — a pod of
+  ordinary priority cannot preempt a live Workspace, and a waiting Sandbox evicts nobody. Both stay far below the system
+  classes. A cluster with its own scheme names its classes in `priorityClasses: { control?, sandbox? }`.
 - **Voluntary disruption.** A Sandbox pod and the Instance Harness pod carry
   `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `karpenter.sh/do-not-disrupt: "true"`: moving either
-  loses work (`/work`; live conversations). The Orchestrator, the operator and the Repo cache agent carry neither — a
-  restarted Orchestrator re-attaches (ADR-0007). No PodDisruptionBudget: `maxUnavailable: 0` blocks node upgrades
-  without end. A drain ends in `workspace.lost`, and the body's policy decides (ADR-0021).
+  loses work (`/work`; live conversations). The Orchestrator, the operator, the Repo cache agent and the Instance
+  Effector carry neither — a restarted Orchestrator re-attaches (ADR-0007), and a stopping Effector finishes its Effects
+  first. No PodDisruptionBudget: `maxUnavailable: 0` blocks node upgrades without end. A drain ends in `workspace.lost`,
+  and the body's policy decides (ADR-0021).
 - **jr2's own pods are kit-sized, with no config key**: memory request = limit, a CPU request, no CPU limit (a
   provisioning burst needs CPU, and no Substrate move applies to them). Orchestrator 500m / 1Gi. Instance Harness 250m /
   1Gi (it frees every conversation no live run holds — ADR-0031). Operator 50m / 256Mi (it caches every Pod in the
-  cluster). Repo cache agent 50m, memory request 128Mi and limit 1Gi — the one exception, since `git index-pack` spikes
-  and its OOM costs only a refetch.
+  cluster). Instance Effector 50m / 128Mi. Repo cache agent 50m, memory request 128Mi and limit 1Gi — the one exception,
+  since `git index-pack` spikes and its OOM costs only a refetch.
 
 ## Considered options
 

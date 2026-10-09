@@ -167,21 +167,29 @@ export type CatalogReach = {
   baseUrl: string;
 };
 
-/** A credential the Harness uses and never holds (ADR-0059). The Harness container's env carries
- * its Stand-in, `jr2-held-<name>`; the Custodian puts the value into requests toward `hosts` alone. */
-export type HeldSecret = {
-  /** The env var the Harness container sees — `[A-Z_][A-Z0-9_]*`. It holds the Stand-in. */
+/**
+ * One secret of the Instance (ADR-0059's entry shape, ADR-0068's list). Its placement is READ, never
+ * declared: an entry with `hosts` (or a known model key, whose hosts default) is a Held secret — the
+ * Harness container's env carries its Stand-in, `jr2-held-<name>`, and the Custodian puts the value
+ * into requests toward `hosts` alone; an entry an Effect names with `secret("name")` is an Effect
+ * secret, a file in that Effect's Effector. Both is both, and `jr2 up` reports it; neither goes
+ * nowhere, and `jr2 up` warns.
+ */
+export type SecretEntry = {
+  /** As a Held secret, the env var the Harness container sees — `[A-Z_][A-Z0-9_]*`, holding the
+   * Stand-in. As an Effect secret, the name `secret("name")` names and the Effector's file. */
   name: string;
   /** The value as a literal, usually read from `process.env`/`.env`. `jr2 up` writes it into the
-   * `jr2-held-secrets` Secret, which only the Custodian mounts. Exactly one of `value`/`valueFrom`. */
+   * Secret of each placement — `jr2-held-secrets` (the Custodian's), `jr2-instance-effector` — and
+   * nowhere else. Exactly one of `value`/`valueFrom`. */
   value?: string;
   /** Or a key of a Secret you manage (Sealed Secrets, External Secrets). `jr2 up` checks that the
-   * Secret and key exist; the Custodian mounts that one key as a file, and no other container does. */
+   * Secret and key exist; each placement mounts that one key as a file, and no other container does. */
   valueFrom?: { secretKeyRef: { name: string; key: string } };
-  /** Where the value may go. Each entry is `host`, `host:port`, or an `https://` URL (its host and
-   * port are taken; the path is ignored). Exact DNS names or IP literals; no wildcards. Port
-   * default 443. Optional ONLY for a known model-key name (`MODEL_KEYS`), where it defaults to the
-   * one host that provider's calls go to. */
+  /** Where the value may go as a Held secret. Each entry is `host`, `host:port`, or an `https://`
+   * URL (its host and port are taken; the path is ignored). Exact DNS names or IP literals; no
+   * wildcards. Port default 443. A known model-key name (`MODEL_KEYS`) may leave it out: it then
+   * goes to the one host that provider's calls go to. */
   hosts?: readonly string[];
   /** Request headers the Stand-in is swapped in, lowercase. Default
    * `["authorization", "x-api-key", "x-goog-api-key", "api-key"]`. */
@@ -209,13 +217,9 @@ export type HarnessConfig = {
   /** pi catalog providers whose calls go somewhere else, keyed by the catalog provider id
    * (`anthropic`, `openai`, ...) — a gateway that serves the provider's own API (ADR-0059). */
   catalog?: Readonly<Record<string, CatalogReach>>;
-  /** Credentials the Harness uses and never holds (ADR-0059): the Harness container sees a
-   * Stand-in, and the Custodian puts the value into requests toward the bound hosts alone. A model
-   * API key belongs here, never in `env`. */
-  heldSecrets?: readonly HeldSecret[];
   /** Env vars for the Harness container. Values read from `process.env`/`.env` are materialized
    * into the instance-owned Secret by `jr2 up`. The Agent can read every one of them, so a known
-   * model key here is refused — it goes in `heldSecrets` (ADR-0059). */
+   * model key here is refused — it goes in the top-level `secrets` list (ADR-0059). */
   env?: readonly HarnessEnvVar[];
   /** Whole-Secret/ConfigMap env for the Harness container — `envFrom` refs to Secrets YOU manage
    * (Sealed Secrets etc.); `jr2 up` preflights that each referenced Secret exists (ADR-0019), and
@@ -289,6 +293,10 @@ export type JR2Config = {
   /** The instance's identity (ADR-0019): its kube namespace defaults to this (`-n` overrides),
    * and `jr2 up` labels every object it owns with it. Default: the instance folder's name. */
   name?: string;
+  /** Every secret of the Instance, one list for both sides (ADR-0068): a Held secret where it has
+   * `hosts` — a model API key belongs here, never in `harness.env` (ADR-0059) — and an Effect
+   * secret where an Effect names it with `secret("name")`. See `SecretEntry`. */
+  secrets?: readonly SecretEntry[];
   /** How the cluster authenticates to Repos, and the fence a per-run url must pass (ADR-0051).
    * NOT a list of Repos: a Machine names those itself, through its `workspace()`'s Repo Slots, and
    * whether the instance has a data plane at all is read off the registered Machines. */
@@ -343,9 +351,9 @@ export function defineConfig(c: JR2Config): JR2Config {
  * Load an instance's `jr2.config.ts` (default export). Absent file → undefined (an instance
  * can boot configless); a file that fails to IMPORT throws — a broken config must be loud,
  * never silently treated as "no config". The shape checks live here, on the path the host CLI
- * and the in-cluster Orchestrator share: `git.credentials`, `harness.heldSecrets` and
- * `harness.catalog` are checked at runtime, because an instance is zero-build and nothing
- * typechecks this file before Node strips its types and imports it. SHAPE only: a held secret's
+ * and the in-cluster Orchestrator share: `git.credentials`, `secrets` and `harness.catalog` are
+ * checked at runtime, because an instance is zero-build and nothing typechecks this file before
+ * Node strips its types and imports it. SHAPE only: a secret's
  * `value` reads `.env`, which the in-cluster evaluation does not have, so an absent value is not
  * this function's to refuse — `jr2 up` checks presence and every held-secret rule host-side
  * (`heldSecretsOf`, ADR-0059).
@@ -356,7 +364,8 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   const mod = (await import(pathToFileURL(file).href)) as { default?: JR2Config };
   if (!mod.default) throw new Error(`${file} has no default export (use \`export default defineConfig({…})\`)`);
   if (mod.default.git !== undefined) checkGit(mod.default.git, file);
-  if (mod.default.harness !== undefined) checkHeld(mod.default.harness, file);
+  if (mod.default.secrets !== undefined) checkSecrets(mod.default.secrets, file);
+  if (mod.default.harness !== undefined) checkHarness(mod.default.harness, file);
   if (mod.default.sandbox !== undefined) checkSandbox(mod.default.sandbox, file);
   if (mod.default.priorityClasses !== undefined) checkPriorityClasses(mod.default.priorityClasses, file);
   return mod.default;
@@ -385,7 +394,7 @@ function checkGit(git: unknown, where: string): void {
 const GIT_HINT = "an entry is { match, token?, sshKey? } (ADR-0051)";
 
 const OptionalText = z.string().optional();
-const HeldSecretShape = z
+const SecretShape = z
   .object({
     name: NonEmpty,
     // `.env` values are absent in-cluster, so `undefined` must pass here — presence is `jr2 up`'s.
@@ -401,25 +410,25 @@ const HeldSecretShape = z
   .strict();
 const CatalogReachShape = z.object({ baseUrl: z.string() }).strict();
 
-/** `harness.heldSecrets` and `harness.catalog`, SHAPE only (ADR-0059) — by index and field, the
- * `checkGit` style, so a bad entry names itself (`harness.heldSecrets[1].hosts`). */
-function checkHeld(harness: unknown, where: string): void {
+/** `secrets`' SHAPE (ADR-0059's entry, ADR-0068's list) — by index and field, the `checkGit` style,
+ * so a bad entry names itself (`secrets[1].hosts`). */
+function checkSecrets(secrets: unknown, where: string): void {
+  if (!Array.isArray(secrets)) throw new Error(`${where} at secrets: expected an array — ${SECRET_HINT}`);
+  for (const [i, entry] of secrets.entries()) {
+    const parsed = SecretShape.safeParse(entry);
+    if (parsed.success) continue;
+    const issue = parsed.error.issues[0];
+    const at = ["", ...(issue?.path ?? [])].map(String).join(".");
+    throw new Error(`${where} at secrets[${i}]${at}: ${issue?.message ?? "invalid"} — ${SECRET_HINT}`);
+  }
+}
+
+/** `harness.catalog`'s SHAPE (ADR-0059) — by provider id and field, the `checkGit` style. */
+function checkHarness(harness: unknown, where: string): void {
   if (typeof harness !== "object" || harness === null || Array.isArray(harness)) {
     throw new Error(`${where} at harness: expected an object`);
   }
-  const { heldSecrets, catalog } = harness as { heldSecrets?: unknown; catalog?: unknown };
-  if (heldSecrets !== undefined) {
-    if (!Array.isArray(heldSecrets)) {
-      throw new Error(`${where} at harness.heldSecrets: expected an array — ${HELD_HINT}`);
-    }
-    for (const [i, entry] of heldSecrets.entries()) {
-      const parsed = HeldSecretShape.safeParse(entry);
-      if (parsed.success) continue;
-      const issue = parsed.error.issues[0];
-      const at = ["", ...(issue?.path ?? [])].map(String).join(".");
-      throw new Error(`${where} at harness.heldSecrets[${i}]${at}: ${issue?.message ?? "invalid"} — ${HELD_HINT}`);
-    }
-  }
+  const { catalog } = harness as { catalog?: unknown };
   if (catalog !== undefined) {
     if (typeof catalog !== "object" || catalog === null || Array.isArray(catalog)) {
       throw new Error(`${where} at harness.catalog: expected an object keyed by catalog provider id — ${CATALOG_HINT}`);
@@ -434,8 +443,8 @@ function checkHeld(harness: unknown, where: string): void {
   }
 }
 
-const HELD_HINT =
-  "an entry is { name, value? | valueFrom?: { secretKeyRef: { name, key } }, hosts?, headers?, paths? } (ADR-0059)";
+const SECRET_HINT =
+  "an entry is { name, value? | valueFrom?: { secretKeyRef: { name, key } }, hosts?, headers?, paths? } (ADR-0059, ADR-0068)";
 const CATALOG_HINT = "an entry is <provider id>: { baseUrl } (ADR-0059)";
 
 /** `sandbox.resources`' SHAPE (ADR-0060), checked at load by field — `requests`, or any key beside

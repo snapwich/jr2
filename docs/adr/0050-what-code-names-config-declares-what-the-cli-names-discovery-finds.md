@@ -13,9 +13,11 @@ a definition lives, and the gate that enforces it.
   name** is discovered from files. Workflows are the latter — `jr2 run` and `POST /workflows/:name/runs` name them, a
   nested Machine is reached by `import` (ADR-0049) — so `workflows/` stays filename-discovered. Agents, images, and
   Repos are neither: they ride the Machine (ADR-0049, ADR-0051), and the `agents/` folder, `config.agents`,
-  `config.images`, and `config.repos` all retire. Nothing is left that code names and a Machine cannot carry, so the
-  first clause holds vacuously — and stays, so the next dependency lands on the right side of it. `jr2.config.ts` holds
-  reach and credentials (`harness`, `git.credentials`, `registry`), which no code names.
+  `config.images`, and `config.repos` all retire. One thing code names and a Machine cannot carry is a secret's value:
+  an Effect names it with `secret("name")`, and the Instance declares it in the top-level `secrets` list
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). The name is a string, not a type: the
+  walk after the typecheck refuses an Effect that names a secret the list does not hold, before anything is built.
+  `jr2.config.ts` holds reach and credentials (`harness`, `secrets`, `git.credentials`, `registry`).
 - **The slot key types a Repo.** A `workspace()` declares its Repos as slots —
   `repos: { target: open, docs: { url, ref } }` — and the keys are a phantom on the wrapper type, read through
   `pool()`'s `worker` and `workspace()`'s `body` as the image is (ADR-0049). A

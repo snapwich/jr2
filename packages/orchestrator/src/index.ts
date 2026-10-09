@@ -37,6 +37,7 @@ export * from "./workspace.ts";
 export * from "./images.ts";
 export * from "./model-keys.ts";
 export * from "./held-secrets.ts";
+export * from "./secret-placement.ts";
 export * from "./custodian.ts";
 export * from "./sandbox-kube.ts";
 export * from "./repos.ts";

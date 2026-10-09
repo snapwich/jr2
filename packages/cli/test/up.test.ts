@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { X509Certificate } from "node:crypto";
 import {
   custodianRef,
+  effectorKey,
   KIT_VERSION,
   harnessTokenDigest,
   leafStem,
@@ -1797,7 +1798,7 @@ test("a known model key in harness.env or in an envFrom Secret is refused, namin
   );
   await assert.rejects(
     () => up(["--yes"], inEnv.io),
-    /harness\.env\[0\] sets ANTHROPIC_API_KEY.*heldSecrets: \[\{ name: "ANTHROPIC_API_KEY", value: process\.env\.ANTHROPIC_API_KEY \}\]/s,
+    /harness\.env\[0\] sets ANTHROPIC_API_KEY.*secrets: \[\{ name: "ANTHROPIC_API_KEY", value: process\.env\.ANTHROPIC_API_KEY \}\]/s,
   );
 
   const viaSecret = mkWorld(
@@ -2603,9 +2604,9 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
   // with no hosts (the gateway's host is its default), and a second key referenced from a Secret
   // the user manages.
   const root = await mkInstance(
-    `export default { name: "myinst", harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } }, ` +
-      `heldSecrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-litellm-secret", paths: ["/v1/messages"] }, ` +
-      `{ name: "OPENAI_API_KEY", valueFrom: { secretKeyRef: { name: "team", key: "openai" } }, hosts: ["api.openai.com"] }] } };\n`,
+    `export default { name: "myinst", harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } }, ` +
+      `secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-litellm-secret", paths: ["/v1/messages"] }, ` +
+      `{ name: "OPENAI_API_KEY", valueFrom: { secretKeyRef: { name: "team", key: "openai" } }, hosts: ["api.openai.com"] }] };\n`,
     "myinst",
     DECISIONER_AGENTS,
   );
@@ -2846,4 +2847,132 @@ test("the Instance Harness: kit-sized, the sandbox class, and the two disruption
   const [custodian] = pod.spec.initContainers;
   assert.deepEqual(harness.resources, { requests: { cpu: "250m", memory: "1Gi" }, limits: { memory: "1Gi" } });
   assert.deepEqual(custodian.resources, { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } });
+});
+
+// --- the Instance Effector (ADR-0068) ---------------------------------------------------------
+
+/** A workflow that carries one http Effect naming `secret("jira")`. */
+async function withHttpEffect(root: string, name = "jira"): Promise<string> {
+  await writeFile(
+    join(root, "workflows", "notify.ts"),
+    `import { bearer, http, jr2Setup, secret } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const comment = http({ method: "POST", url: "https://jira.example.com/rest/api/2/issue", ` +
+      `auth: bearer(secret("${name}")), timeout: "2m" });\n` +
+      `export const machine = jr2Setup({ events: [], actors: { comment } })\n` +
+      `  .createMachine({ id: "notify", initial: "idle", states: { idle: {} } });\n`,
+  );
+  return root;
+}
+
+test("an http Effect places its secret in the Instance Effector: the four objects, the key, the report (ADR-0068)", async () => {
+  const root = await withHttpEffect(
+    await mkInstance(
+      `export default { name: "myinst", secrets: [{ name: "jira", value: "jira-token-value-0123" }, ` +
+        `{ name: "orphan", value: "orphan-value-0123" }] };\n`,
+    ),
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const out = w.err.join("\n");
+  assert.match(out, /comment: http POST https:\/\/jira\.example\.com — 120s, in the Instance Effector, secrets "jira"/);
+  assert.match(out, /secret jira: an Effect secret in the Instance Effector \(notify\/comment\)/);
+  assert.match(out, /warning: secrets\[1\] \(orphan\) is named by nothing; goes nowhere/);
+  assert.match(out, /instance effector: converging \(notify\/comment; secrets `jira`; grace 150s\)/);
+
+  const list = w.kube.applied.find(
+    (m) => m.includes(`"name":"jr2-instance-effector"`) && m.includes(`"kind":"Deployment"`),
+  )!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  assert.deepEqual(
+    items.map((i) => i.kind),
+    ["Secret", "Deployment", "Service", "NetworkPolicy"],
+  );
+  const [secret, deployment, service, policy] = items;
+  assert.equal(secret!.stringData["secret.jira"], "jira-token-value-0123");
+  assert.equal(secret!.stringData.orphan, undefined, "a secret nothing names goes nowhere");
+  const instanceList = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-instance"`))!;
+  const instanceSecret = (JSON.parse(instanceList) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
+  )!;
+  const signing = Buffer.from(instanceSecret.stringData.JR2_SIGNING_KEY, "base64");
+  assert.equal(secret!.stringData.key, effectorKey(signing, "instance"), "the placement's key, derived");
+  assert.deepEqual(JSON.parse(secret!.stringData["effector.json"]), {
+    version: 1,
+    placement: "instance",
+    targets: [{ scheme: "https", host: "jira.example.com", port: 443, secrets: ["jira"] }],
+  });
+  const pod = deployment!.spec.template.spec;
+  assert.equal(deployment!.spec.strategy.rollingUpdate.maxSurge, 1);
+  assert.equal(pod.terminationGracePeriodSeconds, 150, "the longest Effect timeout, plus the read margin");
+  assert.deepEqual(pod.containers[0].command, ["/opt/jr2/bin/effector"]);
+  assert.match(pod.containers[0].image, /jr2-harness/);
+  assert.equal(pod.containers[0].securityContext.readOnlyRootFilesystem, true);
+  assert.equal(pod.containers[0].securityContext.runAsNonRoot, true);
+  assert.equal(pod.automountServiceAccountToken, false);
+  assert.ok(deployment!.spec.template.metadata.annotations["jr2.dev/effector-digest"]);
+  assert.deepEqual(pod.volumes.find((v: { name: string }) => v.name === "secrets").projected.sources, [
+    { secret: { name: "jr2-instance-effector", items: [{ key: "secret.jira", path: "jira" }] } },
+  ]);
+  assert.equal(service!.spec.clusterIP, "None");
+  assert.equal(service!.spec.publishNotReadyAddresses, true);
+  assert.deepEqual(policy!.spec.ingress, [
+    { from: [{ podSelector: { matchLabels: { app: "jr2-orchestrator", "jr2.dev/instance": "myinst" } } }] },
+  ]);
+  assert.ok(
+    !JSON.stringify(w.kube.applied.filter((m) => !m.includes("jr2-instance-effector"))).includes(
+      "jira-token-value-0123",
+    ),
+    "the value lands in the Effector's Secret alone",
+  );
+});
+
+test("no Effect placed there: no Instance Effector, and a stale one is deleted (ADR-0068)", async () => {
+  const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join("\n"), /instance effector: none \(no Effect is placed there\)/);
+  for (const kind of ["deployment", "service", "networkpolicy", "secret"]) {
+    assert.ok(w.kube.deleted.includes(`myinst/${kind}/jr2-instance-effector`), kind);
+  }
+});
+
+test("an Effect secret shorter than 8 characters is refused before anything is applied (B3.5)", async () => {
+  const root = await withHttpEffect(
+    await mkInstance(`export default { name: "myinst", secrets: [{ name: "jira", value: "short" }] };\n`),
+  );
+  const w = mkWorld(root);
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    /secrets\[0\] \(jira\) is an Effect secret shorter than 8 characters/,
+  );
+  assert.ok(!w.kube.applied.some((m) => m.includes("jr2-instance-effector")));
+});
+
+test("an Effect that names a secret the list does not hold is refused, naming the line to add", async () => {
+  const root = await withHttpEffect(await mkInstance(`export default { name: "myinst" };\n`));
+  await assert.rejects(
+    () => up(["--yes"], mkWorld(root).io),
+    /names secret\("jira"\), which the `secrets` list does not hold/,
+  );
+});
+
+test("one secret both Held and named by an Effect is both, and the report says so", async () => {
+  const root = await withHttpEffect(
+    await mkInstance(
+      `export default { name: "myinst", secrets: [{ name: "JIRA_TOKEN", value: "jira-token-value-0123", hosts: ["jira.example.com"] }] };\n`,
+    ),
+    "JIRA_TOKEN",
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(
+    w.err.join("\n"),
+    /secret JIRA_TOKEN: Held \(every Custodian\) and an Effect secret in the Instance Effector \(notify\/comment\)/,
+  );
+  // As a Held secret its name is an env var; one that is not is refused as one (R2).
+  const lower = await withHttpEffect(
+    await mkInstance(
+      `export default { name: "myinst", secrets: [{ name: "jira", value: "jira-token-value-0123", hosts: ["jira.example.com"] }] };\n`,
+    ),
+  );
+  await assert.rejects(() => up(["--yes"], mkWorld(lower).io), /not an env var name/);
 });

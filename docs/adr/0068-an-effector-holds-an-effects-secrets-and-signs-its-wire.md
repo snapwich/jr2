@@ -13,6 +13,14 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
   safe file opener the experiments proved (`os.Root`, `openat2`) is Go's. It is configured by its env, which names where
   its own mount holds things and never a value: `JR2_EFFECTOR_PORT` (default 8082), `JR2_EFFECTOR_KEY`,
   `JR2_EFFECTOR_CONFIG`, `JR2_EFFECTOR_SECRETS`, `JR2_CA_FILE`, `JR2_EFFECTOR_DRAIN_SECONDS`, `POD_NAME`, `POD_IP`.
+- **The binary rides `/opt/jr2`; no Effector image is published.** The `jr2-harness` image builds it in a Go stage and
+  carries it at `/opt/jr2/bin/effector`, beside `rg` and `jr2-upload-pack`
+  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). A container becomes an Effector
+  by running it as its command, so the image around it is whatever that container runs: the tools are the author's, the
+  trust boundary is jr2's binary. The Instance Effector runs the `jr2-harness` Kit image itself — it carries the binary,
+  it is already pulled, and `http` needs no tool. Rejected: a published `jr2-effector` tool image (git, ssh, gpg) —
+  author-built images would deprecate it, as `jr2-adapter` was. The Sandbox Effector, the second placement, is built
+  next.
 - **The wire.** `POST /effects/<id>` starts an Effect and answers at once (202, `state: running`). A second `POST` with
   the same id starts nothing and attaches (200). `GET /effects/<id>` long-polls: it holds up to 25 s and answers
   `running`, or `settled` with the output. A malformed request starts nothing and gets 400 with the reason; a request
@@ -75,6 +83,37 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
   would send the request, and its `Authorization`, to a host the definition did not fix. No proxy is read from the
   environment. The trust is the system roots and the instance's `caBundle`
   ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)).
+- **One list of secrets; placement is read, never declared.** The top-level `secrets` list replaces
+  `harness.heldSecrets`; its entry is ADR-0059's (`{ name, value | valueFrom.secretKeyRef, hosts?, headers?, paths? }`).
+  An entry with `hosts` — or a known model key, whose hosts default — is a Held secret (every Custodian, ADR-0059). An
+  entry an Effect names with `secret("name")` is an Effect secret in that Effect's placement (an `http` Effect: the
+  Instance Effector). Both is both. Neither goes nowhere, and `jr2 up` warns:
+  `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no `placement:` key: naming is the placement.
+  `jr2 up` prints one line per secret with its placements, refuses an Effect that names a secret the list does not hold
+  (with the line to add), and refuses an Effect secret shorter than 8 characters, saying why. A secret reaches only the
+  pods where something names it: a literal is written into the placement's own Secret, and a `valueFrom` is projected
+  from the user's Secret by reference, never copied. `git.credentials` stays its own list: a fence keyed by url prefix,
+  not a named value.
+- **The Instance Effector's objects.** `jr2 up` converges them when a registered Machine places an Effect there, and
+  deletes them otherwise; it reports either (`instance effector: converging (<workflow>/<slot>; secrets …; grace …)` or
+  `instance effector: none`). All four are named `jr2-instance-effector`:
+  - A **Deployment**, one replica, rolling with surge and no gap, so a rollout runs the old pod beside the new one: the
+    `jr2-harness` image, command `/opt/jr2/bin/effector`, non-root, no privilege escalation, every capability dropped, a
+    read-only root filesystem, an emptyDir scratch as `$HOME`, no ServiceAccount token, the control tier's PriorityClass
+    ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)). Its pod template carries
+    `jr2.dev/effector-digest`, an HMAC over every secret input keyed with the signing key, so an edit rolls it.
+    `terminationGracePeriodSeconds` is the longest timeout among the Effects placed there plus 30 s for the outcome to
+    be read; the drain ends 5 s before it.
+  - A **headless Service** that publishes addresses that are not ready: "ask every replica" is its name's addresses, a
+    stopping replica among them.
+  - A **NetworkPolicy** of `jr2-sandbox-ingress`'s form ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)):
+    ingress from this Instance's Orchestrator only. Egress stays open: the pod calls the hosts its Effects name, and
+    holds no Custodian.
+  - The **Secret**: each literal Effect secret placed there, `effector.json` (the targets), and the placement's key,
+    `effectorKey(signing key, "instance")`, which `jr2 up` derives from the kept signing key. "Nothing stored" means
+    nothing stored by the Orchestrator: the Kubernetes Secret is the store, as for every credential. The secrets are
+    files under `/run/jr2/secrets`, mode 0400; the kubelet makes them readable by the pod's `fsGroup`, and the pod has
+    one container. `harness.env` and `harness.envFrom` may not name this Secret (ADR-0059's R13).
 - **The log is a contract.** `jr2.effector` lines: `ready placement=… replica=… secrets=<names> targets=N`,
   `action=start effect=… kind=… method=… host=…`, `action=settle effect=… outcome=… status=…`, `action=drop`,
   `action=drain`. Never a value, a path, a query, a header or a body.
@@ -86,6 +125,11 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
 - **A code generator for the wire types.** Rejected for now: the wire is small. Later, zod 4 emits JSON Schema and Go
   types can be generated from it; the fixtures stay either way.
 - **Follow redirects.** Rejected: the host is the definition's, and a redirect names another.
+- **A StatefulSet for the Instance Effector**, as the Instance Harness is. Rejected: a one-replica StatefulSet deletes
+  the old pod before it creates the new one, so a rollout would cut an Effect in flight; the Effector keeps nothing a
+  stable name or volume would hold.
+- **A `placement:` key on a secret.** Rejected: naming a secret in an Effect is what places it, and a key would be a
+  second statement that can disagree with the first.
 
 ## Consequences
 

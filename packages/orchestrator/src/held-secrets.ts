@@ -1,4 +1,5 @@
-// Held secrets (ADR-0059): credentials the Harness uses and never holds.
+// Held secrets (ADR-0059): credentials the Harness uses and never holds — the entries of the
+// `secrets` list that are Held where they stand (ADR-0068; `isHeld`).
 //
 // The Agent executes code in the Harness container (ADR-0005), so a key in that container's env is
 // a key it can take out of the pod. A held secret is not there: the Harness's env carries a
@@ -21,11 +22,18 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import type { JR2Config, HarnessEnvVar } from "./config.ts";
 import { MODEL_KEYS, MODEL_KEY_PROVIDERS, SIGNING_CREDENTIALS } from "./model-keys.ts";
-import { HELD_CA_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, INSTANCE_SECRET } from "./names.ts";
+import { HELD_CA_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, INSTANCE_EFFECTOR, INSTANCE_SECRET } from "./names.ts";
 
 /** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, the
- * literal held values, the leaves, and the CA. */
-const KIT_SECRETS: readonly string[] = [INSTANCE_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, HELD_CA_SECRET];
+ * literal held values, the leaves, the CA, and the Instance Effector's (its Effect secrets and key,
+ * ADR-0068). */
+const KIT_SECRETS: readonly string[] = [
+  INSTANCE_SECRET,
+  HELD_SECRETS_SECRET,
+  HELD_TLS_SECRET,
+  HELD_CA_SECRET,
+  INSTANCE_EFFECTOR,
+];
 
 /**
  * The Stand-in for one held secret: what its env var holds in the Harness container.
@@ -146,9 +154,10 @@ const FRAMING_HEADERS = new Set([
 ]);
 
 /**
- * Normalize `harness.heldSecrets` (plus the implicit `JR2_PROVIDER_API_KEY`) into the manifest,
- * or throw the FIRST refusal. Every message names the config path and never a value, and says
- * what to write instead — the `checkGit` style.
+ * Normalize the Held secrets of the `secrets` list (`isHeld`, plus the implicit
+ * `JR2_PROVIDER_API_KEY`) into the manifest, or throw the FIRST refusal. Every message names the
+ * config path and never a value, and says what to write instead — the `checkGit` style. An entry
+ * that is only an Effect secret is not this function's (secret-placement.ts).
  */
 export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): HeldResolution {
   const harness = config.harness ?? {};
@@ -185,7 +194,7 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
     if (!(v.name in MODEL_KEYS)) continue;
     throw new Error(
       `harness.env[${i}] sets ${v.name}, a model key the Agent could read and take out of the pod — hold it ` +
-        `instead: heldSecrets: [${heldLine(v)}] (ADR-0059)`,
+        `instead: secrets: [${heldLine(v)}] (ADR-0059)`,
     );
   }
   for (const [i, ref] of (harness.envFrom ?? []).entries()) {
@@ -201,7 +210,7 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
     const where = ref.secretRef ? `Secret "${ref.secretRef.name}"` : `ConfigMap "${ref.configMapRef?.name}"`;
     throw new Error(
       `harness.envFrom[${i}] loads ${where}, which carries ${known} — a model key the Agent could read. Hold it ` +
-        `instead: heldSecrets: [{ name: "${known}", valueFrom: { secretKeyRef: { name: "${ref.secretRef?.name ?? "<secret>"}", key: "${known}" } } }], ` +
+        `instead: secrets: [{ name: "${known}", valueFrom: { secretKeyRef: { name: "${ref.secretRef?.name ?? "<secret>"}", key: "${known}" } } }], ` +
         `and drop the key from that ${ref.secretRef ? "Secret" : "ConfigMap"} (ADR-0059)`,
     );
   }
@@ -224,7 +233,7 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
     headers?: readonly string[];
     paths?: readonly string[];
   };
-  const entries: Entry[] = (harness.heldSecrets ?? []).map((s, i) => ({ at: `harness.heldSecrets[${i}]`, ...s }));
+  const entries: Entry[] = (config.secrets ?? []).flatMap((s, i) => (isHeld(s) ? [{ at: `secrets[${i}]`, ...s }] : []));
 
   // R2, for the user's own entries — before the implicit one joins them.
   for (const e of entries) {
@@ -395,8 +404,17 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
   return { manifest: { version: 1, secrets }, values, warnings };
 }
 
+/**
+ * Is this entry a Held secret (ADR-0068: placement is read)? It is when it states `hosts` — even an
+ * empty list, which R5 then refuses — or when it is a known model key, whose hosts default to where
+ * its provider's calls go (ADR-0059).
+ */
+export function isHeld(entry: { name: string; hosts?: readonly string[] }): boolean {
+  return entry.hosts !== undefined || entry.name in MODEL_KEYS;
+}
+
 /** R4 and R10: exactly one source, and a literal that can ride a header. */
-function sourceOf(
+export function sourceOf(
   e: { at: string; name: string; value?: string; valueFrom?: { secretKeyRef: { name: string; key: string } } },
   lookups: HeldLookups,
 ): HeldBinding["source"] {
@@ -539,7 +557,7 @@ export function normalHost(raw: string): string {
   return bare;
 }
 
-/** The `heldSecrets` line R1 hands back, built from the entry it refuses. */
+/** The `secrets` line R1 hands back, built from the entry it refuses. */
 function heldLine(v: HarnessEnvVar): string {
   const ref = (v.valueFrom as { secretKeyRef?: { name?: string; key?: string } } | undefined)?.secretKeyRef;
   if (ref?.name && ref.key) {

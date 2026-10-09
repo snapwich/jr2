@@ -35,21 +35,23 @@ holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of 
   which model to use: a custom provider (`{ api, baseUrl }` plus token limits — `contextWindow`/`maxTokens`,
   provider-level and per-model, since a custom id has no catalog entry and unset limits resolve to 0, starving
   auto-compaction — e.g. an OpenAI-compatible vLLM endpoint), the gateways pi's catalog providers send their calls to
-  (`catalog`, below), the credentials Agents use (`heldSecrets`, below), and any other env Agents need. It moved out of
-  `sandbox` deliberately: `sandbox` is pod-transport (it still _carries_ this env to the Harness container), but model
-  concerns are Harness semantics and users configure them here. `jr2 up` preflights a configured provider from inside
-  the cluster, per distinct model the definitions name (ADR-0019). An instance-wide default model was tried and removed:
-  it was reached through `.env` (`JR2_MODEL`), which put a design decision in the file reserved for deployment-varying
-  values (ADR-0019) — and split one fact in two, since the endpoint's per-model token limits were already committed in
-  `jr2.config.ts` keyed by the very model id `.env` was choosing. The honest split: **`harness` declares reach; the
-  definition makes the choice.**
+  (`catalog`, below), and any other env Agents need; the credentials Agents use are the Held secrets of the top-level
+  `secrets` list (below). It moved out of `sandbox` deliberately: `sandbox` is pod-transport (it still _carries_ this
+  env to the Harness container), but model concerns are Harness semantics and users configure them here. `jr2 up`
+  preflights a configured provider from inside the cluster, per distinct model the definitions name (ADR-0019). An
+  instance-wide default model was tried and removed: it was reached through `.env` (`JR2_MODEL`), which put a design
+  decision in the file reserved for deployment-varying values (ADR-0019) — and split one fact in two, since the
+  endpoint's per-model token limits were already committed in `jr2.config.ts` keyed by the very model id `.env` was
+  choosing. The honest split: **`harness` declares reach; the definition makes the choice.**
 - **Credentials are held, not handed over**
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Agent executes code in the
-  Harness container, so a key there is a key it can take away. `harness.heldSecrets` declares each credential with the
-  hosts it may reach; `jr2 up` gives the value to the Custodian and to no other container, and the Harness container's
-  env holds the key's Stand-in. `harness.provider.apiKey` is one implicitly: the held secret `JR2_PROVIDER_API_KEY`,
-  bound to `baseUrl`'s host, so it leaves the `jr2-harness-env` Secret and `baseUrl` must be `https://` when a key is
-  set. A known model key in `harness.env`, or in an `envFrom` Secret, is refused.
+  Harness container, so a key there is a key it can take away. The top-level `secrets` list declares each credential,
+  and an entry with the hosts it may reach is a Held secret
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)); `jr2 up` gives the value to the
+  Custodian and to no other container, and the Harness container's env holds the key's Stand-in.
+  `harness.provider.apiKey` is one implicitly: the held secret `JR2_PROVIDER_API_KEY`, bound to `baseUrl`'s host, so it
+  leaves the `jr2-harness-env` Secret and `baseUrl` must be `https://` when a key is set. A known model key in
+  `harness.env`, or in an `envFrom` Secret, is refused.
 - **A catalog provider can be moved to a gateway, and stays a catalog provider.** `harness.catalog.<id>.baseUrl`
   replaces the base URL of every model of one pi catalog provider — a LiteLLM gateway in front of Bedrock, for
   `anthropic/…`. The catalog keeps its limits, cost and thinking levels; only the endpoint moves. It is reach, not a
