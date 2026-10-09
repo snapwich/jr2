@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { X509Certificate } from "node:crypto";
+import { randomBytes, X509Certificate } from "node:crypto";
 import {
   custodianRef,
   effectorKey,
@@ -2923,6 +2923,80 @@ test("an http Effect places its secret in the Instance Effector: the four object
       "jira-token-value-0123",
     ),
     "the value lands in the Effector's Secret alone",
+  );
+});
+
+test("the Instance Effector trusts the instance's caBundle: the jr2-ca ConfigMap mounted, JR2_CA_FILE naming its file (ADR-0068, ADR-0020)", async () => {
+  const effectorPod = async (config: string, pem?: string) => {
+    const root = await withHttpEffect(await mkInstance(config));
+    if (pem) await writeFile(join(root, "ca.crt"), pem);
+    const w = mkWorld(root);
+    assert.equal(await up(["--yes"], w.io), 0);
+    const list = w.kube.applied.find(
+      (m) => m.includes(`"name":"jr2-instance-effector"`) && m.includes(`"kind":"Deployment"`),
+    )!;
+    const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+    return { pod: items.find((i) => i.kind === "Deployment")!.spec.template.spec, w };
+  };
+  const secrets = `secrets: [{ name: "jira", value: "jira-token-value-0123" }]`;
+  const pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
+  const { pod, w } = await effectorPod(
+    `export default { name: "myinst", harness: { caBundle: "ca.crt" }, ${secrets} };\n`,
+    pem,
+  );
+  const [container] = pod.containers;
+  const caFile = container.env.find((e: { name: string }) => e.name === "JR2_CA_FILE");
+  const caMount = container.volumeMounts.find((m: { name: string }) => m.name === "ca");
+  assert.deepEqual(
+    pod.volumes.find((v: { name: string }) => v.name === "ca"),
+    { name: "ca", configMap: { name: "jr2-ca" } },
+  );
+  assert.equal(caMount.readOnly, true);
+  assert.equal(caFile.value, `${caMount.mountPath}/ca.crt`, "the env names the mounted file");
+  const cm = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"jr2-ca"`))!);
+  assert.equal(cm.data["ca.crt"], pem, "…and the ConfigMap holds the bundle under that key");
+
+  const none = (await effectorPod(`export default { name: "myinst", ${secrets} };\n`)).pod;
+  assert.ok(!none.volumes.some((v: { name: string }) => v.name === "ca"), "no caBundle, no mount");
+  assert.ok(!none.containers[0].env.some((e: { name: string }) => e.name === "JR2_CA_FILE"));
+});
+
+test("the Instance Effector's digest is a function of its secret inputs: the same inputs keep it, an edit rolls it (ADR-0068)", async () => {
+  const signing = randomBytes(32).toString("base64");
+  const b64 = (s: string) => Buffer.from(s).toString("base64");
+  const digestOf = async (secrets: string): Promise<string> => {
+    const w = mkWorld(
+      await withHttpEffect(await mkInstance(`export default { name: "myinst", secrets: ${secrets} };\n`)),
+    );
+    // The kept signing key: the digest is keyed with it, so every converge here keys with one.
+    w.kube.set("myinst", "secret", "jr2-instance", {
+      data: { JR2_INSTANCE_TOKEN: b64("tok"), JR2_SIGNING_KEY: b64(signing) },
+    } as never);
+    w.kube.set("myinst", "secret", "team", { data: { jira: b64("team-jira-value-0123"), other: b64("x") } } as never);
+    assert.equal(await up(["--yes"], w.io), 0);
+    const list = w.kube.applied.find(
+      (m) => m.includes(`"name":"jr2-instance-effector"`) && m.includes(`"kind":"Deployment"`),
+    )!;
+    const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+    return items.find((i) => i.kind === "Deployment")!.spec.template.metadata.annotations["jr2.dev/effector-digest"];
+  };
+  const literal = await digestOf(`[{ name: "jira", value: "jira-token-value-0123" }]`);
+  assert.equal(
+    await digestOf(`[{ name: "jira", value: "jira-token-value-0123" }]`),
+    literal,
+    "the same inputs, the same pod",
+  );
+  assert.notEqual(
+    await digestOf(`[{ name: "jira", value: "jira-token-value-4567" }]`),
+    literal,
+    "a new value rolls it",
+  );
+  const fromSecret = await digestOf(`[{ name: "jira", valueFrom: { secretKeyRef: { name: "team", key: "jira" } } }]`);
+  assert.notEqual(fromSecret, literal, "a literal moved to the user's Secret rolls it");
+  assert.notEqual(
+    await digestOf(`[{ name: "jira", valueFrom: { secretKeyRef: { name: "team", key: "other" } } }]`),
+    fromSecret,
+    "another key of the user's Secret rolls it",
   );
 });
 

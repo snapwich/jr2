@@ -141,6 +141,28 @@ func TestAReplayedRequestIsRefused(t *testing.T) {
 	}
 }
 
+func TestARequestOver4MiBIsRefusedAsUnsigned(t *testing.T) {
+	runner := &fakeRunner{release: make(chan struct{})}
+	defer close(runner.release)
+	_, srv := newServer(t, runner)
+	// Signed with the right key, one byte past the bound: it cannot be verified, so it is unsigned.
+	over := strings.Repeat(" ", maxRequestBody+1-len(startBody)) + startBody
+	if a := call(t, srv.URL, "POST", "/effects/over", over, key); a.status != http.StatusUnauthorized || len(a.body) != 0 {
+		t.Fatalf("over the bound: got %d %q", a.status, a.body)
+	}
+	if runner.runs.Load() != 0 {
+		t.Fatal("a request over the bound ran an Effect")
+	}
+	// Exactly at the bound it is read whole, verified and started.
+	at := strings.Repeat(" ", maxRequestBody-len(startBody)) + startBody
+	if a := call(t, srv.URL, "POST", "/effects/at", at, key); a.status != http.StatusAccepted {
+		t.Fatalf("at the bound: got %d %s", a.status, a.body)
+	}
+	if maxRequestBody != 4<<20 {
+		t.Fatalf("the bound is %d bytes; ADR-0068 and the Orchestrator's MAX_START_BYTES say 4 MiB", maxRequestBody)
+	}
+}
+
 func TestAPostStartsOnceAndASecondAttaches(t *testing.T) {
 	runner := &fakeRunner{release: make(chan struct{}), output: wire.Output{Outcome: wire.OutcomeUnknown, Reason: "r"}}
 	_, srv := newServer(t, runner)

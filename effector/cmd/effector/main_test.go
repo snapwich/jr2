@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -49,19 +51,25 @@ type effector struct {
 
 func startEffector(t *testing.T, upstream string, extra ...string) *effector {
 	t.Helper()
+	u, _ := url.Parse(upstream)
+	return startEffectorFor(t, u.Scheme, u.Hostname(), u.Port(), extra...)
+}
+
+// startEffectorFor runs the binary with one target, the jira secret allowed on it.
+func startEffectorFor(t *testing.T, scheme, host, port string, extra ...string) *effector {
+	t.Helper()
 	dir := t.TempDir()
 	must(t, os.MkdirAll(filepath.Join(dir, "secrets"), 0o700))
 	must(t, os.WriteFile(filepath.Join(dir, "key"), []byte(placementKey+"\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "secrets", "jira"), []byte(jiraSecret+"\n"), 0o400))
-	u, _ := url.Parse(upstream)
 	must(t, os.WriteFile(filepath.Join(dir, "effector.json"), fmt.Appendf(nil,
-		`{"version":1,"placement":"instance","targets":[{"scheme":"http","host":%q,"port":%s,"secrets":["jira"]}]}`,
-		u.Hostname(), u.Port()), 0o400))
-	port := freePort(t)
+		`{"version":1,"placement":"instance","targets":[{"scheme":%q,"host":%q,"port":%s,"secrets":["jira"]}]}`,
+		scheme, host, port), 0o400))
+	listen := freePort(t)
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(),
 		"JR2_EFFECTOR_TEST_MAIN=1",
-		"JR2_EFFECTOR_PORT="+port,
+		"JR2_EFFECTOR_PORT="+listen,
 		"JR2_EFFECTOR_KEY="+filepath.Join(dir, "key"),
 		"JR2_EFFECTOR_CONFIG="+filepath.Join(dir, "effector.json"),
 		"JR2_EFFECTOR_SECRETS="+filepath.Join(dir, "secrets"),
@@ -73,7 +81,7 @@ func startEffector(t *testing.T, upstream string, extra ...string) *effector {
 	cmd.Stdout = out
 	cmd.Stderr = out
 	must(t, cmd.Start())
-	e := &effector{cmd: cmd, base: "http://127.0.0.1:" + port, out: out}
+	e := &effector{cmd: cmd, base: "http://127.0.0.1:" + listen, out: out}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -186,6 +194,94 @@ func TestSigtermFinishesTheEffectInFlightAndRefusesNewOnes(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the effector did not exit once its outcome was read")
 	}
+}
+
+// run starts an Effect and polls it to its output.
+func (e *effector) run(t *testing.T, id, body string) string {
+	t.Helper()
+	if status, raw := e.call(t, "POST", "/effects/"+id, body); status != 202 {
+		t.Fatalf("start: got %d %s", status, raw)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, raw := e.call(t, "GET", "/effects/"+id, "")
+		if status != 200 {
+			t.Fatalf("poll: got %d %s", status, raw)
+		}
+		if strings.Contains(raw, `"state":"settled"`) {
+			return raw
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never settled: %s", raw)
+		}
+	}
+}
+
+func TestTheInstanceCaBundleIsTrustedBesideTheSystemRoots(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "a private CA's server")
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	caFile := filepath.Join(dir, "ca.crt")
+	must(t, os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw}), 0o400))
+	body := fmt.Sprintf(`{"kind":"http","method":"GET","url":[{"text":%q}],"timeoutMs":5000,"maxBody":1000}`, upstream.URL)
+
+	trusted := startEffector(t, upstream.URL, "JR2_CA_FILE="+caFile)
+	if raw := trusted.run(t, "trusted", body); !strings.Contains(raw, `"outcome":"response"`) ||
+		!strings.Contains(raw, "a private CA's server") {
+		t.Fatalf("with the caBundle: %s", raw)
+	}
+	// Without it the same server is not trusted: the file, not the test's roots, made the difference.
+	untrusted := startEffector(t, upstream.URL)
+	if raw := untrusted.run(t, "untrusted", body); !strings.Contains(raw, `"outcome":"unreachable"`) {
+		t.Fatalf("without the caBundle: %s", raw)
+	}
+
+	// A caBundle that holds no certificate stops the start, naming the file.
+	notPem := filepath.Join(dir, "empty.crt")
+	must(t, os.WriteFile(notPem, []byte("not a certificate\n"), 0o400))
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "JR2_EFFECTOR_TEST_MAIN=1", "JR2_EFFECTOR_PORT="+freePort(t),
+		"JR2_EFFECTOR_KEY="+keyFile(t), "JR2_EFFECTOR_CONFIG="+emptyConfig(t),
+		"JR2_EFFECTOR_SECRETS="+filepath.Join(dir, "none"), "JR2_CA_FILE="+notPem)
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "holds no PEM certificate") {
+		t.Fatalf("got %v: %s", err, out)
+	}
+}
+
+func TestNoProxyIsReadFromTheEnvironment(t *testing.T) {
+	var proxied atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxied.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "through the proxy")
+	}))
+	defer proxy.Close()
+	// A name that resolves nowhere: called directly it is not answered; read through the proxy the
+	// env names, the proxy would answer it.
+	e := startEffectorFor(t, "http", "upstream.invalid", "80",
+		"HTTP_PROXY="+proxy.URL, "http_proxy="+proxy.URL, "HTTPS_PROXY="+proxy.URL, "https_proxy="+proxy.URL,
+		"NO_PROXY=", "no_proxy=")
+	raw := e.run(t, "direct", `{"kind":"http","method":"GET","url":[{"text":"http://upstream.invalid"}],"timeoutMs":3000,"maxBody":1000}`)
+	if strings.Contains(raw, `"outcome":"response"`) || proxied.Load() != 0 {
+		t.Fatalf("the call went through the proxy (%d): %s", proxied.Load(), raw)
+	}
+}
+
+func keyFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "key")
+	must(t, os.WriteFile(path, []byte(placementKey), 0o400))
+	return path
+}
+
+func emptyConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "effector.json")
+	must(t, os.WriteFile(path, []byte(`{"version":1,"placement":"instance","targets":[]}`), 0o400))
+	return path
 }
 
 func TestAShortSecretStopsTheStart(t *testing.T) {

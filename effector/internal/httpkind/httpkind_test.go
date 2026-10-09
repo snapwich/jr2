@@ -245,6 +245,29 @@ func TestANonTextBodyIsItsSizeAndTypeOnly(t *testing.T) {
 	}
 }
 
+func TestWithNoContentTypeTheFirstBytesSayWhetherTheBodyIsText(t *testing.T) {
+	answer := func(body []byte) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header()["Content-Type"] = nil // no type at all: Go's server would sniff one in
+			_, _ = w.Write(body)
+		}
+	}
+	png := append([]byte("\x89PNG\r\n\x1a\n"), []byte(token)...)
+	srv := httptest.NewServer(answer(png))
+	defer srv.Close()
+	out := runner(t, srv).Run(context.Background(), request(srv.URL))
+	if out.Response.Body != nil || out.Response.Size != int64(len(png)) || out.Response.ContentType != "" {
+		t.Fatalf("a PNG with no type: got %+v", out.Response)
+	}
+
+	words := httptest.NewServer(answer([]byte("plain words and " + token)))
+	defer words.Close()
+	out = runner(t, words).Run(context.Background(), request(words.URL))
+	if out.Response.Body == nil || *out.Response.Body != "plain words and [secret:jira]" {
+		t.Fatalf("text with no type: got %+v", out.Response)
+	}
+}
+
 func TestATextBodyIsBoundedAndScrubbedAcrossTheCut(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
