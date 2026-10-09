@@ -141,7 +141,7 @@ export type EffectMarker = {
   kind: "effect";
   slot: string;
   effect: string;
-  phase: "started" | "output" | "settled" | "aborted";
+  stage: "started" | "output" | "settled" | "aborted";
   text?: string;
   output?: CommandOutput;
 };
@@ -290,7 +290,7 @@ async function drive<I, O>(
     // The settled row first, saved at the write: a restart before the transition is saved delivers
     // this output, and runs nothing.
     binding?.recordEffect?.(id, { state: "settled", kind: parts.kind, slot, output, at: now() });
-    mark({ phase: "settled", output });
+    mark({ stage: "settled", output });
     self.send({ type: "jr2.effect.settle", output } satisfies Settle);
   };
 
@@ -353,7 +353,7 @@ async function drive<I, O>(
     at: now(),
   });
   run.started = true;
-  mark({ phase: "started", text: req.argv.join(" ") });
+  mark({ stage: "started", text: req.argv.join(" ") });
   const sent = await startOnce(port, id, req, signal);
   if (signal.aborted) return;
   const first = await retrying(() => port.read(id, 0, signal), signal);
@@ -418,7 +418,7 @@ async function follow(
       settle({ outcome: "unknown", reason: "the Harness lost it while it ran (it restarted); not run again" });
       return;
     }
-    if (read.stream) mark({ phase: "output", text: read.stream });
+    if (read.stream) mark({ stage: "output", text: read.stream });
     if (read.state === "settled" && read.output) {
       settle(read.output);
       void port.forget(id).catch(() => {});
@@ -451,7 +451,7 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
         kind: "effect",
         slot: row.slot,
         effect: effectId,
-        phase: "aborted",
+        stage: "aborted",
         text: "the kill did not reach its Harness; it may run until its timeout",
       });
     });
@@ -464,7 +464,7 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
     kind: "effect",
     slot: row.slot,
     effect: effectId,
-    phase: "aborted",
+    stage: "aborted",
     text: "its state exited while it ran: stopped; outcome unknown",
   });
 }

@@ -523,7 +523,7 @@ test("a state below an Effect's state that invokes something and that nothing en
 });
 
 /** An Agent's state whose `send_email` pick enters history state `box.h`; `box`'s initial child is
- * `idle`, and `sending` (which invokes `mail`) is entered only through `h`'s default `target`. */
+ * `waiting`, and `sending` (which invokes `mail`) is entered only through `h`'s default `target`. */
 function historyBuild(target: unknown) {
   return jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
     id: "wf",
@@ -535,10 +535,10 @@ function historyBuild(target: unknown) {
         states: {
           rest: {},
           box: {
-            initial: "idle",
+            initial: "waiting",
             states: {
               h: { type: "history", target: target as never },
-              idle: {},
+              waiting: {},
               sending: { invoke: { src: "mail", input: { to: "a", subject: "b" }, onDone: "#wf.w.rest" } },
             },
           },

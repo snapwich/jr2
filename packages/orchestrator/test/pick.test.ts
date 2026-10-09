@@ -220,9 +220,9 @@ test("the fromPick sum is checked against the Effect's input type: a missing or 
       id: "sum",
       context: { dir: "src" },
       invoke: { src: "ws" },
-      initial: "idle",
+      initial: "waiting",
       states: {
-        idle: { on: { lint: "byName", misnamed: "missing", mistyped: "wrongType", bare: "filled" } },
+        waiting: { on: { lint: "byName", misnamed: "missing", mistyped: "wrongType", bare: "filled" } },
         byName: { invoke: { src: "linter", input: fromPick(lint) } },
         missing: {
           // @ts-expect-error — the pick has no `path`, and `fill` adds none
@@ -274,8 +274,8 @@ test("an `answer` below one Agent's state never shapes another Agent's outstandi
         },
         rb: {
           invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
-          initial: "idle",
-          states: { idle: { after: { 50: "rest" } }, rest: { entry: answer(() => "B's answer") } },
+          initial: "waiting",
+          states: { waiting: { after: { 50: "rest" } }, rest: { entry: answer(() => "B's answer") } },
         },
       },
     }),

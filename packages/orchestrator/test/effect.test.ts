@@ -49,9 +49,9 @@ function machineWith(factory: ExecPortFactory, repos?: Record<string, string>, s
     id: "wf",
     context: {},
     invoke: { src: "ws" },
-    initial: "idle",
+    initial: "waiting",
     states: {
-      idle: {
+      waiting: {
         invoke: { src: "gate", id: "start" },
         on: { go: { target: "running", actions: assign({ filter: ({ event }) => event.filter }) } },
       },
@@ -134,7 +134,7 @@ test("a command runs in its Workspace's Harness: argv filled by name, one argume
   await waitFor(() => valueOf(rig) === "done");
   assert.deepEqual(contextOf(rig).result, { outcome: "exited", code: 1, tail: "ok 1\nnot ok 2\n" });
   // The feed carries the start, the stream, and the output.
-  const lines = rig.feed.filter((e) => e.kind === "effect").map((e) => (e as { phase: string }).phase);
+  const lines = rig.feed.filter((e) => e.kind === "effect").map((e) => (e as { stage: string }).stage);
   assert.deepEqual(lines, ["started", "output", "settled"]);
 });
 
@@ -199,7 +199,7 @@ test("D1: its state exits while it runs — the exec is killed, the ledger and t
     ["aborted"],
     "and it stays there: the record that it was cut",
   );
-  const aborted = rig.feed.find((e) => e.kind === "effect" && e.phase === "aborted");
+  const aborted = rig.feed.find((e) => e.kind === "effect" && e.stage === "aborted");
   assert.match((aborted as { text: string }).text, /outcome unknown/);
 });
 
@@ -289,9 +289,9 @@ test("refused outside a Workspace, and under several Repo Slots with none named:
   const bare = jr2Setup({ types: {} as { context: Ctx }, events: [begin], actors: { tests } }).createMachine({
     id: "bare",
     context: {},
-    initial: "idle",
+    initial: "waiting",
     states: {
-      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
       running: {
         invoke: {
           src: "tests",
@@ -335,9 +335,9 @@ test("real processes through the Harness's own exec: a metacharacter stays insid
     id: "real",
     context: {},
     invoke: { src: "ws" },
-    initial: "idle",
+    initial: "waiting",
     states: {
-      idle: {
+      waiting: {
         invoke: { src: "gate", id: "start" },
         on: { go: { target: "running", actions: assign({ filter: ({ event }) => event.filter }) } },
       },
@@ -384,9 +384,9 @@ test("the ledger keeps every row, and drops each output tail once its transition
     id: "loop",
     context: { n: 0 },
     invoke: { src: "ws" },
-    initial: "idle",
+    initial: "waiting",
     states: {
-      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
       running: {
         invoke: {
           src: "loop",
@@ -534,9 +534,9 @@ test("D1 holds a fast exit through the real exec: a kill that overtakes its star
     id: "fast",
     context: {},
     invoke: { src: "ws" },
-    initial: "idle",
+    initial: "waiting",
     states: {
-      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
       running: {
         invoke: [
           { src: "writes", onDone: "done" },
@@ -595,9 +595,9 @@ test("an Effect with no onDone settles in place: xstate keeps the done child, an
     id: "inplace",
     context: {},
     invoke: { src: "ws" },
-    initial: "idle",
+    initial: "waiting",
     states: {
-      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "linting" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { begin: "linting" } },
       linting: {
         invoke: [
           { src: "lint", id: "lint" },
@@ -638,9 +638,9 @@ function onceMachine(id: string, logic: EffectLogic<void, CommandOutput>) {
     id,
     context: {},
     invoke: { src: "ws" },
-    initial: "idle",
+    initial: "waiting",
     states: {
-      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
       running: {
         invoke: { src: "logic", onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) } },
       },
