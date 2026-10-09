@@ -542,6 +542,11 @@ const wake: Driver = async (world, input) => {
 const PUSH_MENU = new Set(["ask_approval", "run_tests", "revise", "submit"]);
 const PUSH_NEW = new Set(["revise", "submit"]);
 const APPROVED = "(approved)";
+/** How many more times the desk answers a coder that picked `revise` (each `revise` → `coding`). */
+const PUSH_REANSWERS = 3;
+/** The run is back in `coding` with the desk open: the coder revised after an answer. */
+const codingAgain = (s: Status): boolean =>
+  /"coding"/.test(JSON.stringify(s.value)) && gateNamed(s, "desk") !== undefined;
 
 /**
  * push-follow and push-no-refusal (ADR-0029's step-boundary check): the step answers the desk while
@@ -590,7 +595,16 @@ async function pushFollowIn(
     };
   }
   await sendToGate(world, runId, desk.gate, "approve");
-  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  // The measure is the first pick after this answer. `revise` is allowed and takes the coder back to
+  // `coding`, where only the desk's answer can move it again: the desk answers again, a bounded
+  // number of times, so the trial can finish whichever reviewing pick the coder chose.
+  let last: Status;
+  for (let answers = 1; ; answers++) {
+    const back = await waitFor(world, runId, (s) => settled(s) || codingAgain(s), TRIAL_MS);
+    last = back.last;
+    if (!back.hit || settled(last) || answers > PUSH_REANSWERS) break;
+    await sendToGate(world, runId, desk.gate, "approve");
+  }
   // The reap at settle ends the stream; what it held by then is the whole conversation.
   await Promise.race([source.follow.closed, sleep(10_000)]);
   const said = (await saidAfter(world, "coder", input.marker, source)) ?? [];

@@ -109,7 +109,10 @@ recover, finish — are exercised only one scripted tool call at a time.
   claims read their pods and run `parallel` at once. A claim whose setup the step must race (a Gate answered while the
   model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
   past the bound counts against the floor.
-- One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials.
+- One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials. After
+  the measured pick, a coder that picked `revise` is back in `coding`, where only the desk's answer moves it, so the
+  step answers the desk again, at most three more times, and the trial can finish; the measure is still the first pick
+  after the first answer.
 - The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link) and
   `cut-pick` (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step
   deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
