@@ -2915,6 +2915,14 @@ test("an http Effect places its secret in the Instance Effector: the four object
   ]);
   assert.equal(service!.spec.clusterIP, "None");
   assert.equal(service!.spec.publishNotReadyAddresses, true);
+  // The policy guards the Effector's own pods: its selector is exactly theirs, and every label it
+  // asks for is on the pod template — a selector that matches no pod would guard nothing (ADR-0068).
+  assert.deepEqual(policy!.spec.podSelector, { matchLabels: { app: "jr2-instance-effector" } });
+  const podLabels = deployment!.spec.template.metadata.labels as Record<string, string>;
+  for (const [k, v] of Object.entries(policy!.spec.podSelector.matchLabels as Record<string, string>)) {
+    assert.equal(podLabels[k], v, `the Effector's pods carry ${k}=${v}, so the policy selects them`);
+  }
+  assert.deepEqual(policy!.spec.policyTypes, ["Ingress"]);
   assert.deepEqual(policy!.spec.ingress, [
     { from: [{ podSelector: { matchLabels: { app: "jr2-orchestrator", "jr2.dev/instance": "myinst" } } }] },
   ]);
