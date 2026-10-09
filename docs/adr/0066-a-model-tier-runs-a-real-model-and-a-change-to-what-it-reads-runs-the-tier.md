@@ -132,13 +132,16 @@ recover, finish — are exercised only one scripted tool call at a time.
     place, and the reap when the run settles deletes the pod with every log it held, so the step follows the restarted
     container's log from the moment it runs. Read after the settle, the log was gone in 5 of 10 trials of the first run,
     each a model that had checked.
-  - `allowed-after-route`: 3, 5 (a diagnostic run), 4 and 4 of 10, below its floor, and **open**. Every miss has one
-    shape: after the failing answer the coder reads the seed Repo, finds its failing test, fixes it with its Working
-    tools, sees it pass, and picks `ship` — the newest "Allowed now" it read (`open_issue`, `run_tests`) does not list
-    it. The correction receipt then sends it to `run_tests`, which fails again, and to `open_issue`. The setup mixes two
-    things: the test command is fixed data that always fails, and the Worktree holds a test the model can make pass.
-    Whether that is a model that disobeys the newest list or a setup that gives it a reason the claim did not mean is
-    not decided; no setup change is made without that decision.
+  - `allowed-after-route`: 3, 5 (a diagnostic run), 4 and 4 of 10 with its first setup, below its floor. Every miss had
+    one shape: after the failing answer the coder read the seed Repo, found a failing test, fixed it with its Working
+    tools, saw it pass, and picked `ship`, which the newest "Allowed now" it read (`open_issue`, `run_tests`) did not
+    list. The setup made that failure say little: the test command was fixed data that always failed and named a file
+    the Repo did not hold, while the Worktree held an unrelated test the model could fix. So a miss could not tell
+    "ignores the newest list" from "fixed what it was shown". The setup now is the real case (2026-10-08): the claim
+    binds its own seed Repo (`billing.git`), whose suite has one failing test that names the defect, and `run_tests`
+    runs that suite in the Worktree. A correct Agent may fix the code, but only `run_tests` passing takes the workflow
+    back to where `ship` is allowed; the miss is a `ship` after its own fix without the workflow's check. The floor and
+    the measure are unchanged. It is open until a run with this setup is read.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but

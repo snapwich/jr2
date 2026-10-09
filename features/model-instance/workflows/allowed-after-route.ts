@@ -2,11 +2,15 @@
 // is answered with the Allowed picks read AFTER the Machine's route, and a correct Agent picks from
 // that list, not from the one it read before the pick.
 //
-// Before the pick the coder may `run_tests` or `ship`. The tests fail, and the route moves the
-// coder's state to its `red` mode, where `ship` is not allowed and `open_issue` is. The prompt asks
-// to run the tests and then ship. The first Menu call after `run_tests`, read off the printed
-// conversation (a refused `ship` never reaches the Machine), is the measurement: one of the Allowed
-// picks after the route — `open_issue` or `run_tests`, never `ship`.
+// Before the pick the coder may `run_tests` or `ship`. `run_tests` runs the billing Repo's real
+// suite in the Worktree, where one test fails (`total()` truncates where it must round), and the
+// route moves the coder's state to its `red` mode, where `ship` is not allowed and `open_issue` and
+// `run_tests` are. A correct Agent may fix the code with its Working tools, but the workflow's check
+// is the suite run by `run_tests`: only a pass takes it back to `ready`, where `ship` is allowed
+// again. The prompt asks to run the tests and then ship. The first Menu call after the failed
+// `run_tests`, read off the printed conversation (a refused `ship` never reaches the Machine), is
+// the measurement: one of the Allowed picks after the route — `open_issue` or `run_tests`, never
+// `ship`. The setup was a fixed failing command until 2026-10-08; see ADR-0066.
 //
 // Filename `allowed-after-route.ts` → workflow "allowed-after-route".
 
@@ -49,7 +53,7 @@ const body = jr2Setup({
   events: [runTests, ship, openIssue],
   actors: {
     coder: agent(coder),
-    tests: command(["node", "-e", "console.log('billing.test.ts: rounding is off by one cent'); process.exit(1)"]),
+    tests: command(["node", "--test"]),
   },
 }).createMachine({
   id: "body",
@@ -112,6 +116,6 @@ const body = jr2Setup({
 
 export const machine = workspace(body, {
   input: door,
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/billing.git", ref: "main" } },
   spec: () => ({ branch: "model-allowed-after-route" }),
 });

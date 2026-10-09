@@ -223,8 +223,9 @@ Feature: a real model drives the kit
       And the cell "answered/off" is written to the scorecard
 
     Scenario: the next call is one the route allows, not one allowed before the pick
-      The `allowed-after-route` workflow's tests fail, and the route moves the coder's state to
-      `red`, where `ship` — allowed before the pick, and what the prompt asked for next — is not.
+      The `allowed-after-route` workflow's `run_tests` runs the billing Repo's real suite, where one
+      test fails, and the route moves the coder's state to `red`, where `ship` — allowed before the
+      pick, and what the prompt asked for next — is not; only the suite passing brings it back.
       The first Menu call after `run_tests`, off the printed conversation, is the measurement:
       `open_issue` or `run_tests`. A Turn that never ran the tests is void.
       Given the model instance is serving

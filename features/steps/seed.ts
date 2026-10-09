@@ -68,6 +68,17 @@ export function makeRepoScript(srv = "/srv", work = "/tmp/w"): string {
     // The eviction scenario needs a Repo nothing binds, and a per-run url spelling `app.git`
     // differently would normalize to the same identity — so it names this one instead.
     serve("other.git"),
+    // A THIRD repository, its own project (ADR-0066): the allowed-after-route claim's billing
+    // module. `total()` truncates where it must round, so one of its two tests fails with a message
+    // that names the defect; the coder can find it, fix it, and run the suite again until it passes.
+    `rm -rf ${work}`,
+    `git init -q -b main ${work}`,
+    `printf '%s\\n' '{ "name": "billing", "private": true, "type": "module", "scripts": { "test": "node --test" } }' > ${work}/package.json`,
+    `printf '%s\\n' '// The total in cents of an amount in cents with a tax rate, to the nearest cent.' 'export function total(cents, rate) {' '  return Math.floor(cents * (1 + rate));' '}' > ${work}/billing.js`,
+    `printf '%s\\n' 'import test from "node:test";' 'import assert from "node:assert/strict";' 'import { total } from "./billing.js";' '' 'test("a total with no tax is the amount", () => {' '  assert.equal(total(1999, 0), 1999);' '});' '' 'test("a total rounds to the nearest cent", () => {' '  assert.equal(total(1999, 0.075), 2149);' '});' > ${work}/billing.test.js`,
+    `git -C ${work} add -A`,
+    `git -C ${work} -c user.email=e2e@jr2 -c user.name=e2e commit -qm init`,
+    serve("billing.git"),
   ].join(" && ");
 }
 
