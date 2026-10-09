@@ -58,11 +58,11 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
   error text — and then the whole encoded answer. It matches every secret the Effector holds, not only the ones the
   current Effect names, in three kinds of form: the exact value; its usual encodings (base64 in both alphabets, padded
   and not; percent-encoding as a query and as a path segment; JSON-escaped); and what the Effector built from it for
-  this Effect (the `Authorization` value it sent, `base64(user:password)`, the url with the secret in its path). A match
-  becomes `[secret:<name>]`. A body is scrubbed as it streams, across chunk borders, with a window one byte shorter than
-  the longest form. The Effector refuses to start with a secret shorter than 8 characters, and names it: a shorter one
-  would match ordinary text. A literal is refused earlier, by `jr2 up`; a value from the user's own Secret is first seen
-  here.
+  this Effect (the `Authorization` value it sent, `base64(user:password)`, the url with the secret in its path, and that
+  url as the server sees it, its path and query), each with the same encodings. A match becomes `[secret:<name>]`. A
+  body is scrubbed as it streams, across chunk borders, with a window one byte shorter than the longest form. The
+  Effector refuses to start with a secret shorter than 8 characters, and names it: a shorter one would match ordinary
+  text. A literal is refused earlier, by `jr2 up`; a value from the user's own Secret is first seen here.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
   trailing `\n` or `\r\n` is taken off, as the Custodian does.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,

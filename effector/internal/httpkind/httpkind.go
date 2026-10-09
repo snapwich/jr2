@@ -186,6 +186,8 @@ func (r *Runner) target(req *wire.StartRequest, built map[string]string) (*url.U
 	if first != "" {
 		built[u.String()] = first
 		built[full] = first
+		// What a server sees of it: the path and query alone — and every encoding of that.
+		built[u.RequestURI()] = first
 	}
 	return u, nil
 }

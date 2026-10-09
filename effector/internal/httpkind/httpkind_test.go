@@ -61,6 +61,8 @@ func echo() http.HandlerFunc {
 			}
 		}
 		fmt.Fprintf(&b, "url %s\nraw %s\n", r.URL.String(), r.RequestURI)
+		fmt.Fprintf(&b, "url-b64 %s\nurl-b64url %s\nurl-pct %s\n", base64.StdEncoding.EncodeToString([]byte(r.RequestURI)),
+			base64.RawURLEncoding.EncodeToString([]byte(r.RequestURI)), url.QueryEscape(r.RequestURI))
 		body, _ := io.ReadAll(r.Body)
 		fmt.Fprintf(&b, "body %s\n", body)
 		w.Header().Set("Content-Type", "text/plain")
@@ -108,12 +110,16 @@ func TestBasicAuthAndASecretInTheUrlPathComeBackScrubbed(t *testing.T) {
 	}
 	body := *out.Response.Body
 	pair := base64.StdEncoding.EncodeToString([]byte("bot:basic-password-value"))
-	for _, leak := range append(append(scrub.Forms(held["tg"]), scrub.Forms(held["pw"])...), pair, url.QueryEscape("Basic "+pair)) {
+	path := "/bot" + url.PathEscape(held["tg"]) + "/sendMessage"
+	leaks := append(append(scrub.Forms(held["tg"]), scrub.Forms(held["pw"])...), pair, url.QueryEscape("Basic "+pair),
+		base64.StdEncoding.EncodeToString([]byte("Basic "+pair)), base64.StdEncoding.EncodeToString([]byte(path)),
+		base64.RawURLEncoding.EncodeToString([]byte(path)))
+	for _, leak := range leaks {
 		if strings.Contains(body, leak) {
 			t.Fatalf("%q came back in %q", leak, body)
 		}
 	}
-	if !strings.Contains(body, "Authorization: [secret:pw]") || !strings.Contains(body, "url /bot[secret:tg]/sendMessage") {
+	if !strings.Contains(body, "Authorization: [secret:pw]") || !strings.Contains(body, "url [secret:tg]\nraw [secret:tg]\nurl-b64 [secret:tg]") {
 		t.Fatalf("got %q", body)
 	}
 }
