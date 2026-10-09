@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -197,6 +198,74 @@ func TestBase64OfALongerStringIsScrubbedAtEachOffset(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The two alphabets differ only in '+' and '/' against '-' and '_'. This value has those
+// characters in its base64 at each of the three offsets, so a missing alphabet, padded or not, at
+// any offset, leaves a run that decodes to the value. The test first proves that each alphabet's
+// spelling differs from the other's at each offset; else it could not see a missing alphabet.
+func TestBase64InEachAlphabetIsScrubbedAtEachOffset(t *testing.T) {
+	const tok = "abc???def>>>ghi???"
+	raw := []byte(tok)
+	std, safe := base64Cores(raw, base64.RawStdEncoding), base64Cores(raw, base64.RawURLEncoding)
+	if len(std) != 3 || len(safe) != 3 {
+		t.Fatalf("want a core at each of the three offsets: %q, %q", std, safe)
+	}
+	for offset := range 3 {
+		if std[offset] == safe[offset] {
+			t.Fatalf("at offset %d both alphabets spell the core %q, so the test cannot tell them apart", offset, std[offset])
+		}
+	}
+	s := New(map[string]string{"tok": tok})
+	for _, enc := range base64Encodings {
+		for _, before := range []string{"", "a", "ab"} {
+			for _, after := range []string{"", "!", "?>"} {
+				encoded := enc.EncodeToString([]byte(before + tok + after))
+				got := s.String(encoded)
+				if !strings.Contains(got, "[secret:tok]") {
+					t.Fatalf("before %q, after %q: %q came back as %q", before, after, encoded, got)
+				}
+				for run := range strings.SplitSeq(got, "[secret:tok]") {
+					for _, dec := range base64Encodings {
+						if b, err := dec.DecodeString(run); err == nil && strings.Contains(string(b), tok) {
+							t.Fatalf("before %q, after %q: a run of %q decodes to the value", before, after, got)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// Go's url.QueryEscape and url.PathEscape each have a spelling that no other percent-encoder
+// listed writes: QueryEscape writes a space as '+' and keeps '~'; PathEscape keeps ':', '@', '&',
+// '=', '+' and '$' but escapes '/', ';' and ','. The test first proves that each spelling of this
+// value differs from every other percent spelling; else it could not see the form missing.
+func TestGosOwnPercentSpellingsAreScrubbed(t *testing.T) {
+	const value = "a b~c*d!e'f(g)h/i;j,k?l:m@n&o=p+q$r"
+	others := make([]string, 0, 2*len(percentSpellings)+1)
+	for _, p := range percentSpellings {
+		for _, hex := range []string{upperHex, lowerHex} {
+			others = append(others, percentEncoded(value, p.keep, p.spacePlus, hex))
+		}
+	}
+	query, path := url.QueryEscape(value), url.PathEscape(value)
+	if query == path {
+		t.Fatalf("QueryEscape and PathEscape both spell %q, so the test cannot tell them apart", query)
+	}
+	others = append(others, value)
+	s := New(map[string]string{"tok": value})
+	for name, f := range map[string]string{"url.QueryEscape": query, "url.PathEscape": path} {
+		t.Run(name, func(t *testing.T) {
+			if slices.Contains(others, f) {
+				t.Fatalf("the spelling %q is also another form, so the test cannot see it missing", f)
+			}
+			got := s.String("before " + f + " after")
+			if got != "before [secret:tok] after" {
+				t.Fatalf("%q came back as %q", f, got)
+			}
+		})
 	}
 }
 
