@@ -137,7 +137,10 @@ func TestWhatTheEffectorBuiltIsScrubbed(t *testing.T) {
 		})
 	}
 	// The built form is the Effect's; the base scrubber is unchanged.
-	if scrubber().String(basic) != basic {
+	base := scrubber()
+	before := len(base.forms)
+	base.With(map[string]string{u: "jira"})
+	if len(base.forms) != before {
 		t.Fatal("With changed the scrubber it was called on")
 	}
 }
@@ -163,6 +166,56 @@ func TestAStreamOfOneByteChunks(t *testing.T) {
 	out.Write(st.Flush())
 	if out.String() != "a[secret:jira]b" {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+var base64Encodings = []*base64.Encoding{
+	base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding,
+}
+
+// A server that base64-encodes a longer string that holds the secret — a dump of the request's
+// headers, `a` + the Authorization header — puts the secret at any byte offset mod 3. At each of
+// the three offsets, in both alphabets, with any bytes before and after it, the secret is
+// scrubbed: no run of the answer decodes to the value.
+func TestBase64OfALongerStringIsScrubbedAtEachOffset(t *testing.T) {
+	const tok = "Tok3n+Secret/Value=Abc!xyz"
+	s := New(map[string]string{"tok": tok})
+	for _, enc := range base64Encodings {
+		for _, before := range []string{"", "a", "ab", "abc", `{"authorization":"Bearer `} {
+			for _, after := range []string{"", "!", "?>", `","x":"y"}`} {
+				encoded := enc.EncodeToString([]byte(before + tok + after))
+				got := s.String(encoded)
+				if !strings.Contains(got, "[secret:tok]") {
+					t.Fatalf("before %q, after %q: %q came back as %q", before, after, encoded, got)
+				}
+				for run := range strings.SplitSeq(got, "[secret:tok]") {
+					for _, dec := range base64Encodings {
+						if b, err := dec.DecodeString(run); err == nil && strings.Contains(string(b), tok) {
+							t.Fatalf("before %q, after %q: a run of %q decodes to the value", before, after, got)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// The verifier's case: base64("a" + the Authorization header the Effector built), and base64 of a
+// JSON dump of the request's headers, which holds base64(user:password) at an offset.
+func TestBase64OfWhatTheEffectorBuiltAtAnOffsetIsScrubbed(t *testing.T) {
+	const tok = "Tok3n+Secret/Value=Abc!xyz"
+	const pw = "pw-Secret_Value9"
+	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("bot:"+pw))
+	s := New(map[string]string{"tok": tok, "pw": pw}).With(map[string]string{"Bearer " + tok: "tok", basic: "pw"})
+	for _, plain := range []string{
+		"aBearer " + tok,
+		`{"accept":"*/*","authorization":"` + basic + `","x":"y"}`,
+	} {
+		encoded := base64.StdEncoding.EncodeToString([]byte(plain))
+		got := s.String(encoded)
+		if !strings.Contains(got, "[secret:") {
+			t.Fatalf("%q came back as %q", encoded, got)
+		}
 	}
 }
 

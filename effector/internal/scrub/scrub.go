@@ -4,7 +4,8 @@
 //
 // It matches every secret the Effector holds — not only the ones the current Effect names — in
 // three kinds of form: the exact value; its usual encodings (base64 in both alphabets, with and
-// without padding, percent-encoding, JSON-escaped); and what the Effector itself built from it for
+// without padding, alone or at any offset inside a longer encoded string; percent-encoding;
+// JSON-escaped); and what the Effector itself built from it for
 // one Effect (the Authorization header it sent, base64(user:password), the url with the secret in
 // its path). Each match becomes `[secret:<name>]`.
 //
@@ -71,7 +72,8 @@ func (s *Scrubber) add(name, value string) {
 	slices.SortStableFunc(s.forms, func(a, b form) int { return cmp.Compare(len(b.value), len(a.value)) })
 }
 
-// Forms lists one value's forms: exact; base64 (standard and url-safe, padded and not);
+// Forms lists one value's forms: exact; base64 (standard and url-safe, padded and not, and the
+// value's own characters at each of the three byte offsets inside a longer encoded string);
 // percent-encoded as the common encoders spell it; and JSON-escaped as the common encoders spell
 // it. An encoding has more than one spelling: which characters an encoder leaves as they are, and
 // whether its hex is upper or lower case. A server echoes a secret in its own encoder's spelling,
@@ -88,6 +90,8 @@ func Forms(value string) []string {
 		url.QueryEscape(value),
 		url.PathEscape(value),
 	)
+	forms = append(forms, base64Cores(raw, base64.RawStdEncoding)...)
+	forms = append(forms, base64Cores(raw, base64.RawURLEncoding)...)
 	for _, p := range percentSpellings {
 		for _, hex := range []string{upperHex, lowerHex} {
 			forms = append(forms, percentEncoded(value, p.keep, p.spacePlus, hex))
@@ -98,6 +102,23 @@ func Forms(value string) []string {
 	}
 	slices.Sort(forms)
 	return slices.Compact(forms)
+}
+
+// base64Cores are the characters of base64 that hold only the value's own bits, when the value sits
+// inside a longer string at a byte offset of 0, 1 or 2 mod 3: a server that base64-encodes a dump
+// of the request's headers puts the value at any offset. The characters at each end that also
+// hold bits of the bytes before or after the value change with those bytes, so they are left out.
+func base64Cores(raw []byte, enc *base64.Encoding) []string {
+	cores := make([]string, 0, 3)
+	for offset := range 3 {
+		encoded := enc.EncodeToString(append(make([]byte, offset), raw...))
+		first := (8*offset + 5) / 6         // the first character with no bit of the bytes before
+		last := 8 * (offset + len(raw)) / 6 // one past the last character with no bit of the bytes after
+		if last > first {
+			cores = append(cores, encoded[first:last])
+		}
+	}
+	return cores
 }
 
 const (
