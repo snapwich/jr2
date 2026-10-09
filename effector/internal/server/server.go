@@ -48,6 +48,9 @@ type Options struct {
 	Log *log.Logger
 }
 
+// maxRequestBody is the most bytes of a request this replica reads (ADR-0068). A longer body cannot
+// be verified, so it is refused as unsigned; the Orchestrator never sends one (its MAX_START_BYTES
+// is this number, and a longer start settles `refused` with nothing sent).
 const maxRequestBody = 4 << 20
 
 type effect struct {

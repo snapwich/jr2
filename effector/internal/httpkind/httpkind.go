@@ -84,7 +84,13 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest, built map[stri
 
 	header := http.Header{}
 	for _, name := range slices.Sorted(maps.Keys(req.Headers)) {
-		header.Set(name, r.fill(req.Headers[name]))
+		value := r.fill(req.Headers[name])
+		header.Set(name, value)
+		// A header filled from a secret is something the Effector built from it (B3.2): its value,
+		// and every encoding of that value, are scrubbed by the secret's name.
+		if carries := firstSecret(req.Headers[name], ""); carries != "" {
+			built[value] = carries
+		}
 	}
 	if req.Auth != nil {
 		value, carries := r.authorization(req.Auth, built)
@@ -141,6 +147,11 @@ func (r *Runner) target(req *wire.StartRequest, built map[string]string) (*url.U
 		if part.Text != nil {
 			raw.WriteString(*part.Text)
 			continue
+		}
+		// A secret sits only in the url's path (ADR-0067): it is encoded as a path segment, which a
+		// query or a fragment would read as a different value.
+		if strings.ContainsAny(raw.String(), "?#") {
+			return nil, errors.New("a secret sits after the url's path, in its query or fragment")
 		}
 		if first == "" {
 			first = *part.Secret

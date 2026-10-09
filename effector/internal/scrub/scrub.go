@@ -17,10 +17,10 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/base64"
-	"encoding/json"
 	"net/url"
 	"slices"
 	"strings"
+	"unicode/utf16"
 )
 
 // MinLength is the shortest Effect secret `jr2 up` and the Effector accept (B3.5): a shorter one
@@ -71,11 +71,15 @@ func (s *Scrubber) add(name, value string) {
 	slices.SortStableFunc(s.forms, func(a, b form) int { return cmp.Compare(len(b.value), len(a.value)) })
 }
 
-// Forms lists one value's forms: exact, base64 (standard and url-safe, padded and not),
-// percent-encoded (as a query and as a path segment), and JSON-escaped.
+// Forms lists one value's forms: exact; base64 (standard and url-safe, padded and not);
+// percent-encoded as the common encoders spell it; and JSON-escaped as the common encoders spell
+// it. An encoding has more than one spelling: which characters an encoder leaves as they are, and
+// whether its hex is upper or lower case. A server echoes a secret in its own encoder's spelling,
+// so each common spelling is a form.
 func Forms(value string) []string {
 	raw := []byte(value)
-	forms := []string{
+	forms := make([]string, 0, 7+2*len(percentSpellings)+jsonAll)
+	forms = append(forms,
 		value,
 		base64.StdEncoding.EncodeToString(raw),
 		base64.RawStdEncoding.EncodeToString(raw),
@@ -83,20 +87,121 @@ func Forms(value string) []string {
 		base64.RawURLEncoding.EncodeToString(raw),
 		url.QueryEscape(value),
 		url.PathEscape(value),
-		jsonEscaped(value),
+	)
+	for _, p := range percentSpellings {
+		for _, hex := range []string{upperHex, lowerHex} {
+			forms = append(forms, percentEncoded(value, p.keep, p.spacePlus, hex))
+		}
+	}
+	for opts := range jsonAll {
+		forms = append(forms, jsonEscaped(value, opts))
 	}
 	slices.Sort(forms)
 	return slices.Compact(forms)
 }
 
-// jsonEscaped is the value as it sits inside a JSON string, without the quotes.
-func jsonEscaped(value string) string {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(value)
-	out := strings.TrimSuffix(buf.String(), "\n")
-	return strings.TrimSuffix(strings.TrimPrefix(out, `"`), `"`)
+const (
+	upperHex = "0123456789ABCDEF"
+	lowerHex = "0123456789abcdef"
+)
+
+// percentSpellings are the sets of bytes the common percent-encoders leave as they are. Go's
+// QueryEscape and PathEscape are listed in Forms itself.
+var percentSpellings = []struct {
+	keep      string
+	spacePlus bool
+}{
+	{keep: ""},                   // RFC 3986 unreserved only (Python quote(safe=""), most libraries)
+	{keep: "/"},                  // Python quote's default
+	{keep: "!'()*"},              // JavaScript encodeURIComponent
+	{keep: "!'()*;,/?:@&=+$#"},   // JavaScript encodeURI
+	{keep: "*", spacePlus: true}, // application/x-www-form-urlencoded (URLSearchParams)
+	{keep: "!$&'()*+,;=:@/"},     // a path's characters (RFC 3986 pchar and "/")
+}
+
+// percentEncoded encodes every byte but the unreserved ones and those in keep, in hex.
+func percentEncoded(value, keep string, spacePlus bool, hex string) string {
+	var b strings.Builder
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case 'A' <= c && c <= 'Z', 'a' <= c && c <= 'z', '0' <= c && c <= '9',
+			c == '-', c == '.', c == '_', c == '~' && !spacePlus:
+			b.WriteByte(c)
+		case c == ' ' && spacePlus:
+			b.WriteByte('+')
+		case strings.IndexByte(keep, c) >= 0:
+			b.WriteByte(c)
+		default:
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&15])
+		}
+	}
+	return b.String()
+}
+
+// JSON spellings: each bit is one choice a common JSON encoder makes differently.
+const (
+	jsonSlash   = 1 << iota // `/` as `\/` (PHP's json_encode)
+	jsonHTML                // `<`, `>`, `&` as <, >, & (Go's encoding/json)
+	jsonASCII               // every non-ASCII rune as \uXXXX (Python's json.dumps)
+	jsonUpper               // \u hex in upper case
+	jsonShort               // \b and \f rather than \u0008 and \u000c (JavaScript's JSON.stringify)
+	jsonLineSep             // U+2028 and U+2029 as   and   (Go's encoding/json)
+	jsonAll     = 1 << iota
+)
+
+// jsonEscaped is the value as it sits inside a JSON string, without the quotes, in one spelling.
+func jsonEscaped(value string, opts int) string {
+	hex := lowerHex
+	if opts&jsonUpper != 0 {
+		hex = upperHex
+	}
+	var b strings.Builder
+	u := func(r rune) {
+		b.WriteString(`\u`)
+		for shift := 12; shift >= 0; shift -= 4 {
+			b.WriteByte(hex[(r>>shift)&15])
+		}
+	}
+	for _, r := range value {
+		switch {
+		case r == '"':
+			b.WriteString(`\"`)
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r == '\b' && opts&jsonShort != 0:
+			b.WriteString(`\b`)
+		case r == '\f' && opts&jsonShort != 0:
+			b.WriteString(`\f`)
+		case r < 0x20:
+			u(r)
+		case r == '/' && opts&jsonSlash != 0:
+			b.WriteString(`\/`)
+		case (r == '<' || r == '>' || r == '&') && opts&jsonHTML != 0:
+			u(r)
+		case (r == ' ' || r == ' ') && (opts&jsonLineSep != 0 || opts&jsonASCII != 0):
+			u(r)
+		case r > 0x7f && opts&jsonASCII != 0:
+			if r > 0xffff {
+				r1, r2 := utf16.EncodeRune(r)
+				u(r1)
+				u(r2)
+			} else {
+				u(r)
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // Replacement is what a match of name becomes.

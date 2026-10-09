@@ -39,6 +39,10 @@ export type StartRequest = {
   maxBody: number;
 };
 
+/** The most bytes of a start's body the Effector reads (its `maxRequestBody`). A longer body
+ * cannot be verified, so the Effector refuses it as unsigned; the Orchestrator never sends one. */
+export const MAX_START_BYTES = 4 << 20;
+
 export const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
 export type HttpMethod = (typeof HTTP_METHODS)[number];
 

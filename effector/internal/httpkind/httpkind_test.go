@@ -124,6 +124,50 @@ func TestBasicAuthAndASecretInTheUrlPathComeBackScrubbed(t *testing.T) {
 	}
 }
 
+// A definition header filled from a secret is something the Effector built from it (B3.2): the
+// header value, and every encoding of it, come back named. Base64 of "Tok <secret>" holds no
+// base64 form of the secret alone, so only the built value catches it.
+func TestADefinitionHeaderWithASecretComesBackScrubbed(t *testing.T) {
+	srv := httptest.NewServer(echo())
+	defer srv.Close()
+	req := request(srv.URL)
+	req.Headers = map[string]wire.Text{"x-api-key": {text("Tok "), secret("jira")}}
+	out := runner(t, srv, "jira").Run(context.Background(), req)
+	if out.Outcome != wire.OutcomeResponse {
+		t.Fatalf("got %+v", out)
+	}
+	body := *out.Response.Body
+	built := "Tok " + token
+	leaks := append(scrub.Forms(token), built, base64.StdEncoding.EncodeToString([]byte(built)), url.QueryEscape(built))
+	for _, leak := range leaks {
+		if strings.Contains(body, leak) {
+			t.Fatalf("%q came back in %q", leak, body)
+		}
+	}
+	if !strings.Contains(body, "X-Api-Key: [secret:jira]\nb64 [secret:jira]\npct [secret:jira]") {
+		t.Fatalf("the header it built is not named: %q", body)
+	}
+}
+
+// A secret sits only in the url's path (ADR-0067). One after a `?` or a `#` is refused, with
+// nothing sent: as a path segment it is encoded for a path, which a query would read differently.
+func TestASecretInTheUrlQueryIsRefusedWithNoSend(t *testing.T) {
+	var sends atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { sends.Add(1) }))
+	defer srv.Close()
+	r := runner(t, srv, "jira")
+	for _, head := range []string{"/x?key=", "/x#"} {
+		req := request("")
+		req.URL = wire.Text{text(srv.URL + head), secret("jira")}
+		if out := r.Run(context.Background(), req); out.Outcome != wire.OutcomeRefused || !strings.Contains(out.Reason, "query or fragment") {
+			t.Fatalf("%s: got %+v", head, out)
+		}
+	}
+	if sends.Load() != 0 {
+		t.Fatalf("%d requests were sent", sends.Load())
+	}
+}
+
 func TestAPathSegmentIsEncodedAndADotSegmentIsRefusedWithNoSend(t *testing.T) {
 	var sends atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

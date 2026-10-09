@@ -150,9 +150,11 @@ export type EffectRow =
  * carries the transition its output drove — `persisted` is the snapshot that save held, and it no
  * longer holds the Effect running (its transition, or with no `onDone` the child done in place). A
  * restore reads a settled row's output only for an Effect its saved snapshot holds running, so
- * nothing reads the tail after that save; the full stream is on the feed. The row keeps its id,
- * kind and outcome — a command's exit code, signal or reason — for the run's life: the record of
- * what ran. So an Effect in a loop grows the blob by one short row per pass, never by its tails.
+ * nothing reads the tail after that save; the full stream is on the feed. An http response's body
+ * and headers are its tail: the settled marker on the feed carries them whole. The row keeps its
+ * id, kind and outcome — a command's exit code, signal or reason; a response's status, content type
+ * and size — for the run's life: the record of what ran. So an Effect in a loop grows the blob by
+ * one short row per pass, never by its tails.
  */
 export function dropSavedTails(effects: Record<string, EffectRow>, persisted: unknown): void {
   const running = new Set<string>();
@@ -168,12 +170,22 @@ export function dropSavedTails(effects: Record<string, EffectRow>, persisted: un
   walk(persisted);
   for (const [id, row] of Object.entries(effects)) {
     if (row.state !== "settled" || running.has(id)) continue;
-    const output = row.output as { tail?: unknown } | null;
-    if (typeof output !== "object" || output === null || !("tail" in output)) continue;
-    const { tail: _tail, ...outcome } = output;
+    const output = row.output as Record<string, unknown> | null;
+    if (typeof output !== "object" || output === null) continue;
+    // A command's tail; an http response's body and headers. What stays is short: the outcome, and
+    // a response's status, content type and size.
+    const long = TAILS[row.kind].filter((field) => field in output);
+    if (long.length === 0) continue;
+    const outcome = Object.fromEntries(Object.entries(output).filter(([field]) => !long.includes(field)));
     effects[id] = { ...row, output: outcome };
   }
 }
+
+/** The fields of a settled output that `dropSavedTails` drops, by kind. */
+const TAILS: Record<EffectRow["kind"], readonly string[]> = {
+  command: ["tail"],
+  http: ["body", "headers"],
+};
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
  * carry the stream; `aborted` and an `unknown` settle say the outside world may have acted. */

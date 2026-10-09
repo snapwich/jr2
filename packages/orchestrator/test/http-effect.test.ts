@@ -8,8 +8,8 @@ import assert from "node:assert/strict";
 import { assign } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import type { EffectRow } from "../src/effect.ts";
-import { createEffectorClient, type HttpOutput } from "../src/effector-wire.ts";
+import { dropSavedTails, type EffectRow } from "../src/effect.ts";
+import { createEffectorClient, MAX_START_BYTES, type HttpOutput } from "../src/effector-wire.ts";
 import { bearer, httpParts, httpWith, secret, text, type HttpDefinition } from "../src/http-effect.ts";
 import { partsOf } from "../src/parts.ts";
 import { RunHost, type RunFeedEvent } from "../src/run-host.ts";
@@ -135,6 +135,43 @@ test("an http Effect: the definition and the input build the request; the Effect
   assert.deepEqual((rig.host.status(rig.runId)?.context as Ctx).result, response);
   const marker = rig.feed.find((e) => e.kind === "effect" && e.stage === "started") as { text: string };
   assert.equal(marker.text, "POST https://jira.example.com", "the feed names the method and host, never the path");
+});
+
+test("a saved http row keeps the outcome, status, type and size; its body and headers are a tail, dropped once its transition is saved", () => {
+  const body = "x".repeat(50_000);
+  const full: HttpOutput = { ...response, headers: { "x-echo": "a" }, body, truncated: true };
+  const effects: Record<string, EffectRow> = {
+    done: { state: "settled", kind: "http", slot: "comment", output: full, at: "t" },
+    running: { state: "settled", kind: "http", slot: "comment", output: full, at: "t" },
+    refused: { state: "settled", kind: "http", slot: "comment", output: { outcome: "refused", reason: "r" }, at: "t" },
+  };
+  // `running` is still held running by the saved snapshot: a restore may yet deliver its output.
+  dropSavedTails(effects, { children: { c: { snapshot: { effectId: "running", status: "active" } } } });
+  assert.deepEqual((effects.done as { output: unknown }).output, {
+    outcome: "response",
+    status: 201,
+    contentType: "application/json",
+    size: 2,
+    truncated: true,
+  });
+  assert.deepEqual((effects.running as { output: unknown }).output, full);
+  assert.deepEqual((effects.refused as { output: unknown }).output, { outcome: "refused", reason: "r" });
+});
+
+test("a start over the bytes an Effector reads is output `refused`: nothing is sent and no intent row is written", async () => {
+  const fake = new FakeEffector();
+  const rig = await started(fake, {
+    request: ({ key, body }) => ({ path: [key], text: body + "y".repeat(MAX_START_BYTES) }),
+  });
+  await waitFor(() => rig.host.status(rig.runId)?.value === "done");
+  const result = (rig.host.status(rig.runId)?.context as Ctx).result;
+  assert.equal(result?.outcome, "refused");
+  assert.match((result as { reason: string }).reason, /over the 4194304 bytes an Effector reads; nothing was sent/);
+  assert.equal(fake.calls.length, 0, "nothing reached the Effector");
+  assert.deepEqual(
+    Object.values(await ledger(rig.store, rig.runId)).map((r) => r.state),
+    ["settled"],
+  );
 });
 
 test("D1: its state exits while it runs — polling stops, the ledger and the feed say `outcome unknown`, no cancel is sent", async () => {
@@ -273,6 +310,16 @@ test("the definition refuses a host that is not literal, a framing header, and a
     /only in its path/,
   );
   assert.doesNotThrow(() => httpParts({ method: "GET", url: text`https://api.example.com/bot${secret("tg")}/send` }));
+  // A secret sits only in the path: the Effector encodes it as a path segment, which a query or a
+  // fragment would read as a different value.
+  for (const url of [
+    text`https://api.example.com/x?key=${secret("qkey")}`,
+    text`https://api.example.com?k=${secret("qkey")}`,
+    text`https://api.example.com/x#${secret("qkey")}`,
+  ]) {
+    assert.throws(() => httpParts({ method: "GET", url }), /secret\("qkey"\) sits in the url's query or fragment/);
+  }
+  assert.doesNotThrow(() => httpParts({ method: "GET", url: text`https://api.example.com/bot${secret("tg")}/x?a=1` }));
   assert.throws(() => httpParts({ method: "GET", url: "ftp://x.example.com/" }), /http:\/\/ or https:\/\//);
   assert.throws(() => httpParts({ method: "GET", url: "https://u:p@x.example.com/" }), /userinfo/);
   assert.throws(() => httpParts({ method: "GET", url: "https://x.example.com/", headers: { host: "y" } }), /frame or/);

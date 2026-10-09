@@ -43,11 +43,12 @@ Workspace, and `http`, call a URL from the Instance Effector
   no Effector to send to.
 - **An `http` Effect is a definition plus one function.**
   `http({ method, url, headers?, auth?, input?, request?, timeout?, maxBody?, idempotent? })`. The url's scheme and host
-  are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template — so the
-  host is fixed by the definition and never a param. `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`.
-  `request(input)` returns the run's part alone: `path` segments and a JSON or text body. So an Agent's param reaches a
-  path segment or a body, never the host, a header or a secret. It runs in the Instance Effector, which builds the
-  request and holds the secrets (ADR-0068); the Orchestrator signs the call and holds none.
+  are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template, and one
+  after a `?` or a `#` is refused when the Machine loads — so the host is fixed by the definition and never a param.
+  `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`. `request(input)` returns the run's part alone:
+  `path` segments and a JSON or text body. So an Agent's param reaches a path segment or a body, never the host, a
+  header or a secret. It runs in the Instance Effector, which builds the request and holds the secrets (ADR-0068); the
+  Orchestrator signs the call and holds none.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing it started outlives it. A bounded tail (default 4096 characters) is the
   output; the full stream goes to the run's feed (Instance-token band).
@@ -63,10 +64,12 @@ Workspace, and `http`, call a URL from the Instance Effector
   into the state, or `idempotent` for a call that carries its own idempotency key or only reads. No row is dropped: each
   settled or aborted row keeps the Effect's id, kind and outcome for the run's life, the record of what the run's
   Effects did. A settled row's output tail is dropped once the save that carries its transition is on disk; the full
-  stream is on the feed. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One
-  exception, bounded by one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because
-  an `answer` action may read it after a restore; a loop below the Agent's state then grows the hold by one tail per
-  pass. The hold drops its chain when the pick is answered.
+  stream is on the feed. An `http` response's body and headers are its tail: the row keeps the outcome, the status, the
+  content type and the size, and the settled line on the feed carries the whole response. So an Effect in a loop grows
+  the ledger by one short row per pass, never by its tails. One exception, bounded by one pick: while a pick is
+  outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action may read it after a restore;
+  a loop below the Agent's state then grows the hold by one tail per pass. The hold drops its chain when the pick is
+  answered.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start

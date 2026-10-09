@@ -68,6 +68,7 @@ import {
   machineBodies,
   matchCredential,
   partsOf,
+  refuseEffectSecrets,
   secretPlacementsOf,
   effectorKey,
   targetText,
@@ -268,6 +269,14 @@ export async function up(args: string[], io: Io): Promise<number> {
       );
     }
   }
+  // An Effect that names a secret the `secrets` list does not hold, and a literal Effect secret too
+  // short to scrub (B3.5), are refused HERE, off the walk and the config alone — before anything is
+  // built or applied (ADR-0050, ADR-0068). A secret read from the user's Secret is placed below,
+  // once the cluster is reached.
+  const placedEffects = workflows.flatMap((w) =>
+    partsOf([w.machine]).effects.map((effect) => ({ workflow: w.name, effect })),
+  );
+  refuseEffectSecrets(config, placedEffects);
   // Who may send what, per state (ADR-0015): the audience rule's answer for each registered
   // Machine and every Machine it composes, as its doc carries it — so an author reads who holds a
   // pick before a run finds out. Then what the build found legal and suspect: a warning, never a
@@ -859,13 +868,9 @@ export async function up(args: string[], io: Io): Promise<number> {
     caBundle: caPem,
   });
   // Where each secret goes (ADR-0068): read off the list and the Effects that name it, never
-  // declared — and refused here, before anything is applied, when an Effect names a secret the list
-  // does not hold or an Effect secret is too short to scrub.
-  const placements = secretPlacementsOf(
-    config,
-    workflows.flatMap((w) => partsOf([w.machine]).effects.map((effect) => ({ workflow: w.name, effect }))),
-    { secretKeys },
-  );
+  // declared. The walk's refusals ran above; a `valueFrom` the user's Secrets do not hold is refused
+  // here, before the instance objects are applied.
+  const placements = secretPlacementsOf(config, placedEffects, { secretKeys });
   for (const line of placements.report) activity(io, line);
   for (const warning of placements.warnings) activity(io, `warning: ${warning}`);
 

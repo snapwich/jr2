@@ -2,6 +2,7 @@ package scrub
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -33,6 +34,43 @@ func TestEachFormIsScrubbed(t *testing.T) {
 			got := s.String("before " + f + " after")
 			if got != "before [secret:jira] after" {
 				t.Fatalf("got %q", got)
+			}
+		})
+	}
+}
+
+// A server echoes a secret in its own encoder's spelling. Each spelling below is what a common
+// encoder writes for the value; each one is a form the scrubber removes.
+func TestEachCommonEncodersSpellingIsScrubbed(t *testing.T) {
+	const value = `s3cr3t/Tok+en=v&x!'(é)<q>`
+	goJSON, err := json.Marshal(value) // Go's default: <, >, & as <, >, &
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(map[string]string{"tok": value, "k": "ab!cd+ef/gh&ij"})
+	spellings := map[string]string{
+		"JSON, Go encoding/json default":     strings.Trim(string(goJSON), `"`),
+		"JSON, PHP json_encode (\\/)":        `s3cr3t\/Tok+en=v&x!'(é)<q>`,
+		"JSON, Python json.dumps (\\u00e9)":  `s3cr3t/Tok+en=v&x!'(é)<q>`,
+		"JSON, upper-case \\u hex":           `s3cr3t/Tok+en=v&x!'(é)<q>`,
+		"JSON, \\/ and HTML-escaped":         `s3cr3t\/Tok+en=v&x!'(é)<q>`,
+		"percent, encodeURIComponent":        `s3cr3t%2FTok%2Ben%3Dv%26x!'(%C3%A9)%3Cq%3E`,
+		"percent, encodeURIComponent, lower": `s3cr3t%2fTok%2ben%3dv%26x!'(%c3%a9)%3cq%3e`,
+		"percent, encodeURI":                 `s3cr3t/Tok+en=v&x!'(%C3%A9)%3Cq%3E`,
+		"percent, unreserved only":           `s3cr3t%2FTok%2Ben%3Dv%26x%21%27%28%C3%A9%29%3Cq%3E`,
+		"percent, unreserved only, lower":    `s3cr3t%2fTok%2ben%3dv%26x%21%27%28%c3%a9%29%3cq%3e`,
+		"percent, Python quote (keeps /)":    `s3cr3t/Tok%2Ben%3Dv%26x%21%27%28%C3%A9%29%3Cq%3E`,
+		"percent, form (URLSearchParams)":    `s3cr3t%2FTok%2Ben%3Dv%26x%21%27%28%C3%A9%29%3Cq%3E`,
+		"percent, the verifier's value":      `ab!cd%2Bef%2Fgh%26ij`,
+		"percent, its value in lower hex":    `ab%21cd%2bef%2fgh%26ij`,
+		"JSON, its value with \\/":           `ab!cd+ef\/gh&ij`,
+		"JSON, its value HTML-escaped":       `ab!cd+ef/gh&ij`,
+	}
+	for name, f := range spellings {
+		t.Run(name, func(t *testing.T) {
+			got := s.String("before " + f + " after")
+			if got != "before [secret:tok] after" && got != "before [secret:k] after" {
+				t.Fatalf("%q came back as %q", f, got)
 			}
 		})
 	}

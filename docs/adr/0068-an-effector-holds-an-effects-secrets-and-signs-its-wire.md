@@ -2,9 +2,10 @@
 
 An Effect that holds a secret cannot run where the Agent executes code: the Agent could read the secret, or spend it on
 another host. A Held secret ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)) cannot do
-it either, because the Agent can spend it through the Custodian. And the Orchestrator holds no Effect secret: it runs
-every Machine, so one fault there would reach every secret. So jr2 runs such an Effect in a container of its own, the
-**Effector**, where the Agent executes nothing and the Orchestrator only asks.
+it either, because the Agent can spend it through the Custodian. And the Orchestrator holds no Effect secret in its
+process or its env: it runs every Machine's code, and a secret it held would be one fault away from all of them. So jr2
+runs such an Effect in a container of its own, the **Effector**, where the Agent executes nothing and the Orchestrator
+only asks. (The Orchestrator's Role can still read the Secrets that hold them; see Consequences.)
 
 ## Decision
 
@@ -25,7 +26,9 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
   the same id starts nothing and attaches (200). `GET /effects/<id>` long-polls: it holds up to 25 s and answers
   `running`, or `settled` with the output. A malformed request starts nothing and gets 400 with the reason; a request
   that names a secret the Effector does not hold is malformed. `/healthz` is the kubelet's probe, unsigned, and says
-  only whether the replica takes new Effects.
+  only whether the replica takes new Effects. A replica reads at most 4 MiB of a request; it cannot verify a longer one,
+  so it refuses it as unsigned. The Orchestrator never sends one: a start whose body is longer settles `refused`, with
+  nothing sent and no intent row, because a body built from context or a pick's param can reach the bound.
 - **Hand-written types, and golden fixtures.** There is no code generator. The types are Go structs in
   `effector/internal/wire` and zod schemas in `@jr2/orchestrator`. Go decodes with unknown fields disallowed. The golden
   fixtures in `effector/testdata/wire/` keep the two equal: one JSON file per request shape (`request.*`), per answer
@@ -57,25 +60,35 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
 - **Scrubbing, last, before the answer is signed.** Every string that leaves goes through it: an http body, its headers,
   error text — and then the whole encoded answer. It matches every secret the Effector holds, not only the ones the
   current Effect names, in three kinds of form: the exact value; its usual encodings (base64 in both alphabets, padded
-  and not; percent-encoding as a query and as a path segment; JSON-escaped); and what the Effector built from it for
-  this Effect (the `Authorization` value it sent, `base64(user:password)`, the url with the secret in its path, and that
-  url as the server sees it, its path and query), each with the same encodings. A match becomes `[secret:<name>]`. A
-  body is scrubbed as it streams, across chunk borders, with a window one byte shorter than the longest form. The
-  Effector refuses to start with a secret shorter than 8 characters, and names it: a shorter one would match ordinary
-  text. A literal is refused earlier, by `jr2 up`; a value from the user's own Secret is first seen here.
+  and not; percent-encoding; JSON-escaping); and what the Effector built from it for this Effect (the `Authorization`
+  value it sent, `base64(user:password)`, a definition header it filled from the secret, the url with the secret in its
+  path, and that url as the server sees it, its path and query), each with the same encodings. An encoding has more than
+  one spelling, and a server echoes in its own encoder's, so each common spelling is a form: percent-encoding that
+  leaves only the unreserved characters, or also `/` (Python's `quote`), or `!'()*` (`encodeURIComponent`), or the
+  reserved ones (`encodeURI`), or a path's characters, a form's `+` for a space, Go's query and path escapes, each in
+  upper and lower hex; JSON with or without `\/`, with or without `<`, `>`, `&` as `<`, `>`, `&`, with or without every
+  non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u` forms, ` ` and ` ` escaped or not, and `\u` hex in either
+  case. A match becomes `[secret:<name>]`. A body is scrubbed as it streams, across chunk borders, with a window one
+  byte shorter than the longest form. The Effector refuses to start with a secret shorter than 8 characters, and names
+  it: a shorter one would match ordinary text. A literal is refused earlier, by `jr2 up`; a value from the user's own
+  Secret is first seen here.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
   trailing `\n` or `\r\n` is taken off, as the Custodian does.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
-  in it percent-encoded; `path` segments, each percent-encoded and appended; the definition's headers (a header that
-  frames or routes the request is refused); auth — `bearer` (`Bearer <value>`), `basic` (`Basic base64(user:password)`),
-  or `text` (the whole header) — from the secret files; a JSON or text body; a timeout. Outcomes:
+  in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
+  a `#` is refused by `http()` when the Machine loads, and by the Effector, because a query would read the path's
+  encoding as a different value; `path` segments, each percent-encoded and appended; the definition's headers (a header
+  that frames or routes the request is refused); auth — `bearer` (`Bearer <value>`), `basic`
+  (`Basic base64(user:password)`), or `text` (the whole header) — from the secret files; a JSON or text body; a timeout.
+  Outcomes:
   - `response`: the status, every header, the content type, the size, and the body when it is text (a `text/*` type,
     JSON, XML, a form, JavaScript; with no type, what its first bytes sniff as), bounded to a byte limit and marked
     `truncated` past it. A body that is not text is never returned: its size and type are.
   - `unreachable`: nothing was sent — the name did not resolve, the connection or TLS failed.
   - `refused`: the Effector refused it and sent nothing — a path segment that is `.`, `..` or empty (an Agent's param
-    can cause it, so it is output, not a fault), or a host and secrets that no Effect placed there names.
+    can cause it, so it is output, not a fault), or a host and secrets that no Effect placed there names. The
+    Orchestrator settles a start longer than 4 MiB `refused` the same way, before it sends anything.
   - `unknown`: the connection was made and no answer came (the timeout, a reset): the host may have acted.
 - **The host is fixed, in the Effector.** The Effector's config (`effector.json`, written by `jr2 up` from the Effects'
   plain data) lists each scheme, host and port an Effect placed there names, with the secrets that Effect names. A
@@ -89,11 +102,13 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
   entry an Effect names with `secret("name")` is an Effect secret in that Effect's placement (an `http` Effect: the
   Instance Effector). Both is both. Neither goes nowhere, and `jr2 up` warns:
   `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no `placement:` key: naming is the placement.
-  `jr2 up` prints one line per secret with its placements, refuses an Effect that names a secret the list does not hold
-  (with the line to add), and refuses an Effect secret shorter than 8 characters, saying why. A secret reaches only the
-  pods where something names it: a literal is written into the placement's own Secret, and a `valueFrom` is projected
-  from the user's Secret by reference, never copied. `git.credentials` stays its own list: a fence keyed by url prefix,
-  not a named value.
+  `jr2 up` prints one line per secret with its placements. Right after the walk, before anything is built or applied, it
+  refuses an Effect that names a secret the list does not hold (with the line to add) and a literal Effect secret
+  shorter than 8 characters, saying why. A `valueFrom` names a key of the user's Secret, which `jr2 up` checks once it
+  reaches the cluster; its value is first seen by the Effector, which refuses to start with it if it is short. A secret
+  reaches only the pods where something names it: a literal is written into the placement's own Secret, and a
+  `valueFrom` is projected from the user's Secret by reference, never copied. `git.credentials` stays its own list: a
+  fence keyed by url prefix, not a named value.
 - **The Instance Effector's objects.** `jr2 up` converges them when a registered Machine places an Effect there, and
   deletes them otherwise; it reports either (`instance effector: converging (<workflow>/<slot>; secrets …; grace …)` or
   `instance effector: none`). All four are named `jr2-instance-effector`:
@@ -140,5 +155,10 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
   `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once.md)).
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
-  value (B3); two replicas and an Orchestrator restart during a call, and a rollout during a call, must give one send
-  (B2.4).
+  value (B3) — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built
+  (`Bearer <value>`, a Basic pair, the url, a header) cannot pass as clean; two replicas and an Orchestrator restart
+  during a call, and a rollout during a call, must give one send (B2.4).
+- **Open gap: the Orchestrator's Role reads Effect secrets.** Its Role can get and list every Secret in its namespace
+  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), `jr2-instance-effector` and every user Secret a
+  `valueFrom` names among them. So a fault that gives code execution in the Orchestrator reaches the Effect secrets
+  through the API, though the Orchestrator never holds one. Narrowing the Role is a separate decision.

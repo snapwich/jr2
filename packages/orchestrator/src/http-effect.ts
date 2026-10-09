@@ -35,6 +35,7 @@ import {
   EffectorNotSent,
   EffectorRefused,
   HTTP_METHODS,
+  MAX_START_BYTES,
   nodeEffectorTransport,
   type EffectorPort,
   type EffectState,
@@ -232,6 +233,19 @@ function targetOf(url: readonly TextPart[]): HttpParts["target"] {
         'only in its path, after a "/": text`https://api.example.com/bot${secret("tg")}/send` (ADR-0068)',
     );
   }
+  // The Effector encodes a secret as a path segment, which a query or a fragment would read as a
+  // different value: a secret after a `?` or a `#` is refused here, as the Effector refuses it.
+  let before = "";
+  for (const part of url) {
+    if ("text" in part) {
+      before += part.text;
+    } else if (/[?#]/.test(before)) {
+      throw new Error(
+        `http({ url }): secret("${part.secret}") sits in the url's query or fragment — a secret may sit only in ` +
+          'its path; send it in `auth` or a header instead: headers: { "x-api-key": text`${secret("...")}` } (ADR-0068)',
+      );
+    }
+  }
   let parsed: URL;
   try {
     parsed = new URL(`${m[1]}://${m[2]}/`);
@@ -406,6 +420,12 @@ async function drive<I, O>(
   // Fresh: nothing was sent. The run's part of the request is built before the intent row, so a
   // defect in `request` is the Machine's error and sends nothing.
   const req = requestFor();
+  // A start the Effector would not read is refused here, before the intent row: nothing is sent.
+  const big = tooLarge(req);
+  if (big) {
+    settle(big);
+    return;
+  }
   // Write-ahead: the intent row is saved, with the snapshot that holds this child, before the
   // request leaves.
   binding?.recordEffect?.(id, {
@@ -438,6 +458,11 @@ async function drive<I, O>(
   /** Send the start, and follow it. A start that never reached a replica is sent again; one whose
    * answer did not come is looked for on every replica, never sent blind. */
   async function send(req: StartRequest): Promise<void> {
+    const big = tooLarge(req);
+    if (big) {
+      settle(big);
+      return;
+    }
     for (let wait = 250; ; wait = Math.min(wait * 2, RETRY_MAX_MS)) {
       let state: EffectState;
       try {
@@ -528,6 +553,17 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
     stage: "aborted",
     text: "its state exited while it ran: no longer followed; the Effector may still send it; outcome unknown",
   });
+}
+
+/** A start over the bytes the Effector reads is output `refused` (ADR-0068): the Effector could not
+ * verify it, and a body built from context or a pick's param can reach the bound. */
+function tooLarge(req: StartRequest): HttpOutput | undefined {
+  const bytes = Buffer.byteLength(JSON.stringify(req), "utf8");
+  if (bytes <= MAX_START_BYTES) return undefined;
+  return {
+    outcome: "refused",
+    reason: `the request is ${bytes} bytes, over the ${MAX_START_BYTES} bytes an Effector reads; nothing was sent`,
+  };
 }
 
 function hostText(parts: HttpParts): string {

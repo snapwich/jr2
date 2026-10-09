@@ -51,6 +51,19 @@ export type SecretPlacements = {
 };
 
 /**
+ * The refusals that need only the config and the walk, never the cluster: a name listed twice, an
+ * Effect that names a secret the list does not hold, a literal Effect secret shorter than 8
+ * characters. `jr2 up` runs it right after the walk, before anything is built or applied.
+ */
+export function refuseEffectSecrets(config: JR2Config, effects: readonly PlacedEffect[]): void {
+  const { entries, namedBy } = namesOf(config, effects);
+  for (const e of entries) {
+    // An empty value is refused later with the list's own rule (`sourceOf`): it is an unset variable.
+    if (namedBy.has(e.name) && e.value) shortRefusal(e, e.value);
+  }
+}
+
+/**
  * Read where each secret goes, or throw the first refusal. `effects` is every Effect the registered
  * Machines carry; `lookups.secretKeys` is R10's read of the user's Secrets.
  */
@@ -59,32 +72,7 @@ export function secretPlacementsOf(
   effects: readonly PlacedEffect[],
   lookups: Pick<HeldLookups, "secretKeys"> = {},
 ): SecretPlacements {
-  const entries = (config.secrets ?? []).map((entry, i) => ({ at: `secrets[${i}]`, ...entry }));
-  const byName = new Map<string, (typeof entries)[number]>();
-  for (const e of entries) {
-    if (byName.has(e.name)) {
-      throw new Error(`${e.at}.name ${e.name} is listed twice — one name, one secret (ADR-0068)`);
-    }
-    byName.set(e.name, e);
-  }
-
-  // Which Effects name which secret, and where each Effect is placed.
-  const namedBy = new Map<string, Array<{ effect: string; placement: "instance" }>>();
-  const http = effects.filter(
-    (p): p is { workflow: string; effect: Extract<CarriedEffect, { kind: "http" }> } => p.effect.kind === "http",
-  );
-  for (const { workflow, effect } of http) {
-    const label = `${workflow}/${effect.name}`;
-    for (const name of effect.secrets) {
-      if (!byName.has(name)) {
-        throw new Error(
-          `workflow "${workflow}": the http Effect "${effect.name}" names secret("${name}"), which the \`secrets\` ` +
-            `list does not hold — add it: secrets: [{ name: "${name}", value: process.env.${envish(name)} }] (ADR-0068)`,
-        );
-      }
-      namedBy.set(name, [...(namedBy.get(name) ?? []), { effect: label, placement: "instance" }]);
-    }
-  }
+  const { entries, namedBy, http } = namesOf(config, effects);
 
   const report: string[] = [];
   const warnings: string[] = [];
@@ -97,13 +85,7 @@ export function secretPlacementsOf(
       const source = sourceOf(e, lookups);
       if (source.kind === "literal") {
         const value = e.value as string;
-        if (value.length < EFFECT_SECRET_MIN_LENGTH) {
-          throw new Error(
-            `${e.at} (${e.name}) is an Effect secret shorter than ${EFFECT_SECRET_MIN_LENGTH} characters — the ` +
-              "Effector replaces every match of a secret in what it returns, and a value this short would match " +
-              "ordinary text. Use the whole credential; the value itself is not shown (ADR-0068)",
-          );
-        }
+        shortRefusal(e, value);
         values[e.name] = value;
       }
       secrets.push({ name: e.name, source });
@@ -143,6 +125,46 @@ export function secretPlacementsOf(
     report,
     warnings,
   };
+}
+
+type HttpPlaced = { workflow: string; effect: Extract<CarriedEffect, { kind: "http" }> };
+
+/** The list by name, refused when a name is listed twice; which Effects name which secret, refused
+ * when an Effect names one the list does not hold. */
+function namesOf(config: JR2Config, effects: readonly PlacedEffect[]) {
+  const entries = (config.secrets ?? []).map((entry, i) => ({ at: `secrets[${i}]`, ...entry }));
+  const byName = new Map<string, (typeof entries)[number]>();
+  for (const e of entries) {
+    if (byName.has(e.name)) {
+      throw new Error(`${e.at}.name ${e.name} is listed twice — one name, one secret (ADR-0068)`);
+    }
+    byName.set(e.name, e);
+  }
+  const namedBy = new Map<string, Array<{ effect: string; placement: "instance" }>>();
+  const http = effects.filter((p): p is HttpPlaced => p.effect.kind === "http");
+  for (const { workflow, effect } of http) {
+    const label = `${workflow}/${effect.name}`;
+    for (const name of effect.secrets) {
+      if (!byName.has(name)) {
+        throw new Error(
+          `workflow "${workflow}": the http Effect "${effect.name}" names secret("${name}"), which the \`secrets\` ` +
+            `list does not hold — add it: secrets: [{ name: "${name}", value: process.env.${envish(name)} }] (ADR-0068)`,
+        );
+      }
+      namedBy.set(name, [...(namedBy.get(name) ?? []), { effect: label, placement: "instance" }]);
+    }
+  }
+  return { entries, namedBy, http };
+}
+
+/** B3.5: an Effect secret shorter than 8 characters is refused, and the refusal says why. */
+function shortRefusal(e: { at: string; name: string }, value: string): void {
+  if (value.length >= EFFECT_SECRET_MIN_LENGTH) return;
+  throw new Error(
+    `${e.at} (${e.name}) is an Effect secret shorter than ${EFFECT_SECRET_MIN_LENGTH} characters — the ` +
+      "Effector replaces every match of a secret in what it returns, and a value this short would match " +
+      "ordinary text. Use the whole credential; the value itself is not shown (ADR-0068)",
+  );
 }
 
 /** A name as the env var a `.env` line would most likely hold it under — for the fix line only. */

@@ -2935,7 +2935,7 @@ test("no Effect placed there: no Instance Effector, and a stale one is deleted (
   }
 });
 
-test("an Effect secret shorter than 8 characters is refused before anything is applied (B3.5)", async () => {
+test("an Effect secret shorter than 8 characters is refused before anything is built or applied (B3.5)", async () => {
   const root = await withHttpEffect(
     await mkInstance(`export default { name: "myinst", secrets: [{ name: "jira", value: "short" }] };\n`),
   );
@@ -2944,15 +2944,16 @@ test("an Effect secret shorter than 8 characters is refused before anything is a
     () => up(["--yes"], w.io),
     /secrets\[0\] \(jira\) is an Effect secret shorter than 8 characters/,
   );
-  assert.ok(!w.kube.applied.some((m) => m.includes("jr2-instance-effector")));
+  assert.deepEqual(w.built, [], "nothing was built");
+  assert.deepEqual(w.kube.applied, [], "nothing was applied");
 });
 
-test("an Effect that names a secret the list does not hold is refused, naming the line to add", async () => {
+test("an Effect that names a secret the list does not hold is refused before anything is built or applied, naming the line to add (ADR-0050)", async () => {
   const root = await withHttpEffect(await mkInstance(`export default { name: "myinst" };\n`));
-  await assert.rejects(
-    () => up(["--yes"], mkWorld(root).io),
-    /names secret\("jira"\), which the `secrets` list does not hold/,
-  );
+  const w = mkWorld(root);
+  await assert.rejects(() => up(["--yes"], w.io), /names secret\("jira"\), which the `secrets` list does not hold/);
+  assert.deepEqual(w.built, [], "nothing was built");
+  assert.deepEqual(w.kube.applied, [], "nothing was applied");
 });
 
 test("one secret both Held and named by an Effect is both, and the report says so", async () => {
