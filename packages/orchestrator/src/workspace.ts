@@ -182,6 +182,9 @@ export type PlaceRequest = {
   name: string;
   runId: string;
   workflow: string;
+  /** The `customize()` route from the registered Machine to this `workspace()` — undefined past an
+   * inline invoke. With `workflow`, it names the pod whose Held secrets `jr2 up` placed (ADR-0059). */
+  path: string[] | undefined;
   image?: string;
   user?: string;
   workGroup?: number;
@@ -513,6 +516,13 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
    * `task`, whose first slot is the one the coder edits). Under it `TSlots` is `string`, and the body's handles must say so.
    */
   repos: Record<TSlots, RepoSlot<TInput>> | typeof open;
+  /**
+   * The Held secrets this Workspace's pod gets (ADR-0059): names of `jr2.config.ts`'s `secrets`
+   * list. Its Custodian holds each one, and the Harness container sees its Stand-in. Naming is
+   * placement: a pod gets the Held secrets something in it names — this list, and the model keys
+   * of the Agents whose Turns run here, which their providers claim without being listed.
+   */
+  secrets?: readonly string[];
 };
 
 /**
@@ -610,6 +620,19 @@ export function workspace(
     }
     for (const [slot, value] of Object.entries(repos)) assertRepoSlot("workspace()", slot, value);
   }
+  // The Held secrets it names (ADR-0059), checked NOW: each a name, each once. Whether the list
+  // holds the name is `jr2 up`'s to say — the config is not here.
+  const secrets = options.secrets;
+  if (secrets !== undefined) {
+    const names = Array.isArray(secrets) ? (secrets as unknown[]) : undefined;
+    const bad = names?.find((n) => typeof n !== "string" || !n);
+    if (names === undefined || bad !== undefined || new Set(names).size !== names.length) {
+      throw new Error(
+        `workspace(): \`secrets\` must be a list of distinct names from jr2.config.ts's \`secrets\` list (got ` +
+          `${JSON.stringify(secrets)}) — secrets: ["JIRA_TOKEN"] (ADR-0059).`,
+      );
+    }
+  }
   const wrapper = buildWorkspaceMachine(body, options.spec);
   // The wrapper is TRANSPARENT to its body (ADR-0049): `customize(machine, { agents })` on a
   // Workspace means the Machine inside, so the composer never spells `body` and never has to know
@@ -625,6 +648,7 @@ export function workspace(
     ...(options.user !== undefined ? { user: options.user } : {}),
     repos: repos === open ? open : { ...repos },
     ...(options.resources !== undefined ? { resources: options.resources } : {}),
+    ...(secrets !== undefined ? { secrets: [...secrets] } : {}),
   });
   // The body's vocabulary stays the BODY's (ADR-0011, ADR-0049): the wrapper declares no events
   // of its own and merges none, because the actors that use the body's names resolve against the
@@ -767,11 +791,8 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     // persisted, because a per-run mapper's answer is this run's fact.
     const parts = sandboxPartsOf(invokingMachine(self));
     const user = userSeatOf(parts.user);
-    const bindings = resolveBindings(
-      { workflow: binding.workflow, path: actorSlotPath(self._parent) },
-      parts.repos,
-      input.runInput,
-    );
+    const route = actorSlotPath(self._parent);
+    const bindings = resolveBindings({ workflow: binding.workflow, path: route }, parts.repos, input.runInput);
     const port = sandboxOf(system);
     const name = workspaceName(binding.runId, input.wsId);
     const wrapper = self._parent;
@@ -798,6 +819,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
         name,
         runId: binding.runId,
         workflow: binding.workflow,
+        path: route,
         // The image strings straight through (ADR-0037/0005) — the port owns resolution, and the
         // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
         ...(parts.image !== undefined ? { image: parts.image } : {}),

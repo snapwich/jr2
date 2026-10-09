@@ -63,17 +63,30 @@ export const CA_CONFIGMAP = "jr2-ca";
 /** Held secrets (ADR-0059). The per-Instance CA — its key included — that `jr2 up` alone reads over
  * the kube API, and that NO pod mounts: every leaf is issued before a pod starts. */
 export const HELD_CA_SECRET = "jr2-held-ca";
-/** The literal held values, one key per name — mounted into the Custodian and nothing else. */
+/** The prefix of each pod's literal held values (`heldSecretsSecret`): one Secret per pod, one key
+ * per name it holds — mounted into that pod's Custodian and nothing else. */
 export const HELD_SECRETS_SECRET = "jr2-held-secrets";
-/** One leaf per bound `host:port` (`<stem>.crt`, `<stem>.key`) — the Custodian's alone. */
+/** The literal held values of one pod (ADR-0059): `jr2-held-secrets-<pod>`. */
+export function heldSecretsSecret(pod: string): string {
+  return `${HELD_SECRETS_SECRET}-${pod}`;
+}
+/** One leaf per bound `host:port` (`<stem>.crt`, `<stem>.key`) — the Custodians' alone. */
 export const HELD_TLS_SECRET = "jr2-held-tls";
-/** `held.json` (what `jr2 up` resolved) plus the Custodian's bootstrap and script. Always applied,
+/** Each pod's held manifest (what `jr2 up` placed there) and its Custodian's bootstrap and script,
+ * by pod (`heldManifestKey`, `custodianBootstrapKey`, `custodianScriptKey`). Always applied,
  * possibly holding no secret: every Harness pod runs a Custodian. */
 export const HELD_CONFIGMAP = "jr2-held";
-/** Where the Orchestrator reads `held.json`, per provision — a mount, so a held-secret edit reaches
- * future Sandboxes without rolling the Orchestrator (the `jr2-images` pattern, ADR-0038). */
+/** Where the Orchestrator reads a Workspace's held manifest, per provision — a mount, so a
+ * held-secret edit reaches future Sandboxes without rolling the Orchestrator (the `jr2-images`
+ * pattern, ADR-0038). */
 export const HELD_MOUNT = "/etc/jr2/held";
-export const HELD_KEY = "held.json";
+/** The `jr2-held` keys of one pod: its manifest, its Custodian's Envoy bootstrap, its Lua. */
+export const heldManifestKey = (pod: string): string => `held-${pod}.json`;
+export const custodianBootstrapKey = (pod: string): string => `envoy-${pod}.json`;
+export const custodianScriptKey = (pod: string): string => `custodian-${pod}.lua`;
+/** The Instance Harness's pod, as its held objects are keyed. A Workspace's is `ws-<digest>`
+ * (`workspaceHeldPod`), so the two cannot collide. */
+export const INSTANCE_HARNESS_HELD_POD = "instance";
 
 /** The Custodian's listeners (ADR-0059), all taken on every Harness pod (ADR-0005): the Harness's
  * HTTPS proxy on loopback, the kubelet's probe, and the control listener the Menu and the ask ride

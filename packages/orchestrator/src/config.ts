@@ -169,24 +169,27 @@ export type CatalogReach = {
 
 /**
  * One secret of the Instance (ADR-0059's entry shape, ADR-0068's list). Its placement is READ, never
- * declared: an entry with `hosts` (or a known model key, whose hosts default) is a Held secret — the
- * Harness container's env carries its Stand-in, `jr2-held-<name>`, and the Custodian puts the value
- * into requests toward `hosts` alone; an entry an Effect names with `secret("name")` is an Effect
- * secret, a file in that Effect's Effector. Both is both, and `jr2 up` reports it; neither goes
- * nowhere, and `jr2 up` warns.
+ * declared, and naming is placement: a pod gets the secrets something in it names. A Held secret is
+ * one a Harness pod names — a `workspace()` lists it under `secrets: [...]`, or it is a known model
+ * key the provider of an Agent whose Turns run there reads — and there the Harness container's env
+ * carries its Stand-in, `jr2-held-<name>`, and that pod's Custodian puts the value into requests
+ * toward `hosts` alone. An entry an Effect names with `secret("name")` is an Effect secret, a file in
+ * that Effect's Effector. Both is both, and `jr2 up` reports it per pod; an entry nothing names goes
+ * nowhere, and `jr2 up` warns. `hosts`, `headers` and `paths` are the binding, never the placement.
  */
 export type SecretEntry = {
   /** As a Held secret, the env var the Harness container sees — `[A-Z_][A-Z0-9_]*`, holding the
    * Stand-in. As an Effect secret, the name `secret("name")` names and the Effector's file. */
   name: string;
   /** The value as a literal, usually read from `process.env`/`.env`. `jr2 up` writes it into the
-   * Secret of each placement — `jr2-held-secrets` (the Custodian's), `jr2-instance-effector` — and
-   * nowhere else. Exactly one of `value`/`valueFrom`. */
+   * Secret of each placement that names it — `jr2-held-secrets-<pod>` (that pod's Custodian's),
+   * `jr2-instance-effector` — and nowhere else. Exactly one of `value`/`valueFrom`. */
   value?: string;
   /** Or a key of a Secret you manage (Sealed Secrets, External Secrets). `jr2 up` checks that the
    * Secret and key exist; each placement mounts that one key as a file, and no other container does. */
   valueFrom?: { secretKeyRef: { name: string; key: string } };
-  /** Where the value may go as a Held secret. Each entry is `host`, `host:port`, or an `https://`
+  /** Where the value may go as a Held secret — its binding, not its placement. Each entry is `host`,
+   * `host:port`, or an `https://`
    * URL (its host and port are taken; the path is ignored). Exact DNS names or IP literals; no
    * wildcards. Port default 443. A known model-key name (`MODEL_KEYS`) may leave it out: it then
    * goes to the one host that provider's calls go to. */

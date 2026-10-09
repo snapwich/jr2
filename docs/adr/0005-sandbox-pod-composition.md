@@ -10,10 +10,10 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
 - **Custodian container** — jr2-composed sidecar, upstream Envoy configured by `jr2 up`
   ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md),
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): the pod's credential holder. It holds
-  the Sandbox token and every held secret — model API keys above all — as files, and carries the Harness's traffic out:
-  its Menu and the ask to the Orchestrator, and its outbound HTTPS. It exists as a separate container precisely
-  _because_ the Working tools give the Agent code execution in the Harness container — the credentials live where the
-  Agent cannot read them, and the Harness container's env holds only their Stand-ins.
+  the Sandbox token and the held secrets its pod names — model API keys above all — as files, and carries the Harness's
+  traffic out: its Menu and the ask to the Orchestrator, and its outbound HTTPS. It exists as a separate container
+  precisely _because_ the Working tools give the Agent code execution in the Harness container — the credentials live
+  where the Agent cannot read them, and the Harness container's env holds only their Stand-ins.
 - **User Container** — opt-in third seat, composed only when the `workspace()` names its image (a `file:` docker context
   the Machine ships or a registry ref, the same resolution as the Sandbox Image, no default —
   [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)). The authoring surface is that string —
@@ -45,11 +45,11 @@ no business in the working tree.
 
 What each container mounts of the credentials, stated once:
 
-| Container   | Mounts                                                                                                                                                                             |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `harness`   | `jr2-ca` at `/etc/jr2/ca` (the trust bundles). None of the Custodian's volumes.                                                                                                    |
-| `custodian` | its values (the Sandbox token, `jr2-held-secrets`, each user `secretKeyRef`) at `/etc/jr2/custodian/values`; its leaves (`jr2-held-tls`); its config (`jr2-held`); `upstream.crt`. |
-| `user`      | the checkouts' three volumes, and nothing else.                                                                                                                                    |
+| Container   | Mounts                                                                                                                                                                                                                 |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `harness`   | `jr2-ca` at `/etc/jr2/ca` (the trust bundles). None of the Custodian's volumes.                                                                                                                                        |
+| `custodian` | its values (the Sandbox token, its pod's `jr2-held-secrets-<pod>`, each user `secretKeyRef` its pod names) at `/etc/jr2/custodian/values`; its leaves (`jr2-held-tls`); its pod's config (`jr2-held`); `upstream.crt`. |
+| `user`      | the checkouts' three volumes, and nothing else.                                                                                                                                                                        |
 
 One git wall stays the image's own: git's dubious-ownership guard fires in the User Container whenever its uid differs
 from the Harness's (the attach created the trees), and `safe.directory` is honored only from system/global config —

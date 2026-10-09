@@ -158,6 +158,9 @@ export type SandboxParts = {
   /** The Size the Machine states (ADR-0060) — the `workspace()`'s, with any `customize()` layered
    * over it. Absent → the Instance's `sandbox.resources`, then the kit default. */
   resources?: Size;
+  /** The Held secrets this Workspace's pod gets beside its Agents' model keys (ADR-0059): names of
+   * the `secrets` list. Naming is placement — no other pod gets a name for being listed here. */
+  secrets?: string[];
 };
 
 // The stamps below are written ON `machine.config` under `Symbol.for` keys, never held in a
@@ -579,4 +582,74 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
 
   for (const machine of machines) walk(machine, []);
   return { agents, effects, images, repos, openSlots, openAgents, sizes, composesSandbox: sandboxed };
+}
+
+/**
+ * One Workspace a Machine composes, as its pod's Held secrets are placed (ADR-0059): what the pod
+ * names. Located like a {@link CarriedSize} — `path` is the `customize()` route to its
+ * `workspace()`, the same route the run host reads off the live actor at provision
+ * (`actorSlotPath`), so `jr2 up` and the provision name one pod alike.
+ */
+export type WorkspacePod = {
+  path: readonly string[] | undefined;
+  /** The `workspace()`'s own `secrets: [...]`, as written. */
+  secrets: string[];
+  /** The model of every bound Agent whose Turn runs in this pod: each Agent below the
+   * `workspace()` that is not `workspace: "none"` (those run at the Instance Harness, ADR-0031),
+   * down to the next `workspace()`, which is a pod of its own. Sorted, deduped. */
+  models: string[];
+};
+
+/**
+ * Every Workspace a Machine composes, at every route it is reached by — one entry per route, so a
+ * `workspace()` composed under two slot keys is two pods. Not deduped like {@link partsOf}: a pod
+ * is a route, not a Machine. A cycle (a recursive pool worker) stops at the Machine on its own
+ * route.
+ */
+export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
+  const pods: WorkspacePod[] = [];
+  /** The bound models of the Agents in `machine` and the Machines it composes, short of a
+   * `workspace()`. */
+  const modelsIn = (machine: AnyStateMachine, models: Set<string>, route: Set<AnyStateMachine>): void => {
+    if (route.has(machine)) return;
+    route.add(machine);
+    const visit = (child: AnyStateMachine) => {
+      if (!composesSandbox(child)) modelsIn(child, models, route);
+    };
+    for (const logic of Object.values(machine.implementations.actors as Record<string, unknown>)) {
+      if (isAgent(logic)) {
+        const { model, workspace } = logic.definition;
+        if (workspace !== "none" && typeof model === "string") models.add(model);
+        continue;
+      }
+      const child = asMachine(logic);
+      if (child) visit(child);
+    }
+    walkStates(machine.root, visit);
+    route.delete(machine);
+  };
+  const walk = (machine: AnyStateMachine, path: OpenSlot["path"], route: Set<AnyStateMachine>): void => {
+    if (route.has(machine)) return;
+    route.add(machine);
+    if (composesSandbox(machine)) {
+      const models = new Set<string>();
+      modelsIn(machine, models, new Set());
+      pods.push({ path, secrets: [...(sandboxPartsOf(machine).secrets ?? [])], models: [...models].sort() });
+    }
+    const body = wrapperBodyOf(machine);
+    for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
+      const child = isAgent(logic) || isEffect(logic) ? undefined : asMachine(logic);
+      if (child) walk(child, path === undefined ? undefined : name === body ? path : [...path, name], route);
+    }
+    walkStates(machine.root, (inline) => walk(inline, undefined, route));
+    route.delete(machine);
+  };
+  walk(root, [], new Set());
+  return pods;
+}
+
+/** Every machine object written inline below `node`, at any depth of its state tree. */
+function walkStates(node: StateNode<any, any>, visit: (machine: AnyStateMachine) => void): void {
+  for (const machine of inlineMachines(node)) visit(machine);
+  for (const child of Object.values(node.states as Record<string, StateNode<any, any>>)) walkStates(child, visit);
 }

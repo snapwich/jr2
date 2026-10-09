@@ -9,7 +9,7 @@ models, and the catalog holds the limits, costs and thinking levels of those mod
 
 The same problem had one solution already, for one credential. The Adapter held the Sandbox token in a container the
 Agent executes nothing in ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)). This
-decision generalizes that container. It holds every credential the Harness uses, and it replaces the Adapter.
+decision generalizes that container. It holds every credential the Harness in its pod uses, and it replaces the Adapter.
 
 ## Decision
 
@@ -19,11 +19,11 @@ decision generalizes that container. It holds every credential the Harness uses,
   contains `sk-ant-oat` (pi reads such a key as an Anthropic OAuth token). The word is not "placeholder", because that
   is the word of an Open part.
 - **The Custodian holds them.** It is a container in every Harness pod — every Sandbox and the Instance Harness — beside
-  the Harness. The Agent executes no code in it, and `shareProcessNamespace` stays off
-  ([ADR-0005](0005-sandbox-pod-composition.md)). So the Agent cannot read its env, its files or its `/proc`. Its engine
-  is Envoy: the upstream distroless image, pinned by digest (`CUSTODIAN_IMAGE` in `@jr2/orchestrator`). `jr2 up` writes
-  Envoy's whole configuration. There is no admin listener and no xDS, so nothing in the pod can change the configuration
-  or read it back.
+  the Harness, and it holds the held secrets its own pod names (below). The Agent executes no code in it, and
+  `shareProcessNamespace` stays off ([ADR-0005](0005-sandbox-pod-composition.md)). So the Agent cannot read its env, its
+  files or its `/proc`. Its engine is Envoy: the upstream distroless image, pinned by digest (`CUSTODIAN_IMAGE` in
+  `@jr2/orchestrator`). `jr2 up` writes Envoy's whole configuration. There is no admin listener and no xDS, so nothing
+  in the pod can change the configuration or read it back.
 - **The Custodian replaces the Adapter.** The `@jr2/adapter` package and the `jr2-adapter` image are deleted. The
   Sandbox token is a held secret of the kit's own: the Harness container holds
   `JR2_SANDBOX_TOKEN=jr2-held-JR2_SANDBOX_TOKEN`, and the Custodian holds the token as a file from the `<sandbox>-token`
@@ -62,10 +62,10 @@ decision generalizes that container. It holds every credential the Harness uses,
   allowlist is the second layer. The control stays in the Orchestrator: the token's scope, the live registration, and
   the event's name and payload are judged there, as before (ADR-0013).
 
-- **Model keys go the same way, over HTTPS.** When a held secret exists, the Harness container also gets:
+- **Model keys go the same way, over HTTPS.** When its pod holds a held secret, the Harness container also gets:
 
   ```sh
-  <NAME>=jr2-held-<NAME>                         one per held secret
+  <NAME>=jr2-held-<NAME>                         one per held secret of the pod
   HTTPS_PROXY / https_proxy=http://127.0.0.1:15001
   NO_PROXY / no_proxy=localhost,127.0.0.1,::1
   NODE_USE_ENV_PROXY=1
@@ -129,11 +129,29 @@ decision generalizes that container. It holds every credential the Harness uses,
   entry is
   `{ name; value | valueFrom.secretKeyRef; hosts?; headers?, default `authorization`, `x-api-key`, `x-goog-api-key`, `api-key`; paths? }`,
   and `harness.catalog` (a catalog provider id → `{ baseUrl }`). The list serves both sides
-  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): an entry with `hosts` — or a known
-  model key, whose hosts default (below) — is a held secret; one an Effect names is an Effect secret.
-  `harness.provider.apiKey` is a held secret too, `JR2_PROVIDER_API_KEY`, bound to its `baseUrl`'s host. `loadConfig`
-  checks the shape in both worlds. `jr2 up` alone checks the rest (`heldSecretsOf`), host-side, because `.env` values
-  are absent in-cluster:
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). `harness.provider.apiKey` is an entry
+  too, implicitly: `JR2_PROVIDER_API_KEY`, bound to its `baseUrl`'s host. `loadConfig` checks the shape in both worlds.
+- **Naming is placement: a pod gets the held secrets something in it names.** Placement is read, never declared
+  (`secretPlacementsOf`), and an entry's `hosts`, `headers` and `paths` are its binding — where the Custodian may put
+  the value — never its placement:
+
+  | Pod                   | The held secrets its Custodian holds                                                       |
+  | --------------------- | ------------------------------------------------------------------------------------------ |
+  | A Workspace's Sandbox | the names its `workspace()` lists under `secrets: [...]`, and the model keys of its Agents |
+  | The Instance Harness  | the model keys of the `"none"` Agents it hosts, and nothing else                           |
+
+  A model key is claimed by the PROVIDER: an Agent names its model, and jr2 knows which keys that provider reads
+  (`MODEL_KEYS`; the custom provider's id for `JR2_PROVIDER_API_KEY`). An Agent's Turns run in the Workspace below which
+  it is declared, down to the next `workspace()`, unless it is `"none"`, whose Turns run at the Instance Harness
+  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)). A `"none"` Agent cannot execute code, so the
+  Instance Harness loses nothing by holding only model keys. Listing a model key under a `workspace()`'s `secrets` is
+  allowed, and `jr2 up` reports it as redundant. A name a `workspace()` lists that the list does not hold is refused,
+  with the line to add. An entry nothing names — no `workspace()`, no provider, no Effect — goes nowhere, and `jr2 up`
+  warns. `jr2 up` reports per pod:
+  `Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`.
+
+  `jr2 up` alone checks the claimed entries (`heldSecretsOf`), host-side, because `.env` values are absent in-cluster.
+  An entry no pod claims is not checked as a held secret:
 
   | #   | Refused                                                                                                                                                                                                                                                        |
   | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -141,7 +159,7 @@ decision generalizes that container. It holds every credential the Harness uses,
   | R2  | A held-secret name that is `JR2_*` or a proxy or trust variable.                                                                                                                                                                                               |
   | R3  | One name held twice, or held and set by `harness.env`.                                                                                                                                                                                                         |
   | R4  | Not exactly one of `value`/`valueFrom`; an empty value; a byte outside `0x20`–`0x7E`; leading or trailing space.                                                                                                                                               |
-  | R5  | No `hosts` where no default exists; a wildcard, userinfo, a non-`https` scheme, a bare-host path, a bad port; two secrets on one host in one header.                                                                                                           |
+  | R5  | A claimed entry with no `hosts` where no default exists; a wildcard, userinfo, a non-`https` scheme, a bare-host path, a bad port; two secrets on one host in one header.                                                                                      |
   | R6  | A `headers` entry that is not a lowercase token, or that frames or routes the request; a duplicate.                                                                                                                                                            |
   | R7  | `provider.apiKey` with a non-`https` `baseUrl`; a non-`https` catalog `baseUrl`.                                                                                                                                                                               |
   | R8  | A catalog key that is not a known provider, or that is the custom provider's id.                                                                                                                                                                               |
@@ -171,13 +189,21 @@ decision generalizes that container. It holds every credential the Harness uses,
   replaces their store), and `upstream.crt` (the roots + `caBundle`, and never the jr2 CA, for the Custodian). "Roots"
   are the Mozilla roots of the Node that runs `jr2 up`. The ConfigMap is applied server-side, because two copies of the
   roots are more than client-side apply's annotation can hold.
-- **Objects.** `jr2-held` (always: `held.json`, `envoy.json`, `custodian.lua`), `jr2-held-secrets` (the literal values),
-  `jr2-held-tls`, `jr2-held-ca`. The Orchestrator mounts only `held.json`, at `/etc/jr2/held`, and reads it per
-  provision — the `jr2-images` pattern ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)). One function,
-  `custodianComposition`, builds what a pod gains; `kubectlSandbox` and `instanceHarnessObjects` both call it, so the
-  two pod shapes cannot drift. The Instance Harness's pod template carries `jr2.dev/held-digest`, an HMAC over every
-  held-secret input keyed with the signing key, so a held-secret edit rolls it. A live Sandbox keeps what its Custodian
-  read at start.
+- **Objects, per pod.** The held manifest, the Custodian's config and the literal values are each a pod's own, from the
+  one derivation that places Effect secrets. A pod is keyed `instance` for the Instance Harness, and `ws-<digest>` for a
+  Workspace, the digest of its registered workflow and the `customize()` route to its `workspace()` — the route the walk
+  reads statically and the run host reads off the live actor at provision, so both name one pod alike. `jr2-held`
+  (always) holds `held-<pod>.json`, `envoy-<pod>.json` and `custodian-<pod>.lua` for each pod; `jr2-held-secrets-<pod>`
+  holds one pod's literal values, labeled `jr2.dev/held-pod`, and `jr2 up` deletes the one a pod no longer needs.
+  `jr2-held-tls` (every bound target's leaf) and `jr2-held-ca` are the Instance's. The Orchestrator mounts `jr2-held` at
+  `/etc/jr2/held` and reads the manifest of the Workspace it provisions, per provision — the `jr2-images` pattern
+  ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)); a Workspace `jr2 up` never walked has none, and its
+  provision is refused, naming `jr2 up`. Two Workspaces of one workflow invoked inline have no route, so they are one
+  pod key; `jr2 up` refuses them when they would hold different names. One function, `custodianComposition`, builds what
+  a pod gains from its pod's manifest; `kubeSandbox` and `instanceHarnessObjects` both call it, so the two pod shapes
+  cannot drift. The Instance Harness's pod template carries `jr2.dev/held-digest`, an HMAC over its pod's held-secret
+  inputs keyed with the signing key, so a held-secret edit rolls it. A live Sandbox keeps what its Custodian read at
+  start.
 
 ## Considered options
 
@@ -233,11 +259,15 @@ decision generalizes that container. It holds every credential the Harness uses,
   Stand-in as `x-api-key`, which an OAuth token cannot ride; hold it as `ANTHROPIC_AUTH_TOKEN` (`Authorization: Bearer`)
   instead.
 - **Rotation of a value** reaches a live Sandbox only when its pod is replaced.
+- **The walk reads definitions, not Turns.** A pod's model keys come from the models its Agents' definitions name. A
+  Turn whose invocation overrides the model with another provider's (`AgentTurnInput.model`) finds no binding for that
+  provider in its pod: its calls carry the Stand-in and fail with 401. The fix is a definition that names the provider,
+  or the key under the `workspace()`'s `secrets`.
 - **TLS-only bindings.** A key for a plain-HTTP endpoint is refused (R7). A LAN `llama-server --api-key` needs TLS and
   its CA in `caBundle`, or no key.
 - **No proxy chaining.** The Custodian cannot forward to a corporate proxy. R11 says so rather than fail silently.
-- **Two Harness env shapes.** With no held secret, a pod gets the Custodian's address and the token's Stand-in and no
-  proxy, and its HTTPS goes direct. The Custodian runs in both shapes, because it carries the Menu.
+- **Two Harness env shapes.** With no held secret in it, a pod gets the Custodian's address and the token's Stand-in and
+  no proxy, and its HTTPS goes direct. The Custodian runs in both shapes, because it carries the Menu.
 - **The dial guard adds no confinement while egress is open.** The Agent can dial those addresses itself. The guard
   matters when a cluster closes egress to everything but the Custodian: then the Custodian is not a way around it.
 - **One container holds two kinds of credential.** A fault in Envoy's TLS or HTTP parsing is a fault in the container

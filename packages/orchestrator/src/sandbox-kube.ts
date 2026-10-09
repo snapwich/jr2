@@ -63,12 +63,13 @@
 // readiness probe the pod's Ready waits on. What this module builds is the pod's asymmetry:
 //
 //   harness container     JR2_CUSTODIAN_URL + the Stand-in of every credential  (no credential)
-//   custodian container   the Sandbox token and every held secret, as files     (the credentials)
+//   custodian container   the Sandbox token and the pod's held secrets, as files (the credentials)
 //
 // The Agent has code execution in the first and none in the second. The token is minted here — a
 // signed Sandbox name (see tokens.ts), so re-provisioning after a restart yields the SAME token and
-// the Secret re-applies as a no-op. What else the Custodian holds is `jr2 up`'s resolution, read
-// per provision from the `jr2-held` mount (custodian.ts builds both placements' pods alike).
+// the Secret re-applies as a no-op. What else the Custodian holds is `jr2 up`'s placement for THIS
+// Workspace — the Held secrets its `workspace()` lists and its Agents' providers claim (ADR-0059) —
+// read per provision from the `jr2-held` mount (custodian.ts builds both placements' pods alike).
 
 import { join } from "node:path";
 import {
@@ -79,14 +80,14 @@ import {
   type SandboxPlacement,
 } from "./config.ts";
 import { custodianComposition, type CustodianComposition } from "./custodian.ts";
-import { readHeldManifest } from "./held-secrets.ts";
+import { readHeldManifest, workspaceHeldPod } from "./held-secrets.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
 import {
   CONVERSATIONS_DIR,
   CONVERSATIONS_DIR_ENV,
   CONVERSATIONS_VOLUME,
-  HELD_KEY,
   HELD_MOUNT,
+  heldManifestKey,
   IMAGES_KEY,
   IMAGES_MOUNT,
   PRIORITY_CLASS_SANDBOX,
@@ -282,10 +283,10 @@ export type KubeSandboxOptions = {
    * off it at invoke time, handed to `provision()` as a string — and resolved against this map at
    * provision. The per-run spec never names one (ADR-0051). */
   imagesPath?: string;
-  /** The held-secret manifest `jr2 up` resolved (ADR-0059) — read per provision like the image map,
-   * so a held-secret edit reaches future Sandboxes without rolling this process. Default: the
-   * `jr2-held` ConfigMap's mount. */
-  heldPath?: string;
+  /** Where each Workspace's held manifest is (ADR-0059): `held-<pod>.json` per pod `jr2 up`
+   * placed, read per provision like the image map, so a held-secret edit reaches future Sandboxes
+   * without rolling this process. Default: the `jr2-held` ConfigMap's mount. */
+  heldDir?: string;
   /** Extra env for the HARNESS container (`harness.env`) — merged ahead of the
    * mechanism-owned vars, which win on collision. */
   env?: HarnessEnvVar[];
@@ -365,7 +366,7 @@ export type KubeSandboxOptions = {
 export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const ns = opts.namespace ?? "default";
   const imagesPath = opts.imagesPath ?? join(IMAGES_MOUNT, IMAGES_KEY);
-  const heldPath = opts.heldPath ?? join(HELD_MOUNT, HELD_KEY);
+  const heldDir = opts.heldDir ?? HELD_MOUNT;
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const repoTimeoutMs = opts.repoTimeoutMs ?? 25 * 60_000;
   const credentials = opts.credentials ?? [];
@@ -887,12 +888,15 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // reaches future Sandboxes without rolling the Orchestrator. Reading before the Secret apply
       // also means an unknown image name costs nothing: no Secret, no CR, nothing to clean up.
       const refs = await readImageRefs(imagesPath);
-      // The same stance for what the Custodian holds (ADR-0059): `jr2 up` resolved it host-side,
-      // where `.env` exists, and this process reads the result — never its own config, whose
-      // `.env` values are absent in-cluster.
-      const manifest = await readHeldManifest(heldPath);
+      // The same stance for what the Custodian holds (ADR-0059): `jr2 up` placed it host-side,
+      // where `.env` exists, per Workspace — the one its workflow and its route name — and this
+      // process reads that pod's manifest, never its own config, whose `.env` values are absent
+      // in-cluster. A Workspace `jr2 up` never walked has none, and is refused by name.
+      const pod = workspaceHeldPod({ workflow: req.workflow, path: req.path });
+      const manifest = await readHeldManifest(join(heldDir, heldManifestKey(pod)));
       const custodian = custodianComposition(manifest, {
         image: refs.custodian,
+        pod,
         token: { secret: secretName(req.name), key: "JR2_SANDBOX_TOKEN" },
         sandbox: req.name,
         caBundle: opts.caBundle === true,

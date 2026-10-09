@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
-import { customizeLine, open, partsOf } from "../src/parts.ts";
+import { customizeLine, open, partsOf, workspacePodsOf } from "../src/parts.ts";
 import { agent } from "../src/harness-client.ts";
 import { arg, commandWith } from "../src/effect.ts";
 import { jr2Setup } from "../src/setup.ts";
@@ -553,4 +553,60 @@ test("an Effect slot is carried as plain data: its kind, where it runs, its argv
       slot: "docs",
     },
   ]);
+});
+
+// --- the Held secrets of each Workspace's pod (ADR-0059) -----------------------------------------
+
+test("each Workspace's pod: its workspace()'s secrets and the models its Turns run on, at every route", () => {
+  const body = jr2Setup({
+    events: [],
+    actors: {
+      coder: agent(def("anthropic/claude-x")),
+      reviewer: agent(def("openai/gpt-x", "read")),
+      // A "none" Agent's Turn runs at the Instance Harness (ADR-0031): not this pod's model.
+      advisor: agent(def("google/gemini-x", "none")),
+      // A child Machine that is no Workspace runs its Agents in this pod.
+      helper: carrier("helper", "linter", "vllm/qwen"),
+      // A nested Workspace is a pod of its own.
+      nested: workspace(carrier("inner", "fixer", "xai/grok"), {
+        repos: { app: "https://example.test/app.git" },
+        secrets: ["INNER_KEY"],
+        spec: () => ({ branch: "inner" }),
+      }),
+    },
+  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  const outer = workspace(body, {
+    repos: { app: "https://example.test/app.git" },
+    secrets: ["JIRA_TOKEN"],
+    spec: () => ({ branch: "feat-1" }),
+  });
+  const root = jr2Setup({ events: [], actors: { a: outer, b: outer } }).createMachine({
+    id: "root",
+    initial: "idle",
+    states: { idle: {} },
+  });
+  const outerPod = { secrets: ["JIRA_TOKEN"], models: ["anthropic/claude-x", "openai/gpt-x", "vllm/qwen"] };
+  const innerPod = { secrets: ["INNER_KEY"], models: ["xai/grok"] };
+  assert.deepEqual(workspacePodsOf(root), [
+    { path: ["a"], ...outerPod },
+    { path: ["a", "nested"], ...innerPod },
+    // The same workspace() under a second slot key is a second pod.
+    { path: ["b"], ...outerPod },
+    { path: ["b", "nested"], ...innerPod },
+  ]);
+  assert.deepEqual(workspacePodsOf(outer)[0], { path: [], ...outerPod }, "the registered root is route []");
+});
+
+test("workspace() refuses a secrets list that is not distinct names", () => {
+  for (const secrets of [["A", "A"], [""], "A", [1]]) {
+    assert.throws(
+      () =>
+        workspace(carrier("body", "coder", "vllm/qwen"), {
+          repos: { app: "https://example.test/app.git" },
+          secrets: secrets as never,
+          spec: () => ({ branch: "feat-1" }),
+        }),
+      /`secrets` must be a list of distinct names/,
+    );
+  }
 });

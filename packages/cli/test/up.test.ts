@@ -17,6 +17,7 @@ import {
   harnessTokenDigest,
   leafStem,
   sandboxToken,
+  workspaceHeldPod,
   type HeldManifest,
 } from "@jr2/orchestrator";
 import { linkKit } from "./_kit.ts";
@@ -130,6 +131,15 @@ class FakeCluster implements KubeAdmin {
     // keep-set question with whatever the last apply happened to name.
     if (opts.kind === "pod" && opts.allNamespaces) return this.clusterPods as T[];
     if (opts.kind === "event") return this.events as T[];
+    // A Secret read by label (`jr2.dev/held-pod`): the ones `set` put in this namespace that carry it.
+    if (opts.kind === "secret") {
+      return [...this.objects]
+        .filter(
+          ([key, o]) =>
+            key.startsWith(`${opts.namespace ?? ""}/secret/`) && opts.selector! in (o.metadata.labels ?? {}),
+        )
+        .map(([, o]) => o) as T[];
+    }
     if (opts.kind !== "pod") return [];
     const failed = this.failedPods[opts.selector ?? ""];
     if (failed) return failed as T[];
@@ -1686,9 +1696,14 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   assert.equal(harnessEnv.stringData.JR2_INSTANCE_TOKEN, undefined, "the token never rides the harness Secret");
 });
 
+/** A `"none"` Agent on the custom provider: the Instance Harness's pod claims the provider's key. */
+const VLLM_ADVISOR: Record<string, FixtureAgent> = { advisor: { model: "vllm/qwen-x", workspace: "none" } };
+
 test("provider apiKey is a held secret: the Custodian's Secret holds it, the Harness's never does (ADR-0059)", async () => {
   const root = await mkInstance(
     `export default { name: "myinst", harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "https://10.0.0.5:8000/v1", apiKey: "sk-secret", contextWindow: 131072, maxTokens: 32768, models: { "qwen-x": { contextWindow: 40960 } } } } };\n`,
+    "myinst",
+    VLLM_ADVISOR,
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
@@ -1697,12 +1712,14 @@ test("provider apiKey is a held secret: the Custodian's Secret holds it, the Har
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   const harnessEnv = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-harness-env")!;
   assert.equal(harnessEnv.stringData.JR2_PROVIDER_API_KEY, undefined, "the Agent can read that Secret");
-  const held = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-held-secrets")!;
+  // The pod whose Agent names the provider holds it: the Instance Harness's own Secret.
+  const held = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-held-secrets-instance")!;
   assert.deepEqual(held.stringData, { JR2_PROVIDER_API_KEY: "sk-secret" }, "written as given, no newline added");
+  assert.equal(held.metadata.labels["jr2.dev/held-pod"], "instance");
 
   // The binding: the endpoint's own host and port, the default credential headers.
   const heldCm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
-  const manifest = JSON.parse(heldCm.data["held.json"]) as HeldManifest;
+  const manifest = JSON.parse(heldCm.data["held-instance.json"]) as HeldManifest;
   assert.deepEqual(manifest.secrets, [
     {
       name: "JR2_PROVIDER_API_KEY",
@@ -1756,7 +1773,7 @@ test("provider apiKey is a held secret: the Custodian's Secret holds it, the Har
 
 test("the CA is kept, a leaf that still fits is reused, and a converge holding nothing drops the Custodian's Secrets", async () => {
   const config = `export default { name: "myinst", harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "https://llm.corp.example/v1", apiKey: "sk-1" } } };\n`;
-  const root = await mkInstance(config);
+  const root = await mkInstance(config, "myinst", VLLM_ADVISOR);
   const first = mkWorld(root);
   assert.equal(await up(["--yes"], first.io), 0);
   const items = (
@@ -1778,16 +1795,19 @@ test("the CA is kept, a leaf that still fits is reused, and a converge holding n
   assert.deepEqual(again.find((i) => i.metadata.name === "jr2-held-ca")!.stringData, ca.stringData);
   assert.deepEqual(again.find((i) => i.metadata.name === "jr2-held-tls")!.stringData, tls.stringData);
 
-  // Nothing held: the values and the leaves go; the CA stays for the next time.
+  // Nothing held: each pod's values and the leaves go; the CA stays for the next time.
   const none = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  none.kube.set("myinst", "secret", "jr2-held-secrets-instance", {
+    metadata: { name: "jr2-held-secrets-instance", labels: { "jr2.dev/held-pod": "instance" } },
+  });
   assert.equal(await up(["--yes"], none.io), 0);
-  assert.ok(none.kube.deleted.includes("myinst/secret/jr2-held-secrets"));
+  assert.ok(none.kube.deleted.includes("myinst/secret/jr2-held-secrets-instance"));
   assert.ok(none.kube.deleted.includes("myinst/secret/jr2-held-tls"));
   assert.ok(!none.kube.deleted.includes("myinst/secret/jr2-held-ca"));
   const cm = (
     JSON.parse(none.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as { items: Array<Record<string, any>> }
   ).items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
-  assert.deepEqual(JSON.parse(cm.data["held.json"]), { version: 1, secrets: [] }, "the manifest is applied always");
+  assert.deepEqual(cm.data, {}, "the ConfigMap is applied always — here with no Harness pod to hold for");
 });
 
 test("a known model key in harness.env or in an envFrom Secret is refused, naming the line to write (R1)", async () => {
@@ -2251,7 +2271,7 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   const heldCm = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.metadata.name === "jr2-held",
   )!;
-  assert.match(heldCm.data["envoy.json"], /jr2-orchestrator\.myinst\.svc/);
+  assert.match(heldCm.data["envoy-instance.json"], /jr2-orchestrator\.myinst\.svc/);
   assert.ok(statefulSet.spec.template.metadata.annotations["jr2.dev/held-digest"], "a held-secret edit rolls this pod");
 });
 
@@ -2608,7 +2628,7 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
       `secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-litellm-secret", paths: ["/v1/messages"] }, ` +
       `{ name: "OPENAI_API_KEY", valueFrom: { secretKeyRef: { name: "team", key: "openai" } }, hosts: ["api.openai.com"] }] };\n`,
     "myinst",
-    DECISIONER_AGENTS,
+    { ...DECISIONER_AGENTS, critic: { model: "openai/gpt-x", workspace: "none" } },
   );
   const w = mkWorld(root);
   w.kube.set("myinst", "secret", "team", { data: { openai: "c2stb3Blbg==" } } as never);
@@ -2616,7 +2636,9 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
 
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-held"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const manifest = JSON.parse(items.find((i) => i.metadata.name === "jr2-held")!.data["held.json"]) as HeldManifest;
+  const manifest = JSON.parse(
+    items.find((i) => i.metadata.name === "jr2-held")!.data["held-instance.json"],
+  ) as HeldManifest;
   assert.deepEqual(
     manifest.secrets.map((s) => [s.name, s.source.kind, s.hosts.map((h) => h.host)]),
     [
@@ -2638,13 +2660,13 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
   assert.deepEqual(env.at(-1)?.name, "JR2_HARNESS_TOKEN_SHA256", "the gate still rides last");
 
   // Only the Custodian references what it holds; no manifest but its own Secret names the CA.
-  const held = ["jr2-held-secrets", "jr2-held-tls", "team"];
+  const held = ["jr2-held-secrets-instance", "jr2-held-tls", "team"];
   const harnessRefs = JSON.stringify(pod.containers[0]);
   for (const name of held) assert.ok(!harnessRefs.includes(`"${name}"`), `the Harness container references ${name}`);
   const values = pod.volumes.find((v: { name: string }) => v.name === "custodian-values");
   assert.deepEqual(
     values.projected.sources.map((s: { secret: { name: string } }) => s.secret.name),
-    ["jr2-instance", "jr2-held-secrets", "team"],
+    ["jr2-instance", "jr2-held-secrets-instance", "team"],
   );
   const everything = w.kube.applied.join("\n");
   const caMentions = everything.split('"jr2-held-ca"').length - 1;
@@ -2654,7 +2676,8 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
     "the value is in one place alone",
   );
   assert.ok(
-    items.find((i) => i.metadata.name === "jr2-held-secrets")!.stringData.ANTHROPIC_API_KEY === "sk-litellm-secret",
+    items.find((i) => i.metadata.name === "jr2-held-secrets-instance")!.stringData.ANTHROPIC_API_KEY ===
+      "sk-litellm-secret",
     "…the Custodian's Secret",
   );
 });
@@ -3038,24 +3061,69 @@ test("an Effect that names a secret the list does not hold is refused before any
   assert.deepEqual(w.kube.applied, [], "nothing was applied");
 });
 
-test("one secret both Held and named by an Effect is both, and the report says so", async () => {
-  const root = await withHttpEffect(
-    await mkInstance(
-      `export default { name: "myinst", secrets: [{ name: "JIRA_TOKEN", value: "jira-token-value-0123", hosts: ["jira.example.com"] }] };\n`,
-    ),
-    "JIRA_TOKEN",
+/** A `workspace()` whose pod is named the Held secrets in `secrets` (ADR-0059). */
+async function withHeldWorkspace(root: string, secrets: string[]): Promise<string> {
+  await writeFile(
+    join(root, "workflows", "coding.ts"),
+    `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, ` +
+      `secrets: ${JSON.stringify(secrets)}, spec: () => ({ branch: "b" }) });\n`,
   );
+  return root;
+}
+
+test("one secret both Held and named by an Effect is both, and the report says so per pod", async () => {
+  const config = `export default { name: "myinst", secrets: [{ name: "JIRA_TOKEN", value: "jira-token-value-0123", hosts: ["jira.example.com"] }] };\n`;
+  const root = await withHeldWorkspace(await withHttpEffect(await mkInstance(config), "JIRA_TOKEN"), ["JIRA_TOKEN"]);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
+  const out = w.err.join("\n");
   assert.match(
-    w.err.join("\n"),
-    /secret JIRA_TOKEN: Held \(every Custodian\) and an Effect secret in the Instance Effector \(notify\/comment\)/,
+    out,
+    /secret JIRA_TOKEN: Held in Workspace of workflow "coding" and an Effect secret in the Instance Effector \(notify\/comment\)/,
+  );
+  assert.match(out, /Workspace of workflow "coding": Custodian holds JIRA_TOKEN/);
+  assert.match(out, /the Instance Effector: holds JIRA_TOKEN/);
+  // The Workspace's pod has its own manifest and its own values' Secret; the Effector its own.
+  const objects = appliedObjects(w);
+  const pod = workspaceHeldPod({ workflow: "coding", path: [] });
+  assert.deepEqual(objects.get(`Secret/jr2-held-secrets-${pod}`)?.stringData, { JIRA_TOKEN: "jira-token-value-0123" });
+  const cm = objects.get("ConfigMap/jr2-held")!;
+  assert.deepEqual(
+    (JSON.parse(cm.data[`held-${pod}.json`]) as HeldManifest).secrets.map((s) => s.name),
+    ["JIRA_TOKEN"],
   );
   // As a Held secret its name is an env var; one that is not is refused as one (R2).
-  const lower = await withHttpEffect(
+  const lower = await withHeldWorkspace(
     await mkInstance(
       `export default { name: "myinst", secrets: [{ name: "jira", value: "jira-token-value-0123", hosts: ["jira.example.com"] }] };\n`,
     ),
+    ["jira"],
   );
   await assert.rejects(() => up(["--yes"], mkWorld(lower).io), /not an env var name/);
+});
+
+test("hosts alone places nothing: an Effect secret with hosts that no workspace() lists reaches no Custodian (ADR-0059)", async () => {
+  // The verifier's case: a known model key that only an Effect names, with one default host or
+  // none, is the Effector's alone — no Custodian binds it, and R5 does not fire.
+  for (const name of ["HF_TOKEN", "AZURE_OPENAI_API_KEY"]) {
+    const root = await withHttpEffect(
+      await mkInstance(
+        `export default { name: "myinst", secrets: [{ name: "${name}", value: "a-long-enough-value" }] };\n`,
+        "myinst",
+        DECISIONER_AGENTS,
+      ),
+      name,
+    );
+    const w = mkWorld(root);
+    assert.equal(await up(["--yes"], w.io), 0, name);
+    const cm = appliedObjects(w).get("ConfigMap/jr2-held")!;
+    for (const [key, manifest] of Object.entries(cm.data as Record<string, string>)) {
+      if (key.startsWith("held-")) assert.deepEqual(JSON.parse(manifest).secrets, [], `${name} in ${key}`);
+    }
+    assert.equal(appliedObjects(w).get(`Secret/jr2-held-secrets-instance`), undefined);
+    assert.match(w.err.join("\n"), new RegExp(`secret ${name}: an Effect secret in the Instance Effector`));
+  }
 });

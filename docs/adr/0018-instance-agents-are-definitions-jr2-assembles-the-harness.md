@@ -45,13 +45,13 @@ holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of 
   choosing. The honest split: **`harness` declares reach; the definition makes the choice.**
 - **Credentials are held, not handed over**
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Agent executes code in the
-  Harness container, so a key there is a key it can take away. The top-level `secrets` list declares each credential,
-  and an entry with the hosts it may reach is a Held secret
-  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)); `jr2 up` gives the value to the
-  Custodian and to no other container, and the Harness container's env holds the key's Stand-in.
-  `harness.provider.apiKey` is one implicitly: the held secret `JR2_PROVIDER_API_KEY`, bound to `baseUrl`'s host, so it
-  leaves the `jr2-harness-env` Secret and `baseUrl` must be `https://` when a key is set. A known model key in
-  `harness.env`, or in an `envFrom` Secret, is refused.
+  Harness container, so a key there is a key it can take away. The top-level `secrets` list declares each credential
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A model key is a Held secret in the
+  pods whose Agents name a model of a provider that reads it; `jr2 up` gives its value to the Custodian of those pods —
+  and, where an Effect also names it, to that Effect's Effector — and the Harness container's env holds the key's
+  Stand-in. `harness.provider.apiKey` is one implicitly: the held secret `JR2_PROVIDER_API_KEY`, bound to `baseUrl`'s
+  host, so it leaves the `jr2-harness-env` Secret and `baseUrl` must be `https://` when a key is set. A known model key
+  in `harness.env`, or in an `envFrom` Secret, is refused.
 - **A catalog provider can be moved to a gateway, and stays a catalog provider.** `harness.catalog.<id>.baseUrl`
   replaces the base URL of every model of one pi catalog provider — a LiteLLM gateway in front of Bedrock, for
   `anthropic/…`. The catalog keeps its limits, cost and thinking levels; only the endpoint moves. It is reach, not a

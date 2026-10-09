@@ -195,6 +195,7 @@ test("the script: a generated table of names, headers, paths and targets in fron
 test("composition, nothing held: the Harness gets the Custodian's address and the token's Stand-in, and no proxy", () => {
   const c = custodianComposition(EMPTY_HELD, {
     image: "envoy:c1",
+    pod: "ws-0123456789abcdef",
     token: { secret: "ws-1-token", key: "JR2_SANDBOX_TOKEN" },
     sandbox: "ws-1",
     caBundle: false,
@@ -209,9 +210,24 @@ test("composition, nothing held: the Harness gets the Custodian's address and th
     ["custodian-values", "custodian-config"],
   );
   assert.deepEqual((c.custodianContainer as { env: unknown }).env, [{ name: "JR2_SANDBOX", value: "ws-1" }]);
+  // Its own pod's bootstrap and script, under the names Envoy is started with (ADR-0059).
+  assert.deepEqual(
+    c.volumes.find((v) => v.name === "custodian-config"),
+    {
+      name: "custodian-config",
+      configMap: {
+        name: "jr2-held",
+        items: [
+          { key: "envoy-ws-0123456789abcdef.json", path: "envoy.json" },
+          { key: "custodian-ws-0123456789abcdef.lua", path: "custodian.lua" },
+        ],
+      },
+    },
+  );
   // The Instance Harness has no Sandbox, so no name to address an ask by.
   const instance = custodianComposition(EMPTY_HELD, {
     image: "envoy:c1",
+    pod: "instance",
     token: { secret: "jr2-instance", key: "JR2_INSTANCE_HARNESS_TOKEN" },
     caBundle: true,
   });

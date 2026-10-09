@@ -12,10 +12,17 @@ import { heldSecretsOf, leafStem, parseTarget, standIn, type HeldLookups } from 
 
 const SECRET = "sk-very-secret-value";
 
+/** The rules over a config whose every entry, and the custom provider's key, some pod claims — what
+ * these tests are about. Which pod claims which name is secret-placement.ts's (its own tests). */
+function rules(config: JR2Config, lookups?: HeldLookups) {
+  const claimed = new Set([...(config.secrets ?? []).map((s) => s.name), "JR2_PROVIDER_API_KEY"]);
+  return heldSecretsOf(config, claimed, lookups);
+}
+
 /** Run the rules, and on a refusal hand back the message — asserting it names no value. */
 function refusal(config: JR2Config, lookups?: HeldLookups): string {
   try {
-    heldSecretsOf(config, lookups);
+    rules(config, lookups);
   } catch (err) {
     const message = (err as Error).message;
     assert.ok(!message.includes(SECRET), `a refusal names no value: ${message}`);
@@ -47,7 +54,7 @@ test("jr2-upload-pack presents the same Stand-in: the Go literal is standIn(JR2_
 });
 
 test("a literal is normalized: hosts parsed, the leaf stem derived, default headers, the value kept host-side", () => {
-  const { manifest, values, warnings } = heldSecretsOf(held({ paths: ["/v1/messages"] }));
+  const { manifest, values, warnings } = rules(held({ paths: ["/v1/messages"] }));
   assert.deepEqual(manifest, {
     version: 1,
     secrets: [
@@ -78,7 +85,7 @@ test("the three hosts forms, and IP literals — IPv6 compressed and unbracketed
 });
 
 test("the implicit JR2_PROVIDER_API_KEY: bound to the custom provider's own host and port", () => {
-  const { manifest, values } = heldSecretsOf({
+  const { manifest, values } = rules({
     harness: {
       provider: { id: "vllm", api: "openai-completions", baseUrl: "https://10.0.0.5:8000/v1", apiKey: SECRET },
     },
@@ -90,20 +97,20 @@ test("the implicit JR2_PROVIDER_API_KEY: bound to the custom provider's own host
   assert.deepEqual(values, { JR2_PROVIDER_API_KEY: SECRET });
   // No apiKey, nothing held — the keyless endpoint is still keyless.
   assert.deepEqual(
-    heldSecretsOf({ harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://llm.lan/v1" } } })
-      .manifest.secrets,
+    rules({ harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://llm.lan/v1" } } }).manifest
+      .secrets,
     [],
   );
 });
 
 test("a known model key with no hosts goes where its provider's calls go: the catalog override, else the table", () => {
-  const table = heldSecretsOf({ secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET }] });
+  const table = rules({ secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET }] });
   assert.deepEqual(
     table.manifest.secrets[0]!.hosts.map((h) => h.host),
     ["api.anthropic.com"],
   );
 
-  const gateway = heldSecretsOf({
+  const gateway = rules({
     secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET, paths: ["/v1/messages"] }],
     harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } },
   });
@@ -112,7 +119,7 @@ test("a known model key with no hosts goes where its provider's calls go: the ca
   ]);
 
   // An explicit hosts wins over both.
-  const explicit = heldSecretsOf({
+  const explicit = rules({
     secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET, hosts: ["litellm.corp.example", "backup.corp.example"] }],
     harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } },
   });
@@ -158,7 +165,7 @@ test("R1: an envFrom Secret or ConfigMap whose key NAMES include a model key is 
 });
 
 test("warn, never refuse: a signing credential in harness.env names the gateway as the fix", () => {
-  const { warnings } = heldSecretsOf({ harness: { env: [{ name: "AWS_SECRET_ACCESS_KEY", value: SECRET }] } });
+  const { warnings } = rules({ harness: { env: [{ name: "AWS_SECRET_ACCESS_KEY", value: SECRET }] } });
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /AWS_SECRET_ACCESS_KEY.*cannot be held.*gateway/);
   assert.ok(!warnings[0]!.includes(SECRET));
@@ -210,9 +217,10 @@ test("R4: exactly one source, a present value, and one a header can carry", () =
 });
 
 test("R5: hosts must be given where no default exists, exact, TLS, and one header per host per secret", () => {
-  // No hosts on a name with no default: not a Held secret at all (ADR-0068 reads placement), so
-  // nothing is bound — the placement report warns it goes nowhere.
-  assert.deepEqual(heldSecretsOf(held({ hosts: undefined })).manifest.secrets, []);
+  // No hosts on a claimed name with no default: R5 refuses — `hosts` is the binding, and a pod
+  // claims the name. A name no pod claims is not normalized at all, `hosts` or none.
+  assert.match(refusal(held({ hosts: undefined })), /hosts is absent.*no single default host/);
+  assert.deepEqual(heldSecretsOf(held({ hosts: undefined }), new Set()).manifest.secrets, []);
   assert.match(refusal(held({ hosts: [] })), /hosts is empty/);
   // A known name whose table host is regional has no default either.
   assert.match(refusal({ secrets: [{ name: "MOONSHOT_API_KEY", value: SECRET }] }), /no single default host/);
@@ -293,7 +301,7 @@ test("R9: an explicit hosts that leaves out where a carried Agent's provider sen
     /hosts leaves out api\.anthropic\.com, where pi sends every "anthropic\/…" turn/,
   );
   // No Agent names an anthropic model: nothing would reach that host, so nothing to refuse.
-  assert.equal(heldSecretsOf(config, { models: ["vllm/qwen"] }).manifest.secrets.length, 1);
+  assert.equal(rules(config, { models: ["vllm/qwen"] }).manifest.secrets.length, 1);
 });
 
 test("R10: a referenced Secret or key that does not exist", () => {
@@ -306,7 +314,7 @@ test("R10: a referenced Secret or key that does not exist", () => {
     refusal(config, { secretKeys: () => ["openai"] }),
     /names key "anthropic" of Secret "team", which has no such key/,
   );
-  const { manifest, values } = heldSecretsOf(config, { secretKeys: () => ["anthropic"] });
+  const { manifest, values } = rules(config, { secretKeys: () => ["anthropic"] });
   assert.deepEqual(manifest.secrets[0]!.source, { kind: "secret", secret: "team", key: "anthropic" });
   assert.deepEqual(values, {}, "a referenced value is never read");
 });
@@ -330,7 +338,7 @@ test("R13: a held Secret key that harness.env or harness.envFrom also hands the 
   );
   // Another key of the same Secret, and another Secret loaded whole, are the user's to hand over.
   assert.equal(
-    heldSecretsOf(
+    rules(
       config({
         env: [{ name: "REGION", valueFrom: { secretKeyRef: { name: "team", key: "region" } } }],
         envFrom: [{ secretRef: { name: "other" } }],
@@ -349,7 +357,14 @@ test("R13: a harness.env literal equal to a held literal", () => {
 });
 
 test("R13: the kit's Secrets never reach the Harness, by env or envFrom, whatever is held", () => {
-  for (const secret of ["jr2-instance", "jr2-held-secrets", "jr2-held-tls", "jr2-held-ca", "jr2-instance-effector"]) {
+  for (const secret of [
+    "jr2-instance",
+    "jr2-held-secrets-instance",
+    "jr2-held-secrets-ws-0123456789abcdef",
+    "jr2-held-tls",
+    "jr2-held-ca",
+    "jr2-instance-effector",
+  ]) {
     assert.match(
       refusal({ harness: { env: [{ name: "X", valueFrom: { secretKeyRef: { name: secret, key: "k" } } }] } }),
       new RegExp(`harness\\.env\\[0\\] \\(X\\) reads Secret "${secret}", which is the kit's`),
@@ -367,10 +382,7 @@ test("R11: while a secret is held, harness.env may not set the proxy or the trus
     /harness\.env\[0\] sets HTTPS_PROXY/,
   );
   // Nothing held: the mechanism is not running, so its names are the user's.
-  assert.equal(
-    heldSecretsOf({ harness: { env: [{ name: "HTTPS_PROXY", value: "http://p" }] } }).manifest.secrets.length,
-    0,
-  );
+  assert.equal(rules({ harness: { env: [{ name: "HTTPS_PROXY", value: "http://p" }] } }).manifest.secrets.length, 0);
 });
 
 test("R12: a path prefix nothing can step around", () => {

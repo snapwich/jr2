@@ -235,7 +235,7 @@ stateDiagram-v2
           <h2>a filesystem sandbox is not isolation</h2>
           <!-- The same three agents, twice: sharing one host (jr), then each in its own pod (jr2).
                The pod is the one the demo opens later (containers, netpol). No egress claim: that
-               is the cluster owner's call. The Custodian holds the Sandbox token and every held secret
+               is the cluster owner's call. The Custodian holds the Sandbox token and the held secrets its pod names
                (ADR-0059); the Harness container holds only Stand-ins. -->
           <div class="versus">
             <div class="host">

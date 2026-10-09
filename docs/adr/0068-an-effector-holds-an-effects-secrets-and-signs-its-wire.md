@@ -104,14 +104,20 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   would send the request, and its `Authorization`, to a host the definition did not fix. No proxy is read from the
   environment. The trust is the system roots and the instance's `caBundle`
   ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)).
-- **One list of secrets; placement is read, never declared.** The top-level `secrets` list replaces
-  `harness.heldSecrets`; its entry is ADR-0059's (`{ name, value | valueFrom.secretKeyRef, hosts?, headers?, paths? }`).
-  An entry with `hosts` — or a known model key, whose hosts default — is a Held secret (every Custodian, ADR-0059). An
-  entry an Effect names with `secret("name")` is an Effect secret in that Effect's placement (an `http` Effect: the
-  Instance Effector). Both is both. Neither goes nowhere, and `jr2 up` warns:
+- **One list of secrets; placement is read, never declared, and naming is placement on both sides.** The top-level
+  `secrets` list replaces `harness.heldSecrets`; its entry is ADR-0059's
+  (`{ name, value | valueFrom.secretKeyRef, hosts?, headers?, paths? }`). A pod gets the secrets something in it names:
+  a Workspace's pod the Held secrets its `workspace()` lists under `secrets: [...]` and the model keys its Agents'
+  providers read; the Instance Harness the model keys of its `"none"` Agents only; an Effector what its Effects name
+  with `secret("name")` (an `http` Effect: the Instance Effector). `hosts`, `headers` and `paths` are a Held secret's
+  binding, never its placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the held
+  manifest, the Custodian config and the held values' Secret of each Harness pod come from it. Both is both, and
+  `jr2 up` reports it per pod. An entry nothing names goes nowhere, and `jr2 up` warns:
   `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no `placement:` key: naming is the placement.
-  `jr2 up` prints one line per secret with its placements. Right after the walk, before anything is built or applied, it
-  refuses an Effect that names a secret the list does not hold (with the line to add) and a literal Effect secret
+  `jr2 up` prints one line per secret with its placements, and one per pod with what it holds
+  (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
+  `the Instance Effector: holds jira`). Right after the walk, before anything is built or applied, it refuses an Effect
+  or a `workspace()` that names a secret the list does not hold (with the line to add) and a literal Effect secret
   shorter than 8 characters, saying why. A `valueFrom` names a key of the user's Secret, which `jr2 up` checks once it
   reaches the cluster; its value is first seen by the Effector, which refuses to start with it if it is short. A secret
   reaches only the pods where something names it: a literal is written into the placement's own Secret, and a

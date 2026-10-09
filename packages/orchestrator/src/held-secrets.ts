@@ -1,5 +1,6 @@
 // Held secrets (ADR-0059): credentials the Harness uses and never holds — the entries of the
-// `secrets` list that are Held where they stand (ADR-0068; `isHeld`).
+// `secrets` list that a Harness pod claims: a `workspace()` lists it under `secrets`, or a provider
+// an Agent there names reads it (secret-placement.ts places each one, ADR-0068).
 //
 // The Agent executes code in the Harness container (ADR-0005), so a key in that container's env is
 // a key it can take out of the pod. A held secret is not there: the Harness's env carries a
@@ -9,8 +10,9 @@
 // This module is the pure half, shared by every seat that needs it:
 //
 //   standIn(name)        the value the Harness sees — deterministic and public
-//   heldSecretsOf(...)   `jr2 up`'s normalization: every refusal (R1–R13), every warning, and the
-//                        engine-neutral manifest (`held.json`) every composition reads
+//   heldSecretsOf(...)   `jr2 up`'s normalization of the claimed entries: every refusal (R1–R13),
+//                        every warning, and the engine-neutral bindings each pod's manifest
+//                        (`held-<pod>.json`) takes its own from
 //
 // It runs HOST-SIDE, in `jr2 up`, because only there does the config carry values: in-cluster,
 // `process.env` has no `.env`, so a `value` reads `undefined` and a `hosts` entry built from `.env`
@@ -24,16 +26,39 @@ import type { JR2Config, HarnessEnvVar } from "./config.ts";
 import { MODEL_KEYS, MODEL_KEY_PROVIDERS, SIGNING_CREDENTIALS } from "./model-keys.ts";
 import { HELD_CA_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, INSTANCE_EFFECTOR, INSTANCE_SECRET } from "./names.ts";
 
-/** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, the
- * literal held values, the leaves, the CA, and the Instance Effector's (its Effect secrets and key,
- * ADR-0068). */
-const KIT_SECRETS: readonly string[] = [
-  INSTANCE_SECRET,
-  HELD_SECRETS_SECRET,
-  HELD_TLS_SECRET,
-  HELD_CA_SECRET,
-  INSTANCE_EFFECTOR,
-];
+/** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, each
+ * pod's literal held values, the leaves, the CA, and the Instance Effector's (its Effect secrets and
+ * key, ADR-0068). */
+const KIT_SECRETS: readonly string[] = [INSTANCE_SECRET, HELD_TLS_SECRET, HELD_CA_SECRET, INSTANCE_EFFECTOR];
+const isKitSecret = (name: string): boolean =>
+  KIT_SECRETS.includes(name) || name === HELD_SECRETS_SECRET || name.startsWith(`${HELD_SECRETS_SECRET}-`);
+
+/**
+ * The pod key of one Workspace (ADR-0059): its registered workflow and the `customize()` route to its
+ * `workspace()` — what `jr2 up` reads off the walk and the run host off the live actor
+ * (`actorSlotPath`), so both name one pod alike. A digest, so it is a name a Secret and a ConfigMap
+ * key can carry; `ws-` keeps it apart from the Instance Harness's.
+ */
+export function workspaceHeldPod(at: { workflow: string; path: readonly string[] | undefined }): string {
+  const key = JSON.stringify([at.workflow, at.path ?? null]);
+  return `ws-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * The names a provider claims for a pod (ADR-0059): the `secrets` entries that are a known model key
+ * the provider of one of `models` reads, and the custom provider's key when an Agent there names
+ * that provider. A model key is claimed by the PROVIDER — the Agent names its model, jr2 knows which
+ * key that provider reads — so it is not listed under a `workspace()`'s `secrets`.
+ */
+export function providerClaims(config: JR2Config, models: readonly string[]): string[] {
+  const providers = new Set(models.map((m) => m.split("/")[0] ?? ""));
+  const claims = (config.secrets ?? [])
+    .filter((s) => MODEL_KEYS[s.name]?.providers.some((p) => providers.has(p)))
+    .map((s) => s.name);
+  const custom = config.harness?.provider;
+  if (custom?.apiKey && providers.has(custom.id)) claims.push(PROVIDER_KEY_NAME);
+  return claims;
+}
 
 /**
  * The Stand-in for one held secret: what its env var holds in the Harness container.
@@ -87,7 +112,7 @@ export const MECHANISM_ENV: readonly string[] = [
   "GIT_SSL_CAINFO",
 ];
 
-/** What `jr2 up` resolved; what every composition reads (`held.json` in the `jr2-held`
+/** What `jr2 up` placed in one pod; what its composition reads (`held-<pod>.json` in the `jr2-held`
  * ConfigMap). Values never appear here. */
 export type HeldManifest = { version: 1; secrets: HeldBinding[] };
 
@@ -95,7 +120,7 @@ export type HeldManifest = { version: 1; secrets: HeldBinding[] };
 export type HeldBinding = {
   /** The env var; the Harness sees `standIn(name)`. */
   name: string;
-  /** A literal lands in the `jr2-held-secrets` Secret under `name`; a `secret` is the user's own
+  /** A literal lands in its pod's `jr2-held-secrets-<pod>` Secret under `name`; a `secret` is the user's own
    * Secret, mounted by reference so a rotation reaches new pods without a `jr2 up`. */
   source: { kind: "literal" } | { kind: "secret"; secret: string; key: string };
   /** `leaf` is the file stem of this host's certificate in `jr2-held-tls` (`leafStem`). */
@@ -131,8 +156,9 @@ export type HeldLookups = {
   models?: readonly string[];
 };
 
-/** `heldSecretsOf`'s answer: the manifest, the literal values (host-side only — they go into the
- * `jr2-held-secrets` Secret and nowhere else), and what `jr2 up` should warn about. */
+/** `heldSecretsOf`'s answer: every claimed binding, the literal values (host-side only — each goes
+ * into the `jr2-held-secrets-<pod>` Secret of a pod that claims it and nowhere else), and what
+ * `jr2 up` should warn about. */
 export type HeldResolution = {
   manifest: HeldManifest;
   values: Record<string, string>;
@@ -154,12 +180,17 @@ const FRAMING_HEADERS = new Set([
 ]);
 
 /**
- * Normalize the Held secrets of the `secrets` list (`isHeld`, plus the implicit
- * `JR2_PROVIDER_API_KEY`) into the manifest, or throw the FIRST refusal. Every message names the
- * config path and never a value, and says what to write instead — the `checkGit` style. An entry
- * that is only an Effect secret is not this function's (secret-placement.ts).
+ * Normalize the Held secrets — the entries of the `secrets` list some pod claims, and the implicit
+ * `JR2_PROVIDER_API_KEY` when one claims it (`claimed`, from secret-placement.ts) — into bindings, or
+ * throw the FIRST refusal. Every message names the config path and never a value, and says what to
+ * write instead — the `checkGit` style. An entry no pod claims is not this function's: `hosts`,
+ * `headers` and `paths` are the binding, never the placement, so R5 fires only for a claimed one.
  */
-export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): HeldResolution {
+export function heldSecretsOf(
+  config: JR2Config,
+  claimed: ReadonlySet<string>,
+  lookups: HeldLookups = {},
+): HeldResolution {
   const harness = config.harness ?? {};
   const warnings: string[] = [];
   const env = harness.env ?? [];
@@ -233,7 +264,9 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
     headers?: readonly string[];
     paths?: readonly string[];
   };
-  const entries: Entry[] = (config.secrets ?? []).flatMap((s, i) => (isHeld(s) ? [{ at: `secrets[${i}]`, ...s }] : []));
+  const entries: Entry[] = (config.secrets ?? []).flatMap((s, i) =>
+    claimed.has(s.name) ? [{ at: `secrets[${i}]`, ...s }] : [],
+  );
 
   // R2, for the user's own entries — before the implicit one joins them.
   for (const e of entries) {
@@ -250,7 +283,7 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
 
   // The custom provider's key: held since ADR-0059, bound to its own endpoint.
   const provider = harness.provider;
-  if (provider?.apiKey) {
+  if (provider?.apiKey && claimed.has(PROVIDER_KEY_NAME)) {
     const target = httpsTarget(provider.baseUrl);
     if (!target) {
       throw new Error(
@@ -344,7 +377,7 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
     )?.name;
   for (const [i, v] of env.entries()) {
     const ref = (v.valueFrom as { secretKeyRef?: { name?: string; key?: string } } | undefined)?.secretKeyRef;
-    if (ref?.name !== undefined && KIT_SECRETS.includes(ref.name)) {
+    if (ref?.name !== undefined && isKitSecret(ref.name)) {
       throw new Error(
         `harness.env[${i}] (${v.name}) reads Secret "${ref.name}", which is the kit's and never the Harness's — the ` +
           "Agent would read it. Drop the entry (ADR-0059)",
@@ -368,7 +401,7 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
   for (const [i, ref] of (harness.envFrom ?? []).entries()) {
     const secret = ref.secretRef?.name;
     if (secret === undefined) continue;
-    if (KIT_SECRETS.includes(secret)) {
+    if (isKitSecret(secret)) {
       throw new Error(
         `harness.envFrom[${i}] loads Secret "${secret}", which is the kit's and never the Harness's — the Agent ` +
           "would read every key of it. Drop the entry (ADR-0059)",
@@ -402,15 +435,6 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
   }
 
   return { manifest: { version: 1, secrets }, values, warnings };
-}
-
-/**
- * Is this entry a Held secret (ADR-0068: placement is read)? It is when it states `hosts` — even an
- * empty list, which R5 then refuses — or when it is a known model key, whose hosts default to where
- * its provider's calls go (ADR-0059).
- */
-export function isHeld(entry: { name: string; hosts?: readonly string[] }): boolean {
-  return entry.hosts !== undefined || entry.name in MODEL_KEYS;
 }
 
 /** R4 and R10: exactly one source, and a literal that can ride a header. */
@@ -567,7 +591,8 @@ function heldLine(v: HarnessEnvVar): string {
 }
 
 /**
- * Read the manifest `jr2 up` wrote (`held.json`, mounted from the `jr2-held` ConfigMap), per call —
+ * Read the manifest `jr2 up` wrote for one pod (`held-<pod>.json`, mounted from the `jr2-held`
+ * ConfigMap), per call —
  * the `readImageRefs` stance (ADR-0038): no cache, so a `jr2 up` that changes a held secret reaches
  * the next provision without rolling the Orchestrator. Absent or malformed is a pointed error naming
  * `jr2 up`, never "nothing held": a Sandbox composed on a guess would put a key where the converge
@@ -580,8 +605,8 @@ export async function readHeldManifest(path: string): Promise<HeldManifest> {
   } catch (err) {
     throw new Error(
       `no held-secret manifest at ${path} (${(err as NodeJS.ErrnoException).code ?? "read failed"}) — every ` +
-        "Harness pod's Custodian is composed from the `jr2-held` ConfigMap, which `jr2 up` writes (ADR-0059). " +
-        "Converge this instance with `jr2 up`.",
+        "Harness pod's Custodian is composed from its own manifest in the `jr2-held` ConfigMap, which `jr2 up` " +
+        "writes for each Workspace it walked (ADR-0059). Converge this instance with `jr2 up`.",
     );
   }
   const bad = (why: string): never => {

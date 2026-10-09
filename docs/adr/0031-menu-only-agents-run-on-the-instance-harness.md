@@ -38,9 +38,11 @@ built.
   [ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) rationale technically lapses):
   the Harness has exactly one route to its Menu — the Custodian on `localhost` — and forking that path for one pod buys
   a divergence in the component this ADR keeps deliberately uniform. The pod is composed by the same function a
-  Sandbox's is ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), so its Custodian holds
-  the same held secrets and carries the Instance Harness's model calls the same way. Defense-in-depth is the bonus, not
-  the reason.
+  Sandbox's is ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), so its Custodian
+  carries the Instance Harness's model calls the same way. It holds only the model keys of the `"none"` Agents it hosts
+  — the keys their providers read — and none of the held secrets a `workspace()` lists: a `"none"` Agent cannot execute
+  code, so it had no way to use the rest. Its held objects are its own (`held-instance.json`,
+  `jr2-held-secrets-instance`). Defense-in-depth is the bonus, not the reason.
 - **The Instance Effector is the second Instance-level pod, beside it**
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), on the same convention: `jr2 up`
   converges it when a registered Machine places an Effect there — an `http` Effect — and deletes it otherwise. It runs

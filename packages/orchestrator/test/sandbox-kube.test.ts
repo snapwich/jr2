@@ -17,7 +17,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { EMPTY_HELD, leafStem, standIn, type HeldManifest } from "../src/held-secrets.ts";
+import { EMPTY_HELD, leafStem, standIn, workspaceHeldPod, type HeldManifest } from "../src/held-secrets.ts";
 import { imageContextDigest } from "../src/images.ts";
 import { kubeClient } from "../src/kube-client.ts";
 import { repoKey } from "../src/repo-identity.ts";
@@ -165,12 +165,21 @@ function fakeRepos() {
   return { port, ensured };
 }
 
-/** The mounted `jr2-held` manifest (ADR-0059) as a real file — the port reads it per provision. */
-async function mkHeld(manifest: HeldManifest): Promise<string> {
+/** The mounted `jr2-held` ConfigMap (ADR-0059) as a real directory — the port reads the manifest of
+ * the Workspace it provisions per provision. Each pod named holds `manifest`; by default, the
+ * root Workspace of the two workflows these tests run. */
+async function mkHeld(
+  manifest: HeldManifest,
+  pods: Array<{ workflow: string; path: string[] | undefined; manifest?: HeldManifest }> = [
+    { workflow: "w", path: [] },
+    { workflow: "coding", path: [] },
+  ],
+): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "jr2-held-"));
-  const path = join(dir, "held.json");
-  await writeFile(path, JSON.stringify(manifest));
-  return path;
+  for (const pod of pods) {
+    await writeFile(join(dir, `held-${workspaceHeldPod(pod)}.json`), JSON.stringify(pod.manifest ?? manifest));
+  }
+  return dir;
 }
 
 const NOTHING_HELD = await mkHeld(EMPTY_HELD);
@@ -180,7 +189,7 @@ const NOTHING_HELD = await mkHeld(EMPTY_HELD);
  * provision names Repos whose resources it must ensure, so neither is the Repo-resource port. */
 const provisionable = {
   signingKey: Buffer.from("k"),
-  heldPath: NOTHING_HELD,
+  heldDir: NOTHING_HELD,
   repos: fakeRepos().port,
 };
 
@@ -189,7 +198,7 @@ const provisionable = {
 const APP_URL = "https://example.test/app.git";
 const APP_KEY = repoKey(APP_URL);
 const app: ProvisionedRepo = { slot: "app", url: APP_URL, perRun: false };
-const withApp = { repos: [app] };
+const withApp = { repos: [app], path: [] as string[] };
 
 /** The CPU hints every Harness container carries (ADR-0060): its own `limits.cpu`, whole cpus. */
 const CPU_HINTS = ["JR2_CPUS", "OMP_NUM_THREADS", "PYTHON_CPU_COUNT", "GOMAXPROCS"].map((name) => ({
@@ -304,6 +313,7 @@ test("two slots spelling one repository are ONE CR entry; two repositories are t
     name: "sb-two",
     runId: "r",
     workflow: "w",
+    path: [],
     repos: [
       { slot: "app", url: "git@github.com:acme/app.git", perRun: false },
       { slot: "same", url: "https://github.com/acme/app", perRun: false },
@@ -879,12 +889,12 @@ test("an absent or malformed image map fails the provision pointing at `jr2 up`,
   const noHeld = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    heldPath: "/nonexistent/jr2/held.json",
+    heldDir: "/nonexistent/jr2",
     ...exec,
   });
   await assert.rejects(
     () => noHeld.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
-    /\/nonexistent\/jr2\/held\.json.*jr2 up/s,
+    /\/nonexistent\/jr2\/held-ws-[0-9a-f]{16}\.json.*jr2 up/s,
   );
 });
 
@@ -1045,6 +1055,53 @@ test("a token Secret that fails after its CR fails the provision, and the CR is 
   assert.equal(api.object("sandboxes", "sb-orphan"), undefined);
 });
 
+test("a Workspace's Custodian holds its own pod's Held secrets, found by its workflow and its route (ADR-0059)", async () => {
+  const jira: HeldManifest = {
+    version: 1,
+    secrets: [
+      {
+        name: "JIRA_TOKEN",
+        source: { kind: "literal" },
+        hosts: [{ host: "jira.example.com", port: 443, leaf: leafStem("jira.example.com", 443) }],
+        headers: ["authorization"],
+      },
+    ],
+  };
+  const heldDir = await mkHeld(EMPTY_HELD, [
+    { workflow: "w", path: [] },
+    { workflow: "w", path: ["review"], manifest: jira },
+  ]);
+  const envOf = async (path: string[]) => {
+    const { exec, calls } = cluster();
+    await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, heldDir, ...exec }).provision({
+      name: "sb",
+      runId: "r",
+      workflow: "w",
+      ...withApp,
+      path,
+    });
+    const cr = crOf(calls);
+    return {
+      env: cr.spec.env.map((e: { name: string }) => e.name) as string[],
+      config: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-config").configMap.items,
+      values: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-values").projected.sources,
+    };
+  };
+  const review = await envOf(["review"]);
+  const pod = workspaceHeldPod({ workflow: "w", path: ["review"] });
+  assert.ok(review.env.includes("JIRA_TOKEN"), "the review Workspace's pod holds what its workspace() lists");
+  assert.deepEqual(review.config, [
+    { key: `envoy-${pod}.json`, path: "envoy.json" },
+    { key: `custodian-${pod}.lua`, path: "custodian.lua" },
+  ]);
+  assert.deepEqual(review.values.at(-1), {
+    secret: { name: `jr2-held-secrets-${pod}`, items: [{ key: "JIRA_TOKEN", path: "JIRA_TOKEN" }] },
+  });
+  const root = await envOf([]);
+  assert.ok(!root.env.includes("JIRA_TOKEN"), "the root Workspace's pod names nothing, and holds nothing");
+  assert.ok(!root.env.includes("HTTPS_PROXY"));
+});
+
 test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alone mounts values and leaves (ADR-0059)", async () => {
   const manifest: HeldManifest = {
     version: 1,
@@ -1067,7 +1124,7 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
   await kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    heldPath: await mkHeld(manifest),
+    heldDir: await mkHeld(manifest),
     ...exec,
     caBundle: true,
     env: [{ name: "FLUE_LOG", value: "debug" }],
@@ -1113,7 +1170,12 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
   const values = applied.spec.volumes.find((v: { name: string }) => v.name === "custodian-values");
   assert.equal(values.projected.defaultMode, 0o440);
   assert.deepEqual(values.projected.sources.slice(1), [
-    { secret: { name: "jr2-held-secrets", items: [{ key: "ANTHROPIC_API_KEY", path: "ANTHROPIC_API_KEY" }] } },
+    {
+      secret: {
+        name: `jr2-held-secrets-${workspaceHeldPod({ workflow: "w", path: [] })}`,
+        items: [{ key: "ANTHROPIC_API_KEY", path: "ANTHROPIC_API_KEY" }],
+      },
+    },
     { secret: { name: "team-keys", items: [{ key: "openai", path: "OPENAI_API_KEY" }] } },
   ]);
   assert.deepEqual(
@@ -1341,6 +1403,7 @@ test("a per-run url matching no git.credentials entry is REFUSED before any writ
         name: "sb-fence",
         runId: "r",
         workflow: "w",
+        path: [],
         repos: [{ slot: "target", url: "https://github.com/nobody/x.git", perRun: true }],
       }),
     (err: Error) => {
@@ -1367,6 +1430,7 @@ test("a per-run url matching no git.credentials entry is REFUSED before any writ
         name: "sb-option",
         runId: "r",
         workflow: "w",
+        path: [],
         repos: [{ slot: "target", url: "--upload-pack=sh -c evil #@github.com:ourorg/repo", perRun: true }],
       }),
     /repo url begins with "-", which git reads as an option/,
@@ -1377,6 +1441,7 @@ test("a per-run url matching no git.credentials entry is REFUSED before any writ
         name: "sb-dots",
         runId: "r",
         workflow: "w",
+        path: [],
         repos: [{ slot: "target", url: "git@github.com:ourorg/../evil/repo", perRun: true }],
       }),
     /no git\.credentials entry matches "github\.com\/evil\/repo"/,
@@ -1387,7 +1452,7 @@ test("a per-run url matching no git.credentials entry is REFUSED before any writ
   // No entries at all → every per-run url is refused, and the message says the list is empty.
   const bare = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   await assert.rejects(
-    () => bare.provision({ name: "sb", runId: "r", workflow: "w", repos: [{ ...app, perRun: true }] }),
+    () => bare.provision({ name: "sb", runId: "r", workflow: "w", path: [], repos: [{ ...app, perRun: true }] }),
     /entries: none/,
   );
 });
@@ -1404,6 +1469,7 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
     name: "sb",
     runId: "r",
     workflow: "w",
+    path: [],
     repos: [{ slot: "app", url: "https://github.com/nobody/x.git", perRun: false }],
   });
   assert.ok(crOf(none.calls), "applied");
@@ -1413,6 +1479,7 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
     name: "sb",
     runId: "r",
     workflow: "w",
+    path: [],
     repos: [{ slot: "t", url: "git@github.com:ourorg/app.git", perRun: true }],
   });
   assert.deepEqual(crOf(org.calls).spec.repos, [
@@ -1425,6 +1492,7 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
     name: "sb",
     runId: "r",
     workflow: "w",
+    path: [],
     repos: [{ slot: "t", url: "https://gitlab.com/a/b.git", perRun: true }],
   });
   assert.ok(crOf(any.calls));
@@ -1457,6 +1525,7 @@ test("provision ENSURES every Repo's resource — per key, identity and boundnes
     name: "sb-ensure",
     runId: "r",
     workflow: "w",
+    path: [],
     repos: [
       { slot: "app", url: "git@github.com:acme/app.git", perRun: false },
       { slot: "same", url: "https://github.com/acme/app", perRun: true },
@@ -1638,7 +1707,7 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
     { slot: "app", url: APP_URL, perRun: false },
     { slot: "infra", url: infraUrl, perRun: false },
   ];
-  await port.provision({ name: "sb-stale", runId: "r", workflow: "w", repos: slots });
+  await port.provision({ name: "sb-stale", runId: "r", workflow: "w", path: [], repos: slots });
   const out = await port.attach({ name: "sb-stale", spec: { branch: "b" }, repos: slots });
   assert.deepEqual(out.stale, {
     infra: `Repo "${infraKey}" on node kind-worker is stale: fatal: unable to access 'https://example.test/infra.git/': Could not resolve host`,
@@ -1654,7 +1723,7 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
   };
   const { exec: e2 } = cluster([fresh]);
   const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...e2 });
-  await port2.provision({ name: "sb-stale", runId: "r", workflow: "w", repos: slots });
+  await port2.provision({ name: "sb-stale", runId: "r", workflow: "w", path: [], repos: slots });
   assert.equal("stale" in (await port2.attach({ name: "sb-stale", spec: { branch: "b" }, repos: slots })), false);
 });
 

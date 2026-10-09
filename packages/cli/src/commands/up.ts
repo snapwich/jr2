@@ -58,8 +58,8 @@ import {
   defaultImageContext,
   heldSecretsOf,
   HELD_CA_SECRET,
-  HELD_SECRETS_SECRET,
   HELD_TLS_SECRET,
+  INSTANCE_HARNESS_HELD_POD,
   ORCHESTRATOR_PORT,
   imageContextDigest,
   isSshUrl,
@@ -68,6 +68,7 @@ import {
   machineBodies,
   matchCredential,
   partsOf,
+  workspacePodsOf,
   refuseEffectSecrets,
   secretPlacementsOf,
   effectorKey,
@@ -84,8 +85,10 @@ import {
   type CarriedImage,
   type CarriedRepo,
   type HeldManifest,
+  type HeldPodPlan,
   type ImageRefs,
   type JR2Config,
+  type PlacementWalk,
   type ResolvedSize,
 } from "@jr2/orchestrator";
 import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
@@ -134,7 +137,10 @@ import {
   priorityClassObjects,
   REPO_CACHE,
   trustObject,
+  holdsAny,
+  LABEL_HELD_POD,
   type HeldObjects,
+  type HeldPodObjects,
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import {
@@ -273,10 +279,20 @@ export async function up(args: string[], io: Io): Promise<number> {
   // short to scrub (ADR-0068), are refused HERE, off the walk and the config alone — before anything is
   // built or applied (ADR-0050, ADR-0068). A secret read from the user's Secret is placed below,
   // once the cluster is reached.
-  const placedEffects = workflows.flatMap((w) =>
-    partsOf([w.machine]).effects.map((effect) => ({ workflow: w.name, effect })),
-  );
-  refuseEffectSecrets(config, placedEffects);
+  // What names each secret, read off the walk (ADR-0059, ADR-0068): every Effect, every Workspace's
+  // pod — its `workspace()`'s `secrets` and the models of the Agents whose Turns run there — and the
+  // models of the `"none"` Agents the Instance Harness hosts.
+  const menuOnlyModels = agents
+    .filter((a) => a.definition.workspace === "none" && typeof a.definition.model === "string")
+    .map((a) => a.definition.model as string);
+  const placementWalk: PlacementWalk = {
+    effects: workflows.flatMap((w) => partsOf([w.machine]).effects.map((effect) => ({ workflow: w.name, effect }))),
+    workspaces: workflows.flatMap((w) => workspacePodsOf(w.machine).map((pod) => ({ workflow: w.name, pod }))),
+    ...(agents.some((a) => a.definition.workspace === "none")
+      ? { instanceHarness: { models: [...new Set(menuOnlyModels)].sort() } }
+      : {}),
+  };
+  refuseEffectSecrets(config, placementWalk);
   // Who may send what, per state (ADR-0015): the audience rule's answer for each registered
   // Machine and every Machine it composes, as its doc carries it — so an author reads who holds a
   // pick before a run finds out. Then what the build found legal and suspect: a warning, never a
@@ -857,7 +873,16 @@ export async function up(args: string[], io: Io): Promise<number> {
     referenced.set(ref, found ? Object.keys(found.data ?? {}) : undefined);
   }
   const secretKeys = (secret: string) => referenced.get(secret);
+  // Where each secret goes (ADR-0059, ADR-0068): read off the list and what names it, never
+  // declared — each Harness pod gets the Held secrets something in it names, the Instance Effector
+  // what its Effects name. The walk's refusals ran above; a `valueFrom` the user's Secrets do not
+  // hold is refused here, before the instance objects are applied.
+  const placements = secretPlacementsOf(config, placementWalk, { secretKeys });
+  for (const line of placements.report) activity(io, line);
+  for (const warning of placements.warnings) activity(io, `warning: ${warning}`);
   const held = await resolveHeld(io, kube, {
+    pods: placements.held,
+    claimed: placements.claimed,
     config,
     name,
     namespace,
@@ -867,12 +892,6 @@ export async function up(args: string[], io: Io): Promise<number> {
     models: agents.map((a) => a.definition.model).filter((m): m is string => typeof m === "string"),
     caBundle: caPem,
   });
-  // Where each secret goes (ADR-0068): read off the list and the Effects that name it, never
-  // declared. The walk's refusals ran above; a `valueFrom` the user's Secrets do not hold is refused
-  // here, before the instance objects are applied.
-  const placements = secretPlacementsOf(config, placedEffects, { secretKeys });
-  for (const line of placements.report) activity(io, line);
-  for (const warning of placements.warnings) activity(io, `warning: ${warning}`);
 
   // --- git over ssh: where the key comes from (ADR-0019, ADR-0047) -------------------------------
   // Runs BEFORE the apply, because a missing key source is a converge that must not start, and the
@@ -905,14 +924,17 @@ export async function up(args: string[], io: Io): Promise<number> {
     }),
     ...ctx,
   });
-  // No secret held any more: the Custodian's Secrets go with it. The CA stays (`jr2-held-ca`), so a
-  // later converge that holds one again issues leaves under the same CA.
-  if (held.objects.manifest.secrets.length === 0) {
-    for (const secret of [HELD_SECRETS_SECRET, HELD_TLS_SECRET]) {
-      await kube.deleteObject({ kind: "secret", name: secret, namespace, ...ctx });
-    }
-  } else if (Object.keys(held.objects.values).length === 0) {
-    await kube.deleteObject({ kind: "secret", name: HELD_SECRETS_SECRET, namespace, ...ctx });
+  // A pod's literal values go when it holds none any more, or when the pod is gone; with no secret
+  // held anywhere, the leaves go too. The CA stays (`jr2-held-ca`), so a later converge that holds
+  // one again issues leaves under the same CA.
+  const literalPods = new Set(held.objects.pods.filter((p) => Object.keys(p.values).length).map((p) => p.pod));
+  const stale = await kube.listJson<KubeObject>({ kind: "secret", selector: LABEL_HELD_POD, namespace, ...ctx });
+  for (const secret of stale) {
+    if (literalPods.has(secret.metadata.labels?.[LABEL_HELD_POD] ?? "")) continue;
+    await kube.deleteObject({ kind: "secret", name: secret.metadata.name, namespace, ...ctx });
+  }
+  if (!holdsAny(held.objects)) {
+    await kube.deleteObject({ kind: "secret", name: HELD_TLS_SECRET, namespace, ...ctx });
   }
   activity(io, "orchestrator: waiting for rollout");
   await awaitRollout(kube, {
@@ -985,8 +1007,8 @@ export async function up(args: string[], io: Io): Promise<number> {
         namespace,
         harnessImage,
         custodianImage,
-        held: held.objects.manifest,
-        heldDigest: heldDigest(Buffer.from(signingKey, "base64"), held.objects),
+        held: instanceHeld(held.objects).manifest,
+        heldDigest: heldDigest(Buffer.from(signingKey, "base64"), held.objects, instanceHeld(held.objects)),
         harness: config.harness,
         caBundle: caPem !== undefined,
         // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
@@ -1170,15 +1192,19 @@ async function sweepAfterConverge(
 }
 
 /**
- * Held secrets, resolved (ADR-0059): the rules (`heldSecretsOf`, fed what only the cluster knows),
- * the per-Instance CA (kept, or minted on first need), one leaf per bound target (reused while it
- * still fits), the trust bundles, and the Custodian's rendered config. Narrated one line per secret
- * — its name, its hosts, its source — and never a value.
+ * Held secrets, resolved (ADR-0059): the rules (`heldSecretsOf`, over the names some pod claims, fed
+ * what only the cluster knows), each pod's own manifest, values and Custodian config, the
+ * per-Instance CA (kept, or minted on first need), one leaf per bound target (reused while it still
+ * fits), and the trust bundles. Narrated one line per secret — its name, its hosts, its source — and
+ * never a value.
  */
 async function resolveHeld(
   io: Io,
   kube: KubeAdmin,
   opts: {
+    /** Each Harness pod and the names it holds (`secretPlacementsOf`). */
+    pods: readonly HeldPodPlan[];
+    claimed: ReadonlySet<string>;
     config: JR2Config;
     name: string;
     namespace: string;
@@ -1196,20 +1222,29 @@ async function resolveHeld(
   const decode = (data: Record<string, string> | undefined, key: string): string | undefined =>
     data?.[key] === undefined ? undefined : Buffer.from(data[key], "base64").toString("utf8");
 
-  const { manifest, values, warnings } = heldSecretsOf(config, {
+  const { manifest, values, warnings } = heldSecretsOf(config, opts.claimed, {
     envFromKeys: opts.envFromKeys,
     secretKeys: opts.secretKeys,
     models: opts.models,
   });
   for (const warning of warnings) activity(io, `warning: ${warning}`);
+  // Each pod's own: the bindings of the names it holds, their literal values, and its Custodian's
+  // config rendered from that manifest alone.
   const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
-  const rendered = {
-    bootstrap: JSON.stringify(custodianBootstrap(manifest, orchestrator)),
-    script: custodianScript(manifest),
-  };
-  if (manifest.secrets.length === 0) {
-    return { objects: { manifest, values, leaves: {}, ...rendered } };
-  }
+  const pods: HeldPodObjects[] = opts.pods.map((plan) => {
+    const own: HeldManifest = { version: 1, secrets: manifest.secrets.filter((b) => plan.names.includes(b.name)) };
+    const literals = Object.fromEntries(
+      own.secrets.filter((b) => b.source.kind === "literal").map((b) => [b.name, values[b.name] as string]),
+    );
+    return {
+      pod: plan.pod,
+      manifest: own,
+      values: literals,
+      bootstrap: JSON.stringify(custodianBootstrap(own, orchestrator)),
+      script: custodianScript(own),
+    };
+  });
+  if (manifest.secrets.length === 0) return { objects: { pods, leaves: {} } };
   for (const s of manifest.secrets) {
     const where = s.hosts.map((h) => (h.port === 443 ? h.host : `${h.host}:${h.port}`)).join(", ");
     const source = s.source.kind === "literal" ? "literal" : `secret ${s.source.secret}/${s.source.key}`;
@@ -1237,17 +1272,25 @@ async function resolveHeld(
     }
   }
   return {
-    objects: { manifest, values, ca, leaves, ...rendered },
+    objects: { pods, ca, leaves },
     bundles: trustBundles(ca.cert, opts.caBundle),
   };
 }
 
-/** The Instance Harness's `jr2.dev/held-digest` (ADR-0059): an HMAC over every held-secret input,
- * keyed with the signing key so the annotation reveals nothing about a value. */
-function heldDigest(key: Buffer, held: HeldObjects): string {
+/** The Instance Harness's held objects — the walk always places it when it converges. */
+function instanceHeld(held: HeldObjects): HeldPodObjects {
+  const pod = held.pods.find((p) => p.pod === INSTANCE_HARNESS_HELD_POD);
+  if (!pod) throw new Error("jr2 up placed no held secrets for the Instance Harness it converges — a jr2 defect");
+  return pod;
+}
+
+/** The Instance Harness's `jr2.dev/held-digest` (ADR-0059): an HMAC over its pod's held-secret
+ * inputs, keyed with the signing key so the annotation reveals nothing about a value. */
+function heldDigest(key: Buffer, all: HeldObjects, held: HeldPodObjects): string {
   const mac = createHmac("sha256", key);
   mac.update(JSON.stringify(held.manifest));
-  for (const stem of Object.keys(held.leaves).sort()) mac.update(`${stem}:${fingerprint(held.leaves[stem]!.cert)}`);
+  const stems = new Set(held.manifest.secrets.flatMap((s) => s.hosts.map((h) => h.leaf)));
+  for (const stem of [...stems].sort()) mac.update(`${stem}:${fingerprint(all.leaves[stem]!.cert)}`);
   for (const name of Object.keys(held.values).sort()) mac.update(`${name}=${held.values[name]}`);
   mac.update(held.bootstrap);
   mac.update(held.script);

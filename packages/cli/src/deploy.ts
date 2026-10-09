@@ -15,15 +15,16 @@ import {
   CONVERSATIONS_DIR_ENV,
   CONVERSATIONS_VOLUME,
   custodianComposition,
-  CUSTODIAN_BOOTSTRAP_KEY,
-  CUSTODIAN_SCRIPT_KEY,
+  custodianBootstrapKey,
+  custodianScriptKey,
   GIT_SSH_SECRET,
   HELD_CA_SECRET,
   HELD_CONFIGMAP,
-  HELD_KEY,
   HELD_MOUNT,
-  HELD_SECRETS_SECRET,
   HELD_TLS_SECRET,
+  heldManifestKey,
+  heldSecretsSecret,
+  INSTANCE_HARNESS_HELD_POD,
   HARNESS_ENV_SECRET,
   IMAGES_CONFIGMAP,
   IMAGES_KEY,
@@ -214,22 +215,37 @@ export function priorityClassObjects(classes: PriorityClasses | undefined): stri
 }
 
 /**
- * What `jr2 up` resolved about held secrets (ADR-0059), ready to become objects. Values appear in
- * two places only: `values` (the literals, for the `jr2-held-secrets` Secret) and the CA's and the
- * leaves' keys — each lands in a Secret no Harness container mounts.
+ * One Harness pod's held objects (ADR-0059): what `jr2 up` placed in it, ready to become objects.
+ * A Workspace's, or the Instance Harness's.
  */
-export type HeldObjects = {
+export type HeldPodObjects = {
+  /** The pod key (`INSTANCE_HARNESS_HELD_POD`, `workspaceHeldPod`). */
+  pod: string;
   manifest: HeldManifest;
-  /** The literal values, by name — never in the manifest, never in a ConfigMap. */
+  /** Its literal values, by name — for its `jr2-held-secrets-<pod>` Secret; never in the manifest,
+   * never in a ConfigMap. */
   values: Record<string, string>;
-  /** The per-Instance CA — kept across converges; present whenever a secret is held. */
-  ca?: Pem;
-  /** One leaf per bound target, by file stem (`leafStem`). */
-  leaves: Record<string, Pem>;
-  /** The Custodian's rendered bootstrap (JSON) and script. */
+  /** Its Custodian's rendered bootstrap (JSON) and script. */
   bootstrap: string;
   script: string;
 };
+
+/**
+ * What `jr2 up` resolved about held secrets (ADR-0059), ready to become objects. Values appear in
+ * two places only: each pod's `values` (the literals, for its own `jr2-held-secrets-<pod>` Secret)
+ * and the CA's and the leaves' keys — each lands in a Secret no Harness container mounts.
+ */
+export type HeldObjects = {
+  /** Every Harness pod the walk found, each with what its Custodian holds. */
+  pods: HeldPodObjects[];
+  /** The per-Instance CA — kept across converges; present whenever a secret is held. */
+  ca?: Pem;
+  /** One leaf per bound target of any pod, by file stem (`leafStem`). */
+  leaves: Record<string, Pem>;
+};
+
+/** Does any pod hold a secret? */
+export const holdsAny = (held: HeldObjects): boolean => held.pods.some((p) => p.manifest.secrets.length > 0);
 
 /** Everything `jr2 up` converges inside the instance's namespace, as one apply-able List. */
 export function instanceObjects(opts: {
@@ -352,18 +368,21 @@ export function instanceObjects(opts: {
       metadata: meta(IMAGES_CONFIGMAP),
       data: { [IMAGES_KEY]: imagesJson },
     },
-    // Held secrets (ADR-0059). `held.json` is what every composition reads — the Orchestrator per
-    // provision from the mount below, `jr2 up` for the Instance Harness — beside the Custodian's
-    // bootstrap and script, which Envoy reads at start. Names, hosts, headers: never a value.
+    // Held secrets (ADR-0059), per pod. A pod's `held-<pod>.json` is what its composition reads —
+    // the Orchestrator per provision from the mount below, `jr2 up` for the Instance Harness —
+    // beside its Custodian's bootstrap and script, which Envoy reads at start. Names, hosts,
+    // headers: never a value.
     {
       apiVersion: "v1",
       kind: "ConfigMap",
       metadata: meta(HELD_CONFIGMAP),
-      data: {
-        [HELD_KEY]: JSON.stringify(opts.held.manifest, null, 2),
-        [CUSTODIAN_BOOTSTRAP_KEY]: opts.held.bootstrap,
-        [CUSTODIAN_SCRIPT_KEY]: opts.held.script,
-      },
+      data: Object.fromEntries(
+        opts.held.pods.flatMap((p) => [
+          [heldManifestKey(p.pod), JSON.stringify(p.manifest, null, 2)],
+          [custodianBootstrapKey(p.pod), p.bootstrap],
+          [custodianScriptKey(p.pod), p.script],
+        ]),
+      ),
     },
     ...heldSecretObjects(opts.held, meta),
     {
@@ -433,8 +452,9 @@ export function instanceObjects(opts: {
                   // The image map, read per provision (ADR-0038). A mount, so `jr2 up` rewriting
                   // it costs one kubelet propagation window instead of a rollout.
                   { name: "images", mountPath: IMAGES_MOUNT, readOnly: true },
-                  // What the Custodian holds, read per provision the same way (ADR-0059): names
-                  // and hosts, which this process could not derive — its `.env` values are absent.
+                  // What each Workspace's Custodian holds, read per provision the same way
+                  // (ADR-0059): names and hosts, which this process could not derive — its `.env`
+                  // values are absent.
                   { name: "held", mountPath: HELD_MOUNT, readOnly: true },
                 ],
                 resources: sized(KIT_POD_SIZES.orchestrator),
@@ -472,7 +492,7 @@ export function instanceObjects(opts: {
             volumes: [
               { name: "state", persistentVolumeClaim: { claimName: STATE_PVC } },
               { name: "images", configMap: { name: IMAGES_CONFIGMAP } },
-              { name: "held", configMap: { name: HELD_CONFIGMAP, items: [{ key: HELD_KEY, path: HELD_KEY }] } },
+              { name: "held", configMap: { name: HELD_CONFIGMAP } },
             ],
           },
         },
@@ -661,20 +681,27 @@ function repoCacheObjects(opts: {
   ];
 }
 
+/** The label on each pod's `jr2-held-secrets-<pod>` Secret: its pod, so `jr2 up` finds and deletes
+ * the one a pod no longer needs. */
+export const LABEL_HELD_POD = "jr2.dev/held-pod";
+
 /**
  * The held-secret Secrets (ADR-0059), present only while a secret is held: the CA (which NO pod
- * mounts — `jr2 up` alone reads it back), the literal values and the leaves (the Custodian's alone).
- * `stringData` as written: no trailing newline is added to a value.
+ * mounts — `jr2 up` alone reads it back), each pod's literal values (its Custodian's alone) and the
+ * leaves (the Custodians'). `stringData` as written: no trailing newline is added to a value.
  */
 function heldSecretObjects(held: HeldObjects, meta: (name: string) => KubeManifest): KubeManifest[] {
-  if (held.manifest.secrets.length === 0 || !held.ca) return [];
-  const secret = (name: string, stringData: Record<string, string>): KubeManifest => ({
-    apiVersion: "v1",
-    kind: "Secret",
-    metadata: meta(name),
-    type: "Opaque",
-    stringData,
-  });
+  if (!holdsAny(held) || !held.ca) return [];
+  const secret = (name: string, stringData: Record<string, string>, pod?: string): KubeManifest => {
+    const m = meta(name);
+    return {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: pod === undefined ? m : { ...m, labels: { ...(m.labels as object), [LABEL_HELD_POD]: pod } },
+      type: "Opaque",
+      stringData,
+    };
+  };
   const leaves: Record<string, string> = {};
   for (const [stem, pem] of Object.entries(held.leaves)) {
     leaves[`${stem}.crt`] = pem.cert;
@@ -682,7 +709,9 @@ function heldSecretObjects(held: HeldObjects, meta: (name: string) => KubeManife
   }
   return [
     secret(HELD_CA_SECRET, { "ca.crt": held.ca.cert, "ca.key": held.ca.key }),
-    ...(Object.keys(held.values).length ? [secret(HELD_SECRETS_SECRET, held.values)] : []),
+    ...held.pods.flatMap((p) =>
+      Object.keys(p.values).length ? [secret(heldSecretsSecret(p.pod), p.values, p.pod)] : [],
+    ),
     secret(HELD_TLS_SECRET, leaves),
   ];
 }
@@ -743,10 +772,10 @@ export function instanceHarnessObjects(opts: {
   /** The resolved Custodian ref: the Harness's one route to its Menu, kept even though a `"none"`
    * Agent cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
   custodianImage: string;
-  /** What this converge resolved about held secrets (ADR-0059) — the same manifest the
-   * Orchestrator composes every Sandbox's Custodian from. */
+  /** What this converge placed in the Instance Harness (ADR-0059): its own manifest — the model
+   * keys its `"none"` Agents' providers read, and nothing else. */
   held: HeldManifest;
-  /** An HMAC over every held-secret input (`held.json`, the leaves, the literal values, the
+  /** An HMAC over this pod's held-secret inputs (its manifest, its leaves, its literal values, its
    * Custodian's config), keyed with the signing key so it reveals nothing — on the pod template, so
    * a change to any of them rolls this pod (ADR-0059). */
   heldDigest: string;
@@ -779,10 +808,11 @@ export function instanceHarnessObjects(opts: {
 
   // The Custodian (ADR-0013, ADR-0059): the placement's Sandbox token — signed for this
   // placement's name (`up.ts` mints it into the instance Secret), so it speaks only for the Turns
-  // hosted HERE (tokens.ts) — plus every held secret. Mounted into the Custodian alone; the Instance
-  // token itself never enters this pod.
+  // hosted HERE (tokens.ts) — plus the held secrets placed here. Mounted into the Custodian alone;
+  // the Instance token itself never enters this pod.
   const custodian = custodianComposition(opts.held, {
     image: opts.custodianImage,
+    pod: INSTANCE_HARNESS_HELD_POD,
     token: { secret: INSTANCE_SECRET, key: "JR2_INSTANCE_HARNESS_TOKEN" },
     caBundle: opts.caBundle === true,
     resources: sized(KIT_POD_SIZES.instanceCustodian),
