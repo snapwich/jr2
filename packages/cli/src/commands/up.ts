@@ -1318,12 +1318,14 @@ function instanceHeld(held: HeldObjects): HeldPodObjects & { custodian: Custodia
  * inputs — a literal's value, a `valueFrom`'s reference and the digest of its value — keyed with
  * the signing key so the annotation reveals nothing about a value. Its Custodian reads each value
  * once at start, so a value edited in the user's Secret must roll it — and so must an edit to its
- * two rendered files or the program they load. Exported for its test alone. */
+ * two rendered files or the program they load. `program` is the kit's program; it is an input
+ * only so that its test can change it. Exported for its test alone. */
 export function heldDigest(
   key: Buffer,
   all: HeldObjects,
   held: HeldPodObjects & { custodian: CustodianFiles },
   valueDigest: ValueDigest,
+  program: string = CUSTODIAN_PROGRAM,
 ): string {
   const mac = createHmac("sha256", key);
   mac.update(JSON.stringify(held.manifest));
@@ -1336,7 +1338,7 @@ export function heldDigest(
   // Its Custodian's files, and the program they load: Envoy reads all three once at start.
   mac.update(held.custodian.bootstrap);
   mac.update(held.custodian.script);
-  mac.update(CUSTODIAN_PROGRAM);
+  mac.update(program);
   return mac.digest("base64url").slice(0, 32);
 }
 

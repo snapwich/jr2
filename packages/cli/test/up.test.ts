@@ -3402,6 +3402,21 @@ test("the Instance Harness's held digest covers its Custodian's two files: a cha
   assert.notEqual(digest({ ...files, bootstrap: '{"static_resources":{"x":1}}' }), first, "envoy.json");
 });
 
+test("the Instance Harness's held digest covers the program its custodian.lua loads: a changed program.lua rolls it (ADR-0059)", () => {
+  const manifest: HeldManifest = {
+    version: 1,
+    secrets: [{ name: "JIRA_TOKEN", source: { kind: "literal" }, hosts: [], headers: ["authorization"] }],
+  };
+  const pod = { pod: "instance", manifest, values: { JIRA_TOKEN: "jira-value-0" } };
+  const files = { bootstrap: '{"static_resources":{}}', script: 'HELD = {}\ndofile("program.lua")\n' };
+  const all: HeldObjects = { pods: [pod], instance: files, leaves: {} };
+  const digest = (program?: string) =>
+    heldDigest(Buffer.from("k"), all, { ...pod, custodian: files }, () => "d", program);
+  // `jr2 up` passes no program, so the digest it writes is over the kit's own program.lua.
+  assert.equal(digest(), digest(CUSTODIAN_PROGRAM), "the kit's program is the default");
+  assert.notEqual(digest(`${CUSTODIAN_PROGRAM}\n-- edited\n`), digest(), "program.lua");
+});
+
 test("the Orchestrator may apply a Sandbox's Custodian ConfigMap — and may not read, list or delete one (ADR-0059)", async () => {
   // It renders a Sandbox's two files at provision with a server-side apply (create + patch); the
   // CR's ownerReference takes them away with the pod, so the Orchestrator needs no delete.
