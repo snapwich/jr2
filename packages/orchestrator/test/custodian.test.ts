@@ -1,4 +1,4 @@
-// The Custodian's configuration (ADR-0059), socket-free: what `jr2 up` renders for Envoy and what a
+// The Custodian's configuration (ADR-0059), socket-free: what a pod's maker renders for Envoy and what a
 // Harness pod gains from it. The claims only a real engine can check — the swap on the wire, the
 // dial guard, streaming, abort — are the Custodian suite's (`packages/cli/test/custodian.docker.ts`).
 // What is pinned here is that the rendering says what that suite proves: no admin listener, the
@@ -14,6 +14,7 @@ import {
   custodianRef,
   custodianScript,
   CUSTODIAN_IMAGE,
+  CUSTODIAN_PROGRAM,
 } from "../src/custodian.ts";
 import { EMPTY_HELD, leafStem, type HeldManifest } from "../src/held-secrets.ts";
 
@@ -173,7 +174,7 @@ test("upstream is verified against upstream.crt and the target's own name — DN
   }
 });
 
-test("the script: a generated table of names, headers, paths and targets in front of custodian.lua — never a value", () => {
+test("the script: a generated table of names, headers, paths and targets, then dofile of the program — never a value", () => {
   const script = custodianScript(TWO);
   assert.match(script, /HELD\.secrets\[1\] = \{ name = "JR2_SANDBOX_TOKEN", headers = \{ "authorization" \} \}/);
   assert.match(
@@ -217,16 +218,24 @@ test("composition, nothing held: the Harness gets the Custodian's address and th
     ["custodian-values", "custodian-config"],
   );
   assert.deepEqual((c.custodianContainer as { env: unknown }).env, [{ name: "JR2_SANDBOX", value: "ws-1" }]);
-  // Its own pod's bootstrap and script, under the names Envoy is started with (ADR-0059).
+  // Its own pod's bootstrap and script, from the ConfigMap its maker rendered, under the names
+  // Envoy is started with — beside the one program every pod shares, from `jr2-held` (ADR-0059).
   assert.deepEqual(
     c.volumes.find((v) => v.name === "custodian-config"),
     {
       name: "custodian-config",
-      configMap: {
-        name: "jr2-held",
-        items: [
-          { key: "envoy-ws-0123456789abcdef.json", path: "envoy.json" },
-          { key: "custodian-ws-0123456789abcdef.lua", path: "custodian.lua" },
+      projected: {
+        sources: [
+          {
+            configMap: {
+              name: "ws-1-custodian",
+              items: [
+                { key: "envoy.json", path: "envoy.json" },
+                { key: "custodian.lua", path: "custodian.lua" },
+              ],
+            },
+          },
+          { configMap: { name: "jr2-held", items: [{ key: "program.lua", path: "program.lua" }] } },
         ],
       },
     },
@@ -235,6 +244,7 @@ test("composition, nothing held: the Harness gets the Custodian's address and th
   const instance = custodianComposition(EMPTY_HELD, {
     image: "envoy:c1",
     pod: "instance",
+    config: "jr2-held-custodian",
     token: { secret: "jr2-instance", key: "JR2_INSTANCE_HARNESS_TOKEN" },
     caBundle: true,
   });
@@ -249,8 +259,17 @@ test("a pod's Harness gets a Stand-in for its own manifest's names only — a pr
   // alike — never a Stand-in that fails with 401.
   const anthropicOnly: HeldManifest = { version: 1, secrets: [TWO.secrets[0]!] };
   for (const pod of [
-    { pod: "ws-0123456789abcdef", token: { secret: "ws-1-token", key: "JR2_SANDBOX_TOKEN" }, sandbox: "ws-1" },
-    { pod: "instance", token: { secret: "jr2-instance", key: "JR2_INSTANCE_HARNESS_TOKEN" } },
+    {
+      pod: "ws-0123456789abcdef",
+      config: "ws-1-custodian",
+      token: { secret: "ws-1-token", key: "JR2_SANDBOX_TOKEN" },
+      sandbox: "ws-1",
+    },
+    {
+      pod: "instance",
+      config: "jr2-held-custodian",
+      token: { secret: "jr2-instance", key: "JR2_INSTANCE_HARNESS_TOKEN" },
+    },
   ]) {
     const c = custodianComposition(anthropicOnly, { image: "envoy:c1", caBundle: false, ...pod });
     const standIns = c.harnessEnv.filter((e) => e.value?.startsWith("jr2-held-")).map((e) => e.name);

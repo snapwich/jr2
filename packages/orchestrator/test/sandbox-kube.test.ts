@@ -17,6 +17,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { custodianBootstrap, custodianScript } from "../src/custodian.ts";
 import { EMPTY_HELD, leafStem, standIn, workspaceHeldPod, type HeldManifest } from "../src/held-secrets.ts";
 import { imageContextDigest } from "../src/images.ts";
 import { kubeClient } from "../src/kube-client.ts";
@@ -1040,6 +1041,72 @@ test("a CR apply that fails writes no token Secret (ADR-0001)", async () => {
   assert.deepEqual(applies(calls, "secrets"), [], "no Secret without the CR that owns it");
 });
 
+test("a Sandbox's Custodian files are rendered at provision, AFTER the CR, owned by it, and never hold a value (ADR-0059)", async () => {
+  const manifest: HeldManifest = {
+    version: 1,
+    secrets: [
+      {
+        name: "JIRA_TOKEN",
+        source: { kind: "literal" },
+        hosts: [{ host: "jira.example.com", port: 443, leaf: leafStem("jira.example.com", 443) }],
+        headers: ["authorization"],
+      },
+    ],
+  };
+  const { api, exec, calls } = cluster();
+  const port = kubeSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    heldDir: await mkHeld(manifest),
+    namespace: "jr2-dev",
+    ...exec,
+  });
+  await port.provision({ name: "sb-files", runId: "r", workflow: "w", ...withApp });
+
+  const writes = calls.map((c) => c.target);
+  const cr = writes.indexOf("sandboxes/sb-files");
+  const config = writes.indexOf("configmaps/sb-files-custodian");
+  assert.ok(cr >= 0 && config > cr, `the CR first, then its Custodian ConfigMap: ${writes.join(", ")}`);
+  const [cm] = applies(calls, "configmaps");
+  assert.equal(cm.metadata.name, "sb-files-custodian");
+  assert.equal(cm.metadata.namespace, "jr2-dev");
+  assert.deepEqual(cm.metadata.labels, { "jr2.dev/sandbox": "sb-files" });
+  // The CR's child from birth, like its token: it goes when the pod goes (ADR-0001).
+  assert.deepEqual(cm.metadata.ownerReferences, [
+    {
+      apiVersion: "core.jr2.dev/v1alpha1",
+      kind: "Sandbox",
+      name: "sb-files",
+      uid: api.object("sandboxes", "sb-files").metadata.uid,
+      controller: true,
+      blockOwnerDeletion: false,
+    },
+  ]);
+  // Envoy's bootstrap from the pod's manifest and the Orchestrator's in-namespace address; the
+  // script is the HELD table ending in the program's dofile.
+  assert.deepEqual(Object.keys(cm.data).sort(), ["custodian.lua", "envoy.json"]);
+  assert.deepEqual(
+    JSON.parse(cm.data["envoy.json"]),
+    custodianBootstrap(manifest, { host: "jr2-orchestrator.jr2-dev.svc", port: 4000 }),
+  );
+  assert.equal(cm.data["custodian.lua"], custodianScript(manifest));
+  assert.match(cm.data["custodian.lua"], /\ndofile\("\/etc\/jr2\/custodian\/config\/program\.lua"\)\n$/);
+  // Names, hosts, headers — never a value, never a Stand-in.
+  const text = JSON.stringify(cm.data);
+  assert.ok(!/jr2-held-/.test(text), "no Stand-in in a ConfigMap");
+  assert.ok(!text.includes(Buffer.from(applies(calls, "secrets")[0].data.JR2_SANDBOX_TOKEN, "base64").toString()));
+});
+
+test("a CR apply that fails writes no Custodian ConfigMap (ADR-0001)", async () => {
+  const { api, exec, calls } = cluster();
+  api.refuse((call) =>
+    call.target === "sandboxes/sb-refused" ? Response.json({ message: "no" }, { status: 500 }) : undefined,
+  );
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  await assert.rejects(port.provision({ name: "sb-refused", runId: "r", workflow: "w", ...withApp }));
+  assert.deepEqual(applies(calls, "configmaps"), [], "no ConfigMap without the CR that owns it");
+});
+
 test("a token Secret that fails after its CR fails the provision, and the CR is its caller's to delete (ADR-0001)", async () => {
   const { api, exec } = cluster([]); // no operator: the CR is deleted before it would answer
   api.refuse((call) =>
@@ -1083,17 +1150,29 @@ test("a Workspace's Custodian holds its own pod's Held secrets, found by its wor
     const cr = crOf(calls);
     return {
       env: cr.spec.env.map((e: { name: string }) => e.name) as string[],
-      config: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-config").configMap.items,
+      config: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-config").projected.sources,
+      files: applies(calls, "configmaps")[0].data,
       values: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-values").projected.sources,
     };
   };
   const review = await envOf(["review"]);
   const pod = workspaceHeldPod({ workflow: "w", path: ["review"] });
   assert.ok(review.env.includes("JIRA_TOKEN"), "the review Workspace's pod holds what its workspace() lists");
+  // Its Custodian's own two files, rendered at provision from THIS pod's manifest, beside the one
+  // program from `jr2-held`.
   assert.deepEqual(review.config, [
-    { key: `envoy-${pod}.json`, path: "envoy.json" },
-    { key: `custodian-${pod}.lua`, path: "custodian.lua" },
+    {
+      configMap: {
+        name: "sb-custodian",
+        items: [
+          { key: "envoy.json", path: "envoy.json" },
+          { key: "custodian.lua", path: "custodian.lua" },
+        ],
+      },
+    },
+    { configMap: { name: "jr2-held", items: [{ key: "program.lua", path: "program.lua" }] } },
   ]);
+  assert.equal(review.files["custodian.lua"], custodianScript(jira));
   assert.deepEqual(review.values.at(-1), {
     secret: { name: `jr2-held-secrets-${pod}`, items: [{ key: "JIRA_TOKEN", path: "JIRA_TOKEN" }] },
   });
