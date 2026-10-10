@@ -115,3 +115,23 @@ test("the attach takes the same bearer, and a refused attach runs nothing (ADR-0
   assert.equal((await attach(BEARER)).status, 200);
   assert.equal(attached.length, 1);
 });
+
+test("the sync takes the same bearer, and a refused sync moves nothing (ADR-0067)", async () => {
+  const synced: unknown[] = [];
+  const app = harnessApp({
+    checkBearer: (bearer) => bearer === BEARER,
+    runSubmissionFor: () => () => new Promise<void>(() => {}),
+    sync: async (req) => (synced.push(req), { sync: "already" }),
+  });
+  const sync = (bearer?: string) =>
+    app.request("/sync", {
+      method: "POST",
+      body: JSON.stringify({ worktree: "/work/app/b", branch: "b", published: "2".repeat(40), source: "1".repeat(40) }),
+      headers: { "content-type": "application/json", ...auth(bearer) },
+    });
+  assert.equal((await sync()).status, 401);
+  assert.equal((await sync("wrong")).status, 401);
+  assert.deepEqual(synced, []);
+  assert.equal((await sync(BEARER)).status, 200);
+  assert.equal(synced.length, 1);
+});

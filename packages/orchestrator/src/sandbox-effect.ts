@@ -15,11 +15,18 @@
 //     commit `pin` names (an approved one, from the Effect's input). It is written to the intent
 //     row, so a restore repeats a push of only that commit.
 //   - THE RESTORE RULE PER KIND. After an Orchestrator restart, or a start whose answer never came,
-//     the Effect asks its Effector for its id: found, it is followed. Not found: a push is sent
-//     again with only the pinned commit (none recorded: `unknown`); a credentialed command settles
-//     `unknown` and never runs again; an upload is sent again only when marked `idempotent`.
+//     the Effect asks its Effector for its id: found, it is followed. Not found: a push and a
+//     credentialed command are sent again with only the pinned commit the intent row holds — a run
+//     is a function of (commit, argv, secrets), never of the Agent's tip now — and with none
+//     recorded settle `unknown`; an upload is sent again only when marked `idempotent`.
+//   - THE PAIR AND THE SYNC. A push sends the ledger's last push of its Workspace (its published
+//     commit and its source) as `last`, the input of the Effector's `pair` fallback. After a signed
+//     push the Orchestrator relays the signed commits' bundle to the Workspace's Harness, which
+//     moves the Agent's branch to them (`POST /sync`); its answer rides the output as `sync`, a
+//     field beside the push's outcome. When the last push's sync did not finish, it is run again
+//     before the next push. The push never trusts it.
 //   - D1. When its state exits, the Orchestrator stops polling and records the abort, "outcome
-//     unknown". There is no cancel route.
+//     unknown". There is no cancel route: the Effector runs a started Effect to its end.
 
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
@@ -60,6 +67,8 @@ import {
 import { httpParts, secret, startRequestOf, type EffectorPortFactory, type HttpDefinition } from "./http-effect.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import { repoKey } from "./repo-identity.ts";
+import { harnessSyncPort, type SyncPortFactory } from "./sync-client.ts";
+import type { SyncAnswer } from "./wire.ts";
 
 /** The work root a Sandbox pod's Worktrees sit under (ADR-0004), as both containers mount it. */
 const WORK_ROOT = "/work";
@@ -142,11 +151,15 @@ export type PushOptions = {
 export type PushInput<O extends PushOptions> = (O["pin"] extends true ? { sha: string } : unknown) &
   (O["squash"] extends true ? { message: string } : unknown);
 
-/** A push's output, as the Machine routes on it: `pushed | rejected | diverged | unknown`, and after
- * a signed push the sync's answer beside it. The signed commits' bundle never reaches the Machine. */
+/** The sync's answer as a push's output carries it: a field beside the outcome, never the outcome. */
+export type SyncState = SyncAnswer["sync"];
+
+/** A push's output, as the Machine routes on it: `pushed | rejected | diverged | unknown`, and beside
+ * `pushed` the sync's answer — `synced | already | skipped | busy | not-synced`, with its reason
+ * when it did not move the branch. The signed commits' bundle never reaches the Machine. */
 export type PushOutput =
   | Exclude<PushWireOutput, { outcome: "pushed" }>
-  | Omit<Extract<PushWireOutput, { outcome: "pushed" }>, "bundle">;
+  | (Omit<Extract<PushWireOutput, { outcome: "pushed" }>, "bundle"> & { sync: SyncState; syncReason?: string });
 
 export function pushParts(options: PushOptions = {}): PushParts {
   if (options.squash && !options.sign) {
@@ -289,16 +302,34 @@ export function commandStartOf(
 type Settle = { type: "jr2.effect.settle"; output: unknown };
 type Fault = { type: "jr2.effect.error"; error: unknown };
 
+/** What a kind's hooks get: the run's ledger, the Workspace, and the call's signal. */
+type KindContext = {
+  ambient: AmbientHandles;
+  binding: ReturnType<typeof boundRun>;
+  id: string;
+  slot: string;
+  signal: AbortSignal;
+  mark: (marker: Omit<EffectMarker, "kind" | "slot" | "effect">) => void;
+};
+
 /** How one Sandbox kind builds its start and what a restore may send again. */
 type KindSpec = {
   kind: "upload" | "push" | "command";
   idempotent: boolean;
+  /** A restore that finds no Effect sends it again with only the pinned commit. */
+  repeatsPinned: boolean;
   label: (ambient: AmbientHandles) => string;
   /** The start for this run; `pinned` is the commit the intent row recorded. */
-  build: (input: unknown, ambient: AmbientHandles, slot: string, pinned?: string) => StartRequest;
+  build: (input: unknown, ambient: AmbientHandles, slot: string, pinned?: string, extra?: StartExtra) => StartRequest;
+  /** Run before a start is sent (a push: the last sync again, and the ledger's pair). */
+  before?: (ctx: KindContext) => Promise<StartExtra>;
+  /** Run on the Effector's settled output before it is ledgered (a push: the sync). */
+  finish?: (output: unknown, ctx: KindContext) => Promise<unknown>;
   /** What a settled output becomes for the Machine. */
   deliver?: (output: unknown) => unknown;
 };
+
+type StartExtra = { last?: Pair };
 
 const running = new WeakMap<AnyActorRef, AbortController>();
 
@@ -356,12 +387,20 @@ async function drive<I, O>(
   const binding = boundRun(system);
   const id = snapshot.effectId;
   const slot = slotName(self);
+  const ambient = ambientHandlesFor(self);
   const now = (): string => new Date().toISOString();
   const mark = (marker: Omit<EffectMarker, "kind" | "slot" | "effect">): void =>
     binding?.marker?.({ kind: "effect", slot, effect: id, ...marker });
   const settle = (output: unknown): void => {
     if (signal.aborted || self.getSnapshot().status !== "active") return;
-    binding?.recordEffect?.(id, { state: "settled", kind: spec.kind, slot, output, at: now() });
+    binding?.recordEffect?.(id, {
+      state: "settled",
+      kind: spec.kind,
+      slot,
+      ...(ambient ? { sandbox: ambient.sandbox } : {}),
+      output,
+      at: now(),
+    });
     mark({ stage: "settled", output: output as HttpOutput });
     self.send({ type: "jr2.effect.settle", output: spec.deliver ? spec.deliver(output) : output } satisfies Settle);
   };
@@ -383,7 +422,6 @@ async function drive<I, O>(
     return;
   }
 
-  const ambient = ambientHandlesFor(self);
   if (!ambient) {
     throw new Error(
       `${spec.kind} "${slot}" runs in the Sandbox Effector of a Workspace, and its state is not inside a ` +
@@ -398,8 +436,7 @@ async function drive<I, O>(
     );
   }
   const port = portFactory(target);
-  const repoSlot = (parts: { slot?: string }) => parts.slot;
-  void repoSlot;
+  const ctx: KindContext = { ambient, binding, id, slot, signal, mark };
 
   const find = async (): Promise<{ found: EffectState | undefined } | undefined> => {
     try {
@@ -422,12 +459,14 @@ async function drive<I, O>(
   });
   /** Not found where it was: the restore rule of the kind. */
   const notFound = async (pinned: string | undefined, why: string): Promise<void> => {
-    if (spec.kind === "push" && pinned) {
+    if (spec.repeatsPinned && pinned) {
       mark({
         stage: "started",
         text: `${spec.label(ambient)} (sent again: only the pinned commit ${pinned.slice(0, 12)})`,
       });
-      await send(spec.build(snapshot.input, ambient, slot, pinned), pinned);
+      const extra = spec.before ? await spec.before(ctx) : {};
+      if (signal.aborted) return;
+      await send(spec.build(snapshot.input, ambient, slot, pinned, extra), pinned);
       return;
     }
     if (spec.kind === "upload" && spec.idempotent) {
@@ -453,7 +492,9 @@ async function drive<I, O>(
     return;
   }
 
-  const req = spec.build(snapshot.input, ambient, slot);
+  const extra = spec.before ? await spec.before(ctx) : {};
+  if (signal.aborted) return;
+  const req = spec.build(snapshot.input, ambient, slot, undefined, extra);
   const big = tooLarge(req);
   if (big) {
     settle(big);
@@ -500,7 +541,9 @@ async function drive<I, O>(
     }
     for (;;) {
       if (state.state === "settled" && state.output) {
-        settle(state.output);
+        const output = spec.finish ? await spec.finish(state.output, ctx) : state.output;
+        if (signal.aborted) return;
+        settle(output);
         return;
       }
       if (state.state === "unknown") {
@@ -595,18 +638,67 @@ function parseDuration(d: Duration): number {
 export function pushWith<const O extends PushOptions>(
   portFactory: EffectorPortFactory,
   options?: O,
+  syncPorts: SyncPortFactory = harnessSyncPort,
 ): EffectLogic<PushInput<O> | void, PushOutput> {
   const parts = pushParts(options);
+  const worktreeOf = (ctx: KindContext) => ctx.ambient.repos[slotOf("push", ctx.slot, parts.slot, ctx.ambient)]!;
+  const syncOf = (ctx: KindContext) =>
+    syncPorts(ctx.ambient.endpoint, ctx.binding?.harnessBearer?.(ctx.ambient.sandbox));
   return sandboxLogic(portFactory, parts, {
     kind: "push",
     idempotent: false,
+    repeatsPinned: true,
     label: (ambient) => `push ${ambient.branch}${parts.sign ? " (signed)" : ""}`,
-    build: (input, ambient, slot, pinned) => {
+    build: (input, ambient, slot, pinned, extra) => {
       const repoSlot = slotOf("push", slot, parts.slot, ambient);
       const ref = repoRefOf(ambient, repoSlot);
-      const req = pushStartOf(parts, ref, ambient.branch, input as { sha?: string; message?: string });
+      const req = pushStartOf(parts, ref, ambient.branch, input as { sha?: string; message?: string }, extra?.last);
       if (pinned) req.push.pin = pinned;
       return req;
+    },
+    // The ledger's last push of this Workspace is the pair (design 6). Its sync, when it did not
+    // finish, runs again first — with the bundle while the row still holds it; the push does not
+    // depend on it.
+    before: async (ctx) => {
+      const last = lastPushOf(ctx.binding?.effectRows?.() ?? {}, ctx.ambient.sandbox, ctx.id);
+      if (last === undefined) return {};
+      const { row, rowId, output } = last;
+      if (output.sync === "busy" || output.sync === "not-synced") {
+        const answer = await syncOf(ctx).sync(
+          {
+            worktree: worktreeOf(ctx),
+            branch: ctx.ambient.branch,
+            published: output.published,
+            source: output.source,
+            ...(typeof output.bundle === "string" ? { bundle: output.bundle } : {}),
+          },
+          ctx.signal,
+        );
+        if (ctx.signal.aborted) return {};
+        ctx.mark({ stage: "output", text: `the last push's sync, run again before this push: ${answer.sync}` });
+        ctx.binding?.recordEffect?.(rowId, { ...row, output: { ...output, ...syncFields(answer) } });
+      }
+      return { last: { published: output.published, source: output.source } };
+    },
+    // After a pushed outcome: the sync, in the Workspace's Harness, from the bundle the Effector
+    // wrote. An unsigned push published the Agent's own commit: `skipped`, nothing to send.
+    finish: async (output, ctx) => {
+      const o = output as PushWireOutput;
+      if (o.outcome !== "pushed") return o;
+      if (o.published === o.source || o.bundle === undefined) {
+        return { ...o, sync: "skipped" satisfies SyncState };
+      }
+      const answer = await syncOf(ctx).sync(
+        {
+          worktree: worktreeOf(ctx),
+          branch: ctx.ambient.branch,
+          published: o.published,
+          source: o.source,
+          bundle: o.bundle,
+        },
+        ctx.signal,
+      );
+      return { ...o, ...syncFields(answer) };
     },
     deliver: (output) => {
       const o = output as PushWireOutput;
@@ -617,6 +709,34 @@ export function pushWith<const O extends PushOptions>(
   }) as EffectLogic<PushInput<O> | void, PushOutput>;
 }
 
+/** The sync's answer as the output's fields: its state, and its reason when it moved nothing. */
+function syncFields(answer: SyncAnswer): { sync: SyncState; syncReason?: string } {
+  return {
+    sync: answer.sync,
+    ...("reason" in answer && answer.sync !== "skipped" ? { syncReason: answer.reason } : {}),
+  };
+}
+
+type PushedRow = { published: string; source: string; sync?: SyncState; bundle?: string } & Record<string, unknown>;
+
+/** The ledger's last push of a Workspace that published: its row, by `at`, never this Effect's. */
+export function lastPushOf(
+  rows: Readonly<Record<string, EffectRow>>,
+  sandbox: string,
+  self: string,
+): { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined {
+  let best: { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined;
+  for (const [rowId, row] of Object.entries(rows)) {
+    if (rowId === self || row.state !== "settled" || row.kind !== "push" || row.sandbox !== sandbox) continue;
+    const output = row.output as Partial<PushedRow> & { outcome?: unknown };
+    if (output?.outcome !== "pushed" || typeof output.published !== "string" || typeof output.source !== "string") {
+      continue;
+    }
+    if (best === undefined || row.at > best.row.at) best = { rowId, row, output: output as PushedRow };
+  }
+  return best;
+}
+
 export function uploadWith<S extends z.ZodType | undefined = undefined>(
   portFactory: EffectorPortFactory,
   def: UploadDefinition<S>,
@@ -625,6 +745,7 @@ export function uploadWith<S extends z.ZodType | undefined = undefined>(
   return sandboxLogic(portFactory, parts, {
     kind: "upload",
     idempotent: parts.idempotent,
+    repeatsPinned: false,
     label: () => `upload ${parts.method} ${parts.target.scheme}://${parts.target.host}`,
     build: (input, ambient, slot) => {
       let value: unknown = input;
@@ -651,6 +772,7 @@ export function credentialedCommandWith(
   return sandboxLogic(portFactory, parts, {
     kind: "command",
     idempotent: false,
+    repeatsPinned: true,
     label: () => parts.argv.map((a) => (typeof a === "string" ? a : `<${(a as Arg).arg}>`)).join(" "),
     build: (input, ambient, slot, pinned) => {
       const repoSlot = slotOf("command", slot, parts.slot, ambient);

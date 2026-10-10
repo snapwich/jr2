@@ -252,6 +252,28 @@ export type AttachResponse = { repos: Record<string, string>; review?: Record<st
  * failed — `slot` names the Repo Slot, and `error` carries the step and git's own stderr. */
 export type AttachError = { error: string; slot?: string };
 
+// --- the sync (after a signed push, ADR-0067) ---------------------------------------------------
+// After a signed push the Sandbox Effector holds signed copies of the Agent's commits; the sync
+// moves the Agent's branch to them, here, in the Harness container, with one `update-ref` (files,
+// index, HEAD and stash do not change). The bundle of the signed commits travels through the
+// Orchestrator. Same bearer as every Harness route (ADR-0058).
+
+/** What `POST /sync` accepts: the branch Worktree (absolute, under `/work`), the branch, the pair
+ * the push published (`published`, the signed tip; `source`, the Agent's commit it copies) and,
+ * when the push just ran, the bundle of the signed commits (base64). With no bundle the signed
+ * commits must already be in the Agent's store (a sync run again). */
+export type SyncRequest = { worktree: string; branch: string; published: string; source: string; bundle?: string };
+
+/** What the sync answers — a report, which the next push never trusts. `synced`: the branch moved
+ * (`replayed` commits the Agent made after the push were copied onto the signed tip). `already`:
+ * the branch holds the signed tip. `skipped`: the push was not signed. `busy`: a rebase, merge,
+ * cherry-pick or revert of the branch is in progress; nothing changed. `not-synced`: the branch
+ * did not move (`reason` says why). */
+export type SyncAnswer =
+  | { sync: "synced"; from: string; to: string; replayed: number; tries: number }
+  | { sync: "already" }
+  | { sync: "skipped" | "busy" | "not-synced"; reason: string };
+
 // --- the exec (a `command` Effect, ADR-0067) ----------------------------------------------------
 // A Machine's `command` Effect runs here, in the Harness container of its Workspace's Sandbox: a
 // child of the Harness process, so the Agent's user and the same Stand-ins, never through a shell.

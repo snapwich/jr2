@@ -1917,6 +1917,7 @@ export class RunHost {
       // transition — a cancel's final save included, which untracks the run — and is saved after
       // it only when nothing else did. A row written around a park lands in memory and skips the save.
       effectRow: (effectId) => effects[effectId],
+      effectRows: () => effects,
       recordEffect: (effectId, row, save = "now") => {
         effects[effectId] = row;
         const persist = (): void => {

@@ -115,10 +115,28 @@ Binding. An Effect that holds a secret runs in an Effector
   (`ancestry | pair | cherry`), `unchanged` when the remote already held it, and the signed commits as a bundle for the
   sync step (`git bundle create` of the signed tip, with the Agent's tip as its prerequisite: the signed commits, and
   the trees and blobs git adds beside them, which the Agent's store may already hold); the bundle never reaches the
-  Machine. The Agent is never told to rebase: a rebase repair loses a reworded message and duplicates empty commits and
-  merges. A side branch the Agent made before the push and merges later is signed again, so a duplicate signed commit
-  can be published — with an ssh key too, because the committer date is the Effector's clock and a second signing is a
-  second commit.
+  Machine. A push sends the ledger's last push of its Workspace — its published commit and its source — as the pair's
+  input (`last`). The Agent is never told to rebase: a rebase repair loses a reworded message and duplicates empty
+  commits and merges. A side branch the Agent made before the push and merges later is signed again, so a duplicate
+  signed commit can be published — with an ssh key too, because the committer date is the Effector's clock and a second
+  signing is a second commit.
+- **The sync: after a signed push, the Agent's branch moves to the signed commits**, in the Harness container
+  (`POST /sync`, behind the Harness bearer, ADR-0058), from the bundle the Effector wrote, which the Orchestrator relays
+  — never a shared volume: the Worktree stays read-only on the credentialed side. Under a cleared environment and a
+  config that names no hook, no fsmonitor, no alternate-refs command and no maintenance, the Harness verifies and
+  unbundles the bundle (objects only), checks that the signed tip is a commit with the source's tree, answers `busy`
+  when a rebase of the branch, or a merge, cherry-pick, revert or sequence in a worktree whose HEAD is the branch, is in
+  progress, and otherwise copies each commit the Agent made after the source as its raw object with only its parents
+  changed, then moves the branch with one `git update-ref <new> <old>` — a compare-and-swap, tried again from the new
+  tip at most 3 times — so files, index, HEAD and stash do not change. Its answer is a field of the push's output beside
+  the outcome: `sync: synced | already | skipped | busy | not-synced`, with `syncReason` when it moved nothing (an
+  unsigned push is `skipped`, with no call). A Harness that cannot be reached answers `not-synced`; the push stays
+  `pushed`. When the last push's sync answered `busy` or `not-synced`, jr2 runs it again before the Workspace's next
+  push, with the bundle while the row still holds it. The push never trusts the sync's answer: the Agent owns its
+  repository and can move the branch at any time, so the next push derives everything again from the remote and the
+  Agent's objects. After a signed push the Agent reads, beside the output, what moved: that its branch now holds signed
+  copies with new ids, or that jr2 did not move it and why; that its files, index and stash did not change; and that
+  amending, rebasing or resetting the pushed commits makes the next push `diverged`.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing it started outlives it. A bounded tail (default 4096 characters) is the
   output; the full stream goes to the run's feed (Instance-token band).
@@ -127,20 +145,21 @@ Binding. An Effect that holds a secret runs in an Effector
   `settled` row with the output, saved at the write just before the transition it drives and kept by the save that
   carries that transition, so a restart that loses the transition's save still delivers the output and runs nothing. On
   restore: settled → the output is delivered; no row → nothing was sent, so it starts; intent → per kind. A `command`
-  re-attaches to the exec by id, or settles `unknown` when the Harness no longer knows it (it restarted); it is never
-  run again by jr2: it runs the Agent's code, which may spend a Stand-in. A credentialed command re-attaches to its
-  Sandbox Effector by id, or settles `unknown`, and is never run again. A `push` intent row names its Sandbox and, once
-  the Effector's first answer names it, the pinned commit: a restore asks the Effector for its id and follows it, and
-  when the Effector no longer holds it the push is sent again with only that commit — never the Agent's tip now; with no
-  commit recorded it settles `unknown`. An `upload` follows the `http` rule. An `http` intent row names its placement
-  and no replica: the Effect asks every replica of that Effector for its id and follows the one that holds it; when none
-  does, it is sent again only when the author marked it `idempotent`, and any other settles `unknown`. Retry is the
-  author's choice — a route back into the state, or `idempotent` for a call that carries its own idempotency key or only
-  reads. No row is dropped: each settled or aborted row keeps the Effect's id, kind and outcome for the run's life, the
-  record of what the run's Effects did. A settled row's output tail is dropped once the save that carries its transition
-  is on disk; the full stream is on the feed. An `http` response's body and headers are its tail: the row keeps the
-  outcome, the status, the content type and the size, and the settled line on the feed carries the whole response. A
-  `push` row keeps its published commit and its source whole — the next push reads them as its pair — and drops its
+  that names no secret re-attaches to the exec by id, or settles `unknown` when the Harness no longer knows it (it
+  restarted); it is never run again by jr2: it runs the Agent's code, which may spend a Stand-in. A `push` and a
+  credentialed command intent row name their Sandbox and, once the Effector's first answer names it, the pinned commit:
+  a restore asks the Effector for the id and follows it, and when the Effector no longer holds it the Effect is sent
+  again with only that commit — never the Agent's tip now — because its run is a function of (commit, argv, secrets),
+  what the intent row records; with no commit recorded it settles `unknown`. An `upload` follows the `http` rule. An
+  `http` intent row names its placement and no replica: the Effect asks every replica of that Effector for its id and
+  follows the one that holds it; when none does, it is sent again only when the author marked it `idempotent`, and any
+  other settles `unknown`. Retry is the author's choice — a route back into the state, or `idempotent` for a call that
+  carries its own idempotency key or only reads. No row is dropped: each settled or aborted row keeps the Effect's id,
+  kind and outcome for the run's life, the record of what the run's Effects did. A settled row's output tail is dropped
+  once the save that carries its transition is on disk; the full stream is on the feed. An `http` response's body and
+  headers are its tail: the row keeps the outcome, the status, the content type and the size, and the settled line on
+  the feed carries the whole response. A `push` row keeps its published commit, its source and its sync's answer whole —
+  the next push of its Workspace reads them as its pair, and runs a sync that did not finish again — and drops its
   bundle and git's words. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One
   exception, bounded by one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because
   an `answer` action may read it after a restore; a loop below the Agent's state then grows the hold by one tail per
@@ -161,9 +180,12 @@ Binding. An Effect that holds a secret runs in an Effector
   (`aborted`, saved with the transition that exited the state — a cancel's final save carries it) and the feed, "outcome
   unknown"; the Machine does not get it — the state that asked has left. An `http` Effect has no cancel route: its
   state's exit stops the polling, and the abort goes to the ledger and the feed the same way, "the Effector may still
-  send it; outcome unknown". The Effector finishes the call and drops an outcome nobody reads. Two stops are not exits:
-  the host parking the run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor). The Effect then
-  re-attaches on restore, or settles `unknown`. There is no "finally": cleanup is a state.
+  send it; outcome unknown". The Effector finishes the call and drops an outcome nobody reads. The Sandbox kinds have no
+  cancel route either: an `upload`, a `push` and a credentialed command that a state exit cut run on in the Sandbox
+  Effector to their end — a `terraform apply` included — and the abort says "the Sandbox Effector may still run it;
+  outcome unknown". Two stops are not exits: the host parking the run (`hostStopping`, ADR-0024) and an Orchestrator
+  shutdown (it stops no actor). The Effect then re-attaches on restore, or settles `unknown`. There is no "finally":
+  cleanup is a state.
 - **Must-finish is a pattern.** An Effect that must not be cut goes in its own state, whose only exit is its `onDone`,
   and that state handles the ancestor's events itself.
 - **No fire-and-forget form.** Two patterns keep D1: an Effect in its own state; or a second invoke with no `onDone`
@@ -191,8 +213,15 @@ Binding. An Effect that holds a secret runs in an Effector
 - **A trailer on each signed commit naming its source.** Rejected: forges show it, and the map must be read off every
   published commit or an unsigned one leaks; ancestry, the sync and the read-only fallback need no stored map.
 - **Take a command as a shell string.** Rejected: an Agent's param in a string is a shell injection.
-- **Repeat a command whose outcome is unknown.** Rejected: it may have acted (a push from a script, a spent Stand-in).
-  The Machine gets `unknown` and decides.
+- **Repeat a command whose outcome is unknown.** Rejected for a command that names no secret: it may have acted (a push
+  from a script, a spent Stand-in), and its run is the live Worktree's, which no row records. The Machine gets `unknown`
+  and decides. A credentialed command runs against a pinned commit the intent row holds, so a restore that finds no
+  Effect sends it again with that commit.
+- **Sync through a volume the Effector writes and the Harness container reads.** Rejected: the Worktree is read-only on
+  the credentialed side so that nothing there is a channel into the Agent's container; the bundle rides the
+  Orchestrator's one call instead.
+- **Tell the Agent to rebase onto the published commits.** Rejected: measured (E8), a rebase repair loses a reworded
+  message, drops a re-applied commit, and duplicates empty commits and merges.
 - **A fire-and-forget Effect (`spawnChild`, or a flag).** Rejected for the reasons above; nothing the Machine starts may
   outlive the state that asked for it.
 
@@ -207,13 +236,14 @@ Binding. An Effect that holds a secret runs in an Effector
 - An `http` call an Orchestrator restart caught in flight gives one send: the restored Effect finds it on the replica
   that holds it. One the Effector lost gives `unknown`, or a second send when it is `idempotent`.
 - A push the Orchestrator restart caught in flight gives one push of the pinned commit; one the Effector lost is pushed
-  again with that commit alone.
+  again with that commit alone. A credentialed command the Effector lost runs again with its pinned commit, so its tool
+  can run twice against one commit.
+- A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (B2's wire is `POST` and `GET`),
+  so D1 holds for the Machine — it does not get the output — and not for the outside world.
 - Not built: the Sandbox Effector in a real pod. The Effector binary runs every Sandbox kind, and the Orchestrator
   builds each start from the Workspace's handles and keeps the ledger above, but the Orchestrator does not yet add the
   `effector` container at provision, `jr2 up` writes no `jr2-effector-<workspace>` Secret and makes none of the push
   refusals of ADR-0051, and the Orchestrator has no address for a Sandbox Effector: the Sandbox's Service names the
   Harness's port only, and a request is signed for the pod's own address. Until then a Sandbox kind faults at invoke,
   naming this.
-- Not built: the sync step that moves the Agent's branch to the signed commits after a signed push, and the text the
-  Agent reads after one.
 - Owed, not built: an Open argv bound by `customize()`.

@@ -388,7 +388,7 @@ export type CarriedEffect = {
   timeoutMs: number;
 } &
   /** A command; one whose env names a secret runs in the Sandbox Effector (ADR-0067). */
-  (| { kind: "command"; argv: string[]; slot?: string; secrets?: string[] }
+  (| { kind: "command"; argv: string[]; slot?: string; secrets?: string[]; pin?: true }
     /** An http Effect (ADR-0068), or an upload (an http request whose body is a Worktree file): its
      * method, its fixed target, and the secrets it names — what places each secret, and what its
      * Effector's config allows. */
@@ -625,7 +625,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
             ...(slot !== undefined ? { slot } : {}),
           });
         } else {
-          const { argv, timeoutMs, slot, secrets } = parts;
+          const { argv, timeoutMs, slot, secrets, pin } = parts;
           effects.push({
             name,
             path,
@@ -635,6 +635,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
             timeoutMs,
             ...(slot !== undefined ? { slot } : {}),
             ...(secrets?.length ? { secrets: [...secrets] } : {}),
+            ...(pin ? { pin } : {}),
           });
         }
       } else {

@@ -295,7 +295,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       }
       if (!("argv" in e)) continue;
       const names = e.secrets?.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
-      const seat = e.secrets?.length ? "the Sandbox Effector" : "the Harness";
+      const seat = e.secrets?.length ? `the Sandbox Effector${e.pin ? ", pinned" : ""}` : "the Harness";
       activity(
         io,
         `  ${e.name}${where}: ${e.kind} ${JSON.stringify(e.argv)} — ${e.timeoutMs / 1000}s, in ${seat}${slot}${names}`,

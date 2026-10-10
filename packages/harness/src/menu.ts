@@ -323,12 +323,50 @@ export function answerText(answer: PickAnswer | undefined): string {
       const payload = Object.keys(answer.payload).length ? `, with ${JSON.stringify(answer.payload)}` : "";
       return `Its answer: \`${answer.event}\`${from}${payload}.`;
     }
-    case "output":
-      return `Its answer: the output of \`${answer.actor}\`: ${JSON.stringify(answer.output) ?? "nothing"}.`;
+    case "output": {
+      const after = signedPushText(answer.output);
+      return `Its answer: the output of \`${answer.actor}\`: ${JSON.stringify(answer.output) ?? "nothing"}.${after ? ` ${after}` : ""}`;
+    }
     // The Machine shaped it (ADR-0067): its words, as the workflow wrote them.
     case "answer":
       return `Its answer: ${typeof answer.value === "string" ? answer.value : (JSON.stringify(answer.value) ?? "nothing")}`;
   }
+}
+
+/**
+ * What the Agent reads after a SIGNED push (ADR-0067): the output of a `push` whose published commit
+ * is not the Agent's own (`published` ≠ `source`), by its sync's answer. The ids changed, so the
+ * Agent is told what moved and what did not, and what makes the next push `diverged`. It is never
+ * told to rebase: a rebase repair loses a reworded message and duplicates empty commits and merges.
+ * Undefined for every other output.
+ */
+export function signedPushText(output: unknown): string | undefined {
+  if (typeof output !== "object" || output === null) return undefined;
+  const o = output as {
+    outcome?: unknown;
+    published?: unknown;
+    source?: unknown;
+    sync?: unknown;
+    syncReason?: unknown;
+  };
+  if (o.outcome !== "pushed" || typeof o.sync !== "string" || o.sync === "skipped" || o.published === o.source) {
+    return undefined;
+  }
+  const keep =
+    "Do not merge or rebase branches that you made before this push. Do not change the pushed commits: if you " +
+    'amend, rebase or reset them, the next push stops with "diverged".';
+  if (o.sync === "synced" || o.sync === "already") {
+    return (
+      "jr2 signed your commits and pushed the signed copies. The signed commits have new commit ids, and jr2 moved " +
+      "your branch to them. Your files, your index and your stash did not change. The old commit ids are in the " +
+      `reflog. Continue your work on your branch. ${keep}`
+    );
+  }
+  const why = typeof o.syncReason === "string" ? ` (${o.syncReason})` : "";
+  return (
+    `jr2 signed your commits and pushed the signed copies. jr2 did not move your branch to them${why}. Continue ` +
+    `your work on your branch: the next push finds the published commits. ${keep}`
+  );
 }
 
 /**

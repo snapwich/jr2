@@ -18,6 +18,7 @@
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { AttachFault, attachFault } from "./attach.ts";
+import { syncFault } from "./sync.ts";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
 import { Execs } from "./exec.ts";
 import { renderEchoEvent, type PrinterOut } from "./printer.ts";
@@ -50,6 +51,8 @@ import {
   type AdmissionRequest,
   type AttachError,
   type AttachRequest,
+  type SyncAnswer,
+  type SyncRequest,
   type AttachResponse,
   type ExecRequest,
   type HistoryMessage,
@@ -109,6 +112,9 @@ export type HarnessAppDeps = {
   /** Run the attach (ADR-0063) — `attach.ts`'s `attacher()` in production, a stub in wire tests.
    * Omitted, `POST /attach` answers 501: this Harness does not attach. */
   attach?: (req: AttachRequest) => Promise<AttachResponse>;
+  /** Run the sync after a signed push (ADR-0067) — `sync.ts`'s `syncer()` in production. Omitted,
+   * `POST /sync` answers 501. */
+  sync?: (req: SyncRequest) => Promise<SyncAnswer>;
   /** The execs a `command` Effect runs as (ADR-0067) — one `Execs` per process in production.
    * Omitted, `/exec/*` answers 501: this Harness runs no command. */
   execs?: Execs;
@@ -234,6 +240,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   app.use("/agents/*", gate);
   app.use("/echo", gate);
   app.use("/attach", gate);
+  app.use("/sync", gate);
   app.use("/exec/*", gate);
 
   /** The process's execs, or the refusal a Harness that runs none answers. */
@@ -417,6 +424,23 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
       const error = err instanceof Error ? err.message : String(err);
       return c.json<AttachError>({ error, ...(slot !== undefined ? { slot } : {}) }, 500);
     }
+  });
+
+  // The sync (ADR-0067): after a signed push, the Agent's branch moves to the signed commits — one
+  // ref, by compare-and-swap, under a clean git config. Its answer is a report; the next push
+  // trusts none of it. The Instance Harness holds no Workspace, so it syncs nothing (ADR-0031).
+  app.post("/sync", async (c) => {
+    if (deps.menuOnly) {
+      return c.json(
+        { error: "this is the Instance Harness, which holds no Workspace — nothing syncs here (ADR-0031)" },
+        403,
+      );
+    }
+    if (!deps.sync) return c.json({ error: "this Harness does not sync (ADR-0067)" }, 501);
+    const body = await c.req.json().catch(() => undefined);
+    const fault = syncFault(body);
+    if (fault) return c.json({ error: fault }, 400);
+    return c.json(await deps.sync(body as SyncRequest));
   });
 
   // The exec (ADR-0067): a Machine's `command` Effect, run here as a child of this process — the

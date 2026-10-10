@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import { harnessServer } from "./app.ts";
 import { attacher } from "./attach.ts";
+import { syncer } from "./sync.ts";
 import { Execs } from "./exec.ts";
 import { seatFacts, standingBriefing } from "./briefing.ts";
 import { clearShm, podMemoryGuard } from "./memory-guard.ts";
@@ -81,6 +82,8 @@ const harnessWire = harnessServer({
   memoryKills: (listener) => guard.onKill(listener),
   // The attach (ADR-0063): the Workspace's Repos into `/work`, on the Orchestrator's call.
   attach: attacher(),
+  // The sync after a signed push (ADR-0067): the Agent's branch to the signed commits.
+  sync: syncer(),
   // The exec (ADR-0067): a Machine's `command` Effects, run as children of this process — the
   // Agent's user and its Stand-ins. The Instance Harness refuses them (`menuOnly`).
   execs: new Execs(),

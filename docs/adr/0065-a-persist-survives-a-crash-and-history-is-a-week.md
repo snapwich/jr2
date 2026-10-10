@@ -25,9 +25,10 @@ upserts cost 0.04 ms (1 KB) and 0.18 ms (100 KB). A run's blob is about 1 KB; a 
   with the ledgers beside it (admissions, epochs, notices, timers, outstanding picks, Effects); a Pool's cost at 40
   workers is 0.2 ms, so its workers do not become rows of their own. The Effect ledger keeps a row for every Effect the
   run started (ADR-0067), so a Machine that loops through an Effect grows its blob by one row per pass: id, kind and
-  outcome. The output's tail is dropped once the save that carries the Effect's transition is on disk. An outstanding
-  pick's hold is the one place tails accumulate: its `chain` keeps every reply since the pick whole until the pick is
-  answered, then it is dropped (ADR-0067).
+  outcome. The output's tail is dropped once the save that carries the Effect's transition is on disk; a push row keeps
+  its published commit, its source and its sync's answer whole, which the next push reads. An outstanding pick's hold is
+  the one place tails accumulate: its `chain` keeps every reply since the pick whole until the pick is answered, then it
+  is dropped (ADR-0067).
 - **`restore()` reads live rows only.** The store answers `WHERE status = 'live'`; terminal rows are not parsed at boot.
 - **A finished run's row lives 7 days, fixed.** Every non-live status — `done`, `error`, `cancelled`, `lost`, `drifted`
   — ages from its terminal write, and a sweep at boot and every hour deletes what is older. A `live` row is never swept:

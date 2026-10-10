@@ -12,6 +12,7 @@ import { EffectStateShape } from "@jr2/orchestrator";
 import { noticeText } from "../src/briefing.ts";
 import {
   answerText,
+  signedPushText,
   cutPickResult,
   outstandingRefusal,
   readMenu,
@@ -282,6 +283,30 @@ test("an Effector's outcome reads as its output, decoded off the wire as the Orc
   const settled = readdirSync(fixtures).filter((f) => f.startsWith("response.settled-"));
   assert.deepEqual(settled.sort(), Object.keys(want).sort(), "every settled fixture has its text here");
   for (const [name, text] of Object.entries(want)) assert.equal(read(name), text, name);
+});
+
+test("after a signed push the Agent reads what moved, by the sync's answer; never a rebase to do (ADR-0067)", () => {
+  const pushed = { outcome: "pushed", published: "2".repeat(40), source: "1".repeat(40), via: "ancestry" };
+  const synced = answerText({ kind: "output", actor: "publish", output: { ...pushed, sync: "synced" } });
+  assert.equal(
+    synced,
+    `Its answer: the output of \`publish\`: ${JSON.stringify({ ...pushed, sync: "synced" })}. jr2 signed your ` +
+      "commits and pushed the signed copies. The signed commits have new commit ids, and jr2 moved your branch to " +
+      "them. Your files, your index and your stash did not change. The old commit ids are in the reflog. Continue " +
+      "your work on your branch. Do not merge or rebase branches that you made before this push. Do not change the " +
+      'pushed commits: if you amend, rebase or reset them, the next push stops with "diverged".',
+  );
+  const busy = signedPushText({ ...pushed, sync: "busy", syncReason: "a rebase of your branch is in progress" });
+  assert.equal(
+    busy,
+    "jr2 signed your commits and pushed the signed copies. jr2 did not move your branch to them (a rebase of your " +
+      "branch is in progress). Continue your work on your branch: the next push finds the published commits. Do not " +
+      "merge or rebase branches that you made before this push. Do not change the pushed commits: if you amend, " +
+      'rebase or reset them, the next push stops with "diverged".',
+  );
+  assert.equal(signedPushText({ ...pushed, source: pushed.published, sync: "skipped" }), undefined, "unsigned");
+  assert.equal(signedPushText({ outcome: "diverged", reason: "x" }), undefined);
+  for (const text of [synced, busy!]) assert.doesNotMatch(text, /\b(please )?rebase (your|onto)/i);
 });
 
 test('a guard straight back alone reads "moved; nothing ran"; a move to a mode reads as the plain receipt', () => {

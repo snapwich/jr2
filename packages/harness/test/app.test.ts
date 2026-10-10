@@ -506,6 +506,30 @@ test("a failed attach is 500 with the slot and git's own words", async () => {
   });
 });
 
+// ---- POST /sync (ADR-0067) ---------------------------------------------------------------------
+
+test("the sync hands a valid body to the syncer and answers its report; a malformed one is 400; the Instance Harness refuses it", async () => {
+  const seen: unknown[] = [];
+  const body = {
+    worktree: "/work/app/b",
+    branch: "b",
+    published: "2".repeat(40),
+    source: "1".repeat(40),
+    bundle: "QQ==",
+  };
+  const { app } = scripted({ sync: async (req) => (seen.push(req), { sync: "already" }) });
+  const res = await app.request("/sync", attachInit(body));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { sync: "already" });
+  assert.deepEqual(seen, [body]);
+  const bad = await app.request("/sync", attachInit({ ...body, worktree: "/etc" }));
+  assert.equal(bad.status, 400);
+  assert.equal(seen.length, 1, "nothing ran");
+  const instance = scripted({ menuOnly: true, sync: async () => (seen.push("x"), { sync: "already" }) });
+  assert.equal((await instance.app.request("/sync", attachInit(body))).status, 403);
+  assert.equal(seen.length, 1);
+});
+
 test("the Instance Harness refuses the attach: it has no /work (ADR-0031)", async () => {
   let runs = 0;
   const { app } = scripted({ menuOnly: true, attach: async () => (runs++, { repos: {} }) });

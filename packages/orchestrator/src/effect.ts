@@ -57,6 +57,9 @@ export type CommandParts = {
   readonly env?: Readonly<Record<string, { readonly secret: string; readonly path?: true }>>;
   /** The secrets `env` names, once each, sorted — what places them (ADR-0068). */
   readonly secrets?: readonly string[];
+  /** A credentialed command's `pin`: its input names the commit (`{ sha }`, an approved one) in
+   * place of the Agent's branch tip (ADR-0067). */
+  readonly pin?: true;
   /** The Repo Slot whose Worktree is the cwd. Needed only where the Workspace carries several. */
   readonly slot?: string;
   readonly timeoutMs: number;
@@ -165,11 +168,11 @@ export function targetText(parts: { readonly target: HttpParts["target"] }): str
   return `${scheme}://${host.includes(":") ? `[${host}]` : host}${standard ? "" : `:${port}`}`;
 }
 
-/** The keys an Effect's input has, read off its parts: a command's argv slot names; an http
- * Effect's input schema keys. */
+/** The keys an Effect's input has, read off its parts: a command's argv slot names (and `sha` with
+ * `pin`); an http Effect's input schema keys; a push's `sha` and `message`. */
 export function inputKeysOf(parts: EffectParts): string[] {
   if (parts.kind !== "command") return [...parts.inputKeys];
-  return parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg]));
+  return [...parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg])), ...(parts.pin ? ["sha"] : [])];
 }
 
 // --- Output -------------------------------------------------------------------------------------
@@ -198,8 +201,8 @@ export type EffectRow =
   | { state: "intent"; kind: "http"; slot: string; placement: "instance"; idempotent: boolean; at: string }
   /** An Effect of the Sandbox Effector (ADR-0067): its Sandbox, and — for a push or a credentialed
    * command — the commit it runs against, written once the start's answer names it. A restore
-   * repeats a push of only that commit, re-attaches a command or settles it `unknown`, and sends an
-   * upload again only when it is marked idempotent. */
+   * re-attaches by id, or sends a push or a credentialed command again with only that commit, and
+   * sends an upload again only when it is marked idempotent. */
   | {
       state: "intent";
       kind: "upload" | "push" | "command";
@@ -210,7 +213,9 @@ export type EffectRow =
       pinned?: string;
       at: string;
     }
-  | { state: "settled"; kind: EffectParts["kind"]; slot: string; output: unknown; at: string }
+  /** `sandbox`: the Workspace an Effect of the Sandbox Effector ran in — a push's next push reads
+   * its pair from the last row of its own Workspace. */
+  | { state: "settled"; kind: EffectParts["kind"]; slot: string; sandbox?: string; output: unknown; at: string }
   | { state: "aborted"; kind: EffectParts["kind"]; slot: string; at: string };
 
 /**
@@ -254,8 +259,8 @@ const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   command: ["tail"],
   http: ["body", "headers"],
   upload: ["body", "headers"],
-  // A push row keeps its sha and pair data whole (`published`, `source`): the next push reads them.
-  // The sync's bundle is its tail.
+  // A push row keeps its sha and pair data whole (`published`, `source`) and its sync's answer:
+  // the next push reads them. The signed commits' bundle and git's words are its tail.
   push: ["bundle", "detail"],
 };
 
@@ -301,10 +306,13 @@ type Fault = { type: "jr2.effect.error"; error: unknown };
 export type EffectLogic<I, O> = ActorLogic<EffectSnapshot<O, I>, EventObject, I> & EffectSlot;
 
 type ArgNames<A extends readonly unknown[]> = A[number] extends infer E ? (E extends Arg<infer N> ? N : never) : never;
-/** A command's input: one string per argv slot; none when the argv has no slot. */
-export type CommandInput<A extends readonly unknown[]> = [ArgNames<A>] extends [never]
+/** A command's input: one string per argv slot, and with `pin` the approved commit (`{ sha }`);
+ * none when there is neither. */
+export type CommandInput<A extends readonly unknown[], P = false> = [
+  ArgNames<A> | ([P] extends [true] ? "sha" : never),
+] extends [never]
   ? void
-  : { [K in ArgNames<A>]: string };
+  : { [K in ArgNames<A> | ([P] extends [true] ? "sha" : never)]: string };
 
 export type Duration = `${number}s` | `${number}m` | `${number}h`;
 
@@ -339,12 +347,15 @@ const running = new WeakMap<AnyActorRef, Running>();
  * unit tests share. `argv` is never shell text: an `arg("x")` entry is ONE argument, filled from
  * the input's `x`.
  */
-export function commandWith<const A extends readonly (string | Arg)[]>(
+export function commandWith<
+  const A extends readonly (string | Arg)[],
+  const Opt extends CommandOptions = CommandOptions,
+>(
   portFactory: ExecPortFactory,
   argv: A,
-  options: CommandOptions = {},
+  options: Opt = {} as Opt,
   effectorPorts: EffectorPortFactory = sandboxEffectorPort,
-): EffectLogic<CommandInput<A>, CommandOutput> {
+): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> {
   if (!Array.isArray(argv) || argv.length === 0) {
     throw new Error("command(argv): argv is a non-empty list — each entry one argument, never shell text");
   }
@@ -360,18 +371,27 @@ export function commandWith<const A extends readonly (string | Arg)[]>(
     tail: options.tail ?? DEFAULT_TAIL,
     ...(options.slot !== undefined ? { slot: options.slot } : {}),
     ...(options.env !== undefined && Object.keys(options.env).length > 0 ? commandEnvParts(options.env) : {}),
+    ...(options.pin === true ? { pin: true as const } : {}),
   };
+  if (parts.pin && (parts.secrets?.length ?? 0) === 0) {
+    // A command that names no secret runs in the Harness container, in the live Worktree: there
+    // is no pinned checkout for `pin` to choose (ADR-0067).
+    throw new Error(
+      "command(argv, { pin: true }) names no secret in its env: `pin` chooses the commit a credentialed command " +
+        "runs against in the Sandbox Effector, and a command that names no secret runs in the live Worktree " +
+        '(ADR-0067) — name its secret, command(argv, { env: { NAME: secret("x") }, pin: true }), or drop `pin`',
+    );
+  }
   if ((parts.secrets?.length ?? 0) > 0) {
     // Naming a secret is the placement (ADR-0067): the Sandbox Effector runs it.
-    const pinned = options.pin === true;
     return credentialedCommandWith(
       effectorPorts,
       parts,
       (input, slot) => argvOf(slot, parts, input),
-      pinned,
-    ) as unknown as EffectLogic<CommandInput<A>, CommandOutput>;
+      parts.pin === true,
+    ) as unknown as EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput>;
   }
-  type I = CommandInput<A>;
+  type I = CommandInput<A, Opt["pin"]>;
   type O = CommandOutput;
   const logic: ActorLogic<EffectSnapshot<O, I>, EventObject, I> = {
     getInitialSnapshot: (_scope, input) => ({

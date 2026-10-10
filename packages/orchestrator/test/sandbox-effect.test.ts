@@ -8,12 +8,14 @@ import assert from "node:assert/strict";
 import { assign } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { commandWith, isEffect, placementOf, type EffectLogic, type EffectRow } from "../src/effect.ts";
+import { commandWith, inputKeysOf, isEffect, placementOf, type EffectLogic, type EffectRow } from "../src/effect.ts";
 import { createEffectorClient, type CommandStartRequest, type PushStartRequest } from "../src/effector-wire.ts";
 import { bearer, secret } from "../src/http-effect.ts";
 import { partsOf } from "../src/parts.ts";
 import { RunHost } from "../src/run-host.ts";
-import { pushParts, pushWith, uploadWith } from "../src/sandbox-effect.ts";
+import { lastPushOf, pushParts, pushWith, uploadWith } from "../src/sandbox-effect.ts";
+import { createSyncPort, type SyncPortFactory } from "../src/sync-client.ts";
+import type { SyncAnswer, SyncRequest } from "../src/wire.ts";
 import { sandboxEffectorSecret, sandboxEffectorContainer } from "../src/sandbox-kube.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
@@ -96,9 +98,22 @@ const pushed = (published: string) => ({
   bundle: "QlVORExF",
 });
 
+/** The Workspace's Harness sync, in-process: what each call asked, and the answer it gives. */
+class FakeSync {
+  readonly calls: Array<{ endpoint: string; bearer?: string; req: SyncRequest }> = [];
+  answer: SyncAnswer = { sync: "synced", from: "a".repeat(40), to: "b".repeat(40), replayed: 0, tries: 1 };
+  factory: SyncPortFactory = (endpoint, bearer) => ({
+    sync: async (req) => {
+      this.calls.push({ endpoint, ...(bearer ? { bearer } : {}), req });
+      return this.answer;
+    },
+  });
+}
+
 test("a push: the start names the Workspace's repositories and Binding; the pinned commit goes to the intent row; the bundle never reaches the Machine", async () => {
   const fake = new FakeEffector(["sandbox"]);
-  const rig = await started(pushWith(port(fake), { sign: true }) as AnyEffect);
+  const syncs = new FakeSync();
+  const rig = await started(pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect);
   await waitFor(() => fake.starts.length === 1);
   const req = fake.starts[0]!.req as PushStartRequest;
   assert.equal(req.kind, "push");
@@ -122,11 +137,118 @@ test("a push: the start names the Workspace's repositories and Binding; the pinn
   assert.equal(result.outcome, "pushed");
   assert.equal(result.published, "b".repeat(40));
   assert.equal("bundle" in result, false);
+  // The sync ran in the Workspace's Harness, from the bundle the Effector wrote, and its answer is
+  // a field beside the outcome.
+  assert.equal(syncs.calls.length, 1);
+  assert.deepEqual(syncs.calls[0]!.req, {
+    worktree: "/work/app/jr2-run-1",
+    branch: "jr2/run-1",
+    published: "b".repeat(40),
+    source: "a".repeat(40),
+    bundle: "QlVORExF",
+  });
+  assert.equal(result.sync, "synced");
+  assert.equal("syncReason" in result, false);
+});
+
+test("an unsigned push is sync `skipped`, and no sync is asked", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const syncs = new FakeSync();
+  const rig = await started(pushWith(port(fake), {}, syncs.factory) as AnyEffect);
+  await waitFor(() => fake.starts.length === 1);
+  fake.settle({ outcome: "pushed", published: "a".repeat(40), source: "a".repeat(40) });
+  await waitFor(() => rig.host.status(rig.runId)?.value === "done");
+  const result = (rig.host.status(rig.runId)?.context as Ctx).result as Record<string, unknown>;
+  assert.equal(result.sync, "skipped");
+  assert.equal(syncs.calls.length, 0);
+});
+
+/** A Machine that pushes twice in one run, in one Workspace. */
+function twoPushes(effect: AnyEffect) {
+  return jr2Setup({
+    types: {} as { context: Ctx & { first?: unknown } },
+    events: [go],
+    actors: { ws: fakeWorkspace(ws()), effect },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    invoke: { src: "ws" },
+    initial: "waiting",
+    states: {
+      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "first" } },
+      first: {
+        invoke: {
+          src: "effect",
+          onDone: { target: "second", actions: assign({ first: ({ event }) => event.output }) },
+        },
+      },
+      second: {
+        invoke: { src: "effect", onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) } },
+      },
+      done: {},
+    },
+  });
+}
+
+test("the next push sends the ledger's last push of its Workspace as its pair, and runs a sync that did not finish again first", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const syncs = new FakeSync();
+  syncs.answer = { sync: "busy", reason: "a rebase of your branch is in progress" };
+  const host = new RunHost({ store: await mkStore(), ...target });
+  host.register({
+    name: "fx",
+    machine: twoPushes(pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("fx");
+  host.sendToGate(runId, "start", { type: "go" });
+  await waitFor(() => fake.starts.length === 1);
+  assert.equal((fake.starts[0]!.req as PushStartRequest).push.last, undefined, "no push before it");
+  fake.settle(pushed("b".repeat(40)));
+  // The first sync answered busy: before the second push it is run again, and the push carries
+  // the first push's pair.
+  await waitFor(() => fake.starts.length === 2);
+  assert.equal(syncs.calls.length, 2);
+  assert.equal(syncs.calls[1]!.req.published, "b".repeat(40));
+  assert.equal(syncs.calls[1]!.req.source, "a".repeat(40));
+  const second = fake.starts[1]!.req as PushStartRequest;
+  assert.deepEqual(second.push.last, { published: "b".repeat(40), source: "a".repeat(40) });
+  const first = (host.status(runId)?.context as { first?: Record<string, unknown> }).first!;
+  assert.equal(first.sync, "busy");
+  assert.equal(first.syncReason, "a rebase of your branch is in progress");
+  syncs.answer = { sync: "already" };
+  fake.settle({ ...pushed("c".repeat(40)), source: "d".repeat(40) });
+  await waitFor(() => host.status(runId)?.value === "done");
+  assert.equal(syncs.calls.length, 3, "a sync that answered `already` is not run again");
+});
+
+test("the pair is the last push of the SAME Workspace that published", () => {
+  const row = (sandbox: string, at: string, output: Record<string, unknown>): EffectRow => ({
+    state: "settled",
+    kind: "push",
+    slot: "publish",
+    sandbox,
+    output,
+    at,
+  });
+  const rows: Record<string, EffectRow> = {
+    a: row("ws-1", "2026-01-01T00:00:01Z", { outcome: "pushed", published: "1".repeat(40), source: "2".repeat(40) }),
+    b: row("ws-2", "2026-01-01T00:00:03Z", { outcome: "pushed", published: "3".repeat(40), source: "4".repeat(40) }),
+    c: row("ws-1", "2026-01-01T00:00:04Z", {
+      outcome: "diverged",
+      reason: "x",
+      published: "5".repeat(40),
+      source: "6".repeat(40),
+    }),
+  };
+  assert.equal(lastPushOf(rows, "ws-1", "self")?.output.published, "1".repeat(40));
+  assert.equal(lastPushOf(rows, "ws-2", "self")?.output.published, "3".repeat(40));
+  assert.equal(lastPushOf(rows, "ws-1", "a"), undefined, "never the Effect's own row");
 });
 
 test("a push restored when its Effector no longer holds it is sent again with only the pinned commit", async () => {
   const fake = new FakeEffector(["sandbox"]);
-  const effect = () => pushWith(port(fake)) as AnyEffect;
+  const effect = () => pushWith(port(fake), {}, new FakeSync().factory) as AnyEffect;
   const rig = await started(effect());
   await until(async () => Object.values(await ledger(rig.store, rig.runId)).some((r) => "pinned" in r));
   await rig.host.stop(rig.runId);
@@ -141,7 +263,7 @@ test("a push restored when its Effector no longer holds it is sent again with on
   await waitFor(() => host.status(rig.runId)?.value === "done");
 });
 
-test("a credentialed command runs in the Sandbox Effector; restored when its Effector forgot it, it settles unknown and never runs again", async () => {
+test("a credentialed command runs in the Sandbox Effector; restored when its Effector forgot it, it is sent again with only the pinned commit", async () => {
   const fake = new FakeEffector(["sandbox"]);
   const exec = new FakeHarnessExec();
   const effect = () =>
@@ -163,12 +285,88 @@ test("a credentialed command runs in the Sandbox Effector; restored when its Eff
   await until(async () => Object.values(await ledger(rig.store, rig.runId)).some((r) => "pinned" in r));
   await rig.host.stop(rig.runId);
   fake.restart("sandbox");
+  fake.tip = "c".repeat(40); // the Agent moved its branch since
   const host = await restored(rig.store, effect());
+  await waitFor(() => fake.starts.length === 2);
+  const again = fake.starts[1]!.req as CommandStartRequest;
+  assert.equal(fake.starts[1]!.id, fake.starts[0]!.id, "the same Effect");
+  assert.equal(again.command.pin, "a".repeat(40), "only the commit the intent row holds");
+  fake.settle({ outcome: "exited", code: 0, tail: "applied\n" });
   await waitFor(() => host.status(rig.runId)?.value === "done");
-  const result = (host.status(rig.runId)?.context as Ctx).result as { outcome: string; reason: string };
+  assert.equal(((host.status(rig.runId)?.context as Ctx).result as { outcome: string }).outcome, "exited");
+});
+
+test("a credentialed command with `pin` takes the approved commit from its input; `pin` with no secret is refused", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const exec = new FakeHarnessExec();
+  const effect = commandWith(
+    exec.factory,
+    ["terraform", "apply"],
+    { env: { AWS: secret("aws") }, pin: true },
+    port(fake),
+  );
+  assert.deepEqual(effect.effect.kind === "command" && effect.effect.pin, true);
+  // The load walk's pick-param check reads this: a fromPick that hands it `sha` is read.
+  assert.deepEqual(inputKeysOf(effect.effect), ["sha"]);
+  const machine = jr2Setup({
+    types: {} as { context: Ctx },
+    events: [go],
+    actors: { ws: fakeWorkspace(ws()), effect },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    invoke: { src: "ws" },
+    initial: "waiting",
+    states: {
+      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "running" } },
+      running: {
+        invoke: {
+          src: "effect",
+          input: { sha: "e".repeat(40) },
+          onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
+        },
+      },
+      done: {},
+    },
+  });
+  const host = new RunHost({ store: await mkStore(), ...target });
+  host.register({ name: "fx", machine, provide: () => ({}) });
+  const { runId } = await host.start("fx");
+  host.sendToGate(runId, "start", { type: "go" });
+  await waitFor(() => fake.starts.length === 1);
+  assert.equal((fake.starts[0]!.req as CommandStartRequest).command.pin, "e".repeat(40));
+  fake.settle({ outcome: "exited", code: 0, tail: "" });
+  await waitFor(() => host.status(runId)?.value === "done");
+  assert.throws(() => commandWith(exec.factory, ["make"], { pin: true }), /names no secret/);
+});
+
+test("a port takeover: a process on the Sandbox Effector's address gets a signed start that carries no secret, and its answer fails the Effect closed", async () => {
+  const seen: Array<{ headers: Record<string, string>; body: string }> = [];
+  const takeover = () =>
+    createEffectorClient({
+      key: EFFECTOR_KEY,
+      transport: {
+        replicas: async () => ["10.0.0.9:8082"],
+        send: async (_address, _method, _path, headers, body) => {
+          seen.push({ headers, body });
+          // It holds no key: it can answer, and it cannot sign.
+          return { status: 202, headers: { "x-jr2-signature": "forged" }, body: '{"state":"settled"}' };
+        },
+      },
+    });
+  const exec = new FakeHarnessExec();
+  const effect = commandWith(exec.factory, ["deploy"], { env: { AWS: secret("aws") } }, takeover);
+  const rig = await started(effect as AnyEffect);
+  await waitFor(() => rig.host.status(rig.runId)?.value === "done");
+  const result = (rig.host.status(rig.runId)?.context as Ctx).result as { outcome: string; reason: string };
   assert.equal(result.outcome, "unknown");
-  assert.match(result.reason, /not run again/);
-  assert.equal(fake.starts.length, 1);
+  assert.match(result.reason, /not the Sandbox Effector's; not run again/);
+  assert.ok(seen.length >= 1);
+  const start = seen[0]!;
+  assert.ok(start.headers["x-jr2-signature"], "the start is signed");
+  assert.match(start.body, /"secret":"aws"/, "it names the secret");
+  assert.equal(start.body.includes(EFFECTOR_KEY), false, "and carries no key");
+  assert.equal(exec.starts.length, 0, "nothing ran in the Harness container");
 });
 
 test("an upload names its Worktree file; restored with no Effector holding it, unknown unless idempotent", async () => {
@@ -261,4 +459,34 @@ test("refusals that name the fix: a squash without sign, an env that sets PATH o
   assert.throws(() => commandWith(exec.factory, ["x"], { env: { PATH: secret("abcdefgh") } }), /PATH and HOME/);
   assert.equal(JSON.stringify(secret("aws")), '{"secret":"aws"}', "`.path` is not in a definition's plain data");
   assert.deepEqual(secret("aws").path, { secret: "aws", path: true });
+});
+
+test("the sync's client: POST /sync with the Workspace's bearer; a Harness that refuses or cannot be reached is not-synced, never a fault", async () => {
+  const req = { worktree: "/work/app/b", branch: "b", published: "2".repeat(40), source: "1".repeat(40) };
+  const sent: Array<{ url: string; init: RequestInit }> = [];
+  const ok = createSyncPort({
+    baseUrl: "http://ws-1.default.svc:8080",
+    token: "bearer-1",
+    fetch: (async (url: string, init: RequestInit) => {
+      sent.push({ url, init });
+      return new Response(JSON.stringify({ sync: "already" }), { status: 200 });
+    }) as typeof fetch,
+  });
+  assert.deepEqual(await ok.sync(req, new AbortController().signal), { sync: "already" });
+  assert.equal(sent[0]!.url, "http://ws-1.default.svc:8080/sync");
+  assert.equal((sent[0]!.init.headers as Record<string, string>).authorization, "Bearer bearer-1");
+  const refused = createSyncPort({
+    baseUrl: "http://ws-1:8080",
+    fetch: (async () => new Response('{"error":"no"}', { status: 400 })) as unknown as typeof fetch,
+  });
+  assert.equal((await refused.sync(req, new AbortController().signal)).sync, "not-synced");
+  const gone = createSyncPort({
+    baseUrl: "http://ws-1:8080",
+    fetch: (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch,
+  });
+  const answer = await gone.sync(req, new AbortController().signal);
+  assert.equal(answer.sync, "not-synced");
+  assert.match("reason" in answer ? answer.reason : "", /could not be reached/);
 });

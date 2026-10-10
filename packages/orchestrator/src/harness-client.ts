@@ -603,10 +603,10 @@ export function createExecPort(options: {
  * (`slot`, needed only where the Workspace carries several); outside a Workspace it is refused.
  * Every outcome is output: `exited | timeout | killed | unknown`.
  */
-export function command<const A extends readonly (string | Arg)[]>(
+export function command<const A extends readonly (string | Arg)[], const Opt extends CommandOptions = CommandOptions>(
   argv: A,
-  options: CommandOptions = {},
-): EffectLogic<CommandInput<A>, CommandOutput> {
+  options: Opt = {} as Opt,
+): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> {
   return commandWith(
     (endpoint, bearer) => createExecPort({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
     argv,

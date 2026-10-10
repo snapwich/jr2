@@ -42,7 +42,7 @@ export type MachineTransitionDoc = {
 /** An Effect slot's parts, as the doc carries them (ADR-0067): a command's argv (an argv slot reads
  * `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one. */
 export type EffectDoc =
-  | { kind: "command"; argv: string[]; timeoutMs: number; slot?: string; secrets?: string[] }
+  | { kind: "command"; argv: string[]; timeoutMs: number; slot?: string; secrets?: string[]; pin?: true }
   /** An http Effect (ADR-0068) or an upload: its method, its fixed target, the secrets it names —
    * never a value. */
   | {
@@ -391,12 +391,13 @@ function effectDoc(parts: EffectParts): EffectDoc {
     const { sign, squash, force, pin, timeoutMs, slot } = parts;
     return { kind: "push", sign, squash, force, pin, timeoutMs, ...(slot ? { slot } : {}) };
   }
-  const { argv, timeoutMs, slot, secrets } = parts;
+  const { argv, timeoutMs, slot, secrets, pin } = parts;
   return {
     kind: "command",
     argv: argvText(argv),
     timeoutMs,
     ...(slot ? { slot } : {}),
     ...(secrets?.length ? { secrets: [...secrets] } : {}),
+    ...(pin ? { pin } : {}),
   };
 }
