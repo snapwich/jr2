@@ -525,7 +525,7 @@ test("the sync hands a valid body to the syncer and answers its report; a malfor
   const bad = await app.request("/sync", attachInit({ ...body, worktree: "/etc" }));
   assert.equal(bad.status, 400);
   assert.equal(seen.length, 1, "nothing ran");
-  const instance = scripted({ menuOnly: true, sync: async () => (seen.push("x"), { sync: "already" }) });
+  const instance = scripted({ menuOnly: true, sync: async () => (seen.push(body), { sync: "already" }) });
   assert.equal((await instance.app.request("/sync", attachInit(body))).status, 403);
   assert.equal(seen.length, 1);
 });
