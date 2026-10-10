@@ -22,7 +22,7 @@ import (
 const awsSecret = "aws-secret-value-0123456789"
 
 // A Sandbox Effector: the binary with a read-only view of the Agent's /work, the node caches, a
-// git credential and a secret, as the Orchestrator composes the sidecar.
+// git credential and a secret, as the Orchestrator composes its container.
 func startSandboxEffector(t *testing.T, p *gittest.Pod) *effector {
 	t.Helper()
 	dir := t.TempDir()
@@ -73,7 +73,7 @@ func TestASandboxEffectorPinsAPushToTheAgentsTipAndPushesIt(t *testing.T) {
 	sha := p.Commit("one", map[string]string{"a.txt": "a\n"})
 	e := startSandboxEffector(t, p)
 	body := fmt.Sprintf(`{"kind":"push","push":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",`+
-		`"cache":"app-key"},"url":%q,"branch":"work","credential":"*"},"timeoutMs":30000}`, p.Remote)
+		`"cache":"app-key"},"url":%q,"branch":"work"},"timeoutMs":30000}`, p.Remote)
 	status, raw := e.call(t, "POST", "/effects/push-1", body)
 	if status != 202 || !strings.Contains(raw, `"pinned":"`+sha+`"`) {
 		t.Fatalf("got %d %s", status, raw)

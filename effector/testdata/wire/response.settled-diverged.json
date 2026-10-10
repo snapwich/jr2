@@ -1,0 +1,11 @@
+{
+  "effect": "e-push",
+  "replica": { "name": "ws-ab12cd-run-1", "address": "10.244.1.9:8082" },
+  "state": "settled",
+  "output": {
+    "outcome": "diverged",
+    "reason": "the published commit 222222222222 is not in the history of the Agent's 111111111111, and no fallback pairs it; nothing was pushed",
+    "published": "2222222222222222222222222222222222222222",
+    "source": "1111111111111111111111111111111111111111"
+  }
+}

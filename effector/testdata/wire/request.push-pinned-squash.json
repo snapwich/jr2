@@ -1,0 +1,13 @@
+{
+  "kind": "push",
+  "push": {
+    "repo": { "gitDir": "app/default/.git", "worktree": "app/jr2-run-1", "cache": "app-14189a29" },
+    "url": "https://github.com/ourorg/app.git",
+    "branch": "jr2/run-1",
+    "pin": "1111111111111111111111111111111111111111",
+    "sign": true,
+    "squash": "Add the report",
+    "force": true
+  },
+  "timeoutMs": 300000
+}

@@ -15,6 +15,7 @@ export * from "./agent.ts";
 export * from "./effect.ts";
 // The http kind (ADR-0068): `http`, `secret`, `bearer`, `basic`, `text`, and the Effector's wire.
 export * from "./http-effect.ts";
+export * from "./sandbox-effect.ts";
 export * from "./effector-wire.ts";
 export * from "./pick.ts";
 export * from "./parts.ts";

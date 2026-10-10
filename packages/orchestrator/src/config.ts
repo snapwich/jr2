@@ -43,6 +43,16 @@ export type GitCredential = {
   token?: string;
   /** A Secret (Flux key names: `identity`, `identity.pub`, `known_hosts`) holding a deploy key. */
   sshKey?: string;
+  /** The credential a `push()` spends (ADR-0051, ADR-0067), when it is not the clone credential: an
+   * ssh key (a Secret of `sshKey`'s shape) or a token (an env var, as `token`). Absent, the clone
+   * credential pushes; an entry with neither admits a clone, never a push. A token goes Basic
+   * through a credential helper only. */
+  push?: { sshKey: string } | { token: string };
+  /** The key a `push({ sign: true })` signs with, and the committer it signs as (ADR-0067): an ssh
+   * key (a Secret with `identity`) by default, or a GPG key (a Secret with `private.asc`, no
+   * passphrase). Explicit: an auth key is never reused as a signing key. The committer's email must
+   * belong to the forge account that holds the key, or the forge shows the signature unverified. */
+  sign?: { sshKey: string; name: string; email: string } | { gpgKey: string; name: string; email: string };
 };
 
 export type GitConfig = {
@@ -377,7 +387,20 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
 }
 
 const NonEmpty = z.string().min(1);
-const Credential = z.object({ match: NonEmpty, token: NonEmpty.optional(), sshKey: NonEmpty.optional() }).strict();
+const Credential = z
+  .object({
+    match: NonEmpty,
+    token: NonEmpty.optional(),
+    sshKey: NonEmpty.optional(),
+    push: z.union([z.object({ sshKey: NonEmpty }).strict(), z.object({ token: NonEmpty }).strict()]).optional(),
+    sign: z
+      .union([
+        z.object({ sshKey: NonEmpty, name: NonEmpty, email: NonEmpty }).strict(),
+        z.object({ gpgKey: NonEmpty, name: NonEmpty, email: NonEmpty }).strict(),
+      ])
+      .optional(),
+  })
+  .strict();
 
 /** `git.credentials`' SHAPE, checked at load — by index and field, so a bad entry names itself
  * (`git.credentials[1].token`) rather than surfacing as a Secret that never matches. */
@@ -396,7 +419,8 @@ function checkGit(git: unknown, where: string): void {
   }
 }
 
-const GIT_HINT = "an entry is { match, token?, sshKey? } (ADR-0051)";
+const GIT_HINT =
+  "an entry is { match, token?, sshKey?, push?: { sshKey } | { token }, sign?: { sshKey | gpgKey, name, email } } (ADR-0051)";
 
 const OptionalText = z.string().optional();
 const SecretShape = z

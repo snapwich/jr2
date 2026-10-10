@@ -42,9 +42,19 @@ export type MachineTransitionDoc = {
 /** An Effect slot's parts, as the doc carries them (ADR-0067): a command's argv (an argv slot reads
  * `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one. */
 export type EffectDoc =
-  | { kind: "command"; argv: string[]; timeoutMs: number; slot?: string }
-  /** An http Effect (ADR-0068): its method, its fixed target, the secrets it names — never a value. */
-  | { kind: "http"; method: string; target: string; secrets: string[]; timeoutMs: number; idempotent: boolean };
+  | { kind: "command"; argv: string[]; timeoutMs: number; slot?: string; secrets?: string[] }
+  /** An http Effect (ADR-0068) or an upload: its method, its fixed target, the secrets it names —
+   * never a value. */
+  | {
+      kind: "http" | "upload";
+      method: string;
+      target: string;
+      secrets: string[];
+      timeoutMs: number;
+      idempotent: boolean;
+    }
+  /** A push (ADR-0067): which options the author set. */
+  | { kind: "push"; sign: boolean; squash: boolean; force: boolean; pin: boolean; timeoutMs: number; slot?: string };
 
 /** One state of the Machine; `states` nests in document order. */
 export type MachineStateDoc = {
@@ -373,10 +383,20 @@ export function serializeMachine(workflow: string, machine: AnyStateMachine): Ma
 
 /** An Effect's plain data as the doc carries it: what it runs, read without running anything. */
 function effectDoc(parts: EffectParts): EffectDoc {
-  if (parts.kind === "http") {
+  if (parts.kind === "http" || parts.kind === "upload") {
     const { method, secrets, timeoutMs, idempotent } = parts;
-    return { kind: "http", method, target: targetText(parts), secrets: [...secrets], timeoutMs, idempotent };
+    return { kind: parts.kind, method, target: targetText(parts), secrets: [...secrets], timeoutMs, idempotent };
   }
-  const { argv, timeoutMs, slot } = parts;
-  return { kind: "command", argv: argvText(argv), timeoutMs, ...(slot ? { slot } : {}) };
+  if (parts.kind === "push") {
+    const { sign, squash, force, pin, timeoutMs, slot } = parts;
+    return { kind: "push", sign, squash, force, pin, timeoutMs, ...(slot ? { slot } : {}) };
+  }
+  const { argv, timeoutMs, slot, secrets } = parts;
+  return {
+    kind: "command",
+    argv: argvText(argv),
+    timeoutMs,
+    ...(slot ? { slot } : {}),
+    ...(secrets?.length ? { secrets: [...secrets] } : {}),
+  };
 }

@@ -126,9 +126,10 @@ type PushSpec struct {
 	Repo   RepoRef `json:"repo"`
 	URL    string  `json:"url"`
 	Branch string  `json:"branch"`
-	// Credential is the match of the `git.credentials` entry whose push credential this spends;
-	// the Effector's config holds the files, and the url must fall under it.
-	Credential string  `json:"credential"`
+	// Credential names the `git.credentials` entry whose push credential this spends, by its
+	// match; absent, the Effector takes the entry of its config the url falls under — the longest
+	// match, as ADR-0051's fence. The config holds the files; the url must fall under the entry.
+	Credential string  `json:"credential,omitempty"`
 	Pin        string  `json:"pin,omitempty"`
 	Sign       bool    `json:"sign,omitempty"`
 	Squash     *string `json:"squash,omitempty"`
@@ -507,9 +508,6 @@ func (p *PushSpec) validate() error {
 	}
 	if !ValidBranch(p.Branch) {
 		return fmt.Errorf("push.branch %q is not a branch name", p.Branch)
-	}
-	if p.Credential == "" {
-		return errors.New("push.credential is empty")
 	}
 	if p.Pin != "" && !fullSha.MatchString(p.Pin) {
 		return fmt.Errorf("push.pin %q is not a full commit id", p.Pin)

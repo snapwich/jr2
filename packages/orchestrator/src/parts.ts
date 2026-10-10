@@ -386,18 +386,24 @@ export type CarriedEffect = {
   path: readonly string[] | undefined;
   placement: Placement;
   timeoutMs: number;
-} & (
-  | { kind: "command"; argv: string[]; slot?: string }
-  /** An http Effect (ADR-0068): its method, its fixed target, and the secrets it names — what
-   * places each secret, and what the Instance Effector's config allows. */
-  | {
-      kind: "http";
-      method: string;
-      target: { scheme: "http" | "https"; host: string; port: number };
-      secrets: string[];
-      idempotent: boolean;
-    }
-);
+} &
+  /** A command; one whose env names a secret runs in the Sandbox Effector (ADR-0067). */
+  (| { kind: "command"; argv: string[]; slot?: string; secrets?: string[] }
+    /** An http Effect (ADR-0068), or an upload (an http request whose body is a Worktree file): its
+     * method, its fixed target, and the secrets it names — what places each secret, and what its
+     * Effector's config allows. */
+    | {
+        kind: "http" | "upload";
+        method: string;
+        target: { scheme: "http" | "https"; host: string; port: number };
+        secrets: string[];
+        idempotent: boolean;
+        slot?: string;
+      }
+    /** A push (ADR-0067, ADR-0051): the Workspace's branch to its Repo Slot's Binding. It names no
+     * secret: `jr2 up` resolves its credential through `git.credentials`. */
+    | { kind: "push"; slot?: string; sign: boolean; squash: boolean; force: boolean; pin: boolean; secrets: string[] }
+  );
 
 /** Everything the registered Machines carry that a converge or a boot must act on. */
 export type CarriedParts = {
@@ -590,20 +596,36 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
       else if (isEffect(logic)) {
         const parts = logic.effect;
         const placement = placementOf(parts);
-        if (parts.kind === "http") {
+        if (parts.kind === "http" || parts.kind === "upload") {
           effects.push({
             name,
             path,
-            kind: "http",
+            kind: parts.kind,
             placement,
             method: parts.method,
             target: { ...parts.target },
             secrets: [...parts.secrets],
             idempotent: parts.idempotent,
             timeoutMs: parts.timeoutMs,
+            ...(parts.kind === "upload" && parts.slot !== undefined ? { slot: parts.slot } : {}),
+          });
+        } else if (parts.kind === "push") {
+          const { sign, squash, force, pin, timeoutMs, slot } = parts;
+          effects.push({
+            name,
+            path,
+            kind: "push",
+            placement,
+            sign,
+            squash,
+            force,
+            pin,
+            secrets: [],
+            timeoutMs,
+            ...(slot !== undefined ? { slot } : {}),
           });
         } else {
-          const { argv, timeoutMs, slot } = parts;
+          const { argv, timeoutMs, slot, secrets } = parts;
           effects.push({
             name,
             path,
@@ -612,6 +634,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
             argv: argvText(argv),
             timeoutMs,
             ...(slot !== undefined ? { slot } : {}),
+            ...(secrets?.length ? { secrets: [...secrets] } : {}),
           });
         }
       } else {

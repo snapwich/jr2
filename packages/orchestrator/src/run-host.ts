@@ -73,7 +73,7 @@ import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import type { AgentAdmission } from "./actor.ts";
 import { dropSavedTails, type EffectRow } from "./effect.ts";
-import type { EffectorTarget } from "./http-effect.ts";
+import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
 
 /** The actors filled into a run's named slots — `.provide()` is the unit-test seam (ADR-0015);
@@ -572,7 +572,7 @@ export type RunHostOptions = {
   harnessBearer?: (placement: string) => string;
   /** Where an Effector placement is, and its key (ADR-0068) — `startInstance` derives both, the key
    * from the signing key. Handed to every run's binding; absent, an http Effect faults pointedly. */
-  effector?: (placement: "instance") => EffectorTarget | undefined;
+  effector?: (placement: EffectorPlacement) => EffectorTarget | undefined;
   /**
    * Build the run-narrative echo pusher for one Workspace's Harness (ADR-0023) — the seam a fake
    * echo server rides in tests; `startInstance` binds the real wire push (harness-client.ts).
@@ -698,7 +698,7 @@ export class RunHost {
   private readonly sandbox?: SandboxPort;
   private readonly instanceHarness?: string;
   private readonly harnessBearer?: (placement: string) => string;
-  private readonly effector?: (placement: "instance") => EffectorTarget | undefined;
+  private readonly effector?: (placement: EffectorPlacement) => EffectorTarget | undefined;
   private readonly echoFactory?: (
     endpoint: string,
     bearer: string | undefined,

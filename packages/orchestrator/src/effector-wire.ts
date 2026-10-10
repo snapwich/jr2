@@ -35,7 +35,21 @@ export const WireAuthShape = z.union([
 ]);
 export type WireAuth = z.infer<typeof WireAuthShape>;
 
-export const WireBodyShape = z.union([z.strictObject({ json: z.unknown() }), z.strictObject({ text: z.string() })]);
+/** A Worktree file (ADR-0067's `upload`, a file-body `http`): the Worktree, relative to the work
+ * root, and the file, relative to the Worktree. The Sandbox Effector opens both beneath, with no
+ * symlink, and refuses a FIFO and a file with more than one link — output, with nothing sent. */
+export const FileRefShape = z.strictObject({
+  worktree: z.string(),
+  path: z.string(),
+  contentType: z.string().optional(),
+});
+export type FileRef = z.infer<typeof FileRefShape>;
+
+export const WireBodyShape = z.union([
+  z.strictObject({ json: z.unknown() }),
+  z.strictObject({ text: z.string() }),
+  z.strictObject({ file: FileRefShape }),
+]);
 export type WireBody = z.infer<typeof WireBodyShape>;
 
 /** The headers the Effector sets itself, which a definition may not: they frame or route the
@@ -57,8 +71,9 @@ const HEADER_NAME = /^[a-z0-9!#$%&'*+.^_`|~-]+$/;
 export const isEffectHeader = (name: string): boolean =>
   HEADER_NAME.test(name) && !FRAMING_HEADERS.has(name) && !name.startsWith("proxy-");
 
-export const StartRequestShape = z.strictObject({
-  kind: z.literal("http"),
+/** An `http` start, or an `upload`'s (an http request whose body is a Worktree file). */
+export const HttpStartShape = z.strictObject({
+  kind: z.enum(["http", "upload"]),
   method: HttpMethodShape,
   url: z.array(TextPartShape),
   path: z.array(z.string()).optional(),
@@ -68,6 +83,59 @@ export const StartRequestShape = z.strictObject({
   timeoutMs: z.number().int(),
   maxBody: z.number().int(),
 });
+export type HttpStartRequest = z.infer<typeof HttpStartShape>;
+
+/** Where one Repo Slot's repositories are in a Sandbox pod (ADR-0004, ADR-0051): the Agent's
+ * common git dir and Worktree, relative to `/work`, and the node cache's key under `/repos`. */
+export const RepoRefShape = z.strictObject({ gitDir: z.string(), worktree: z.string(), cache: z.string() });
+export type RepoRef = z.infer<typeof RepoRefShape>;
+
+/** One push's published commit and the Agent's commit it was made from: the ledger's pair. */
+export const PairShape = z.strictObject({ published: z.string(), source: z.string() });
+export type Pair = z.infer<typeof PairShape>;
+
+/** A `push` start: the Workspace's branch to the Repo Slot's Binding, with the push credential of
+ * the `git.credentials` entry the url falls under — the Effector's config holds the entries, and
+ * matches the url as the fence does (`credential` names one by its `match` instead). `pin` is the
+ * commit; absent, the Effector reads the Agent's branch tip and its answer carries it (`pinned`). */
+export const PushStartShape = z.strictObject({
+  kind: z.literal("push"),
+  push: z.strictObject({
+    repo: RepoRefShape,
+    url: z.string(),
+    branch: z.string(),
+    credential: z.string().optional(),
+    pin: z.string().optional(),
+    sign: z.boolean().optional(),
+    squash: z.string().optional(),
+    force: z.boolean().optional(),
+    last: PairShape.optional(),
+  }),
+  timeoutMs: z.number().int(),
+});
+export type PushStartRequest = z.infer<typeof PushStartShape>;
+
+/** One variable of a credentialed command's env: a secret's value, or (`path`) its file's path. */
+export const EnvRefShape = z.strictObject({ secret: z.string(), path: z.boolean().optional() });
+export type EnvRef = z.infer<typeof EnvRefShape>;
+
+/** A credentialed `command` start: argv against the pinned commit, with only the env named. */
+export const CommandStartShape = z.strictObject({
+  kind: z.literal("command"),
+  command: z.strictObject({
+    repo: RepoRefShape,
+    branch: z.string(),
+    pin: z.string().optional(),
+    argv: z.array(z.string()).min(1),
+    env: z.record(z.string(), EnvRefShape),
+    tail: z.number().int(),
+  }),
+  timeoutMs: z.number().int(),
+});
+export type CommandStartRequest = z.infer<typeof CommandStartShape>;
+
+/** Every start: the http kinds, a push, a credentialed command. */
+export const StartRequestShape = z.union([HttpStartShape, PushStartShape, CommandStartShape]);
 export type StartRequest = z.infer<typeof StartRequestShape>;
 
 /** The most bytes of a start's body the Effector reads (its `maxRequestBody`). A longer body
@@ -101,6 +169,49 @@ export const HttpOutputShape = z.union([
 ]);
 export type HttpOutput = z.infer<typeof HttpOutputShape>;
 
+/**
+ * A `push` Effect's output (ADR-0067). `pushed`: the published commit, its source (the Agent's
+ * commit), what the remote held before, how the new commits were found after a signed push
+ * (`ancestry | pair | cherry | force`), `unchanged` when the remote held it already, and the
+ * signed commits as a bundle for the sync. `rejected`: a stage and git's words. `diverged`: the
+ * published commit is not in the Agent's history and nothing paired it; nothing was pushed.
+ */
+export const PushOutputShape = z.union([
+  z.strictObject({
+    outcome: z.literal("pushed"),
+    published: z.string(),
+    source: z.string(),
+    previous: z.string().optional(),
+    via: z.string().optional(),
+    unchanged: z.boolean().optional(),
+    bundle: z.string().optional(),
+  }),
+  z.strictObject({
+    outcome: z.literal("rejected"),
+    stage: z.string(),
+    reason: z.string(),
+    detail: z.string().optional(),
+  }),
+  z.strictObject({ outcome: z.literal("diverged"), reason: z.string(), published: z.string(), source: z.string() }),
+  z.strictObject({ outcome: z.literal("unknown"), reason: z.string() }),
+]);
+export type PushWireOutput = z.infer<typeof PushOutputShape>;
+
+/** A credentialed command's output, as the command kind's (ADR-0067), and `dirty` when the
+ * Worktree held uncommitted edits it did not see. */
+export const CommandOutputShape = z.union([
+  z.strictObject({
+    outcome: z.literal("exited"),
+    code: z.number().int(),
+    tail: z.string(),
+    dirty: z.boolean().optional(),
+  }),
+  z.strictObject({ outcome: z.literal("timeout"), tail: z.string(), dirty: z.boolean().optional() }),
+  z.strictObject({ outcome: z.literal("killed"), signal: z.string(), tail: z.string(), dirty: z.boolean().optional() }),
+  z.strictObject({ outcome: z.literal("unknown"), reason: z.string() }),
+]);
+export type CommandWireOutput = z.infer<typeof CommandOutputShape>;
+
 /** The replica that holds an Effect, and where to poll it. */
 export const ReplicaShape = z.strictObject({ name: z.string(), address: z.string() });
 export type Replica = z.infer<typeof ReplicaShape>;
@@ -110,7 +221,10 @@ export const EffectStateShape = z.strictObject({
   effect: z.string(),
   replica: ReplicaShape,
   state: z.enum(["running", "settled", "unknown"]),
-  output: HttpOutputShape.optional(),
+  /** The commit a push or a credentialed command runs against, read when it started: the
+   * Orchestrator writes it to the ledger's intent row. */
+  pinned: z.string().optional(),
+  output: z.union([HttpOutputShape, PushOutputShape, CommandOutputShape]).optional(),
 });
 export type EffectState = z.infer<typeof EffectStateShape>;
 

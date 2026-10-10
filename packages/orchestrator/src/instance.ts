@@ -32,6 +32,7 @@ import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import { createAuthenticator, effectorKey, harnessToken, loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
+import type { EffectorPlacement } from "./http-effect.ts";
 
 export type InstanceOptions = {
   /** The instance folder (holds `workflows/`, and `.jr2/state.db` unless `store` is supplied). */
@@ -143,11 +144,11 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     // — derived from the signing key as the Harness bearer is, so nothing is stored.
     ...(opts.instanceEffector
       ? {
-          effector: (placement: "instance") => ({
-            placement,
-            service: opts.instanceEffector!,
-            key: effectorKey(signingKey, placement),
-          }),
+          // A Sandbox Effector's address is not one this host derives yet: see ADR-0067.
+          effector: (placement: EffectorPlacement) =>
+            placement === "instance"
+              ? { placement, service: opts.instanceEffector!, key: effectorKey(signingKey, placement) }
+              : undefined,
         }
       : {}),
     // The run-narrative echo (ADR-0023): tee a run's feed to its enclosing Workspace's Harness,

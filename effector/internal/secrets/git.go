@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/snapwich/jr2/effector/internal/gitclean"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
@@ -76,6 +77,32 @@ func (c *Config) Entry(match string) *GitEntry {
 		}
 	}
 	return nil
+}
+
+// EntryFor is the entry a push spends: the one match names, or — match empty — the entry whose
+// match the url falls under, the longest winning and a tie going to the first (ADR-0051).
+func (c *Config) EntryFor(match, url string) *GitEntry {
+	if match != "" {
+		return c.Entry(match)
+	}
+	best, length := -1, -1
+	for i := range c.Git {
+		m := c.Git[i].Match
+		if !gitclean.Matches(url, m) {
+			continue
+		}
+		n := len(m)
+		if m == "*" {
+			n = 0
+		}
+		if n > length {
+			best, length = i, n
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	return &c.Git[best]
 }
 
 // secretFiles are the files of a git credential's directory whose content is secret: a private

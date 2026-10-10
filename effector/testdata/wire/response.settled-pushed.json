@@ -1,0 +1,12 @@
+{
+  "effect": "e-push",
+  "replica": { "name": "ws-ab12cd-run-1", "address": "10.244.1.9:8082" },
+  "state": "settled",
+  "output": {
+    "outcome": "pushed",
+    "published": "2222222222222222222222222222222222222222",
+    "source": "1111111111111111111111111111111111111111",
+    "via": "ancestry",
+    "bundle": "IyB2MyBnaXQgYnVuZGxl"
+  }
+}

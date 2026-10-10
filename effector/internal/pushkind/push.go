@@ -67,17 +67,19 @@ type Runner struct {
 // config does not hold, or a url outside it. `jr2 up` refuses each before the converge.
 func (r *Runner) Check(req *wire.StartRequest) string {
 	spec := req.Push
-	entry := r.Config.Entry(spec.Credential)
+	entry := r.Config.EntryFor(spec.Credential, spec.URL)
 	switch {
+	case entry == nil && spec.Credential == "":
+		return "no git.credentials entry this Effector's config holds matches the push url"
 	case entry == nil:
 		return fmt.Sprintf("the push names git.credentials entry %q, which this Effector's config does not hold",
 			spec.Credential)
 	case entry.Push == nil:
-		return fmt.Sprintf("git.credentials entry %q holds no push credential", spec.Credential)
+		return fmt.Sprintf("git.credentials entry %q holds no push credential", entry.Match)
 	case !gitclean.Matches(spec.URL, entry.Match):
-		return fmt.Sprintf("the push url is not under git.credentials entry %q", spec.Credential)
+		return fmt.Sprintf("the push url is not under git.credentials entry %q", entry.Match)
 	case spec.Sign && entry.Sign == nil:
-		return fmt.Sprintf("the push signs, and git.credentials entry %q holds no sign field", spec.Credential)
+		return fmt.Sprintf("the push signs, and git.credentials entry %q holds no sign field", entry.Match)
 	}
 	return ""
 }
@@ -106,7 +108,8 @@ type call struct {
 
 // Run pushes, and answers the outcome scrubbed.
 func (r *Runner) Run(ctx context.Context, req *wire.StartRequest) wire.Output {
-	c := &call{r: r, spec: req.Push, entry: r.Config.Entry(req.Push.Credential), built: map[string]string{}}
+	entry := r.Config.EntryFor(req.Push.Credential, req.Push.URL)
+	c := &call{r: r, spec: req.Push, entry: entry, built: map[string]string{}}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(req.TimeoutMs)*time.Millisecond)
 	defer cancel()
 	out := c.run(ctx)

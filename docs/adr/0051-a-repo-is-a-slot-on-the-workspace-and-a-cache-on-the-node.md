@@ -104,6 +104,15 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   wildcard entry — `{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }`, today's two implicit defaults made
   visible, with a comment saying to narrow it before anything untrusted can start a run — so the open fence is in the
   user's file and commit, never implied.
+- **An entry may carry a push credential and a signing key** (ADR-0067), checked by shape when the config loads:
+  `push?: { sshKey } | { token }`, the credential a `push()` to a Binding under the entry spends — absent, the clone
+  credential pushes, and an entry with no credential admits a clone, never a push; a token goes Basic through a
+  credential helper only. `sign?: { sshKey, name, email } | { gpgKey, name, email }`, the key a `push({ sign: true })`
+  signs with and the committer it signs as — explicit, so an auth key is never reused as a signing key; an ssh key is
+  the default format, a GPG key is a Secret with `private.asc` and no passphrase. `name` and `email` are required: the
+  Effector re-creates the commits, and a forge verifies a signature only when the committer email belongs to the account
+  that holds the key. The author line stays the Agent's. The Sandbox Effector holds the entries its pushes spend and
+  matches a push's url as the fence does, longest match first, and refuses a url outside the entry.
 - **Freshness degrades, absence does not.** A fetch that fails on a warm cache lets the attach proceed on the objects it
   has, announced as stale with git's own error. A stale attach is stale until the next fetch anyone inside the pod runs:
   the worktree's `origin` asks the cache, and the cache asks the remote (ADR-0053) — the pod still holds no credential

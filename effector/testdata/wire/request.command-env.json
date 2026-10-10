@@ -1,0 +1,11 @@
+{
+  "kind": "command",
+  "command": {
+    "repo": { "gitDir": "app/default/.git", "worktree": "app/jr2-run-1", "cache": "app-14189a29" },
+    "branch": "jr2/run-1",
+    "argv": ["terraform", "apply", "-auto-approve"],
+    "env": { "AWS_SECRET": { "secret": "aws" }, "KUBECONFIG": { "secret": "kube", "path": true } },
+    "tail": 4096
+  },
+  "timeoutMs": 600000
+}

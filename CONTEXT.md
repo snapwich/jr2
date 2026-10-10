@@ -124,10 +124,12 @@ _Avoid_: masked secret, injected secret, proxied key, secret (unqualified)
 public. It means something only to the Custodian, and only toward a host the secret is bound to; sent anywhere else, it
 arrives as it left. _Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
 
-**Effector**: The container in which jr2's own process runs, for a Machine, the Effects that name an Effect secret — in
-an image the author chose, with the binary jr2 mounts. The Agent executes nothing in it; a `command` runs in it only
-when it names an Effect secret, and then against a pinned commit, never the live Worktree. Two placements: the Sandbox
-Effector and the Instance Effector. _Avoid_: Courier, Actuator, Clerk, machine container, tool image
+**Effector**: The container in which jr2's own process runs, for a Machine, the Effects that name an Effect secret —
+jr2's binary on the runtime volume, in the image of its placement: the Sandbox Effector in the author's image (the
+Sandbox Image by default), the Instance Effector in jr2's Harness image. The Agent executes nothing in it; a `command`
+runs in it only when it names an Effect secret, and then against a pinned commit, never the live Worktree. Two
+placements: the Sandbox Effector and the Instance Effector. _Avoid_: Courier, Actuator, Clerk, machine container, tool
+image
 
 **Sandbox Effector**: The Effector as a container in a Sandbox pod, with the Worktree mounted read-only — for `push`,
 `upload`, an `http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is the

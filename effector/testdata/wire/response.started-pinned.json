@@ -1,0 +1,6 @@
+{
+  "effect": "e-push",
+  "replica": { "name": "ws-ab12cd-run-1", "address": "10.244.1.9:8082" },
+  "state": "running",
+  "pinned": "1111111111111111111111111111111111111111"
+}

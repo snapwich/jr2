@@ -39,6 +39,8 @@ import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import type { HttpMethod, HttpOutput, TextPart, WireAuth } from "./effector-wire.ts";
 import type { ExecOutcome, ExecRead, ExecRequest } from "./wire.ts";
+import type { EffectorPortFactory } from "./http-effect.ts";
+import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
 
 // --- Parts: what `jr2 up` and the Machine doc read off a slot, without running anything ---------
 
@@ -50,6 +52,11 @@ export const arg = <const N extends string>(name: N): Arg<N> => ({ arg: name });
 export type CommandParts = {
   readonly kind: "command";
   readonly argv: readonly (string | Arg)[];
+  /** The env the author named (ADR-0067): each a secret's value, or its file's path. A command
+   * that names a secret runs in the Sandbox Effector; one with none in the Harness container. */
+  readonly env?: Readonly<Record<string, { readonly secret: string; readonly path?: true }>>;
+  /** The secrets `env` names, once each, sorted — what places them (ADR-0068). */
+  readonly secrets?: readonly string[];
   /** The Repo Slot whose Worktree is the cwd. Needed only where the Workspace carries several. */
   readonly slot?: string;
   readonly timeoutMs: number;
@@ -80,15 +87,59 @@ export type HttpParts = {
   readonly idempotent: boolean;
 };
 
-/** Every kind's parts. */
-export type EffectParts = CommandParts | HttpParts;
+/**
+ * An `upload` Effect's plain data (ADR-0067): an http request whose body is a Worktree file — the
+ * http parts, and the file's Repo Slot. It runs in the Sandbox Effector.
+ */
+export type UploadParts = Omit<HttpParts, "kind"> & {
+  readonly kind: "upload";
+  /** The Repo Slot whose Worktree holds the file. Needed only where the Workspace carries several. */
+  readonly slot?: string;
+  readonly contentType?: string;
+};
 
 /**
- * Where an Effect runs, derived from its kind and never authored (ADR-0067, ADR-0068): a `command`
- * in the Harness container of its Workspace, an `http` Effect in the Instance Effector.
+ * A `push` Effect's plain data (ADR-0067, ADR-0051): the Workspace's branch to its Repo Slot's
+ * Binding. `sign`, `squash`, `force` are the author's; `pin` says the Effect's input names the
+ * commit (an approved one) instead of the Agent's branch tip.
  */
-export type Placement = "harness" | "instance";
-export const placementOf = (parts: EffectParts): Placement => (parts.kind === "http" ? "instance" : "harness");
+export type PushParts = {
+  readonly kind: "push";
+  readonly slot?: string;
+  readonly pin: boolean;
+  readonly sign: boolean;
+  readonly squash: boolean;
+  readonly force: boolean;
+  readonly timeoutMs: number;
+  /** A push names no secret: its credential is the `git.credentials` entry its Binding matches. */
+  readonly secrets: readonly string[];
+  readonly inputKeys: readonly string[];
+};
+
+/** Every kind's parts. */
+export type EffectParts = CommandParts | HttpParts | UploadParts | PushParts;
+
+/** The kinds, as their parts name them. */
+export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "upload", "push"]);
+
+/**
+ * Where an Effect runs, derived from its kind and what it names, never authored (ADR-0067,
+ * ADR-0068): a `command` that names no secret in the Harness container of its Workspace; an
+ * `http` Effect with no Worktree file in the Instance Effector; an `upload`, a `push` and a
+ * `command` that names a secret in the Sandbox Effector of its Workspace.
+ */
+export type Placement = "harness" | "instance" | "sandbox";
+export function placementOf(parts: EffectParts): Placement {
+  switch (parts.kind) {
+    case "http":
+      return "instance";
+    case "upload":
+    case "push":
+      return "sandbox";
+    case "command":
+      return (parts.secrets?.length ?? 0) > 0 ? "sandbox" : "harness";
+  }
+}
 
 /** The brand an Effect slot carries, as `definition` marks an Agent slot (ADR-0049). */
 export type EffectSlot = { readonly effect: EffectParts };
@@ -97,7 +148,9 @@ export type EffectSlot = { readonly effect: EffectParts };
 export function isEffect(logic: unknown): logic is EffectSlot {
   if (typeof logic !== "object" || logic === null) return false;
   const effect = (logic as { effect?: { kind?: unknown } }).effect;
-  return typeof effect === "object" && effect !== null && (effect.kind === "command" || effect.kind === "http");
+  return (
+    typeof effect === "object" && effect !== null && typeof effect.kind === "string" && EFFECT_KINDS.has(effect.kind)
+  );
 }
 
 /** argv as text a reader can print: an argv slot reads `<name>`. */
@@ -115,7 +168,7 @@ export function targetText(parts: { readonly target: HttpParts["target"] }): str
 /** The keys an Effect's input has, read off its parts: a command's argv slot names; an http
  * Effect's input schema keys. */
 export function inputKeysOf(parts: EffectParts): string[] {
-  if (parts.kind === "http") return [...parts.inputKeys];
+  if (parts.kind !== "command") return [...parts.inputKeys];
   return parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg]));
 }
 
@@ -125,8 +178,9 @@ export function inputKeysOf(parts: EffectParts): string[] {
  * exited while it ran. Output the Machine routes on; never repeated by jr2. */
 export type Unknown = { outcome: "unknown"; reason: string };
 
-/** A `command` Effect's output: it exited, its timeout killed it, a signal killed it, or unknown. */
-export type CommandOutput = ExecOutcome | Unknown;
+/** A `command` Effect's output: it exited, its timeout killed it, a signal killed it, or unknown. A
+ * credentialed command's says `dirty` when the Worktree held edits it did not see (ADR-0067). */
+export type CommandOutput = (ExecOutcome & { dirty?: boolean }) | Unknown;
 
 // --- The ledger row (persisted in the run's blob, ADR-0007) --------------------------------------
 
@@ -142,6 +196,20 @@ export type EffectRow =
   /** An http Effect's intent names its placement and no replica (ADR-0068): a restore asks every
    * replica. `idempotent` is the author's mark, which the restore rule reads. */
   | { state: "intent"; kind: "http"; slot: string; placement: "instance"; idempotent: boolean; at: string }
+  /** An Effect of the Sandbox Effector (ADR-0067): its Sandbox, and — for a push or a credentialed
+   * command — the commit it runs against, written once the start's answer names it. A restore
+   * repeats a push of only that commit, re-attaches a command or settles it `unknown`, and sends an
+   * upload again only when it is marked idempotent. */
+  | {
+      state: "intent";
+      kind: "upload" | "push" | "command";
+      slot: string;
+      placement: "sandbox";
+      sandbox: string;
+      idempotent: boolean;
+      pinned?: string;
+      at: string;
+    }
   | { state: "settled"; kind: EffectParts["kind"]; slot: string; output: unknown; at: string }
   | { state: "aborted"; kind: EffectParts["kind"]; slot: string; at: string };
 
@@ -185,6 +253,10 @@ export function dropSavedTails(effects: Record<string, EffectRow>, persisted: un
 const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   command: ["tail"],
   http: ["body", "headers"],
+  upload: ["body", "headers"],
+  // A push row keeps its sha and pair data whole (`published`, `source`): the next push reads them.
+  // The sync's bundle is its tail.
+  push: ["bundle", "detail"],
 };
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
@@ -243,6 +315,13 @@ export type CommandOptions = {
   timeout?: Duration;
   /** Characters of the stream's end kept in the output. Default 4096. */
   tail?: number;
+  /** The env, each a secret's value — `secret("x")` — or its file's path — `secret("x").path`
+   * (ADR-0067). Naming a secret places the command in the Sandbox Effector, against the pinned
+   * commit; with none it runs in the Harness container. */
+  env?: CommandEnv;
+  /** A credentialed command's commit: the Effect's input names it (`{ sha }`, an approved one);
+   * absent, the Agent's branch tip when it starts. */
+  pin?: boolean;
 };
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
@@ -264,6 +343,7 @@ export function commandWith<const A extends readonly (string | Arg)[]>(
   portFactory: ExecPortFactory,
   argv: A,
   options: CommandOptions = {},
+  effectorPorts: EffectorPortFactory = sandboxEffectorPort,
 ): EffectLogic<CommandInput<A>, CommandOutput> {
   if (!Array.isArray(argv) || argv.length === 0) {
     throw new Error("command(argv): argv is a non-empty list — each entry one argument, never shell text");
@@ -279,7 +359,18 @@ export function commandWith<const A extends readonly (string | Arg)[]>(
     timeoutMs: options.timeout === undefined ? DEFAULT_TIMEOUT_MS : parseDuration(options.timeout),
     tail: options.tail ?? DEFAULT_TAIL,
     ...(options.slot !== undefined ? { slot: options.slot } : {}),
+    ...(options.env !== undefined && Object.keys(options.env).length > 0 ? commandEnvParts(options.env) : {}),
   };
+  if ((parts.secrets?.length ?? 0) > 0) {
+    // Naming a secret is the placement (ADR-0067): the Sandbox Effector runs it.
+    const pinned = options.pin === true;
+    return credentialedCommandWith(
+      effectorPorts,
+      parts,
+      (input, slot) => argvOf(slot, parts, input),
+      pinned,
+    ) as unknown as EffectLogic<CommandInput<A>, CommandOutput>;
+  }
   type I = CommandInput<A>;
   type O = CommandOutput;
   const logic: ActorLogic<EffectSnapshot<O, I>, EventObject, I> = {
@@ -359,7 +450,7 @@ async function drive<I, O>(
     settle({ outcome: "unknown", reason: "its state exited while it ran; not run again" });
     return;
   }
-  if (row?.state === "intent" && row.kind === "command") {
+  if (row?.state === "intent" && row.kind === "command" && "endpoint" in row) {
     // In flight at an Orchestrator restart: re-attach by id, or settle `unknown`. Never run again.
     const port = portFactory(row.endpoint, binding?.harnessBearer?.(row.placement));
     run.port = port;

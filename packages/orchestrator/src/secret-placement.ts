@@ -194,7 +194,7 @@ function effectorPlan(http: HttpPlaced[], secrets: EffectSecret[], values: Recor
   };
 }
 
-type HttpPlaced = { workflow: string; effect: Extract<CarriedEffect, { kind: "http" }> };
+type HttpPlaced = { workflow: string; effect: Extract<CarriedEffect, { method: string }> };
 
 /** A Workspace as a human reads it: its workflow and the `customize()` route to it. */
 function workspaceLabel({ workflow, pod }: PlacedWorkspace): string {

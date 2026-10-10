@@ -16,7 +16,7 @@ import {
   type StartRequest,
 } from "../src/effector-wire.ts";
 
-type Held = { req: StartRequest; output?: HttpOutput; waiters: Set<() => void> };
+type Held = { req: StartRequest; output?: unknown; pinned?: string; waiters: Set<() => void> };
 type FakeReplica = { name: string; address: string; effects: Map<string, Held>; down: boolean; stopping: boolean };
 
 export const EFFECTOR_KEY = "the-instance-effector-placement-key";
@@ -39,6 +39,9 @@ export class FakeEffector {
   forgePolls = 0;
   /** When set, every signed answer's body is not the wire's shape (a jr2 defect). */
   malformed = false;
+  /** The Agent's branch tip a Sandbox Effector reads for a push or a credentialed command that
+   * names no pin: its answer carries it (`pinned`). */
+  tip = "a".repeat(40);
 
   readonly key: string;
 
@@ -56,7 +59,7 @@ export class FakeEffector {
   }
 
   /** Settle the newest Effect (or the named one), wherever it is held. */
-  settle(output: HttpOutput, id = this.starts.at(-1)?.id): void {
+  settle(output: HttpOutput | Record<string, unknown>, id = this.starts.at(-1)?.id): void {
     for (const r of this.replicas) {
       const held = id ? r.effects.get(id) : undefined;
       if (!held || held.output) continue;
@@ -100,13 +103,18 @@ export class FakeEffector {
         effect: id,
         replica: { name: replica.name, address: replica.address },
         state: held === undefined ? "unknown" : held.output ? "settled" : "running",
-        ...(held?.output ? { output: held.output } : {}),
+        ...(held?.pinned ? { pinned: held.pinned } : {}),
+        ...(held?.output ? { output: held.output as HttpOutput } : {}),
       });
       if (method === "POST") {
         const existing = replica.effects.get(id);
         if (existing) return answer(200, stateOf(existing));
         if (replica.stopping) return answer(503, { error: "stopping", replica: { name: replica.name, address } });
-        const held: Held = { req: JSON.parse(body) as StartRequest, waiters: new Set() };
+        const req = JSON.parse(body) as StartRequest;
+        const pinOf = (r: StartRequest): string | undefined =>
+          "push" in r ? (r.push.pin ?? this.tip) : "command" in r ? (r.command.pin ?? this.tip) : undefined;
+        const pinned = pinOf(req);
+        const held: Held = { req, ...(pinned ? { pinned } : {}), waiters: new Set() };
         replica.effects.set(id, held);
         this.starts.push({ id, req: held.req, replica: replica.name });
         if (this.loseNextAnswer) {

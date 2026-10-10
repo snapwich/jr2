@@ -140,6 +140,29 @@ test("loadConfig passes git.credentials through and refuses a mis-shaped entry b
   await assert.rejects(bad(`[]`), /at git:/);
 });
 
+test("a git.credentials entry's push and sign fields (ADR-0051): one credential each, a signer named whole", async () => {
+  const load = async (git: string) => {
+    const d = await mkdtemp(join(tmpdir(), "jr2-config-"));
+    await writeFile(join(d, "jr2.config.ts"), `export default { git: ${git} };\n`);
+    return loadConfig(d);
+  };
+  const ok = `{ credentials: [{ match: "github.com/acme/", token: "GH_READ", push: { sshKey: "jr2-push" }, sign: { sshKey: "jr2-sign", name: "jr2 bot", email: "bot@acme.test" } }, { match: "gitlab.com/", push: { token: "GL_PUSH" }, sign: { gpgKey: "jr2-gpg", name: "b", email: "b@x" } }] }`;
+  assert.equal((await load(ok))?.git?.credentials?.length, 2);
+  await assert.rejects(
+    load(`{ credentials: [{ match: "*", push: { sshKey: "a", token: "B" } }] }`),
+    /at git\.credentials\[0\]\.push/,
+  );
+  await assert.rejects(load(`{ credentials: [{ match: "*", push: {} }] }`), /at git\.credentials\[0\]\.push/);
+  await assert.rejects(
+    load(`{ credentials: [{ match: "*", sign: { sshKey: "k" } }] }`),
+    /at git\.credentials\[0\]\.sign/,
+  );
+  await assert.rejects(
+    load(`{ credentials: [{ match: "*", sign: { sshKey: "k", gpgKey: "g", name: "n", email: "e" } }] }`),
+    /at git\.credentials\[0\]\.sign/,
+  );
+});
+
 test("loadConfig checks secrets and harness.catalog by SHAPE — in-cluster, where .env reads undefined", async () => {
   const write = async (body: string) => {
     const d = await mkdtemp(join(tmpdir(), "jr2-config-"));

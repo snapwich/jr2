@@ -20,6 +20,16 @@ import {
   type EffectorTransport,
 } from "../src/effector-wire.ts";
 import { basic, bearer, httpParts, secret, startRequestOf, text } from "../src/http-effect.ts";
+import type { CommandParts } from "../src/effect.ts";
+import {
+  commandEnvParts,
+  commandStartOf,
+  pushParts,
+  pushStartOf,
+  uploadParts,
+  uploadStartOf,
+  type CommandEnv,
+} from "../src/sandbox-effect.ts";
 import { effectorKey } from "../src/tokens.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
 
@@ -84,12 +94,58 @@ test("every request fixture is what a definition encodes", () => {
       }),
       { path: ["a/b", "ü ñ", "%2e%2e", ".."] },
     ),
+    // The Sandbox Effector's kinds (ADR-0067).
+    "request.push-signed.json": pushStartOf(
+      pushParts({ sign: true }),
+      repo("git@github.com:ourorg/app.git"),
+      "jr2/run-1",
+      {},
+      {
+        published: "2".repeat(40),
+        source: "1".repeat(40),
+      },
+    ),
+    "request.push-pinned-squash.json": pushStartOf(
+      pushParts({ pin: true, sign: true, squash: true, force: true }),
+      repo("https://github.com/ourorg/app.git"),
+      "jr2/run-1",
+      { sha: "1".repeat(40), message: "Add the report" },
+    ),
+    "request.command-env.json": commandStartOf(
+      commandParts(["terraform", "apply", "-auto-approve"], {
+        AWS_SECRET: secret("aws"),
+        KUBECONFIG: secret("kube").path,
+      }),
+      ["terraform", "apply", "-auto-approve"],
+      repo("https://github.com/ourorg/app.git"),
+      "jr2/run-1",
+    ),
+    "request.upload-file.json": uploadStartOf(
+      uploadParts({
+        url: "https://files.example.com/reports",
+        auth: bearer(secret("files")),
+        contentType: "application/pdf",
+        file: () => ({ path: "dist/report.pdf" }),
+      }),
+      "app/jr2-run-1",
+      { path: "dist/report.pdf" },
+    ),
   };
   assert.deepEqual(named("request.").sort(), Object.keys(cases).sort(), "one case per request fixture");
   for (const [name, encoded] of Object.entries(cases)) {
     assert.deepEqual(JSON.parse(JSON.stringify(encoded)), normalize(fixture(name)), name);
   }
 });
+
+/** A Repo Slot's repositories as the request fixtures name them. */
+function repo(url: string) {
+  return { gitDir: "app/default/.git", worktree: "app/jr2-run-1", cache: "app-14189a29", url };
+}
+
+/** A credentialed command's parts, as `command(argv, { env })` builds them. */
+function commandParts(argv: string[], env: CommandEnv): CommandParts {
+  return { kind: "command", argv, timeoutMs: 600_000, tail: 4096, ...commandEnvParts(env) };
+}
 
 /** The fixture `x-trace` header is two literal parts; the `text` template joins adjacent text. */
 function normalize(v: unknown): unknown {

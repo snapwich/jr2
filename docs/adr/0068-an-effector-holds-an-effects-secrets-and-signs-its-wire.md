@@ -19,16 +19,31 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). A container becomes an Effector
   by running it as its command, so the image around it is whatever that container runs: the tools are the author's, the
   trust boundary is jr2's binary. The Instance Effector runs the `jr2-harness` Kit image itself — it carries the binary,
-  it is already pulled, and `http` needs no tool. Rejected: a published `jr2-effector` tool image (git, ssh, gpg) —
-  author-built images would deprecate it, as `jr2-adapter` was. The Sandbox Effector, the second placement, is built
-  next.
+  it is already pulled, and `http` needs no tool. The Sandbox Effector runs the author's image: the Sandbox Image by
+  default — ADR-0037's floor already holds `git`, so a `push` owes the author no Dockerfile; `ssh-keygen` signs, and
+  `gpg` only when a key is GPG — or the image a `workspace()` names as `effector: { image }`, for the tools and
+  credentials an author keeps out of the Agent's image. Rejected: a published `jr2-effector` tool image (git, ssh, gpg)
+  — author-built images would deprecate it, as `jr2-adapter` was.
+- **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file. A Sandbox Effector — the
+  binary with `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs every kind: `http`, `upload`,
+  `push` and a credentialed `command` (ADR-0067); the Instance Effector refuses the last three, and a file body, as a
+  defect. Its env names where its mount holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only),
+  `JR2_EFFECTOR_GIT` (the push credentials, a directory each: `identity` and `known_hosts` for an ssh key, `token` for a
+  token, `private.asc` for a GPG key), `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2 guarantees is stated
+  per kind: for `push`, git never takes config or hooks from the Agent's repository and no program the Agent's files
+  name runs — the clean-repository procedure of ADR-0067; for a credentialed `command`, the Agent's files are the
+  author's choice to run, and the claims are three: the Agent never reads or spends the secret, the tool sees a pinned
+  commit and not the live Worktree, and the output is scrubbed. The Sandbox Effector's container — its mounts, its
+  per-pod key — is composed in the Orchestrator (`sandboxEffectorContainer`); provision does not add it yet (ADR-0067).
 - **The wire.** `POST /effects/<id>` starts an Effect and answers at once (202, `state: running`). A second `POST` with
-  the same id starts nothing and attaches (200). `GET /effects/<id>` long-polls: it holds up to 25 s and answers
-  `running`, or `settled` with the output. A malformed request starts nothing and gets 400 with the reason; a request
-  that names a secret the Effector does not hold is malformed. `/healthz` is the kubelet's probe, unsigned, and says
-  only whether the replica takes new Effects. A replica reads at most 4 MiB of a request; it cannot verify a longer one,
-  so it refuses it as unsigned. The Orchestrator never sends one: a start whose body is longer settles `refused`, with
-  nothing sent and no intent row, because a body built from context or a pick's param can reach the bound.
+  the same id starts nothing and attaches (200). The answer to a `push` or a credentialed `command` start names the
+  commit it runs against (`pinned`), read before the answer, so the Orchestrator writes it to the ledger's intent row.
+  `GET /effects/<id>` long-polls: it holds up to 25 s and answers `running`, or `settled` with the output. A malformed
+  request starts nothing and gets 400 with the reason; a request that names a secret the Effector does not hold is
+  malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the replica takes new Effects. A replica
+  reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it as unsigned. The Orchestrator never
+  sends one: a start whose body is longer settles `refused`, with nothing sent and no intent row, because a body built
+  from context or a pick's param can reach the bound.
 - **Hand-written types, and golden fixtures.** There is no code generator. The types are Go structs in
   `effector/internal/wire` and zod schemas in `@jr2/orchestrator`, the one definition each TypeScript type is inferred
   from. Go decodes with unknown fields disallowed. The golden fixtures in `effector/testdata/wire/` keep the two equal:
@@ -86,8 +101,11 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   earlier, a literal and a value in the user's own Secret alike (see the secrets list below); the Effector's refusal is
   for a Secret edited after the converge.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
-  trailing `\n` or `\r\n` is taken off, as the Custodian does. A value changed after the start reaches the Effector when
-  its pod rolls; the template digest below makes the next `jr2 up` roll it.
+  trailing `\n` or `\r\n` is taken off, as the Custodian does. A credentialed command names what it needs under `env`,
+  in two forms: `secret("x")` gives the value, `secret("x").path` the file's path; there is no `files:` option. A push
+  credential's secret files (`identity`, `token`, `private.asc`) are held and scrubbed like every Effect secret. A value
+  changed after the start reaches the Effector when its pod rolls; the template digest below makes the next `jr2 up`
+  roll it.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
   in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
@@ -166,8 +184,9 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
     files under `/run/jr2/secrets`, mode 0400; the kubelet makes them readable by the pod's `fsGroup`, and the pod has
     one container. `harness.env` and `harness.envFrom` may not name this Secret (ADR-0059's R13).
 - **The log is a contract.** `jr2.effector` lines: `ready placement=… replica=… secrets=<names> targets=N`,
-  `action=start effect=… kind=… method=… host=…`, `action=settle effect=… outcome=… status=…`, `action=drop`,
-  `action=drain`. Never a value, a path, a query, a header or a body.
+  `action=start effect=… kind=… method=… host=…` (a push and a command log `host=-`),
+  `action=settle effect=… outcome=… status=…`, `action=drop`, `action=drain`. Never a value, a path, a query, a header
+  or a body.
 
 ## Considered options
 

@@ -50,6 +50,7 @@ import {
   type HttpMethod,
   type HttpOutput,
   type Replica,
+  type HttpStartRequest,
   type StartRequest,
   type TextPart,
   type WireAuth,
@@ -62,7 +63,7 @@ import { boundRun, type AnyActorSystem } from "./registration.ts";
 /** A secret an Effect names, by its name in the config's `secrets` list (ADR-0068). Naming it in an
  * Effect is what places it in that Effect's Effector: an Effect secret. Its value never leaves the
  * Effector; on the wire it is a name. */
-export type Secret = { readonly secret: string };
+export type Secret = { readonly secret: string; readonly path: { readonly secret: string; readonly path: true } };
 
 /** A string the Effector builds: literal text and secrets, in order — the `text` template's value. */
 export type Text = { readonly text: readonly TextPart[] };
@@ -77,7 +78,12 @@ export function secret(name: string): Secret {
         "it is the file the Effector reads it from (ADR-0068)",
     );
   }
-  return { secret: name };
+  // `.path` names the secret's FILE in the Effector's own mount, for a credentialed command's env
+  // (ADR-0067): `env: { KUBECONFIG: secret("kube").path }`. Not enumerable, so a definition's plain
+  // data never carries it.
+  const s = { secret: name } as Secret;
+  Object.defineProperty(s, "path", { value: Object.freeze({ secret: name, path: true as const }), enumerable: false });
+  return s;
 }
 
 /** A string with secrets in it: text`Token ${secret("x")}`. Each `${…}` is a secret or a string. */
@@ -271,7 +277,7 @@ function inputKeysOfSchema(schema: z.ZodType | undefined): string[] {
 }
 
 /** The wire request for one run: the definition's parts, and `request`'s from the input. */
-export function startRequestOf(parts: HttpParts, run: HttpRequestParts): StartRequest {
+export function startRequestOf(parts: HttpParts, run: HttpRequestParts): HttpStartRequest {
   const path = run.path === undefined ? undefined : [...run.path];
   if (path !== undefined && !path.every((seg) => typeof seg === "string")) {
     throw new Error("http: `request` returned a path that is not a list of strings");
@@ -294,8 +300,12 @@ export function startRequestOf(parts: HttpParts, run: HttpRequestParts): StartRe
 
 // --- The actor logic -----------------------------------------------------------------------------
 
+/** Which Effector an Effect asks for: the Instance Effector, or the Sandbox Effector of one
+ * Workspace's Sandbox (ADR-0067). */
+export type EffectorPlacement = "instance" | { sandbox: string };
+
 /** Where a placement's Effector is, as the host knows it (ADR-0068): its Service and its key. */
-export type EffectorTarget = { placement: "instance"; service: string; key: Buffer | string };
+export type EffectorTarget = { placement: "instance" | "sandbox"; service: string; key: Buffer | string };
 export type EffectorPortFactory = (target: EffectorTarget) => EffectorPort;
 
 type Settle = { type: "jr2.effect.settle"; output: unknown };
@@ -523,7 +533,7 @@ async function drive<I, O>(
     let replica: Replica = first.replica;
     for (;;) {
       if (state.state === "settled" && state.output) {
-        settle(state.output);
+        settle(state.output as HttpOutput);
         return;
       }
       if (state.state === "unknown") {

@@ -235,16 +235,16 @@ test("an answer that left the Agent's state ends the Turn; the answer's words na
   );
 });
 
-test("an http Effect's outcome reads as its output, decoded off the wire as the Orchestrator decodes it (ADR-0068)", () => {
+test("an Effector's outcome reads as its output, decoded off the wire as the Orchestrator decodes it (ADR-0068, ADR-0067)", () => {
   // The golden fixtures (effector/testdata/wire/) are what the Effector answers; the default answer
-  // renders the output whole, so these are the texts the model reads for each outcome.
+  // renders the output whole, so these are the texts the model reads for each outcome. A push's
+  // bundle is the sync's, and the Orchestrator delivers its output without it.
   const fixtures = fileURLToPath(new URL("../../../effector/testdata/wire/", import.meta.url));
-  const read = (name: string) =>
-    answerText({
-      kind: "output",
-      actor: "comment",
-      output: EffectStateShape.parse(JSON.parse(readFileSync(join(fixtures, name), "utf8"))).output,
-    });
+  const read = (name: string) => {
+    const wire = EffectStateShape.parse(JSON.parse(readFileSync(join(fixtures, name), "utf8"))).output;
+    const { bundle: _bundle, ...output } = (wire ?? {}) as Record<string, unknown>;
+    return answerText({ kind: "output", actor: "comment", output });
+  };
   const want: Record<string, string> = {
     "response.settled-response-text.json":
       'Its answer: the output of `comment`: {"outcome":"response","status":201,"headers":{"content-type":' +
@@ -265,6 +265,19 @@ test("an http Effect's outcome reads as its output, decoded off the wire as the 
     "response.settled-unknown.json":
       'Its answer: the output of `comment`: {"outcome":"unknown","reason":"the timeout passed; the request may ' +
       'have reached the host, and no answer came"}.',
+    "response.settled-pushed.json":
+      'Its answer: the output of `comment`: {"outcome":"pushed","published":"2222222222222222222222222222222222222222",' +
+      '"source":"1111111111111111111111111111111111111111","via":"ancestry"}.',
+    "response.settled-rejected.json":
+      'Its answer: the output of `comment`: {"outcome":"rejected","stage":"push","reason":"non-fast-forward: the ' +
+      'remote\'s branch moved","detail":"! [rejected] (fetch first)"}.',
+    "response.settled-diverged.json":
+      'Its answer: the output of `comment`: {"outcome":"diverged","reason":"the published commit 222222222222 is ' +
+      "not in the history of the Agent's 111111111111, and no fallback pairs it; nothing was pushed\"," +
+      '"published":"2222222222222222222222222222222222222222","source":"1111111111111111111111111111111111111111"}.',
+    "response.settled-exited-dirty.json":
+      'Its answer: the output of `comment`: {"outcome":"exited","code":0,"tail":"Apply complete! [secret:aws]\\n",' +
+      '"dirty":true}.',
   };
   const settled = readdirSync(fixtures).filter((f) => f.startsWith("response.settled-"));
   assert.deepEqual(settled.sort(), Object.keys(want).sort(), "every settled fixture has its text here");

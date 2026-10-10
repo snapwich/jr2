@@ -167,6 +167,63 @@ const HARDENED = {
   seccompProfile: { type: "RuntimeDefault" },
 };
 
+/** The Sandbox Effector's port in its pod (ADR-0068's default). */
+export const SANDBOX_EFFECTOR_PORT = 8082;
+
+/** The Secret `jr2 up` writes per Workspace for its Sandbox Effector (ADR-0067): the secrets its
+ * Effects name, as files, and `effector.json`. */
+export const sandboxEffectorSecret = (workspacePod: string): string => `jr2-effector-${workspacePod}`;
+
+/**
+ * The Sandbox Effector's container (ADR-0067, ADR-0068), for the Sandbox CR's `sidecars` beside the
+ * Custodian, so the operator changes nothing. It is for a `workspace()` whose body holds an Effect
+ * placed there (`push`, `upload`, a file-body `http`, a credentialed `command`); provision does
+ * not add it yet, because nothing writes its Secret (ADR-0067). Its image is the Sandbox Image unless the `workspace()` names `effector: { image }`;
+ * its command is jr2's binary on the runtime volume; it runs as its image's own `USER`. Its mounts:
+ * `/work`, `/repos/<key>` and `/opt/jr2` read-only, its Secret at `/run/jr2/secrets` (0400), its
+ * per-pod key (derived from the Sandbox's name, like the Sandbox token) at `/run/jr2/effector`,
+ * and an emptyDir scratch that is its `$HOME`. No Custodian, no `harness.env`, and no env beyond
+ * where its mounts are and the downward API's name and address.
+ */
+export function sandboxEffectorContainer(opts: {
+  image: string;
+  keys: readonly string[];
+  securityContext: Record<string, unknown>;
+  secretVolume: string;
+  keyVolume: string;
+  scratchVolume: string;
+}) {
+  const env = (name: string, value: string) => ({ name, value });
+  return {
+    name: "effector",
+    image: opts.image,
+    command: [`${RUNTIME_MOUNT}/bin/effector`],
+    env: [
+      env("JR2_EFFECTOR_PORT", String(SANDBOX_EFFECTOR_PORT)),
+      env("JR2_EFFECTOR_WORK", WORK_ROOT),
+      env("JR2_EFFECTOR_REPOS", REPOS_MOUNT),
+      env("JR2_EFFECTOR_KEY", "/run/jr2/effector/key"),
+      env("JR2_EFFECTOR_CONFIG", "/run/jr2/secrets/effector.json"),
+      env("JR2_EFFECTOR_SECRETS", "/run/jr2/secrets"),
+      env("JR2_EFFECTOR_GIT", "/run/jr2/secrets/git"),
+      env("JR2_EFFECTOR_SCRATCH", "/run/jr2/scratch"),
+      env("HOME", "/run/jr2/scratch"),
+      { name: "POD_NAME", valueFrom: { fieldRef: { fieldPath: "metadata.name" } } },
+      { name: "POD_IP", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } },
+    ],
+    ports: [{ name: "effector", containerPort: SANDBOX_EFFECTOR_PORT }],
+    volumeMounts: [
+      { name: "work", mountPath: WORK_ROOT, readOnly: true },
+      RUNTIME_VOLUME_MOUNT,
+      ...opts.keys.map((key) => ({ name: repoVolumeName(key), mountPath: repoMountPath(key), readOnly: true })),
+      { name: opts.secretVolume, mountPath: "/run/jr2/secrets", readOnly: true },
+      { name: opts.keyVolume, mountPath: "/run/jr2/effector", readOnly: true },
+      { name: opts.scratchVolume, mountPath: "/run/jr2/scratch" },
+    ],
+    securityContext: opts.securityContext,
+  };
+}
+
 /**
  * ADR-0037's fallback seat, for a BUILT image that declares no `USER` (the converge's `docker
  * inspect` is what saw that; images.ts holds the record). jr2 sets `runAsUser` nowhere else — an

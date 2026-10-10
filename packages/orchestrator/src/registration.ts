@@ -29,7 +29,7 @@ import type { ActorSystem, AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyS
 import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
 import type { EffectMarker, EffectRow } from "./effect.ts";
-import type { EffectorTarget } from "./http-effect.ts";
+import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
 import type { NoticeScope, TakenNotices } from "./notices.ts";
 import type { AnswerSeats } from "./pick.ts";
 import type { Notice, PickAnswer } from "./wire.ts";
@@ -422,7 +422,7 @@ export type RunBinding = {
    * Effector's Service and `effectorKey(signingKey, "instance")`, closed over by the host. An http
    * Effect asks it; absent (bare unit-test bindings, an instance with no Effector), it faults.
    */
-  effector?: (placement: "instance") => EffectorTarget | undefined;
+  effector?: (placement: EffectorPlacement) => EffectorTarget | undefined;
   /**
    * Record an Agent invocation's durable admission in the host ledger (ADR-0016): persisted
    * beside the snapshot in the same RunBlob save, keyed by iid (globally unique, so the map is

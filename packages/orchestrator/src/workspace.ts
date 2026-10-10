@@ -1091,6 +1091,11 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
                     // (ADR-0013).
                     sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),
                     repos: out.repos,
+                    // Each slot's Binding url: where a push goes, and the Repo cache its import
+                    // borrows from (ADR-0051, ADR-0067).
+                    ...(ctx.bindings
+                      ? { bindings: Object.fromEntries(Object.entries(ctx.bindings).map(([s, b]) => [s, b.url])) }
+                      : {}),
                     branch: ctx.spec.branch,
                     ...(out.review ? { review: out.review } : {}),
                   };

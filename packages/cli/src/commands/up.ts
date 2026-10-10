@@ -275,9 +275,30 @@ export async function up(args: string[], io: Io): Promise<number> {
         continue;
       }
       const slot = e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
+      if (e.kind === "upload") {
+        const names = e.secrets.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
+        activity(
+          io,
+          `  ${e.name}${where}: upload ${e.method} ${targetText({ target: e.target })} — ${e.timeoutMs / 1000}s, ` +
+            `in the Sandbox Effector${slot}${names}${e.idempotent ? ", idempotent" : ""}`,
+        );
+        continue;
+      }
+      if (e.kind === "push") {
+        const opts = (["pin", "sign", "squash", "force"] as const).filter((k) => e[k]);
+        activity(
+          io,
+          `  ${e.name}${where}: push${opts.length ? ` (${opts.join(", ")})` : ""} — ${e.timeoutMs / 1000}s, ` +
+            `in the Sandbox Effector${slot}`,
+        );
+        continue;
+      }
+      if (!("argv" in e)) continue;
+      const names = e.secrets?.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
+      const seat = e.secrets?.length ? "the Sandbox Effector" : "the Harness";
       activity(
         io,
-        `  ${e.name}${where}: ${e.kind} ${JSON.stringify(e.argv)} — ${e.timeoutMs / 1000}s, in the Harness${slot}`,
+        `  ${e.name}${where}: ${e.kind} ${JSON.stringify(e.argv)} — ${e.timeoutMs / 1000}s, in ${seat}${slot}${names}`,
       );
     }
   }
