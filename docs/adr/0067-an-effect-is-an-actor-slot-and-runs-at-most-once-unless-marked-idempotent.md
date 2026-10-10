@@ -113,14 +113,18 @@ Binding. An Effect that holds a secret runs in an Effector
   push is `diverged` and nothing is pushed — with `force` too: `force` replaces a remote branch that moved, and never
   stands in for a pairing. Every commit the remote lacks must be one the call signed, or the push is `diverged`.
   `pushed` carries the published commit, its source, what the remote held before, how the new commits were found
-  (`ancestry | pair | cherry`), `unchanged` when the remote already held it, and the signed commits as a bundle for the
-  sync step (`git bundle create` of the signed tip, with the Agent's tip as its prerequisite: the signed commits, and
-  the trees and blobs git adds beside them, which the Agent's store may already hold); the bundle never reaches the
-  Machine. A push sends the ledger's last push of its Workspace — its published commit and its source — as the pair's
-  input (`last`). The Agent is never told to rebase: a rebase repair loses a reworded message and duplicates empty
-  commits and merges. A side branch the Agent made before the push and merges later is signed again, so a duplicate
-  signed commit can be published — with an ssh key too, because the committer date is the Effector's clock and a second
-  signing is a second commit.
+  (`ancestry | pair | cherry`), `unchanged` when the remote already held it, and — whenever the published commit is not
+  the Agent's own — the signed commits as a bundle for the sync step (`git bundle create` of the signed tip, with the
+  Agent's tip as its prerequisite: the signed commits, and the trees and blobs git adds beside them, which the Agent's
+  store may already hold). A signed push that publishes nothing new carries one too: when `pair` or `cherry` maps the
+  published tip itself (a restore that sends a pinned push again, a push after a sync that did not finish), the Agent's
+  branch still holds its unsigned commits. The bundle never reaches the Machine. A push sends the ledger's last push of
+  its Workspace and Repo Slot — one branch on one remote; its published commit and its source — as the pair's input
+  (`last`). The pair stands for the published tip only while the remote still holds that push: a remote that moved past
+  it (another writer) is paired by `cherry` or is `diverged`, never grafted onto. The Agent is never told to rebase: a
+  rebase repair loses a reworded message and duplicates empty commits and merges. A side branch the Agent made before
+  the push and merges later is signed again, so a duplicate signed commit can be published — with an ssh key too,
+  because the committer date is the Effector's clock and a second signing is a second commit.
 - **The sync: after a signed push, the Agent's branch moves to the signed commits**, in the Harness container
   (`POST /sync`, behind the Harness bearer, ADR-0058), from the bundle the Effector wrote, which the Orchestrator relays
   — never a shared volume: the Worktree stays read-only on the credentialed side. Under a cleared environment and a
@@ -131,13 +135,15 @@ Binding. An Effect that holds a secret runs in an Effector
   changed, then moves the branch with one `git update-ref <new> <old>` — a compare-and-swap, tried again from the new
   tip at most 3 times — so files, index, HEAD and stash do not change. Its answer is a field of the push's output beside
   the outcome: `sync: synced | already | skipped | busy | not-synced`, with `syncReason` when it moved nothing (an
-  unsigned push is `skipped`, with no call). A Harness that cannot be reached answers `not-synced`; the push stays
-  `pushed`. When the last push's sync answered `busy` or `not-synced`, jr2 runs it again before the Workspace's next
-  push, with the bundle while the row still holds it. The push never trusts the sync's answer: the Agent owns its
-  repository and can move the branch at any time, so the next push derives everything again from the remote and the
-  Agent's objects. After a signed push the Agent reads, beside the output, what moved: that its branch now holds signed
-  copies with new ids, or that jr2 did not move it and why; that its files, index and stash did not change; and that
-  amending, rebasing or resetting the pushed commits makes the next push `diverged`.
+  unsigned push — its published commit is the Agent's own — is `skipped`, with no call; every other `pushed` is synced,
+  a signed push that published nothing new included). A Harness that cannot be reached answers `not-synced`; the push
+  stays `pushed`. When the last push of a Repo Slot answered `busy` or `not-synced`, jr2 runs its sync again before that
+  slot's next push, in that slot's Worktree and with that push's bundle, which its row keeps until a sync finished. The
+  push never trusts the sync's answer: the Agent owns its repository and can move the branch at any time, so the next
+  push derives everything again from the remote and the Agent's objects. After a signed push the Agent reads, beside the
+  output, what moved: that its branch now holds signed copies with new ids, or that jr2 did not move it and why; that
+  its files, index and stash did not change; and that amending, rebasing or resetting the pushed commits makes the next
+  push `diverged`.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing it started outlives it. A bounded tail (default 4096 characters) is the
   output; the full stream goes to the run's feed (Instance-token band).
@@ -159,12 +165,14 @@ Binding. An Effect that holds a secret runs in an Effector
   kind and outcome for the run's life, the record of what the run's Effects did. A settled row's output tail is dropped
   once the save that carries its transition is on disk; the full stream is on the feed. An `http` response's body and
   headers are its tail: the row keeps the outcome, the status, the content type and the size, and the settled line on
-  the feed carries the whole response. A `push` row keeps its published commit, its source and its sync's answer whole —
-  the next push of its Workspace reads them as its pair, and runs a sync that did not finish again — and drops its
-  bundle and git's words. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One
-  exception, bounded by one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because
-  an `answer` action may read it after a restore; a loop below the Agent's state then grows the hold by one tail per
-  pass. The hold drops its chain when the pick is answered.
+  the feed carries the whole response. A `push` row keeps its Repo Slot, its published commit, its source and its sync's
+  answer whole — the next push of its Workspace and Repo Slot reads them as its pair, and runs a sync that did not
+  finish again — and drops git's words; it drops its bundle once its sync answered `synced`, `already` or `skipped`, and
+  keeps it while the sync is `busy` or `not-synced`, because the sync that runs again moves the branch from it. So an
+  Effect in a loop grows the ledger by one short row per pass, never by its tails. One exception, bounded by one pick:
+  while a pick is outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action may read it
+  after a restore; a loop below the Agent's state then grows the hold by one tail per pass. The hold drops its chain
+  when the pick is answered.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start
@@ -241,10 +249,11 @@ Binding. An Effect that holds a secret runs in an Effector
   can run twice against one commit.
 - A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (B2's wire is `POST` and `GET`),
   so D1 holds for the Machine — it does not get the output — and not for the outside world.
-- Open: the Orchestrator's address for a Sandbox Effector. `jr2 up` places its Effects and writes its Secret, the
-  provision adds the `effector` container and its key, and the Orchestrator builds each start and keeps the ledger
-  above; but the Sandbox's Service names the Harness's port only, a request is signed for the pod's own `POD_IP:port`,
-  and the Sandbox's status publishes no pod address. Until that is decided a Sandbox kind faults at invoke, naming it.
+- The Orchestrator reaches a Sandbox Effector by a headless Service the provision writes beside its key, owned by the
+  Sandbox CR (`fx-` in place of the Sandbox name's `ws-`): its name resolves to the pod's own address, the one each
+  request is signed for (ADR-0068), and it publishes that address while the pod is not ready, so a restore can ask the
+  Effector for an Effect while the Harness beside it restarts. The operator's Service names the Harness's port only and
+  is unchanged.
 - Not built: a file-body `http`. The Effector serves a Worktree file as an `http` body on the wire, with the opener
   above, and no authoring form names one; `upload` is the one that exists.
 - Owed, not built: an Open argv bound by `customize()`.

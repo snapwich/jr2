@@ -43,7 +43,8 @@ import { partsOf, type CarriedRepo } from "./parts.ts";
 import { kubeClient, type KubeClient } from "./kube-client.ts";
 import { kubeRepoFetches, type RepoFetches } from "./repo-fetch.ts";
 import { kubeRepos, type RepoResources } from "./repos.ts";
-import { kubeSandbox } from "./sandbox-kube.ts";
+import { SANDBOX_EFFECTOR_PORT, kubeSandbox } from "./sandbox-kube.ts";
+import { sandboxEffectorService } from "./sandbox-effector.ts";
 import { watchSandboxes } from "./sandbox-watch.ts";
 import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
@@ -175,6 +176,14 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // Where an http Effect runs (ADR-0068): the Instance Effector's headless Service. `jr2 up`
     // converges it whenever a registered Machine carries an http Effect.
     ...(namespace ? { instanceEffector: `${INSTANCE_EFFECTOR}.${namespace}.svc:${EFFECTOR_PORT}` } : {}),
+    // Where a push, an upload or a credentialed command runs (ADR-0068): a Sandbox's Effector, by
+    // the headless Service the provision writes beside it when `jr2 up` placed an Effect there.
+    ...(namespace
+      ? {
+          sandboxEffector: (sandbox: string) =>
+            `${sandboxEffectorService(sandbox)}.${namespace}.svc:${SANDBOX_EFFECTOR_PORT}`,
+        }
+      : {}),
   });
   // The watch ends with the instance: its stream is the one thing here that never settles alone.
   if (stopWatch) {

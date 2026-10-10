@@ -197,11 +197,20 @@ func (c *call) run(ctx context.Context) wire.Output {
 		if out != nil {
 			return *out
 		}
-		target, via, bundle = s.target, s.via, s.bundle
+		target, via = s.target, s.via
+		// The sync's bundle, whenever what is published is not the Agent's own commit — a push
+		// that publishes nothing new included: a pair or cherry that maps the published tip (a
+		// restore of a pinned push, a push after a sync that did not finish) leaves the Agent's
+		// branch on its unsigned commits, and the sync moves it from this bundle.
+		if target != sha {
+			if bundle, out = c.bundleOf(ctx, target, sha); out != nil {
+				return *out
+			}
+		}
 	}
 	if target == pub {
 		return wire.Output{Outcome: wire.OutcomePushed, Push: &wire.PushResult{Published: pub, Source: sha,
-			Previous: pub, Via: via, Unchanged: true}}
+			Previous: pub, Via: via, Unchanged: true, Bundle: bundle}}
 	}
 	return c.push(ctx, target, sha, pub, via, bundle)
 }
@@ -378,7 +387,7 @@ func tail(s string) string {
 
 // --- signing -------------------------------------------------------------------------------------
 
-type signed struct{ target, via, bundle string }
+type signed struct{ target, via string }
 
 // not is rev-list's word for "and none of these".
 const not, revList = "--not", "rev-list"
@@ -460,24 +469,25 @@ func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signe
 			return diverged(sha, pub, fmt.Sprintf("commit %s would be published unsigned", short(n)))
 		}
 	}
-	// The sync's bundle: the signed commits only. Its prerequisite is the Agent's own tip, so it
-	// carries commit objects and no tree or blob the Agent's store does not hold.
-	bundle := ""
-	if len(news) > 0 {
-		if _, err := repo.Git(ctx, nil, "update-ref", "refs/jr2/out", target); err != nil {
-			return nil, ptr(rejected("sign", "the signed tip could not be recorded", tail(stderrOf(err))))
-		}
-		file := filepath.Join(repo.Work, "sync.bundle")
-		if _, err := repo.Git(ctx, nil, "bundle", "create", "-q", file, "refs/jr2/out", not, sha); err != nil {
-			return nil, ptr(rejected("sign", "the sync bundle could not be written", tail(stderrOf(err))))
-		}
-		raw, err := os.ReadFile(file)
-		if err != nil {
-			return nil, ptr(rejected("sign", "the sync bundle could not be read", ""))
-		}
-		bundle = base64.StdEncoding.EncodeToString(raw)
+	return &signed{target: target, via: via}, nil
+}
+
+// bundleOf is the sync's bundle: the signed commits only. Its prerequisite is the Agent's own tip,
+// so it carries commit objects and no tree or blob the Agent's store does not hold.
+func (c *call) bundleOf(ctx context.Context, target, sha string) (string, *wire.Output) {
+	repo := c.repo
+	if _, err := repo.Git(ctx, nil, "update-ref", "refs/jr2/out", target); err != nil {
+		return "", ptr(rejected("sign", "the signed tip could not be recorded", tail(stderrOf(err))))
 	}
-	return &signed{target: target, via: via, bundle: bundle}, nil
+	file := filepath.Join(repo.Work, "sync.bundle")
+	if _, err := repo.Git(ctx, nil, "bundle", "create", "-q", file, "refs/jr2/out", not, sha); err != nil {
+		return "", ptr(rejected("sign", "the sync bundle could not be written", tail(stderrOf(err))))
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return "", ptr(rejected("sign", "the sync bundle could not be read", ""))
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
 // rangeOf finds what to sign: the commits after `from`, and which Agent commit stands for the

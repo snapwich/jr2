@@ -13,10 +13,13 @@ import { createEffectorClient, type CommandStartRequest, type PushStartRequest }
 import { bearer, secret } from "../src/http-effect.ts";
 import { partsOf } from "../src/parts.ts";
 import { RunHost } from "../src/run-host.ts";
-import { lastPushOf, pushParts, pushWith, uploadWith } from "../src/sandbox-effect.ts";
+import { pushParts, pushWith, uploadWith } from "../src/sandbox-effect.ts";
 import { createSyncPort, type SyncPortFactory } from "../src/sync-client.ts";
 import type { SyncAnswer, SyncRequest } from "../src/wire.ts";
 import { sandboxEffectorSecret, sandboxEffectorContainer } from "../src/sandbox-kube.ts";
+import { sandboxEffectorService } from "../src/sandbox-effector.ts";
+import { effectorTarget } from "../src/instance.ts";
+import { effectorKey } from "../src/tokens.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
@@ -220,30 +223,6 @@ test("the next push sends the ledger's last push of its Workspace as its pair, a
   fake.settle({ ...pushed("c".repeat(40)), source: "d".repeat(40) });
   await waitFor(() => host.status(runId)?.value === "done");
   assert.equal(syncs.calls.length, 3, "a sync that answered `already` is not run again");
-});
-
-test("the pair is the last push of the SAME Workspace that published", () => {
-  const row = (sandbox: string, at: string, output: Record<string, unknown>): EffectRow => ({
-    state: "settled",
-    kind: "push",
-    slot: "publish",
-    sandbox,
-    output,
-    at,
-  });
-  const rows: Record<string, EffectRow> = {
-    a: row("ws-1", "2026-01-01T00:00:01Z", { outcome: "pushed", published: "1".repeat(40), source: "2".repeat(40) }),
-    b: row("ws-2", "2026-01-01T00:00:03Z", { outcome: "pushed", published: "3".repeat(40), source: "4".repeat(40) }),
-    c: row("ws-1", "2026-01-01T00:00:04Z", {
-      outcome: "diverged",
-      reason: "x",
-      published: "5".repeat(40),
-      source: "6".repeat(40),
-    }),
-  };
-  assert.equal(lastPushOf(rows, "ws-1", "self")?.output.published, "1".repeat(40));
-  assert.equal(lastPushOf(rows, "ws-2", "self")?.output.published, "3".repeat(40));
-  assert.equal(lastPushOf(rows, "ws-1", "a"), undefined, "never the Effect's own row");
 });
 
 test("a push restored when its Effector no longer holds it is sent again with only the pinned commit", async () => {
@@ -489,4 +468,24 @@ test("the sync's client: POST /sync with the Workspace's bearer; a Harness that 
   const answer = await gone.sync(req, new AbortController().signal);
   assert.equal(answer.sync, "not-synced");
   assert.match("reason" in answer ? answer.reason : "", /could not be reached/);
+});
+
+test("where each Effector is: the Instance Effector's Service and key; a Sandbox Effector's Service and its Sandbox's key", () => {
+  const key = Buffer.from("k");
+  const opts = {
+    instanceEffector: "jr2-instance-effector.ns.svc:8082",
+    sandboxEffector: (sandbox: string) => `${sandboxEffectorService(sandbox)}.ns.svc:8082`,
+  };
+  assert.deepEqual(effectorTarget("instance", opts, key), {
+    placement: "instance",
+    service: "jr2-instance-effector.ns.svc:8082",
+    key: effectorKey(key, "instance"),
+  });
+  assert.deepEqual(effectorTarget({ sandbox: "ws-run-coding-1a2b" }, opts, key), {
+    placement: "sandbox",
+    service: "fx-run-coding-1a2b.ns.svc:8082",
+    key: effectorKey(key, "ws-run-coding-1a2b"),
+  });
+  assert.equal(effectorTarget({ sandbox: "ws-x" }, {}, key), undefined);
+  assert.equal(effectorTarget("instance", {}, key), undefined);
 });

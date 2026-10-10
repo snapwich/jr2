@@ -24,6 +24,15 @@ export const sandboxEffectorSecret = (workspacePod: string): string => `jr2-effe
 export const effectorManifestKey = (workspacePod: string): string => `effector-${workspacePod}.json`;
 /** The Secret the provision writes per Sandbox with its Effector's key, owned by the CR. */
 export const sandboxEffectorKeySecret = (sandbox: string): string => `${sandbox}-effector`;
+/**
+ * The headless Service the provision writes per Sandbox for its Effector, owned by the CR: how the
+ * Orchestrator reaches it. Its name resolves to the pod's own address, which a request is signed
+ * for (`POD_IP:port`, ADR-0068); the operator's Service names the Harness's port only. A Sandbox's
+ * name always starts `ws-` and is at most 63 characters (`workspaceName`), so `fx-` in its place
+ * keeps the name unique, as long, and apart from the operator's Service.
+ */
+export const sandboxEffectorService = (sandbox: string): string =>
+  sandbox.startsWith("ws-") ? `fx-${sandbox.slice(3)}` : `fx-${sandbox}`.slice(0, 63);
 /** The label every `jr2-effector-<pod>` Secret carries: its pod key, so a stale one is found. */
 export const LABEL_EFFECTOR_POD = "jr2.dev/effector-pod";
 

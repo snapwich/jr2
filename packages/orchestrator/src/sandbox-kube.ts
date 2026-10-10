@@ -92,6 +92,7 @@ import {
   effectorManifestKey,
   readSandboxEffectorManifest,
   sandboxEffectorKeySecret,
+  sandboxEffectorService,
   type SandboxEffectorManifest,
 } from "./sandbox-effector.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
@@ -110,7 +111,15 @@ import {
   REPOS_MOUNT,
   sandboxCustodianConfigMap,
 } from "./names.ts";
-import { CONFIGMAPS, SANDBOXES, SECRETS, kubeClient, type KubeClient, type KubeObject } from "./kube-client.ts";
+import {
+  CONFIGMAPS,
+  SANDBOXES,
+  SECRETS,
+  SERVICES,
+  kubeClient,
+  type KubeClient,
+  type KubeObject,
+} from "./kube-client.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import type { RepoResources } from "./repos.ts";
 import { resolveSize, splitSize, type Size, type SizeSplit } from "./size.ts";
@@ -894,6 +903,43 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   };
 
   /**
+   * This Sandbox's Effector Service (ADR-0068): headless, so its name resolves to the pod's own
+   * address — the one each request is signed for — and publishing an address that is not ready, so
+   * a restore asks the Effector for an Effect while the Harness beside it restarts. Owned by the
+   * CR, so it goes with the pod. Ingress is `jr2-sandbox-ingress`'s: the Orchestrator's alone.
+   */
+  const applyEffectorService = async (name: string, owner: KubeObject): Promise<void> => {
+    const uid = owner.metadata?.uid;
+    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its Effector Service`);
+    await kube().apply(SERVICES, ns, {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: {
+        name: sandboxEffectorService(name),
+        namespace: ns,
+        labels: { "jr2.dev/sandbox": name },
+        ownerReferences: [
+          {
+            apiVersion: "core.jr2.dev/v1alpha1",
+            kind: "Sandbox",
+            name,
+            uid,
+            controller: true,
+            blockOwnerDeletion: false,
+          },
+        ],
+      },
+      spec: {
+        clusterIP: "None",
+        publishNotReadyAddresses: true,
+        // The operator's label on every Sandbox pod (operator helpers.go `sandboxLabels`).
+        selector: { "sandbox.jr2.dev/name": name },
+        ports: [{ name: "effector", port: SANDBOX_EFFECTOR_PORT, targetPort: SANDBOX_EFFECTOR_PORT }],
+      },
+    });
+  };
+
+  /**
    * This Sandbox's Custodian files — Envoy's bootstrap and the `HELD` table — rendered HERE, from
    * the pod's manifest, into a ConfigMap owned by the CR like its token (ADR-0059). Who makes the
    * pod renders its files: `jr2 up` declares what each pod holds and nothing per Workspace lands in
@@ -1143,7 +1189,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // After the CR: its uid owns both, so they go when it goes.
       await applyTokenSecret(req.name, applied);
       await applyCustodianConfig(req.name, applied, manifest);
-      if (effectorManifest) await applyEffectorKey(req.name, applied);
+      if (effectorManifest) {
+        await applyEffectorKey(req.name, applied);
+        await applyEffectorService(req.name, applied);
+      }
 
       // The wait for a node, with no deadline (ADR-0064): jr2 cannot tell "full now" from "never
       // fits", so a bound is the Machine's `after`. Its reason — the scheduler's, or a quota's

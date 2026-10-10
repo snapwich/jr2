@@ -37,12 +37,13 @@ command); a command that names no secret never. A row replaces the one before it
 that is done or stopped never starts, so no restore reads a finished Effect's row, and the settled and aborted rows keep
 the Effect's id, kind and outcome for the run's life: the record of what the run's Effects did. A settled row's output
 TAIL is dropped once the save that carries its transition is on disk — that save's snapshot no longer holds the Effect
-running, so no restore reads it, and the full stream is on the run's feed. A push row keeps its published commit, its
-source and its sync's answer whole: the next push of its Workspace reads them as its pair, and runs a sync that did not
-finish again (ADR-0067); its bundle and git's words are its tail. The ledger grows by one short row per Effect a run
-starts, never by its tails, and lives as long as the run's row (ADR-0065). An outstanding pick's hold is saved in the
-same blob and keeps its `chain` whole until the pick is answered (ADR-0067); that is the only place an Effect's tails
-accumulate.
+running, so no restore reads it, and the full stream is on the run's feed. A push row keeps its Repo Slot, its published
+commit, its source and its sync's answer whole: the next push of its Workspace and Repo Slot reads them as its pair, and
+runs a sync that did not finish again (ADR-0067); git's words are its tail, and so is its bundle once a sync finished —
+while the sync is `busy` or `not-synced` the row keeps the bundle, which the sync that runs again moves the branch from.
+The ledger grows by one short row per Effect a run starts, never by its tails, and lives as long as the run's row
+(ADR-0065). An outstanding pick's hold is saved in the same blob and keeps its `chain` whole until the pick is answered
+(ADR-0067); that is the only place an Effect's tails accumulate.
 
 **Pending timers** do not ride the snapshot either. The host persists a **timer table** beside it in the same save: one
 row per pending `after`, named delay, delayed `raise` or delayed `sendTo` in the run's tree, with its absolute deadline.

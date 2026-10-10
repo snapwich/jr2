@@ -213,9 +213,18 @@ export type EffectRow =
       pinned?: string;
       at: string;
     }
-  /** `sandbox`: the Workspace an Effect of the Sandbox Effector ran in — a push's next push reads
-   * its pair from the last row of its own Workspace. */
-  | { state: "settled"; kind: EffectParts["kind"]; slot: string; sandbox?: string; output: unknown; at: string }
+  /** `sandbox` and `repo`: the Workspace and the Repo Slot an Effect of the Sandbox Effector ran on
+   * — a push's next push reads its pair from the last row of its own Workspace and Repo Slot (one
+   * branch, one remote), and runs that row's unfinished sync again in that slot's Worktree. */
+  | {
+      state: "settled";
+      kind: EffectParts["kind"];
+      slot: string;
+      sandbox?: string;
+      repo?: string;
+      output: unknown;
+      at: string;
+    }
   | { state: "aborted"; kind: EffectParts["kind"]; slot: string; at: string };
 
 /**
@@ -247,7 +256,7 @@ export function dropSavedTails(effects: Record<string, EffectRow>, persisted: un
     if (typeof output !== "object" || output === null) continue;
     // A command's tail; an http response's body and headers. What stays is short: the outcome, and
     // a response's status, content type and size.
-    const long = TAILS[row.kind].filter((field) => field in output);
+    const long = tailsOf(row.kind, output).filter((field) => field in output);
     if (long.length === 0) continue;
     const outcome = Object.fromEntries(Object.entries(output).filter(([field]) => !long.includes(field)));
     effects[id] = { ...row, output: outcome };
@@ -263,6 +272,14 @@ const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   // the next push reads them. The signed commits' bundle and git's words are its tail.
   push: ["bundle", "detail"],
 };
+
+/** A kind's tail for one output. A push whose sync did not finish (`busy`, `not-synced`) keeps its
+ * bundle: the sync that runs again before the next push moves the branch from it, and the Agent's
+ * store may not hold the signed commits without it. Once a sync finished, the bundle goes. */
+function tailsOf(kind: EffectRow["kind"], output: Record<string, unknown>): readonly string[] {
+  if (kind === "push" && (output.sync === "busy" || output.sync === "not-synced")) return ["detail"];
+  return TAILS[kind];
+}
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
  * carry the stream; `aborted` and an `unknown` settle say the outside world may have acted. */

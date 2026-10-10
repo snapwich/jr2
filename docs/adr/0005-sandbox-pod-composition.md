@@ -122,15 +122,16 @@ The seat is zero-_contract_, not zero-_physics_. What an image brought here must
 
 - **The entrypoint must block.** The pod's restart policy restarts an exited container, so a `CMD` that finishes
   crash-loops. Run a long-lived process — an sshd, an IDE server, `sleep infinity` at minimum.
-- **The Harness's and the Custodian's ports are taken** — one network namespace: `:8080` (the Harness), and the
-  Custodian's `127.0.0.1:8081` (control), `127.0.0.1:15001` (egress) and `:15021` (health). Everything else is the
-  image's.
+- **The ports of jr2's seats are taken** — one network namespace: `:8080` (the Harness), the Custodian's
+  `127.0.0.1:8081` (control), `127.0.0.1:15001` (egress) and `:15021` (health), and `:8082` (the Sandbox Effector, in a
+  pod that has one). Everything else is the image's. A process that binds `:8082` while the Sandbox Effector is down
+  gets signed requests it can neither forge nor answer (ADR-0068): the Effect fails closed.
 - **Root is allowed.** The hardened security context (non-root, all capabilities dropped, no escalation) applies to the
-  seats jr2 owns — Harness and Custodian, per container — and deliberately not here: the seat's identity is "what jr2
-  does not own", and hardening it is an opinion. A root sshd that binds `:22` and setuids sessions down to its login
-  user — the standard shape for managed access — runs unmodified; a platform that wants this seat hardened hardens its
-  own image or its namespace's Pod Security profile. The credential-visibility boundary never depended on this seat
-  being unprivileged, only on the Agent executing nothing in it.
+  seats jr2 owns — Harness, Custodian and Sandbox Effector, per container — and deliberately not here: the seat's
+  identity is "what jr2 does not own", and hardening it is an opinion. A root sshd that binds `:22` and setuids sessions
+  down to its login user — the standard shape for managed access — runs unmodified; a platform that wants this seat
+  hardened hardens its own image or its namespace's Pod Security profile. The credential-visibility boundary never
+  depended on this seat being unprivileged, only on the Agent executing nothing in it.
 
 ## Why separate containers, not one image
 

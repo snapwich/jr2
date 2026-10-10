@@ -3488,3 +3488,47 @@ test("the Orchestrator may apply a Sandbox's Custodian ConfigMap — and may not
   const rules = role.rules.filter((r: { resources: string[] }) => r.resources.includes("configmaps"));
   assert.deepEqual(rules, [{ apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] }]);
 });
+
+test("a Workspace that no longer places an Effect in its Sandbox Effector loses its Secret; one that does keeps it (ADR-0068)", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", secrets: [{ name: "aws", value: "aws-secret-value-0123" }] };\n`,
+  );
+  await writeFile(
+    join(root, "workflows", "deploy.ts"),
+    `import { command, jr2Setup, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const deploy = command(["terraform", "apply"], { env: { AWS: secret("aws") } });\n` +
+      `const body = jr2Setup({ events: [], actors: { deploy } })\n` +
+      `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "deploy", onDone: "done" } }, done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  const first = mkWorld(root);
+  assert.equal(await up(["--yes"], first.io), 0);
+  const items = first.kube.applied
+    .filter((m) => m.startsWith("{"))
+    .flatMap(
+      (m) => ((JSON.parse(m) as { items?: Array<Record<string, any>> }).items ?? []) as Array<Record<string, any>>,
+    );
+  const own = items.find((i) => i.kind === "Secret" && String(i.metadata.name).startsWith("jr2-effector-"))!;
+  assert.ok(own, "the Workspace's Effector Secret");
+  const pod = own.metadata.labels["jr2.dev/effector-pod"] as string;
+
+  const w = mkWorld(root);
+  w.kube.set("myinst", "secret", own.metadata.name, {
+    metadata: { name: own.metadata.name, labels: { "jr2.dev/effector-pod": pod } },
+  });
+  w.kube.set("myinst", "secret", "jr2-effector-gone", {
+    metadata: { name: "jr2-effector-gone", labels: { "jr2.dev/effector-pod": "gone" } },
+  });
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.ok(w.kube.deleted.includes("myinst/secret/jr2-effector-gone"), "the stale Workspace's Secret goes");
+  assert.ok(!w.kube.deleted.includes(`myinst/secret/${own.metadata.name}`), "the placing Workspace's stays");
+});
+
+test("the Orchestrator may apply a Sandbox Effector's Service — and may not read, list or delete one (ADR-0068)", async () => {
+  // It writes the headless Service at provision, server-side applied, owned by the CR.
+  const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  assert.equal(await up(["--yes"], w.io), 0);
+  const role = appliedObjects(w).get("Role/jr2-orchestrator")!;
+  const rules = role.rules.filter((r: { resources: string[] }) => r.resources.includes("services"));
+  assert.deepEqual(rules, [{ apiGroups: [""], resources: ["services"], verbs: ["create", "patch"] }]);
+});

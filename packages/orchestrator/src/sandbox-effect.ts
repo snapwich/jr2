@@ -19,8 +19,8 @@
 //     credentialed command are sent again with only the pinned commit the intent row holds — a run
 //     is a function of (commit, argv, secrets), never of the Agent's tip now — and with none
 //     recorded settle `unknown`; an upload is sent again only when marked `idempotent`.
-//   - THE PAIR AND THE SYNC. A push sends the ledger's last push of its Workspace (its published
-//     commit and its source) as `last`, the input of the Effector's `pair` fallback. After a signed
+//   - THE PAIR AND THE SYNC. A push sends the ledger's last push of its Workspace and Repo Slot (its
+//     published commit and its source) as `last`, the input of the Effector's `pair` fallback. After a signed
 //     push the Orchestrator relays the signed commits' bundle to the Workspace's Harness, which
 //     moves the Agent's branch to them (`POST /sync`); its answer rides the output as `sync`, a
 //     field beside the push's outcome. When the last push's sync did not finish, it is run again
@@ -319,6 +319,8 @@ type KindSpec = {
   /** A restore that finds no Effect sends it again with only the pinned commit. */
   repeatsPinned: boolean;
   label: (ambient: AmbientHandles) => string;
+  /** The Repo Slot the Effect runs on, written to its settled row. */
+  repoOf: (ambient: AmbientHandles, slot: string) => string;
   /** The start for this run; `pinned` is the commit the intent row recorded. */
   build: (input: unknown, ambient: AmbientHandles, slot: string, pinned?: string, extra?: StartExtra) => StartRequest;
   /** Run before a start is sent (a push: the last sync again, and the ledger's pair). */
@@ -397,7 +399,7 @@ async function drive<I, O>(
       state: "settled",
       kind: spec.kind,
       slot,
-      ...(ambient ? { sandbox: ambient.sandbox } : {}),
+      ...(ambient ? { sandbox: ambient.sandbox, ...repoField(spec, ambient, slot) } : {}),
       output,
       at: now(),
     });
@@ -568,6 +570,15 @@ async function drive<I, O>(
   }
 }
 
+/** The settled row's Repo Slot, or none when the Workspace does not name one the kind can run on. */
+function repoField(spec: KindSpec, ambient: AmbientHandles, slot: string): { repo?: string } {
+  try {
+    return { repo: spec.repoOf(ambient, slot) };
+  } catch {
+    return {};
+  }
+}
+
 function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): void {
   running.get(self)?.abort();
   running.delete(self);
@@ -641,7 +652,8 @@ export function pushWith<const O extends PushOptions>(
   syncPorts: SyncPortFactory = harnessSyncPort,
 ): EffectLogic<PushInput<O> | void, PushOutput> {
   const parts = pushParts(options);
-  const worktreeOf = (ctx: KindContext) => ctx.ambient.repos[slotOf("push", ctx.slot, parts.slot, ctx.ambient)]!;
+  const repoOf = (ambient: AmbientHandles, slot: string) => slotOf("push", slot, parts.slot, ambient);
+  const worktreeOf = (ctx: KindContext) => ctx.ambient.repos[repoOf(ctx.ambient, ctx.slot)]!;
   const syncOf = (ctx: KindContext) =>
     syncPorts(ctx.ambient.endpoint, ctx.binding?.harnessBearer?.(ctx.ambient.sandbox));
   return sandboxLogic(portFactory, parts, {
@@ -649,6 +661,7 @@ export function pushWith<const O extends PushOptions>(
     idempotent: false,
     repeatsPinned: true,
     label: (ambient) => `push ${ambient.branch}${parts.sign ? " (signed)" : ""}`,
+    repoOf,
     build: (input, ambient, slot, pinned, extra) => {
       const repoSlot = slotOf("push", slot, parts.slot, ambient);
       const ref = repoRefOf(ambient, repoSlot);
@@ -656,11 +669,13 @@ export function pushWith<const O extends PushOptions>(
       if (pinned) req.push.pin = pinned;
       return req;
     },
-    // The ledger's last push of this Workspace is the pair (design 6). Its sync, when it did not
-    // finish, runs again first — with the bundle while the row still holds it; the push does not
+    // The ledger's last push of this Workspace's Repo Slot — one branch, one remote — is the pair
+    // (design 6). Its sync, when it did not finish, runs again first, in that slot's Worktree and
+    // from the bundle the row keeps until a sync finishes (`dropSavedTails`); the push does not
     // depend on it.
     before: async (ctx) => {
-      const last = lastPushOf(ctx.binding?.effectRows?.() ?? {}, ctx.ambient.sandbox, ctx.id);
+      const rows = ctx.binding?.effectRows?.() ?? {};
+      const last = lastPushOf(rows, ctx.ambient.sandbox, repoOf(ctx.ambient, ctx.slot), ctx.id);
       if (last === undefined) return {};
       const { row, rowId, output } = last;
       if (output.sync === "busy" || output.sync === "not-synced") {
@@ -681,20 +696,20 @@ export function pushWith<const O extends PushOptions>(
       return { last: { published: output.published, source: output.source } };
     },
     // After a pushed outcome: the sync, in the Workspace's Harness, from the bundle the Effector
-    // wrote. An unsigned push published the Agent's own commit: `skipped`, nothing to send.
+    // wrote. An unsigned push published the Agent's own commit: `skipped`, nothing to send. A
+    // signed one syncs whenever the published commit is not the Agent's — a push that published
+    // nothing new included (a pair or cherry that mapped the published tip).
     finish: async (output, ctx) => {
       const o = output as PushWireOutput;
       if (o.outcome !== "pushed") return o;
-      if (o.published === o.source || o.bundle === undefined) {
-        return { ...o, sync: "skipped" satisfies SyncState };
-      }
+      if (o.published === o.source) return { ...o, sync: "skipped" satisfies SyncState };
       const answer = await syncOf(ctx).sync(
         {
           worktree: worktreeOf(ctx),
           branch: ctx.ambient.branch,
           published: o.published,
           source: o.source,
-          bundle: o.bundle,
+          ...(o.bundle !== undefined ? { bundle: o.bundle } : {}),
         },
         ctx.signal,
       );
@@ -719,15 +734,18 @@ function syncFields(answer: SyncAnswer): { sync: SyncState; syncReason?: string 
 
 type PushedRow = { published: string; source: string; sync?: SyncState; bundle?: string } & Record<string, unknown>;
 
-/** The ledger's last push of a Workspace that published: its row, by `at`, never this Effect's. */
+/** The ledger's last push of a Workspace's Repo Slot that published: its row, by `at`, never this
+ * Effect's. A Workspace with two Repo Slots has two branches on two remotes, so two pairs. */
 export function lastPushOf(
   rows: Readonly<Record<string, EffectRow>>,
   sandbox: string,
+  repo: string,
   self: string,
 ): { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined {
   let best: { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined;
   for (const [rowId, row] of Object.entries(rows)) {
-    if (rowId === self || row.state !== "settled" || row.kind !== "push" || row.sandbox !== sandbox) continue;
+    if (rowId === self || row.state !== "settled" || row.kind !== "push") continue;
+    if (row.sandbox !== sandbox || row.repo !== repo) continue;
     const output = row.output as Partial<PushedRow> & { outcome?: unknown };
     if (output?.outcome !== "pushed" || typeof output.published !== "string" || typeof output.source !== "string") {
       continue;
@@ -747,6 +765,7 @@ export function uploadWith<S extends z.ZodType | undefined = undefined>(
     idempotent: parts.idempotent,
     repeatsPinned: false,
     label: () => `upload ${parts.method} ${parts.target.scheme}://${parts.target.host}`,
+    repoOf: (ambient, slot) => slotOf("upload", slot, parts.slot, ambient),
     build: (input, ambient, slot) => {
       let value: unknown = input;
       if (def.input !== undefined) {
@@ -774,6 +793,7 @@ export function credentialedCommandWith(
     idempotent: false,
     repeatsPinned: true,
     label: () => parts.argv.map((a) => (typeof a === "string" ? a : `<${(a as Arg).arg}>`)).join(" "),
+    repoOf: (ambient, slot) => slotOf("command", slot, parts.slot, ambient),
     build: (input, ambient, slot, pinned) => {
       const repoSlot = slotOf("command", slot, parts.slot, ambient);
       const ref = repoRefOf(ambient, repoSlot);

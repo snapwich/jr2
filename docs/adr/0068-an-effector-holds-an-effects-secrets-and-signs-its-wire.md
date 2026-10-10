@@ -34,7 +34,10 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   name runs — the clean-repository procedure of ADR-0067; for a credentialed `command`, the Agent's files are the
   author's choice to run, and the claims are three: the Agent never reads or spends the secret, the tool sees a pinned
   commit and not the live Worktree, and the output is scrubbed. A credentialed command's child gets the Effector
-  container's own `PATH`, as its image set it.
+  container's own `PATH`, as its image set it. Its env holds only what the author named, but it runs as the Effector's
+  own uid, so it can read every file of the Effector's mount: the other Effect secrets of that Workspace, the push and
+  signing credentials under the git mount, and the placement key. What it prints of them is scrubbed, the key included;
+  a tool that transforms one before it prints it is outside the claim (Consequences).
 - **The wire.** `POST /effects/<id>` starts an Effect and answers at once (202, `state: running`). A second `POST` with
   the same id starts nothing and attaches (200). The answer to a `push` or a credentialed `command` start names the
   commit it runs against (`pinned`), read before the answer, so the Orchestrator writes it to the ledger's intent row.
@@ -69,8 +72,9 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
 - **The Orchestrator's side.** `@jr2/orchestrator` speaks the wire through an injected transport (the unit tests' seam,
   [ADR-0010](0010-bdd-acceptance-tests.md)). The Instance Effector's address is derived from the namespace,
   `jr2-instance-effector.<namespace>.svc:8082`, and its key from the signing key (`effectorKey`): the Orchestrator
-  stores neither (a Sandbox Effector's key is derived from its Sandbox's name; its address is open, ADR-0067). The real
-  transport resolves that name to every replica's address; a start goes to one of them, and to the next only when a
+  stores neither. A Sandbox Effector's key is derived from its Sandbox's name, and its address is the headless Service
+  the provision writes beside its key, `fx-<…>.<namespace>.svc:8082` (`fx-` in place of the Sandbox name's `ws-`). The
+  real transport resolves that name to every replica's address; a start goes to one of them, and to the next only when a
   replica was never reached or answered that it is stopping. An answer without the Effector's signature is not the
   Effector's, and never an outcome. To a start it is an answer lost and to a poll a replica gone (its address may be
   stale): every replica is asked. When asking every replica gets one too, the Effect settles `unknown`, with that
@@ -84,24 +88,26 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   reads is dropped 10 minutes after it settled: there is no cancel route.
 - **Scrubbing, last, before the answer is signed.** Every string that leaves goes through it: an http body, its headers'
   values and names (a name reaches the Effector case-folded, so it is matched with case folded), error text — and then
-  the whole encoded answer. It matches every secret the Effector holds, not only the ones the current Effect names, in
-  three kinds of form: the exact value; its usual encodings (base64 in both alphabets, padded and not, alone or inside a
-  longer encoded string — a server that base64-encodes a dump of the request's headers puts the value at any byte
-  offset, so the characters that hold only the value's own bits are a form at each of the three offsets;
-  percent-encoding; JSON-escaping); and what the Effector built from it for this Effect (the `Authorization` value it
-  sent, `base64(user:password)`, a definition header it filled from the secret, the url with the secret in its path, and
-  that url as the server sees it, its path and query), each with the same encodings. An encoding has more than one
-  spelling, and a server echoes in its own encoder's, so each common spelling is a form: percent-encoding that leaves
-  only the unreserved characters, or also `/` (Python's `quote`), or `!'()*` (`encodeURIComponent`), or the reserved
-  ones (`encodeURI`), or a path's characters, a form's `+` for a space, Go's query and path escapes, each in upper and
-  lower hex; JSON with or without `\/`, with or without `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026`, with or without
-  every non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u` forms, U+2028 and U+2029 as `\u2028` and `\u2029`
-  or as they are, and `\u` hex in either case. A match becomes `[secret:<name>]`. A body, and a credentialed command's
-  stream, is scrubbed as it streams, across chunk borders, with a window one byte shorter than the longest form — and
-  before it is bounded: a secret that straddles the cut to the tail was replaced whole before the cut. The Effector
-  refuses to start with a secret shorter than 8 characters, and names it: a shorter one would match ordinary text.
-  `jr2 up` refuses a short one earlier, a literal and a value in the user's own Secret alike (see the secrets list
-  below); the Effector's refusal is for a Secret edited after the converge.
+  the whole encoded answer. It matches every secret the Effector holds, not only the ones the current Effect names — and
+  the placement key, as `[secret:effector-key]`: a credentialed command's child can read the key's file, and a key that
+  reached the Agent would sign a start from bash — in three kinds of form: the exact value; its usual encodings (base64
+  in both alphabets, padded and not, alone or inside a longer encoded string — a server that base64-encodes a dump of
+  the request's headers puts the value at any byte offset, so the characters that hold only the value's own bits are a
+  form at each of the three offsets; percent-encoding; JSON-escaping); and what the Effector built from it for this
+  Effect (the `Authorization` value it sent, `base64(user:password)`, a definition header it filled from the secret, the
+  url with the secret in its path, and that url as the server sees it, its path and query), each with the same
+  encodings. An encoding has more than one spelling, and a server echoes in its own encoder's, so each common spelling
+  is a form: percent-encoding that leaves only the unreserved characters, or also `/` (Python's `quote`), or `!'()*`
+  (`encodeURIComponent`), or the reserved ones (`encodeURI`), or a path's characters, a form's `+` for a space, Go's
+  query and path escapes, each in upper and lower hex; JSON with or without `\/`, with or without `<`, `>`, `&` as
+  `\u003c`, `\u003e`, `\u0026`, with or without every non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u`
+  forms, U+2028 and U+2029 as `\u2028` and `\u2029` or as they are, and `\u` hex in either case. A match becomes
+  `[secret:<name>]`. A body, and a credentialed command's stream, is scrubbed as it streams, across chunk borders, with
+  a window one byte shorter than the longest form — and before it is bounded: a secret that straddles the cut to the
+  tail was replaced whole before the cut. The Effector refuses to start with a secret shorter than 8 characters, and
+  names it: a shorter one would match ordinary text. `jr2 up` refuses a short one earlier, a literal and a value in the
+  user's own Secret alike (see the secrets list below); the Effector's refusal is for a Secret edited after the
+  converge.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
   trailing `\n` or `\r\n` is taken off, as the Custodian does. A credentialed command names what it needs under `env`,
   in two forms: `secret("x")` gives the value, `secret("x").path` the file's path; there is no `files:` option. A push
@@ -203,7 +209,11 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   (ADR-0005): its image is the `workspace()`'s `effector: { image }`, resolved like the User Container's, or the Sandbox
   Image; its per-pod key is `effectorKey(signing key, <Sandbox name>)`, derived like the Sandbox token and written into
   `<sandbox>-effector`, a Secret the CR owns, which only that container mounts, beside `effector.json`. Each pod's key
-  is its own: a request signed for one Sandbox is refused by every other.
+  is its own: a request signed for one Sandbox is refused by every other. Beside the key the provision writes a headless
+  Service the CR owns, selecting the pod by the operator's label, port 8082, publishing its address while the pod is not
+  ready: its name resolves to the pod's own `POD_IP`, which each request is signed for. Ingress to it is
+  `jr2-sandbox-ingress`'s: the Orchestrator's alone. The Orchestrator's Role may create and patch Services for it, and
+  may not read, list or delete one.
 
 - **The log is a contract.** `jr2.effector` lines: `ready placement=… replica=… secrets=<names> targets=N`,
   `action=start effect=… kind=… method=… host=…` (a push and a command log `host=-`),
@@ -228,6 +238,10 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
 - **Not a goal of scrubbing:** a transformed secret (a hash, a truncation, an encoding not listed above), a partial
   echo, a side channel. The claim is that an Effector does not return a secret it holds, in the forms it sent or in
   common encodings.
+- **A credentialed command's child can read the whole Effector mount.** Naming one secret for one command gives that
+  tool, and any Agent-written file it runs (B4.6), read access to every secret file of the Workspace's Sandbox Effector
+  and to the placement key. Scrubbing covers what it prints in the forms above; a tool that transforms a value first
+  (`base32`, a hash, a reversal) returns it. Only the env is per Effect today.
 - An `unknown` outcome is the Machine's to route. jr2 sends an `http` call again only when the author marked it
   `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and

@@ -1,0 +1,161 @@
+package pushkind
+
+import (
+	"context"
+	"encoding/base64"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/snapwich/jr2/effector/internal/gittest"
+	"github.com/snapwich/jr2/effector/internal/wire"
+)
+
+// unbundle reads a sync bundle into the Agent's repository, as the Harness's sync does, and
+// answers whether the published commit is then in the Agent's store.
+func unbundle(t *testing.T, f *fixture, bundle, published string) bool {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(f.pod.Root, "sync.bundle")
+	if err := os.WriteFile(file, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Git(t, f.pod.Tree, "bundle", "verify", "-q", file)
+	gittest.Git(t, f.pod.Tree, "bundle", "unbundle", file)
+	return exec.Command("git", "-C", f.pod.Tree, "cat-file", "-e", published+"^{commit}").Run() == nil
+}
+
+// design 6: "jr2 runs the sync again before the next push if it did not finish". A push that
+// publishes nothing new because the pair or cherry maps the published tip still leaves the Agent's
+// branch on its unsigned commit, so its answer carries the bundle the sync moves the branch from.
+func TestASignedPushThatPublishesNothingNewStillCarriesTheSyncBundle(t *testing.T) {
+	for _, mode := range []string{"pair", "cherry"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t, "ssh")
+			f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+			first := f.push(true, nil)
+			if first.Outcome != wire.OutcomePushed {
+				t.Fatalf("first: %+v", first)
+			}
+			var last *wire.Pair
+			if mode == "pair" {
+				last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+			}
+			again := f.push(true, last)
+			if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged || again.Push.Via != mode ||
+				again.Push.Published != first.Push.Published || again.Push.Source != first.Push.Source {
+				t.Fatalf("got %+v %+v", again, again.Push)
+			}
+			if again.Push.Bundle == "" {
+				t.Fatal("no sync bundle: the Agent's branch stays on its unsigned commit and no sync can move it")
+			}
+			if !unbundle(t, f, again.Push.Bundle, again.Push.Published) {
+				t.Fatal("the bundle does not carry the published commit")
+			}
+		})
+	}
+}
+
+// design 6: option `squash` (with a message from the Machine). The Agent's commits become one
+// signed commit on the published base, with the Agent's tree and author and the Machine's message.
+func TestASquashedSignedPushPublishesOneSignedCommitWithTheMachinesMessage(t *testing.T) {
+	f := newFixture(t, "ssh")
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	sha := f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+	req := f.request(true, nil)
+	msg := "one squashed commit"
+	req.Push.Squash = &msg
+	out := f.runner.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomePushed || out.Push.Source != sha || out.Push.Published == sha {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	pub := remoteRef(f)
+	if n := remoteGit(t, f, "rev-list", "--count", pub, "--not", "main"); n != "1" {
+		t.Fatalf("%s commits published, want 1", n)
+	}
+	if got := remoteGit(t, f, "log", "-1", "--format=%s|%an <%ae>|%cn <%ce>", pub); got !=
+		msg+"|Agent <agent@example.test>|"+signerName+" <"+signerEmail+">" {
+		t.Fatalf("the squashed commit: %s", got)
+	}
+	if remoteGit(t, f, "rev-parse", pub+"^") != remoteGit(t, f, "rev-parse", "main") {
+		t.Fatal("the squashed commit's parent is not the published base")
+	}
+	if remoteGit(t, f, "rev-parse", pub+"^{tree}") != gittest.Git(t, f.pod.Tree, "rev-parse", sha+"^{tree}") {
+		t.Fatal("the squashed tree is not the Agent's")
+	}
+	verify(t, f, pub)
+	if out.Push.Bundle == "" || !unbundle(t, f, out.Push.Bundle, pub) {
+		t.Fatal("no sync bundle of the squashed commit")
+	}
+}
+
+// design 6: `pin` pushes exactly the commit a Gate approved — one older than the Agent's tip
+// included; what the Agent committed after it does not leave.
+func TestAPinnedPushPublishesTheApprovedCommitAndNothingAfterIt(t *testing.T) {
+	f := newFixture(t, "")
+	approved := f.pod.Commit("approved", map[string]string{"a.txt": "a\n"})
+	f.pod.Commit("after the approval", map[string]string{"b.txt": "b\n"})
+	req := f.request(false, nil)
+	req.Push.Pin = approved
+	out := f.runner.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomePushed || out.Push.Published != approved || out.Push.Source != approved {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != approved {
+		t.Fatalf("the remote holds %q, want the approved %q", remoteRef(f), approved)
+	}
+}
+
+// design 6: "A pinned push can be denied by the Agent (it prunes the commit) and never
+// substituted."
+func TestAPinnedPushOfACommitTheAgentPrunedIsRejectedAndNothingIsPushed(t *testing.T) {
+	f := newFixture(t, "")
+	f.pod.Commit("kept", map[string]string{"a.txt": "a\n"})
+	approved := f.pod.Commit("approved", map[string]string{"b.txt": "b\n"})
+	gittest.Git(t, f.pod.Tree, "reset", "-q", "--hard", "HEAD~1")
+	gittest.Git(t, f.pod.Tree, "reflog", "expire", "--expire=now", "--all")
+	gittest.Git(t, f.pod.Tree, "gc", "-q", "--prune=now")
+	if exec.Command("git", "-C", f.pod.Tree, "cat-file", "-e", approved).Run() == nil {
+		t.Fatal("setup: the approved commit is still in the Agent's store")
+	}
+	req := f.request(false, nil)
+	req.Push.Pin = approved
+	out := f.runner.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "import" ||
+		!strings.Contains(out.Reason, "not in the Agent's") {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != "" {
+		t.Fatalf("the remote holds %q: the pruned commit was substituted", remoteRef(f))
+	}
+}
+
+// The pair is the ledger's LAST push: it stands for the remote's tip only while the remote still
+// holds that push. When the remote moved past it (another writer), the Agent's commits are not
+// grafted onto the new tip — that would publish a fast-forward that reverts the other commit.
+func TestAPairWhoseRemoteMovedPastTheLastPushIsDiverged(t *testing.T) {
+	f := newFixture(t, "ssh")
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	first := f.push(true, nil)
+	if first.Outcome != wire.OutcomePushed {
+		t.Fatalf("first: %+v", first)
+	}
+	// Another writer pushes on top of the signed copy.
+	tree := remoteGit(t, f, "rev-parse", first.Push.Published+"^{tree}")
+	other := gittest.Git(t, f.pod.Root, "--git-dir="+f.pod.Remote, "commit-tree", tree, "-p", first.Push.Published, "-m", "another writer")
+	remoteGit(t, f, "update-ref", "refs/heads/"+f.pod.Branch, other)
+	// The sync did not run; the Agent adds a commit on its unsigned one.
+	f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+	out := f.push(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+	if out.Outcome != wire.OutcomeDiverged {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != other {
+		t.Fatal("the remote moved: the other writer's commit was built over")
+	}
+}

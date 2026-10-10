@@ -75,9 +75,32 @@ async function pod() {
     git(effector, "bundle", "create", "-q", file, "refs/jr2/out", "--not", sha);
     return { published, source: sha, bundle: execFileSync("base64", ["-w0", file], { encoding: "utf8" }).trim() };
   };
-  const sync = syncer({ env: { GIT_CONFIG_GLOBAL: globalConfig } });
-  return { root, work, clone, tree, git, commit, sign, sync };
+  const hooks: { beforeMove?: () => Promise<void> } = {};
+  const sync = syncer({
+    env: { GIT_CONFIG_GLOBAL: globalConfig },
+    beforeMove: () => hooks.beforeMove?.() ?? Promise.resolve(),
+  });
+  return { root, work, clone, tree, git, commit, sign, sync, hooks };
 }
+
+test("a commit the Agent makes while the sync runs is never lost: the move is a compare-and-swap, tried again from the new tip", async () => {
+  const p = await pod();
+  const tip = await p.commit("one", "a.txt", "a\n");
+  const signed = p.sign(tip);
+  let raced = "";
+  // Between the sync's read of the branch and its move, the Agent commits.
+  p.hooks.beforeMove = async () => {
+    if (raced) return;
+    raced = await p.commit("made while the sync ran", "b.txt", "b\n");
+  };
+  const answer = await p.sync({ worktree: p.tree, branch: "jr2/work", ...signed });
+  assert.equal(answer.sync, "synced", JSON.stringify(answer));
+  assert.equal((answer as { tries: number }).tries, 2, "the lost race is tried again");
+  const now = p.git(p.tree, "rev-parse", "refs/heads/jr2/work");
+  assert.equal(p.git(p.tree, "log", "-1", "--format=%s", now), "made while the sync ran", "the Agent's commit is kept");
+  assert.equal(p.git(p.tree, "rev-parse", `${now}^`), signed.published, "on top of the signed commit");
+  assert.equal(p.git(p.tree, "rev-parse", `${now}^{tree}`), p.git(p.tree, "rev-parse", `${raced}^{tree}`));
+});
 
 test("a sync moves the Agent's branch to the signed commits; files, index, HEAD and stash do not change", async () => {
   const p = await pod();

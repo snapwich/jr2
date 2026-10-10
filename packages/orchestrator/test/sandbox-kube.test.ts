@@ -25,10 +25,16 @@ import { repoKey } from "../src/repo-identity.ts";
 import { kubeSandbox as kubePort, memoryFaultOf, type KubeSandboxOptions } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
 import { effectorKey, harnessToken, harnessTokenDigest } from "../src/tokens.ts";
-import { effectorManifestKey, sandboxEffectorObjectsOf } from "../src/sandbox-effector.ts";
+import { effectorManifestKey, sandboxEffectorObjectsOf, sandboxEffectorService } from "../src/sandbox-effector.ts";
 import type { RepoResources } from "../src/repos.ts";
 import type { AttachRequest } from "../src/wire.ts";
-import type { Continuity, PlaceRequest, PlacingWait, ProvisionedRepo } from "../src/workspace.ts";
+import {
+  workspaceName,
+  type Continuity,
+  type PlaceRequest,
+  type PlacingWait,
+  type ProvisionedRepo,
+} from "../src/workspace.ts";
 import { fakeKube, type FakeCall } from "./_fake-kube.ts";
 import { waitFor } from "./_fixtures.ts";
 
@@ -1115,6 +1121,7 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
     applies(bare.calls, "secrets").some((s) => s.metadata.name === "sb-none-effector"),
     false,
   );
+  assert.deepEqual(applies(bare.calls, "services"), [], "no Effector Service without an Effector");
 
   const heldDir = await mkHeld(EMPTY_HELD);
   const plan = {
@@ -1165,6 +1172,15 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   const key = applies(placed.calls, "secrets").find((s) => s.metadata.name === "sb-fx-effector");
   assert.equal(Buffer.from(key.data.key, "base64").toString(), effectorKey(Buffer.from("k"), "sb-fx"));
   assert.equal(key.metadata.ownerReferences[0].name, "sb-fx");
+  // How the Orchestrator reaches it: a headless Service the CR owns, whose name resolves to the
+  // pod's own address (the one a request is signed for), publishing it while not ready.
+  const [svc] = applies(placed.calls, "services");
+  assert.equal(svc.metadata.name, sandboxEffectorService("sb-fx"));
+  assert.equal(svc.metadata.ownerReferences[0].name, "sb-fx");
+  assert.equal(svc.spec.clusterIP, "None");
+  assert.equal(svc.spec.publishNotReadyAddresses, true);
+  assert.deepEqual(svc.spec.selector, { "sandbox.jr2.dev/name": "sb-fx" });
+  assert.deepEqual(svc.spec.ports, [{ name: "effector", port: 8082, targetPort: 8082 }]);
   // The default image is the Sandbox Image, in the Harness's seat.
   const dflt = cluster();
   await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, heldDir, ...dflt.exec }).provision({
@@ -2093,4 +2109,13 @@ test("a split below the Harness floor fails the provision by name, with NOTHING 
     /Sandbox "sb-tiny" cannot be provisioned: the Size leaves the Harness container .* below its 256Mi floor/,
   );
   assert.deepEqual(calls, [], "no Secret, no CR");
+});
+
+test("a Sandbox Effector's Service name: `fx-` in place of `ws-`, so as long as the Sandbox's and apart from the operator's", () => {
+  const name = workspaceName("run-0123456789abcdef", "a-very-long-workspace-id-".repeat(4));
+  assert.ok(name.length <= 63 && name.startsWith("ws-"));
+  const svc = sandboxEffectorService(name);
+  assert.equal(svc.length, name.length);
+  assert.ok(svc.startsWith("fx-") && svc !== name);
+  assert.ok(sandboxEffectorService("sb-fx").length <= 63);
 });

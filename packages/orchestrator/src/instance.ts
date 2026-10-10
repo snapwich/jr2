@@ -32,7 +32,7 @@ import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import { createAuthenticator, effectorKey, harnessToken, loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
-import type { EffectorPlacement } from "./http-effect.ts";
+import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
 
 export type InstanceOptions = {
   /** The instance folder (holds `workflows/`, and `.jr2/state.db` unless `store` is supplied). */
@@ -65,6 +65,10 @@ export type InstanceOptions = {
   /** The Instance Effector's headless Service, `host:port` (ADR-0068) — where an http Effect is sent.
    * The entrypoint derives it from the pod's namespace; absent, an http Effect faults pointedly. */
   instanceEffector?: string;
+  /** A Sandbox Effector's address, `host:port`, by its Sandbox's name (ADR-0068) — where a push, an
+   * upload or a credentialed command is sent. The entrypoint derives it from the pod's namespace and
+   * the Service the provision writes; absent, those Effects fault pointedly. */
+  sandboxEffector?: (sandbox: string) => string;
   /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.jr2/secret`, minted on
    * first boot. Supply it when the instance folder must stay untouched (tests), or when the same
    * key must reach a `kubeSandbox` built before this call (it mints the tokens). */
@@ -140,19 +144,12 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     sandbox: opts.sandbox,
     instanceHarness: opts.instanceHarness,
     harnessBearer: (placement) => harnessToken(signingKey, placement),
-    // The Instance Effector (ADR-0068): its Service, and the placement's key the wire is signed with
-    // — derived from the signing key as the Harness bearer is, so nothing is stored.
-    ...(opts.instanceEffector
-      ? {
-          // A Sandbox Effector's key is the Sandbox's name's (`effectorKey(signingKey, <name>)`, written
-          // at provision), and its address is not one this host knows: the Sandbox's Service names
-          // the Harness's port only, and a request is signed for the pod's own `POD_IP:port`, which
-          // the Sandbox's status does not publish. Open, recorded in ADR-0067.
-          effector: (placement: EffectorPlacement) =>
-            placement === "instance"
-              ? { placement, service: opts.instanceEffector!, key: effectorKey(signingKey, placement) }
-              : undefined,
-        }
+    // The Effectors (ADR-0068): each placement's Service, and the key its wire is signed with —
+    // derived from the signing key as the Harness bearer is, so nothing is stored. The Instance
+    // Effector's key is `effectorKey(signingKey, "instance")`; a Sandbox Effector's is its Sandbox's
+    // name's, as the provision wrote it, and its Service is the one the provision wrote beside it.
+    ...(opts.instanceEffector || opts.sandboxEffector
+      ? { effector: (placement: EffectorPlacement) => effectorTarget(placement, opts, signingKey) }
       : {}),
     // The run-narrative echo (ADR-0023): tee a run's feed to its enclosing Workspace's Harness,
     // bearing that Workspace's Harness bearer (ADR-0058) — never the Instance token, which would
@@ -262,6 +259,31 @@ async function importMachine(name: string, file: string, gen = 0): Promise<AnySt
     );
   }
   return machine;
+}
+
+/**
+ * Where an Effector placement is, and its key (ADR-0068): the Instance Effector's Service and
+ * `effectorKey(signingKey, "instance")`; a Sandbox Effector's Service by its Sandbox's name and
+ * `effectorKey(signingKey, <name>)`, the key the provision wrote into its pod. Undefined where the
+ * entrypoint named no address for that placement.
+ */
+export function effectorTarget(
+  placement: EffectorPlacement,
+  opts: Pick<InstanceOptions, "instanceEffector" | "sandboxEffector">,
+  signingKey: Buffer,
+): EffectorTarget | undefined {
+  if (placement === "instance") {
+    return opts.instanceEffector
+      ? { placement, service: opts.instanceEffector, key: effectorKey(signingKey, placement) }
+      : undefined;
+  }
+  return opts.sandboxEffector
+    ? {
+        placement: "sandbox",
+        service: opts.sandboxEffector(placement.sandbox),
+        key: effectorKey(signingKey, placement.sandbox),
+      }
+    : undefined;
 }
 
 /**

@@ -53,6 +53,10 @@ import (
 // runs the remote repository's config and hooks — never runs in a pod.
 var allowLocalRemotes bool
 
+// placementKeyName is the name the scrubber puts in place of the placement key:
+// `[secret:effector-key]`.
+const placementKeyName = "effector-key"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "git-credential" {
 		os.Exit(pushkind.Helper(os.Args[2:], os.Stdin, os.Stdout))
@@ -115,10 +119,13 @@ func run(logger *log.Logger) error {
 		Address: net.JoinHostPort(env("POD_IP", "127.0.0.1"), port),
 	}
 
-	// Every secret this Effector holds is scrubbed, a push's key and token included.
+	// Every secret this Effector holds is scrubbed (B3.2), a push's key and token included — and its
+	// own placement key: a credentialed command's child runs as this process's uid and can read the
+	// key's file, and a key that reached the Agent would sign any start from bash.
 	every := map[string]string{}
 	maps.Copy(every, held)
 	maps.Copy(every, gitHeld)
+	every[placementKeyName] = string(key)
 	scrubber := scrub.New(every)
 	runner, err := kindsFor(config, held, scrubber, roots, secretsDir, gitDir)
 	if err != nil {

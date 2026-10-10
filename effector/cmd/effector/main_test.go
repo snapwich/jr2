@@ -49,6 +49,8 @@ type effector struct {
 	cmd  *exec.Cmd
 	base string
 	out  *lockedBuffer
+	// keyFile is the placement key's file, when a test started the binary over a directory.
+	keyFile string
 }
 
 // lockedBuffer is the process's combined output: exec's copying goroutine writes it while a test

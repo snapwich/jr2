@@ -333,6 +333,9 @@ export function instanceObjects(opts: {
         // A Sandbox's Custodian files, rendered at provision and server-side applied (ADR-0059);
         // owned by the CR, so the garbage collector deletes them with the pod.
         { apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] },
+        // A Sandbox Effector's headless Service, written at provision beside its key (ADR-0068): how
+        // this process reaches the pod's own address. Owned by the CR, like the ConfigMap.
+        { apiGroups: [""], resources: ["services"], verbs: ["create", "patch"] },
       ],
     },
     {

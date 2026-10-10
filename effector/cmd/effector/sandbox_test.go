@@ -51,7 +51,7 @@ func startSandboxEffector(t *testing.T, p *gittest.Pod) *effector {
 	out := &lockedBuffer{}
 	cmd.Stdout, cmd.Stderr = out, out
 	must(t, cmd.Start())
-	e := &effector{cmd: cmd, base: "http://127.0.0.1:" + listen, out: out}
+	e := &effector{cmd: cmd, base: "http://127.0.0.1:" + listen, out: out, keyFile: filepath.Join(dir, "key")}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -107,6 +107,27 @@ func TestASandboxEffectorRunsACredentialedCommandAndScrubsIt(t *testing.T) {
 	}
 	if strings.Contains(e.out.String(), awsSecret) {
 		t.Fatalf("the log holds the secret: %s", e.out.String())
+	}
+}
+
+// B3.2: the scrubber matches every secret the Effector holds — its own placement key too. A
+// credentialed command may run a file the Agent committed (B4.6), and its child can read the key's
+// file; a key that reached the Agent would sign any start from bash in the Harness container.
+func TestACredentialedCommandThatReadsThePlacementKeyReturnsItScrubbed(t *testing.T) {
+	p := gittest.NewPod(t, "work")
+	e := startSandboxEffector(t, p)
+	keyFile := e.keyFile
+	p.Commit("a committed script", map[string]string{"leak.sh": "cat '" + keyFile + "'; base64 < '" + keyFile + "'\n"})
+	body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
+		`"cache":"app-key"},"branch":"work","argv":["sh","leak.sh"],"env":{"AWS":{"secret":"aws"}},"tail":4000},` +
+		`"timeoutMs":30000}`
+	if status, raw := e.call(t, "POST", "/effects/leak-1", body); status != 202 {
+		t.Fatalf("got %d %s", status, raw)
+	}
+	got := e.wait(t, "leak-1")
+	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, "[secret:effector-key]") ||
+		strings.Contains(got, placementKey) {
+		t.Fatalf("got %s", got)
 	}
 }
 

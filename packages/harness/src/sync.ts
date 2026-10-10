@@ -66,20 +66,24 @@ export function syncFault(body: unknown, workRoot = "/work"): string | undefined
   return undefined;
 }
 
+/** The tests' seams: an env beside the cleared one, and a call just before each compare-and-swap
+ * (where a test commits, as the Agent can while the sync runs). Production sets neither. */
+type SyncSeams = { env?: NodeJS.ProcessEnv; beforeMove?: () => Promise<void> };
+
 /**
  * The sync, bound to the work root. Calls are serialized: two syncs of one branch would race on
- * its ref. `env` is a seam for the tests; production clears the process's.
+ * its ref.
  */
-export function syncer(opts: { env?: NodeJS.ProcessEnv } = {}) {
+export function syncer(opts: SyncSeams = {}) {
   let queue: Promise<unknown> = Promise.resolve();
   return (req: SyncRequest): Promise<SyncAnswer> => {
-    const run = queue.then(() => sync(req, opts.env));
+    const run = queue.then(() => sync(req, opts));
     queue = run.catch(() => {});
     return run;
   };
 }
 
-async function sync(req: SyncRequest, extraEnv?: NodeJS.ProcessEnv): Promise<SyncAnswer> {
+async function sync(req: SyncRequest, seams: SyncSeams): Promise<SyncAnswer> {
   if (req.published === req.source) return { sync: "skipped", reason: "the push was not signed: nothing to move" };
   const home = await mkdtemp(join(tmpdir(), "jr2-sync-"));
   try {
@@ -91,7 +95,7 @@ async function sync(req: SyncRequest, extraEnv?: NodeJS.ProcessEnv): Promise<Syn
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_NO_REPLACE_OBJECTS: "1",
       GIT_TERMINAL_PROMPT: "0",
-      ...extraEnv,
+      ...seams.env,
     };
     const git = (args: string[], input?: string) => run(req.worktree, env, [...CLEAN, ...args], input);
     const ref = `refs/heads/${req.branch}`;
@@ -140,6 +144,7 @@ async function sync(req: SyncRequest, extraEnv?: NodeJS.ProcessEnv): Promise<Syn
       if ((await tree(next)) !== (await tree(t))) {
         return { sync: "not-synced", reason: "the moved branch would not hold your files — a jr2 defect" };
       }
+      await seams.beforeMove?.();
       const moved = await git(["update-ref", "-m", `jr2 sync to ${req.published}`, ref, next, t]);
       if (moved.code !== 0) continue; // the Agent committed while the sync ran: again, from its new tip
       const now = (await git(["rev-parse", ref])).out;
