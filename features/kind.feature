@@ -216,6 +216,34 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the echo received the run's call exactly once
       And the Instance Effector's rollout completes
 
+  Rule: an upload and a credentialed command run in the Workspace's Sandbox Effector, which the Agent cannot read
+    ADR-0067, ADR-0068. The `effected` workflow's body commits a file in the Harness container, then
+    runs an Effect that `jr2 up` placed in this Workspace's Sandbox Effector: an `upload` of the
+    file to the echo with `bearer(secret("echo-token"))`, or a credentialed `command` whose env names
+    the token by value and by `.path`. The provision adds the `effector` container to the pod; the
+    Harness container mounts none of its volumes. A credentialed command runs against the pinned
+    commit in a scratch of its own, so an uncommitted edit is never seen and the answer says
+    `dirty`. Every string that comes back is scrubbed. Not covered here: a push (the seed serves
+    dumb HTTP and takes no push, and no push-capable remote runs in the tier) and the port takeover
+    (Go and Orchestrator tests show it). These scenarios fault at invoke until the Orchestrator's
+    address for a Sandbox Effector is decided (ADR-0067).
+
+    Scenario: an upload sends a committed Worktree file, and the answer names the secret
+      Given the kind instance is serving
+      When I start the "effected" workflow in mode "upload" detached
+      Then the run's Sandbox pod has a Sandbox Effector beside the Agent
+      And the upload's answer is a response from the echo, whose body is the committed file
+
+    Scenario: a credentialed command reads its secret from env and from its file, and its output is scrubbed
+      Given the kind instance is serving
+      When I start the "effected" workflow in mode "env" detached
+      Then the credentialed command read its secret from env and from its file, and its output names it
+
+    Scenario: a credentialed command never sees an uncommitted edit, and says the tree was dirty
+      Given the kind instance is serving
+      When I start the "effected" workflow in mode "dirty" detached
+      Then the credentialed command saw the commit and not the edit, and says dirty
+
   Rule: a Sandbox reaped while the orchestrator is down is never silently re-provisioned
 
     Scenario: the restored body is told its workspace is lost

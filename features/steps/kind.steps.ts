@@ -2556,3 +2556,61 @@ When("the Instance Effector rolls out", async function (this: E2EWorld): Promise
 Then("the Instance Effector's rollout completes", async function (this: E2EWorld): Promise<void> {
   await kubectl(this, ["rollout", "status", `deployment/${INSTANCE_EFFECTOR}`, "--timeout=300s"]);
 });
+
+// --- the Sandbox Effector (ADR-0067, ADR-0068) ----------------------------------------------------
+
+/** The run's Sandbox pod has an `effector` container, and the Harness container mounts none of its
+ * volumes — read off the pod the operator made from the CR the provision wrote. */
+Then("the run's Sandbox pod has a Sandbox Effector beside the Agent", async function (this: E2EWorld): Promise<void> {
+  let podName: string | undefined;
+  for (let i = 0; i < 120 && podName === undefined; i++) {
+    const ready = (await sandboxesFor(this)).find((sb) => sb.status?.phase === "Ready");
+    podName = (ready?.status as { podRef?: { name?: string } } | undefined)?.podRef?.name;
+    if (podName === undefined) await sleep(500);
+  }
+  assert.ok(podName, "the run's Sandbox never reported its pod");
+  const pod = JSON.parse(await kubectl(this, ["get", "pod", podName, "-o", "json"])) as {
+    spec: { containers: Array<{ name: string; volumeMounts?: Array<{ name: string }> }> };
+  };
+  const names = pod.spec.containers.map((c) => c.name);
+  assert.ok(names.includes("effector"), `no effector container: ${names.join(", ")}`);
+  const harness = pod.spec.containers[0]!;
+  for (const m of harness.volumeMounts ?? []) assert.ok(!m.name.startsWith("effector"), `the Harness mounts ${m.name}`);
+});
+
+Then(
+  "the upload's answer is a response from the echo, whose body is the committed file",
+  async function (this: E2EWorld): Promise<void> {
+    const output = await httpOutput(this);
+    assert.equal(output.outcome, "response", JSON.stringify(output));
+    assert.equal(output.status, 200);
+    assert.match(String(output.body), /\nbody report of the run\n/, "the Worktree file was the body");
+    assert.ok(this.echoToken);
+    assert.equal(leakOf(JSON.stringify(output), this.echoToken), undefined, "the answer holds no form of the token");
+  },
+);
+
+Then(
+  "the credentialed command read its secret from env and from its file, and its output names it",
+  async function (this: E2EWorld): Promise<void> {
+    const output = (await httpOutput(this)) as { outcome?: string; code?: number; tail?: string; dirty?: boolean };
+    assert.equal(output.outcome, "exited", JSON.stringify(output));
+    assert.equal(output.code, 0);
+    assert.match(output.tail ?? "", /env=\[secret:echo-token\]\nfile=\[secret:echo-token\]\n/);
+    assert.ok(this.echoToken);
+    assert.equal(leakOf(JSON.stringify(output), this.echoToken), undefined, "no form of the token came back");
+    const feed = await this.runCli(["logs", this.runId!]);
+    assert.equal(leakOf(feed.stdout + feed.stderr, this.echoToken), undefined, "the feed holds no form of it");
+  },
+);
+
+Then(
+  "the credentialed command saw the commit and not the edit, and says dirty",
+  async function (this: E2EWorld): Promise<void> {
+    const output = (await httpOutput(this)) as { outcome?: string; tail?: string; dirty?: boolean };
+    assert.equal(output.outcome, "exited", JSON.stringify(output));
+    assert.match(output.tail ?? "", /report of the run\n$/, "the pinned commit's file");
+    assert.doesNotMatch(output.tail ?? "", /edited, not committed/);
+    assert.equal(output.dirty, true);
+  },
+);
