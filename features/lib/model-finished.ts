@@ -33,4 +33,5 @@ export const FINISHED: Record<string, (s: RunEnd) => boolean> = {
   answered: outcomeIn("reported", "shipped"),
   "allowed-after-route": outcomeIn("filed", "shipped"),
   "unknown-outcome": outcomeIn("checked", "announced"),
+  "continue-after-signed-push": outcomeIn("finished"),
 };

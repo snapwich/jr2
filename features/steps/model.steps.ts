@@ -726,6 +726,32 @@ const answered: Driver = async (world, input) => {
   };
 };
 
+/**
+ * continue-after-signed-push (ADR-0067): the coder publishes twice, signed. The setup is a first
+ * push that published a signed copy (`pushed`, its published commit not its source) — the answer
+ * that carries the paragraph after a signed push; without it the trial is void. The measurement is
+ * the second push: `pushed`, because the Agent continued on its branch and left the pushed commits
+ * as they were. A trial that never published a second time is a miss.
+ */
+const continueAfterSignedPush: Driver = async (world, input) => {
+  const runId = await startRun(world, "continue-after-signed-push", input);
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  const pushes = (last.context.output?.pushes ?? []) as Array<{
+    outcome?: string;
+    published?: string;
+    source?: string;
+  }>;
+  const first = pushes[0];
+  const setup = first?.outcome === "pushed" && first.published !== undefined && first.published !== first.source;
+  return {
+    runId,
+    measured: setup && pushes[1]?.outcome === "pushed",
+    finished: FINISHED["continue-after-signed-push"]!(last),
+    ...(setup ? {} : { void: true }),
+    note: `pushes ${pushes.map((p) => p.outcome).join(" ") || "none"}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+  };
+};
+
 /** The allowed-after-route workflow's Menu (`allowed-after-route.ts`), and its Allowed picks after
  * the failing tests' route into `red`. */
 const ROUTE_MENU = new Set(["run_tests", "ship", "open_issue"]);
@@ -847,6 +873,7 @@ const DRIVERS: Record<string, Driver> = {
   "chain-answer": chainAnswer,
   "cut-pick": cutPick,
   answered,
+  "continue-after-signed-push": continueAfterSignedPush,
   "allowed-after-route": allowedAfterRoute,
   "unknown-outcome": unknownOutcome,
 };
@@ -1013,6 +1040,13 @@ Then(
   "the first pick after the command answered was the one its output called for in at least {int} trials",
   function (this: E2EWorld, floor: number): void {
     atLeast(claimOf(this), floor, "the pick after the command's answer followed its output", (t) => t.measured);
+  },
+);
+
+Then(
+  "the push after a signed push was published in at least {int} trials",
+  function (this: E2EWorld, floor: number): void {
+    atLeast(claimOf(this), floor, "the next push after a signed push published", (t) => t.measured);
   },
 );
 

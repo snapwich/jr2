@@ -28,6 +28,8 @@ test("the make-repo script runs again on the same volume, and keeps a branch a s
   assert.equal((await exec("git", ["-C", join(srv, "app.git"), "rev-parse", "main"])).stdout.trim(), main);
   assert.equal((await exec("git", ["-C", join(srv, "app.git"), "rev-parse", "pushed"])).stdout.trim(), main);
   await exec("git", ["-C", join(srv, "other.git"), "rev-parse", "main"]);
+  // The push remote (ADR-0067): app's content, its own repository.
+  await exec("git", ["-C", join(srv, "push.git"), "rev-parse", "main"]);
 });
 
 test("a run cut halfway leaves nothing a second run mistakes for done", async () => {

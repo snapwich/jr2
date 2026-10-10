@@ -246,6 +246,26 @@ Feature: a real model drives the kit
       And every trial finished
       And the cell "unknown-outcome/off" is written to the scorecard
 
+  Rule: after a signed push the Agent continues on its branch, and its next push publishes
+    ADR-0067. A signed push re-creates the Agent's commits as signed copies with new ids; the sync
+    moves the Agent's branch to them and changes no file. The answer says so, says to continue on
+    the branch, and says that amending, rebasing or resetting the pushed commits makes the next
+    push `diverged` — and never tells the Agent to rebase. The floor's origin is push-follow's:
+    ADR-0029/0062's measurement of a list read last, 10/10, rounded down to 9, because the answer
+    is the newest thing the model read.
+
+    Scenario: the push after a signed push publishes
+      The `continue-after-signed-push` coder fixes the seed's failing test, commits and publishes
+      — a signed push over ssh to the seed's push remote — then commits a comment and publishes
+      again, then finishes. The second push's outcome, from the Machine's own record, is the
+      measurement: `pushed`. A trial whose first push did not publish a signed copy is void.
+      Given the seed's push remote trusts this scenario's keys
+      And the model instance is serving
+      When I run the "continue-after-signed-push" workflow 10 times with thinking off
+      Then the push after a signed push was published in at least 9 trials
+      And every trial finished
+      And the cell "continue-after-signed-push/off" is written to the scorecard
+
   Rule: the kit carries a ticket from a failing test to a verified commit
     The run (ADR-0066). The seed Repo's `main` holds a small project whose one test fails: the
     ticket. `ticket` is a `workspace()` workflow with three seats and the paths no scripted tier

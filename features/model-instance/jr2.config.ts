@@ -16,7 +16,20 @@ import { profile } from "./workflows/_profile.ts";
 
 export default defineConfig({
   name: "jr2-e2e-model",
-  git: { credentials: [{ match: "seed.jr2-e2e-seed.svc/" }] },
+  git: {
+    credentials: [
+      { match: "seed.jr2-e2e-seed.svc/" },
+      // The seed's push remote over ssh (ADR-0067), as the @kind instance names it: the
+      // `continue-after-signed-push` claim's Binding. Its scenario writes both Secrets from the
+      // seed's keys before `jr2 up`; any other scenario's `jr2 up` generates a deploy key nothing
+      // authorizes, and that namespace's cache of `push.git` fails its probe and serves anyway.
+      {
+        match: "seed.jr2-e2e-seed.svc/srv/",
+        sshKey: "jr2-e2e-push-key",
+        sign: { sshKey: "jr2-e2e-sign-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
+      },
+    ],
+  },
   // The @kind Size (ADR-0060): small enough for several trials in flight on one node, and the
   // ceiling the `noticed` claim's memory kill is measured against (ADR-0061).
   sandbox: { resources: { limits: { memory: "1Gi", cpu: "500m" } } },

@@ -19,6 +19,7 @@ test("a trial that took the other task final finished: the claim's measure, not 
   ] as const) {
     for (const outcome of finals) assert.equal(FINISHED[workflow]!(body(outcome)), true, `${workflow}: ${outcome}`);
   }
+  assert.equal(FINISHED["continue-after-signed-push"]!(body("finished")), true);
   assert.equal(FINISHED.wake!(root("held")), true);
   assert.equal(FINISHED["chain-answer"]!(root("released")), true);
 });
@@ -29,5 +30,6 @@ test("a fault, a lost Workspace or an unsettled run never finished", () => {
     assert.equal(FINISHED[workflow]!(body("lost")), false, `${workflow}: lost`);
   }
   assert.equal(FINISHED.answered!(body("reported", "running")), false);
+  assert.equal(FINISHED["continue-after-signed-push"]!(body("faulted")), false);
   assert.equal(FINISHED.obedience!(root("faulted")), false);
 });

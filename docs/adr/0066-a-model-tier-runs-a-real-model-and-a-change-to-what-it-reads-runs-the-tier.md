@@ -34,18 +34,20 @@ recover, finish — are exercised only one scripted tool call at a time.
   Gate's answer opens a pick, and picks (the wake, ADR-0016); a Turn hears its Allowed picks change under it at a step
   boundary and follows them without a refused pick (ADR-0029); and a pick that runs work is answered at Rest and the
   Agent acts on the answer, after a chain of replies and after a Harness restart cut the pick
-  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md), ADR-0031). A claim qualifies when an ADR
-  states what a correct Agent does differently for it and a step can observe the difference from outside the pod. **The
-  run** is one `workspace()` workflow through to `done` on a real task: a ticket the seed Repo carries as a failing
-  test, a planner's pick, a coder that edits in the Worktree, runs the test, commits on the run's branch and names the
-  commit — a guard refuses a `submit` that names none — and a reviewer in the same Sandbox, read-only
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md), ADR-0031); and after a signed push the
+  Agent continues on its branch, so its next push publishes
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)). A claim qualifies
+  when an ADR states what a correct Agent does differently for it and a step can observe the difference from outside the
+  pod. **The run** is one `workspace()` workflow through to `done` on a real task: a ticket the seed Repo carries as a
+  failing test, a planner's pick, a coder that edits in the Worktree, runs the test, commits on the run's branch and
+  names the commit — a guard refuses a `submit` that names none — and a reviewer in the same Sandbox, read-only
   ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)), that runs the test itself and
   approves or rejects, bounded. Approval parks at a Gate, and the witness is the pod (parking is retention, ADR-0012):
   the branch is ahead of `main`, its head is the named commit, the tree is clean, and the test passes when the suite
   runs it there. Nothing is pushed — the Agent holds no credential and the push is the caller's (ADR-0005,
   [ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)), as `task` says — and
-  the seed accepts none. The run asserts the pick ledger's shape and a time bound — never the diff, the commit message,
-  or the Turn count, which are the model's.
+  the seed's `app.git` accepts none. The run asserts the pick ledger's shape and a time bound — never the diff, the
+  commit message, or the Turn count, which are the model's.
 - **Scored, not asserted.** A claim is N trials per cell (thinking off and on are cells, set through the Dial), and a
   cell fails only below the floor written in its scenario. The floors are the ADRs' numbers rounded down to what a model
   at the floor can hold: 9 of 10 where the ADR measured 10/10. Every run writes a scorecard,
@@ -147,6 +149,12 @@ recover, finish — are exercised only one scripted tool call at a time.
     back to where `ship` is allowed; the miss is a `ship` after its own fix without the workflow's check. The floor and
     the measure are unchanged. Its first run with this setup (2026-10-08) read 10 of 10, now a baseline. The setup
     change (86e9691) was made before the user saw it; the user approved it on 2026-10-09.
+- `continue-after-signed-push` (ADR-0067): the coder fixes the seed's failing test, commits and publishes — a signed
+  push from the Sandbox Effector over ssh to the seed's push remote, `push.git` — then commits a second change,
+  publishes again, and finishes. The first push's answer carries the paragraph after a signed push. The measure is the
+  Machine's record of the second push: `pushed`; an Agent that rewrites the pushed commits after their ids changed makes
+  it `diverged`. A trial whose first push did not publish a signed copy is void. Its floor is `push-follow`'s, 9 of 10:
+  the answer is the newest thing the model read. Written; not yet run, so it has no baseline.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but
