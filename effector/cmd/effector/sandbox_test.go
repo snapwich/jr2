@@ -89,45 +89,28 @@ func TestASandboxEffectorPinsAPushToTheAgentsTipAndPushesIt(t *testing.T) {
 	}
 }
 
-func TestASandboxEffectorRunsACredentialedCommandAndScrubsIt(t *testing.T) {
-	p := gittest.NewPod(t, "work")
-	sha := p.Commit("one", map[string]string{"a.txt": "a\n"})
-	e := startSandboxEffector(t, p)
-	body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
-		`"cache":"app-key"},"branch":"work","argv":["sh","-c","echo $AWS; cat $AWS_FILE; cat a.txt"],` +
-		`"env":{"AWS":{"secret":"aws"},"AWS_FILE":{"secret":"aws","path":true}},"tail":1000},"timeoutMs":30000}`
-	status, raw := e.call(t, "POST", "/effects/cmd-1", body)
-	if status != 202 || !strings.Contains(raw, `"pinned":"`+sha+`"`) {
-		t.Fatalf("got %d %s", status, raw)
-	}
-	got := e.wait(t, "cmd-1")
-	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, `[secret:aws]\n[secret:aws]\na\n`) ||
-		strings.Contains(got, awsSecret) {
-		t.Fatalf("got %s", got)
-	}
-	if strings.Contains(e.out.String(), awsSecret) {
-		t.Fatalf("the log holds the secret: %s", e.out.String())
-	}
-}
-
-// B3.2: the scrubber matches every secret the Effector holds — its own placement key too. A
-// credentialed command may run a file the Agent committed (B4.6), and its child can read the key's
-// file; a key that reached the Agent would sign any start from bash in the Harness container.
-func TestACredentialedCommandThatReadsThePlacementKeyReturnsItScrubbed(t *testing.T) {
+// A credentialed command's child would run as the Effector's uid: a file the Agent committed that
+// the command runs could read the placement key, the secrets the command does not name and the
+// push credentials, and send them on transformed past the scrubber. With the key, bash in the
+// Harness container signs any start. So the Sandbox Effector refuses the kind before anything runs
+// (ADR-0068), until the child is kept from the mount.
+func TestASandboxEffectorRefusesACredentialedCommandAndRunsNothing(t *testing.T) {
 	p := gittest.NewPod(t, "work")
 	e := startSandboxEffector(t, p)
-	keyFile := e.keyFile
-	p.Commit("a committed script", map[string]string{"leak.sh": "cat '" + keyFile + "'; base64 < '" + keyFile + "'\n"})
+	marker := filepath.Join(t.TempDir(), "ran")
+	p.Commit("a committed script", map[string]string{"leak.sh": "base32 -w0 < '" + e.keyFile + "' > '" + marker + "'\n"})
 	body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
 		`"cache":"app-key"},"branch":"work","argv":["sh","leak.sh"],"env":{"AWS":{"secret":"aws"}},"tail":4000},` +
 		`"timeoutMs":30000}`
-	if status, raw := e.call(t, "POST", "/effects/leak-1", body); status != 202 {
+	status, raw := e.call(t, "POST", "/effects/leak-1", body)
+	if status != 400 || !strings.Contains(raw, "no Sandbox Effector runs") {
 		t.Fatalf("got %d %s", status, raw)
 	}
-	got := e.wait(t, "leak-1")
-	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, "[secret:effector-key]") ||
-		strings.Contains(got, placementKey) {
-		t.Fatalf("got %s", got)
+	if status, raw := e.call(t, "GET", "/effects/leak-1", ""); status != 404 {
+		t.Fatalf("the refused start exists: %d %s", status, raw)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the committed script ran")
 	}
 }
 

@@ -37,7 +37,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/snapwich/jr2/effector/internal/commandkind"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/kinds"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
@@ -120,14 +119,13 @@ func run(logger *log.Logger) error {
 	}
 
 	// Every secret this Effector holds is scrubbed (B3.2), a push's key and token included — and its
-	// own placement key: a credentialed command's child runs as this process's uid and can read the
-	// key's file, and a key that reached the Agent would sign any start from bash.
+	// own placement key: a key that reached the Agent would sign any start from bash.
 	every := map[string]string{}
 	maps.Copy(every, held)
 	maps.Copy(every, gitHeld)
 	every[placementKeyName] = string(key)
 	scrubber := scrub.New(every)
-	runner, err := kindsFor(config, held, scrubber, roots, secretsDir, gitDir)
+	runner, err := kindsFor(config, held, scrubber, roots, gitDir)
 	if err != nil {
 		return err
 	}
@@ -181,9 +179,9 @@ func run(logger *log.Logger) error {
 }
 
 // kindsFor is this placement's kinds: `http` alone in the Instance Effector; in a Sandbox
-// Effector (JR2_EFFECTOR_WORK set) also upload, push and the credentialed command.
+// Effector (JR2_EFFECTOR_WORK set) also upload and push. The credentialed command is refused.
 func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Scrubber, roots *x509.CertPool,
-	secretsDir, gitDir string) (*kinds.Runner, error) {
+	gitDir string) (*kinds.Runner, error) {
 	work := os.Getenv("JR2_EFFECTOR_WORK")
 	r := &kinds.Runner{HTTP: &httpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots,
 		WorkRoot: work}}
@@ -203,10 +201,9 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 	r.Push = &pushkind.Runner{Config: config, WorkRoot: work, ReposRoot: repos, GitRoot: gitDir,
 		Scratch: filepath.Join(scratch, "push"), Helper: self, CAFile: os.Getenv("JR2_CA_FILE"), Scrubber: scrubber,
 		AllowLocal: allowLocalRemotes}
-	// A credentialed command's PATH is this container's own, as its image set it: the tools are the
-	// author's (ADR-0068).
-	r.Command = &commandkind.Runner{Secrets: held, SecretsDir: secretsDir, WorkRoot: work, ReposRoot: repos,
-		Scratch: filepath.Join(scratch, "command"), Scrubber: scrubber, Path: os.Getenv("PATH")}
+	// No credentialed command: its child would run as this process's uid and could read the
+	// placement key, the secrets it does not name and the push credentials. r.Command stays nil
+	// until the child is kept from this mount (ADR-0068); the start is refused, and runs nothing.
 	return r, nil
 }
 

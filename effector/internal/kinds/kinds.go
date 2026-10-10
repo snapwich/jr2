@@ -1,6 +1,8 @@
 // Package kinds routes a start to the kind that runs it (ADR-0067): `http` and `upload` to the
 // http runner, `push` to the push runner, a credentialed `command` to the command runner. The
-// Instance Effector holds only the first; a Sandbox Effector holds every kind.
+// Instance Effector holds only the first; a Sandbox Effector holds the first two. No Effector
+// holds the command runner yet: its child runs as the Effector's uid and can read every file of
+// the Effector's mount, and how the child is kept from it is not decided (ADR-0068).
 package kinds
 
 import (
@@ -11,6 +13,12 @@ import (
 	"github.com/snapwich/jr2/effector/internal/pushkind"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
+
+// CommandWithheld is why a Sandbox Effector refuses a credentialed command: the child would run as
+// the Effector's uid, so a file the Agent wrote that the command runs could read the placement key
+// and every secret and push credential of the mount (ADR-0068).
+const CommandWithheld = "a credentialed command, which no Sandbox Effector runs until its child is kept from the " +
+	"Effector's mount (its key, the secrets it does not name, the push credentials)"
 
 // Runner is one Effector's kinds. A nil Push or Command is a kind this placement does not run.
 type Runner struct {
@@ -29,6 +37,9 @@ func (r *Runner) Missing(req *wire.StartRequest) string {
 		}
 		return r.Push.Check(req)
 	case wire.KindCommand:
+		if r.Command == nil && r.HTTP.WorkRoot != "" {
+			return CommandWithheld
+		}
 		if r.Command == nil {
 			return "a credentialed command, which runs in a Sandbox Effector"
 		}

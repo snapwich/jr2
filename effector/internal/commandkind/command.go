@@ -4,11 +4,13 @@
 // push's import procedure (package gitclean), never in the live Worktree. So the Agent's
 // uncommitted edits are never seen; the answer says `dirty` when there were some.
 //
-// What jr2 claims for this kind is three things, and not the push's fourth: the Agent never reads
-// or spends the secret (the Effector is a container it cannot exec in); the tool sees a pinned
-// commit and not the live Worktree; the output is scrubbed (ADR-0068). The Agent's files are the
-// author's choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no
-// program the Agent's files name runs" is not claimed here.
+// No Effector holds this runner yet (package kinds; ADR-0068): the child runs as the Effector's
+// uid, so a file the Agent wrote that argv runs could read every file of the Effector's mount — its
+// key, the secrets the command does not name, the push credentials. The runner stays behind that
+// refusal until the child is kept from the mount. The tool sees a pinned commit and not the live
+// Worktree, and the output is scrubbed. The Agent's files are the author's choice to run — a
+// tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files name
+// runs" is not claimed here.
 //
 // The child's env is what the author named — a secret's value, or its file's path — plus PATH and
 // HOME, and nothing else: not the Effector's key, not another secret. PATH is the Effector's own,

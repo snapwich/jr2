@@ -146,6 +146,26 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
 }
 
 /**
+ * A credentialed `command` is refused at `jr2 up` (ADR-0068): its child would run as the Sandbox
+ * Effector's uid, so a file the Agent wrote that the command runs could read the Effector's key and
+ * every secret and push credential of its mount — and with the key, bash in the Harness container
+ * could sign any start. The Sandbox Effector refuses the kind too. The refusal stays until the
+ * child is kept from that mount.
+ */
+export function refuseCredentialedCommands(walk: PlacementWalk): void {
+  for (const { workflow, effect } of walk.effects) {
+    if (effect.kind !== "command" || !effect.secrets?.length) continue;
+    throw new Error(
+      `workflow "${workflow}": the command Effect "${effect.name}" names secret("${effect.secrets[0]}"), and jr2 ` +
+        "does not run a credentialed command yet — its process would run as the Sandbox Effector's uid, so a file " +
+        "the Agent wrote that it runs could read the Effector's key and every secret and push credential there. " +
+        "Until it is kept from them, a gateway that holds the credential, with a held key for the gateway, is the " +
+        "way (ADR-0059, ADR-0068)",
+    );
+  }
+}
+
+/**
  * Read where each secret goes, or throw the first refusal. `walk` is what the registered Machines
  * name; `lookups.secretKeys` is R10's read of the user's Secrets, and `lookups.valueLength` the
  * length of a `valueFrom` Effect secret's value there, which is refused when short as a literal is.

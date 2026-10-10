@@ -11,6 +11,7 @@ import type { JR2Config } from "../src/config.ts";
 import { heldSecretsOf, workspaceHeldPod } from "../src/held-secrets.ts";
 import type { CarriedEffect, WorkspacePod } from "../src/parts.ts";
 import {
+  refuseCredentialedCommands,
   refuseEffectSecrets,
   secretPlacementsOf,
   storedValueLength,
@@ -378,6 +379,18 @@ test("a secret a credentialed command or an upload names is an Effect secret in 
   assert.deepEqual(plan.values, { aws: VALUE, files: VALUE });
   assert.deepEqual(plan.targets, [{ scheme: "https", host: "files.example.com", port: 443, secrets: ["files"] }]);
   assert.deepEqual(plan.effects, ["ticket/deploy", "ticket/report"]);
+});
+
+test("a credentialed command is refused at jr2 up; a command that names no secret, an upload and a push are not (ADR-0068)", () => {
+  // The child would run as the Sandbox Effector's uid and could read its key and every secret of
+  // its mount: the kind is withheld until the child is kept from them.
+  assert.throws(
+    () => refuseCredentialedCommands(placedIn([upload("report", ["files"]), credentialed("deploy", ["aws"])])),
+    /the command Effect "deploy" names secret\("aws"\), and jr2 does not run a credentialed command yet/,
+  );
+  assert.doesNotThrow(() =>
+    refuseCredentialedCommands(placedIn([credentialed("lint", []), upload("report", ["files"]), pusher("publish")])),
+  );
 });
 
 test("a Sandbox kind's secret missing from the list, or shorter than 8 characters, is refused as an http one is", () => {

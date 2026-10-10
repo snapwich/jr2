@@ -3495,8 +3495,8 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   );
   await writeFile(
     join(root, "workflows", "deploy.ts"),
-    `import { command, jr2Setup, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const deploy = command(["terraform", "apply"], { env: { AWS: secret("aws") } });\n` +
+    `import { bearer, jr2Setup, secret, upload, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const deploy = upload({ url: "https://files.example.com/r", auth: bearer(secret("aws")), file: () => ({ path: "r.txt" }) });\n` +
       `const body = jr2Setup({ events: [], actors: { deploy } })\n` +
       `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "deploy", onDone: "done" } }, done: { type: "final" } } });\n` +
       `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
@@ -3522,6 +3522,29 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   assert.equal(await up(["--yes"], w.io), 0);
   assert.ok(w.kube.deleted.includes("myinst/secret/jr2-effector-gone"), "the stale Workspace's Secret goes");
   assert.ok(!w.kube.deleted.includes(`myinst/secret/${own.metadata.name}`), "the placing Workspace's stays");
+});
+
+test("jr2 up refuses a credentialed command before it applies anything, and says why (ADR-0068)", async () => {
+  // Its child would run as the Sandbox Effector's uid and could read the Effector's key and every
+  // secret there; the refusal stays until the child is kept from that mount.
+  const root = await mkInstance(
+    `export default { name: "myinst", secrets: [{ name: "aws", value: "aws-secret-value-0123" }] };\n`,
+  );
+  await writeFile(
+    join(root, "workflows", "deploy.ts"),
+    `import { command, jr2Setup, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const deploy = command(["terraform", "apply"], { env: { AWS: secret("aws") } });\n` +
+      `const body = jr2Setup({ events: [], actors: { deploy } })\n` +
+      `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "deploy", onDone: "done" } }, done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  const w = mkWorld(root);
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    /the command Effect "deploy" names secret\("aws"\), and jr2 does not run a credentialed command yet/,
+  );
+  assert.deepEqual(w.built, [], "nothing was built");
+  assert.deepEqual(w.kube.applied, [], "nothing was applied");
 });
 
 test("the Orchestrator may apply a Sandbox Effector's Service — and may not read, list or delete one (ADR-0068)", async () => {

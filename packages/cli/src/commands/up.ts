@@ -72,6 +72,7 @@ import {
   partsOf,
   workspacePodsOf,
   refuseEffectSecrets,
+  refuseCredentialedCommands,
   LABEL_EFFECTOR_POD,
   secretPlacementsOf,
   storedValueLength,
@@ -321,6 +322,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       : {}),
   };
   refuseEffectSecrets(config, placementWalk);
+  refuseCredentialedCommands(placementWalk);
   // Who may send what, per state (ADR-0015): the audience rule's answer for each registered
   // Machine and every Machine it composes, as its doc carries it — so an author reads who holds a
   // pick before a run finds out. Then what the build found legal and suspect: a warning, never a

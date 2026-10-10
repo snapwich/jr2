@@ -2590,31 +2590,6 @@ Then(
   },
 );
 
-Then(
-  "the credentialed command read its secret from env and from its file, and its output names it",
-  async function (this: E2EWorld): Promise<void> {
-    const output = (await httpOutput(this)) as { outcome?: string; code?: number; tail?: string; dirty?: boolean };
-    assert.equal(output.outcome, "exited", JSON.stringify(output));
-    assert.equal(output.code, 0);
-    assert.match(output.tail ?? "", /env=\[secret:echo-token\]\nfile=\[secret:echo-token\]\n/);
-    assert.ok(this.echoToken);
-    assert.equal(leakOf(JSON.stringify(output), this.echoToken), undefined, "no form of the token came back");
-    const feed = await this.runCli(["logs", this.runId!]);
-    assert.equal(leakOf(feed.stdout + feed.stderr, this.echoToken), undefined, "the feed holds no form of it");
-  },
-);
-
-Then(
-  "the credentialed command saw the commit and not the edit, and says dirty",
-  async function (this: E2EWorld): Promise<void> {
-    const output = (await httpOutput(this)) as { outcome?: string; tail?: string; dirty?: boolean };
-    assert.equal(output.outcome, "exited", JSON.stringify(output));
-    assert.match(output.tail ?? "", /report of the run\n$/, "the pinned commit's file");
-    assert.doesNotMatch(output.tail ?? "", /edited, not committed/);
-    assert.equal(output.dirty, true);
-  },
-);
-
 // --- a push from the Sandbox Effector (ADR-0067, ADR-0068) -----------------------------------------
 
 /**

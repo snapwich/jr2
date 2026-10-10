@@ -5,7 +5,8 @@ as running the tests had no place of its own, so an author either asked an Agent
 wrote a raw xstate promise that a restart ran again. jr2 builds four kinds: `command`, run a program in the Workspace;
 `http`, call a URL; `upload`, send a Worktree file to a URL; and `push`, push the Workspace's branch to its Repo Slot's
 Binding. An Effect that holds a secret runs in an Effector
-([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
+([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A `command` whose env names a secret —
+the credentialed `command` — is written and refused (below).
 
 ## Decision
 
@@ -62,20 +63,23 @@ Binding. An Effect that holds a secret runs in an Effector
   `path` segments and a JSON or text body. So an Agent's param reaches a path segment or a body, never the host, a
   header or a secret. It runs in the Instance Effector, which builds the request and holds the secrets (ADR-0068); the
   Orchestrator signs the call and holds none.
-- **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`.** It runs in the
-  Sandbox Effector, against one commit: the Agent's branch tip when it starts, or — with `pin` — the commit the Effect's
-  input names (`{ sha }`, one a Gate approved). That commit is checked out into a fresh scratch of the Effect's own by
-  the push's import procedure (below), so the Agent's uncommitted edits are never seen; the answer carries `dirty: true`
-  beside the output when the Worktree held some (a status in jr2's clean repository over a copy of the Worktree's index,
-  against the Worktree's own HEAD — never the pin, so the commits the Agent made after an approved one are not edits —
-  read as data; when it cannot tell, it says dirty). The child's env is what the author named — a secret's value, or its
-  file's path — plus `PATH` and `HOME`, and nothing else; `PATH` is the Effector container's own, as its image set it
-  (the tools are the author's), and `argv[0]` is looked up there; `HOME` is the scratch's, and the scratch is removed
-  once the outcome is read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). jr2 claims
-  three things for it, not the push's fourth: the Agent never reads or spends the secret (a container it cannot exec
-  in); the tool sees a pinned commit, not the live Worktree; the output is scrubbed. The Agent's files are the author's
-  choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files name runs"
-  is not claimed for it.
+- **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`, refused.**
+  `jr2 up` refuses it before it builds or applies anything, and the Sandbox Effector answers its start 400 and runs
+  nothing (ADR-0068): its child would run as the Effector's uid and could read the Effector's key, the secrets it does
+  not name and the push credentials, and its argv may run a file the Agent wrote. The kind is written behind both
+  refusals, as follows, until the child is kept from the Effector's mount. It would run in the Sandbox Effector, against
+  one commit: the Agent's branch tip when it starts, or — with `pin` — the commit the Effect's input names (`{ sha }`,
+  one a Gate approved). That commit is checked out into a fresh scratch of the Effect's own by the push's import
+  procedure (below), so the Agent's uncommitted edits are never seen; the answer carries `dirty: true` beside the output
+  when the Worktree held some (a status in jr2's clean repository over a copy of the Worktree's index, against the
+  Worktree's own HEAD — never the pin, so the commits the Agent made after an approved one are not edits — read as data;
+  when it cannot tell, it says dirty). The child's env is what the author named — a secret's value, or its file's path —
+  plus `PATH` and `HOME`, and nothing else; `PATH` is the Effector container's own, as its image set it (the tools are
+  the author's), and `argv[0]` is looked up there; `HOME` is the scratch's, and the scratch is removed once the outcome
+  is read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the
+  author's choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files
+  name runs" is not claimed for it; and a program the Agent wrote that it runs can read what the child can read, which
+  is why the kind is refused. The tool sees a pinned commit, not the live Worktree.
 - **An `upload` is an `http` definition whose body is a Worktree file.**
   `upload({ method?, url, headers?, auth?, input?, file, contentType?, slot?, timeout?, maxBody?, idempotent? })`:
   `file(input)` returns the file's path relative to the Repo Slot's Worktree (and path segments, as `request` gives
@@ -101,8 +105,10 @@ Binding. An Effect that holds a secret runs in an Effector
   directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The commit is pinned when
   the push starts: the Agent's branch tip, or with `pin` the commit the input names (`{ sha }`); the Effector's first
   answer names it, and it is written to the intent row. A pinned commit the Agent pruned fails the import and is never
-  substituted. `squash` (built with `sign` only) makes one commit with the input's `{ message }`; `force` replaces what
-  the remote holds.
+  substituted. `squash` makes one commit with the input's `{ message }`, and is built with `sign` only: the squashed
+  commit is a new commit whose committer is the `sign` entry's, and an unsigned push has no committer to give it, so
+  `push({ squash: true })` without `sign` is refused at construction (Consequences). `force` replaces what the remote
+  holds.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The
@@ -245,8 +251,8 @@ Binding. An Effect that holds a secret runs in an Effector
 - An `http` call an Orchestrator restart caught in flight gives one send: the restored Effect finds it on the replica
   that holds it. One the Effector lost gives `unknown`, or a second send when it is `idempotent`.
 - A push the Orchestrator restart caught in flight gives one push of the pinned commit; one the Effector lost is pushed
-  again with that commit alone. A credentialed command the Effector lost runs again with its pinned commit, so its tool
-  can run twice against one commit.
+  again with that commit alone. A credentialed command the Effector lost would run again with its pinned commit, so its
+  tool could run twice against one commit.
 - A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (B2's wire is `POST` and `GET`),
   so D1 holds for the Machine — it does not get the output — and not for the outside world.
 - The Orchestrator reaches a Sandbox Effector by a headless Service the provision writes beside its key, owned by the
@@ -261,3 +267,6 @@ Binding. An Effect that holds a secret runs in an Effector
 - Not built: a file-body `http`. The Effector serves a Worktree file as an `http` body on the wire, with the opener
   above, and no authoring form names one; `upload` is the one that exists.
 - Owed, not built: an Open argv bound by `customize()`.
+- Not built: `squash` without `sign`. Who commits an unsigned squash (its committer name, email and date) is not
+  decided; `push({ squash: true })` alone is refused at construction and on the wire.
+- Not built: a credentialed `command` that runs (above; ADR-0068).
