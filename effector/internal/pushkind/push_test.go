@@ -90,7 +90,9 @@ func newFixture(t *testing.T, sign string) *fixture {
 		Scratch:   filepath.Join(p.Root, "scratch"),
 		Helper:    os.Args[0],
 		Scrubber:  scrub.New(nil),
-		Now:       func() time.Time { return time.Unix(1800000000, 0) },
+		// The tests' remotes are local paths.
+		AllowLocal: true,
+		Now:        func() time.Time { return time.Unix(1800000000, 0) },
 	}
 	return f
 }
@@ -348,5 +350,72 @@ func TestCheckRefusesAPushThisEffectorCannotSpend(t *testing.T) {
 	req.Push.Credential, req.Push.Sign = "github.com/ourorg/", false
 	if msg := f.runner.Check(req); !strings.Contains(msg, "not under") {
 		t.Fatalf("got %q", msg)
+	}
+}
+
+// design 6: "If it cannot pair cleanly: `diverged`, nothing pushed" — with `force` too. Force
+// replaces a remote branch that moved; it never stands in for a pairing.
+func TestASignedForcePushThatCannotPairIsDivergedAndPushesNothing(t *testing.T) {
+	f := newFixture(t, "ssh")
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	first := f.push(true, nil)
+	if first.Outcome != wire.OutcomePushed {
+		t.Fatalf("first: %+v", first)
+	}
+	gittest.Git(t, f.pod.Tree, "commit", "-q", "--amend", "-m", "reworded")
+	req := f.request(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+	req.Push.Force = true
+	out := f.runner.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomeDiverged {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != first.Push.Published {
+		t.Fatal("the remote moved")
+	}
+}
+
+// Nothing unsigned leaves: every commit the remote lacks is one the call signed. A merge whose
+// second parent is an Agent commit that the pair does not map would carry that unsigned commit
+// to the remote; the push is `diverged` instead.
+func TestASignedPushThatWouldPublishAnUnsignedCommitIsDiverged(t *testing.T) {
+	f := newFixture(t, "ssh")
+	one := f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	two := f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+	first := f.push(true, nil)
+	if first.Outcome != wire.OutcomePushed {
+		t.Fatalf("first: %+v", first)
+	}
+	// The sync did not run. The Agent writes a merge of its tip and its own first commit.
+	tree := gittest.Git(t, f.pod.Tree, "rev-parse", two+"^{tree}")
+	merge := gittest.Git(t, f.pod.Tree, "commit-tree", tree, "-p", two, "-p", one, "-m", "merge")
+	gittest.Git(t, f.pod.Tree, "update-ref", "refs/heads/"+f.pod.Branch, merge)
+	out := f.push(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+	if out.Outcome != wire.OutcomeDiverged || !strings.Contains(out.Reason, "unsigned") {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != first.Push.Published {
+		t.Fatal("the remote moved")
+	}
+	if err := exec.Command("git", "--git-dir="+f.pod.Remote, "cat-file", "-e", one).Run(); err == nil {
+		t.Fatal("the Agent's unsigned commit reached the remote")
+	}
+}
+
+// A local url is never pushed to outside the tests: git's local transport runs that repository's
+// config and hooks, and a local path in the pod can be the Agent's own repository.
+func TestAPushToALocalPathIsRefusedOutsideTheTests(t *testing.T) {
+	f := newFixture(t, "")
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	f.pod.Plant()
+	f.runner.AllowLocal = false
+	out := f.push(false, nil)
+	if out.Outcome != wire.OutcomeRejected || !strings.Contains(out.Reason, "local path") {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != "" {
+		t.Fatal("something was pushed")
+	}
+	if ran := f.pod.Ran(); len(ran) != 0 {
+		t.Fatalf("planted programs ran: %v", ran)
 	}
 }

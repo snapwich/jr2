@@ -95,11 +95,12 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   ones (`encodeURI`), or a path's characters, a form's `+` for a space, Go's query and path escapes, each in upper and
   lower hex; JSON with or without `\/`, with or without `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026`, with or without
   every non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u` forms, U+2028 and U+2029 as `\u2028` and `\u2029`
-  or as they are, and `\u` hex in either case. A match becomes `[secret:<name>]`. A body is scrubbed as it streams,
-  across chunk borders, with a window one byte shorter than the longest form. The Effector refuses to start with a
-  secret shorter than 8 characters, and names it: a shorter one would match ordinary text. `jr2 up` refuses a short one
-  earlier, a literal and a value in the user's own Secret alike (see the secrets list below); the Effector's refusal is
-  for a Secret edited after the converge.
+  or as they are, and `\u` hex in either case. A match becomes `[secret:<name>]`. A body, and a credentialed command's
+  stream, is scrubbed as it streams, across chunk borders, with a window one byte shorter than the longest form — and
+  before it is bounded: a secret that straddles the cut to the tail was replaced whole before the cut. The Effector
+  refuses to start with a secret shorter than 8 characters, and names it: a shorter one would match ordinary text.
+  `jr2 up` refuses a short one earlier, a literal and a value in the user's own Secret alike (see the secrets list
+  below); the Effector's refusal is for a Secret edited after the converge.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
   trailing `\n` or `\r\n` is taken off, as the Custodian does. A credentialed command names what it needs under `env`,
   in two forms: `secret("x")` gives the value, `secret("x").path` the file's path; there is no `files:` option. A push

@@ -30,6 +30,8 @@ import (
 func TestMain(m *testing.M) {
 	if os.Getenv("JR2_EFFECTOR_TEST_MAIN") == "1" {
 		os.Args = os.Args[:1]
+		// The tests' remotes are local paths.
+		allowLocalRemotes = true
 		logger := log.New(os.Stdout, "", 0)
 		if err := run(logger); err != nil {
 			logger.Printf("jr2.effector action=exit reason=%q", err.Error())

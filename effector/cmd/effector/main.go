@@ -48,6 +48,11 @@ import (
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
+// allowLocalRemotes lets a push go to a local path. Only this binary's own tests set it (a local
+// remote is the tests' remote): nothing in the built binary can, so git's local transport — which
+// runs the remote repository's config and hooks — never runs in a pod.
+var allowLocalRemotes bool
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "git-credential" {
 		os.Exit(pushkind.Helper(os.Args[2:], os.Stdin, os.Stdout))
@@ -189,9 +194,12 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 	}
 	repos := env("JR2_EFFECTOR_REPOS", "/repos")
 	r.Push = &pushkind.Runner{Config: config, WorkRoot: work, ReposRoot: repos, GitRoot: gitDir,
-		Scratch: filepath.Join(scratch, "push"), Helper: self, CAFile: os.Getenv("JR2_CA_FILE"), Scrubber: scrubber}
+		Scratch: filepath.Join(scratch, "push"), Helper: self, CAFile: os.Getenv("JR2_CA_FILE"), Scrubber: scrubber,
+		AllowLocal: allowLocalRemotes}
+	// A credentialed command's PATH is this container's own, as its image set it: the tools are the
+	// author's (ADR-0068).
 	r.Command = &commandkind.Runner{Secrets: held, SecretsDir: secretsDir, WorkRoot: work, ReposRoot: repos,
-		Scratch: filepath.Join(scratch, "command"), Scrubber: scrubber}
+		Scratch: filepath.Join(scratch, "command"), Scrubber: scrubber, Path: os.Getenv("PATH")}
 	return r, nil
 }
 

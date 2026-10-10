@@ -67,12 +67,15 @@ Binding. An Effect that holds a secret runs in an Effector
   input names (`{ sha }`, one a Gate approved). That commit is checked out into a fresh scratch of the Effect's own by
   the push's import procedure (below), so the Agent's uncommitted edits are never seen; the answer carries `dirty: true`
   beside the output when the Worktree held some (a status in jr2's clean repository over a copy of the Worktree's index,
+  against the Worktree's own HEAD — never the pin, so the commits the Agent made after an approved one are not edits —
   read as data; when it cannot tell, it says dirty). The child's env is what the author named — a secret's value, or its
-  file's path — plus `PATH` and `HOME`, and nothing else; `HOME` is the scratch's, and the scratch is removed once the
-  outcome is read. Its output is scrubbed (ADR-0068). jr2 claims three things for it, not the push's fourth: the Agent
-  never reads or spends the secret (a container it cannot exec in); the tool sees a pinned commit, not the live
-  Worktree; the output is scrubbed. The Agent's files are the author's choice to run — a tool's plugins, a `local-exec`,
-  a `credential_process` — so "no program the Agent's files name runs" is not claimed for it.
+  file's path — plus `PATH` and `HOME`, and nothing else; `PATH` is the Effector container's own, as its image set it
+  (the tools are the author's), and `argv[0]` is looked up there; `HOME` is the scratch's, and the scratch is removed
+  once the outcome is read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). jr2 claims
+  three things for it, not the push's fourth: the Agent never reads or spends the secret (a container it cannot exec
+  in); the tool sees a pinned commit, not the live Worktree; the output is scrubbed. The Agent's files are the author's
+  choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files name runs"
+  is not claimed for it.
 - **An `upload` is an `http` definition whose body is a Worktree file.**
   `upload({ method?, url, headers?, auth?, input?, file, contentType?, slot?, timeout?, maxBody?, idempotent? })`:
   `file(input)` returns the file's path relative to the Repo Slot's Worktree (and path segments, as `request` gives
@@ -89,14 +92,16 @@ Binding. An Effect that holds a secret runs in an Effector
   opened beneath with no symlink, bounded); it imports the Agent's objects as data — one `pack-objects` over the Agent's
   object store with a deadline (a FIFO in place of an object blocks an open forever), `index-pack --strict`, and a
   connectivity check — borrowing only from the node's Repo cache; and it pushes `<commit>:refs/heads/<branch>` to the
-  Binding url, never to a remote of the Agent's config. So no config, hook, attribute or program of the Agent's runs; a
-  test plants each in the Agent's repository and proves none ran. A token goes Basic through a credential helper only,
-  and the helper is the Effector binary (`effector git-credential`), which reads the token's file when git asks; an ssh
-  key is copied into the call's directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked
-  strictly. The commit is pinned when the push starts: the Agent's branch tip, or with `pin` the commit the input names
-  (`{ sha }`); the Effector's first answer names it, and it is written to the intent row. A pinned commit the Agent
-  pruned fails the import and is never substituted. `squash` (built with `sign` only) makes one commit with the input's
-  `{ message }`; `force` replaces what the remote holds.
+  Binding url, never to a remote of the Agent's config, and never to a local path (git's local transport runs that
+  repository's config and hooks, and a path in the pod can be the Agent's own repository; only the binary's tests can
+  allow one). So no config, hook, attribute or program of the Agent's runs; a test plants each in the Agent's repository
+  and proves none ran. A token goes Basic through a credential helper only, and the helper is the Effector binary
+  (`effector git-credential`), which reads the token's file when git asks; an ssh key is copied into the call's
+  directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The commit is pinned when
+  the push starts: the Agent's branch tip, or with `pin` the commit the input names (`{ sha }`); the Effector's first
+  answer names it, and it is written to the intent row. A pinned commit the Agent pruned fails the import and is never
+  substituted. `squash` (built with `sign` only) makes one commit with the input's `{ message }`; `force` replaces what
+  the remote holds.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The
@@ -104,13 +109,16 @@ Binding. An Effect that holds a secret runs in an Effector
   read-only fallback pairs the published commits with the Agent's — `pair`, the ledger's last push (its published commit
   and its source), then `cherry`, each published commit after the merge base paired with one Agent commit by a stable
   patch-id, author line and message (a merge by its tree and non-first parents) — and when nothing pairs cleanly the
-  push is `diverged` and nothing is pushed. Every commit the remote lacks must be one the call signed, or the push is
-  `diverged`. `pushed` carries the published commit, its source, what the remote held before, how the new commits were
-  found (`ancestry | pair | cherry | force`), `unchanged` when the remote already held it, and the signed commits as a
-  bundle (commit objects only) for the sync step; the bundle never reaches the Machine. The Agent is never told to
-  rebase: a rebase repair loses a reworded message and duplicates empty commits and merges. A side branch the Agent made
-  before the push and merges later is signed again, so a duplicate signed commit can be published — with an ssh key too,
-  because the committer date is the Effector's clock and a second signing is a second commit.
+  push is `diverged` and nothing is pushed — with `force` too: `force` replaces a remote branch that moved, and never
+  stands in for a pairing. Every commit the remote lacks must be one the call signed, or the push is `diverged`.
+  `pushed` carries the published commit, its source, what the remote held before, how the new commits were found
+  (`ancestry | pair | cherry`), `unchanged` when the remote already held it, and the signed commits as a bundle for the
+  sync step (`git bundle create` of the signed tip, with the Agent's tip as its prerequisite: the signed commits, and
+  the trees and blobs git adds beside them, which the Agent's store may already hold); the bundle never reaches the
+  Machine. The Agent is never told to rebase: a rebase repair loses a reworded message and duplicates empty commits and
+  merges. A side branch the Agent made before the push and merges later is signed again, so a duplicate signed commit
+  can be published — with an ssh key too, because the committer date is the Effector's clock and a second signing is a
+  second commit.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing it started outlives it. A bounded tail (default 4096 characters) is the
   output; the full stream goes to the run's feed (Instance-token band).

@@ -61,6 +61,10 @@ type Runner struct {
 	Now func() time.Time
 	// ImportDeadline bounds every read of the Agent's objects. Default 120 s.
 	ImportDeadline time.Duration
+	// AllowLocal lets a push go to a local path — the tests' remotes, and nothing else. git's local
+	// transport runs the remote repository's own config and hooks, and a local path in the pod can
+	// be the Agent's repository, so outside the tests a local url is refused.
+	AllowLocal bool
 }
 
 // Check names what makes a push a defect of jr2 or config, or "": a credential the Effector's
@@ -221,7 +225,11 @@ func (c *call) credential() ([]string, string, error) {
 		}
 		return nil, "ssh", nil
 	case gitclean.SchemeLocal:
-		// A local repository: no credential crosses. Used by the tests' remotes.
+		// A local repository: no credential crosses. Only the tests' remotes are one (AllowLocal).
+		if !c.r.AllowLocal {
+			return nil, "", errors.New("the url is a local path, which jr2 never pushes to: git's local transport " +
+				"runs that repository's config and hooks")
+		}
 		return nil, "file", nil
 	}
 	return nil, "", errors.New("the url's scheme is not one jr2 pushes over")
@@ -473,8 +481,8 @@ func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signe
 }
 
 // rangeOf finds what to sign: the commits after `from`, and which Agent commit stands for the
-// published tip (written into mapped) — by ancestry, the ledger's pair, cherry, or the author's
-// force. A non-nil signed or output ends the push there.
+// published tip (written into mapped) — by ancestry, the ledger's pair, or cherry; none of them is
+// `diverged`, with or without `force`. A non-nil signed or output ends the push there.
 func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 	mapped map[string]string) ([]string, string, *signed, *wire.Output) {
 	repo := c.repo
@@ -501,11 +509,9 @@ func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 			case ok:
 				mapped[x] = pub
 				from, via = []string{x}, "cherry"
-			case c.spec.Force:
-				// The author forces: what the remote holds is replaced, and every commit of the
-				// Agent's that it does not hold is signed.
-				from, via = []string{pub}, "force"
 			default:
+				// Whatever `force` says: a signed push that cannot pair cleanly publishes nothing
+				// (design 6). `force` replaces a remote whose branch moved, never a pairing.
 				d, o := diverged(sha, pub, fmt.Sprintf("the published commit %s is not in the history of the Agent's %s, "+
 					"and no fallback pairs it", short(pub), short(sha)))
 				return nil, "", d, o

@@ -11,7 +11,8 @@
 // program the Agent's files name runs" is not claimed here.
 //
 // The child's env is what the author named — a secret's value, or its file's path — plus PATH and
-// HOME, and nothing else: not the Effector's key, not another secret. HOME is the scratch's own.
+// HOME, and nothing else: not the Effector's key, not another secret. PATH is the Effector's own,
+// which its image set (the tools are the author's); HOME is the scratch's own.
 // The scratch is removed once the outcome is read. Every outcome is output: `exited`, `timeout`,
 // `killed`, `unknown`.
 package commandkind
@@ -27,6 +28,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -46,6 +48,9 @@ type Runner struct {
 	// this Effector's own writable dir.
 	WorkRoot, ReposRoot, Scratch string
 	Scrubber                     *scrub.Scrubber
+	// Path is the child's PATH, and where argv[0] is looked up: the Effector's own, as its image
+	// set it. Default gitclean.Path.
+	Path string
 	// ImportDeadline bounds every read of the Agent's objects. Default 120 s.
 	ImportDeadline time.Duration
 }
@@ -97,10 +102,13 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 	if deadline == 0 {
 		deadline = 120 * time.Second
 	}
-	if err := repo.Import(ctx, filepath.Join(r.WorkRoot, spec.Repo.GitDir, "objects"), sha, have, deadline); err != nil {
+	objects := filepath.Join(r.WorkRoot, spec.Repo.GitDir, "objects")
+	if err := repo.Import(ctx, objects, sha, have, deadline); err != nil {
 		return unknown(err.Error())
 	}
-	dirty := r.dirty(ctx, repo, spec)
+	dirty := r.dirty(ctx, repo, spec, func(head string) error {
+		return repo.Import(ctx, objects, head, append(slices.Clone(have), sha), deadline)
+	})
 	tree := filepath.Join(repo.Work, "tree")
 	if err := os.Mkdir(tree, 0o700); err != nil {
 		return unknown(err.Error())
@@ -109,7 +117,11 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 		return unknown("the pinned commit could not be checked out")
 	}
 	home := filepath.Join(repo.Work, "home")
-	env := []string{"PATH=" + gitclean.Path, "HOME=" + home}
+	path := r.Path
+	if path == "" {
+		path = gitclean.Path
+	}
+	env := []string{"PATH=" + path, "HOME=" + home}
 	for _, name := range slices.Sorted(maps.Keys(spec.Env)) {
 		ref := spec.Env[name]
 		if ref.Path {
@@ -118,20 +130,22 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 			env = append(env, name+"="+r.Secrets[ref.Secret])
 		}
 	}
-	out := execute(ctx, spec.Argv, tree, env, timeout, spec.Tail)
+	out := execute(ctx, spec.Argv, tree, env, path, timeout, spec.Tail, r.Scrubber)
 	if out.Command != nil {
 		out.Command.Dirty = dirty
 	}
 	return out
 }
 
-// execute runs argv in its own process group; on its timeout the group is killed.
-func execute(ctx context.Context, argv []string, dir string, env []string, timeout time.Duration,
-	tailLen int) wire.Output {
+// execute runs argv in its own process group; on its timeout the group is killed. The stream is
+// scrubbed as it arrives, across chunk borders, BEFORE it is cut to its tail: a secret that
+// straddles the cut was replaced whole before the cut could split it.
+func execute(ctx context.Context, argv []string, dir string, env []string, path string, timeout time.Duration,
+	tailLen int, scrubber *scrub.Scrubber) wire.Output {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	if !strings.Contains(argv[0], "/") {
-		// The child's PATH is what it was given, not the Effector's.
-		if p, err := lookPath(argv[0], gitclean.Path); err == nil {
+		// Looked up in the PATH the child is given.
+		if p, err := lookPath(argv[0], path); err == nil {
 			cmd.Path = p
 			cmd.Err = nil
 		}
@@ -139,9 +153,8 @@ func execute(ctx context.Context, argv []string, dir string, env []string, timeo
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var stream tailBuffer
-	stream.limit = 4 * tailLen
-	cmd.Stdout, cmd.Stderr = &stream, &stream
+	stream := &tailBuffer{limit: 4 * tailLen, scrub: scrubber.Stream()}
+	cmd.Stdout, cmd.Stderr = stream, stream
 	if err := cmd.Start(); err != nil {
 		return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Code: new(127),
 			Tail: fmt.Sprintf("%s: %v\n", argv[0], err)}}
@@ -206,22 +219,36 @@ func lookPath(name, path string) (string, error) {
 	return "", exec.ErrNotFound
 }
 
-// tailBuffer keeps the end of the stream, bounded.
+// tailBuffer keeps the end of the stream, bounded, scrubbed before it is bounded. Stdout and
+// stderr are one writer, which exec serializes only when they are the same value: it takes a
+// lock all the same.
 type tailBuffer struct {
+	mu    sync.Mutex
 	buf   []byte
 	limit int
+	scrub *scrub.Stream
 }
 
 func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.keep(t.scrub.Write(p))
+	return len(p), nil
+}
+
+func (t *tailBuffer) keep(p []byte) {
 	t.buf = append(t.buf, p...)
 	if over := len(t.buf) - t.limit; t.limit > 0 && over > 0 {
 		t.buf = t.buf[over:]
 	}
-	return len(p), nil
 }
 
-// tail is the last n characters of the stream, as valid UTF-8.
+// tail is the last n characters of the stream, as valid UTF-8: what the scrubber held back is
+// scrubbed and kept first.
 func (t *tailBuffer) tail(n int) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.keep(t.scrub.Flush())
 	s := strings.ToValidUTF8(string(t.buf), string(utf8.RuneError))
 	if r := []rune(s); len(r) > n {
 		s = string(r[len(r)-n:])
@@ -230,11 +257,14 @@ func (t *tailBuffer) tail(n int) string {
 }
 
 // dirty says whether the Agent's Worktree held edits that were not committed: a `git status`
-// in the clean repository, over a copy of the Worktree's index, read as data. The clean config
-// names no filter, no fsmonitor and no hook, so the Worktree's attributes name programs that do
-// not exist here. When it cannot tell, it says dirty: the answer must not claim a clean tree it
-// did not see.
-func (r *Runner) dirty(ctx context.Context, repo *gitclean.Repo, spec *wire.CommandSpec) bool {
+// in the clean repository, over a copy of the Worktree's index, against the Worktree's OWN HEAD
+// (read as data, and imported by importHead when it is not the pinned commit) — never against the
+// pin, so the commits the Agent made after an approved one are not edits. The clean config names
+// no filter, no fsmonitor and no hook, so the Worktree's attributes name programs that do not
+// exist here. When it cannot tell, it says dirty: the answer must not claim a clean tree it did
+// not see.
+func (r *Runner) dirty(ctx context.Context, repo *gitclean.Repo, spec *wire.CommandSpec,
+	importHead func(head string) error) bool {
 	index := filepath.Join(repo.Dir, "index")
 	// The checkout that follows writes an index of its own.
 	defer func() { _ = os.Remove(index) }()
@@ -259,6 +289,15 @@ func (r *Runner) dirty(ctx context.Context, repo *gitclean.Repo, spec *wire.Comm
 	if err != nil || !strings.HasPrefix(rel, "worktrees/") || strings.Contains(rel, "..") {
 		return true
 	}
+	head, err := worktreeHead(gitDir, rel)
+	if err != nil {
+		return true
+	}
+	if head != spec.Pin {
+		if err := importHead(head); err != nil {
+			return true
+		}
+	}
 	raw, err := beneath.ReadSmall(gitDir, rel+"/index", 512<<20)
 	if err != nil {
 		return true
@@ -266,7 +305,7 @@ func (r *Runner) dirty(ctx context.Context, repo *gitclean.Repo, spec *wire.Comm
 	if err := os.WriteFile(index, raw, 0o600); err != nil {
 		return true
 	}
-	if _, err := repo.Git(ctx, nil, "update-ref", "--no-deref", "HEAD", spec.Pin); err != nil {
+	if _, err := repo.Git(ctx, nil, "update-ref", "--no-deref", "HEAD", head); err != nil {
 		return true
 	}
 	out, err := repo.Git(ctx, nil, "--work-tree="+filepath.Join(r.WorkRoot, spec.Repo.Worktree),
@@ -276,4 +315,21 @@ func (r *Runner) dirty(ctx context.Context, repo *gitclean.Repo, spec *wire.Comm
 		return true
 	}
 	return len(bytes.TrimSpace(out)) > 0
+}
+
+// worktreeHead reads the Worktree's HEAD as data, from its private git dir: a commit id, or the
+// branch it names, read as ReadBranch reads one.
+func worktreeHead(gitDir *os.File, private string) (string, error) {
+	raw, err := beneath.ReadSmall(gitDir, private+"/HEAD", 512)
+	if err != nil {
+		return "", err
+	}
+	line := strings.TrimSpace(string(raw))
+	if ref, ok := strings.CutPrefix(line, "ref: refs/heads/"); ok {
+		return gitclean.ReadBranch(gitDir, ref)
+	}
+	if gitclean.IsSha(line) {
+		return line, nil
+	}
+	return "", errors.New("the Worktree's HEAD names no commit")
 }

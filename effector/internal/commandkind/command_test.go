@@ -155,3 +155,69 @@ func TestACommandsTimeoutKillsItsGroupAndASignalIsKilled(t *testing.T) {
 		t.Fatalf("got %+v", out)
 	}
 }
+
+// A secret that straddles the cut to the tail is scrubbed whole: the stream is scrubbed before it
+// is cut (ADR-0068's scrub claim). With the cut first, the secret's last characters left.
+func TestASecretThatStraddlesTheTailsCutLeavesNoPart(t *testing.T) {
+	p, r := setup(t)
+	p.Commit("one", nil)
+	req := request(t, p, `printf '%s' "$AWS_SECRET"; printf 'abcdefghijklmnopqrst'`, "")
+	req.Command.Tail = 30
+	out := r.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomeExited {
+		t.Fatalf("got %+v", out)
+	}
+	tail := out.Command.Tail
+	// Any end of the secret of 4 characters or more is a leak.
+	for i := 0; i+4 <= len(secretValue); i++ {
+		if strings.Contains(tail, secretValue[i:]) {
+			t.Fatalf("the tail holds the secret's end %q: %q", secretValue[i:], tail)
+		}
+	}
+	if !strings.HasSuffix(tail, "abcdefghijklmnopqrst") {
+		t.Fatalf("the tail lost the output's end: %q", tail)
+	}
+}
+
+// With `pin` naming an earlier approved commit and a clean Worktree, the answer is not dirty: the
+// Worktree is compared with its own HEAD, never with the pin.
+func TestAPinnedCommandOverACleanWorktreeIsNotDirty(t *testing.T) {
+	p, r := setup(t)
+	first := p.Commit("one", map[string]string{"a.txt": "one\n"})
+	p.Commit("two", map[string]string{"b.txt": "two\n"})
+	out := r.Run(context.Background(), request(t, p, "ls", first))
+	if out.Outcome != wire.OutcomeExited || out.Command.Dirty {
+		t.Fatalf("a clean Worktree read dirty: %+v %+v", out, out.Command)
+	}
+	if strings.Contains(out.Command.Tail, "b.txt") {
+		t.Fatalf("the run saw a commit after the pin: %q", out.Command.Tail)
+	}
+	if err := os.WriteFile(filepath.Join(p.Tree, "b.txt"), []byte("edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := r.Run(context.Background(), request(t, p, "true", first)); !out.Command.Dirty {
+		t.Fatal("an uncommitted edit after the pin was not dirty")
+	}
+}
+
+// The child's PATH is the Effector's own (its image's), and argv[0] is looked up there: a tool
+// the author's image keeps outside the usual places runs.
+func TestACommandFindsItsToolInTheEffectorsPath(t *testing.T) {
+	p, r := setup(t)
+	p.Commit("one", nil)
+	bin := filepath.Join(p.Root, "tools")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "deploytool"), []byte("#!/bin/sh\necho deployed \"$PATH\"\n"),
+		0o700); err != nil {
+		t.Fatal(err)
+	}
+	r.Path = bin + ":/usr/bin:/bin"
+	req := request(t, p, "", "")
+	req.Command.Argv = []string{"deploytool"}
+	out := r.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomeExited || *out.Command.Code != 0 || out.Command.Tail != "deployed "+r.Path+"\n" {
+		t.Fatalf("got %+v %+v", out, out.Command)
+	}
+}
