@@ -149,6 +149,8 @@ test("two Repo Slots: each push's pair and its sync re-run are its own slot's, n
   });
   const rows = Object.values(await ledger(rig.store, rig.runId)).filter((r) => r.state === "settled");
   assert.deepEqual(rows.map((r) => (r as { repo?: string }).repo).sort(), ["app", "lib"]);
+  // The third push is still followed: stop the run, so nothing polls once the test is done.
+  await rig.host.stop(rig.runId);
 });
 
 test("a sync that never unbundled runs again before the next push with the bundle: the row keeps it past the save until a sync finishes", async () => {
@@ -235,6 +237,7 @@ test("a signed push that published nothing new (the pair mapped the published ti
     assert.equal(out.sync, "synced", `bundle ${bundle}`);
     assert.equal(syncs.calls.length, 1);
     assert.equal(syncs.calls[0]!.bundle, bundle);
+    await rig.host.stop(rig.runId);
   }
 });
 
@@ -305,4 +308,5 @@ test("D1 for the Sandbox kinds: its state exits while it runs — polling stops,
   const calls = fake.calls.length;
   await new Promise((r) => setTimeout(r, 120));
   assert.equal(fake.calls.length, calls, "nobody polls it any more");
+  await rig.host.stop(rig.runId);
 });
