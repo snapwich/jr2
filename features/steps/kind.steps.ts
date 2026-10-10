@@ -34,7 +34,7 @@ import {
   repoKey,
   type RepoStatus,
 } from "@jr2/orchestrator";
-import { ensureSeed, pushToSeed, SEED_URL } from "./seed.ts";
+import { ensureSeed, pushRemoteTip, pushToSeed, seedKeys, SEED_URL, verifyOnPushRemote } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -2612,5 +2612,205 @@ Then(
     assert.match(output.tail ?? "", /report of the run\n$/, "the pinned commit's file");
     assert.doesNotMatch(output.tail ?? "", /edited, not committed/);
     assert.equal(output.dirty, true);
+  },
+);
+
+// --- a push from the Sandbox Effector (ADR-0067, ADR-0068) -----------------------------------------
+
+/**
+ * The scenario's namespace holds the two Secrets the push remote's `git.credentials` entry names
+ * (`kind-instance/jr2.config.ts`): the deploy key the seed's sshd authorizes, with its known_hosts
+ * line, and the signing key. Written before `jr2 up`, which then finds the deploy key and
+ * generates none; read from the seed, which made them in-cluster.
+ */
+Given("the seed's push remote trusts this scenario's keys", async function (this: E2EWorld): Promise<void> {
+  await ensureSeed();
+  const keys = await seedKeys();
+  assert.ok(this.namespace, "a @kind scenario has its namespace set in setupKind");
+  const objects = {
+    apiVersion: "v1",
+    kind: "List",
+    items: [
+      { apiVersion: "v1", kind: "Namespace", metadata: { name: this.namespace } },
+      {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: "jr2-e2e-push-key", namespace: this.namespace },
+        stringData: { identity: keys.deploy, "identity.pub": keys.deployPub, known_hosts: keys.knownHosts },
+      },
+      {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: "jr2-e2e-sign-key", namespace: this.namespace },
+        stringData: { identity: keys.sign, "identity.pub": keys.signPub },
+      },
+    ],
+  };
+  await kubectlInput(this, ["apply", "-f", "-"], JSON.stringify(objects));
+});
+
+type PushOut = {
+  outcome?: string;
+  published?: string;
+  source?: string;
+  via?: string;
+  sync?: string;
+  syncReason?: string;
+  reason?: string;
+};
+type PushedRun = {
+  first: PushOut | null;
+  second: PushOut | null;
+  before: { tail?: string } | null;
+  after: { tail?: string } | null;
+};
+
+Then(
+  "the signed push published signed copies on the remote, which verify with the signer's key",
+  async function (this: E2EWorld): Promise<void> {
+    const run = (await httpOutput(this)) as unknown as PushedRun;
+    const first = run.first;
+    assert.equal(first?.outcome, "pushed", JSON.stringify(run));
+    assert.ok(first.published && first.source && first.published !== first.source, "a signed copy, a new id");
+    assert.equal(await pushRemoteTip(`pushed-${this.marker}`), first.published, "the remote holds the signed commit");
+    const verified = await verifyOnPushRemote(first.published);
+    assert.ok(verified.verified, `the commit does not verify with the allowed signer: ${verified.out}`);
+    assert.equal(
+      verified.who,
+      "jr2 e2e <e2e@jr2.test>|jr2 e2e signer <signer@jr2.test>",
+      "author the Agent's, committer the signer's",
+    );
+  },
+);
+
+/** The sync (ADR-0067): the Agent's branch is the signed commit now, and the Worktree it looks at
+ * is as it was — the same status, the same files, HEAD still the branch. */
+Then(
+  "the sync moved the Agent's branch to the signed commit, and its files, index and HEAD did not change",
+  async function (this: E2EWorld): Promise<void> {
+    const run = (await httpOutput(this)) as unknown as PushedRun;
+    assert.equal(run.first?.sync, "synced", JSON.stringify(run.first));
+    const [statusBefore, filesBefore] = (run.before?.tail ?? "").split("--\n");
+    const [statusAfter, filesAfter, headAfter] = (run.after?.tail ?? "").split("--\n");
+    assert.ok(
+      statusBefore && statusBefore.includes("notes.txt"),
+      `the edit and the untracked file were there: ${run.before?.tail}`,
+    );
+    assert.equal(statusAfter, statusBefore, "git status did not change");
+    assert.equal(filesAfter, filesBefore, "the files did not change");
+    const [head, symbolic] = (headAfter ?? "").trim().split("\n");
+    assert.equal(head, run.first?.published, "HEAD resolves to the signed commit");
+    assert.equal(symbolic, `refs/heads/pushed-${this.marker}`, "HEAD is still the branch");
+  },
+);
+
+Then(
+  "the push after the rewrite is diverged, and the remote still holds the first push",
+  async function (this: E2EWorld): Promise<void> {
+    const run = (await httpOutput(this)) as unknown as PushedRun;
+    assert.equal(run.first?.outcome, "pushed", JSON.stringify(run));
+    assert.equal(run.second?.outcome, "diverged", JSON.stringify(run.second));
+    assert.equal(await pushRemoteTip(`pushed-${this.marker}`), run.first?.published, "nothing was pushed");
+  },
+);
+
+// --- the port takeover (B2) --------------------------------------------------------------------------
+
+/** What a process the Agent can start does with the Effector's port: bind it the moment it is
+ * free, write down every request it gets, and answer each with a signature it cannot make. */
+const TAKEOVER = [
+  String.raw`const net=require("net"),fs=require("fs");const dir="/work/takeover";fs.mkdirSync(dir,{recursive:true});`,
+  String.raw`const answer=(c)=>{const b='{"state":"running"}';c.end("HTTP/1.1 202 Accepted\r\nX-Jr2-Signature: forged\r\n`,
+  String.raw`Content-Type: application/json\r\nContent-Length: "+Buffer.byteLength(b)+"\r\nConnection: close\r\n\r\n"+b);};`,
+  String.raw`const serve=(c)=>{let buf=Buffer.alloc(0);c.on("error",()=>{});c.on("data",(d)=>{buf=Buffer.concat([buf,d]);`,
+  String.raw`const h=buf.indexOf("\r\n\r\n");if(h<0)return;const m=/content-length:\s*(\d+)/i.exec(buf.subarray(0,h).toString());`,
+  String.raw`const want=h+4+(m?Number(m[1]):0);if(buf.length<want)return;`,
+  String.raw`fs.appendFileSync(dir+"/requests.log",buf.subarray(0,want).toString()+"\n=====\n");buf=Buffer.alloc(0);answer(c);});};`,
+  String.raw`const bind=()=>{const s=net.createServer(serve);s.once("error",()=>setTimeout(bind,20));`,
+  String.raw`s.listen(8082,"0.0.0.0",()=>fs.writeFileSync(dir+"/bound",String(Date.now())));};bind();`,
+].join("");
+
+async function sandboxPodOf(world: E2EWorld): Promise<string> {
+  let podName: string | undefined;
+  for (let i = 0; i < 240 && podName === undefined; i++) {
+    const ready = (await sandboxesFor(world)).find((sb) => sb.status?.phase === "Ready");
+    podName = (ready?.status as { podRef?: { name?: string } } | undefined)?.podRef?.name;
+    if (podName === undefined) await sleep(500);
+  }
+  assert.ok(podName, "the run's Sandbox never reported its pod");
+  return podName;
+}
+
+When(
+  "a process in the Harness container takes the Sandbox Effector's port while the Effector is down",
+  { timeout: 180_000 },
+  async function (this: E2EWorld): Promise<void> {
+    // The body holds on its Gate: the Workspace is attached and its Effector is up.
+    await openGate(this);
+    const pod = await sandboxPodOf(this);
+    await kubectlInput(
+      this,
+      ["exec", "-i", `pod/${pod}`, "-c", "harness", "--", "sh", "-c", "cat > /work/takeover.js"],
+      TAKEOVER,
+    );
+    await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "sh",
+      "-c",
+      "setsid node /work/takeover.js > /work/takeover.out 2>&1 < /dev/null &",
+    ]);
+    // The Effector stops (SIGTERM: it drains and exits); its container restarts into a port taken.
+    await kubectl(this, ["exec", `pod/${pod}`, "-c", "effector", "--", "sh", "-c", "kill -TERM 1"]);
+    for (let i = 0; i < 120; i++) {
+      const bound = await kubectl(this, [
+        "exec",
+        `pod/${pod}`,
+        "-c",
+        "harness",
+        "--",
+        "sh",
+        "-c",
+        "cat /work/takeover/bound 2>/dev/null || true",
+      ]);
+      if (bound.trim()) return;
+      await sleep(500);
+    }
+    throw new Error("the takeover never bound the Effector's port");
+  },
+);
+
+When("the held Effect is released", async function (this: E2EWorld): Promise<void> {
+  const gate = await openGate(this);
+  const r = await this.runCli(["send", this.runId!, "--gate", gate.gate, "--event", "go"]);
+  assert.equal(r.code, 0, `jr2 send failed: ${r.stderr}`);
+});
+
+Then(
+  "the takeover got a signed start that carries no secret, and the Effect failed closed",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const output = (await httpOutput(this)) as { outcome?: string; reason?: string; tail?: string };
+    assert.equal(output.outcome, "unknown", JSON.stringify(output));
+    assert.match(output.reason ?? "", /not the Sandbox Effector's/);
+    const pod = await sandboxPodOf(this);
+    const seen = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "cat",
+      "/work/takeover/requests.log",
+    ]);
+    assert.match(seen, /^POST \/effects\//m, "it received the start");
+    assert.match(seen, /x-jr2-signature:/i, "the start was signed");
+    assert.match(seen, /"secret":"echo-token"/, "it names the secret");
+    assert.ok(this.echoToken);
+    assert.equal(leakOf(seen, this.echoToken), undefined, "no form of the secret reached it");
+    assert.equal(leakOf(JSON.stringify(output), this.echoToken), undefined);
   },
 );

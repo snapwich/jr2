@@ -248,7 +248,9 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built
   (`Bearer <value>`, a Basic pair, the url, a header) cannot pass as clean; two replicas and an Orchestrator restart
-  during a call, and a rollout during a call, must give one send.
+  during a call, and a rollout during a call, must give one send; and the port takeover — a process in the Harness
+  container binds a stopped Sandbox Effector's port — must get a signed start that names a secret and holds no value of
+  it, and the Effect must settle `unknown`.
 - **Open gap: the Orchestrator's Role reads Effect secrets.** Its Role can get and list every Secret in its namespace
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), `jr2-instance-effector` and every user Secret a
   `valueFrom` names among them. So a fault that gives code execution in the Orchestrator reaches the Effect secrets

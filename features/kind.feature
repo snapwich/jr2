@@ -223,10 +223,8 @@ Feature: a workspace() run drives a real Sandbox on kind
     the token by value and by `.path`. The provision adds the `effector` container to the pod; the
     Harness container mounts none of its volumes. A credentialed command runs against the pinned
     commit in a scratch of its own, so an uncommitted edit is never seen and the answer says
-    `dirty`. Every string that comes back is scrubbed. Not covered here: a push (the seed serves
-    dumb HTTP and takes no push, and no push-capable remote runs in the tier) and the port takeover
-    (Go and Orchestrator tests show it). These scenarios fault at invoke until the Orchestrator's
-    address for a Sandbox Effector is decided (ADR-0067).
+    `dirty`. Every string that comes back is scrubbed. The Orchestrator reaches the Effector by the
+    headless Service the provision writes beside it, which resolves to the pod's own address.
 
     Scenario: an upload sends a committed Worktree file, and the answer names the secret
       Given the kind instance is serving
@@ -243,6 +241,42 @@ Feature: a workspace() run drives a real Sandbox on kind
       Given the kind instance is serving
       When I start the "effected" workflow in mode "dirty" detached
       Then the credentialed command saw the commit and not the edit, and says dirty
+
+    Scenario: a process that takes the Effector's port gets a signed start it cannot answer, and the Effect fails closed
+      B2. The body holds on its Gate; the step starts a process in the Harness container, as the
+      Agent could, that binds :8082 the moment it is free, then stops the Effector, whose
+      container restarts into a port taken. Released, the credentialed command's start reaches
+      that process: signed, naming the secret, carrying no value of it. Its answer carries no
+      signature the key verifies, so it is no answer: the Effect settles `unknown`.
+      Given the kind instance is serving
+      When I start the "effected" workflow in mode "takeover" detached
+      And a process in the Harness container takes the Sandbox Effector's port while the Effector is down
+      And the held Effect is released
+      Then the takeover got a signed start that carries no secret, and the Effect failed closed
+
+  Rule: a signed push leaves the Sandbox Effector signed, and the sync moves the Agent's branch to it
+    ADR-0067, ADR-0051. The `pushed` workflow binds the seed's push remote over ssh; its
+    `git.credentials` entry names the deploy key the seed's sshd authorizes and the key the
+    Effector signs with, which the scenario writes into its namespace before `jr2 up`. The Effector
+    runs in the workflow's own image (`images/effector`: git and ssh). The remote verifies the
+    published commit with the signing key as the one allowed signer — git's own check, in the
+    pod. After the push the Agent's branch is the signed commit, and the Worktree is as it was.
+    Not covered: a token push over https — the seed serves no https, and its sshd is the one
+    remote that takes a push.
+
+    Scenario: a signed ssh push verifies on the remote, and the sync changes no file
+      Given the seed's push remote trusts this scenario's keys
+      And the kind instance is serving
+      When I start the "pushed" workflow in mode "signed" detached
+      Then the run's Sandbox pod has a Sandbox Effector beside the Agent
+      And the signed push published signed copies on the remote, which verify with the signer's key
+      And the sync moved the Agent's branch to the signed commit, and its files, index and HEAD did not change
+
+    Scenario: a push after the Agent rewrote the pushed commit is diverged, and pushes nothing
+      Given the seed's push remote trusts this scenario's keys
+      And the kind instance is serving
+      When I start the "pushed" workflow in mode "diverged" detached
+      Then the push after the rewrite is diverged, and the remote still holds the first push
 
   Rule: a Sandbox reaped while the orchestrator is down is never silently re-provisioned
 

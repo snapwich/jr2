@@ -254,6 +254,10 @@ Binding. An Effect that holds a secret runs in an Effector
   request is signed for (ADR-0068), and it publishes that address while the pod is not ready, so a restore can ask the
   Effector for an Effect while the Harness beside it restarts. The operator's Service names the Harness's port only and
   is unchanged.
+- The `@kind` tier pushes to a remote of its own: the seed's sshd serves a push remote, and the tier's scenarios push
+  signed over ssh and verify the published commit with the signing key as the one allowed signer, read the Agent's
+  branch and Worktree after the sync, and push again after the Agent amended the pushed commit (`diverged`). A token
+  push over https has no remote there.
 - Not built: a file-body `http`. The Effector serves a Worktree file as an `http` body on the wire, with the opener
   above, and no authoring form names one; `upload` is the one that exists.
 - Owed, not built: an Open argv bound by `customize()`.

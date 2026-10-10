@@ -8,6 +8,10 @@
 //            files of the commit it runs against: the output names the secret and holds no form of it
 //   dirty    the body leaves an edit uncommitted, then the same command: the answer is `dirty`, and
 //            the command saw the commit, not the edit
+//   takeover the body commits, then waits on its `hold` Gate while the step takes the Effector's
+//            port from the Harness container (B2: the Effector is down, a process the Agent could
+//            start binds :8082); the step's answer runs the same command, whose start reaches that
+//            process signed and is answered by it unsigned: the Effect settles `unknown`
 //
 // The echo is the suite's (`steps/seed.ts`); `echo-token` is the tier's one Effect secret, which
 // these Effects place in this Workspace's Sandbox Effector (and the `called` workflow's in the
@@ -31,18 +35,22 @@ const SEED = { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" };
 
 const ECHO = "http://echo.jr2-e2e-seed.svc";
 
-const door = z.object({ mode: z.enum(["upload", "env", "dirty"]), marker: z.string().regex(/^m-[a-z0-9]+$/) });
+const door = z.object({
+  mode: z.enum(["upload", "env", "dirty", "takeover"]),
+  marker: z.string().regex(/^m-[a-z0-9]+$/),
+});
 type Door = z.infer<typeof door>;
 type BodyInput = Workspaced<HostInjectedInput & Door, "app">;
 type BodyContext = BodyInput & { output?: unknown };
 
 const unused = defineEvent({ name: "noop", input: z.object({}) });
+const go = defineEvent({ name: "go", input: z.object({}) });
 const token = secret("echo-token");
 const GIT = ["-c", "user.name=jr2 e2e", "-c", "user.email=e2e@jr2.test"];
 
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
-  events: [unused],
+  events: [unused, go],
   actors: {
     // In the Harness container: the Agent's own work, committed.
     commit: command([
@@ -76,11 +84,13 @@ const body = jr2Setup({
         onDone: [
           { guard: ({ context }) => context.mode === "upload", target: "uploading" },
           { guard: ({ context }) => context.mode === "dirty", target: "editing" },
+          { guard: ({ context }) => context.mode === "takeover", target: "holding" },
           { target: "revealing" },
         ],
       },
     },
     editing: { invoke: { src: "edit", onDone: "revealing" } },
+    holding: { invoke: { src: "gate", id: "hold" }, on: { go: "revealing" } },
     uploading: {
       invoke: {
         src: "send",

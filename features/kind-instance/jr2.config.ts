@@ -22,7 +22,22 @@ import { defineConfig } from "@jr2/orchestrator";
 
 export default defineConfig({
   name: "jr2-e2e-kind",
-  git: { credentials: [{ match: "seed.jr2-e2e-seed.svc/" }] },
+  git: {
+    credentials: [
+      { match: "seed.jr2-e2e-seed.svc/" },
+      // The seed's push remote (ADR-0067, ADR-0051): `push.git` over ssh, the `pushed` workflow's
+      // Binding. The deploy key clones and pushes (no `push` field); `sign` names the key the
+      // Sandbox Effector signs with. A scenario that runs `pushed` writes both Secrets from the
+      // seed's keys before `jr2 up` (`steps/kind.steps.ts`); any other scenario's `jr2 up`
+      // generates a deploy key nothing authorizes, so that namespace's cache of `push.git` fails
+      // its probe and serves anyway (ADR-0048), as `unsynced`'s does.
+      {
+        match: "seed.jr2-e2e-seed.svc/srv/",
+        sshKey: "jr2-e2e-push-key",
+        sign: { sshKey: "jr2-e2e-sign-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
+      },
+    ],
+  },
   // The tier's one Effect secret (ADR-0068): the `called` and `asked` workflows' http Effects name
   // it, so it is placed in the Instance Effector, and the `effected` workflow's upload and
   // credentialed command name it, so it is placed in that Workspace's Sandbox Effector — no

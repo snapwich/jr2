@@ -18,6 +18,14 @@
 // the pusher's own (`pushToSeed`), so parallel workers sharing this one repository never race for
 // a ref, and `main` — the branch every kind workflow's Binding names — is never moved under a
 // Sandbox that already cloned it.
+//
+// Since ADR-0067 a push LEAVES a pod for the seed: a Sandbox Effector pushes over ssh. The same
+// Deployment runs sshd (from the git image, which carries it) as a third container on the same
+// volume, serving `push.git` to the user `git`, port 22 of the same Service. Its keys are made
+// in-cluster by an init container, once per pod — the host key, the deploy key the user `git`
+// authorizes, and a signing key — so the four `--parallel` workers that apply this manifest at
+// once never race to make them; a scenario reads them back (`seedKeys`) into its own namespace's
+// Secrets. They are test keys for a test remote, and nothing else trusts them.
 
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
@@ -27,6 +35,10 @@ const exec = promisify(execFile);
 
 /** The seed Repo's url — the identity every kind workflow binds and the fence admits. */
 export const SEED_URL = "http://seed.jr2-e2e-seed.svc/app.git";
+/** The seed's push remote (ADR-0067): `push.git`, the same content as `app.git`, over ssh. */
+export const PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git";
+/** The host the push remote's known_hosts line names. */
+const PUSH_HOST = "seed.jr2-e2e-seed.svc";
 // Two more urls on the same host appear in kind.feature, spelled there rather than here because
 // the scenarios read them the way a user types them: `other.git` below, an identity no workflow
 // binds (the per-run Repo `jr2 gc` may evict, ADR-0051); and `missing.git`, which nothing serves
@@ -91,6 +103,8 @@ export function makeRepoScript(srv = "/srv", work = "/tmp/w"): string {
     `git -C ${work} add -A`,
     `git -C ${work} -c user.email=e2e@jr2 -c user.name=e2e commit -qm init`,
     serve("app.git"),
+    // The push remote (ADR-0067): the same content, its own identity, written by pushes over ssh.
+    serve("push.git"),
     // A SECOND repository, same content, its own identity (ADR-0051): every kind workflow binds
     // `app.git`, so in every scenario's namespace that Repo is bound and `jr2 gc` never evicts it.
     // The eviction scenario needs a Repo nothing binds, and a per-run url spelling `app.git`
@@ -111,6 +125,26 @@ export function makeRepoScript(srv = "/srv", work = "/tmp/w"): string {
 }
 
 const MAKE_REPO = makeRepoScript();
+
+/** The init container's keys: made once per pod, in its own volume, never on the host. */
+const MAKE_KEYS = [
+  "mkdir -p /keys",
+  "[ -f /keys/host ] || ssh-keygen -q -t ed25519 -N '' -C seed-host -f /keys/host",
+  "[ -f /keys/deploy ] || ssh-keygen -q -t ed25519 -N '' -C jr2-e2e-deploy -f /keys/deploy",
+  "[ -f /keys/sign ] || ssh-keygen -q -t ed25519 -N '' -C signer@jr2.test -f /keys/sign",
+].join(" && ");
+
+/** The ssh seat: the user `git`, the deploy key authorized, `push.git` its own, sshd in front. */
+const SERVE_SSH = [
+  "id git >/dev/null 2>&1 || adduser -D -u 1001 -s /bin/sh git",
+  // Alpine's adduser locks the account (`!`), and sshd refuses a locked account even for a key.
+  "sed -i 's/^git:!/git:*/' /etc/shadow",
+  "mkdir -p /home/git/.ssh",
+  "cp /keys/deploy.pub /home/git/.ssh/authorized_keys",
+  "chown -R git:git /home/git /srv/push.git",
+  "chmod 700 /home/git/.ssh && chmod 600 /home/git/.ssh/authorized_keys",
+  "exec /usr/sbin/sshd -D -e -h /keys/host -o PasswordAuthentication=no -o PermitRootLogin=no -o AllowUsers=git",
+].join(" && ");
 
 const MANIFEST = `
 apiVersion: v1
@@ -140,6 +174,12 @@ spec:
           volumeMounts:
             - name: srv
               mountPath: /srv
+        - name: make-keys
+          image: ${GIT_IMAGE}
+          command: ["sh", "-ec", ${JSON.stringify(MAKE_KEYS)}]
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
       containers:
         - name: http
           image: ${HTTP_IMAGE}
@@ -159,8 +199,25 @@ spec:
           volumeMounts:
             - name: srv
               mountPath: /srv
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+        # The push remote (ADR-0067): sshd as root, on the same volume, for the user \`git\`.
+        - name: ssh
+          image: ${GIT_IMAGE}
+          command: ["sh", "-ec", ${JSON.stringify(SERVE_SSH)}]
+          ports:
+            - containerPort: 22
+          volumeMounts:
+            - name: srv
+              mountPath: /srv
+            - name: keys
+              mountPath: /keys
+              readOnly: true
       volumes:
         - name: srv
+          emptyDir: {}
+        - name: keys
           emptyDir: {}
 ---
 apiVersion: v1
@@ -172,8 +229,12 @@ spec:
   selector:
     app: seed
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 80
+    - name: ssh
+      port: 22
+      targetPort: 22
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -293,4 +354,69 @@ export async function pushToSeed(branch: string): Promise<string> {
   const sha = stdout.trim().split("\n").pop() ?? "";
   assert.match(sha, /^[0-9a-f]{40}$/, `the seed reported the pushed commit (got ${JSON.stringify(stdout)})`);
   return sha;
+}
+
+/** Run a script in the seed's write seat and answer its stdout. */
+async function inSeed(script: string): Promise<string> {
+  const { stdout } = await exec("kubectl", [
+    "--namespace",
+    NAMESPACE,
+    "exec",
+    "deployment/seed",
+    "-c",
+    "git",
+    "--",
+    "sh",
+    "-ec",
+    script,
+  ]);
+  return stdout;
+}
+
+/** The push remote's keys, as a scenario's Secrets need them (ADR-0051's ssh Secret shape). */
+export async function seedKeys(): Promise<{
+  deploy: string;
+  deployPub: string;
+  sign: string;
+  signPub: string;
+  knownHosts: string;
+}> {
+  const read = (file: string) => inSeed(`cat /keys/${file}`);
+  const host = (await read("host.pub")).trim().split(/\s+/);
+  return {
+    deploy: await read("deploy"),
+    deployPub: await read("deploy.pub"),
+    sign: await read("sign"),
+    signPub: await read("sign.pub"),
+    knownHosts: `${PUSH_HOST} ${host[0]} ${host[1]}\n`,
+  };
+}
+
+/** What the push remote holds on a branch, or "" when it has none. */
+export async function pushRemoteTip(branch: string): Promise<string> {
+  assert.match(branch, /^[a-z0-9][a-z0-9-]{0,60}$/, "a branch is a plain lower-case label");
+  const out = await inSeed(
+    `git -c safe.directory='*' -C /srv/push.git rev-parse -q --verify refs/heads/${branch} || true`,
+  );
+  return out.trim();
+}
+
+/**
+ * Verify a commit on the push remote with the seed's signing key as the one allowed signer, and
+ * answer its author and committer lines — what a forge checks, done by git itself in the pod.
+ */
+export async function verifyOnPushRemote(commit: string): Promise<{ verified: boolean; who: string; out: string }> {
+  assert.match(commit, /^[0-9a-f]{40}$/);
+  const script = [
+    `printf 'signer@jr2.test namespaces="git" %s\\n' "$(cat /keys/sign.pub)" > /tmp/allowed_signers`,
+    `if git -c safe.directory='*' -c gpg.ssh.allowedSignersFile=/tmp/allowed_signers -C /srv/push.git verify-commit ${commit} 2>/tmp/verify.out; then echo VERIFIED; else echo UNVERIFIED; fi`,
+    `cat /tmp/verify.out`,
+    `git -c safe.directory='*' -C /srv/push.git log -1 --format='WHO %an <%ae>|%cn <%ce>' ${commit}`,
+  ].join("\n");
+  const out = await inSeed(script);
+  return {
+    verified: out.includes("VERIFIED") && !out.includes("UNVERIFIED"),
+    who: (out.split("\n").find((l) => l.startsWith("WHO ")) ?? "").slice(4),
+    out,
+  };
 }
