@@ -32,6 +32,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/snapwich/jr2/effector/internal/beneath"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/secrets"
 	"github.com/snapwich/jr2/effector/internal/wire"
@@ -44,6 +45,9 @@ type Runner struct {
 	Scrubber *scrub.Scrubber
 	// Roots is the trust: the system roots plus the instance's caBundle (ADR-0020).
 	Roots *x509.CertPool
+	// WorkRoot is the Agent's work volume, read-only (/work): a Sandbox Effector's. Empty in the
+	// Instance Effector, which has no Worktree.
+	WorkRoot string
 }
 
 // Missing names the first secret req names that the Effector does not hold — a defect, refused
@@ -106,6 +110,7 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest, built map[stri
 		built[value] = carries
 	}
 	var body io.Reader
+	length := int64(-1)
 	if req.Body != nil {
 		switch {
 		case req.Body.JSON != nil:
@@ -117,6 +122,23 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest, built map[stri
 			body = strings.NewReader(*req.Body.Text)
 			if header.Get("Content-Type") == "" {
 				header.Set("Content-Type", "text/plain; charset=utf-8")
+			}
+		case req.Body.File != nil:
+			// A Worktree file (an upload, a file-body http): opened beneath the Worktree with no
+			// symlink, one link, a regular file — anything else is output, with nothing sent.
+			f, err := r.open(req.Body.File)
+			if err != nil {
+				return refused(err.Error())
+			}
+			defer func() { _ = f.Close() }()
+			body = f
+			length = f.Size
+			if header.Get("Content-Type") == "" {
+				ct := req.Body.File.ContentType
+				if ct == "" {
+					ct = "application/octet-stream"
+				}
+				header.Set("Content-Type", ct)
 			}
 		}
 	}
@@ -132,6 +154,9 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest, built map[stri
 		return refused(fmt.Sprintf("the request could not be built: %v", err))
 	}
 	hreq.Header = header
+	if length >= 0 {
+		hreq.ContentLength = length
+	}
 	resp, err := r.client().Do(hreq)
 	if err != nil {
 		if !connected.Load() {
@@ -144,6 +169,19 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest, built map[stri
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return wire.Output{Outcome: wire.OutcomeResponse, Response: r.response(resp, req.MaxBody, built)}
+}
+
+// open opens a Worktree file beneath the work root: the Worktree first, then the file in it.
+func (r *Runner) open(ref *wire.FileRef) (*beneath.File, error) {
+	if r.WorkRoot == "" {
+		return nil, errors.New("this Effector has no Worktree: a file body runs in a Sandbox Effector")
+	}
+	dir, err := beneath.Dir(r.WorkRoot, ref.Worktree)
+	if err != nil {
+		return nil, fmt.Errorf("the Worktree could not be opened: %w", err)
+	}
+	defer func() { _ = dir.Close() }()
+	return beneath.Open(dir, ref.Path)
 }
 
 // target builds the url: the definition's, its secrets filled (percent-encoded), each path

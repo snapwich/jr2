@@ -1,6 +1,7 @@
-// The Effector (ADR-0068): jr2's own process, in an image the author chose (the jr2-harness Kit
-// image for the Instance Effector), that runs for a Machine the Effects that hold an Effect secret.
-// A container becomes an Effector by running /opt/jr2/bin/effector as its command.
+// The Effector (ADR-0068): jr2's own process, which runs for a Machine the Effects that hold an
+// Effect secret. A container becomes an Effector by running /opt/jr2/bin/effector as its command:
+// the Instance Effector in the jr2-harness Kit image, a Sandbox Effector in the author's image
+// (the Sandbox Image by default) beside the Agent in its Sandbox pod.
 //
 // Its env names only where its own mount holds things — never a value:
 //
@@ -9,8 +10,14 @@
 //	JR2_EFFECTOR_CONFIG   the targets jr2 up wrote (default /run/jr2/effector/effector.json)
 //	JR2_EFFECTOR_SECRETS  the Effect secrets, one file each (default /run/jr2/secrets)
 //	JR2_CA_FILE           the instance's caBundle, trusted beside the system roots (optional)
+//	JR2_EFFECTOR_WORK     a Sandbox Effector's read-only view of the Agent's /work (unset: none)
+//	JR2_EFFECTOR_REPOS    the node's Repo caches, read-only (default /repos)
+//	JR2_EFFECTOR_GIT      the git credentials a push spends, a directory each (default /run/jr2/git)
+//	JR2_EFFECTOR_SCRATCH  this Effector's own writable scratch (default $HOME)
 //	JR2_EFFECTOR_DRAIN_SECONDS  how long a stopping replica waits for its Effects (default 30)
 //	POD_NAME, POD_IP      the replica's name and address (the downward API)
+//
+// `effector git-credential get` is git's credential helper for a token push (package pushkind).
 package main
 
 import (
@@ -19,16 +26,21 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/snapwich/jr2/effector/internal/commandkind"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
+	"github.com/snapwich/jr2/effector/internal/kinds"
+	"github.com/snapwich/jr2/effector/internal/pushkind"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/secrets"
 	"github.com/snapwich/jr2/effector/internal/server"
@@ -37,6 +49,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "git-credential" {
+		os.Exit(pushkind.Helper(os.Args[2:], os.Stdin, os.Stdout))
+	}
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 	if err := run(logger); err != nil {
 		logger.Printf("jr2.effector action=exit reason=%q", err.Error())
@@ -71,7 +86,13 @@ func run(logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	held, err := secrets.Read(env("JR2_EFFECTOR_SECRETS", "/run/jr2/secrets"))
+	secretsDir := env("JR2_EFFECTOR_SECRETS", "/run/jr2/secrets")
+	held, err := secrets.Read(secretsDir)
+	if err != nil {
+		return err
+	}
+	gitDir := env("JR2_EFFECTOR_GIT", "/run/jr2/git")
+	gitHeld, err := secrets.ReadGit(gitDir)
 	if err != nil {
 		return err
 	}
@@ -89,12 +110,20 @@ func run(logger *log.Logger) error {
 		Address: net.JoinHostPort(env("POD_IP", "127.0.0.1"), port),
 	}
 
-	scrubber := scrub.New(held)
+	// Every secret this Effector holds is scrubbed, a push's key and token included.
+	every := map[string]string{}
+	maps.Copy(every, held)
+	maps.Copy(every, gitHeld)
+	scrubber := scrub.New(every)
+	runner, err := kindsFor(config, held, scrubber, roots, secretsDir, gitDir)
+	if err != nil {
+		return err
+	}
 	srv := server.New(server.Options{
 		// Bound to this replica's address and this process: a start signed for another replica,
 		// or before this process started, starts nothing here.
 		Verifier: sign.NewVerifier(key, replica.Address, started, nil),
-		Runner:   &httpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots},
+		Runner:   runner,
 		Scrubber: scrubber,
 		Replica:  replica,
 		Log:      logger,
@@ -137,6 +166,33 @@ func run(logger *log.Logger) error {
 	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelShutdown()
 	return httpServer.Shutdown(shutdown)
+}
+
+// kindsFor is this placement's kinds: `http` alone in the Instance Effector; in a Sandbox
+// Effector (JR2_EFFECTOR_WORK set) also upload, push and the credentialed command.
+func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Scrubber, roots *x509.CertPool,
+	secretsDir, gitDir string) (*kinds.Runner, error) {
+	work := os.Getenv("JR2_EFFECTOR_WORK")
+	r := &kinds.Runner{HTTP: &httpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots,
+		WorkRoot: work}}
+	if work == "" {
+		return r, nil
+	}
+	home, _ := os.UserHomeDir()
+	scratch := env("JR2_EFFECTOR_SCRATCH", home)
+	if scratch == "" {
+		return nil, errors.New("a Sandbox Effector needs a writable scratch: JR2_EFFECTOR_SCRATCH or HOME")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	repos := env("JR2_EFFECTOR_REPOS", "/repos")
+	r.Push = &pushkind.Runner{Config: config, WorkRoot: work, ReposRoot: repos, GitRoot: gitDir,
+		Scratch: filepath.Join(scratch, "push"), Helper: self, CAFile: os.Getenv("JR2_CA_FILE"), Scrubber: scrubber}
+	r.Command = &commandkind.Runner{Secrets: held, SecretsDir: secretsDir, WorkRoot: work, ReposRoot: repos,
+		Scratch: filepath.Join(scratch, "command"), Scrubber: scrubber}
+	return r, nil
 }
 
 // trust is the system roots plus the instance's caBundle (ADR-0020), when one is mounted.

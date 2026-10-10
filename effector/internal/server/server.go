@@ -30,6 +30,9 @@ import (
 type Runner interface {
 	// Missing names a secret the request needs that this Effector does not hold, or "".
 	Missing(req *wire.StartRequest) string
+	// Pin fixes the commit a push or a credentialed command runs against, before the start is
+	// answered, and answers it ("" for a kind that runs against none).
+	Pin(req *wire.StartRequest) string
 	Run(ctx context.Context, req *wire.StartRequest) wire.Output
 }
 
@@ -55,6 +58,7 @@ const maxRequestBody = 4 << 20
 
 type effect struct {
 	kind, method, host string
+	pinned             string
 	done               chan struct{}
 	output             *wire.Output
 	settledAt          time.Time
@@ -170,6 +174,9 @@ func (s *Server) start(_ context.Context, reply func(int, any), id string, body 
 	}
 	e := &effect{kind: req.Kind, method: req.Method, host: hostOf(&req), done: make(chan struct{})}
 	s.effects[id] = e
+	// Read before the answer, so the Orchestrator writes the commit to the intent row: a restore
+	// repeats only that commit.
+	e.pinned = s.opts.Runner.Pin(&req)
 	state := s.stateOf(id, e)
 	s.mu.Unlock()
 
@@ -221,7 +228,7 @@ func (s *Server) poll(ctx context.Context, reply func(int, any), id string) {
 
 // stateOf is one Effect's answer. Called with mu held.
 func (s *Server) stateOf(id string, e *effect) wire.EffectState {
-	state := wire.EffectState{Effect: id, Replica: s.opts.Replica, State: wire.StateRunning}
+	state := wire.EffectState{Effect: id, Replica: s.opts.Replica, State: wire.StateRunning, Pinned: e.pinned}
 	if e.output != nil {
 		state.State = wire.StateSettled
 		state.Output = e.output
@@ -287,6 +294,9 @@ func (s *Server) Drain(ctx context.Context) {
 func hostOf(req *wire.StartRequest) string {
 	// The host is the url's literal head: a secret never sits before the path (the constructor
 	// refuses one there), so this logs no value.
+	if req.Kind == wire.KindPush || req.Kind == wire.KindCommand {
+		return "-"
+	}
 	if len(req.URL) == 0 || req.URL[0].Text == nil {
 		return "?"
 	}

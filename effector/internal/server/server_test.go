@@ -36,6 +36,7 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) Missing(*wire.StartRequest) string { return f.missing }
+func (f *fakeRunner) Pin(*wire.StartRequest) string     { return "" }
 func (f *fakeRunner) Run(context.Context, *wire.StartRequest) wire.Output {
 	f.runs.Add(1)
 	<-f.release
