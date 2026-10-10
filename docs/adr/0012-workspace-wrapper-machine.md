@@ -51,15 +51,16 @@ actually reaches this body depends on where the wrapper sits and no type can see
 ## An Effect runs in its Workspace: the Harness container or the Sandbox Effector
 
 An Effect in the body (ADR-0067) resolves the same ambient handles an Agent does. A `command` that names no secret runs
-in the Harness container of the enclosing Workspace's Sandbox, as the Agent's user. A `push`, an `upload` and a
-`command` that names a secret run in that Workspace's Sandbox Effector, the pod's `effector` container
-([ADR-0005](0005-sandbox-pod-composition.md),
+in the Harness container of the enclosing Workspace's Sandbox, as the Agent's user. A `push` and an `upload` run in that
+Workspace's Sandbox Effector, the pod's `effector` container ([ADR-0005](0005-sandbox-pod-composition.md),
 [ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), which the provision adds only when an
 Effect below the `workspace()` is placed there; its image is the Sandbox Image unless the `workspace()` names
 `effector: { image }`. Each one's Worktree follows the Turn's rule (ADR-0057): the one Repo Slot's, or the slot it names
 with `slot`; a Workspace with several and none named refuses it. A push goes to that slot's Binding, and after a signed
 push the Workspace's Harness moves the Agent's branch to the signed commits (the sync, ADR-0067). An Effect of these
-kinds outside any `workspace()` is refused at invoke, as an error, never as output.
+kinds outside any `workspace()` is refused at invoke, as an error, never as output. A `command` that names a secret
+would run in the Sandbox Effector too, and is refused today — by `jr2 up` before it builds anything, and by the Sandbox
+Effector — because its child would run as the Effector's uid and could read the Effector's mount (ADR-0067, ADR-0068).
 
 ## There is no retain policy: parking is retention
 

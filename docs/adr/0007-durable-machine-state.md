@@ -29,21 +29,21 @@ never by a save inside the transition. A restore reads the row and never guesses
 transition's save was lost); intent → per kind: a command that names no secret re-attaches to its exec by id, or settles
 `unknown` when the Harness no longer knows it; an http call or an upload asks every replica of its Effector for its id
 and follows the one that holds it, and when none does it is sent again only when the author marked it `idempotent`, else
-it settles `unknown`; a push and a credentialed command ask their Sandbox Effector for their id, and when it no longer
-holds them are sent again with only the commit the intent row pinned — never the Agent's tip now — or settle `unknown`
-when no commit was pinned; no row → nothing was sent, so it starts. jr2 runs an Effect it started a second time only
-where its author marked it `idempotent`, or where its run is a function of a pinned commit (a push, a credentialed
-command); a command that names no secret never. A row replaces the one before it and is never dropped: a restored child
-that is done or stopped never starts, so no restore reads a finished Effect's row, and the settled and aborted rows keep
-the Effect's id, kind and outcome for the run's life: the record of what the run's Effects did. A settled row's output
-TAIL is dropped once the save that carries its transition is on disk — that save's snapshot no longer holds the Effect
-running, so no restore reads it, and the full stream is on the run's feed. A push row keeps its Repo Slot, its published
-commit, its source and its sync's answer whole: the next push of its Workspace and Repo Slot reads them as its pair, and
-runs a sync that did not finish again (ADR-0067); git's words are its tail, and so is its bundle once a sync finished —
-while the sync is `busy` or `not-synced` the row keeps the bundle, which the sync that runs again moves the branch from.
-The ledger grows by one short row per Effect a run starts, never by its tails, and lives as long as the run's row
-(ADR-0065). An outstanding pick's hold is saved in the same blob and keeps its `chain` whole until the pick is answered
-(ADR-0067); that is the only place an Effect's tails accumulate.
+it settles `unknown`; a push asks its Sandbox Effector for its id, and when it no longer holds it is sent again with
+only the commit the intent row pinned — never the Agent's tip now — or settles `unknown` when no commit was pinned; no
+row → nothing was sent, so it starts. jr2 runs an Effect it started a second time only where its author marked it
+`idempotent`, or where its run is a function of a pinned commit (a push); a command that names no secret never. A
+credentialed command is refused before it has a row (ADR-0067). A row replaces the one before it and is never dropped: a
+restored child that is done or stopped never starts, so no restore reads a finished Effect's row, and the settled and
+aborted rows keep the Effect's id, kind and outcome for the run's life: the record of what the run's Effects did. A
+settled row's output TAIL is dropped once the save that carries its transition is on disk — that save's snapshot no
+longer holds the Effect running, so no restore reads it, and the full stream is on the run's feed. A push row keeps its
+Repo Slot, its published commit, its source and its sync's answer whole: the next push of its Workspace and Repo Slot
+reads them as its pair, and runs a sync that did not finish again (ADR-0067); git's words are its tail, and so is its
+bundle once a sync finished — while the sync is `busy` or `not-synced` the row keeps the bundle, which the sync that
+runs again moves the branch from. The ledger grows by one short row per Effect a run starts, never by its tails, and
+lives as long as the run's row (ADR-0065). An outstanding pick's hold is saved in the same blob and keeps its `chain`
+whole until the pick is answered (ADR-0067); that is the only place an Effect's tails accumulate.
 
 **Pending timers** do not ride the snapshot either. The host persists a **timer table** beside it in the same save: one
 row per pending `after`, named delay, delayed `raise` or delayed `sendTo` in the run's tree, with its absolute deadline.

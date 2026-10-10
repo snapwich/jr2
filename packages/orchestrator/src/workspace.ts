@@ -528,9 +528,9 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
   secrets?: readonly string[];
   /**
    * The Sandbox Effector's image (ADR-0068, ADR-0005): the container that runs this Workspace's
-   * `push`, `upload` and credentialed `command` Effects, with the secrets they name. Absent → the
-   * Sandbox Image, whose floor already holds `git` (ADR-0037). Name one for the tools and the
-   * credentials kept out of the Agent's image (`terraform`, `aws`). A `file:` context or a
+   * `push` and `upload` Effects, with the secrets they name. Absent → the Sandbox Image, whose
+   * floor already holds `git` (ADR-0037). A credentialed `command` would run here too, with this
+   * image's tools (`terraform`, `aws`); `jr2 up` refuses one today (ADR-0067). A `file:` context or a
    * registry ref, resolved like the User Container's image; it runs as its own `USER`. The
    * container exists only when an Effect below this `workspace()` is placed there.
    */
