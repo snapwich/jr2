@@ -241,9 +241,10 @@ export type CustodianFiles = { bootstrap: string; script: string };
 export type HeldObjects = {
   /** Every Harness pod the walk found, each with what its Custodian holds. */
   pods: HeldPodObjects[];
-  /** The Instance Harness's Custodian files — the one pod `jr2 up` makes, so the one it renders
-   * for; a Sandbox's are rendered by the Orchestrator at provision (`kubeSandbox`). */
-  instance: CustodianFiles;
+  /** The Instance Harness's Custodian files, when the walk placed it — the one pod `jr2 up` makes,
+   * so the one it renders for; a Sandbox's are rendered by the Orchestrator at provision
+   * (`kubeSandbox`). */
+  instance?: CustodianFiles;
   /** The per-Instance CA — kept across converges; present whenever a secret is held. */
   ca?: Pem;
   /** One leaf per bound target of any pod, by file stem (`leafStem`). */
@@ -386,16 +387,6 @@ export function instanceObjects(opts: {
       data: {
         ...Object.fromEntries(opts.held.pods.map((p) => [heldManifestKey(p.pod), JSON.stringify(p.manifest, null, 2)])),
         [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
-      },
-    },
-    // The one pod `jr2 up` makes: the Instance Harness's Custodian files, rendered from its manifest.
-    {
-      apiVersion: "v1",
-      kind: "ConfigMap",
-      metadata: meta(INSTANCE_CUSTODIAN_CONFIGMAP),
-      data: {
-        [CUSTODIAN_BOOTSTRAP_KEY]: opts.held.instance.bootstrap,
-        [CUSTODIAN_SCRIPT_KEY]: opts.held.instance.script,
       },
     },
     ...heldSecretObjects(opts.held, meta),
@@ -789,6 +780,9 @@ export function instanceHarnessObjects(opts: {
   /** What this converge placed in the Instance Harness (ADR-0059): its own manifest — the model
    * keys its `"none"` Agents' providers read, and nothing else. */
   held: HeldManifest;
+  /** Its Custodian's two files, rendered from `held` — applied here, with the pod they are for
+   * (`INSTANCE_CUSTODIAN_CONFIGMAP`, ADR-0059). */
+  custodian: CustodianFiles;
   /** An HMAC over this pod's held-secret inputs (its manifest, its leaves, its literal values, its
    * Custodian's config), keyed with the signing key so it reveals nothing — on the pod template, so
    * a change to any of them rolls this pod (ADR-0059). */
@@ -878,6 +872,17 @@ export function instanceHarnessObjects(opts: {
   };
 
   const items: KubeManifest[] = [
+    // The one pod `jr2 up` makes, so the one whose Custodian files it renders: its bootstrap and
+    // its HELD table, from its own manifest, beside the program its volume projects from `jr2-held`.
+    {
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { ...meta(), name: INSTANCE_CUSTODIAN_CONFIGMAP },
+      data: {
+        [CUSTODIAN_BOOTSTRAP_KEY]: opts.custodian.bootstrap,
+        [CUSTODIAN_SCRIPT_KEY]: opts.custodian.script,
+      },
+    },
     {
       apiVersion: "apps/v1",
       kind: "StatefulSet",

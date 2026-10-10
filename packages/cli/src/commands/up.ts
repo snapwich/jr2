@@ -60,6 +60,7 @@ import {
   heldSecretsOf,
   HELD_CA_SECRET,
   HELD_TLS_SECRET,
+  INSTANCE_CUSTODIAN_CONFIGMAP,
   INSTANCE_HARNESS_HELD_POD,
   ORCHESTRATOR_PORT,
   imageContextDigest,
@@ -1022,19 +1023,16 @@ export async function up(args: string[], io: Io): Promise<number> {
       `instance harness: converging (${menuOnly.join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none")`,
     );
     const harnessImage = refs.harness;
+    const instance = instanceHeld(held.objects);
     await kube.apply({
       manifest: instanceHarnessObjects({
         name,
         namespace,
         harnessImage,
         custodianImage,
-        held: instanceHeld(held.objects).manifest,
-        heldDigest: heldDigest(
-          Buffer.from(signingKey, "base64"),
-          held.objects,
-          instanceHeld(held.objects),
-          valueDigest,
-        ),
+        held: instance.manifest,
+        custodian: instance.custodian,
+        heldDigest: heldDigest(Buffer.from(signingKey, "base64"), held.objects, instance, valueDigest),
         harness: config.harness,
         caBundle: caPem !== undefined,
         // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
@@ -1069,6 +1067,8 @@ export async function up(args: string[], io: Io): Promise<number> {
     await kube.deleteObject({ kind: "persistentvolumeclaim", name: INSTANCE_HARNESS_PVC, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_PODS_SERVICE, namespace, ...ctx });
+    // Its Custodian's files go with the pod they were rendered for (ADR-0059).
+    await kube.deleteObject({ kind: "configmap", name: INSTANCE_CUSTODIAN_CONFIGMAP, namespace, ...ctx });
   }
 
   // --- Instance Effector (ADR-0068): converged when an Effect is placed there, absent otherwise ---
@@ -1264,15 +1264,15 @@ async function resolveHeld(
     );
     return { pod: plan.pod, manifest: own, values: literals };
   });
+  // The Instance Harness, when the walk placed one: the one pod `jr2 up` makes, so the one whose
+  // Custodian files it renders.
   const instancePod = pods.find((p) => p.pod === INSTANCE_HARNESS_HELD_POD);
-  if (!instancePod)
-    throw new Error("jr2 up placed no held secrets for the Instance Harness it converges — a jr2 defect");
   const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
-  const instance: CustodianFiles = {
+  const instance: CustodianFiles | undefined = instancePod && {
     bootstrap: JSON.stringify(custodianBootstrap(instancePod.manifest, orchestrator)),
     script: custodianScript(instancePod.manifest),
   };
-  if (manifest.secrets.length === 0) return { objects: { pods, instance, leaves: {} } };
+  if (manifest.secrets.length === 0) return { objects: { pods, ...(instance && { instance }), leaves: {} } };
   for (const s of manifest.secrets) {
     const where = s.hosts.map((h) => (h.port === 443 ? h.host : `${h.host}:${h.port}`)).join(", ");
     const source = s.source.kind === "literal" ? "literal" : `secret ${s.source.secret}/${s.source.key}`;
@@ -1300,23 +1300,31 @@ async function resolveHeld(
     }
   }
   return {
-    objects: { pods, instance, ca, leaves },
+    objects: { pods, ...(instance && { instance }), ca, leaves },
     bundles: trustBundles(ca.cert, opts.caBundle),
   };
 }
 
-/** The Instance Harness's held objects — the walk always places it when it converges. */
-function instanceHeld(held: HeldObjects): HeldPodObjects {
+/** The Instance Harness's held objects and its Custodian's files — the walk always places it when
+ * it converges. */
+function instanceHeld(held: HeldObjects): HeldPodObjects & { custodian: CustodianFiles } {
   const pod = held.pods.find((p) => p.pod === INSTANCE_HARNESS_HELD_POD);
-  if (!pod) throw new Error("jr2 up placed no held secrets for the Instance Harness it converges — a jr2 defect");
-  return pod;
+  if (!pod || !held.instance)
+    throw new Error("jr2 up placed no held secrets for the Instance Harness it converges — a jr2 defect");
+  return { ...pod, custodian: held.instance };
 }
 
 /** The Instance Harness's `jr2.dev/held-digest` (ADR-0059): an HMAC over its pod's held-secret
  * inputs — a literal's value, a `valueFrom`'s reference and the digest of its value — keyed with
  * the signing key so the annotation reveals nothing about a value. Its Custodian reads each value
- * once at start, so a value edited in the user's Secret must roll it. */
-function heldDigest(key: Buffer, all: HeldObjects, held: HeldPodObjects, valueDigest: ValueDigest): string {
+ * once at start, so a value edited in the user's Secret must roll it — and so must an edit to its
+ * two rendered files or the program they load. Exported for its test alone. */
+export function heldDigest(
+  key: Buffer,
+  all: HeldObjects,
+  held: HeldPodObjects & { custodian: CustodianFiles },
+  valueDigest: ValueDigest,
+): string {
   const mac = createHmac("sha256", key);
   mac.update(JSON.stringify(held.manifest));
   const stems = new Set(held.manifest.secrets.flatMap((s) => s.hosts.map((h) => h.leaf)));
@@ -1326,8 +1334,8 @@ function heldDigest(key: Buffer, all: HeldObjects, held: HeldPodObjects, valueDi
     if (s.source.kind === "secret") mac.update(`${s.name}<-${valueDigest(s.source.secret, s.source.key) ?? ""}`);
   }
   // Its Custodian's files, and the program they load: Envoy reads all three once at start.
-  mac.update(all.instance.bootstrap);
-  mac.update(all.instance.script);
+  mac.update(held.custodian.bootstrap);
+  mac.update(held.custodian.script);
   mac.update(CUSTODIAN_PROGRAM);
   return mac.digest("base64url").slice(0, 32);
 }

@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes, X509Certificate } from "node:crypto";
 import {
+  CUSTODIAN_PROGRAM,
   custodianRef,
   effectorKey,
   KIT_VERSION,
@@ -21,7 +22,8 @@ import {
   type HeldManifest,
 } from "@jr2/orchestrator";
 import { linkKit } from "./_kit.ts";
-import { up } from "../src/commands/up.ts";
+import { heldDigest, up } from "../src/commands/up.ts";
+import { instanceObjects, type HeldObjects } from "../src/deploy.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
 import type { Io } from "../src/output.ts";
@@ -1807,7 +1809,14 @@ test("the CA is kept, a leaf that still fits is reused, and a converge holding n
   const cm = (
     JSON.parse(none.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as { items: Array<Record<string, any>> }
   ).items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
-  assert.deepEqual(cm.data, {}, "the ConfigMap is applied always — here with no Harness pod to hold for");
+  assert.deepEqual(
+    cm.data,
+    { "program.lua": CUSTODIAN_PROGRAM },
+    "the ConfigMap is applied always — here with no Harness pod to hold for, and the program once",
+  );
+  // No Instance Harness: no pod to render Custodian files for, and a stale one's go with it.
+  assert.ok(none.kube.deleted.includes("myinst/configmap/jr2-held-custodian"));
+  assert.ok(!none.kube.applied.some((m) => m.includes(`"jr2-held-custodian"`)), "nothing rendered for no pod");
 });
 
 test("a known model key in harness.env or in an envFrom Secret is refused, naming the line to write (R1)", async () => {
@@ -2227,6 +2236,28 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
     ["custodian-values", "custodian-config"],
     "no /work — nothing to attach; the Custodian's own two alone",
   );
+  // Its Custodian's two files from the ConfigMap `jr2 up` rendered for this pod, beside the one
+  // program every pod projects from `jr2-held` (ADR-0059).
+  assert.deepEqual(
+    podSpec.volumes.find((v: { name: string }) => v.name === "custodian-config"),
+    {
+      name: "custodian-config",
+      projected: {
+        sources: [
+          {
+            configMap: {
+              name: "jr2-held-custodian",
+              items: [
+                { key: "envoy.json", path: "envoy.json" },
+                { key: "custodian.lua", path: "custodian.lua" },
+              ],
+            },
+          },
+          { configMap: { name: "jr2-held", items: [{ key: "program.lua", path: "program.lua" }] } },
+        ],
+      },
+    },
+  );
   assert.equal(podSpec.shareProcessNamespace, undefined, "the Harness cannot read the Custodian's /proc");
 
   // Same wiring a Sandbox's Harness container gets: the harness-config ConfigMap + the env Secret.
@@ -2266,12 +2297,21 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
     "the Harness holds the token's Stand-in",
   );
   assert.equal(podSpec.securityContext.fsGroup, 2000, "the values are readable by the Custodian's uid");
-  // Where the Custodian carries the Menu: this instance's Orchestrator Service, rendered by `jr2 up`.
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-held"`))!;
-  const heldCm = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
-    (i) => i.metadata.name === "jr2-held",
-  )!;
-  assert.match(heldCm.data["envoy-instance.json"], /jr2-orchestrator\.myinst\.svc/);
+  // Where the Custodian carries the Menu: this instance's Orchestrator Service, rendered by `jr2 up`
+  // for the one pod it makes — and the script is the HELD table, which loads the program.
+  const objects = appliedObjects(w);
+  const files = objects.get("ConfigMap/jr2-held-custodian")!;
+  assert.deepEqual(Object.keys(files.data).sort(), ["custodian.lua", "envoy.json"]);
+  assert.match(files.data["envoy.json"], /jr2-orchestrator\.myinst\.svc/);
+  assert.match(files.data["custodian.lua"], /\ndofile\("\/etc\/jr2\/custodian\/config\/program\.lua"\)\n$/);
+  // `jr2-held` DECLARES: each pod's manifest and the program once — nothing rendered per pod.
+  const heldCm = objects.get("ConfigMap/jr2-held")!;
+  const keys = Object.keys(heldCm.data);
+  assert.ok(keys.includes("held-instance.json") && keys.includes("program.lua"), keys.join(", "));
+  for (const key of keys) {
+    assert.ok(key === "program.lua" || /^held-[a-z0-9-]+\.json$/.test(key), `jr2-held holds no rendered file: ${key}`);
+  }
+  assert.equal(heldCm.data["program.lua"], CUSTODIAN_PROGRAM);
   assert.ok(statefulSet.spec.template.metadata.annotations["jr2.dev/held-digest"], "a held-secret edit rolls this pod");
 });
 
@@ -3247,4 +3287,90 @@ test("hosts alone places nothing: an Effect secret with hosts that no workspace(
     assert.equal(appliedObjects(w).get(`Secret/jr2-held-secrets-instance`), undefined);
     assert.match(w.err.join("\n"), new RegExp(`secret ${name}: an Effect secret in the Instance Effector`));
   }
+});
+
+/** A Workspace pod's manifest as the walk places it: two bound secrets, each its own host. */
+function wsManifest(i: number): HeldManifest {
+  return {
+    version: 1,
+    secrets: [
+      {
+        name: "ANTHROPIC_API_KEY",
+        source: { kind: "secret", secret: "team", key: "anthropic" },
+        hosts: [{ host: "api.anthropic.com", port: 443, leaf: leafStem("api.anthropic.com", 443) }],
+        headers: ["x-api-key"],
+        paths: ["/v1/messages"],
+      },
+      {
+        name: `JIRA_TOKEN_${i}`,
+        source: { kind: "literal" },
+        hosts: [{ host: `jira-${i}.example.com`, port: 443, leaf: leafStem(`jira-${i}.example.com`, 443) }],
+        headers: ["authorization"],
+      },
+    ],
+  };
+}
+
+test("jr2-held grows by one manifest per Workspace and holds the program once — 40 Workspaces stay under the apply limit (ADR-0059)", () => {
+  // The @kind failure this pins: nine pods' rendered Envoy files in one ConfigMap passed client-side
+  // apply's 256 KiB annotation. `jr2 up` DECLARES; a pod's maker renders its own files.
+  const heldOf = (n: number): HeldObjects => ({
+    pods: Array.from({ length: n }, (_, i) => ({
+      pod: workspaceHeldPod({ workflow: `w${i}`, path: [] }),
+      manifest: wsManifest(i),
+      values: {},
+    })),
+    leaves: {},
+  });
+  const heldCm = (n: number): { text: string; data: Record<string, string> } => {
+    const list = JSON.parse(
+      instanceObjects({
+        name: "myinst",
+        namespace: "myinst",
+        image: "jr2-orchestrator:o",
+        hash: "h",
+        secretData: {},
+        harnessEnvData: {},
+        held: heldOf(n),
+        imageRefs: {},
+      }),
+    ) as { items: Array<Record<string, any>> };
+    const cm = list.items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+    // The whole List, too: no other object carries a rendered file or a copy of the program.
+    assert.equal(JSON.stringify(list).split("function envoy_on_request").length - 1, 1, "the program once");
+    assert.ok(!list.items.some((i) => i.metadata.name === "jr2-held-custodian"), "no Instance Harness, no files");
+    return { text: JSON.stringify(cm), data: cm.data };
+  };
+
+  const forty = heldCm(40);
+  assert.ok(forty.text.length < 256 * 1024, `jr2-held for 40 Workspaces: ${forty.text.length} bytes`);
+  assert.equal(Object.keys(forty.data).length, 41, "forty manifests and one program");
+  assert.equal(forty.data["program.lua"], CUSTODIAN_PROGRAM);
+  for (const key of Object.keys(forty.data)) {
+    assert.ok(key === "program.lua" || /^held-ws-[0-9a-f]+\.json$/.test(key), `no rendered file: ${key}`);
+  }
+
+  // One more Workspace adds its manifest, and nothing else.
+  const fortyOne = heldCm(41);
+  const added = Object.keys(fortyOne.data).filter((k) => !(k in forty.data));
+  assert.equal(added.length, 1);
+  const entry = JSON.stringify({ [added[0]!]: fortyOne.data[added[0]!] }).length - 2 + 1; // `,"k":"v"`
+  assert.equal(fortyOne.text.length - forty.text.length, entry);
+});
+
+test("the Instance Harness's held digest covers its Custodian's two files: a changed custodian.lua rolls it (ADR-0059)", () => {
+  // A literal bound to no target, so the digest reads no leaf: what moves it here is the files.
+  const manifest: HeldManifest = {
+    version: 1,
+    secrets: [{ name: "JIRA_TOKEN", source: { kind: "literal" }, hosts: [], headers: ["authorization"] }],
+  };
+  const pod = { pod: "instance", manifest, values: { JIRA_TOKEN: "jira-value-0" } };
+  const files = { bootstrap: '{"static_resources":{}}', script: 'HELD = {}\ndofile("program.lua")\n' };
+  const all: HeldObjects = { pods: [pod], instance: files, leaves: {} };
+  const digest = (custodian: { bootstrap: string; script: string }) =>
+    heldDigest(Buffer.from("k"), all, { ...pod, custodian }, () => "d");
+  const first = digest(files);
+  assert.equal(digest({ ...files }), first, "the same files, the same pod");
+  assert.notEqual(digest({ ...files, script: 'HELD = { x = 1 }\ndofile("program.lua")\n' }), first, "custodian.lua");
+  assert.notEqual(digest({ ...files, bootstrap: '{"static_resources":{"x":1}}' }), first, "envoy.json");
 });
