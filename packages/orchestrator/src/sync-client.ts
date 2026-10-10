@@ -14,6 +14,9 @@ export interface SyncPort {
 }
 export type SyncPortFactory = (endpoint: string, bearer?: string) => SyncPort;
 
+/** How long a sync may take before it answers `not-synced`: its git steps are bounded at 120 s each. */
+const SYNC_TIMEOUT_MS = 5 * 60_000;
+
 export function createSyncPort(options: {
   baseUrl: string;
   /** The Workspace's Harness bearer (ADR-0058). */
@@ -33,7 +36,8 @@ export function createSyncPort(options: {
             ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
           },
           body: JSON.stringify(req),
-          signal,
+          // Bounded: a Harness that never answers is a sync that did not finish, never a push held open.
+          signal: AbortSignal.any([signal, AbortSignal.timeout(SYNC_TIMEOUT_MS)]),
         });
         const text = await res.text();
         if (!res.ok) return { sync: "not-synced", reason: `the Harness refused the sync (${res.status}): ${text}` };
