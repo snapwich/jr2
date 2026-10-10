@@ -3374,3 +3374,13 @@ test("the Instance Harness's held digest covers its Custodian's two files: a cha
   assert.notEqual(digest({ ...files, script: 'HELD = { x = 1 }\ndofile("program.lua")\n' }), first, "custodian.lua");
   assert.notEqual(digest({ ...files, bootstrap: '{"static_resources":{"x":1}}' }), first, "envoy.json");
 });
+
+test("the Orchestrator may apply a Sandbox's Custodian ConfigMap — and may not read, list or delete one (ADR-0059)", async () => {
+  // It renders a Sandbox's two files at provision with a server-side apply (create + patch); the
+  // CR's ownerReference takes them away with the pod, so the Orchestrator needs no delete.
+  const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  assert.equal(await up(["--yes"], w.io), 0);
+  const role = appliedObjects(w).get("Role/jr2-orchestrator")!;
+  const rules = role.rules.filter((r: { resources: string[] }) => r.resources.includes("configmaps"));
+  assert.deepEqual(rules, [{ apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] }]);
+});

@@ -322,6 +322,9 @@ export function instanceObjects(opts: {
           resources: ["secrets"],
           verbs: ["get", "list", "create", "delete", "patch", "update"],
         },
+        // A Sandbox's Custodian files, rendered at provision and server-side applied (ADR-0059);
+        // owned by the CR, so the garbage collector deletes them with the pod.
+        { apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] },
       ],
     },
     {
