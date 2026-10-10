@@ -42,7 +42,8 @@ decision generalizes that container. It holds every credential the Harness in it
   (`deferred` is retired, ADR-0006). The event's own JSON Schema is the tool's parameters, so the model sees the
   contract the Orchestrator validates against.
 - **The control listener forwards four routes and no other.** `127.0.0.1:8081`, plain HTTP, to the Orchestrator's
-  Service (`jr2-orchestrator.<ns>.svc:4000`, written into the bootstrap by `jr2 up`):
+  Service (`jr2-orchestrator.<ns>.svc:4000`, written into the pod's bootstrap by whoever makes the pod — see "Objects,
+  per pod"):
 
   ```
   GET  /agents/<iid>/surface          → the same path     the Menu
@@ -101,13 +102,14 @@ decision generalizes that container. It holds every credential the Harness in it
 
   Every other target is tunneled, byte for byte, after the dial guard (below).
 
-- **The engine choices.** The values and every credential decision are in a Lua filter (`custodian.lua`), with a table
-  that `jr2 up` generates in front of it: names, headers, paths and targets, never a value. At start the script reads
-  each value from `/etc/jr2/custodian/values/<NAME>`, takes off one trailing `\n` or `\r\n`, and stops the start-up with
-  a line that names the secret when a value is missing, empty, or has a byte outside `0x20`–`0x7E`. Envoy's
-  `credential_injector` is not used: it is alpha, it breaks on a secret file that ends in a newline (1.39.1), and it
-  replaces a whole header, where the swap must see the Stand-in. Values never enter a ConfigMap. Envoy runs one worker,
-  with hot restart off, and flushes its access log twice a second.
+- **The engine choices.** The values and every credential decision are in a Lua filter. Its program is fixed
+  (`program.lua`); each pod's own `custodian.lua` is a generated `HELD` table — names, headers, paths and targets, never
+  a value — that ends with `dofile` of the program, so the program runs after the table it reads. At start the program
+  reads each value from `/etc/jr2/custodian/values/<NAME>`, takes off one trailing `\n` or `\r\n`, and stops the
+  start-up with a line that names the secret when a value is missing, empty, or has a byte outside `0x20`–`0x7E`.
+  Envoy's `credential_injector` is not used: it is alpha, it breaks on a secret file that ends in a newline (1.39.1),
+  and it replaces a whole header, where the swap must see the Stand-in. Values never enter a ConfigMap. Envoy runs one
+  worker, with hot restart off, and flushes its access log twice a second.
 - **The log is a contract.** One line per decision on stdout, with the prefix `jr2.custodian` and `key=value` pairs:
   `ready secrets=… hosts=N` (at the first probe), `action=intercept target=… secret=… method=… status=…`,
   `action=tunnel target=…`, `action=refuse target=… reason=…`. Never a header value, a body, a path, a query, a value or
@@ -189,23 +191,33 @@ decision generalizes that container. It holds every credential the Harness in it
   replaces their store), and `upstream.crt` (the roots + `caBundle`, and never the jr2 CA, for the Custodian). "Roots"
   are the Mozilla roots of the Node that runs `jr2 up`. The ConfigMap is applied server-side, because two copies of the
   roots are more than client-side apply's annotation can hold.
-- **Objects, per pod.** The held manifest, the Custodian's config and the literal values are each a pod's own, from the
+- **Objects, per pod.** The held manifest, the Custodian's files and the literal values are each a pod's own, from the
   one derivation that places Effect secrets. A pod is keyed `instance` for the Instance Harness, and `ws-<digest>` for a
   Workspace, the digest of its registered workflow and the `customize()` route to its `workspace()` — the route the walk
-  reads statically and the run host reads off the live actor at provision, so both name one pod alike. `jr2-held`
-  (always) holds `held-<pod>.json`, `envoy-<pod>.json` and `custodian-<pod>.lua` for each pod; `jr2-held-secrets-<pod>`
-  holds one pod's literal values, labeled `jr2.dev/held-pod`, and `jr2 up` deletes the one a pod no longer needs.
-  `jr2-held-tls` (every bound target's leaf) and `jr2-held-ca` are the Instance's. The Orchestrator mounts `jr2-held` at
-  `/etc/jr2/held` and reads the manifest of the Workspace it provisions, per provision — the `jr2-images` pattern
-  ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)); a Workspace `jr2 up` never walked has none, and its
-  provision is refused, naming `jr2 up`. Two Workspaces of one workflow invoked inline have no route, so they are one
-  pod key; `jr2 up` refuses them when they would hold different names. One function, `custodianComposition`, builds what
-  a pod gains from its pod's manifest; `kubeSandbox` and `instanceHarnessObjects` both call it, so the two pod shapes
-  cannot drift. The Instance Harness's pod template carries `jr2.dev/held-digest`, an HMAC over its pod's held-secret
-  inputs keyed with the signing key, so a held-secret edit rolls it at the next `jr2 up`. Its Custodian reads each value
-  once at start, so the inputs are a literal's value, a `valueFrom`'s reference, and a digest of the value in the user's
-  Secret, keyed with the signing key: `jr2 up` reads that Secret to check the key exists, and keeps the digest in place
-  of the value, so a value edited there rolls the pod too. A live Sandbox keeps what its Custodian read at start.
+  reads statically and the run host reads off the live actor at provision, so both name one pod alike. Nothing rendered
+  per pod lands in a shared object: `jr2 up` declares, and the pod's maker renders. `jr2-held` (always) holds
+  `held-<pod>.json` for each pod (what it holds: names, bindings, headers, never a value) and `program.lua` once per
+  Instance, so it grows by one manifest per Workspace. A pod's two rendered files, Envoy's `envoy.json` and its
+  `custodian.lua`, are in a ConfigMap of that pod's own: the Orchestrator renders a Sandbox's at provision, from the
+  manifest it reads, into `<sandbox>-custodian`, applied after the CR and owned by it like the `<sandbox>-token` Secret,
+  so it goes with the pod (the Orchestrator's Role may create and patch a ConfigMap, and no more); `jr2 up` renders the
+  Instance Harness's into `jr2-held-custodian`, applied with its StatefulSet and deleted with it. A pod's
+  `custodian-config` volume projects its own ConfigMap and `program.lua` from `jr2-held`. The reason: every Kubernetes
+  object stops at 1 MiB, and client-side apply's annotation at 256 KiB; one copy of Envoy's files per pod in `jr2-held`
+  passed that limit at nine Workspaces, and a dedupe or a server-side apply only moves the ceiling.
+  `jr2-held-secrets-<pod>` holds one pod's literal values, labeled `jr2.dev/held-pod`, and `jr2 up` deletes the one a
+  pod no longer needs. `jr2-held-tls` (every bound target's leaf) and `jr2-held-ca` are the Instance's. The Orchestrator
+  mounts `jr2-held` at `/etc/jr2/held` and reads the manifest of the Workspace it provisions, per provision — the
+  `jr2-images` pattern ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)); a Workspace `jr2 up` never walked has
+  none, and its provision is refused, naming `jr2 up`. Two Workspaces of one workflow invoked inline have no route, so
+  they are one pod key; `jr2 up` refuses them when they would hold different names. One function,
+  `custodianComposition`, builds what a pod gains from its pod's manifest; `kubeSandbox` and `instanceHarnessObjects`
+  both call it, so the two pod shapes cannot drift. The Instance Harness's pod template carries `jr2.dev/held-digest`,
+  an HMAC over its pod's held-secret inputs keyed with the signing key, so a held-secret edit rolls it at the next
+  `jr2 up`. Its Custodian reads each value and its files once at start, so the inputs are its two rendered files, the
+  program, a literal's value, a `valueFrom`'s reference, and a digest of the value in the user's Secret, keyed with the
+  signing key: `jr2 up` reads that Secret to check the key exists, and keeps the digest in place of the value, so a
+  value edited there rolls the pod too. A live Sandbox keeps what its Custodian read at start.
 
 ## Considered options
 
