@@ -190,6 +190,24 @@ func (r *Repo) run(ctx context.Context, stdin io.Reader, env []string, args ...s
 	return out.Bytes(), nil
 }
 
+// Exec runs one of jr2's own programs (ssh-keygen, gpg) in this repository's call directory, with
+// its cleared environment, and answers its stdout.
+func Exec(ctx context.Context, r *Repo, stdin io.Reader, argv ...string) ([]byte, error) {
+	var out, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = r.Env()
+	cmd.Dir = r.Work
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	cmd.Stdout, cmd.Stderr = &out, &stderr
+	cmd.WaitDelay = time.Second
+	if err := cmd.Run(); err != nil {
+		return out.Bytes(), &Error{Args: argv, Stderr: stderr.String(), Err: err}
+	}
+	return out.Bytes(), nil
+}
+
 // Line runs git and answers its stdout's first line.
 func (r *Repo) Line(ctx context.Context, args ...string) (string, error) {
 	out, err := r.Git(ctx, nil, args...)

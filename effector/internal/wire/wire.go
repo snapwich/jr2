@@ -17,8 +17,14 @@ import (
 	"strings"
 )
 
-// KindHTTP is the one kind the Instance Effector runs.
-const KindHTTP = "http"
+// The kinds an Effector runs. The Instance Effector runs `http` with no Worktree file; the
+// Sandbox Effector runs `upload`, `push`, `command` and a file-body `http` (ADR-0067).
+const (
+	KindHTTP    = "http"
+	KindUpload  = "upload"
+	KindPush    = "push"
+	KindCommand = "command"
+)
 
 // Outcomes of an http Effect. Every outcome is output (ADR-0067).
 const (
@@ -26,6 +32,14 @@ const (
 	OutcomeUnreachable = "unreachable"
 	OutcomeRefused     = "refused"
 	OutcomeUnknown     = "unknown"
+	// A push's outcomes besides `unknown`.
+	OutcomePushed   = "pushed"
+	OutcomeRejected = "rejected"
+	OutcomeDiverged = "diverged"
+	// A command's outcomes besides `unknown`.
+	OutcomeExited  = "exited"
+	OutcomeTimeout = "timeout"
+	OutcomeKilled  = "killed"
 )
 
 // States of one Effect as a replica answers for it.
@@ -75,23 +89,83 @@ type Auth struct {
 	Text   Text       `json:"text,omitempty"`
 }
 
-// Body is the request body: JSON, or text. At most one field is set; absent, no body.
+// Body is the request body: JSON, text, or a Worktree file. At most one field is set; absent, no
+// body.
 type Body struct {
 	JSON json.RawMessage `json:"json,omitempty"`
 	Text *string         `json:"text,omitempty"`
+	File *FileRef        `json:"file,omitempty"`
+}
+
+// FileRef is a file of a Worktree: the Worktree, relative to the work root (`/work`), and the
+// file, relative to the Worktree. Both are opened beneath, with no symlink (package beneath).
+type FileRef struct {
+	Worktree    string `json:"worktree"`
+	Path        string `json:"path"`
+	ContentType string `json:"contentType,omitempty"`
+}
+
+// RepoRef is where one Repo Slot's repositories are in this pod (ADR-0004, ADR-0051): the
+// Agent's common git dir and its Worktree, relative to the work root, and the node cache's key,
+// under the Repo caches' mount.
+type RepoRef struct {
+	GitDir   string `json:"gitDir"`
+	Worktree string `json:"worktree"`
+	Cache    string `json:"cache"`
+}
+
+// Pair is one push's published commit and the Agent's commit it was made from: what the
+// ledger's last push row holds, and the `pair` fallback reads.
+type Pair struct {
+	Published string `json:"published"`
+	Source    string `json:"source"`
+}
+
+// PushSpec is a push's part of a start: the Workspace's branch to the Repo Slot's Binding.
+type PushSpec struct {
+	Repo   RepoRef `json:"repo"`
+	URL    string  `json:"url"`
+	Branch string  `json:"branch"`
+	// Credential is the match of the `git.credentials` entry whose push credential this spends;
+	// the Effector's config holds the files, and the url must fall under it.
+	Credential string  `json:"credential"`
+	Pin        string  `json:"pin,omitempty"`
+	Sign       bool    `json:"sign,omitempty"`
+	Squash     *string `json:"squash,omitempty"`
+	Force      bool    `json:"force,omitempty"`
+	Last       *Pair   `json:"last,omitempty"`
+}
+
+// EnvRef is one variable of a credentialed command's env: a secret's value, or its file's path.
+type EnvRef struct {
+	Secret string `json:"secret"`
+	Path   bool   `json:"path,omitempty"`
+}
+
+// CommandSpec is a credentialed command's part of a start (ADR-0067): argv, run against the
+// pinned commit checked out into the Effect's own scratch, with only the env the author named.
+type CommandSpec struct {
+	Repo   RepoRef           `json:"repo"`
+	Branch string            `json:"branch"`
+	Pin    string            `json:"pin,omitempty"`
+	Argv   []string          `json:"argv"`
+	Env    map[string]EnvRef `json:"env"`
+	Tail   int               `json:"tail"`
 }
 
 // StartRequest is the body of `POST /effects/<id>`.
 type StartRequest struct {
 	Kind      string          `json:"kind"`
-	Method    string          `json:"method"`
-	URL       Text            `json:"url"`
+	Method    string          `json:"method,omitempty"`
+	URL       Text            `json:"url,omitempty"`
 	Path      []string        `json:"path,omitempty"`
 	Headers   map[string]Text `json:"headers,omitempty"`
 	Auth      *Auth           `json:"auth,omitempty"`
 	Body      *Body           `json:"body,omitempty"`
+	Push      *PushSpec       `json:"push,omitempty"`
+	Command   *CommandSpec    `json:"command,omitempty"`
 	TimeoutMs int64           `json:"timeoutMs"`
-	MaxBody   int             `json:"maxBody"`
+	MaxBody   int             `json:"maxBody,omitempty"`
 }
 
 // Replica names the pod that holds an Effect, and where to poll it.
@@ -105,7 +179,10 @@ type EffectState struct {
 	Effect  string  `json:"effect"`
 	Replica Replica `json:"replica"`
 	State   string  `json:"state"`
-	Output  *Output `json:"output,omitempty"`
+	// Pinned is the commit a push or a credentialed command runs against, read when it started
+	// (the Agent's branch tip, or the pin): the Orchestrator writes it to the ledger's intent row.
+	Pinned string  `json:"pinned,omitempty"`
+	Output *Output `json:"output,omitempty"`
 }
 
 // Refusal is the body of an answer that started nothing: a malformed request (400), or a replica
@@ -125,11 +202,42 @@ type Response struct {
 	Truncated   bool              `json:"truncated,omitempty"`
 }
 
-// Output is an http Effect's outcome. `response` carries a Response; every other outcome a reason.
+// PushResult is a push's outcome beside its name: `pushed` (published, source, and what the remote
+// held before), `rejected` (the stage, git's words in detail), `diverged` (the published commit
+// and the Agent's tip that could not be paired).
+type PushResult struct {
+	Published string `json:"published,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Previous  string `json:"previous,omitempty"`
+	// Via says how the new commits were found after a signed push: ancestry, pair, or cherry.
+	Via string `json:"via,omitempty"`
+	// Unchanged: the remote already held the published commit; nothing was sent.
+	Unchanged bool `json:"unchanged,omitempty"`
+	// Bundle is the signed commits, base64, for the sync step (ADR-0067): commit objects only.
+	Bundle string `json:"bundle,omitempty"`
+	Stage  string `json:"stage,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// CommandResult is a command's outcome beside its name: how it ended and its stream's tail.
+type CommandResult struct {
+	Code   *int   `json:"code,omitempty"`
+	Signal string `json:"signal,omitempty"`
+	Tail   string `json:"tail"`
+	// Dirty: the Worktree held edits that were not committed when the command started; it ran
+	// against the commit, without them.
+	Dirty bool `json:"dirty,omitempty"`
+}
+
+// Output is an Effect's outcome. Every outcome is output (ADR-0067). `response` carries a
+// Response; a push's outcomes a PushResult; a command's a CommandResult; every other outcome a
+// reason.
 type Output struct {
 	Outcome  string
 	Response *Response
 	Reason   string
+	Push     *PushResult
+	Command  *CommandResult
 }
 
 type responseJSON struct {
@@ -142,13 +250,83 @@ type reasonJSON struct {
 	Reason  string `json:"reason"`
 }
 
+type pushedJSON struct {
+	Outcome   string `json:"outcome"`
+	Published string `json:"published"`
+	Source    string `json:"source"`
+	Previous  string `json:"previous,omitempty"`
+	Via       string `json:"via,omitempty"`
+	Unchanged bool   `json:"unchanged,omitempty"`
+	Bundle    string `json:"bundle,omitempty"`
+}
+
+type rejectedJSON struct {
+	Outcome string `json:"outcome"`
+	Stage   string `json:"stage"`
+	Reason  string `json:"reason"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+type divergedJSON struct {
+	Outcome   string `json:"outcome"`
+	Reason    string `json:"reason"`
+	Published string `json:"published"`
+	Source    string `json:"source"`
+}
+
+type exitedJSON struct {
+	Outcome string `json:"outcome"`
+	Code    int    `json:"code"`
+	Tail    string `json:"tail"`
+	Dirty   bool   `json:"dirty,omitempty"`
+}
+
+type timeoutJSON struct {
+	Outcome string `json:"outcome"`
+	Tail    string `json:"tail"`
+	Dirty   bool   `json:"dirty,omitempty"`
+}
+
+type killedJSON struct {
+	Outcome string `json:"outcome"`
+	Signal  string `json:"signal"`
+	Tail    string `json:"tail"`
+	Dirty   bool   `json:"dirty,omitempty"`
+}
+
 // MarshalJSON writes one flat object per outcome.
 func (o Output) MarshalJSON() ([]byte, error) {
-	if o.Outcome == OutcomeResponse {
+	p, c := o.Push, o.Command
+	if p == nil {
+		p = &PushResult{}
+	}
+	if c == nil {
+		c = &CommandResult{}
+	}
+	switch o.Outcome {
+	case OutcomeResponse:
 		if o.Response == nil {
 			return nil, errors.New("wire: a response outcome without its response")
 		}
 		return json.Marshal(responseJSON{Outcome: o.Outcome, Response: *o.Response})
+	case OutcomePushed:
+		return json.Marshal(pushedJSON{Outcome: o.Outcome, Published: p.Published, Source: p.Source,
+			Previous: p.Previous, Via: p.Via, Unchanged: p.Unchanged, Bundle: p.Bundle})
+	case OutcomeRejected:
+		return json.Marshal(rejectedJSON{Outcome: o.Outcome, Stage: p.Stage, Reason: o.Reason, Detail: p.Detail})
+	case OutcomeDiverged:
+		return json.Marshal(divergedJSON{Outcome: o.Outcome, Reason: o.Reason, Published: p.Published,
+			Source: p.Source})
+	case OutcomeExited:
+		code := 0
+		if c.Code != nil {
+			code = *c.Code
+		}
+		return json.Marshal(exitedJSON{Outcome: o.Outcome, Code: code, Tail: c.Tail, Dirty: c.Dirty})
+	case OutcomeTimeout:
+		return json.Marshal(timeoutJSON{Outcome: o.Outcome, Tail: c.Tail, Dirty: c.Dirty})
+	case OutcomeKilled:
+		return json.Marshal(killedJSON{Outcome: o.Outcome, Signal: c.Signal, Tail: c.Tail, Dirty: c.Dirty})
 	}
 	return json.Marshal(reasonJSON{Outcome: o.Outcome, Reason: o.Reason})
 }
@@ -174,6 +352,43 @@ func (o *Output) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		*o = Output{Outcome: r.Outcome, Reason: r.Reason}
+	case OutcomePushed:
+		var r pushedJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Push: &PushResult{Published: r.Published, Source: r.Source,
+			Previous: r.Previous, Via: r.Via, Unchanged: r.Unchanged, Bundle: r.Bundle}}
+	case OutcomeRejected:
+		var r rejectedJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Reason: r.Reason, Push: &PushResult{Stage: r.Stage, Detail: r.Detail}}
+	case OutcomeDiverged:
+		var r divergedJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Reason: r.Reason, Push: &PushResult{Published: r.Published, Source: r.Source}}
+	case OutcomeExited:
+		var r exitedJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Command: &CommandResult{Code: &r.Code, Tail: r.Tail, Dirty: r.Dirty}}
+	case OutcomeTimeout:
+		var r timeoutJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Command: &CommandResult{Tail: r.Tail, Dirty: r.Dirty}}
+	case OutcomeKilled:
+		var r killedJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Command: &CommandResult{Signal: r.Signal, Tail: r.Tail, Dirty: r.Dirty}}
 	default:
 		return fmt.Errorf("wire: unknown outcome %q", head.Outcome)
 	}
@@ -227,9 +442,123 @@ func ValidSecretName(name string) bool {
 // What the Agent can cause (a path segment, a host the url names) is not checked here: that is
 // output, never a refused request (ADR-0068).
 func (r *StartRequest) Validate() error {
-	if r.Kind != KindHTTP {
-		return fmt.Errorf("kind %q is not one this Effector runs", r.Kind)
+	if r.TimeoutMs <= 0 {
+		return errors.New("timeoutMs is not positive")
 	}
+	switch r.Kind {
+	case KindHTTP, KindUpload:
+		if r.Push != nil || r.Command != nil {
+			return fmt.Errorf("a %s start carries a push or a command", r.Kind)
+		}
+		return r.validateHTTP()
+	case KindPush:
+		if r.Push == nil || r.Command != nil || r.httpSet() {
+			return errors.New("a push start carries exactly its push part")
+		}
+		return r.Push.validate()
+	case KindCommand:
+		if r.Command == nil || r.Push != nil || r.httpSet() {
+			return errors.New("a command start carries exactly its command part")
+		}
+		return r.Command.validate()
+	}
+	return fmt.Errorf("kind %q is not one an Effector runs", r.Kind)
+}
+
+func (r *StartRequest) httpSet() bool {
+	return r.Method != "" || r.URL != nil || r.Path != nil || r.Headers != nil || r.Auth != nil ||
+		r.Body != nil || r.MaxBody != 0
+}
+
+var gitRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+
+// ValidBranch says whether name is a branch jr2 pushes or reads as data.
+func ValidBranch(name string) bool {
+	return gitRef.MatchString(name) && !strings.Contains(name, "..") && !strings.HasPrefix(name, "/") &&
+		!strings.HasPrefix(name, "-") && !strings.HasSuffix(name, "/") && !strings.HasSuffix(name, ".lock")
+}
+
+var fullSha = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// relative says whether p is a path relative to a root, with no `..` component.
+func relative(p string) bool {
+	return p != "" && !strings.HasPrefix(p, "/") && !slices.Contains(strings.Split(p, "/"), "..") &&
+		!strings.ContainsRune(p, 0)
+}
+
+func (r *RepoRef) validate() error {
+	for _, p := range []string{r.GitDir, r.Worktree} {
+		if !relative(p) {
+			return fmt.Errorf("repo path %q is not relative to the work root", p)
+		}
+	}
+	if !ValidSecretName(r.Cache) {
+		return fmt.Errorf("repo cache %q is not a cache key", r.Cache)
+	}
+	return nil
+}
+
+func (p *PushSpec) validate() error {
+	if err := p.Repo.validate(); err != nil {
+		return err
+	}
+	if p.URL == "" || strings.HasPrefix(p.URL, "-") {
+		return errors.New("push.url is empty or begins with -")
+	}
+	if !ValidBranch(p.Branch) {
+		return fmt.Errorf("push.branch %q is not a branch name", p.Branch)
+	}
+	if p.Credential == "" {
+		return errors.New("push.credential is empty")
+	}
+	if p.Pin != "" && !fullSha.MatchString(p.Pin) {
+		return fmt.Errorf("push.pin %q is not a full commit id", p.Pin)
+	}
+	if p.Squash != nil && strings.TrimSpace(*p.Squash) == "" {
+		return errors.New("push.squash is an empty message")
+	}
+	if p.Squash != nil && !p.Sign {
+		return errors.New("push.squash is only built with sign: the squashed commit's committer is the signer's")
+	}
+	if p.Last != nil && (!fullSha.MatchString(p.Last.Published) || !fullSha.MatchString(p.Last.Source)) {
+		return errors.New("push.last is not two full commit ids")
+	}
+	return nil
+}
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func (c *CommandSpec) validate() error {
+	if err := c.Repo.validate(); err != nil {
+		return err
+	}
+	if !ValidBranch(c.Branch) {
+		return fmt.Errorf("command.branch %q is not a branch name", c.Branch)
+	}
+	if c.Pin != "" && !fullSha.MatchString(c.Pin) {
+		return fmt.Errorf("command.pin %q is not a full commit id", c.Pin)
+	}
+	if len(c.Argv) == 0 || c.Argv[0] == "" {
+		return errors.New("command.argv is empty")
+	}
+	if len(c.Env) == 0 {
+		return errors.New("command.env names no secret: a command with none runs in the Harness container")
+	}
+	for name, ref := range c.Env {
+		if !envName.MatchString(name) || name == "PATH" || name == "HOME" {
+			return fmt.Errorf("command.env %q is not a variable the author may set", name)
+		}
+		if !ValidSecretName(ref.Secret) {
+			return fmt.Errorf("command.env.%s names %q, which is no secret name", name, ref.Secret)
+		}
+	}
+	if c.Tail <= 0 {
+		return errors.New("command.tail is not positive")
+	}
+	return nil
+}
+
+func (r *StartRequest) validateHTTP() error {
 	if !methods[r.Method] {
 		return fmt.Errorf("method %q is not one an http Effect may send", r.Method)
 	}
@@ -255,11 +584,22 @@ func (r *StartRequest) Validate() error {
 			return err
 		}
 	}
-	if r.Body != nil && r.Body.JSON != nil && r.Body.Text != nil {
-		return errors.New("body has both json and text")
+	if r.Body != nil {
+		set := 0
+		for _, b := range []bool{r.Body.JSON != nil, r.Body.Text != nil, r.Body.File != nil} {
+			if b {
+				set++
+			}
+		}
+		if set > 1 {
+			return errors.New("body sets more than one of json, text, file")
+		}
+		if f := r.Body.File; f != nil && !relative(f.Worktree) {
+			return fmt.Errorf("body.file.worktree %q is not relative to the work root", f.Worktree)
+		}
 	}
-	if r.TimeoutMs <= 0 {
-		return errors.New("timeoutMs is not positive")
+	if r.Kind == KindUpload && (r.Body == nil || r.Body.File == nil) {
+		return errors.New("an upload carries a Worktree file as its body")
 	}
 	if r.MaxBody <= 0 {
 		return errors.New("maxBody is not positive")
@@ -308,10 +648,19 @@ func (t Text) validate(at string) error {
 	return nil
 }
 
-// Secrets lists every secret the request names, in order, once each.
+// Secrets lists every secret the request names, in order, once each. A push names its
+// credential's files through the Effector's config, not here.
 func (r *StartRequest) Secrets() []string {
 	var names []string
 	seen := map[string]bool{}
+	if r.Command != nil {
+		for _, name := range slices.Sorted(maps.Keys(r.Command.Env)) {
+			if s := r.Command.Env[name].Secret; !seen[s] {
+				seen[s] = true
+				names = append(names, s)
+			}
+		}
+	}
 	add := func(t Text) {
 		for _, part := range t {
 			if part.Secret != nil && !seen[*part.Secret] {
