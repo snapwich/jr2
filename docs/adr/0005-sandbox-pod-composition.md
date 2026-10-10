@@ -1,4 +1,4 @@
-# The Sandbox pod's containers: Harness, Custodian, and an optional User Container
+# The Sandbox pod's containers: Harness, Custodian, an optional User Container, and an optional Sandbox Effector
 
 A Sandbox pod composes up to four containers around one shared worktree volume (`/work`):
 
@@ -34,7 +34,7 @@ A Sandbox pod composes up to four containers around one shared worktree volume (
     private mount namespace, where the Agent executes nothing. The human sshs in with agent forwarding, works, and the
     socket is gone on disconnect; at no point does it share a filesystem with code the Agent runs.
 - **Sandbox Effector** — jr2-composed sidecar, added at provision only when an Effect below the `workspace()` is placed
-  there — a `push`, an `upload` or a credentialed `command`
+  there — a `push` or an `upload` (a credentialed `command` is refused at `jr2 up`)
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md),
   [ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), which `jr2 up` reads off the Machines
   and declares in the pod's manifest beside its Held one. In the pod it is the container named `effector`. Its image is
@@ -77,12 +77,13 @@ The worktrees' remotes encode which hop each seat can make: `git fetch origin` a
 the remote with the cluster's credential (ADR-0053 — the hop the pod can make, from any seat, with no credential of its
 own), while origin's **push url** is the real remote in the Binding's own spelling — the attach sets it from the slot
 the Machine bound (ADR-0051), so a Machine that bound over ssh pushes over ssh even when the cache was cloned over
-https, and nothing else plumbs it. A push therefore succeeds exactly when a caller supplies the credential — a human's
-forwarded agent in the User Container — and never for the Agent, because the pod holds none (the credential-visibility
-story above, unchanged). Creating a pull request is a GitHub API call on top: the human's own `gh` login in their
-session. An UNATTENDED publish (workflow pushes a branch, opens a PR) is deliberately absent: it belongs to the
-Orchestrator, which already holds the git credential and can fetch a branch out of a pod without one
-(`ext::kubectl exec … git upload-pack`) — a future decision, not a pod-composition change.
+https, and nothing else plumbs it. A push from the Harness or the User Container therefore succeeds exactly when a
+caller supplies the credential — a human's forwarded agent in the User Container — and never for the Agent, because no
+container it executes in holds one (the credential-visibility story above, unchanged). An UNATTENDED publish is the
+Machine's `push()` Effect (ADR-0067): it runs in the Sandbox Effector, which holds the push credential of the
+`git.credentials` entry the Binding falls under (ADR-0051) and pushes to the Binding url, never to origin's push url
+from the Agent's config. The Orchestrator holds no push credential (ADR-0068). Opening a pull request is an `http`
+Effect the author writes; jr2 has no forge client.
 
 ## Sharing `/work` across uids
 
@@ -195,19 +196,21 @@ Container offers a human session — with its edges stated plainly:
 
 - The generic `Sandbox` CRD composes all of this as plain container specs
   ([ADR-0001](0001-operator-owned-generic-sandbox.md) holds — the operator stays agent-agnostic); the Orchestrator's
-  `kubectlSandbox` supplies the images. Absent a `user` entry in the spec, the pod runs two containers.
-- Every container carries a limit from the Workspace's Size (ADR-0060): the Custodian a fixed kit slice, the User
-  Container its split if stated, the Harness the rest. The Harness container alone mounts a memory-backed `/dev/shm`
-  (`sizeLimit` 25% of its share); the User Container keeps the pod's default.
+  `kubectlSandbox` supplies the images. The pod runs two containers, plus `user` when the spec names one and `effector`
+  when an Effect is placed there.
+- Every container but the Sandbox Effector carries a limit from the Workspace's Size (ADR-0060): the Custodian a fixed
+  kit slice, the User Container its split if stated, the Harness the rest. The Sandbox Effector carries no `resources`:
+  what share of the Size it gets is not decided, so it is bounded by the node, not by the Size. The Harness container
+  alone mounts a memory-backed `/dev/shm` (`sizeLimit` 25% of its share); the User Container keeps the pod's default.
 - jr2 does not gate readiness on the User Container and never restarts the pod for it; it lives and dies by the pod's
   own policy.
-- **Operator**: `runAsNonRoot` moves from the pod level to the two jr2-owned containers (the Custodian states its own
-  context: non-root, read-only root filesystem, no capabilities); the hardened-by-default rule for sidecar specs exempts
-  the `user` container; the pod gains `fsGroup` (`spec.workGroup ?? 2000`). **Orchestrator**: the attach script stamps
-  the default ACL on each repo root _before_ the clone that fills it — inheritance happens at creation, never
-  retroactively. **Harness image**: vendors the static `work-acl` into `/opt/jr2/bin` (ADR-0037's surface). **Harness**:
-  sets `umask 002` at startup. `shareProcessNamespace` stays off — ever — because the credential-visibility boundary
-  depends on it.
+- **Operator**: `runAsNonRoot` moves from the pod level to the jr2-owned containers — the Harness, the Custodian and the
+  Sandbox Effector (the Custodian states its own context: non-root, read-only root filesystem, no capabilities); the
+  hardened-by-default rule for sidecar specs exempts the `user` container; the pod gains `fsGroup`
+  (`spec.workGroup ?? 2000`). **Orchestrator**: the attach script stamps the default ACL on each repo root _before_ the
+  clone that fills it — inheritance happens at creation, never retroactively. **Harness image**: vendors the static
+  `work-acl` into `/opt/jr2/bin` (ADR-0037's surface). **Harness**: sets `umask 002` at startup. `shareProcessNamespace`
+  stays off — ever — because the credential-visibility boundary depends on it.
 - The Harness container's `/work` writes being group-writable widens nothing: every process that could abuse group
   access already runs in the same trust domain, and the work group exists only inside this pod.
 - **Routable access is a follow-up, deliberately untaken**: the operator's Service serves the Harness at `:8080`, and a
