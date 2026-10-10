@@ -33,10 +33,12 @@ unchanged.
 - **jr2 splits the Size inside the pod.** The Custodian takes a fixed kit slice (64Mi, 50m). The User Container takes
   its split if the Machine states one — `user` widens from a string to
   `{ image, resources?: { limits: { memory?, cpu? } } }` (ADR-0005 foresaw the widening) — and otherwise shares the pod
-  budget with no limit of its own. The Harness container gets the rest as its own limit, so an OOM stays per container
-  where it can. Pod-level resources (KEP-2837) hold the whole-pod ceiling. A server with the PodLevelResources gate off
-  drops them without a word, so `jr2 up` dry-runs a pod that states them and refuses the cluster when they are gone.
-  `jr2 up` refuses a split that leaves the Harness below its floor (256Mi) and names the line.
+  budget with no limit of its own. The Sandbox Effector, in a pod that has one
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), has no split and no limit of its own
+  and shares the pod budget the same way. The Harness container gets the rest as its own limit, so an OOM stays per
+  container where it can. Pod-level resources (KEP-2837) hold the whole-pod ceiling. A server with the PodLevelResources
+  gate off drops them without a word, so `jr2 up` dry-runs a pod that states them and refuses the cluster when they are
+  gone. `jr2 up` refuses a split that leaves the Harness below its floor (256Mi) and names the line.
 - **Kit numbers.** Default Size: memory 2Gi, cpu 1. Node gives each process a V8 heap of about 55% of its container
   limit, and hono's `tsc` aborted with a heap error below about 1.1Gi, so 1Gi fails a common task. 2Gi covers `tsc` +
   vitest, `cargo build` and Playwright at 2 workers; Playwright at 4 workers and large monorepos state a Size. No

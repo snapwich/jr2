@@ -22,15 +22,17 @@ import (
 const awsSecret = "aws-secret-value-0123456789"
 
 // A Sandbox Effector: the binary with a read-only view of the Agent's /work, the node caches, a
-// git credential and a secret, as the Orchestrator composes its container.
+// git credential and two secrets, as the Orchestrator composes its container: one mount holds the
+// secrets and, at `@git`, the push credentials — a secret named `git` beside them included.
 func startSandboxEffector(t *testing.T, p *gittest.Pod) *effector {
 	t.Helper()
 	dir := t.TempDir()
-	must(t, os.MkdirAll(filepath.Join(dir, "secrets"), 0o700))
-	must(t, os.MkdirAll(filepath.Join(dir, "git", "push"), 0o700))
+	gitDir := filepath.Join(dir, "secrets", "@git")
+	must(t, os.MkdirAll(filepath.Join(gitDir, "push"), 0o700))
 	must(t, os.WriteFile(filepath.Join(dir, "key"), []byte(placementKey+"\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "secrets", "aws"), []byte(awsSecret+"\n"), 0o400))
-	must(t, os.WriteFile(filepath.Join(dir, "git", "push", "token"), []byte("unused-token-value\n"), 0o400))
+	must(t, os.WriteFile(filepath.Join(dir, "secrets", "git"), []byte("git-named-secret-value\n"), 0o400))
+	must(t, os.WriteFile(filepath.Join(gitDir, "push", "token"), []byte("unused-token-value\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "effector.json"),
 		[]byte(`{"version":1,"placement":"sandbox","targets":[],"git":[{"match":"*","push":{"token":"push"}}]}`), 0o400))
 	listen := freePort(t)
@@ -43,7 +45,7 @@ func startSandboxEffector(t *testing.T, p *gittest.Pod) *effector {
 		"JR2_EFFECTOR_SECRETS="+filepath.Join(dir, "secrets"),
 		"JR2_EFFECTOR_WORK="+p.Work,
 		"JR2_EFFECTOR_REPOS="+filepath.Dir(p.Cache),
-		"JR2_EFFECTOR_GIT="+filepath.Join(dir, "git"),
+		"JR2_EFFECTOR_GIT="+gitDir,
 		"JR2_EFFECTOR_SCRATCH="+filepath.Join(dir, "scratch"),
 		"POD_NAME=sandbox-effector",
 		"POD_IP=127.0.0.1",

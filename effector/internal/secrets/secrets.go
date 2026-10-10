@@ -36,15 +36,17 @@ func Read(dir string) (map[string]string, error) {
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		if !wire.ValidSecretName(name) {
-			return nil, fmt.Errorf("secret file %q is not a secret name", name)
-		}
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			return nil, fmt.Errorf("secret %s: %w", name, err)
 		}
+		// A directory is no secret: the push credentials sit in one (`@git`, a name no secret can
+		// take), and the kubelet's own are skipped above.
 		if info.IsDir() {
 			continue
+		}
+		if !wire.ValidSecretName(name) {
+			return nil, fmt.Errorf("secret file %q is not a secret name", name)
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {

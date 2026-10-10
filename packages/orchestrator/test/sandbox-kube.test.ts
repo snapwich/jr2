@@ -22,7 +22,12 @@ import { EMPTY_HELD, leafStem, standIn, workspaceHeldPod, type HeldManifest } fr
 import { imageContextDigest } from "../src/images.ts";
 import { kubeClient } from "../src/kube-client.ts";
 import { repoKey } from "../src/repo-identity.ts";
-import { kubeSandbox as kubePort, memoryFaultOf, type KubeSandboxOptions } from "../src/sandbox-kube.ts";
+import {
+  kubeSandbox as kubePort,
+  memoryFaultOf,
+  sandboxEffectorContainer,
+  type KubeSandboxOptions,
+} from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
 import { effectorKey, harnessToken, harnessTokenDigest } from "../src/tokens.ts";
 import { effectorManifestKey, sandboxEffectorObjectsOf, sandboxEffectorService } from "../src/sandbox-effector.ts";
@@ -1152,6 +1157,10 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   assert.ok(effector, "the effector sidecar");
   assert.equal(effector.image, "registry.example/tools:1", "the image the workspace() names");
   assert.deepEqual(effector.command, ["/opt/jr2/bin/effector"]);
+  // No limit of its own: it shares the pod's Size ceiling (pod-level resources), as a User
+  // Container with no split does (ADR-0005, ADR-0060) — never bounded by the node alone.
+  assert.equal(effector.resources, undefined);
+  assert.ok(crOf(placed.calls).spec.podResources?.limits?.memory, "the pod's whole Size bounds it");
   const mounts = Object.fromEntries(
     effector.volumeMounts.map((m: { mountPath: string; readOnly?: boolean }) => [m.mountPath, m.readOnly === true]),
   );
@@ -2118,4 +2127,46 @@ test("a Sandbox Effector's Service name: `fx-` in place of `ws-`, so as long as 
   assert.equal(svc.length, name.length);
   assert.ok(svc.startsWith("fx-") && svc !== name);
   assert.ok(sandboxEffectorService("sb-fx").length <= 63);
+});
+
+test("a secret named `git` and a push's credentials take apart paths in the Effector's mount, where it reads them", () => {
+  const plan = {
+    placement: "sandbox" as const,
+    pod: workspaceHeldPod({ workflow: "w", path: [] }),
+    label: "w",
+    secrets: [
+      { name: "git", source: { kind: "literal" as const } },
+      { name: "deploy", source: { kind: "secret" as const, secret: "team", key: "git" } },
+    ],
+    values: { git: "abcdefgh12345" },
+    targets: [],
+    git: [{ match: "*", push: { token: "push-0" } }],
+    gitFiles: [
+      { dir: "push-0", file: "token", source: { kind: "literal" as const, value: "T" } },
+      { dir: "sign-0", file: "identity", source: { kind: "secret" as const, secret: "team", key: "identity" } },
+    ],
+    effects: ["w/publish", "w/send"],
+  };
+  const { manifest } = sandboxEffectorObjectsOf(plan);
+  const paths = manifest.sources.flatMap((s) => s.secret.items.map((i) => i.path));
+  assert.ok(paths.includes("git"), "the secret is the file of its name");
+  // No path is a file where another needs a directory: one projected volume holds every one.
+  for (const p of paths) {
+    for (const q of paths) assert.ok(p === q || !q.startsWith(`${p}/`), `${p} is a file and a directory of ${q}`);
+  }
+  const container = sandboxEffectorContainer({
+    image: "img",
+    keys: [],
+    securityContext: {},
+    secretVolume: "effector-secrets",
+    keyVolume: "effector-own",
+    scratchVolume: "effector-scratch",
+  });
+  const gitVar = container.env.find((e) => e.name === "JR2_EFFECTOR_GIT");
+  const gitDir = gitVar && "value" in gitVar ? gitVar.value : "";
+  assert.ok(gitDir.startsWith("/run/jr2/secrets/"));
+  const rel = gitDir.slice("/run/jr2/secrets/".length);
+  const creds = paths.filter((p) => p.startsWith(`${rel}/`));
+  assert.deepEqual(creds.sort(), [`${rel}/push-0/token`, `${rel}/sign-0/identity`]);
+  assert.ok(!paths.some((p) => !p.startsWith(`${rel}/`) && p.split("/")[0] === rel), "no secret takes the git dir");
 });

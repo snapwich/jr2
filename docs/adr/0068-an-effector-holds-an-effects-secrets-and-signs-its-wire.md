@@ -204,7 +204,8 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   - the **manifest** `effector-<pod>.json` in `jr2-held` beside the pod's Held manifest: names only — the projected
     sources of the Effector's `/run/jr2/secrets`: that Secret's keys, each `valueFrom` key of the user's own Secret and
     each key of a deploy or signing key a push spends (`identity`, `known_hosts`, `private.asc`), all by reference, at
-    `git/<dir>/<file>` for a credential.
+    `@git/<dir>/<file>` for a credential — a directory no secret's file can take, since `@` is no character of a
+    secret's name.
 
   The provision reads the pod's manifest, as it reads its Held one, and adds the `effector` container when one is there
   (ADR-0005): its image is the `workspace()`'s `effector: { image }`, resolved like the User Container's, or the Sandbox

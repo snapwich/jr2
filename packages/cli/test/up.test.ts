@@ -3399,7 +3399,7 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
           name: `jr2-effector-${pod}`,
           items: [
             { key: "secret.aws", path: "aws" },
-            { key: "git.push-0.token", path: "git/push-0/token" },
+            { key: "git.push-0.token", path: "@git/push-0/token" },
           ],
         },
       },

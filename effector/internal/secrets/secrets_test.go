@@ -39,6 +39,30 @@ func TestReadFollowsTheKubeletsSymlinks(t *testing.T) {
 	}
 }
 
+// One mount holds both, as the provision projects it: a secret named `git` is a file, and the push
+// credentials are the `@git` directory beside it.
+func TestASecretNamedGitAndThePushCredentialsShareTheMount(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "git", "git-secret-value")
+	if err := os.MkdirAll(filepath.Join(dir, "@git", "push-0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "@git", "push-0"), "token", "push-token-value")
+	got, err := Read(dir)
+	if err != nil || len(got) != 1 || got["git"] != "git-secret-value" {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	creds, err := ReadGit(filepath.Join(dir, "@git"))
+	if err != nil || creds["git:push-0/token"] != "push-token-value" {
+		t.Fatalf("got %v, %v", creds, err)
+	}
+	// A file whose name is no secret's is still refused.
+	write(t, dir, "@other", "some-value-here")
+	if _, err := Read(dir); err == nil || !strings.Contains(err.Error(), "not a secret name") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestReadRefusesAShortOrEmptyValueByName(t *testing.T) {
 	for value, want := range map[string]string{"short": "shorter than 8", "\n": "is empty"} {
 		dir := t.TempDir()

@@ -91,6 +91,7 @@ import { readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-se
 import {
   effectorManifestKey,
   readSandboxEffectorManifest,
+  SANDBOX_EFFECTOR_GIT_DIR,
   sandboxEffectorKeySecret,
   sandboxEffectorService,
   type SandboxEffectorManifest,
@@ -222,7 +223,7 @@ export function sandboxEffectorContainer(opts: {
       env("JR2_EFFECTOR_KEY", "/run/jr2/effector/key"),
       env("JR2_EFFECTOR_CONFIG", "/run/jr2/effector/effector.json"),
       env("JR2_EFFECTOR_SECRETS", "/run/jr2/secrets"),
-      env("JR2_EFFECTOR_GIT", "/run/jr2/secrets/git"),
+      env("JR2_EFFECTOR_GIT", `/run/jr2/secrets/${SANDBOX_EFFECTOR_GIT_DIR}`),
       env("JR2_EFFECTOR_SCRATCH", "/run/jr2/scratch"),
       env("HOME", "/run/jr2/scratch"),
       ...(opts.caVolume ? [env("JR2_CA_FILE", `${EFFECTOR_CA_MOUNT}/ca.crt`)] : []),
