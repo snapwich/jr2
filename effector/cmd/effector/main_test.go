@@ -46,7 +46,26 @@ const jiraSecret = "jira-secret-value-0123"
 type effector struct {
 	cmd  *exec.Cmd
 	base string
-	out  *strings.Builder
+	out  *lockedBuffer
+}
+
+// lockedBuffer is the process's combined output: exec's copying goroutine writes it while a test
+// reads it, so each side takes the lock.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 func startEffector(t *testing.T, upstream string, extra ...string) *effector {
@@ -77,7 +96,7 @@ func startEffectorFor(t *testing.T, scheme, host, port string, extra ...string) 
 		"POD_IP=127.0.0.1",
 	)
 	cmd.Env = append(cmd.Env, extra...)
-	out := &strings.Builder{}
+	out := &lockedBuffer{}
 	cmd.Stdout = out
 	cmd.Stderr = out
 	must(t, cmd.Start())
