@@ -54,6 +54,7 @@ import {
   custodianBootstrap,
   custodianRef,
   custodianScript,
+  CUSTODIAN_PROGRAM,
   customizeLine,
   defaultImageContext,
   heldSecretsOf,
@@ -143,6 +144,7 @@ import {
   holdsAny,
   LABEL_HELD_POD,
   type HeldObjects,
+  type CustodianFiles,
   type HeldPodObjects,
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
@@ -1252,23 +1254,25 @@ async function resolveHeld(
     models: opts.models,
   });
   for (const warning of warnings) activity(io, `warning: ${warning}`);
-  // Each pod's own: the bindings of the names it holds, their literal values, and its Custodian's
-  // config rendered from that manifest alone.
-  const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
+  // Each pod's own: the bindings of the names it holds and their literal values. Its Custodian's
+  // files are rendered by whoever makes the pod — here for the Instance Harness alone; the
+  // Orchestrator at provision for a Sandbox, from the same manifest (ADR-0059).
   const pods: HeldPodObjects[] = opts.pods.map((plan) => {
     const own: HeldManifest = { version: 1, secrets: manifest.secrets.filter((b) => plan.names.includes(b.name)) };
     const literals = Object.fromEntries(
       own.secrets.filter((b) => b.source.kind === "literal").map((b) => [b.name, values[b.name] as string]),
     );
-    return {
-      pod: plan.pod,
-      manifest: own,
-      values: literals,
-      bootstrap: JSON.stringify(custodianBootstrap(own, orchestrator)),
-      script: custodianScript(own),
-    };
+    return { pod: plan.pod, manifest: own, values: literals };
   });
-  if (manifest.secrets.length === 0) return { objects: { pods, leaves: {} } };
+  const instancePod = pods.find((p) => p.pod === INSTANCE_HARNESS_HELD_POD);
+  if (!instancePod)
+    throw new Error("jr2 up placed no held secrets for the Instance Harness it converges — a jr2 defect");
+  const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
+  const instance: CustodianFiles = {
+    bootstrap: JSON.stringify(custodianBootstrap(instancePod.manifest, orchestrator)),
+    script: custodianScript(instancePod.manifest),
+  };
+  if (manifest.secrets.length === 0) return { objects: { pods, instance, leaves: {} } };
   for (const s of manifest.secrets) {
     const where = s.hosts.map((h) => (h.port === 443 ? h.host : `${h.host}:${h.port}`)).join(", ");
     const source = s.source.kind === "literal" ? "literal" : `secret ${s.source.secret}/${s.source.key}`;
@@ -1296,7 +1300,7 @@ async function resolveHeld(
     }
   }
   return {
-    objects: { pods, ca, leaves },
+    objects: { pods, instance, ca, leaves },
     bundles: trustBundles(ca.cert, opts.caBundle),
   };
 }
@@ -1321,8 +1325,10 @@ function heldDigest(key: Buffer, all: HeldObjects, held: HeldPodObjects, valueDi
   for (const s of held.manifest.secrets) {
     if (s.source.kind === "secret") mac.update(`${s.name}<-${valueDigest(s.source.secret, s.source.key) ?? ""}`);
   }
-  mac.update(held.bootstrap);
-  mac.update(held.script);
+  // Its Custodian's files, and the program they load: Envoy reads all three once at start.
+  mac.update(all.instance.bootstrap);
+  mac.update(all.instance.script);
+  mac.update(CUSTODIAN_PROGRAM);
   return mac.digest("base64url").slice(0, 32);
 }
 

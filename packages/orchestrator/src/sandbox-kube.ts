@@ -79,8 +79,15 @@ import {
   type HarnessEnvVar,
   type SandboxPlacement,
 } from "./config.ts";
-import { custodianComposition, type CustodianComposition } from "./custodian.ts";
-import { readHeldManifest, workspaceHeldPod } from "./held-secrets.ts";
+import {
+  custodianBootstrap,
+  custodianComposition,
+  custodianScript,
+  CUSTODIAN_BOOTSTRAP_KEY,
+  CUSTODIAN_SCRIPT_KEY,
+  type CustodianComposition,
+} from "./custodian.ts";
+import { readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
 import {
   CONVERSATIONS_DIR,
@@ -90,10 +97,13 @@ import {
   heldManifestKey,
   IMAGES_KEY,
   IMAGES_MOUNT,
+  ORCHESTRATOR_PORT,
+  ORCHESTRATOR_SERVICE,
   PRIORITY_CLASS_SANDBOX,
   REPOS_MOUNT,
+  sandboxCustodianConfigMap,
 } from "./names.ts";
-import { SANDBOXES, SECRETS, kubeClient, type KubeClient, type KubeObject } from "./kube-client.ts";
+import { CONFIGMAPS, SANDBOXES, SECRETS, kubeClient, type KubeClient, type KubeObject } from "./kube-client.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import type { RepoResources } from "./repos.ts";
 import { resolveSize, splitSize, type Size, type SizeSplit } from "./size.ts";
@@ -714,6 +724,43 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   };
 
   /**
+   * This Sandbox's Custodian files — Envoy's bootstrap and the `HELD` table — rendered HERE, from
+   * the pod's manifest, into a ConfigMap owned by the CR like its token (ADR-0059). Who makes the
+   * pod renders its files: `jr2 up` declares what each pod holds and nothing per Workspace lands in
+   * `jr2-held`, so an Instance with many Workspaces never grows one object toward its 1 MiB limit.
+   * Names, hosts, headers — never a value — so a ConfigMap is the right kind. Same owner, same
+   * idempotence and same race as the token: the kubelet retries the mount until this lands.
+   */
+  const applyCustodianConfig = async (name: string, owner: KubeObject, manifest: HeldManifest): Promise<void> => {
+    const uid = owner.metadata?.uid;
+    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its Custodian ConfigMap`);
+    const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${ns}.svc`, port: ORCHESTRATOR_PORT };
+    await kube().apply(CONFIGMAPS, ns, {
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: {
+        name: sandboxCustodianConfigMap(name),
+        namespace: ns,
+        labels: { "jr2.dev/sandbox": name },
+        ownerReferences: [
+          {
+            apiVersion: "core.jr2.dev/v1alpha1",
+            kind: "Sandbox",
+            name,
+            uid,
+            controller: true,
+            blockOwnerDeletion: false,
+          },
+        ],
+      },
+      data: {
+        [CUSTODIAN_BOOTSTRAP_KEY]: JSON.stringify(custodianBootstrap(manifest, orchestrator)),
+        [CUSTODIAN_SCRIPT_KEY]: custodianScript(manifest),
+      },
+    });
+  };
+
+  /**
    * Every Repo the provision names, resolved to its identity and key — and FENCED (ADR-0051). A
    * per-run url is the run's input; one no `git.credentials` entry admits is refused here, before
    * anything is read or applied, naming the list. A bound url is admitted without a match: it is
@@ -897,6 +944,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       const custodian = custodianComposition(manifest, {
         image: refs.custodian,
         pod,
+        config: sandboxCustodianConfigMap(req.name),
         token: { secret: secretName(req.name), key: "JR2_SANDBOX_TOKEN" },
         sandbox: req.name,
         caBundle: opts.caBundle === true,
@@ -919,7 +967,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // be reached fails the apply below at once, rather than hanging on a list.
       sandboxes();
       const applied = await kube().apply(SANDBOXES, ns, cr);
-      await applyTokenSecret(req.name, applied); // after the CR: its uid is the Secret's owner
+      // After the CR: its uid owns both, so they go when it goes.
+      await applyTokenSecret(req.name, applied);
+      await applyCustodianConfig(req.name, applied, manifest);
 
       // The wait for a node, with no deadline (ADR-0064): jr2 cannot tell "full now" from "never
       // fits", so a bound is the Machine's `after`. Its reason — the scheduler's, or a quota's

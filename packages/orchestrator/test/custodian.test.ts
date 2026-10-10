@@ -187,15 +187,22 @@ test("the script: a generated table of names, headers, paths and targets in fron
     script,
     /HELD\.credential = \{ "authorization", "x-api-key", "x-goog-api-key", "api-key", "proxy-authorization" \}/,
   );
-  assert.match(script, /function envoy_on_request/, "the fixed half follows");
-  // The values are read from the mounted files at start; the script names only where.
-  assert.match(script, /\/etc\/jr2\/custodian\/values\//);
+  // The fixed half is not copied per pod: the table ends by loading the program from the config
+  // mount, where every pod's volume projects it from `jr2-held` (one copy per Instance).
+  assert.match(script, /\ndofile\("\/etc\/jr2\/custodian\/config\/program\.lua"\)\n$/);
+  assert.ok(!/function envoy_on_request/.test(script), "the program is loaded, never inlined");
+  assert.ok(script.length < 2048, `a pod's own script stays small: ${script.length} bytes`);
+  assert.match(CUSTODIAN_PROGRAM, /function envoy_on_request/);
+  // The values are read from the mounted files at start; the program names only where.
+  assert.match(CUSTODIAN_PROGRAM, /\/etc\/jr2\/custodian\/values\//);
+  assert.ok(!/jr2-held-/.test(script) && !/sk-/.test(script), "never a value, never a Stand-in");
 });
 
 test("composition, nothing held: the Harness gets the Custodian's address and the token's Stand-in, and no proxy", () => {
   const c = custodianComposition(EMPTY_HELD, {
     image: "envoy:c1",
     pod: "ws-0123456789abcdef",
+    config: "ws-1-custodian",
     token: { secret: "ws-1-token", key: "JR2_SANDBOX_TOKEN" },
     sandbox: "ws-1",
     caBundle: false,

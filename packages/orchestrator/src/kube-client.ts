@@ -45,6 +45,7 @@ export type KubeKind = { group: string; version: string; plural: string };
 export const SANDBOXES: KubeKind = { group: "core.jr2.dev", version: "v1alpha1", plural: "sandboxes" };
 export const REPOS: KubeKind = { group: "core.jr2.dev", version: "v1alpha1", plural: "repos" };
 export const SECRETS: KubeKind = { group: "", version: "v1", plural: "secrets" };
+export const CONFIGMAPS: KubeKind = { group: "", version: "v1", plural: "configmaps" };
 
 /** The object fields every kind shares — what the client and the watch read off any of them. */
 export type KubeObject = {

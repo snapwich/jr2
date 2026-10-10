@@ -5,11 +5,16 @@
 // Its engine is Envoy, the upstream distroless image pinned by digest: jr2 deploys it and never
 // builds it (ADR-0038). This module is the jr2 half — everything Envoy is told, and where:
 //
-//   custodianBootstrap(...)   the static bootstrap `jr2 up` writes into the `jr2-held` ConfigMap,
-//                             one per pod, from that pod's manifest:
+//   custodianBootstrap(...)   the static bootstrap, one per pod, from that pod's manifest:
 //                             no admin listener, no xDS, one internal listener per bound host
-//   custodianScript(...)      the Lua the bootstrap runs: `custodian.lua`, with a generated table
-//                             of names, headers, paths and targets in front — never a value
+//   custodianScript(...)      the Lua the bootstrap runs: a generated table of names, headers,
+//                             paths and targets — never a value — then `dofile` of the program
+//   CUSTODIAN_PROGRAM         `custodian.lua` as written: in `jr2-held` once per Instance
+//
+// Who renders the two per-pod files is who makes the pod: the Orchestrator at provision, into a
+// ConfigMap the Sandbox CR owns; `jr2 up` for the Instance Harness. `jr2 up` DECLARES — each pod's
+// manifest, the program — and nothing rendered per pod lands in a shared object (a ConfigMap
+// stops at 1 MiB; a per-pod copy of Envoy's files reached it at nine Workspaces).
 //   custodianComposition(...) what a Harness pod gains: the Custodian container, its volumes, and
 //                             the Harness container's env and mounts. BOTH placements call it —
 //                             `kubeSandbox` per provision, `instanceHarnessObjects` at converge —
@@ -35,8 +40,7 @@ import {
   CUSTODIAN_CONTROL_PORT,
   CUSTODIAN_HEALTH_PORT,
   CUSTODIAN_PORT,
-  custodianBootstrapKey,
-  custodianScriptKey,
+  CUSTODIAN_PROGRAM_KEY,
   HELD_CONFIGMAP,
   HELD_TLS_SECRET,
   heldSecretsSecret,
@@ -66,8 +70,10 @@ export function custodianRef(kitRegistry?: string): string {
 export const CUSTODIAN_VALUES = "/etc/jr2/custodian/values";
 export const CUSTODIAN_TLS = "/etc/jr2/custodian/tls";
 export const CUSTODIAN_CONFIG = "/etc/jr2/custodian/config";
-/** The two files the Custodian reads, under its config mount — from its pod's two keys of the
- * `jr2-held` ConfigMap (`custodianBootstrapKey`, `custodianScriptKey`). */
+/** The files the Custodian reads under its config mount: its own pod's rendered bootstrap and
+ * script (the two keys of the pod's Custodian ConfigMap — `sandboxCustodianConfigMap`,
+ * `INSTANCE_CUSTODIAN_CONFIGMAP`), and the fixed program the script loads, projected from
+ * `jr2-held` (`CUSTODIAN_PROGRAM_KEY`). */
 export const CUSTODIAN_BOOTSTRAP_KEY = "envoy.json";
 export const CUSTODIAN_SCRIPT_KEY = "custodian.lua";
 
@@ -725,8 +731,11 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
 
 // ---- the script ---------------------------------------------------------------------------------
 
-/** `custodian.lua` beside this module — the fixed half of the script. */
-const SCRIPT = readFileSync(new URL("./custodian.lua", import.meta.url), "utf8");
+/** `custodian.lua` beside this module — the fixed half of the script, as written. `jr2 up` puts it
+ * in `jr2-held` once (`CUSTODIAN_PROGRAM_KEY`); every pod's own script loads it from the config
+ * mount. The per-pod half is the table alone, so a pod's rendered files stay small and nothing
+ * fixed is copied per Workspace. */
+export const CUSTODIAN_PROGRAM: string = readFileSync(new URL("./custodian.lua", import.meta.url), "utf8");
 
 /** A Lua string literal. Every string that reaches here passed `heldSecretsOf`'s rules (names,
  * header tokens, printable paths), so escaping the two characters Lua gives meaning to is enough. */
@@ -739,10 +748,11 @@ function luaList(values: readonly string[]): string {
 }
 
 /**
- * The script the Custodian runs: a generated `HELD` table in front of `custodian.lua`. The table
- * names every secret this pod holds — the Sandbox token first, then the manifest's — with the
- * headers and paths each may ride and the targets each is bound to. It never holds a value: the
- * script reads those from the mounted files at start.
+ * The script the Custodian runs: a generated `HELD` table, then `dofile` of the fixed program
+ * (`CUSTODIAN_PROGRAM`, mounted beside it from `jr2-held`). The table names every secret this pod
+ * holds — the Sandbox token first, then the manifest's — with the headers and paths each may ride
+ * and the targets each is bound to. It never holds a value: the program reads those from the
+ * mounted files at start.
  */
 export function custodianScript(manifest: HeldManifest): string {
   const lines = [
@@ -760,7 +770,10 @@ export function custodianScript(manifest: HeldManifest): string {
     const refs = t.secrets.map((s) => `HELD.secrets[${manifest.secrets.indexOf(s) + 2}]`);
     lines.push(`HELD.targets[${lua(t.key)}] = { ${refs.join(", ")} }`);
   }
-  return `${lines.join("\n")}\n\n${SCRIPT}`;
+  // `dofile`, not a copy: Envoy's Lua opens the standard libraries (the program already reads its
+  // values with `io`), and the program's top-level code runs here, after the table it reads.
+  lines.push(`dofile(${lua(`${CUSTODIAN_CONFIG}/${CUSTODIAN_PROGRAM_KEY}`)})`);
+  return `${lines.join("\n")}\n`;
 }
 
 // ---- the composition ----------------------------------------------------------------------------
@@ -769,8 +782,12 @@ export type CustodianCompositionOptions = {
   /** The Custodian's resolved ref (`custodianRef`, from the image map). */
   image: string;
   /** The pod whose held objects these are (ADR-0059): `INSTANCE_HARNESS_HELD_POD`, or a Workspace's
-   * `workspaceHeldPod` — its manifest, its bootstrap and script, its literal values' Secret. */
+   * `workspaceHeldPod` — its manifest and its literal values' Secret. */
   pod: string;
+  /** The ConfigMap with THIS pod's rendered `envoy.json` and `custodian.lua` — written by whoever
+   * makes the pod: the Orchestrator at provision (`sandboxCustodianConfigMap`, owned by the CR),
+   * `jr2 up` for the Instance Harness (`INSTANCE_CUSTODIAN_CONFIGMAP`). */
+  config: string;
   /** Where the Sandbox token lives: a Sandbox's `<name>-token` Secret, or the Instance Harness's key
    * of `jr2-instance`. Mounted into the Custodian alone (ADR-0013). */
   token: { secret: string; key: string };
@@ -864,14 +881,22 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
         ],
       },
     },
-    // This pod's own bootstrap and script, under the names Envoy is started with.
+    // This pod's own bootstrap and script, under the names Envoy is started with, beside the fixed
+    // program the script loads — the one thing every pod shares, from `jr2-held`.
     {
       name: "custodian-config",
-      configMap: {
-        name: HELD_CONFIGMAP,
-        items: [
-          { key: custodianBootstrapKey(opts.pod), path: CUSTODIAN_BOOTSTRAP_KEY },
-          { key: custodianScriptKey(opts.pod), path: CUSTODIAN_SCRIPT_KEY },
+      projected: {
+        sources: [
+          {
+            configMap: {
+              name: opts.config,
+              items: [
+                { key: CUSTODIAN_BOOTSTRAP_KEY, path: CUSTODIAN_BOOTSTRAP_KEY },
+                { key: CUSTODIAN_SCRIPT_KEY, path: CUSTODIAN_SCRIPT_KEY },
+              ],
+            },
+          },
+          { configMap: { name: HELD_CONFIGMAP, items: [{ key: CUSTODIAN_PROGRAM_KEY, path: CUSTODIAN_PROGRAM_KEY }] } },
         ],
       },
     },

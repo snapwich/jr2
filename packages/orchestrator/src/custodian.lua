@@ -1,11 +1,12 @@
 -- The Custodian's decisions (ADR-0059), run by Envoy's Lua filter on every listener it owns.
 --
 -- Envoy carries the bytes: the CONNECT listener, TLS on both sides, the upstream pools, streaming.
--- This script makes every choice about a credential, and nothing else. `jr2 up` prepends a
--- generated `HELD` table (names, headers, paths, bound targets — never a value) and ships the
--- whole file in the `jr2-held` ConfigMap. Envoy loads it once per Lua state at start, so the
--- top-level code below runs before any listener serves: a value that is missing or cannot ride a
--- header stops the start-up with a line that names the secret, never the value.
+-- This script makes every choice about a credential, and nothing else. It ships once per Instance
+-- in the `jr2-held` ConfigMap (`program.lua`); each pod's own `custodian.lua` is a generated `HELD`
+-- table (names, headers, paths, bound targets — never a value) that ends by loading this file.
+-- Envoy loads that once per Lua state at start, so the top-level code below runs before any
+-- listener serves, with `HELD` already set: a value that is missing or cannot ride a header stops
+-- the start-up with a line that names the secret, never the value.
 --
 -- Four roles, one per route family, read from the route's metadata:
 --

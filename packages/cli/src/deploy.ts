@@ -15,8 +15,11 @@ import {
   CONVERSATIONS_DIR_ENV,
   CONVERSATIONS_VOLUME,
   custodianComposition,
-  custodianBootstrapKey,
-  custodianScriptKey,
+  CUSTODIAN_BOOTSTRAP_KEY,
+  CUSTODIAN_PROGRAM,
+  CUSTODIAN_PROGRAM_KEY,
+  CUSTODIAN_SCRIPT_KEY,
+  INSTANCE_CUSTODIAN_CONFIGMAP,
   GIT_SSH_SECRET,
   HELD_CA_SECRET,
   HELD_CONFIGMAP,
@@ -225,10 +228,10 @@ export type HeldPodObjects = {
   /** Its literal values, by name — for its `jr2-held-secrets-<pod>` Secret; never in the manifest,
    * never in a ConfigMap. */
   values: Record<string, string>;
-  /** Its Custodian's rendered bootstrap (JSON) and script. */
-  bootstrap: string;
-  script: string;
 };
+
+/** A Custodian's two rendered files: Envoy's bootstrap (JSON) and the `HELD` table script. */
+export type CustodianFiles = { bootstrap: string; script: string };
 
 /**
  * What `jr2 up` resolved about held secrets (ADR-0059), ready to become objects. Values appear in
@@ -238,6 +241,9 @@ export type HeldPodObjects = {
 export type HeldObjects = {
   /** Every Harness pod the walk found, each with what its Custodian holds. */
   pods: HeldPodObjects[];
+  /** The Instance Harness's Custodian files — the one pod `jr2 up` makes, so the one it renders
+   * for; a Sandbox's are rendered by the Orchestrator at provision (`kubeSandbox`). */
+  instance: CustodianFiles;
   /** The per-Instance CA — kept across converges; present whenever a secret is held. */
   ca?: Pem;
   /** One leaf per bound target of any pod, by file stem (`leafStem`). */
@@ -368,21 +374,29 @@ export function instanceObjects(opts: {
       metadata: meta(IMAGES_CONFIGMAP),
       data: { [IMAGES_KEY]: imagesJson },
     },
-    // Held secrets (ADR-0059), per pod. A pod's `held-<pod>.json` is what its composition reads —
-    // the Orchestrator per provision from the mount below, `jr2 up` for the Instance Harness —
-    // beside its Custodian's bootstrap and script, which Envoy reads at start. Names, hosts,
-    // headers: never a value.
+    // Held secrets (ADR-0059): what `jr2 up` DECLARES. A pod's `held-<pod>.json` is what its
+    // composition reads — the Orchestrator per provision from the mount below, `jr2 up` for the
+    // Instance Harness — and the Custodian's program is here once. Envoy's per-pod files are
+    // rendered by whoever makes the pod, never collected here: a shared object stops at 1 MiB.
+    // Names, hosts, headers: never a value.
     {
       apiVersion: "v1",
       kind: "ConfigMap",
       metadata: meta(HELD_CONFIGMAP),
-      data: Object.fromEntries(
-        opts.held.pods.flatMap((p) => [
-          [heldManifestKey(p.pod), JSON.stringify(p.manifest, null, 2)],
-          [custodianBootstrapKey(p.pod), p.bootstrap],
-          [custodianScriptKey(p.pod), p.script],
-        ]),
-      ),
+      data: {
+        ...Object.fromEntries(opts.held.pods.map((p) => [heldManifestKey(p.pod), JSON.stringify(p.manifest, null, 2)])),
+        [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
+      },
+    },
+    // The one pod `jr2 up` makes: the Instance Harness's Custodian files, rendered from its manifest.
+    {
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: meta(INSTANCE_CUSTODIAN_CONFIGMAP),
+      data: {
+        [CUSTODIAN_BOOTSTRAP_KEY]: opts.held.instance.bootstrap,
+        [CUSTODIAN_SCRIPT_KEY]: opts.held.instance.script,
+      },
     },
     ...heldSecretObjects(opts.held, meta),
     {
@@ -813,6 +827,7 @@ export function instanceHarnessObjects(opts: {
   const custodian = custodianComposition(opts.held, {
     image: opts.custodianImage,
     pod: INSTANCE_HARNESS_HELD_POD,
+    config: INSTANCE_CUSTODIAN_CONFIGMAP,
     token: { secret: INSTANCE_SECRET, key: "JR2_INSTANCE_HARNESS_TOKEN" },
     caBundle: opts.caBundle === true,
     resources: sized(KIT_POD_SIZES.instanceCustodian),

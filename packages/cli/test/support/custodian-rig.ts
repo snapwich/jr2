@@ -28,6 +28,8 @@ import {
   custodianScript,
   CUSTODIAN_ARGS,
   CUSTODIAN_BOOTSTRAP_KEY,
+  CUSTODIAN_PROGRAM,
+  CUSTODIAN_PROGRAM_KEY,
   CUSTODIAN_SCRIPT_KEY,
   type HeldManifest,
 } from "@jr2/orchestrator";
@@ -145,6 +147,8 @@ export async function startCustodian(opts: {
   }
   await writeFile(join(dir, "config", CUSTODIAN_BOOTSTRAP_KEY), JSON.stringify(bootstrap));
   await writeFile(join(dir, "config", CUSTODIAN_SCRIPT_KEY), custodianScript(opts.manifest));
+  // The fixed program, as a pod's config mount projects it from `jr2-held` beside its own two files.
+  await writeFile(join(dir, "config", CUSTODIAN_PROGRAM_KEY), CUSTODIAN_PROGRAM);
 
   const name = `jr2-custodian-suite-${process.pid}-${Date.now() % 100000}`;
   const args = [

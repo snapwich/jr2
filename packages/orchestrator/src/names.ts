@@ -72,18 +72,28 @@ export function heldSecretsSecret(pod: string): string {
 }
 /** One leaf per bound `host:port` (`<stem>.crt`, `<stem>.key`) — the Custodians' alone. */
 export const HELD_TLS_SECRET = "jr2-held-tls";
-/** Each pod's held manifest (what `jr2 up` placed there) and its Custodian's bootstrap and script,
- * by pod (`heldManifestKey`, `custodianBootstrapKey`, `custodianScriptKey`). Always applied,
- * possibly holding no secret: every Harness pod runs a Custodian. */
+/** What `jr2 up` DECLARES about held secrets: each pod's held manifest (`heldManifestKey` — names,
+ * bindings, headers; never a value) and the Custodian's program once (`CUSTODIAN_PROGRAM_KEY`).
+ * Nothing rendered per pod lives here: a shared object stops at 1 MiB, and Envoy's files are a
+ * pod's own, rendered where the pod is made (`sandboxCustodianConfigMap`,
+ * `INSTANCE_CUSTODIAN_CONFIGMAP`). Always applied, possibly holding no secret: every Harness pod
+ * runs a Custodian. */
 export const HELD_CONFIGMAP = "jr2-held";
 /** Where the Orchestrator reads a Workspace's held manifest, per provision — a mount, so a
  * held-secret edit reaches future Sandboxes without rolling the Orchestrator (the `jr2-images`
  * pattern, ADR-0038). */
 export const HELD_MOUNT = "/etc/jr2/held";
-/** The `jr2-held` keys of one pod: its manifest, its Custodian's Envoy bootstrap, its Lua. */
+/** The `jr2-held` key of one pod's manifest. */
 export const heldManifestKey = (pod: string): string => `held-${pod}.json`;
-export const custodianBootstrapKey = (pod: string): string => `envoy-${pod}.json`;
-export const custodianScriptKey = (pod: string): string => `custodian-${pod}.lua`;
+/** The `jr2-held` key of the Custodian's fixed Lua — `custodian.lua` as written, once per Instance;
+ * each pod's own script loads it by this name from its config mount. */
+export const CUSTODIAN_PROGRAM_KEY = "program.lua";
+/** The ConfigMap with the Instance Harness's Custodian's two rendered files (`envoy.json`,
+ * `custodian.lua`), written by `jr2 up`: the one pod it makes. */
+export const INSTANCE_CUSTODIAN_CONFIGMAP = "jr2-held-custodian";
+/** The ConfigMap with one Sandbox's Custodian's two rendered files, written by the Orchestrator at
+ * provision and owned by the Sandbox CR — the `<name>-token` family: it goes with the pod. */
+export const sandboxCustodianConfigMap = (sandbox: string): string => `${sandbox}-custodian`;
 /** The Instance Harness's pod, as its held objects are keyed. A Workspace's is `ws-<digest>`
  * (`workspaceHeldPod`), so the two cannot collide. */
 export const INSTANCE_HARNESS_HELD_POD = "instance";
