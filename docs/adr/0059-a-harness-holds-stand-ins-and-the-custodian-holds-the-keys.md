@@ -22,8 +22,9 @@ decision generalizes that container. It holds every credential the Harness in it
   the Harness, and it holds the held secrets its own pod names (below). The Agent executes no code in it, and
   `shareProcessNamespace` stays off ([ADR-0005](0005-sandbox-pod-composition.md)). So the Agent cannot read its env, its
   files or its `/proc`. Its engine is Envoy: the upstream distroless image, pinned by digest (`CUSTODIAN_IMAGE` in
-  `@jr2/orchestrator`). `jr2 up` writes Envoy's whole configuration. There is no admin listener and no xDS, so nothing
-  in the pod can change the configuration or read it back.
+  `@jr2/orchestrator`). The pod's maker writes Envoy's whole configuration — the Orchestrator a Sandbox's at provision,
+  `jr2 up` the Instance Harness's — from the manifest `jr2 up` declares (see "Objects, per pod"). There is no admin
+  listener and no xDS, so nothing in the pod can change the configuration or read it back.
 - **The Custodian replaces the Adapter.** The `@jr2/adapter` package and the `jr2-adapter` image are deleted. The
   Sandbox token is a held secret of the kit's own: the Harness container holds
   `JR2_SANDBOX_TOKEN=jr2-held-JR2_SANDBOX_TOKEN`, and the Custodian holds the token as a file from the `<sandbox>-token`

@@ -107,7 +107,7 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   them. `just custodian-test` runs `node --test` (`packages/cli/test/custodian.docker.ts`) against it under docker, on
   the host network with free ports, with local HTTPS upstreams under their own CA; about 23 seconds. Opt-in for the
   `@kind` reason — it needs docker — and NOT part of `pnpm -r test`. What the default gate keeps is the rendering:
-  `custodian.test.ts` pins the bootstrap and script `jr2 up` writes, socket-free. The `@kind` tier then proves the
+  `custodian.test.ts` pins the bootstrap and script a pod's maker writes, socket-free. The `@kind` tier then proves the
   Custodian in a real pod, in both placements, against a model provider that refuses any request without the key.
 - **An opt-in `@model` tier, against a real model**
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). Every tier above

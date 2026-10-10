@@ -107,8 +107,8 @@ other (ADR-0013, ADR-0053). It holds the Held secrets its pod claims, and carrie
 swaps the Stand-in for the value in the named headers, and opens its own verified TLS to the host; every other host it
 tunnels untouched (ADR-0059). A separate container from the Harness because the Agent executes code in the Harness
 container and none here (ADR-0005). It controls no egress — a client that goes around it sends only a Stand-in. Its
-engine is Envoy, a Pinned image, configured by `jr2 up`. _Avoid_: proxy (the mechanism, and the Handoff's word), sidecar
-(its deployment shape), MITM, vault, egress gateway, firewall
+engine is Envoy, a Pinned image, configured by the pod's maker from what `jr2 up` declares. _Avoid_: proxy (the
+mechanism, and the Handoff's word), sidecar (its deployment shape), MITM, vault, egress gateway, firewall
 
 **Held secret**: A credential the Harness uses but never holds — a model API key above all, and the Sandbox token.
 `jr2.config.ts` declares it in the top-level `secrets` list, with the hosts it may reach (`hosts`; a known model key's

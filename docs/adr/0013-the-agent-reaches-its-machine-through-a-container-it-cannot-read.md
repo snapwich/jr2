@@ -105,8 +105,9 @@ is needed either (ADR-0006).
     silent). A run-scoped token instead of a Sandbox-scoped one would be genuinely exploitable: derivable iids plus
     readable ticket ids would let one feature's coder inject a `review_verdict` into another feature's reviewer.
 - **Reachability, narrowed to one caller.** The Orchestrator is always in-cluster (ADR-0019), so the route home is
-  simply **Service DNS**, which `jr2 up` writes into the Custodian's configuration. The Harness is told the Custodian's
-  loopback address (`JR2_CUSTODIAN_URL`) and nothing else.
+  simply **Service DNS**, which the pod's maker writes into the Custodian's configuration — the Orchestrator at a
+  Sandbox's provision, `jr2 up` for the Instance Harness. The Harness is told the Custodian's loopback address
+  (`JR2_CUSTODIAN_URL`) and nothing else.
 - **A Machine-answered tool result is the held answer, for every pick that runs work.** No def declares it: a pick whose
   target runs something inside the Agent's state is outstanding until the workflow is back at Rest, and the Harness
   polls its delivery inside the one tool call (ADR-0002, ADR-0024). The gates surface answers `{ ok: true }` for a send

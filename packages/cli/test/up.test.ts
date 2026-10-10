@@ -3358,6 +3358,33 @@ test("jr2-held grows by one manifest per Workspace and holds the program once â€
   assert.equal(fortyOne.text.length - forty.text.length, entry);
 });
 
+test("no ADR and no glossary entry says `jr2 up` writes a Sandbox's Custodian configuration (ADR-0059)", async () => {
+  // `jr2 up` DECLARES; a pod's maker renders its files â€” the Orchestrator a Sandbox's at provision.
+  // A sentence that gives `jr2 up` the whole of Envoy's configuration tells a reader the
+  // Orchestrator renders nothing: ADR-0059, -0005, -0010, -0013 and CONTEXT.md said so after B8.
+  const stale = [
+    /`jr2 up` writes Envoy's whole configuration/,
+    /`jr2 up` writes into the Custodian's configuration/,
+    /Envoy,? (?:a Pinned image, )?configured by `jr2 up`/,
+    /bootstrap and script `jr2 up` writes/,
+    /its pod's config \(`jr2-held`\)/,
+  ];
+  const texts: Array<[string, string]> = [["CONTEXT.md", await readFile(join(REPO_ROOT, "CONTEXT.md"), "utf8")]];
+  for (const file of await readdir(join(REPO_ROOT, "docs/adr"))) {
+    if (file.endsWith(".md")) texts.push([file, await readFile(join(REPO_ROOT, "docs/adr", file), "utf8")]);
+  }
+  assert.ok(texts.length > 1, "the ADRs were read");
+  for (const [file, raw] of texts) {
+    const text = raw.replace(/\s+/g, " ");
+    for (const re of stale) assert.equal(re.exec(text)?.[0], undefined, `${file} still says the old placement`);
+  }
+  // ADR-0005's mount table, "stated once", names the pod's own ConfigMap beside the program.
+  const adr5 = texts.find(([f]) => f.startsWith("0005-"))![1];
+  const row = adr5.split("\n").find((l) => l.startsWith("| `custodian` |"))!;
+  assert.match(row, /`<sandbox>-custodian`/);
+  assert.match(row, /`program\.lua` from `jr2-held`/);
+});
+
 test("the Instance Harness's held digest covers its Custodian's two files: a changed custodian.lua rolls it (ADR-0059)", () => {
   // A literal bound to no target, so the digest reads no leaf: what moves it here is the files.
   const manifest: HeldManifest = {
