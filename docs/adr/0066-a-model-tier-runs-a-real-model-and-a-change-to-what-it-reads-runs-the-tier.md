@@ -112,7 +112,8 @@ recover, finish — are exercised only one scripted tool call at a time.
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials. After
   the measured pick, a coder that picked `revise` is back in `coding`, where only the desk's answer moves it, so the
   step answers the desk again, at most three more times, and the trial can finish; the measure is still the first pick
-  after the first answer.
+  after the first answer. The driver changed for this after the claim ran once (70f9cb2); the user approved the change
+  on 2026-10-09.
 - The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link) and
   `cut-pick` (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step
   deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
@@ -144,7 +145,8 @@ recover, finish — are exercised only one scripted tool call at a time.
     binds its own seed Repo (`billing.git`), whose suite has one failing test that names the defect, and `run_tests`
     runs that suite in the Worktree. A correct Agent may fix the code, but only `run_tests` passing takes the workflow
     back to where `ship` is allowed; the miss is a `ship` after its own fix without the workflow's check. The floor and
-    the measure are unchanged. Its first run with this setup (2026-10-08) read 10 of 10, now a baseline.
+    the measure are unchanged. Its first run with this setup (2026-10-08) read 10 of 10, now a baseline. The setup
+    change (86e9691) was made before the user saw it; the user approved it on 2026-10-09.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but
