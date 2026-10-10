@@ -3358,6 +3358,68 @@ test("jr2-held grows by one manifest per Workspace and holds the program once â€
   assert.equal(fortyOne.text.length - forty.text.length, entry);
 });
 
+test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names only; its Secret holds its literals and effector.json (ADR-0068)", () => {
+  const pod = workspaceHeldPod({ workflow: "ticket", path: [] });
+  const list = JSON.parse(
+    instanceObjects({
+      name: "myinst",
+      namespace: "myinst",
+      image: "jr2-orchestrator:o",
+      hash: "h",
+      secretData: {},
+      harnessEnvData: {},
+      held: { pods: [], leaves: {} },
+      imageRefs: {},
+      sandboxEffectors: [
+        {
+          placement: "sandbox",
+          pod,
+          label: 'Workspace of workflow "ticket"',
+          secrets: [
+            { name: "aws", source: { kind: "literal" } },
+            { name: "kube", source: { kind: "secret", secret: "team", key: "kubeconfig" } },
+          ],
+          values: { aws: "aws-secret-value-0123" },
+          targets: [],
+          git: [{ match: "*", push: { token: "push-0" } }],
+          gitFiles: [{ dir: "push-0", file: "token", source: { kind: "literal", value: "ghp_token_value_0123" } }],
+          effects: ["ticket/deploy", "ticket/publish"],
+        },
+      ],
+    }),
+  ) as { items: Array<Record<string, any>> };
+  const cm = list.items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+  const manifest = JSON.parse(cm.data[`effector-${pod}.json`]);
+  assert.deepEqual(manifest, {
+    version: 1,
+    secret: `jr2-effector-${pod}`,
+    sources: [
+      {
+        secret: {
+          name: `jr2-effector-${pod}`,
+          items: [
+            { key: "secret.aws", path: "aws" },
+            { key: "git.push-0.token", path: "git/push-0/token" },
+          ],
+        },
+      },
+      { secret: { name: "team", items: [{ key: "kubeconfig", path: "kube" }] } },
+    ],
+  });
+  assert.ok(!JSON.stringify(cm).includes("aws-secret-value") && !JSON.stringify(cm).includes("ghp_token"), "no value");
+  const secret = list.items.find((i) => i.kind === "Secret" && i.metadata.name === `jr2-effector-${pod}`)!;
+  assert.equal(secret.metadata.labels["jr2.dev/effector-pod"], pod);
+  assert.equal(secret.stringData["secret.aws"], "aws-secret-value-0123");
+  assert.equal(secret.stringData["git.push-0.token"], "ghp_token_value_0123");
+  assert.deepEqual(JSON.parse(secret.stringData["effector.json"]), {
+    version: 1,
+    placement: "sandbox",
+    targets: [],
+    git: [{ match: "*", push: { token: "push-0" } }],
+  });
+  assert.equal("kube" in secret.stringData || "secret.kube" in secret.stringData, false, "a valueFrom is never copied");
+});
+
 test("no ADR and no glossary entry says `jr2 up` writes a Sandbox's Custodian configuration (ADR-0059)", async () => {
   // `jr2 up` DECLARES; a pod's maker renders its files â€” the Orchestrator a Sandbox's at provision.
   // A sentence that gives `jr2 up` the whole of Envoy's configuration tells a reader the

@@ -10,7 +10,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
 import { customizeLine, open, partsOf, workspacePodsOf } from "../src/parts.ts";
-import { agent } from "../src/harness-client.ts";
+import { agent, command } from "../src/harness-client.ts";
+import { secret } from "../src/http-effect.ts";
+import { push, upload } from "../src/sandbox-effect.ts";
 import { arg, commandWith } from "../src/effect.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { pool, source } from "../src/pool.ts";
@@ -597,8 +599,14 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
     initial: "idle",
     states: { idle: {} },
   });
-  const outerPod = { secrets: ["JIRA_TOKEN"], models: ["anthropic/claude-x", "openai/gpt-x", "vllm/qwen"] };
-  const innerPod = { secrets: ["INNER_KEY"], models: ["xai/grok"] };
+  const bindings = { app: "https://example.test/app.git" };
+  const outerPod = {
+    secrets: ["JIRA_TOKEN"],
+    models: ["anthropic/claude-x", "openai/gpt-x", "vllm/qwen"],
+    effects: [],
+    bindings,
+  };
+  const innerPod = { secrets: ["INNER_KEY"], models: ["xai/grok"], effects: [], bindings };
   assert.deepEqual(workspacePodsOf(root), [
     { path: ["a"], ...outerPod },
     { path: ["a", "nested"], ...innerPod },
@@ -607,6 +615,50 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
     { path: ["b", "nested"], ...innerPod },
   ]);
   assert.deepEqual(workspacePodsOf(outer)[0], { path: [], ...outerPod }, "the registered root is route []");
+});
+
+test("each Workspace's pod carries the Effects placed in its Sandbox Effector, down to the next workspace(), and its effector image (B5.1)", () => {
+  const inner = jr2Setup({ events: [], actors: { ship: push({ sign: true }) } }).createMachine({ id: "inner" });
+  const body = jr2Setup({
+    events: [],
+    actors: {
+      tests: command(["pnpm", "test"]),
+      deploy: command(["terraform", "apply"], { env: { AWS: secret("aws") } }),
+      publish: push(),
+      helper: jr2Setup({
+        events: [],
+        actors: { report: upload({ url: "https://files.example.com/r", file: () => ({ path: "r" }) }) },
+      }).createMachine({ id: "helper" }),
+      nested: workspace(inner, { repos: { lib: "https://example.test/lib.git" }, spec: () => ({ branch: "inner" }) }),
+    },
+  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  const ws = workspace(body, {
+    repos: { app: "https://example.test/app.git", other: open },
+    effector: { image: "registry.example/tools:1" },
+    spec: () => ({ branch: "feat-1" }),
+  });
+  const [outer, nested] = workspacePodsOf(ws);
+  assert.deepEqual(
+    outer!.effects.map((e) => `${e.name}:${e.kind}`).sort(),
+    ["deploy:command", "publish:push", "report:upload"],
+    "a command that names no secret runs in the Harness; the nested Workspace's push is its own",
+  );
+  assert.deepEqual(outer!.effector, { image: "registry.example/tools:1" });
+  assert.deepEqual(outer!.bindings, { app: "https://example.test/app.git", other: undefined });
+  assert.deepEqual(
+    nested!.effects.map((e) => e.name),
+    ["ship"],
+  );
+  assert.equal(nested!.effector, undefined);
+  assert.throws(
+    () =>
+      workspace(body, {
+        repos: { app: "https://example.test/app.git" },
+        effector: { img: "x" } as never,
+        spec: () => ({ branch: "b" }),
+      }),
+    /`effector` is \{ image \}/,
+  );
 });
 
 test("workspace() refuses a secrets list that is not distinct names", () => {

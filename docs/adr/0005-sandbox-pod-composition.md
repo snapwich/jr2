@@ -1,6 +1,6 @@
 # The Sandbox pod's containers: Harness, Custodian, and an optional User Container
 
-A Sandbox pod composes up to three containers around one shared worktree volume (`/work`):
+A Sandbox pod composes up to four containers around one shared worktree volume (`/work`):
 
 - **Harness container** — the CR's primary container: the Sandbox Image (user-built or user-brought,
   [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) with jr2's runtime mounted at
@@ -33,6 +33,19 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
   - **Credential visibility.** A session's secrets — a forwarded ssh agent socket above all — live in this container's
     private mount namespace, where the Agent executes nothing. The human sshs in with agent forwarding, works, and the
     socket is gone on disconnect; at no point does it share a filesystem with code the Agent runs.
+- **Sandbox Effector** — jr2-composed sidecar, added at provision only when an Effect below the `workspace()` is placed
+  there — a `push`, an `upload` or a credentialed `command`
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md),
+  [ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), which `jr2 up` reads off the Machines
+  and declares in the pod's manifest beside its Held one. In the pod it is the container named `effector`. Its image is
+  the Sandbox Image unless the `workspace()` names `effector: { image }` — a `file:` context or a registry ref, resolved
+  like the User Container's — for the tools and the credentials kept out of the Agent's image. Its command is jr2's
+  binary on the runtime volume (`/opt/jr2/bin/effector`); it runs as its image's own `USER` (ADR-0037's 1000 fallback
+  included), hardened like the Harness. The Agent executes nothing in it: it holds the secrets its Effects name and the
+  credentials its pushes spend, which the Agent never reads. With the default image it runs as the Agent's uid, and that
+  is the rule, not a gap: the containers share no mount namespace and no `/proc`, so the barrier is the container and
+  the read-only mount, not the uid. No Custodian, no `harness.env`, and no env beyond where its mounts are and its pod's
+  name and address.
 
 The Harness and User containers mount `/work` read-write, **`/repos` read-only** — the node's Repo cache, one bare
 checkout per Repo the Sandbox names (ADR-0004, ADR-0051) — **and `/opt/jr2` read-only**, the runtime volume — so human
@@ -45,11 +58,12 @@ no business in the working tree.
 
 What each container mounts of the credentials, stated once:
 
-| Container   | Mounts                                                                                                                                                                                                                                                                       |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `harness`   | `jr2-ca` at `/etc/jr2/ca` (the trust bundles). None of the Custodian's volumes.                                                                                                                                                                                              |
-| `custodian` | its values (the Sandbox token, its pod's `jr2-held-secrets-<pod>`, each user `secretKeyRef` its pod names) at `/etc/jr2/custodian/values`; its leaves (`jr2-held-tls`); its pod's config (its own `<sandbox>-custodian`, and `program.lua` from `jr2-held`); `upstream.crt`. |
-| `user`      | the checkouts' three volumes, and nothing else.                                                                                                                                                                                                                              |
+| Container   | Mounts                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `harness`   | `jr2-ca` at `/etc/jr2/ca` (the trust bundles). None of the Custodian's volumes.                                                                                                                                                                                                                                                                                                       |
+| `custodian` | its values (the Sandbox token, its pod's `jr2-held-secrets-<pod>`, each user `secretKeyRef` its pod names) at `/etc/jr2/custodian/values`; its leaves (`jr2-held-tls`); its pod's config (its own `<sandbox>-custodian`, and `program.lua` from `jr2-held`); `upstream.crt`.                                                                                                          |
+| `user`      | the checkouts' three volumes, and nothing else.                                                                                                                                                                                                                                                                                                                                       |
+| `effector`  | `/work`, `/repos/<key>` and `/opt/jr2` read-only; at `/run/jr2/secrets` (0400) the secrets its Effects name — its pod's `jr2-effector-<pod>` literals, each user `secretKeyRef` by reference — and at `git/<dir>/` the credentials its pushes spend; at `/run/jr2/effector` its key (its own `<sandbox>-effector`) and `effector.json`; an emptyDir at `/run/jr2/scratch` as `$HOME`. |
 
 One git wall stays the image's own: git's dubious-ownership guard fires in the User Container whenever its uid differs
 from the Harness's (the attach created the trees), and `safe.directory` is honored only from system/global config —

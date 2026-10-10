@@ -38,7 +38,7 @@ const httpEffect = (name: string, secrets: string[], extra: Partial<CarriedEffec
 
 const ws = (pod: Partial<WorkspacePod> = {}, workflow = "ticket") => ({
   workflow,
-  pod: { path: [], secrets: [], models: [], ...pod },
+  pod: { path: [], secrets: [], models: [], effects: [], bindings: {}, ...pod } as WorkspacePod,
 });
 
 const walk = (w: Partial<PlacementWalk>): PlacementWalk => ({ effects: [], workspaces: [], ...w });
@@ -305,4 +305,199 @@ test("the hover text of `secrets` and `SecretEntry` states the rule these tests 
     assert.match(doc, /`workspace\(\)`/, "it names what places a Held secret");
     assert.match(doc, /secret\("name"\)/, "it names what places an Effect secret");
   }
+});
+
+// --- The Sandbox Effector's placement (ADR-0067, ADR-0068, B5.1, B6.2) ----------------------------
+
+const upload = (name: string, secrets: string[]): CarriedEffect =>
+  ({
+    name,
+    path: [],
+    kind: "upload",
+    placement: "sandbox",
+    method: "PUT",
+    target: { scheme: "https", host: "files.example.com", port: 443 },
+    secrets,
+    idempotent: false,
+    timeoutMs: 30_000,
+  }) as CarriedEffect;
+const credentialed = (name: string, secrets: string[]): CarriedEffect =>
+  ({
+    name,
+    path: [],
+    kind: "command",
+    placement: "sandbox",
+    argv: ["terraform", "apply"],
+    timeoutMs: 60_000,
+    secrets,
+  }) as CarriedEffect;
+const pusher = (name: string, extra: Partial<Extract<CarriedEffect, { kind: "push" }>> = {}): CarriedEffect =>
+  ({
+    name,
+    path: [],
+    kind: "push",
+    placement: "sandbox",
+    sign: false,
+    squash: false,
+    force: false,
+    pin: false,
+    secrets: [],
+    timeoutMs: 300_000,
+    ...extra,
+  }) as CarriedEffect;
+const placedIn = (
+  effects: CarriedEffect[],
+  bindings: Record<string, string | undefined> = { app: "https://github.com/ourorg/app.git" },
+) => {
+  const pod = ws({ effects, bindings });
+  return walk({ effects: effects.map((effect) => ({ workflow: "ticket", effect })), workspaces: [pod] });
+};
+
+test("a secret a credentialed command or an upload names is an Effect secret in its Workspace's Sandbox Effector, never 'named by nothing'", () => {
+  const config: JR2Config = {
+    secrets: [
+      { name: "aws", value: VALUE },
+      { name: "files", value: VALUE },
+    ],
+  };
+  const out = secretPlacementsOf(config, placedIn([credentialed("deploy", ["aws"]), upload("report", ["files"])]));
+  assert.deepEqual(out.warnings, []);
+  assert.deepEqual(out.report, [
+    'secret aws: an Effect secret in the Sandbox Effector of Workspace of workflow "ticket" (ticket/deploy)',
+    'secret files: an Effect secret in the Sandbox Effector of Workspace of workflow "ticket" (ticket/report)',
+    'Workspace of workflow "ticket": Custodian holds nothing',
+    'Workspace of workflow "ticket": Sandbox Effector (image the Sandbox Image) holds aws, files',
+  ]);
+  assert.equal(out.instance, undefined, "nothing is placed in the Instance Effector");
+  const plan = out.sandbox[0]!;
+  assert.equal(plan.pod, ROOT);
+  assert.deepEqual(
+    plan.secrets.map((s) => s.name),
+    ["aws", "files"],
+  );
+  assert.deepEqual(plan.values, { aws: VALUE, files: VALUE });
+  assert.deepEqual(plan.targets, [{ scheme: "https", host: "files.example.com", port: 443, secrets: ["files"] }]);
+  assert.deepEqual(plan.effects, ["ticket/deploy", "ticket/report"]);
+});
+
+test("a Sandbox kind's secret missing from the list, or shorter than 8 characters, is refused as an http one is", () => {
+  assert.throws(
+    () => refuseEffectSecrets({ secrets: [] }, placedIn([credentialed("deploy", ["aws"])])),
+    /the command Effect "deploy" names secret\("aws"\).*secrets: \[\{ name: "aws", value: process\.env\.AWS \}\]/,
+  );
+  assert.throws(
+    () => refuseEffectSecrets({ secrets: [{ name: "files", value: "abc" }] }, placedIn([upload("report", ["files"])])),
+    /secrets\[0\] \(files\) is an Effect secret shorter than 8 characters/,
+  );
+});
+
+test("a Workspace with no Effect placed in its Sandbox Effector gets none; one names its image when the workspace() does", () => {
+  const none = secretPlacementsOf({}, walk({ workspaces: [ws()] }));
+  assert.deepEqual(none.sandbox, []);
+  const named = secretPlacementsOf(
+    { git: { credentials: [{ match: "github.com/ourorg/", token: "GH_TOKEN" }] } },
+    walk({
+      workspaces: [
+        ws({
+          effects: [pusher("publish")],
+          bindings: { app: "https://github.com/ourorg/app.git" },
+          effector: { image: "registry.example/tools:1" },
+        }),
+      ],
+    }),
+    { env: (n) => (n === "GH_TOKEN" ? "ghp_0123456789abcdef" : undefined) },
+  );
+  assert.equal(named.sandbox[0]?.image, "registry.example/tools:1");
+  assert.match(
+    named.report.at(-1)!,
+    /Sandbox Effector \(image registry\.example\/tools:1\) holds no Effect secret; pushes with git\.credentials "github\.com\/ourorg\/"/,
+  );
+});
+
+test("a push spends the git.credentials entry its Binding matches: the clone credential, or its push and sign fields", () => {
+  const config: JR2Config = {
+    git: {
+      credentials: [
+        { match: "github.com/other/", token: "OTHER" },
+        {
+          match: "github.com/ourorg/",
+          token: "GH_TOKEN",
+          push: { sshKey: "deploy-key" },
+          sign: { sshKey: "signing-key", name: "jr2 bot", email: "bot@example.test" },
+        },
+      ],
+    },
+  };
+  const out = secretPlacementsOf(
+    config,
+    placedIn([pusher("publish", { sign: true })], { app: "git@github.com:ourorg/app.git" }),
+  );
+  const plan = out.sandbox[0]!;
+  assert.deepEqual(plan.git, [
+    {
+      match: "github.com/ourorg/",
+      push: { sshKey: "push-1" },
+      sign: { sshKey: "sign-1", name: "jr2 bot", email: "bot@example.test" },
+    },
+  ]);
+  assert.deepEqual(plan.gitFiles, [
+    { dir: "push-1", file: "identity", source: { kind: "secret", secret: "deploy-key", key: "identity" } },
+    { dir: "push-1", file: "known_hosts", source: { kind: "secret", secret: "deploy-key", key: "known_hosts" } },
+    { dir: "sign-1", file: "identity", source: { kind: "secret", secret: "signing-key", key: "identity" } },
+  ]);
+  // Absent `push`, the clone credential pushes: a token goes to the Effector's own Secret.
+  const clone = secretPlacementsOf(
+    { git: { credentials: [{ match: "*", token: "GH_TOKEN" }] } },
+    placedIn([pusher("publish")]),
+    { env: (n) => (n === "GH_TOKEN" ? "ghp_0123456789abcdef" : undefined) },
+  );
+  assert.deepEqual(clone.sandbox[0]!.git, [{ match: "*", push: { token: "push-0" } }]);
+  assert.deepEqual(clone.sandbox[0]!.gitFiles, [
+    { dir: "push-0", file: "token", source: { kind: "literal", value: "ghp_0123456789abcdef" } },
+  ]);
+});
+
+test("jr2 up refuses a push with no matching entry, an entry with no credential, and sign with no sign field — each with the line to add", () => {
+  assert.throws(
+    () =>
+      refuseEffectSecrets(
+        { git: { credentials: [{ match: "github.com/other/", token: "T" }] } },
+        placedIn([pusher("publish")]),
+      ),
+    /push "publish" pushes Repo Slot "app" \(https:\/\/github\.com\/ourorg\/app\.git\), and no git\.credentials entry matches "github\.com\/ourorg\/app".*credentials: \[\{ match: "github\.com\/ourorg\/", token:/,
+  );
+  assert.throws(
+    () => refuseEffectSecrets({ git: { credentials: [{ match: "*" }] } }, placedIn([pusher("publish")])),
+    /entry "\*" holds no credential a push over https can spend — an entry with none admits a clone, never a push; add push: \{ token:/,
+  );
+  assert.throws(
+    () =>
+      refuseEffectSecrets(
+        { git: { credentials: [{ match: "*", token: "T" }] } },
+        placedIn([pusher("publish")], { app: "git@github.com:ourorg/app.git" }),
+      ),
+    /over ssh can spend.*add push: \{ sshKey:/,
+  );
+  assert.throws(
+    () =>
+      refuseEffectSecrets(
+        { git: { credentials: [{ match: "*", token: "T" }] } },
+        placedIn([pusher("publish", { sign: true })]),
+      ),
+    /push "publish" pushes .* signed, and git\.credentials entry "\*" holds no sign field — add sign: \{ sshKey: .*name: .*email:/,
+  );
+  assert.throws(
+    () =>
+      refuseEffectSecrets(
+        { git: { credentials: [{ match: "*", token: "T" }] } },
+        placedIn([pusher("publish")], { app: "/srv/app.git" }),
+      ),
+    /a local path — jr2 never pushes to one/,
+  );
+  // A slot the run chooses cannot be read here: it is said, not refused.
+  const perRun = secretPlacementsOf({}, placedIn([pusher("publish")], { app: undefined }));
+  assert.match(
+    perRun.warnings.join("\n"),
+    /push "publish" pushes Repo Slot "app", whose url the run or a customize\(\) chooses/,
+  );
 });

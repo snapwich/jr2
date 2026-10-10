@@ -72,6 +72,7 @@ import {
   partsOf,
   workspacePodsOf,
   refuseEffectSecrets,
+  LABEL_EFFECTOR_POD,
   secretPlacementsOf,
   storedValueLength,
   effectorKey,
@@ -920,7 +921,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // declared — each Harness pod gets the Held secrets something in it names, the Instance Effector
   // what its Effects name. The walk's refusals ran above; a `valueFrom` the user's Secrets do not
   // hold is refused here, before the instance objects are applied.
-  const placements = secretPlacementsOf(config, placementWalk, { secretKeys, valueLength });
+  const placements = secretPlacementsOf(config, placementWalk, { secretKeys, valueLength, env: (n) => io.env[n] });
   for (const line of placements.report) activity(io, line);
   for (const warning of placements.warnings) activity(io, `warning: ${warning}`);
   const held = await resolveHeld(io, kube, {
@@ -964,9 +965,22 @@ export async function up(args: string[], io: Io): Promise<number> {
       imageRefs: converged,
       repoCache: carried.composesSandbox ? { image: operatorImage!, placement: config.sandbox } : undefined,
       ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
+      sandboxEffectors: placements.sandbox,
     }),
     ...ctx,
   });
+  // A Workspace whose body no longer places an Effect in its Sandbox Effector loses its Secret;
+  // its manifest went with the ConfigMap's data above, so the next provision adds no container.
+  const effectorPods = new Set(placements.sandbox.map((p) => p.pod));
+  for (const secret of await kube.listJson<KubeObject>({
+    kind: "secret",
+    selector: LABEL_EFFECTOR_POD,
+    namespace,
+    ...ctx,
+  })) {
+    if (effectorPods.has(secret.metadata.labels?.[LABEL_EFFECTOR_POD] ?? "")) continue;
+    await kube.deleteObject({ kind: "secret", name: secret.metadata.name, namespace, ...ctx });
+  }
   // A pod's literal values go when it holds none any more, or when the pod is gone; with no secret
   // held anywhere, the leaves go too. The CA stays (`jr2-held-ca`), so a later converge that holds
   // one again issues leaves under the same CA.

@@ -82,8 +82,9 @@ Binding. An Effect that holds a secret runs in an Effector
   them). The Sandbox Effector opens it with `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
   `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_XDEV`, non-blocking — then `fstat`: a symlink at any component (one that stays
   inside included), `..`, an absolute path, a FIFO, a directory and a file with more than one link are refused, in
-  words, as output. A file-body `http` uses the same opener. The method defaults to `PUT`, the content type to the
-  definition's or `application/octet-stream`.
+  words, as output. The method defaults to `PUT`, the content type to the definition's or `application/octet-stream`.
+  The Effector serves a file body for `http` the same way, through the same opener; no authoring form names one yet
+  (Consequences).
 - **A `push` pushes the Workspace's branch to its Repo Slot's Binding**, from the Sandbox Effector, with no input:
   `push({ pin?, sign?, squash?, force?, slot?, timeout? })`. Its credential is the push credential of the
   `git.credentials` entry the Binding falls under (ADR-0051), which the Effector matches as the fence does. git never
@@ -240,10 +241,10 @@ Binding. An Effect that holds a secret runs in an Effector
   can run twice against one commit.
 - A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (B2's wire is `POST` and `GET`),
   so D1 holds for the Machine — it does not get the output — and not for the outside world.
-- Not built: the Sandbox Effector in a real pod. The Effector binary runs every Sandbox kind, and the Orchestrator
-  builds each start from the Workspace's handles and keeps the ledger above, but the Orchestrator does not yet add the
-  `effector` container at provision, `jr2 up` writes no `jr2-effector-<workspace>` Secret and makes none of the push
-  refusals of ADR-0051, and the Orchestrator has no address for a Sandbox Effector: the Sandbox's Service names the
-  Harness's port only, and a request is signed for the pod's own address. Until then a Sandbox kind faults at invoke,
-  naming this.
+- Open: the Orchestrator's address for a Sandbox Effector. `jr2 up` places its Effects and writes its Secret, the
+  provision adds the `effector` container and its key, and the Orchestrator builds each start and keeps the ledger
+  above; but the Sandbox's Service names the Harness's port only, a request is signed for the pod's own `POD_IP:port`,
+  and the Sandbox's status publishes no pod address. Until that is decided a Sandbox kind faults at invoke, naming it.
+- Not built: a file-body `http`. The Effector serves a Worktree file as an `http` body on the wire, with the opener
+  above, and no authoring form names one; `upload` is the one that exists.
 - Owed, not built: an Open argv bound by `customize()`.

@@ -41,6 +41,15 @@ export * from "./held-secrets.ts";
 export * from "./secret-placement.ts";
 export * from "./custodian.ts";
 export * from "./sandbox-kube.ts";
+export {
+  effectorManifestKey,
+  LABEL_EFFECTOR_POD,
+  readSandboxEffectorManifest,
+  sandboxEffectorKeySecret,
+  sandboxEffectorObjectsOf,
+  type ProjectedSecret,
+  type SandboxEffectorManifest,
+} from "./sandbox-effector.ts";
 export * from "./repos.ts";
 export * from "./repo-fetch.ts";
 // Type-only: what a workflow event delivery looks like (the registration TABLE stays internal —

@@ -24,7 +24,8 @@ import { kubeClient } from "../src/kube-client.ts";
 import { repoKey } from "../src/repo-identity.ts";
 import { kubeSandbox as kubePort, memoryFaultOf, type KubeSandboxOptions } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
-import { harnessToken, harnessTokenDigest } from "../src/tokens.ts";
+import { effectorKey, harnessToken, harnessTokenDigest } from "../src/tokens.ts";
+import { effectorManifestKey, sandboxEffectorObjectsOf } from "../src/sandbox-effector.ts";
 import type { RepoResources } from "../src/repos.ts";
 import type { AttachRequest } from "../src/wire.ts";
 import type { Continuity, PlaceRequest, PlacingWait, ProvisionedRepo } from "../src/workspace.ts";
@@ -1095,6 +1096,87 @@ test("a Sandbox's Custodian files are rendered at provision, AFTER the CR, owned
   const text = JSON.stringify(cm.data);
   assert.ok(!/jr2-held-/.test(text), "no Stand-in in a ConfigMap");
   assert.ok(!text.includes(Buffer.from(applies(calls, "secrets")[0].data.JR2_SANDBOX_TOKEN, "base64").toString()));
+});
+
+test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its image, its mounts, and a key the CR owns (ADR-0068)", async () => {
+  // Without a manifest the pod has no Effector: no sidecar, no key.
+  const bare = cluster();
+  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...bare.exec }).provision({
+    name: "sb-none",
+    runId: "r",
+    workflow: "w",
+    ...withApp,
+  });
+  assert.equal(
+    crOf(bare.calls).spec.sidecars.some((c: { name: string }) => c.name === "effector"),
+    false,
+  );
+  assert.equal(
+    applies(bare.calls, "secrets").some((s) => s.metadata.name === "sb-none-effector"),
+    false,
+  );
+
+  const heldDir = await mkHeld(EMPTY_HELD);
+  const plan = {
+    placement: "sandbox" as const,
+    pod: workspaceHeldPod({ workflow: "w", path: [] }),
+    label: "w",
+    secrets: [{ name: "aws", source: { kind: "literal" as const } }],
+    values: { aws: "aws-secret-value" },
+    targets: [],
+    git: [{ match: "*", push: { sshKey: "push-0" } }],
+    gitFiles: [
+      { dir: "push-0", file: "identity", source: { kind: "secret" as const, secret: "deploy-key", key: "identity" } },
+    ],
+    effects: ["w/publish"],
+  };
+  const { manifest } = sandboxEffectorObjectsOf(plan);
+  await writeFile(join(heldDir, effectorManifestKey(plan.pod)), JSON.stringify(manifest));
+  const placed = cluster();
+  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, heldDir, ...placed.exec }).provision({
+    name: "sb-fx",
+    runId: "r",
+    workflow: "w",
+    effector: "registry.example/tools:1",
+    ...withApp,
+  });
+  const spec = crOf(placed.calls).spec;
+  const effector = spec.sidecars.find((c: { name: string }) => c.name === "effector");
+  assert.ok(effector, "the effector sidecar");
+  assert.equal(effector.image, "registry.example/tools:1", "the image the workspace() names");
+  assert.deepEqual(effector.command, ["/opt/jr2/bin/effector"]);
+  const mounts = Object.fromEntries(
+    effector.volumeMounts.map((m: { mountPath: string; readOnly?: boolean }) => [m.mountPath, m.readOnly === true]),
+  );
+  assert.equal(mounts["/work"], true);
+  assert.equal(mounts["/run/jr2/secrets"], true);
+  assert.equal(mounts["/run/jr2/effector"], true);
+  assert.equal(mounts["/run/jr2/scratch"], false);
+  assert.equal(mounts[`/repos/${APP_KEY}`], true);
+  const volumes = Object.fromEntries(spec.volumes.map((v: { name: string }) => [v.name, v]));
+  assert.deepEqual(volumes["effector-secrets"].projected.sources, manifest.sources);
+  assert.deepEqual(volumes["effector-own"].projected.sources, [
+    { secret: { name: "sb-fx-effector", items: [{ key: "key", path: "key" }] } },
+    { secret: { name: manifest.secret, items: [{ key: "effector.json", path: "effector.json" }] } },
+  ]);
+  // The Harness container mounts none of them.
+  for (const m of spec.volumeMounts) assert.ok(!String(m.name).startsWith("effector"), m.name);
+  // The key: derived from the Sandbox's name, in a Secret the CR owns.
+  const key = applies(placed.calls, "secrets").find((s) => s.metadata.name === "sb-fx-effector");
+  assert.equal(Buffer.from(key.data.key, "base64").toString(), effectorKey(Buffer.from("k"), "sb-fx"));
+  assert.equal(key.metadata.ownerReferences[0].name, "sb-fx");
+  // The default image is the Sandbox Image, in the Harness's seat.
+  const dflt = cluster();
+  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, heldDir, ...dflt.exec }).provision({
+    name: "sb-fx2",
+    runId: "r",
+    workflow: "w",
+    ...withApp,
+  });
+  const spec2 = crOf(dflt.calls).spec;
+  const fx2 = spec2.sidecars.find((c: { name: string }) => c.name === "effector");
+  assert.equal(fx2.image, spec2.image);
+  assert.deepEqual(fx2.securityContext, spec2.securityContext);
 });
 
 test("a CR apply that fails writes no Custodian ConfigMap (ADR-0001)", async () => {

@@ -191,6 +191,9 @@ export type PlaceRequest = {
   repos: ProvisionedRepo[];
   resources?: Size;
   userResources?: Size;
+  /** The Sandbox Effector's image as the `workspace()` names it (ADR-0068): the port resolves it,
+   * and adds the container only when `jr2 up` placed an Effect there. Absent → the Sandbox Image. */
+  effector?: string;
 };
 
 /** One Repo Slot as the port receives it at provision (ADR-0051): resolved to a Binding, and
@@ -523,6 +526,15 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
    * of the Agents whose Turns run here, which their providers claim without being listed.
    */
   secrets?: readonly string[];
+  /**
+   * The Sandbox Effector's image (ADR-0068, ADR-0005): the container that runs this Workspace's
+   * `push`, `upload` and credentialed `command` Effects, with the secrets they name. Absent → the
+   * Sandbox Image, whose floor already holds `git` (ADR-0037). Name one for the tools and the
+   * credentials kept out of the Agent's image (`terraform`, `aws`). A `file:` context or a
+   * registry ref, resolved like the User Container's image; it runs as its own `USER`. The
+   * container exists only when an Effect below this `workspace()` is placed there.
+   */
+  effector?: { image: string };
 };
 
 /**
@@ -633,6 +645,20 @@ export function workspace(
       );
     }
   }
+  const effector = options.effector;
+  if (
+    effector !== undefined &&
+    (typeof effector !== "object" ||
+      effector === null ||
+      typeof effector.image !== "string" ||
+      !effector.image ||
+      Object.keys(effector).some((k) => k !== "image"))
+  ) {
+    throw new Error(
+      `workspace(): \`effector\` is { image } — a \`file:\` URL to a docker context or a registry ref (got ` +
+        `${JSON.stringify(effector)}) — effector: { image: import.meta.resolve("./effector") } (ADR-0068).`,
+    );
+  }
   const wrapper = buildWorkspaceMachine(body, options.spec);
   // The wrapper is TRANSPARENT to its body (ADR-0049): `customize(machine, { agents })` on a
   // Workspace means the Machine inside, so the composer never spells `body` and never has to know
@@ -649,6 +675,7 @@ export function workspace(
     repos: repos === open ? open : { ...repos },
     ...(options.resources !== undefined ? { resources: options.resources } : {}),
     ...(secrets !== undefined ? { secrets: [...secrets] } : {}),
+    ...(effector !== undefined ? { effector: { image: effector.image } } : {}),
   });
   // The body's vocabulary stays the BODY's (ADR-0011, ADR-0049): the wrapper declares no events
   // of its own and merges none, because the actors that use the body's names resolve against the
@@ -830,6 +857,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
         // that retuned it reaches the next provision, and no snapshot holds it.
         ...(parts.resources !== undefined ? { resources: parts.resources } : {}),
         ...(user.resources !== undefined ? { userResources: user.resources } : {}),
+        ...(parts.effector !== undefined ? { effector: parts.effector.image } : {}),
       },
       { onWait, signal },
     );

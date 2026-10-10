@@ -168,6 +168,8 @@ export type SandboxParts = {
   /** The Held secrets this Workspace's pod gets beside its Agents' model keys (ADR-0059): names of
    * the `secrets` list. Naming is placement — no other pod gets a name for being listed here. */
   secrets?: string[];
+  /** The Sandbox Effector's image (ADR-0068). Absent → the Sandbox Image. */
+  effector?: { image: string };
 };
 
 // The stamps below are written ON `machine.config` under `Symbol.for` keys, never held in a
@@ -581,6 +583,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     const user = userSeatOf(parts.user);
     collectImage(parts.image);
     collectImage(user.image);
+    collectImage(parts.effector?.image);
     if (composesSandbox(machine)) {
       sandboxed = true;
       collectRepos(path, parts.repos);
@@ -593,52 +596,8 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(path, name, logic.definition);
-      else if (isEffect(logic)) {
-        const parts = logic.effect;
-        const placement = placementOf(parts);
-        if (parts.kind === "http" || parts.kind === "upload") {
-          effects.push({
-            name,
-            path,
-            kind: parts.kind,
-            placement,
-            method: parts.method,
-            target: { ...parts.target },
-            secrets: [...parts.secrets],
-            idempotent: parts.idempotent,
-            timeoutMs: parts.timeoutMs,
-            ...(parts.kind === "upload" && parts.slot !== undefined ? { slot: parts.slot } : {}),
-          });
-        } else if (parts.kind === "push") {
-          const { sign, squash, force, pin, timeoutMs, slot } = parts;
-          effects.push({
-            name,
-            path,
-            kind: "push",
-            placement,
-            sign,
-            squash,
-            force,
-            pin,
-            secrets: [],
-            timeoutMs,
-            ...(slot !== undefined ? { slot } : {}),
-          });
-        } else {
-          const { argv, timeoutMs, slot, secrets, pin } = parts;
-          effects.push({
-            name,
-            path,
-            kind: "command",
-            placement,
-            argv: argvText(argv),
-            timeoutMs,
-            ...(slot !== undefined ? { slot } : {}),
-            ...(secrets?.length ? { secrets: [...secrets] } : {}),
-            ...(pin ? { pin } : {}),
-          });
-        }
-      } else {
+      else if (isEffect(logic)) effects.push(carriedEffectOf(name, path, logic.effect));
+      else {
         const child = asMachine(logic);
         if (child) walk(child, path === undefined ? undefined : name === body ? path : [...path, name]);
       }
@@ -648,6 +607,53 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
 
   for (const machine of machines) walk(machine, []);
   return { agents, effects, images, repos, openSlots, openAgents, sizes, composesSandbox: sandboxed };
+}
+
+/** One Effect slot's plain data, as `jr2 up` and the placement read it. */
+export function carriedEffectOf(name: string, path: OpenSlot["path"], parts: EffectParts): CarriedEffect {
+  const placement = placementOf(parts);
+  if (parts.kind === "http" || parts.kind === "upload") {
+    return {
+      name,
+      path,
+      kind: parts.kind,
+      placement,
+      method: parts.method,
+      target: { ...parts.target },
+      secrets: [...parts.secrets],
+      idempotent: parts.idempotent,
+      timeoutMs: parts.timeoutMs,
+      ...(parts.kind === "upload" && parts.slot !== undefined ? { slot: parts.slot } : {}),
+    };
+  }
+  if (parts.kind === "push") {
+    const { sign, squash, force, pin, timeoutMs, slot } = parts;
+    return {
+      name,
+      path,
+      kind: "push",
+      placement,
+      sign,
+      squash,
+      force,
+      pin,
+      secrets: [],
+      timeoutMs,
+      ...(slot !== undefined ? { slot } : {}),
+    };
+  }
+  const { argv, timeoutMs, slot, secrets, pin } = parts;
+  return {
+    name,
+    path,
+    kind: "command",
+    placement,
+    argv: argvText(argv),
+    timeoutMs,
+    ...(slot !== undefined ? { slot } : {}),
+    ...(secrets?.length ? { secrets: [...secrets] } : {}),
+    ...(pin ? { pin } : {}),
+  };
 }
 
 /**
@@ -664,6 +670,15 @@ export type WorkspacePod = {
    * `workspace()` that is not `workspace: "none"` (those run at the Instance Harness, ADR-0031),
    * down to the next `workspace()`, which is a pod of its own. Sorted, deduped. */
   models: string[];
+  /** The Effects placed in this pod's Sandbox Effector (ADR-0068, B5.1): every `push`, `upload` and
+   * credentialed `command` slot below the `workspace()`, down to the next `workspace()` — read off
+   * their plain data, statically. Empty → the pod gets no Sandbox Effector and no Secret. */
+  effects: CarriedEffect[];
+  /** The `workspace()`'s `effector: { image }`, as written. Absent → the Sandbox Image. */
+  effector?: { image: string };
+  /** Each Repo Slot's Binding url as the Machine binds it, by slot, in order; undefined for an open
+   * or per-run slot, whose url `jr2 up` cannot read. A push resolves its credential through it. */
+  bindings: Record<string, string | undefined>;
 };
 
 /**
@@ -676,22 +691,34 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
   const pods: WorkspacePod[] = [];
   /** The bound models of the Agents in `machine` and the Machines it composes, short of a
    * `workspace()`. */
-  const modelsIn = (machine: AnyStateMachine, models: Set<string>, route: Set<AnyStateMachine>): void => {
+  const modelsIn = (
+    machine: AnyStateMachine,
+    models: Set<string>,
+    route: Set<AnyStateMachine>,
+    effects: Map<string, CarriedEffect>,
+    path: OpenSlot["path"],
+  ): void => {
     if (route.has(machine)) return;
     route.add(machine);
-    const visit = (child: AnyStateMachine) => {
-      if (!composesSandbox(child)) modelsIn(child, models, route);
+    const body = wrapperBodyOf(machine);
+    const visit = (child: AnyStateMachine, at: OpenSlot["path"]) => {
+      if (!composesSandbox(child)) modelsIn(child, models, route, effects, at);
     };
-    for (const logic of Object.values(machine.implementations.actors as Record<string, unknown>)) {
+    for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) {
         const { model, workspace } = logic.definition;
         if (workspace !== "none" && typeof model === "string") models.add(model);
         continue;
       }
+      if (isEffect(logic)) {
+        const effect = carriedEffectOf(name, path, logic.effect);
+        if (effect.placement === "sandbox") effects.set(JSON.stringify([path ?? null, name]), effect);
+        continue;
+      }
       const child = asMachine(logic);
-      if (child) visit(child);
+      if (child) visit(child, path === undefined ? undefined : name === body ? path : [...path, name]);
     }
-    walkStates(machine.root, visit);
+    walkStates(machine.root, (inline) => visit(inline, undefined));
     route.delete(machine);
   };
   const walk = (machine: AnyStateMachine, path: OpenSlot["path"], route: Set<AnyStateMachine>): void => {
@@ -699,8 +726,24 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
     route.add(machine);
     if (composesSandbox(machine)) {
       const models = new Set<string>();
-      modelsIn(machine, models, new Set());
-      pods.push({ path, secrets: [...(sandboxPartsOf(machine).secrets ?? [])], models: [...models].sort() });
+      const effects = new Map<string, CarriedEffect>();
+      modelsIn(machine, models, new Set(), effects, path);
+      const parts = sandboxPartsOf(machine);
+      const bindings: Record<string, string | undefined> = {};
+      if (parts.repos !== open) {
+        for (const [slot, value] of Object.entries(parts.repos)) {
+          const state = repoSlotState(value);
+          bindings[slot] = state.kind === "bound" ? state.binding.url : undefined;
+        }
+      }
+      pods.push({
+        path,
+        secrets: [...(parts.secrets ?? [])],
+        models: [...models].sort(),
+        effects: [...effects.values()],
+        ...(parts.effector ? { effector: { ...parts.effector } } : {}),
+        bindings,
+      });
     }
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {

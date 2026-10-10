@@ -144,7 +144,10 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     // — derived from the signing key as the Harness bearer is, so nothing is stored.
     ...(opts.instanceEffector
       ? {
-          // A Sandbox Effector's address is not one this host derives yet: see ADR-0067.
+          // A Sandbox Effector's key is the Sandbox's name's (`effectorKey(signingKey, <name>)`, written
+          // at provision), and its address is not one this host knows: the Sandbox's Service names
+          // the Harness's port only, and a request is signed for the pod's own `POD_IP:port`, which
+          // the Sandbox's status does not publish. Open, recorded in ADR-0067.
           effector: (placement: EffectorPlacement) =>
             placement === "instance"
               ? { placement, service: opts.instanceEffector!, key: effectorKey(signingKey, placement) }

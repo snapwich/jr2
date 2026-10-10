@@ -48,6 +48,10 @@ import {
   SERVICE_ACCOUNT_CA,
   STATE_PVC,
   type EffectorPlan,
+  type SandboxEffectorPlan,
+  effectorManifestKey,
+  LABEL_EFFECTOR_POD,
+  sandboxEffectorObjectsOf,
   type HarnessConfig,
   type HeldManifest,
   type PriorityClasses,
@@ -284,9 +288,13 @@ export function instanceObjects(opts: {
   repoCache?: { image: string; placement?: SandboxPlacement };
   /** `priorityClasses` from jr2.config.ts (ADR-0060): the classes to name instead of jr2's own. */
   priorityClasses?: PriorityClasses;
+  /** Each Workspace's Sandbox Effector (ADR-0068, B5.1): its manifest rides `jr2-held`, its
+   * `jr2-effector-<pod>` Secret holds its literals and `effector.json`. */
+  sandboxEffectors?: readonly SandboxEffectorPlan[];
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const priority = priorityClassNames(opts.priorityClasses);
+  const effectors = (opts.sandboxEffectors ?? []).map((plan) => ({ plan, ...sandboxEffectorObjectsOf(plan) }));
   const meta = (name: string, extra: Record<string, string> = {}): KubeManifest => ({
     name,
     namespace: opts.namespace,
@@ -390,9 +398,26 @@ export function instanceObjects(opts: {
       data: {
         ...Object.fromEntries(opts.held.pods.map((p) => [heldManifestKey(p.pod), JSON.stringify(p.manifest, null, 2)])),
         [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
+        // Each Sandbox Effector's manifest (ADR-0068): the sources of its secrets mount, by name.
+        // The provision adds the container only for a pod whose manifest is here.
+        ...Object.fromEntries(
+          effectors.map((e) => [effectorManifestKey(e.plan.pod), JSON.stringify(e.manifest, null, 2)]),
+        ),
       },
     },
     ...heldSecretObjects(opts.held, meta),
+    // Each Sandbox Effector's own Secret (ADR-0068): the literals its Effects name, each push
+    // token, and `effector.json`. A `valueFrom` and a deploy key stay in the user's Secret,
+    // projected by reference at provision.
+    ...effectors.map(
+      (e): KubeManifest => ({
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: meta(e.secret.name, { [LABEL_EFFECTOR_POD]: e.plan.pod }),
+        type: "Opaque",
+        stringData: e.secret.stringData,
+      }),
+    ),
     {
       apiVersion: "v1",
       kind: "Secret",

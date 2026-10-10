@@ -33,8 +33,8 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   per kind: for `push`, git never takes config or hooks from the Agent's repository and no program the Agent's files
   name runs — the clean-repository procedure of ADR-0067; for a credentialed `command`, the Agent's files are the
   author's choice to run, and the claims are three: the Agent never reads or spends the secret, the tool sees a pinned
-  commit and not the live Worktree, and the output is scrubbed. The Sandbox Effector's container — its mounts, its
-  per-pod key — is composed in the Orchestrator (`sandboxEffectorContainer`); provision does not add it yet (ADR-0067).
+  commit and not the live Worktree, and the output is scrubbed. A credentialed command's child gets the Effector
+  container's own `PATH`, as its image set it.
 - **The wire.** `POST /effects/<id>` starts an Effect and answers at once (202, `state: running`). A second `POST` with
   the same id starts nothing and attaches (200). The answer to a `push` or a credentialed `command` start names the
   commit it runs against (`pinned`), read before the answer, so the Orchestrator writes it to the ledger's intent row.
@@ -69,13 +69,14 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
 - **The Orchestrator's side.** `@jr2/orchestrator` speaks the wire through an injected transport (the unit tests' seam,
   [ADR-0010](0010-bdd-acceptance-tests.md)). The Instance Effector's address is derived from the namespace,
   `jr2-instance-effector.<namespace>.svc:8082`, and its key from the signing key (`effectorKey`): the Orchestrator
-  stores neither. The real transport resolves that name to every replica's address; a start goes to one of them, and to
-  the next only when a replica was never reached or answered that it is stopping. An answer without the Effector's
-  signature is not the Effector's, and never an outcome. To a start it is an answer lost and to a poll a replica gone
-  (its address may be stale): every replica is asked. When asking every replica gets one too, the Effect settles
-  `unknown`, with that reason, and is not sent again, `idempotent` or not: no retry changes the key the answer is
-  checked with. So a key that is not the Effector's, or another process on its address, makes the call fail and never
-  holds the run in its state. A signed answer that is not the wire's shape is a jr2 defect: the Effect errors.
+  stores neither (a Sandbox Effector's key is derived from its Sandbox's name; its address is open, ADR-0067). The real
+  transport resolves that name to every replica's address; a start goes to one of them, and to the next only when a
+  replica was never reached or answered that it is stopping. An answer without the Effector's signature is not the
+  Effector's, and never an outcome. To a start it is an answer lost and to a poll a replica gone (its address may be
+  stale): every replica is asked. When asking every replica gets one too, the Effect settles `unknown`, with that
+  reason, and is not sent again, `idempotent` or not: no retry changes the key the answer is checked with. So a key that
+  is not the Effector's, or another process on its address, makes the call fail and never holds the run in its state. A
+  signed answer that is not the wire's shape is a jr2 defect: the Effect errors.
 - **Replica-aware.** Every answer names the replica that holds the Effect — its pod name and its address
   (`POD_IP:port`). A poll to a replica that does not hold the Effect gets 404 with `state: unknown` and that replica's
   name. A replica that gets SIGTERM refuses a new Effect (503, `error: stopping`, which starts nothing), finishes the
@@ -144,24 +145,26 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   (`{ name, value | valueFrom.secretKeyRef, hosts?, headers?, paths? }`). A pod gets the secrets something in it names:
   a Workspace's pod the Held secrets its `workspace()` lists under `secrets: [...]` and the model keys its Agents'
   providers read; the Instance Harness the model keys of its `"none"` Agents only; an Effector what its Effects name
-  with `secret("name")` (an `http` Effect: the Instance Effector). `hosts`, `headers` and `paths` are a Held secret's
-  binding, never its placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the held
-  manifest, the Custodian config and the held values' Secret of each Harness pod come from it. Both is both, and
-  `jr2 up` reports it per pod. An entry nothing names goes nowhere, and `jr2 up` warns:
+  with `secret("name")` (an `http` Effect: the Instance Effector; an `upload` and a credentialed `command`: the Sandbox
+  Effector of the Workspace whose body invokes it, B5.1). `hosts`, `headers` and `paths` are a Held secret's binding,
+  never its placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the held manifest, the
+  Custodian config and the held values' Secret of each Harness pod come from it. Both is both, and `jr2 up` reports it
+  per pod. An entry nothing names goes nowhere, and `jr2 up` warns:
   `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no `placement:` key: naming is the placement.
   `jr2 up` prints one line per secret with its placements, and one per pod with what it holds
   (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
-  `the Instance Effector: holds jira`). Right after the walk, before anything is built or applied, it refuses an Effect
-  or a `workspace()` that names a secret the list does not hold (with the line to add) and a literal Effect secret
-  shorter than 8 characters, saying why. A `valueFrom` names a key of the user's Secret, which `jr2 up` checks once it
-  reaches the cluster: the key exists, and its value is 8 characters or more, measured as the Effector reads the file
-  (bytes, one trailing newline off). `jr2 up` keeps that length and a keyed digest of the value, never the value, and
-  refuses a short one with the same line. The digest rolls each long-lived pod that reads the value once at start: the
-  Instance Effector (its Deployment, below) and the Instance Harness (its Custodian, ADR-0059). The Effector refuses to
-  start with an empty or short value, for a Secret edited after the converge. A secret reaches only the pods where
-  something names it: a literal is written into the placement's own Secret, and a `valueFrom` is projected from the
-  user's Secret by reference, never copied. `git.credentials` stays its own list: a fence keyed by url prefix, not a
-  named value.
+  `the Instance Effector: holds jira`,
+  `Workspace of workflow "coding": Sandbox Effector (image the Sandbox Image) holds aws; pushes with git.credentials "*"`).
+  Right after the walk, before anything is built or applied, it refuses an Effect of any kind or a `workspace()` that
+  names a secret the list does not hold (with the line to add) and a literal Effect secret shorter than 8 characters,
+  saying why. A `valueFrom` names a key of the user's Secret, which `jr2 up` checks once it reaches the cluster: the key
+  exists, and its value is 8 characters or more, measured as the Effector reads the file (bytes, one trailing newline
+  off). `jr2 up` keeps that length and a keyed digest of the value, never the value, and refuses a short one with the
+  same line. The digest rolls each long-lived pod that reads the value once at start: the Instance Effector (its
+  Deployment, below) and the Instance Harness (its Custodian, ADR-0059). The Effector refuses to start with an empty or
+  short value, for a Secret edited after the converge. A secret reaches only the pods where something names it: a
+  literal is written into the placement's own Secret, and a `valueFrom` is projected from the user's Secret by
+  reference, never copied. `git.credentials` stays its own list: a fence keyed by url prefix, not a named value.
 - **The Instance Effector's objects.** `jr2 up` converges them when a registered Machine places an Effect there, and
   deletes them otherwise; it reports either (`instance effector: converging (<workflow>/<slot>; secrets …; grace …)` or
   `instance effector: none`). All four are named `jr2-instance-effector`:
@@ -184,6 +187,24 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
     nothing stored by the Orchestrator: the Kubernetes Secret is the store, as for every credential. The secrets are
     files under `/run/jr2/secrets`, mode 0400; the kubelet makes them readable by the pod's `fsGroup`, and the pod has
     one container. `harness.env` and `harness.envFrom` may not name this Secret (ADR-0059's R13).
+- **A Workspace's Sandbox Effector's objects** (B5.1, B8). `jr2 up` reads, for each `workspace()`, the Effects placed
+  there below it, down to the next `workspace()` — every `push`, `upload` and credentialed `command`, from their plain
+  data, statically — and writes two objects for a Workspace with one, none for one without:
+  - the **Secret** `jr2-effector-<pod>` (labelled with its pod key, deleted when its Workspace no longer places an
+    Effect there): each literal Effect secret those Effects name, each push token, and `effector.json` — the targets its
+    uploads call, and the `git.credentials` entries its pushes spend, each credential named by a directory under the git
+    mount;
+  - the **manifest** `effector-<pod>.json` in `jr2-held` beside the pod's Held manifest: names only — the projected
+    sources of the Effector's `/run/jr2/secrets`: that Secret's keys, each `valueFrom` key of the user's own Secret and
+    each key of a deploy or signing key a push spends (`identity`, `known_hosts`, `private.asc`), all by reference, at
+    `git/<dir>/<file>` for a credential.
+
+  The provision reads the pod's manifest, as it reads its Held one, and adds the `effector` container when one is there
+  (ADR-0005): its image is the `workspace()`'s `effector: { image }`, resolved like the User Container's, or the Sandbox
+  Image; its per-pod key is `effectorKey(signing key, <Sandbox name>)`, derived like the Sandbox token and written into
+  `<sandbox>-effector`, a Secret the CR owns, which only that container mounts, beside `effector.json`. Each pod's key
+  is its own: a request signed for one Sandbox is refused by every other.
+
 - **The log is a contract.** `jr2.effector` lines: `ready placement=… replica=… secrets=<names> targets=N`,
   `action=start effect=… kind=… method=… host=…` (a push and a command log `host=-`),
   `action=settle effect=… outcome=… status=…`, `action=drop`, `action=drain`. Never a value, a path, a query, a header

@@ -5,8 +5,9 @@
 //     model keys of the Agents whose Turns run there — a model key is claimed by the PROVIDER;
 //   - the Instance Harness: the model keys of the `"none"` Agents it hosts, and nothing else (they
 //     cannot execute code, ADR-0031, so nothing else is theirs to use);
-//   - an Effector: what its Effects name with `secret("name")` — today the Instance Effector, the
-//     one placement built.
+//   - an Effector: what its Effects name with `secret("name")` — the Instance Effector what its
+//     `http` Effects name; a Workspace's Sandbox Effector what its `upload`s and credentialed
+//     `command`s name, and the `git.credentials` entries its `push`es spend (ADR-0067).
 //
 // `hosts`, `headers` and `paths` are an entry's BINDING — where a Custodian may put the value — and
 // never its placement. Both is both, and `jr2 up` reports it per pod; an entry nothing names goes
@@ -24,9 +25,10 @@ import {
   type HeldBinding,
   type HeldLookups,
 } from "./held-secrets.ts";
-import type { JR2Config } from "./config.ts";
+import { matchCredential, type GitCredential, type JR2Config } from "./config.ts";
 import { INSTANCE_HARNESS_HELD_POD } from "./names.ts";
 import type { CarriedEffect, WorkspacePod } from "./parts.ts";
+import { repoIdentity } from "./repo-identity.ts";
 
 /** The shortest Effect secret jr2 accepts (ADR-0068) — the Effector refuses a shorter file at start. */
 export const EFFECT_SECRET_MIN_LENGTH = 8;
@@ -78,6 +80,40 @@ export type HeldPodPlan = {
   byProvider: string[];
 };
 
+/** One `git.credentials` entry a Sandbox Effector's pushes spend, as its `effector.json` names it:
+ * each credential a directory under the git mount (ADR-0068). */
+export type SandboxGitEntry = {
+  match: string;
+  push: { sshKey: string } | { token: string };
+  sign?: { sshKey: string; name: string; email: string } | { gpgKey: string; name: string; email: string };
+};
+
+/** One file of a git directory: a key of the user's Secret, by reference, or a token's value. */
+export type SandboxGitFile =
+  | { dir: string; file: string; source: { kind: "secret"; secret: string; key: string } }
+  | { dir: string; file: string; source: { kind: "literal"; value: string } };
+
+/** A Workspace's Sandbox Effector (ADR-0068, B5.1): what `jr2 up` writes for it. */
+export type SandboxEffectorPlan = {
+  placement: "sandbox";
+  /** The pod key its objects are keyed by (`workspaceHeldPod`). */
+  pod: string;
+  label: string;
+  /** The `workspace()`'s `effector: { image }`, as written; absent → the Sandbox Image. */
+  image?: string;
+  /** Every Effect secret its Effects name, in list order. */
+  secrets: EffectSecret[];
+  /** The literal values, by name — host-side only. */
+  values: Record<string, string>;
+  /** The targets its `upload`s name, with their secrets. */
+  targets: EffectorTargetConfig[];
+  /** The entries its pushes spend, and the files of their directories. */
+  git: SandboxGitEntry[];
+  gitFiles: SandboxGitFile[];
+  /** Its Effects, as `<workflow>/<slot>`. */
+  effects: string[];
+};
+
 export type SecretPlacements = {
   /** Every Harness pod the walk found — each Workspace, then the Instance Harness — with what its
    * Custodian holds. A pod that holds nothing is here too: its Custodian still runs. */
@@ -86,6 +122,8 @@ export type SecretPlacements = {
   claimed: Set<string>;
   /** The Instance Effector, when an Effect is placed there; absent otherwise. */
   instance?: EffectorPlan;
+  /** Each Workspace whose body places an Effect in its Sandbox Effector. */
+  sandbox: SandboxEffectorPlan[];
   /** One line per secret, then one per pod: where each goes, what each holds. */
   report: string[];
   warnings: string[];
@@ -104,6 +142,7 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
     // An empty value is refused later with the list's own rule (`sourceOf`): it is an unset variable.
     if (namedBy.has(e.name) && e.value) shortRefusal(e, e.value.length);
   }
+  for (const ws of walk.workspaces) pushEntriesOf(config, ws);
 }
 
 /**
@@ -114,7 +153,10 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
 export function secretPlacementsOf(
   config: JR2Config,
   walk: PlacementWalk,
-  lookups: Pick<HeldLookups, "secretKeys" | "valueLength"> = {},
+  lookups: Pick<HeldLookups, "secretKeys" | "valueLength"> & {
+    /** A token's value, by its env var (`.env`): a push token is written into its Effector's Secret. */
+    env?: (name: string) => string | undefined;
+  } = {},
 ): SecretPlacements {
   const { entries, namedBy, http } = namesOf(config, walk);
   const { pods, redundant } = heldPodsOf(config, walk, new Set(entries.map((e) => e.name)));
@@ -140,10 +182,13 @@ export function secretPlacementsOf(
       secrets.push({ name: e.name, source });
     }
     const heldIn = pods.filter((p) => p.names.includes(e.name)).map((p) => p.label);
-    const where = [
-      ...(heldIn.length ? [`Held in ${heldIn.join(", ")}`] : []),
-      ...(named.length ? [`an Effect secret in the Instance Effector (${[...new Set(named)].join(", ")})`] : []),
-    ];
+    const effectIn = [...new Set(named.map((n) => n.where))].map(
+      (where) =>
+        `an Effect secret in ${where} (${[...new Set(named.filter((n) => n.where === where).map((n) => n.label))].join(
+          ", ",
+        )})`,
+    );
+    const where = [...(heldIn.length ? [`Held in ${heldIn.join(", ")}`] : []), ...effectIn];
     if (where.length === 0) {
       warnings.push(
         `${e.at} (${e.name}) is named by nothing; goes nowhere — no workspace() lists it, no Agent's provider ` +
@@ -167,13 +212,200 @@ export function secretPlacementsOf(
     report.push(`${label}: secrets lists ${name}, which its Agents' provider claims already — redundant`);
   }
 
-  const instance = http.length === 0 ? undefined : effectorPlan(http, secrets, values);
+  const instanceSecrets = new Set(http.flatMap((p) => p.effect.secrets));
+  const instance =
+    http.length === 0
+      ? undefined
+      : effectorPlan(
+          http,
+          secrets.filter((s) => instanceSecrets.has(s.name)),
+          values,
+        );
   if (instance) {
     report.push(
       `the Instance Effector: holds ${instance.secrets.length ? instance.secrets.map((s) => s.name).join(", ") : "nothing"}`,
     );
   }
-  return { held: pods, claimed, ...(instance ? { instance } : {}), report, warnings };
+  const sandbox: SandboxEffectorPlan[] = [];
+  for (const ws of walk.workspaces) {
+    if (ws.pod.effects.length === 0) continue;
+    const plan = sandboxPlanOf(config, ws, secrets, values, lookups.env ?? (() => undefined));
+    if (sandbox.some((p) => p.pod === plan.pod)) continue;
+    sandbox.push(plan);
+    const holds = plan.secrets.map((s) => s.name);
+    const pushes = plan.git.map((g) => g.match);
+    report.push(
+      `${plan.label}: Sandbox Effector (image ${plan.image ?? "the Sandbox Image"}) holds ` +
+        `${holds.length ? holds.join(", ") : "no Effect secret"}` +
+        `${pushes.length ? `; pushes with git.credentials ${pushes.map((m) => `"${m}"`).join(", ")}` : ""}`,
+    );
+  }
+  for (const w of perRunPushes(walk)) warnings.push(w);
+  return { held: pods, claimed, ...(instance ? { instance } : {}), sandbox, report, warnings };
+}
+
+/** A Workspace's Sandbox Effector: the secrets its Effects name, the targets its uploads call, and
+ * the `git.credentials` entries its pushes spend. */
+function sandboxPlanOf(
+  config: JR2Config,
+  ws: PlacedWorkspace,
+  secrets: EffectSecret[],
+  values: Record<string, string>,
+  env: (name: string) => string | undefined,
+): SandboxEffectorPlan {
+  const named = new Set(ws.pod.effects.flatMap((e) => e.secrets ?? []));
+  const own = secrets.filter((s) => named.has(s.name));
+  const targets: EffectorTargetConfig[] = [];
+  for (const effect of ws.pod.effects) {
+    if (effect.kind !== "upload" && effect.kind !== "http") continue;
+    const t = { ...effect.target, secrets: [...effect.secrets].sort() };
+    const same = (x: EffectorTargetConfig) =>
+      x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();
+    if (!targets.some(same)) targets.push(t);
+  }
+  const git: SandboxGitEntry[] = [];
+  const gitFiles: SandboxGitFile[] = [];
+  const list = config.git?.credentials ?? [];
+  for (const { entry, url } of pushEntriesOf(config, ws)) {
+    const i = list.indexOf(entry);
+    if (git.some((g) => g.match === entry.match)) continue;
+    const scheme = repoIdentity(url).scheme;
+    const pushDir = `push-${i}`;
+    const spend = entry.push ?? (scheme === "ssh" ? { sshKey: entry.sshKey! } : { token: entry.token! });
+    if ("sshKey" in spend) {
+      for (const file of ["identity", "known_hosts"]) {
+        gitFiles.push({ dir: pushDir, file, source: { kind: "secret", secret: spend.sshKey, key: file } });
+      }
+    } else {
+      const value = env(spend.token);
+      if (!value) {
+        throw new Error(
+          `${ws.workflow}: the push credential of git.credentials entry "${entry.match}" is the token in ` +
+            `${spend.token}, which is not set — set it in .env, as the clone's token is (ADR-0051)`,
+        );
+      }
+      gitFiles.push({ dir: pushDir, file: "token", source: { kind: "literal", value } });
+    }
+    const out: SandboxGitEntry = {
+      match: entry.match,
+      push: "sshKey" in spend ? { sshKey: pushDir } : { token: pushDir },
+    };
+    if (entry.sign) {
+      const signDir = `sign-${i}`;
+      const { name, email } = entry.sign;
+      if ("gpgKey" in entry.sign) {
+        gitFiles.push({
+          dir: signDir,
+          file: "private.asc",
+          source: { kind: "secret", secret: entry.sign.gpgKey, key: "private.asc" },
+        });
+        out.sign = { gpgKey: signDir, name, email };
+      } else {
+        gitFiles.push({
+          dir: signDir,
+          file: "identity",
+          source: { kind: "secret", secret: entry.sign.sshKey, key: "identity" },
+        });
+        out.sign = { sshKey: signDir, name, email };
+      }
+    }
+    git.push(out);
+  }
+  return {
+    placement: "sandbox",
+    pod: workspaceHeldPod({ workflow: ws.workflow, path: ws.pod.path }),
+    label: workspaceLabel(ws),
+    ...(ws.pod.effector ? { image: ws.pod.effector.image } : {}),
+    secrets: own,
+    values: Object.fromEntries(Object.entries(values).filter(([name]) => named.has(name))),
+    targets,
+    git,
+    gitFiles,
+    effects: ws.pod.effects.map((e) => `${ws.workflow}/${e.name}`),
+  };
+}
+
+/**
+ * The `git.credentials` entry each push of a Workspace spends (ADR-0051, B6.2), or the refusal
+ * with the line to add: a push whose Binding no entry matches, an entry that holds no credential
+ * the url's scheme can spend (anonymous admits a clone, never a push), and `sign: true` on an
+ * entry with no `sign` field. A local path is never pushed to. A slot whose url the run chooses
+ * (per-run, open) is not read here: its push is checked by the Effector when it runs.
+ */
+function pushEntriesOf(config: JR2Config, ws: PlacedWorkspace): Array<{ entry: GitCredential; url: string }> {
+  const out: Array<{ entry: GitCredential; url: string }> = [];
+  const slots = Object.keys(ws.pod.bindings);
+  for (const effect of ws.pod.effects) {
+    if (effect.kind !== "push") continue;
+    const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
+    const url = slot === undefined ? undefined : ws.pod.bindings[slot];
+    if (url === undefined) continue;
+    const at = `workflow "${ws.workflow}": push "${effect.name}" pushes Repo Slot "${slot}" (${url})`;
+    const { scheme, identity } = repoIdentity(url);
+    if (scheme === "local") {
+      throw new Error(
+        `${at}, a local path — jr2 never pushes to one: git's local transport runs that repository's config and hooks (ADR-0067)`,
+      );
+    }
+    if (scheme === "git") {
+      throw new Error(`${at} over git://, which carries no credential — bind the slot over https or ssh (ADR-0051)`);
+    }
+    const entry = matchCredential(identity, config.git?.credentials ?? []);
+    if (entry === undefined) {
+      const fix =
+        scheme === "ssh"
+          ? `{ match: "${identity.split("/").slice(0, 2).join("/")}/", sshKey: "<a Secret with identity and known_hosts>" }`
+          : `{ match: "${identity.split("/").slice(0, 2).join("/")}/", token: "<the env var that holds the token>" }`;
+      throw new Error(
+        `${at}, and no git.credentials entry matches "${identity}" — a push spends the entry its Binding ` +
+          `matches; add one: git: { credentials: [${fix}] } (ADR-0051)`,
+      );
+    }
+    const spend = entry.push ?? (scheme === "ssh" ? entry.sshKey : entry.token);
+    const fits =
+      entry.push === undefined
+        ? spend !== undefined
+        : scheme === "ssh"
+          ? "sshKey" in entry.push
+          : "token" in entry.push;
+    if (!fits) {
+      const line =
+        scheme === "ssh"
+          ? `push: { sshKey: "<a Secret with identity and known_hosts>" }`
+          : `push: { token: "<the env var that holds the token>" }`;
+      throw new Error(
+        `${at}, and git.credentials entry "${entry.match}" holds no credential a push over ${scheme} can spend — ` +
+          `an entry with none admits a clone, never a push; add ${line} to it (ADR-0051)`,
+      );
+    }
+    if (effect.sign && entry.sign === undefined) {
+      throw new Error(
+        `${at} signed, and git.credentials entry "${entry.match}" holds no sign field — add ` +
+          `sign: { sshKey: "<a Secret with identity>", name: "<committer name>", email: "<committer email>" } ` +
+          "to it; the email must belong to the forge account that holds the key (ADR-0051, ADR-0067)",
+      );
+    }
+    out.push({ entry, url });
+  }
+  return out;
+}
+
+/** A push on a slot whose url the run chooses: `jr2 up` cannot place its credential. */
+function perRunPushes(walk: PlacementWalk): string[] {
+  const out: string[] = [];
+  for (const ws of walk.workspaces) {
+    const slots = Object.keys(ws.pod.bindings);
+    for (const effect of ws.pod.effects) {
+      if (effect.kind !== "push") continue;
+      const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
+      if (slot === undefined || ws.pod.bindings[slot] !== undefined) continue;
+      out.push(
+        `workflow "${ws.workflow}": push "${effect.name}" pushes Repo Slot "${slot}", whose url the run or a ` +
+          "customize() chooses — jr2 up places no push credential for it, and the push is refused when it runs (ADR-0051)",
+      );
+    }
+  }
+  return out;
 }
 
 function effectorPlan(http: HttpPlaced[], secrets: EffectSecret[], values: Record<string, string>): EffectorPlan {
@@ -267,18 +499,29 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
     }
     byName.set(e.name, e);
   }
-  const namedBy = new Map<string, string[]>();
+  // Every Effect that names a secret names it, whatever its kind: an `http` one in the Instance
+  // Effector, an `upload` and a credentialed `command` in their Workspace's Sandbox Effector.
+  const namedBy = new Map<string, Array<{ label: string; where: string }>>();
   const http = walk.effects.filter((p): p is HttpPlaced => p.effect.kind === "http");
-  for (const { workflow, effect } of http) {
+  const sandboxOf = new Map<string, string>();
+  for (const ws of walk.workspaces) {
+    for (const e of ws.pod.effects)
+      sandboxOf.set(`${ws.workflow}/${e.name}`, `the Sandbox Effector of ${workspaceLabel(ws)}`);
+  }
+  for (const { workflow, effect } of walk.effects) {
     const label = `${workflow}/${effect.name}`;
-    for (const name of effect.secrets) {
+    const where =
+      effect.placement === "instance"
+        ? "the Instance Effector"
+        : (sandboxOf.get(label) ?? "the Sandbox Effector of the Workspace that invokes it");
+    for (const name of effect.secrets ?? []) {
       if (!byName.has(name)) {
         throw new Error(
-          `workflow "${workflow}": the http Effect "${effect.name}" names secret("${name}"), which the \`secrets\` ` +
-            `list does not hold — add it: secrets: [{ name: "${name}", value: process.env.${envish(name)} }] (ADR-0068)`,
+          `workflow "${workflow}": the ${effect.kind} Effect "${effect.name}" names secret("${name}"), which the ` +
+            `\`secrets\` list does not hold — add it: secrets: [{ name: "${name}", value: process.env.${envish(name)} }] (ADR-0068)`,
         );
       }
-      namedBy.set(name, [...(namedBy.get(name) ?? []), label]);
+      namedBy.set(name, [...(namedBy.get(name) ?? []), { label, where }]);
     }
   }
   return { entries, namedBy, http };

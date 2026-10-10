@@ -88,12 +88,19 @@ import {
   type CustodianComposition,
 } from "./custodian.ts";
 import { readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
+import {
+  effectorManifestKey,
+  readSandboxEffectorManifest,
+  sandboxEffectorKeySecret,
+  type SandboxEffectorManifest,
+} from "./sandbox-effector.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
 import {
   CONVERSATIONS_DIR,
   CONVERSATIONS_DIR_ENV,
   CONVERSATIONS_VOLUME,
   HELD_MOUNT,
+  CA_CONFIGMAP,
   heldManifestKey,
   IMAGES_KEY,
   IMAGES_MOUNT,
@@ -114,7 +121,7 @@ import {
   type SandboxObject,
   type SandboxWatch,
 } from "./sandbox-watch.ts";
-import { harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
+import { effectorKey, harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
 import type { AttachError, AttachRequest, AttachResponse } from "./wire.ts";
 import type { Continuity, MemoryKill, PlacingWait, ProvisionedRepo, SandboxLoss, SandboxPort } from "./workspace.ts";
 
@@ -170,20 +177,19 @@ const HARDENED = {
 /** The Sandbox Effector's port in its pod (ADR-0068's default). */
 export const SANDBOX_EFFECTOR_PORT = 8082;
 
-/** The Secret `jr2 up` writes per Workspace for its Sandbox Effector (ADR-0067): the secrets its
- * Effects name, as files, and `effector.json`. */
-export const sandboxEffectorSecret = (workspacePod: string): string => `jr2-effector-${workspacePod}`;
+export { sandboxEffectorSecret } from "./sandbox-effector.ts";
 
 /**
  * The Sandbox Effector's container (ADR-0067, ADR-0068), for the Sandbox CR's `sidecars` beside the
- * Custodian, so the operator changes nothing. It is for a `workspace()` whose body holds an Effect
- * placed there (`push`, `upload`, a file-body `http`, a credentialed `command`); provision does
- * not add it yet, because nothing writes its Secret (ADR-0067). Its image is the Sandbox Image unless the `workspace()` names `effector: { image }`;
- * its command is jr2's binary on the runtime volume; it runs as its image's own `USER`. Its mounts:
- * `/work`, `/repos/<key>` and `/opt/jr2` read-only, its Secret at `/run/jr2/secrets` (0400), its
- * per-pod key (derived from the Sandbox's name, like the Sandbox token) at `/run/jr2/effector`,
- * and an emptyDir scratch that is its `$HOME`. No Custodian, no `harness.env`, and no env beyond
- * where its mounts are and the downward API's name and address.
+ * Custodian, so the operator changes nothing. The provision adds it for a `workspace()` whose body
+ * holds an Effect placed there (`push`, `upload`, a credentialed `command`) — which `jr2 up` read
+ * off the Machines and declared in the pod's manifest. Its image is the Sandbox Image unless the
+ * `workspace()` names `effector: { image }`; its command is jr2's binary on the runtime volume; it
+ * runs as its image's own `USER`. Its mounts: `/work`, `/repos/<key>` and `/opt/jr2` read-only,
+ * the secrets its Effects name and the credentials its pushes spend at `/run/jr2/secrets` (0400),
+ * its per-pod key (derived from the Sandbox's name, like the Sandbox token) and `effector.json` at
+ * `/run/jr2/effector`, and an emptyDir scratch that is its `$HOME`. No Custodian, no
+ * `harness.env`, and no env beyond where its mounts are and the downward API's name and address.
  */
 export function sandboxEffectorContainer(opts: {
   image: string;
@@ -192,6 +198,8 @@ export function sandboxEffectorContainer(opts: {
   secretVolume: string;
   keyVolume: string;
   scratchVolume: string;
+  /** The instance's trust ConfigMap's volume, when it ships a caBundle (ADR-0020). */
+  caVolume?: string;
 }) {
   const env = (name: string, value: string) => ({ name, value });
   return {
@@ -203,11 +211,12 @@ export function sandboxEffectorContainer(opts: {
       env("JR2_EFFECTOR_WORK", WORK_ROOT),
       env("JR2_EFFECTOR_REPOS", REPOS_MOUNT),
       env("JR2_EFFECTOR_KEY", "/run/jr2/effector/key"),
-      env("JR2_EFFECTOR_CONFIG", "/run/jr2/secrets/effector.json"),
+      env("JR2_EFFECTOR_CONFIG", "/run/jr2/effector/effector.json"),
       env("JR2_EFFECTOR_SECRETS", "/run/jr2/secrets"),
       env("JR2_EFFECTOR_GIT", "/run/jr2/secrets/git"),
       env("JR2_EFFECTOR_SCRATCH", "/run/jr2/scratch"),
       env("HOME", "/run/jr2/scratch"),
+      ...(opts.caVolume ? [env("JR2_CA_FILE", `${EFFECTOR_CA_MOUNT}/ca.crt`)] : []),
       { name: "POD_NAME", valueFrom: { fieldRef: { fieldPath: "metadata.name" } } },
       { name: "POD_IP", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } },
     ],
@@ -219,9 +228,35 @@ export function sandboxEffectorContainer(opts: {
       { name: opts.secretVolume, mountPath: "/run/jr2/secrets", readOnly: true },
       { name: opts.keyVolume, mountPath: "/run/jr2/effector", readOnly: true },
       { name: opts.scratchVolume, mountPath: "/run/jr2/scratch" },
+      ...(opts.caVolume ? [{ name: opts.caVolume, mountPath: EFFECTOR_CA_MOUNT, readOnly: true }] : []),
     ],
     securityContext: opts.securityContext,
   };
+}
+
+const EFFECTOR_CA_MOUNT = "/etc/jr2/effector-ca";
+
+/** The Sandbox Effector's volumes, by the names its container mounts. */
+export function sandboxEffectorVolumes(opts: {
+  sandbox: string;
+  manifest: SandboxEffectorManifest;
+  caBundle: boolean;
+}) {
+  return [
+    { name: "effector-secrets", projected: { defaultMode: 0o400, sources: opts.manifest.sources } },
+    {
+      name: "effector-own",
+      projected: {
+        defaultMode: 0o400,
+        sources: [
+          { secret: { name: sandboxEffectorKeySecret(opts.sandbox), items: [{ key: "key", path: "key" }] } },
+          { secret: { name: opts.manifest.secret, items: [{ key: "effector.json", path: "effector.json" }] } },
+        ],
+      },
+    },
+    { name: "effector-scratch", emptyDir: {} },
+    ...(opts.caBundle ? [{ name: "effector-ca", configMap: { name: CA_CONFIGMAP } }] : []),
+  ];
 }
 
 /**
@@ -504,7 +539,53 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     keys: string[],
     split: SizeSplit,
     user?: string,
-  ) => [custodian.custodianContainer, ...(user !== undefined ? [await userSidecar(refs, user, keys, split)] : [])];
+    effector?: Record<string, unknown>,
+  ) => [
+    custodian.custodianContainer,
+    ...(user !== undefined ? [await userSidecar(refs, user, keys, split)] : []),
+    ...(effector !== undefined ? [effector] : []),
+  ];
+
+  /**
+   * The Sandbox Effector (ADR-0068, B5.1, B5.3), when `jr2 up` placed an Effect there: its
+   * container and volumes. Its image is the one the `workspace()` names, resolved like the User
+   * Container's (a `file:` context to its built ref), or the Sandbox Image; it runs as that image's
+   * own `USER` — the seat rule every jr2 seat follows, ADR-0037's fallback included — hardened.
+   */
+  const effectorFor = async (
+    req: { name: string; effector?: string },
+    refs: ImageRefs,
+    keys: string[],
+    seat: Seat,
+    manifest: SandboxEffectorManifest,
+  ) => {
+    let image = seat.image;
+    let securityContext: Record<string, unknown> = seat.securityContext;
+    if (req.effector !== undefined) {
+      const named = await resolveSandboxImage(refs, req.effector);
+      if (named.refusedUser !== undefined) {
+        throw new Error(
+          `the Sandbox Effector's image "${req.effector}" declares \`USER ${named.refusedUser}\`, which cannot run a jr2 ` +
+            "seat: every jr2-owned container is `runAsNonRoot` with no `runAsUser`, so the kubelet needs a NUMERIC " +
+            "non-zero uid (ADR-0005). Change the Dockerfile's last `USER` to that uid, then re-run `jr2 up`.",
+        );
+      }
+      image = named.ref;
+      securityContext = named.fallbackSeat ? { ...HARDENED, runAsUser: FALLBACK_UID } : HARDENED;
+    }
+    return {
+      container: sandboxEffectorContainer({
+        image,
+        keys,
+        securityContext,
+        secretVolume: "effector-secrets",
+        keyVolume: "effector-own",
+        scratchVolume: "effector-scratch",
+        ...(opts.caBundle ? { caVolume: "effector-ca" } : {}),
+      }),
+      volumes: sandboxEffectorVolumes({ sandbox: req.name, manifest, caBundle: opts.caBundle === true }),
+    };
+  };
 
   // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
   // config) first, then the mechanism-owned vars (the Custodian's address and every Stand-in, the
@@ -622,20 +703,18 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       user?: string;
       workGroup?: number;
       userResources?: Size;
+      effector?: string;
     },
     refs: ImageRefs,
     repos: FencedRepo[],
     custodian: CustodianComposition,
     split: SizeSplit,
+    effectorManifest?: SandboxEffectorManifest,
   ) => {
     const seat = await seatFor(refs, req.image);
-    const sidecars = await sidecarsFor(
-      custodian,
-      refs,
-      repos.map((r) => r.key),
-      split,
-      req.user,
-    );
+    const keys = repos.map((r) => r.key);
+    const effector = effectorManifest ? await effectorFor(req, refs, keys, seat, effectorManifest) : undefined;
+    const sidecars = await sidecarsFor(custodian, refs, keys, split, req.user, effector?.container);
     return {
       apiVersion: "core.jr2.dev/v1alpha1",
       kind: "Sandbox",
@@ -722,6 +801,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           ...seat.homeVolume,
           // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
           ...custodian.volumes,
+          // The Sandbox Effector's (ADR-0068): its secrets, its key and config, its scratch.
+          ...(effector?.volumes ?? []),
         ],
         // CR-level volumeMounts land on the HARNESS container only (the operator's contract): the
         // trust bundles, and none of the Custodian's volumes. The Repo caches are not listed: the
@@ -777,6 +858,38 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       },
       type: "Opaque",
       data: { JR2_SANDBOX_TOKEN: Buffer.from(sandboxToken(opts.signingKey, name)).toString("base64") },
+    });
+  };
+
+  /**
+   * This Sandbox's Effector key (ADR-0068, B5.1): `effectorKey(signing key, <Sandbox name>)`,
+   * derived like the Sandbox token, so a re-provision re-applies the same value, and written into a
+   * Secret the CR owns, which only the `effector` container mounts.
+   */
+  const applyEffectorKey = async (name: string, owner: KubeObject): Promise<void> => {
+    if (!opts.signingKey) throw new Error("kubeSandbox: a Sandbox Effector needs a signingKey to derive its key");
+    const uid = owner.metadata?.uid;
+    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its Effector key`);
+    await kube().apply(SECRETS, ns, {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {
+        name: sandboxEffectorKeySecret(name),
+        namespace: ns,
+        labels: { "jr2.dev/sandbox": name },
+        ownerReferences: [
+          {
+            apiVersion: "core.jr2.dev/v1alpha1",
+            kind: "Sandbox",
+            name,
+            uid,
+            controller: true,
+            blockOwnerDeletion: false,
+          },
+        ],
+      },
+      type: "Opaque",
+      data: { key: Buffer.from(effectorKey(opts.signingKey, name)).toString("base64") },
     });
   };
 
@@ -1007,7 +1120,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         caBundle: opts.caBundle === true,
         resources: split.custodian,
       });
-      const cr = await crFor(req, refs, repos, custodian, split);
+      // The Sandbox Effector (ADR-0068): present when `jr2 up` placed an Effect of this Workspace
+      // there, and declared it in the pod's manifest beside the Held one; absent otherwise.
+      const effectorManifest = await readSandboxEffectorManifest(join(heldDir, effectorManifestKey(pod)));
+      const cr = await crFor(req, refs, repos, custodian, split, effectorManifest);
 
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
       // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
@@ -1027,6 +1143,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // After the CR: its uid owns both, so they go when it goes.
       await applyTokenSecret(req.name, applied);
       await applyCustodianConfig(req.name, applied, manifest);
+      if (effectorManifest) await applyEffectorKey(req.name, applied);
 
       // The wait for a node, with no deadline (ADR-0064): jr2 cannot tell "full now" from "never
       // fits", so a bound is the Machine's `after`. Its reason — the scheduler's, or a quota's
