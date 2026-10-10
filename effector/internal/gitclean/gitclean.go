@@ -100,6 +100,9 @@ func New(ctx context.Context, opts Options) (*Repo, error) {
 		{"protocol.version", "2"},
 		{"push.default", "nothing"},
 		{"credential.helper", ""},
+		// A redirect would take the push, and the helper's credential, to an origin outside the
+		// git.credentials entry: the clean repository follows none.
+		{"http.followRedirects", no},
 	} {
 		if _, err := r.Git(ctx, nil, "config", kv[0], kv[1]); err != nil {
 			r.Close()

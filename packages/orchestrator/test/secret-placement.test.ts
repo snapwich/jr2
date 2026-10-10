@@ -507,10 +507,12 @@ test("jr2 up refuses a push with no matching entry, an entry with no credential,
       ),
     /a local path — jr2 never pushes to one/,
   );
-  // A slot the run chooses cannot be read here: it is said, not refused.
-  const perRun = secretPlacementsOf({}, placedIn([pusher("publish")], { app: undefined }));
-  assert.match(
-    perRun.warnings.join("\n"),
-    /push "publish" pushes Repo Slot "app", whose url the run or a customize\(\) chooses/,
-  );
+  // A slot the run chooses: no entry can be matched to a url jr2 up cannot read, so the push is
+  // refused like one no entry matches — with a wildcard entry that could spend it too.
+  for (const config of [{}, { git: { credentials: [{ match: "*", token: "T" }] } }]) {
+    assert.throws(
+      () => refuseEffectSecrets(config, placedIn([pusher("publish")], { app: undefined })),
+      /push "publish" pushes Repo Slot "app", whose url the run or a customize\(\) chooses — .*refuses the push; bind the slot/,
+    );
+  }
 });

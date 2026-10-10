@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -219,7 +220,10 @@ func (c *call) run(ctx context.Context) wire.Output {
 // helper, an ssh command's key. Never a value.
 func (c *call) credential() ([]string, string, error) {
 	switch gitclean.Scheme(c.spec.URL) {
-	case gitclean.SchemeHTTPS, gitclean.SchemeHTTP:
+	case gitclean.SchemeHTTP:
+		// A token goes over HTTPS only (design 6): Basic over cleartext http is the token in the clear.
+		return nil, "", errors.New("the url is http, and jr2 sends a push token over https only")
+	case gitclean.SchemeHTTPS:
 		if c.entry.Push.Token == "" {
 			return nil, "", errors.New("the url is https and the git.credentials entry's push credential is an ssh key")
 		}
@@ -227,7 +231,13 @@ func (c *call) credential() ([]string, string, error) {
 		if _, err := os.Stat(file); err != nil {
 			return nil, "", errors.New("the push token's file is not in this Effector's mount")
 		}
-		return []string{"JR2_GIT_TOKEN_FILE=" + file}, "https:http", nil
+		u, err := url.Parse(strings.TrimSpace(c.spec.URL))
+		if err != nil || u.Host == "" {
+			return nil, "", errors.New("the url's host could not be read")
+		}
+		// The helper answers only the Binding's own origin: the token never leaves its entry, a
+		// redirect included (the clean repository follows none, and the helper checks again).
+		return []string{"JR2_GIT_TOKEN_FILE=" + file, "JR2_GIT_TOKEN_HOST=" + u.Host}, "https", nil
 	case gitclean.SchemeSSH:
 		if c.entry.Push.SSHKey == "" {
 			return nil, "", errors.New("the url is ssh and the git.credentials entry's push credential is a token")
@@ -257,7 +267,7 @@ func (c *call) configure(ctx context.Context) error {
 		}
 	}
 	switch gitclean.Scheme(c.spec.URL) {
-	case gitclean.SchemeHTTPS, gitclean.SchemeHTTP:
+	case gitclean.SchemeHTTPS:
 		helper := c.r.Helper + " git-credential"
 		if _, err := repo.Git(ctx, nil, "config", "--replace-all", "credential.helper", helper); err != nil {
 			return err

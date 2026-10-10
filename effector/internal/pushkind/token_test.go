@@ -119,6 +119,7 @@ func TestTheHelperAnswersOnlyGetAndOnlyFromItsFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("JR2_GIT_TOKEN_FILE", file)
+	t.Setenv("JR2_GIT_TOKEN_HOST", "x")
 	var out strings.Builder
 	if code := Helper([]string{"get"}, strings.NewReader("protocol=https\nhost=x\n\n"), &out); code != 0 {
 		t.Fatalf("exit %d", code)
@@ -136,10 +137,128 @@ func TestTheHelperAnswersOnlyGetAndOnlyFromItsFile(t *testing.T) {
 	}
 	// The binary itself is the helper git runs.
 	cmd := exec.Command(os.Args[0], "git-credential", "get")
-	cmd.Env = append(os.Environ(), "JR2_GIT_TOKEN_FILE="+file)
-	cmd.Stdin = strings.NewReader("\n")
+	cmd.Env = append(os.Environ(), "JR2_GIT_TOKEN_FILE="+file, "JR2_GIT_TOKEN_HOST=x")
+	cmd.Stdin = strings.NewReader("protocol=https\nhost=x\n\n")
 	got, err := cmd.Output()
 	if err != nil || !strings.Contains(string(got), "password="+token) {
 		t.Fatalf("%v %q", err, got)
+	}
+}
+
+// A redirect from the Binding's host takes neither the push nor the token to another origin:
+// the clean repository follows no redirect, and the helper answers only the Binding's host.
+func TestARedirectTakesTheTokenToNoOtherOrigin(t *testing.T) {
+	for _, scheme := range []string{"https", "http"} {
+		t.Run(scheme, func(t *testing.T) {
+			f := newFixture(t, "")
+			f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+			before := remoteRef(f)
+			// The other origin: a git server that takes this token and records what it saw — over
+			// TLS on another port (only the redirect and the helper stop it), or plain http.
+			var elsewhere string
+			var asked func() int
+			if scheme == "https" {
+				srv, seen := tokenServer(t, filepath.Dir(f.pod.Remote))
+				elsewhere, asked = srv.URL, func() int { return len(*seen) }
+			} else {
+				var mu sync.Mutex
+				n := 0
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					mu.Lock()
+					n++
+					mu.Unlock()
+					w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+					w.WriteHeader(http.StatusUnauthorized)
+				}))
+				t.Cleanup(srv.Close)
+				elsewhere, asked = srv.URL, func() int { mu.Lock(); defer mu.Unlock(); return n }
+			}
+			binding := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, elsewhere+strings.TrimPrefix(r.URL.RequestURI(), "/redir"), http.StatusFound)
+			}))
+			t.Cleanup(binding.Close)
+			if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", "token"), []byte(token+"\n"), 0o400); err != nil {
+				t.Fatal(err)
+			}
+			// httptest's TLS servers share one certificate, so one CA file trusts both origins.
+			ca := filepath.Join(f.pod.Root, "ca.pem")
+			cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: binding.Certificate().Raw})
+			if err := os.WriteFile(ca, cert, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f.runner.CAFile = ca
+			f.runner.Scrubber = scrub.New(map[string]string{"git:push/token": token})
+
+			req := f.request(false, nil)
+			req.Push.URL = binding.URL + "/redir/" + filepath.Base(f.pod.Remote)
+			out := f.runner.Run(t.Context(), req)
+			if out.Outcome == wire.OutcomePushed {
+				t.Fatalf("a push followed the redirect: %+v %+v", out, out.Push)
+			}
+			if n := asked(); n != 0 {
+				t.Fatalf("the other origin was asked %d times", n)
+			}
+			if remoteRef(f) != before {
+				t.Fatal("the remote moved")
+			}
+		})
+	}
+}
+
+func TestATokenPushOverHTTPIsRefusedAndSendsNothing(t *testing.T) {
+	f := newFixture(t, "")
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	var mu sync.Mutex
+	seen := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		seen++
+		mu.Unlock()
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", "token"), []byte(token+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	req := f.request(false, nil)
+	req.Push.URL = srv.URL + "/" + filepath.Base(f.pod.Remote)
+	out := f.runner.Run(t.Context(), req)
+	if out.Outcome != wire.OutcomeRejected || !strings.Contains(out.Reason, "https only") {
+		t.Fatalf("got %+v", out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if seen != 0 {
+		t.Fatalf("the http server was asked %d times", seen)
+	}
+}
+
+func TestTheHelperAnswersOnlyTheBindingsHostOverHTTPS(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(file, []byte(token+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JR2_GIT_TOKEN_FILE", file)
+	t.Setenv("JR2_GIT_TOKEN_HOST", "git.example.com:8443")
+	for _, ask := range []string{
+		"protocol=https\nhost=other.example.com:8443\n\n",
+		"protocol=http\nhost=git.example.com:8443\n\n",
+		"protocol=https\nhost=git.example.com\n\n",
+		"host=git.example.com:8443\n\n",
+	} {
+		var out strings.Builder
+		if code := Helper([]string{"get"}, strings.NewReader(ask), &out); code == 0 || out.Len() != 0 {
+			t.Fatalf("%q: exit %d, %q", ask, code, out.String())
+		}
+	}
+	var out strings.Builder
+	if code := Helper([]string{"get"}, strings.NewReader("protocol=https\nhost=GIT.example.com:8443\n\n"), &out); code != 0 ||
+		!strings.Contains(out.String(), "password="+token) {
+		t.Fatalf("the Binding's host: %q", out.String())
+	}
+	t.Setenv("JR2_GIT_TOKEN_HOST", "")
+	out.Reset()
+	if code := Helper([]string{"get"}, strings.NewReader("protocol=https\nhost=git.example.com:8443\n\n"), &out); code == 0 {
+		t.Fatal("answered with no host")
 	}
 }

@@ -260,7 +260,6 @@ export function secretPlacementsOf(
         `${pushes.length ? `; pushes with git.credentials ${pushes.map((m) => `"${m}"`).join(", ")}` : ""}`,
     );
   }
-  for (const w of perRunPushes(walk)) warnings.push(w);
   return { held: pods, claimed, ...(instance ? { instance } : {}), sandbox, report, warnings };
 }
 
@@ -349,8 +348,8 @@ function sandboxPlanOf(
  * The `git.credentials` entry each push of a Workspace spends (ADR-0051, B6.2), or the refusal
  * with the line to add: a push whose Binding no entry matches, an entry that holds no credential
  * the url's scheme can spend (anonymous admits a clone, never a push), and `sign: true` on an
- * entry with no `sign` field. A local path is never pushed to. A slot whose url the run chooses
- * (per-run, open) is not read here: its push is checked by the Effector when it runs.
+ * entry with no `sign` field. A local path is never pushed to. A push on a slot whose url the run
+ * chooses (per-run, open) is refused too: no entry can be matched to a url `jr2 up` cannot read.
  */
 function pushEntriesOf(config: JR2Config, ws: PlacedWorkspace): Array<{ entry: GitCredential; url: string }> {
   const out: Array<{ entry: GitCredential; url: string }> = [];
@@ -358,8 +357,17 @@ function pushEntriesOf(config: JR2Config, ws: PlacedWorkspace): Array<{ entry: G
   for (const effect of ws.pod.effects) {
     if (effect.kind !== "push") continue;
     const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
-    const url = slot === undefined ? undefined : ws.pod.bindings[slot];
-    if (url === undefined) continue;
+    if (slot === undefined) continue;
+    const url = ws.pod.bindings[slot];
+    if (url === undefined) {
+      // jr2 up cannot show a matching entry for a url it cannot read, so it refuses the push, as
+      // it refuses one no entry matches (design 6, B6.2). A push on such a slot is not built.
+      throw new Error(
+        `workflow "${ws.workflow}": push "${effect.name}" pushes Repo Slot "${slot}", whose url the run or a ` +
+          "customize() chooses — jr2 up matches a push's Binding to its git.credentials entry before the run, " +
+          "and cannot read this one, so it refuses the push; bind the slot to a url in the workspace() (ADR-0051)",
+      );
+    }
     const at = `workflow "${ws.workflow}": push "${effect.name}" pushes Repo Slot "${slot}" (${url})`;
     const { scheme, identity } = repoIdentity(url);
     if (scheme === "local") {
@@ -406,24 +414,6 @@ function pushEntriesOf(config: JR2Config, ws: PlacedWorkspace): Array<{ entry: G
       );
     }
     out.push({ entry, url });
-  }
-  return out;
-}
-
-/** A push on a slot whose url the run chooses: `jr2 up` cannot place its credential. */
-function perRunPushes(walk: PlacementWalk): string[] {
-  const out: string[] = [];
-  for (const ws of walk.workspaces) {
-    const slots = Object.keys(ws.pod.bindings);
-    for (const effect of ws.pod.effects) {
-      if (effect.kind !== "push") continue;
-      const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
-      if (slot === undefined || ws.pod.bindings[slot] !== undefined) continue;
-      out.push(
-        `workflow "${ws.workflow}": push "${effect.name}" pushes Repo Slot "${slot}", whose url the run or a ` +
-          "customize() chooses — jr2 up places no push credential for it, and the push is refused when it runs (ADR-0051)",
-      );
-    }
   }
   return out;
 }
