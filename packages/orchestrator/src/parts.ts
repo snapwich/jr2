@@ -34,6 +34,13 @@
 //     xstate rewrites to a generated key and keeps only on the raw config node. Nothing jr2 owns
 //     arrives this way any more; the walk keeps it because an AUTHOR may still write one.
 //
+// A PART written inline is refused, not walked (`refuseInlineParts`): an `agent()`, an Effect
+// (ADR-0067) or a `workspace()` on an `invoke.src` has no author-written name. xstate's generated
+// key (`xstate.invoke.<n>.<state id>`) moves when a state is renamed, so the ledger, the Console doc
+// and `jr2 up`'s report would name it by a number, and `customize()` — xstate's `provide`, keyed on
+// `actors` — could not reach it at all. A slot key is the one name every reader shares (ADR-0049),
+// so a Part is a key of `actors`, and the refusal says how to write it.
+//
 // Deliberately NOT a `provide()`-aware read: the walk runs on the registered Machine, which is the
 // object the run will start, so a `customize()` clone is walked as itself and a test seam's fake
 // (unbranded) contributes nothing.
@@ -429,6 +436,37 @@ function inlineMachines(node: StateNode<any, any>): AnyStateMachine[] {
   });
 }
 
+/**
+ * Refuse a Part written inline on an `invoke.src` — an `agent()`, an Effect or a `workspace()` that
+ * is no key of the Machine's `actors` (see the module comment). Thrown at build by
+ * `jr2Setup.createMachine` and at load by {@link partsOf}, so a Machine built with xstate's own
+ * `createMachine` is refused where `jr2 up` and the Orchestrator read it. A plain child Machine
+ * written inline is not a Part: it stays walked, with no `customize()` route (its `path` is
+ * `undefined`).
+ */
+export function refuseInlineParts(machine: AnyStateMachine): void {
+  const partOf = (src: unknown): { part: string; written: string } | undefined => {
+    if (isAgent(src)) return { part: "an Agent", written: "agent(...)" };
+    if (isEffect(src)) return { part: "an Effect", written: `${src.effect.kind}(...)` };
+    const child = asMachine(src);
+    if (child && composesSandbox(child)) return { part: "a Workspace", written: "workspace(...)" };
+    return undefined;
+  };
+  const visit = (node: StateNode<any, any>): void => {
+    for (const inv of [node.config.invoke ?? []].flat() as Array<{ src?: unknown }>) {
+      const found = partOf(inv?.src);
+      if (found === undefined) continue;
+      throw new Error(
+        `machine "${machine.id}": state "${node.id}" invokes ${found.part} inline — a Part is a key of actors, so ` +
+          `it has a name that the ledger, the report and customize() share: actors: { <name>: ${found.written} }, ` +
+          `then invoke: { src: "<name>" }`,
+      );
+    }
+    for (const child of Object.values(node.states as Record<string, StateNode<any, any>>)) visit(child);
+  };
+  visit(machine.root);
+}
+
 /** `JSON.stringify` with object keys sorted at every depth — a value's identity, not its spelling.
  * Symbols are spelled out rather than dropped: `JSON.stringify` silently omits a symbol-valued
  * key, which would make an Open Agent (ADR-0054) collapse into a bound one that differs in nothing
@@ -532,6 +570,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const walk = (machine: AnyStateMachine, path: OpenSlot["path"]): void => {
     if (walked.has(machine)) return;
     walked.add(machine);
+    refuseInlineParts(machine);
     const parts = sandboxPartsOf(machine);
     const user = userSeatOf(parts.user);
     collectImage(parts.image);

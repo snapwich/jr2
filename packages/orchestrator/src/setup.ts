@@ -48,6 +48,7 @@ import { isAgent } from "./agent.ts";
 import { isEffect } from "./effect.ts";
 import { effectChecks } from "./effect-checks.ts";
 import { gate } from "./gate.ts";
+import { refuseInlineParts } from "./parts.ts";
 import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
 import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } from "./vocabulary.ts";
@@ -222,6 +223,8 @@ export function jr2Setup<
       );
     }
 
+    // A Part written inline has no name (ADR-0049, ADR-0067): refused, with the slot form.
+    refuseInlineParts(machine);
     refuseParallelBelowAgents(machine, def.actors ?? {});
     refuseUnknownSentBy(machine);
     // Before the Effect checks: they ask who may send a writing (`mayTake`), which reads its audience.

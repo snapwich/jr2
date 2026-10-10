@@ -75,6 +75,12 @@ because they are one problem: **what a Machine depends on that is not inside it.
 - **The wrapper's body is a named slot** (`invoke: { id: "body", src: "body" }` over `setup({ actors: { body } })`), and
   `pool()`'s worker likewise. That is what lets `provide`, `customize`, Stately, and the `jr2 up` walk reach it
   uniformly.
+- **A Part is a key of `actors`.** An `agent()`, an Effect (ADR-0067) or a `workspace()` written inline on an
+  `invoke.src` is refused at build (`jr2Setup.createMachine`) and at load (the walk), with the slot form in the message.
+  xstate gives an inline `src` a generated key (`xstate.invoke.<n>.<state id>`) that moves when a state is renamed, so
+  the ledger, `jr2 up`'s report and the Machine doc would name the Part by a number, and `customize()` — `provide`,
+  keyed on `actors` — could not reach it at all. A plain child Machine written inline is not a Part: the walk descends
+  it, with no `customize()` route below it.
 - **`jr2 up` walks the registered Machines** — `implementations.actors`, descending into child Machines — to collect
   models to preflight and `file:` image contexts to build. A context is keyed by its content digest (the same digest
   ADR-0038 tags by), so the host at `jr2 up` and the baked Orchestrator, whose `node_modules` holds the same folder,

@@ -13,7 +13,10 @@ Workspace, and `http`, call a URL from the Instance Effector
   exits, its input persists with the snapshot, a `src` typo is a compile error, and `.provide()` is the unit-test seam.
   The slot carries its parts as plain data — kind, placement, timeout; a `command`'s argv and Repo Slot; an `http`
   Effect's method, fixed host and the names of the secrets it names — which `jr2 up` prints and the Machine doc carries,
-  read without running anything.
+  read without running anything. An Effect written inline (`invoke: { src: http({...}) }`) is refused at build and at
+  load, with the slot form in the message: xstate gives it a generated key that moves when a state is renamed, so the
+  ledger, the report and the Machine doc would name it by a number, and `customize()` — `provide`, keyed on `actors` —
+  could not reach it. The same rule holds for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`.
 - **Between a pick and its work: `fromPick`, `paramsOf`, `answer`.** All optional; a plain mapper is legal.
   `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
   `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security

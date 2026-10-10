@@ -364,12 +364,23 @@ test("open slots are reported with their `customize()` route from the root — w
     [["review"], ["review"]],
   );
 
-  // Invoked INLINE, the wrapper sits under an actor with no slot key — nothing a `customize()`
-  // can name — so the path is undefined and the refusal says so instead of printing a line.
+  // A `workspace()` invoked INLINE is a Part with no name: refused at build, with the slot form
+  // (ADR-0049). A plain Machine invoked inline is walked, but the inline link breaks the route —
+  // nothing a `customize()` can name is below it — so the path is undefined and the refusal says
+  // so instead of printing a line.
+  assert.throws(
+    () =>
+      jr2Setup({ events: [] }).createMachine({
+        id: "inline",
+        initial: "reviewing",
+        states: { reviewing: { invoke: { src: packaged } } },
+      }),
+    /machine "inline": state "inline\.reviewing" invokes a Workspace inline — a Part is a key of actors/,
+  );
   const inline = jr2Setup({ events: [] }).createMachine({
     id: "inline",
     initial: "reviewing",
-    states: { reviewing: { invoke: { src: packaged } } },
+    states: { reviewing: { invoke: { src: host } } },
   });
   assert.deepEqual(partsOf([inline]).openSlots, [
     { slot: "target", path: undefined },
@@ -436,12 +447,13 @@ test("an Open Agent is located by the same `customize()` route a Repo Slot is �
   assert.deepEqual(parts.openSlots, [{ slot: "target", path: ["review"] }]);
   assert.deepEqual(parts.openAgents, [{ slot: "coder", path: ["review"] }]);
 
-  // Invoked INLINE, the Machine sits under an actor with no slot key: nothing a `customize()` can
-  // name, so the path is undefined and the refusal says so instead of printing a line.
+  // A plain Machine invoked INLINE is walked, but it sits under an actor with no slot key: nothing
+  // a `customize()` can name is below it, so the path is undefined and the refusal says so instead
+  // of printing a line. (The `workspace()` itself inline is refused — ADR-0049.)
   const inline = jr2Setup({ events: [] }).createMachine({
     id: "inline",
     initial: "reviewing",
-    states: { reviewing: { invoke: { src: packaged } } },
+    states: { reviewing: { invoke: { src: host } } },
   });
   assert.deepEqual(partsOf([inline]).openAgents, [{ slot: "coder", path: undefined }]);
 });

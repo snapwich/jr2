@@ -17,6 +17,8 @@ import {
   or,
   type AnyStateMachine,
 } from "xstate";
+import { commandWith } from "../src/effect.ts";
+import { partsOf } from "../src/parts.ts";
 import { sentBy } from "../src/party.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { loadWarningsOf, seatLine } from "../src/vocabulary.ts";
@@ -26,6 +28,35 @@ const ev = (name: string, audience?: "agent" | "external" | "any"): EventDef =>
   defineEvent({ name, input: z.object({}), ...(audience ? { audience } : {}) });
 const slot = () => agentActorWith(() => new MockFlueClient(), coderDefinition);
 const EP = "http://harness.invalid";
+const never = () => {
+  throw new Error("never run at load");
+};
+
+test("a Part written inline — an agent(), an Effect — is refused at build with the slot form; a plain child Machine is not a Part (ADR-0049, ADR-0067)", () => {
+  // xstate's generated key for an inline `src` moves when a state is renamed, so nothing outside
+  // the run — the ledger, the report, `customize()` — could name the Part. The refusal says how.
+  const build = (src: unknown) =>
+    jr2Setup({ events: [], actors: {} }).createMachine({
+      id: "m",
+      initial: "x",
+      states: { x: { invoke: { src, onDone: "d" } as never }, d: { type: "final" } },
+    });
+  assert.throws(
+    () => build(slot()),
+    /machine "m": state "m\.x" invokes an Agent inline — a Part is a key of actors, so it has a name that the ledger, the report and customize\(\) share: actors: \{ <name>: agent\(\.\.\.\) \}, then invoke: \{ src: "<name>" \}/,
+  );
+  assert.throws(() => build(commandWith(never, ["pnpm", "test"])), /invokes an Effect inline — .*command\(\.\.\.\)/);
+  // A plain child Machine written inline is walked, with no `customize()` route — not refused.
+  build(createMachine({ id: "child", initial: "a", states: { a: { type: "final" } } }));
+  // A Machine built with xstate's own `createMachine` meets the same refusal where `jr2 up` and
+  // the Orchestrator read it: the load walk.
+  const raw = createMachine({
+    id: "raw",
+    initial: "x",
+    states: { x: { invoke: { src: commandWith(never, ["ls"]) } as never } },
+  });
+  assert.throws(() => partsOf([raw]), /machine "raw": state "raw\.x" invokes an Effect inline/);
+});
 
 test("a registered pick that no state handles is refused at build: it is on no Menu and no Gate", () => {
   assert.throws(

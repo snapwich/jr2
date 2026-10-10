@@ -618,10 +618,11 @@ const recorder = jr2Setup({
   output: ({ event }) => (event as { output?: unknown }).output,
 });
 
-test("a provision reads the pod key jr2 up writes, at every route an author can write — an inline invoke included (ADR-0059)", async () => {
+test("a provision reads the pod key jr2 up writes, at every route an author can write; an inline workspace() is refused (ADR-0059, ADR-0049)", async () => {
   // `jr2 up` keys each Workspace's held manifest by the walk's route; the provision keys its read by
-  // the route off the live actor. An inline `invoke: { src: ws }` has no slot key on either side —
-  // xstate's generated `xstate.invoke.<n>.<id>` is no route — or the provision finds no manifest.
+  // the route off the live actor. An inline `invoke: { src: ws }` would have no slot key on either
+  // side — xstate's generated `xstate.invoke.<n>.<id>` is no route — so a Workspace, like every
+  // Part, is a key of `actors`, and the build refuses the inline form with the slot form.
   const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
   const invoking = (id: string, src: unknown, actors: Record<string, unknown> = {}) =>
     jr2Setup({ events: [], actors: actors as never }).createMachine({
@@ -629,14 +630,15 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
       initial: "x",
       states: { x: { invoke: { src, onDone: "done" } as never }, done: { type: "final" } },
     });
+  assert.throws(
+    () => invoking("inline", ws),
+    /machine "inline": state "inline\.x" invokes a Workspace inline — a Part is a key of actors.*actors: \{ <name>: workspace\(\.\.\.\) \}, then invoke: \{ src: "<name>" \}/,
+  );
   const named = invoking("named", "review", { review: ws });
-  const inline = invoking("inline", ws);
   const shapes: Record<string, unknown> = {
     root: ws,
     named,
     nested: invoking("nested", "outer", { outer: named }),
-    inline,
-    inlineBelowNamed: invoking("inlineBelowNamed", "mid", { mid: inline }),
   };
   for (const [workflow, machine] of Object.entries(shapes)) {
     const sandbox = new FakeSandbox();
