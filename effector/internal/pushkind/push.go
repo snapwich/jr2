@@ -90,6 +90,8 @@ func (r *Runner) Check(req *wire.StartRequest) string {
 		return fmt.Sprintf("the push url is not under git.credentials entry %q", entry.Match)
 	case spec.Sign && entry.Sign == nil:
 		return fmt.Sprintf("the push signs, and git.credentials entry %q holds no sign field", entry.Match)
+	case spec.Squash != nil && !spec.Sign && entry.Committer == nil && entry.Sign == nil:
+		return fmt.Sprintf("the push squashes unsigned, and git.credentials entry %q holds no committer", entry.Match)
 	}
 	return ""
 }
@@ -198,7 +200,8 @@ func (c *call) run(ctx context.Context) wire.Output {
 
 	target, via := sha, ""
 	var bundle string
-	if spec.Sign {
+	// A squash is a new commit, signed or not (B15): it is made as a signed push's copies are.
+	if spec.Sign || spec.Squash != nil {
 		s, out := c.sign(ctx, sha, pub, base)
 		if out != nil {
 			return *out
@@ -411,11 +414,16 @@ type signed struct{ target, via string }
 // not is rev-list's word for "and none of these".
 const not, revList = "--not", "rev-list"
 
+// sign makes the commits to publish: signed copies of the Agent's new commits, or one squashed
+// commit — signed with `sign`, made with the entry's committer without it (B15).
 func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signed, *wire.Output) {
 	repo := c.repo
-	signer, err := c.signer(ctx)
-	if err != nil {
-		return nil, ptr(rejected("sign", err.Error(), ""))
+	var signer *signerKey
+	if c.spec.Sign {
+		var err error
+		if signer, err = c.signer(ctx); err != nil {
+			return nil, ptr(rejected("sign", err.Error(), ""))
+		}
 	}
 	mapped := map[string]string{}
 	from, via, done, out := c.rangeOf(ctx, sha, pub, base, mapped)
@@ -608,7 +616,8 @@ func (c *call) read(ctx context.Context, id string) (*commit, error) {
 	return out, nil
 }
 
-// write makes one signed commit object and answers its id.
+// write makes one commit object, signed by s, and answers its id. With no s it is unsigned (a
+// squash without sign), committed by the entry's committer, else by its signer's identity.
 func (c *call) write(ctx context.Context, s *signerKey, tree string, parents []string, author, encoding,
 	message string) (string, error) {
 	var body bytes.Buffer
@@ -621,12 +630,27 @@ func (c *call) write(ctx context.Context, s *signerKey, tree string, parents []s
 		now = c.r.Now
 	}
 	fmt.Fprintf(&body, "author %s\n", author)
-	fmt.Fprintf(&body, "committer %s <%s> %d +0000\n", c.entry.Sign.Name, c.entry.Sign.Email, now().Unix())
+	// A signed commit's committer is the signer's; an unsigned squash's the entry's committer, or
+	// the signer's identity when the entry names no committer (B15).
+	name, email := "", ""
+	if s != nil || c.entry.Committer == nil {
+		name, email = c.entry.Sign.Name, c.entry.Sign.Email
+	} else {
+		name, email = c.entry.Committer.Name, c.entry.Committer.Email
+	}
+	fmt.Fprintf(&body, "committer %s <%s> %d +0000\n", name, email, now().Unix())
 	if encoding != "" {
 		fmt.Fprintf(&body, "encoding %s\n", encoding)
 	}
 	headers := body.String()
 	payload := headers + "\n" + message
+	if s == nil {
+		id, err := c.repo.Git(ctx, strings.NewReader(payload), "hash-object", "-t", "commit", "-w", "--stdin")
+		if err != nil {
+			return "", errors.New("the squashed commit could not be written")
+		}
+		return strings.TrimSpace(string(id)), nil
+	}
 	sig, err := s.sign(ctx, payload)
 	if err != nil {
 		return "", err

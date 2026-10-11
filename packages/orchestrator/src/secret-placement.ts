@@ -84,7 +84,7 @@ export type HeldPodPlan = {
 /** One push of a Workspace (ADR-0067, B10): its Repo Slot, whether it signs, and — for a slot the
  * Machine binds to a url — that url and the `git.credentials` entry it matches. A slot the run or a
  * `customize()` binds has no url here: the provision matches it. */
-export type SandboxPush = { slot: string; sign: boolean; url?: string; match?: string };
+export type SandboxPush = { slot: string; sign: boolean; squash?: true; url?: string; match?: string };
 
 /** A Workspace's Sandbox Effector (ADR-0068, B5.1): what `jr2 up` writes for it. */
 export type SandboxEffectorPlan = {
@@ -294,15 +294,23 @@ function pushesOf(config: JR2Config, ws: PlacedWorkspace): SandboxPush[] {
     const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
     if (slot === undefined) continue;
     const sign = effect.sign === true;
+    // An unsigned squash needs the entry's committer (B15); a signed one has the signer's.
+    const squash = effect.squash === true && !sign ? ({ squash: true } as const) : {};
+    const same = (p: SandboxPush) => p.slot === slot && p.sign === sign && (p.squash === true) === "squash" in squash;
     const url = ws.pod.bindings[slot];
     if (url === undefined) {
-      if (!out.some((p) => p.slot === slot && p.sign === sign)) out.push({ slot, sign });
+      if (!out.some(same)) out.push({ slot, sign, ...squash });
       continue;
     }
     const at = `workflow "${ws.workflow}": push "${effect.name}" pushes Repo Slot "${slot}" (${url})`;
-    const checked = pushRefusal({ at, url, sign }, list, declaredPushKinds, (entry) => entry.sign !== undefined);
+    const checked = pushRefusal(
+      { at, url, sign, squash: "squash" in squash },
+      list,
+      declaredPushKinds,
+      (entry) => entry.sign !== undefined,
+    );
     if ("refusal" in checked) throw new Error(checked.refusal);
-    if (!out.some((p) => p.slot === slot && p.sign === sign)) out.push({ slot, sign, url, match: checked.entry.match });
+    if (!out.some(same)) out.push({ slot, sign, ...squash, url, match: checked.entry.match });
   }
   return out;
 }

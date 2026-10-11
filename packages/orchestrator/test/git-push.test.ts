@@ -74,6 +74,19 @@ test("the provision's refusal reads what jr2 up wrote: the longest match, its ki
   assert.ok("refusal" in https && /over https can spend/.test(https.refusal));
   const unsigned = placedPushRefusal({ at, url: "https://bitbucket.org/x/y.git", sign: true }, LIST, manifest);
   assert.ok("refusal" in unsigned && /holds no sign field/.test(unsigned.refusal));
+  // B15: an unsigned squash on an entry with neither sign nor committer, for any url at provision.
+  const squash = placedPushRefusal(
+    { at, url: "https://bitbucket.org/x/y.git", sign: false, squash: true },
+    LIST,
+    manifest,
+  );
+  assert.ok("refusal" in squash && /holds neither sign nor committer/.test(squash.refusal), JSON.stringify(squash));
+  const signer = placedPushRefusal(
+    { at, url: "git@github.com:ourorg/app.git", sign: false, squash: true },
+    LIST,
+    manifest,
+  );
+  assert.ok("entry" in signer, "an entry with a sign field commits an unsigned squash as its signer");
   const unset = placedPushRefusal({ at, url: "https://gitlab.com/x/y.git", sign: false }, LIST, manifest);
   assert.ok(
     "refusal" in unset &&

@@ -54,6 +54,10 @@ export type GitCredential = {
    * passphrase). Explicit: an auth key is never reused as a signing key. The committer's email must
    * belong to the forge account that holds the key, or the forge shows the signature unverified. */
   sign?: { sshKey: string; name: string; email: string } | { gpgKey: string; name: string; email: string };
+  /** Who an unsigned `push({ squash: true })` is committed by (ADR-0067, B15): the squashed commit is
+   * new, and without `sign` no signer names its committer. Its date is the Effector's clock; the
+   * author line stays the Agent's. A signed push's committer is the signer's. */
+  committer?: { name: string; email: string };
 };
 
 export type GitConfig = {
@@ -400,6 +404,7 @@ const Credential = z
         z.object({ gpgKey: NonEmpty, name: NonEmpty, email: NonEmpty }).strict(),
       ])
       .optional(),
+    committer: z.object({ name: NonEmpty, email: NonEmpty }).strict().optional(),
   })
   .strict();
 
@@ -421,7 +426,8 @@ function checkGit(git: unknown, where: string): void {
 }
 
 const GIT_HINT =
-  "an entry is { match, token?, sshKey?, push?: { sshKey } | { token }, sign?: { sshKey | gpgKey, name, email } } (ADR-0051)";
+  "an entry is { match, token?, sshKey?, push?: { sshKey } | { token }, sign?: { sshKey | gpgKey, name, email }, " +
+  "committer?: { name, email } } (ADR-0051)";
 
 const OptionalText = z.string().optional();
 const SecretShape = z

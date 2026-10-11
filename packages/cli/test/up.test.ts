@@ -3527,18 +3527,55 @@ test("the Orchestrator may apply a Sandbox's Custodian ConfigMap — and may not
 });
 
 /** An instance whose one workflow pushes Repo Slot `app`, bound to `url`. */
-async function pushingInstance(url: string, credentials: string, sign = false): Promise<string> {
+async function pushingInstance(url: string, credentials: string, sign: boolean | string = false): Promise<string> {
   const root = await mkInstance(`export default { name: "myinst", git: { credentials: ${credentials} } };\n`);
+  const options = typeof sign === "string" ? sign : sign ? "{ sign: true }" : "";
   await writeFile(
     join(root, "workflows", "publish.ts"),
     `import { jr2Setup, push, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const publish = push(${sign ? "{ sign: true }" : ""});\n` +
+      `const publish = push(${options});\n` +
       `const body = jr2Setup({ events: [], actors: { publish } })\n` +
       `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "publish", onDone: "done" } }, done: { type: "final" } } });\n` +
       `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} }, spec: () => ({ branch: "b" }) });\n`,
   );
   return root;
 }
+
+test("jr2 up refuses an unsigned squash only when the matched entry has neither sign nor committer, and names both fixes (B15)", async () => {
+  const env = { GH_TOKEN: "ghp_0123456789abcdef" };
+  const url = "https://git.example.com/acme/app.git";
+  const bare = mkWorld(await pushingInstance(url, `[{ match: "*", token: "GH_TOKEN" }]`, "{ squash: true }"), { env });
+  await assert.rejects(
+    () => up(["--yes"], bare.io),
+    /squashed without sign, and git\.credentials entry "\*" holds neither sign nor committer.*add committer: \{ name: "<committer name>", email: "<committer email>" \} to it, or sign the push — push\(\{ squash: true, sign: true \}\) — and add sign: \{ sshKey/s,
+  );
+  assert.deepEqual(bare.kube.applied, [], "nothing applied");
+  // The first fix: a committer. The entry's push Secret says who commits the squash.
+  const committed = mkWorld(
+    await pushingInstance(
+      url,
+      `[{ match: "*", token: "GH_TOKEN", committer: { name: "jr2 bot", email: "bot@example.test" } }]`,
+      "{ squash: true }",
+    ),
+    { env },
+  );
+  assert.equal(await up(["--yes"], committed.io), 0);
+  const secret = appliedObjects(committed).get(`Secret/${gitPushSecretName("*")}`)!;
+  assert.deepEqual(JSON.parse(Buffer.from(secret.data["entry.json"], "base64").toString()).committer, {
+    name: "jr2 bot",
+    email: "bot@example.test",
+  });
+  // A signed squash needs no committer: the signer commits.
+  const signed = mkWorld(
+    await pushingInstance(
+      url,
+      `[{ match: "*", token: "GH_TOKEN", sign: { sshKey: "signer", name: "n", email: "e@x.test" } }]`,
+      "{ squash: true, sign: true }",
+    ),
+    { env },
+  );
+  assert.equal(await up(["--yes"], signed.io), 0);
+});
 
 test("jr2 up writes one push Secret per git.credentials entry — the token, the keys copied as data — and names none per Workspace (B10)", async () => {
   const root = await pushingInstance(

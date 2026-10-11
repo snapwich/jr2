@@ -117,10 +117,14 @@ the credentialed `command` — runs there too, its child confined (below).
   directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The commit is pinned when
   the push starts: the Agent's branch tip, or with `pin` the commit the input names (`{ sha }`); the Effector's first
   answer names it, and it is written to the intent row. A pinned commit the Agent pruned fails the import and is never
-  substituted. `squash` makes one commit with the input's `{ message }`, and is built with `sign` only: the squashed
-  commit is a new commit whose committer is the `sign` entry's, and an unsigned push has no committer to give it, so
-  `push({ squash: true })` without `sign` is refused at construction (Consequences). `force` replaces what the remote
-  holds.
+  substituted. `squash` makes one commit with the input's `{ message }`, on the published base: the Agent's tree, its
+  author line and date, the Machine's message. It is a new commit, so it needs a committer. With `sign`, the signer is
+  the committer, as for every signed copy. Without it (B15; signing is optional, and `squash` is an option of its own),
+  the matching `git.credentials` entry's `committer: { name, email }` commits it, at the Effector's clock — or, when the
+  entry names no committer, its `sign` field's name and email. `jr2 up` refuses `squash` without `sign` only when the
+  matched entry has neither `sign` nor `committer`, naming both fixes (a `committer`, or a signed push and its `sign`
+  field), and the provision refuses it the same way for a slot the run or a `customize()` binds. `force` replaces what
+  the remote holds.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The
@@ -292,5 +296,3 @@ the credentialed `command` — runs there too, its child confined (below).
 - Not built: a file-body `http`. The Effector serves a Worktree file as an `http` body on the wire, with the opener
   above, and no authoring form names one; `upload` is the one that exists.
 - Owed, not built: an Open argv bound by `customize()`.
-- Not built: `squash` without `sign`. Who commits an unsigned squash (its committer name, email and date) is not
-  decided; `push({ squash: true })` alone is refused at construction and on the wire.

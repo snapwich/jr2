@@ -137,8 +137,9 @@ export type PushOptions = {
   pin?: boolean;
   /** Push signed copies; the matching `git.credentials` entry's `sign` names the key. */
   sign?: boolean;
-  /** Squash into one commit; the Effect's input carries the message (`{ message }`). Built only
-   * with `sign` (the squashed commit's committer is the signer's). */
+  /** Squash into one commit; the Effect's input carries the message (`{ message }`). Signed, its
+   * committer is the signer's; unsigned, the matching `git.credentials` entry's `committer`, which
+   * `jr2 up` requires when the entry has no `sign` (B15). */
   squash?: boolean;
   /** Replace what the remote holds. */
   force?: boolean;
@@ -163,12 +164,6 @@ export type PushOutput =
   | (Omit<Extract<PushWireOutput, { outcome: "pushed" }>, "bundle"> & { sync: SyncState; syncReason?: string });
 
 export function pushParts(options: PushOptions = {}): PushParts {
-  if (options.squash && !options.sign) {
-    throw new Error(
-      "push({ squash: true }) without sign: the squashed commit's committer is the signer's, so squash is built " +
-        "with sign only — push({ squash: true, sign: true }) (ADR-0067)",
-    );
-  }
   const inputKeys = [...(options.pin ? ["sha"] : []), ...(options.squash ? ["message"] : [])];
   return {
     kind: "push",

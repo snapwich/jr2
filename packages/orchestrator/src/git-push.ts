@@ -75,6 +75,8 @@ export type PushNeed = {
   at: string;
   url: string;
   sign: boolean;
+  /** It squashes: unsigned, the entry's `committer` makes the commit (B15). */
+  squash?: boolean;
 };
 
 /**
@@ -84,7 +86,8 @@ export type PushNeed = {
  * a signing key. Refused: a local path and `git://` (jr2 never pushes there), `http://` (a
  * credential over cleartext http is the credential in the clear: a token goes over https only and
  * an ssh key over ssh only), a url no entry matches, an entry whose credentials the url's scheme
- * cannot spend, and `sign: true` on an entry with no `sign` field.
+ * cannot spend, `sign: true` on an entry with no `sign` field, and an unsigned squash on an entry
+ * with neither `sign` nor `committer` (B15: the squashed commit is new, and needs a committer).
  *
  * Each fix is one the next check accepts: the match it names is a prefix of the url's identity;
  * an `http://` url is told the url its entry CAN push to, or the https url and the token to add;
@@ -169,6 +172,16 @@ export function pushRefusal(
         `${at} signed, and git.credentials entry "${entry.match}" holds no sign field — add ` +
         `sign: { sshKey: "<a Secret with identity>", name: "<committer name>", email: "<committer email>" } ` +
         "to it; the email must belong to the forge account that holds the key (ADR-0051, ADR-0067)",
+    };
+  }
+  if (need.squash && !need.sign && entry.sign === undefined && entry.committer === undefined) {
+    return {
+      refusal:
+        `${at} squashed without sign, and git.credentials entry "${entry.match}" holds neither sign nor committer ` +
+        "— the squashed commit is new and needs a committer; add " +
+        `committer: { name: "<committer name>", email: "<committer email>" } to it, or sign the push — ` +
+        `push({ squash: true, sign: true }) — and add sign: { sshKey: "<a Secret with identity>", ` +
+        `name: "<committer name>", email: "<committer email>" } to it (ADR-0051, ADR-0067)`,
     };
   }
   return { entry };
@@ -298,6 +311,7 @@ export function gitPushPlansOf(
       order,
       push: placed.push,
       ...(sign ? { sign: { format: placed.sign, name: sign.name, email: sign.email } } : {}),
+      ...(entry.committer ? { committer: { name: entry.committer.name, email: entry.committer.email } } : {}),
     };
     sources.unshift({ key: GIT_PUSH_KEYS.entry, literal: JSON.stringify(entryJson) });
     plans.push({ entry: placed, sources });

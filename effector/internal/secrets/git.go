@@ -44,11 +44,19 @@ type GitSign struct {
 	Email  string `json:"email"`
 }
 
+// GitIdentity is a committer: the one an unsigned squash is made with (B15).
+type GitIdentity struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
 // GitEntry is one `git.credentials` entry a push placed here spends.
 type GitEntry struct {
 	Match string   `json:"match"`
 	Push  *GitAuth `json:"push,omitempty"`
 	Sign  *GitSign `json:"sign,omitempty"`
+	// Committer is who an unsigned squash is committed by; a signed push's is the signer's.
+	Committer *GitIdentity `json:"committer,omitempty"`
 	// Order is the entry's place in the list: a tie on the match's length goes to the first.
 	Order int `json:"-"`
 }
@@ -64,6 +72,7 @@ type entryFile struct {
 		Name   string `json:"name"`
 		Email  string `json:"email"`
 	} `json:"sign,omitempty"`
+	Committer *GitIdentity `json:"committer,omitempty"`
 }
 
 // ReadGitEntries reads every entry the git mount holds: one directory each, the Secret the
@@ -93,7 +102,7 @@ func ReadGitEntries(dir string) ([]GitEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("git credential %s: %s: %w", name, EntryFile, err)
 		}
-		entry := GitEntry{Match: e.Match, Order: e.Order, Push: &GitAuth{}}
+		entry := GitEntry{Match: e.Match, Order: e.Order, Push: &GitAuth{}, Committer: e.Committer}
 		for _, kind := range e.Push {
 			switch kind {
 			case "ssh":
@@ -138,6 +147,9 @@ func (e *GitEntry) validate(i int) error {
 		if s.Name == "" || s.Email == "" || strings.ContainsAny(s.Name+s.Email, "<>\n") {
 			return fmt.Errorf("git[%d].sign needs a committer name and email", i)
 		}
+	}
+	if c := e.Committer; c != nil && (c.Name == "" || c.Email == "" || strings.ContainsAny(c.Name+c.Email, "<>\n")) {
+		return fmt.Errorf("git[%d].committer needs a name and email", i)
 	}
 	for _, d := range []string{e.dirs()[0], e.dirs()[1]} {
 		if d != "" && !wire.ValidSecretName(d) {

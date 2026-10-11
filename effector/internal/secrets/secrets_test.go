@@ -70,7 +70,7 @@ func TestASecretNamedGitAndThePushCredentialsShareTheMount(t *testing.T) {
 func TestTheGitEntriesAreReadOffTheMount(t *testing.T) {
 	dir := t.TempDir()
 	for name, entry := range map[string]string{
-		"jr2-git-push-aaaa": `{"match":"*","order":1,"push":["ssh","token"]}`,
+		"jr2-git-push-aaaa": `{"match":"*","order":1,"push":["ssh","token"],"committer":{"name":"jr2 bot","email":"bot@jr2.test"}}`,
 		"jr2-git-push-bbbb": `{"match":"github.com/ourorg/","order":0,"push":["ssh"],` +
 			`"sign":{"format":"ssh","name":"jr2 bot","email":"bot@example.com"}}`,
 	} {
@@ -90,12 +90,14 @@ func TestTheGitEntriesAreReadOffTheMount(t *testing.T) {
 		t.Fatalf("got %+v", ssh)
 	}
 	if other := c.EntryFor("", "https://gitlab.com/x/y.git"); other == nil || other.Push.Token != "jr2-git-push-aaaa" ||
-		other.Push.SSHKey != "jr2-git-push-aaaa" || other.Sign != nil {
+		other.Push.SSHKey != "jr2-git-push-aaaa" || other.Sign != nil || other.Committer == nil ||
+		other.Committer.Email != "bot@jr2.test" {
 		t.Fatalf("got %+v", other)
 	}
 	for _, bad := range []string{`{"match":"*","order":0,"push":["both"]}`, `{"match":"*","order":0,"push":["ssh"],"x":1}`,
 		`{"match":"","order":0,"push":["ssh"]}`, `{"match":"*","order":0,"push":[]}`,
-		`{"match":"*","order":0,"push":["ssh"],"sign":{"format":"ssh","name":"","email":"e@x"}}`} {
+		`{"match":"*","order":0,"push":["ssh"],"sign":{"format":"ssh","name":"","email":"e@x"}}`,
+		`{"match":"*","order":0,"push":["ssh"],"committer":{"name":"x","email":""}}`} {
 		write(t, filepath.Join(dir, "jr2-git-push-aaaa"), EntryFile, bad)
 		if _, err := ReadGitEntries(dir); err == nil {
 			t.Errorf("%s was read", bad)

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/snapwich/jr2/effector/internal/gittest"
+	"github.com/snapwich/jr2/effector/internal/secrets"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
@@ -157,5 +158,52 @@ func TestAPairWhoseRemoteMovedPastTheLastPushIsDiverged(t *testing.T) {
 	}
 	if remoteRef(f) != other {
 		t.Fatal("the remote moved: the other writer's commit was built over")
+	}
+}
+
+// B15: an unsigned squash has a committer of its own. Without `sign`, the squashed commit is made
+// with the entry's `committer` and the Effector's clock, unsigned; the author and its date stay
+// the Agent's, the message is the Machine's. An entry with no committer is a defect jr2 up refuses.
+func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
+	f := newFixture(t, "")
+	f.runner.Config.Git[0].Committer = &secrets.GitIdentity{Name: "jr2 bot", Email: "bot@jr2.test"}
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	sha := f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+	req := f.request(false, nil)
+	msg := "one squashed commit"
+	req.Push.Squash = &msg
+	if err := req.Validate(); err != nil {
+		t.Fatalf("an unsigned squash is a valid start: %v", err)
+	}
+	if m := f.runner.Check(req); m != "" {
+		t.Fatalf("got %q", m)
+	}
+	out := f.runner.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomePushed || out.Push.Source != sha || out.Push.Published == sha {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	pub := remoteRef(f)
+	if n := remoteGit(t, f, "rev-list", "--count", pub, "--not", "main"); n != "1" {
+		t.Fatalf("%s commits published, want 1", n)
+	}
+	if got := remoteGit(t, f, "log", "-1", "--format=%s|%an <%ae> %at|%cn <%ce> %ct", pub); got !=
+		msg+"|Agent <agent@example.test> 1700000000|jr2 bot <bot@jr2.test> 1800000000" {
+		t.Fatalf("the squashed commit: %s", got)
+	}
+	if raw := remoteGit(t, f, "cat-file", "commit", pub); strings.Contains(raw, "gpgsig") {
+		t.Fatalf("an unsigned squash carries a signature: %s", raw)
+	}
+	if remoteGit(t, f, "rev-parse", pub+"^{tree}") != gittest.Git(t, f.pod.Tree, "rev-parse", sha+"^{tree}") {
+		t.Fatal("the squashed tree is not the Agent's")
+	}
+
+	f.runner.Config.Git[0].Committer = nil
+	if m := f.runner.Check(req); !strings.Contains(m, "holds no committer") {
+		t.Fatalf("got %q", m)
+	}
+	// An entry with a sign field and no committer: its signer's identity commits the unsigned squash.
+	f.runner.Config.Git[0].Sign = &secrets.GitSign{SSHKey: "sign", Name: signerName, Email: signerEmail}
+	if m := f.runner.Check(req); m != "" {
+		t.Fatalf("got %q", m)
 	}
 }

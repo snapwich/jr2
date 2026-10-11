@@ -515,9 +515,6 @@ func (p *PushSpec) validate() error {
 	if p.Squash != nil && strings.TrimSpace(*p.Squash) == "" {
 		return errors.New("push.squash is an empty message")
 	}
-	if p.Squash != nil && !p.Sign {
-		return errors.New("push.squash is only built with sign: the squashed commit's committer is the signer's")
-	}
 	if p.Last != nil && (!fullSha.MatchString(p.Last.Published) || !fullSha.MatchString(p.Last.Source)) {
 		return errors.New("push.last is not two full commit ids")
 	}

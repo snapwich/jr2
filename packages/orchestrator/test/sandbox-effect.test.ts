@@ -470,8 +470,12 @@ test("every Sandbox Effector mount that holds a secret or the Agent's files is w
   assert.ok(ca && "configMap" in ca);
 });
 
-test("refusals that name the fix: a squash without sign, an env that sets PATH, HOME or TMPDIR", () => {
-  assert.throws(() => pushParts({ squash: true }), /push\(\{ squash: true, sign: true \}\)/);
+test("an unsigned squash is built (B15); an env that sets PATH, HOME or TMPDIR is refused with the fix", () => {
+  assert.deepEqual(
+    (({ squash, sign, inputKeys }) => ({ squash, sign, inputKeys }))(pushParts({ squash: true })),
+    { squash: true, sign: false, inputKeys: ["message"] },
+    "jr2 up decides whether the entry can commit it",
+  );
   const exec = new FakeHarnessExec();
   assert.throws(() => commandWith(exec.factory, ["x"], { env: { PATH: secret("abcdefgh") } }), /PATH, HOME and TMPDIR/);
   assert.throws(

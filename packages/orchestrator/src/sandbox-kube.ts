@@ -1024,17 +1024,18 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    * `git.credentials` entry (longest prefix, the attach match), and that entry's Secret as `jr2 up`
    * wrote it (`git-push.json`: names only). Refused with the fix, by the same rule `jr2 up` applies
    * to a static Binding: no entry, a local path or `git://`, `http://`, an entry whose credentials
-   * the url's scheme cannot spend or that `jr2 up` placed none for, `sign` with no `sign` field.
+   * the url's scheme cannot spend or that `jr2 up` placed none for, `sign` with no `sign` field, an
+   * unsigned squash on an entry with neither `sign` nor `committer`.
    */
   const gitCredentialsFor = async (
     name: string,
     repos: readonly ProvisionedRepo[],
-    pushes: ReadonlyArray<{ slot: string; sign: boolean }>,
+    pushes: ReadonlyArray<{ slot: string; sign: boolean; squash?: true }>,
   ): Promise<string[]> => {
     if (pushes.length === 0) return [];
     const manifest = await readGitPushManifest(join(heldDir, GIT_PUSH_MANIFEST_KEY));
     const names: string[] = [];
-    for (const { slot, sign } of pushes) {
+    for (const { slot, sign, squash } of pushes) {
       const repo = repos.find((r) => r.slot === slot);
       if (repo === undefined) {
         throw new Error(
@@ -1043,7 +1044,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         );
       }
       const at = `Sandbox "${name}" refuses the push of Repo Slot "${slot}" (${repo.url})`;
-      const out = placedPushRefusal({ at, url: repo.url, sign }, credentials, manifest);
+      const out = placedPushRefusal({ at, url: repo.url, sign, squash: squash === true }, credentials, manifest);
       if ("refusal" in out) throw new Error(out.refusal);
       if (!names.includes(out.entry.secret)) names.push(out.entry.secret);
     }

@@ -117,7 +117,10 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   `push({ sign: true })` signs with and the committer it signs as — explicit, so an auth key is never reused as a
   signing key; an ssh key is the default format, a GPG key is a Secret with `private.asc` and no passphrase. `name` and
   `email` are required: the Effector re-creates the commits, and a forge verifies a signature only when the committer
-  email belongs to the account that holds the key. The author line stays the Agent's.
+  email belongs to the account that holds the key. The author line stays the Agent's. `committer?: { name, email }`, who
+  an unsigned `push({ squash: true })` is committed by, at the Effector's clock (B15): a squash is a new commit, and
+  without `sign` no signer names its committer; `jr2 up` refuses an unsigned squash whose entry has neither `sign` nor
+  `committer`.
 - **The pod's maker places the push credential, by reference, when the url is known (B10).** When a registered Machine
   pushes, `jr2 up` writes each entry's push and sign credentials into that entry's own Secret,
   `jr2-git-push-<hash of match>` (labelled, and deleted when the entry no longer has one), never per Workspace: the

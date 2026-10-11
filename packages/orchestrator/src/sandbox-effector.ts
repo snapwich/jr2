@@ -47,8 +47,9 @@ export type SandboxEffectorManifest = {
   secret: string;
   /** The sources of `/run/jr2/secrets`. */
   sources: ProjectedSecret[];
-  /** Its pushes, by Repo Slot: the provision names each one's entry Secret on the Sandbox CR. */
-  pushes?: Array<{ slot: string; sign: boolean }>;
+  /** Its pushes, by Repo Slot: the provision names each one's entry Secret on the Sandbox CR.
+   * `squash`: an unsigned squash, which needs the entry's committer (B15). */
+  pushes?: Array<{ slot: string; sign: boolean; squash?: true }>;
 };
 
 const secretKey = (name: string): string => `secret.${name}`;
@@ -86,7 +87,7 @@ export function sandboxEffectorObjectsOf(plan: SandboxEffectorPlan): {
     ...(own.length ? [{ secret: { name, items: own } }] : []),
     ...[...byRef].map(([secret, items]) => ({ secret: { name: secret, items } })),
   ];
-  const pushes = plan.pushes.map(({ slot, sign }) => ({ slot, sign }));
+  const pushes = plan.pushes.map(({ slot, sign, squash }) => ({ slot, sign, ...(squash ? { squash } : {}) }));
   return {
     secret: { name, stringData },
     manifest: { version: 1, secret: name, sources, ...(pushes.length ? { pushes } : {}) },
