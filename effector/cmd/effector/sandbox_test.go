@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/snapwich/jr2/effector/internal/confine"
 	"github.com/snapwich/jr2/effector/internal/gittest"
 	"github.com/snapwich/jr2/effector/internal/sign"
 )
@@ -39,26 +41,31 @@ func startSandboxEffector(t *testing.T, p *gittest.Pod) *effector {
 // before it served.
 func startSandboxEffectorWith(t *testing.T, p *gittest.Pod, commands bool, extra ...string) (*effector, string) {
 	t.Helper()
+	// The pod's layout, each of the Effector's own trees apart as the provision mounts them: its
+	// key and config, the secrets with @git inside, and its scratch — so no one deny entry covers
+	// another's tree, and a test sees each entry the binary gives a child.
 	dir := t.TempDir()
+	own := filepath.Join(dir, "effector")
+	must(t, os.MkdirAll(own, 0o700))
 	gitDir := filepath.Join(dir, "secrets", "@git")
 	// The entry's own Secret, as the operator projects it: what it is, and its token.
 	entry := filepath.Join(gitDir, "jr2-git-push-0a1b2c3d")
 	must(t, os.MkdirAll(entry, 0o700))
-	must(t, os.WriteFile(filepath.Join(dir, "key"), []byte(placementKey+"\n"), 0o400))
+	must(t, os.WriteFile(filepath.Join(own, "key"), []byte(placementKey+"\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "secrets", "aws"), []byte(awsSecret+"\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "secrets", "git"), []byte("git-named-secret-value\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(entry, "entry.json"), []byte(`{"match":"*","order":0,"push":["token"]}`), 0o400))
 	must(t, os.WriteFile(filepath.Join(entry, "password"), []byte("unused-token-value\n"), 0o400))
 	config := `{"version":1,"placement":"sandbox","targets":[]` +
 		map[bool]string{true: `,"commands":true}`, false: `}`}[commands]
-	must(t, os.WriteFile(filepath.Join(dir, "effector.json"), []byte(config), 0o400))
+	must(t, os.WriteFile(filepath.Join(own, "effector.json"), []byte(config), 0o400))
 	listen := freePort(t)
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(),
 		"JR2_EFFECTOR_TEST_MAIN=1",
 		"JR2_EFFECTOR_PORT="+listen,
-		"JR2_EFFECTOR_KEY="+filepath.Join(dir, "key"),
-		"JR2_EFFECTOR_CONFIG="+filepath.Join(dir, "effector.json"),
+		"JR2_EFFECTOR_KEY="+filepath.Join(own, "key"),
+		"JR2_EFFECTOR_CONFIG="+filepath.Join(own, "effector.json"),
 		"JR2_EFFECTOR_SECRETS="+filepath.Join(dir, "secrets"),
 		"JR2_EFFECTOR_WORK="+p.Work,
 		"JR2_EFFECTOR_REPOS="+filepath.Dir(p.Cache),
@@ -72,7 +79,7 @@ func startSandboxEffectorWith(t *testing.T, p *gittest.Pod, commands bool, extra
 	out := &lockedBuffer{}
 	cmd.Stdout, cmd.Stderr = out, out
 	must(t, cmd.Start())
-	e := &effector{cmd: cmd, base: "http://127.0.0.1:" + listen, out: out, keyFile: filepath.Join(dir, "key")}
+	e := &effector{cmd: cmd, base: "http://127.0.0.1:" + listen, out: out, keyFile: filepath.Join(own, "key")}
 	ended := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(ended) }()
 	t.Cleanup(func() { _ = cmd.Process.Kill(); <-ended })
@@ -154,6 +161,84 @@ func TestASandboxEffectorRunsACredentialedCommandWhoseChildCannotReadTheKey(t *t
 	read := start("read-1", "read.sh")
 	if !strings.Contains(read, `env=[secret:aws]\nfile=[secret:aws]\n`) || !strings.Contains(read, `"code":0`) {
 		t.Fatalf("got %s", read)
+	}
+}
+
+// The deny list the binary gives a credentialed command's child (ADR-0068, B9), seen from the
+// child in a layout where nothing but that list keeps the paths out: each of the Effector's own
+// trees lies where the image-following system paths would allow it. A committed script — the
+// Agent's code, which the author's argv runs — tries the Worktree (read and write), the Agent's
+// git dir, the node's Repo cache, a secret the command does not name, @git, the config and the
+// key. Each ends with a permission error. A test that set the Runner's Deny by hand could not see
+// the binary drop an entry (dropping /work and /repos from it left every other test passing).
+func TestACredentialedCommandsChildIsKeptFromEveryTreeTheEffectorDenies(t *testing.T) {
+	p := gittest.NewPod(t, "work")
+	e, out := startSandboxEffectorWith(t, p, true)
+	if e == nil {
+		t.Fatalf("the effector never served: %s", out)
+	}
+	dir := filepath.Dir(filepath.Dir(e.keyFile))
+	gitEntry := filepath.Join(dir, "secrets", "@git", "jr2-git-push-0a1b2c3d")
+	planted := filepath.Join(p.Tree, "planted")
+	tries := []struct{ label, try string }{
+		{"read-worktree", "cat '" + filepath.Join(p.Tree, "README.md") + "'"},
+		{"list-work", "ls '" + p.Work + "'"},
+		{"write-worktree", "echo x > '" + planted + "'"},
+		{"list-agent-git", "ls '" + p.GitDir + "'"},
+		{"list-cache", "ls '" + p.Cache + "'"},
+		{"read-cache", "cat '" + filepath.Join(p.Cache, "HEAD") + "'"},
+		{"read-unnamed-secret", "cat '" + filepath.Join(dir, "secrets", "git") + "'"},
+		{"list-secrets", "ls '" + filepath.Join(dir, "secrets") + "'"},
+		{"read-git-token", "cat '" + filepath.Join(gitEntry, "password") + "'"},
+		{"list-git", "ls '" + filepath.Join(dir, "secrets", "@git") + "'"},
+		{"read-config", "cat '" + filepath.Join(dir, "effector", "effector.json") + "'"},
+		{"read-key", "cat '" + e.keyFile + "'"},
+	}
+	// Each path lies where the system paths alone would allow it: so only the deny list can be
+	// what keeps it out, and a pass is not the layout's.
+	readExec, readWrite, err := confine.SystemPaths("/", nil)
+	must(t, err)
+	allowed := func(path string) bool {
+		for _, a := range append(readExec, readWrite...) {
+			if a == "/" || path == a || strings.HasPrefix(path, a+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, path := range []string{p.Tree, p.Cache, gitEntry, e.keyFile} {
+		if !allowed(path) {
+			t.Fatalf("%s lies under a denied name, so this test cannot see the deny list; set TMPDIR under /tmp", path)
+		}
+	}
+	var script strings.Builder
+	for _, try := range tries {
+		script.WriteString(try.try + "; echo \"" + try.label + " rc=$?\"\n")
+	}
+	p.Commit("a committed script", map[string]string{"probe.sh": script.String()})
+	body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
+		`"cache":"app-key"},"branch":"work","argv":["sh","probe.sh"],"env":{"AWS":{"secret":"aws"}},` +
+		`"tail":8000},"timeoutMs":30000}`
+	if status, raw := e.call(t, "POST", "/effects/deny-1", body); status != 202 {
+		t.Fatalf("got %d %s", status, raw)
+	}
+	got := e.wait(t, "deny-1")
+	if !strings.Contains(got, `"outcome":"exited"`) {
+		t.Fatalf("got %s", got)
+	}
+	for _, try := range tries {
+		if !strings.Contains(got, try.label+" rc=") {
+			t.Fatalf("%s never ran: %s", try.label, got)
+		}
+		if strings.Contains(got, try.label+" rc=0") {
+			t.Errorf("the child reached what the Effector denies (%s): %s", try.label, got)
+		}
+	}
+	if _, err := os.Stat(planted); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the child wrote in the Worktree: %v", err)
+	}
+	if strings.Contains(got, placementKey) || strings.Contains(got, "unused-token-value") {
+		t.Fatalf("the answer carries the key or the push token: %s", got)
 	}
 }
 
