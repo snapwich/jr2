@@ -299,11 +299,10 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   `gpgKey` (and a per-run or `customize()`-bound slot whenever any entry can, since the url it takes could match one),
   naming ssh signing (`sign: { sshKey, name, email }`) — which starts no agent and reads the key from a file the child's
   confinement denies — as the fix. An ssh-signed push and the token helper serve no socket, so they run beside a
-  credentialed command. Open: letting the two coexist (an ssh-only rule for such a Workspace, or a per-Effector lock
-  around a signed push) is a decision the user has not yet taken; until then the refusal stands. Rejected: a second
-  container per credentialed placement — its child would still share a uid with that container's Effector and could
-  spend that container's key, so it would need Landlock anyway, plus a key, a Secret, a port and a NetworkPolicy per
-  placement.
+  credentialed command. No form of a GPG-signing push runs in a Sandbox Effector that also runs a credentialed command.
+  Rejected: a second container per credentialed placement — its child would still share a uid with that container's
+  Effector and could spend that container's key, so it would need Landlock anyway, plus a key, a Secret, a port and a
+  NetworkPolicy per placement.
 - **A node with no Landlock runs no credentialed command.** Its Sandboxes that hold one fail at provision, naming the
   node; the fix is a kernel with `landlock` in its LSM list. The home cluster's nodes are arm64, so the Effector binary
   and the Kit images need `linux/arm64` builds there.

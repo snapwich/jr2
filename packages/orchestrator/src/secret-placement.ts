@@ -145,8 +145,8 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
 }
 
 /**
- * A credentialed command and a GPG-signing push() cannot share a Sandbox Effector (ADR-0068,
- * open). A GPG-signed push starts gpg-agent, which holds the entry's signing key on a Unix socket
+ * A credentialed command and a GPG-signing push() cannot share a Sandbox Effector (ADR-0068).
+ * A GPG-signed push starts gpg-agent, which holds the entry's signing key on a Unix socket
  * until the push ends; a credentialed command's child runs as the same uid at the same time, and
  * Landlock governs files, not `connect()`, so the child could sign with that key without reading
  * it — breaking "the Agent can neither spend an Effect secret". ssh signing starts no agent and
@@ -168,7 +168,7 @@ function refuseGpgWithCommand(config: JR2Config, ws: PlacedWorkspace, pushes: Sa
   throw new Error(
     `${workspaceLabel(ws)}: a credentialed command and a GPG-signing push (Repo Slot "${conflict.slot}") ` +
       "cannot share a Sandbox Effector — a command's child could spend the signing key through gpg-agent's " +
-      "socket, which Landlock does not cover (ADR-0068, open). Sign with ssh instead " +
+      "socket, which Landlock does not cover (ADR-0068). Sign with ssh instead " +
       "(sign: { sshKey, name, email } on the git.credentials entry), or move the push to a Workspace with no " +
       "credentialed command.",
   );

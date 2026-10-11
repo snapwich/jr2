@@ -560,3 +560,43 @@ test("jr2 up refuses a credentialed command beside a GPG-signing push, and names
   // A per-run / customize() url is refused too: the url it takes at provision could match a GPG entry.
   assert.throws(() => refuseEffectSecrets(cfg("gpgKey"), placedIn(both, { app: undefined })), /gpg-agent's socket/s);
 });
+
+test("the GPG-beside-a-command refusal is stated as the current rule, never as an open plan (ADR-0068, ADR-0067)", async () => {
+  // design.md and design-b.md hold no rule for this pair; the refusal is what jr2 does now, and an
+  // ADR states the current decision, so neither the message nor an ADR may say "open" or
+  // "until then" of it.
+  const config: JR2Config = {
+    secrets: [{ name: "aws", value: VALUE }],
+    git: {
+      credentials: [
+        { match: "github.com/ourorg/", token: "T", sign: { gpgKey: "k", name: "jr2 bot", email: "bot@example.test" } },
+      ],
+    },
+  };
+  let message = "";
+  try {
+    refuseEffectSecrets(config, placedIn([credentialed("deploy", ["aws"]), pusher("publish", { sign: true })]));
+  } catch (e) {
+    message = (e as Error).message;
+  }
+  assert.match(message, /\(ADR-0068\)/);
+  assert.doesNotMatch(message, /\bopen\)|until/);
+  for (const adr of [
+    "0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md",
+    "0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md",
+  ]) {
+    const text = (await readFile(new URL(`../../../docs/adr/${adr}`, import.meta.url), "utf8")).replace(/\s+/g, " ");
+    assert.match(text, /GPG-signing `?push/, `${adr} states the GPG rule`);
+    assert.doesNotMatch(text, /until then|not yet taken/, `${adr} states a refusal as an open plan`);
+  }
+  const adr68 = (
+    await readFile(
+      new URL("../../../docs/adr/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md", import.meta.url),
+      "utf8",
+    )
+  ).replace(/\s+/g, " ");
+  assert.match(
+    adr68,
+    /No form of a GPG-signing push runs in a Sandbox Effector that also runs a credentialed command\./,
+  );
+});
