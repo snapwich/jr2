@@ -23,10 +23,14 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
 - **A key per Effector placement, derived the same way**
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
   `effectorKey(key, placement) = HMAC(signing key, "effector:" + placement)` signs every request the Orchestrator sends
-  an Effector and every answer it takes back; `placement` is `instance` for the Instance Effector. The `effector:`
-  prefix keeps it apart from every Harness bearer and Sandbox token. Unlike a Harness, an Effector holds the key itself
-  — it must sign its answers — in a Secret only its own pod mounts, which `jr2 up` writes from the kept signing key; the
-  Orchestrator stores nothing and derives it again after a restart.
+  an Effector and every answer it takes back. `placement` is `instance` for the Instance Effector and the Sandbox's name
+  for a Sandbox Effector, so each Sandbox pod has its own key and a request signed for one Sandbox is refused by every
+  other; no Sandbox name is `instance`, since each one starts `ws-`. The `effector:` prefix keeps it apart from every
+  Harness bearer and Sandbox token. Unlike a Harness, an Effector holds the key itself — it must sign its answers — in a
+  Secret only its own container mounts. `jr2 up` writes the Instance Effector's (`jr2-instance-effector`) from the kept
+  signing key. The Orchestrator writes a Sandbox Effector's at provision, as it writes the Sandbox token: into
+  `<sandbox>-effector`, a Secret the Sandbox CR owns, so it goes with the pod. Either way the Orchestrator stores
+  nothing and derives the key again after a restart, and a re-provision applies the same value.
 - **The Harness holds only the digest.** Its env carries `JR2_HARNESS_TOKEN_SHA256 = sha256(bearer)`. The Agent can read
   that env, and a digest inverts to nothing. So a Harness can verify its own bearer, and it can mint none, for itself or
   for another pod. The HMAC key never leaves the Orchestrator's Secret.
@@ -97,6 +101,7 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
     `resourceNames` can pin only the fixed names; `create`, `list` and the per-Sandbox names cannot be narrowed that
     way. For the bearers and tokens derived from the signing key, an attacker with code execution in the Orchestrator
     gains little, because it has the signing key already. For an Effect secret the gain is not small: the Orchestrator
-    never holds one, and the Role reads the Secrets that do, `jr2-instance-effector` and every user Secret a `valueFrom`
-    names ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). This stays as it is until a
-    design removes the need.
+    never holds one, and the Role reads the Secrets that do: `jr2-instance-effector`, each Workspace's
+    `jr2-effector-<workspace>`, each `git.credentials` entry's `jr2-git-push-<hash>`, and every user Secret a
+    `valueFrom` names ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). This stays as it is
+    until a design removes the need.

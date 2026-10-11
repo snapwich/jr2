@@ -13,7 +13,7 @@
 
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -30,7 +30,12 @@ import {
 } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
 import { effectorKey, harnessToken, harnessTokenDigest } from "../src/tokens.ts";
-import { effectorManifestKey, sandboxEffectorObjectsOf, sandboxEffectorService } from "../src/sandbox-effector.ts";
+import {
+  effectorManifestKey,
+  sandboxEffectorKeySecret,
+  sandboxEffectorObjectsOf,
+  sandboxEffectorService,
+} from "../src/sandbox-effector.ts";
 import { GIT_PUSH_MANIFEST_KEY, gitPushSecretName } from "../src/git-push.ts";
 import type { RepoResources } from "../src/repos.ts";
 import type { AttachRequest } from "../src/wire.ts";
@@ -2267,6 +2272,33 @@ test("a Sandbox Effector's Service name: `fx-` in place of `ws-`, so as long as 
   assert.equal(svc.length, name.length);
   assert.ok(svc.startsWith("fx-") && svc !== name);
   assert.ok(sandboxEffectorService("sb-fx").length <= 63);
+});
+
+test("a Sandbox Effector's key is its Sandbox's own, never the Instance Effector's, and ADR-0058 says who writes each (ADR-0058, ADR-0068)", async () => {
+  // The provision writes `effectorKey(signing key, <Sandbox name>)` (the test of the effector
+  // container above); a Sandbox name always starts `ws-`, so none derives the Instance
+  // Effector's `effectorKey(signing key, "instance")`.
+  const signing = Buffer.from("k");
+  const name = workspaceName("instance", "instance");
+  assert.ok(name.startsWith("ws-") && name !== "instance");
+  assert.notEqual(effectorKey(signing, name), effectorKey(signing, "instance"));
+  // ADR-0058 is the ADR of the keys derived from the signing key: it names both placements, and
+  // the Orchestrator, not jr2 up, as the writer of a Sandbox Effector's key.
+  const adr = (
+    await readFile(
+      new URL("../../../docs/adr/0058-a-harness-answers-the-orchestrator-alone.md", import.meta.url),
+      "utf8",
+    )
+  ).replace(/\s+/g, " ");
+  assert.match(
+    adr,
+    /`placement` is `instance` for the Instance Effector and the Sandbox's name for a Sandbox Effector/,
+  );
+  assert.match(
+    adr,
+    /The Orchestrator writes a Sandbox Effector's at provision[^.]*`<sandbox>-effector`, a Secret the Sandbox CR owns/,
+  );
+  assert.equal(sandboxEffectorKeySecret("ws-a-b"), "ws-a-b-effector");
 });
 
 test("a secret named `git` takes no path of the push credentials, which the operator projects at @git in the same mount", () => {
