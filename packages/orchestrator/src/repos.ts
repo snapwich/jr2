@@ -33,7 +33,7 @@
 
 import { credentialSecretFor, matchCredential, type GitCredential } from "./config.ts";
 import { ANNOTATION_REPO_IDENTITY, ANNOTATION_REPO_LAST_ATTACHED, LABEL_REPO_BOUND } from "./names.ts";
-import { REPOS, SECRETS, isAlreadyExists, kubeClient, KubeError, type KubeClient } from "./kube-client.ts";
+import { REPOS, isAlreadyExists, kubeClient, KubeError, type KubeClient } from "./kube-client.ts";
 
 /** One node's view of a Repo, as the cache agent reports it on the resource's status. */
 export type RepoNodeState = {
@@ -75,8 +75,8 @@ export interface RepoResources {
    * that moved the url or the credential reaches the cache. The only caller that writes a BOUND
    * resource's spec, and never the eviction clock: a boot is not an attach. Resolves the
    * `git.credentials` entry for the identity into the `secretRef` the cache agent reads: an https
-   * entry's token materializes as a Secret in Flux's shape, an ssh entry names its deploy-key
-   * Secret and the Orchestrator never reads it.
+   * entry names the clone Secret `jr2 up` wrote from its token, an ssh entry names its deploy-key
+   * Secret. The Orchestrator writes and reads neither (B11).
    */
   bind(repo: { url: string; identity: string; key: string }): Promise<void>;
   /**
@@ -100,10 +100,10 @@ export type KubeReposOptions = {
   namespace: string;
   /** The instance's `git.credentials`, matched by prefix on the identity (config.ts). */
   credentials: readonly GitCredential[];
-  /** Where a token entry's env var is read from (deployed: `process.env`, which the Instance
-   * Secret's `envFrom` populated at `jr2 up`). Unset → the resource carries no `secretRef` and the
-   * clone is anonymous. */
-  env: Record<string, string | undefined>;
+  /** The clone Secrets `jr2 up` wrote (deployed: `git-clone.json` in `jr2-held`), by name. A token
+   * entry whose Secret is not among them — its variable was unset at `jr2 up` — gives the resource
+   * no `secretRef`, and the clone is anonymous. Default: none. */
+  cloneSecrets?: () => Promise<ReadonlySet<string>>;
   /** CR `spec.refreshInterval` — how often the cache agent fetches a warm cache. Default `5m`. */
   refreshInterval?: string;
   /** The Kubernetes client (ADR-0063), shared with the Sandbox port. Default: the in-cluster one. */
@@ -120,37 +120,18 @@ export function kubeRepos(opts: KubeReposOptions): RepoResources {
   const kube = () => (client ??= kubeClient());
 
   /**
-   * The Secret the cache agent spends for an https url, in Flux's shape (`username`/`password`),
-   * so a Flux or Argo user reuses the Secret they have. Its name is derived from the entry's
-   * `match`, so a redeploy finds its own and two entries never share one. Applied (create-or-
-   * update) on every ensure: a token rotated by `jr2 up` reaches the Secret at the next boot.
-   * `data`, not `stringData`: a server-side apply owns the fields it names, and `stringData` never
-   * reads back as one.
-   */
-  const applyTokenSecret = async (name: string, password: string): Promise<void> => {
-    const b64 = (v: string) => Buffer.from(v).toString("base64");
-    await kube().apply(SECRETS, ns, {
-      apiVersion: "v1",
-      kind: "Secret",
-      metadata: { name, namespace: ns, labels: { "app.kubernetes.io/managed-by": "jr2" } },
-      type: "Opaque",
-      data: { username: b64("x-access-token"), password: b64(password) },
-    });
-  };
-
-  /**
    * The `secretRef` for one url: the entry the identity matches, then the url's scheme picks
-   * which of its fields applies (config.ts). A token entry whose env var is unset writes no ref —
-   * the clone is anonymous, and `jr2 status` will show git's refusal if the host wanted one.
+   * which of its fields applies (config.ts). It only names the Secret (B11): `jr2 up` wrote the
+   * token's, in Flux's shape, and the cache agent reads it. A token entry whose Secret `jr2 up` did
+   * not write — its variable was unset — names none: the clone is anonymous, and `jr2 status` will
+   * show git's refusal if the host wanted one.
    */
   const secretRefFor = async (url: string, identity: string): Promise<{ name: string } | undefined> => {
     const cred = credentialSecretFor(url, matchCredential(identity, opts.credentials));
     if (cred === undefined) return undefined;
     if (cred.kind === "ssh") return { name: cred.secret };
-    const value = opts.env[cred.env];
-    if (value === undefined || value === "") return undefined;
-    await applyTokenSecret(cred.secret, value);
-    return { name: cred.secret };
+    const written = (await opts.cloneSecrets?.()) ?? new Set<string>();
+    return written.has(cred.secret) ? { name: cred.secret } : undefined;
   };
 
   /** The resource as one statement writes it: `create` needs the whole, `bind` its spec again.

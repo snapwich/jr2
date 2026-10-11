@@ -74,6 +74,8 @@ import {
   refuseEffectSecrets,
   LABEL_EFFECTOR_POD,
   LABEL_GIT_PUSH,
+  LABEL_GIT_CLONE,
+  gitCloneSecretsOf,
   gitPushPlansOf,
   repoIdentity,
   type GitPushManifest,
@@ -848,13 +850,12 @@ export async function up(args: string[], io: Io): Promise<number> {
     // the same value; live Custodians keep verifying.
     JR2_INSTANCE_HARNESS_TOKEN: sandboxToken(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
   };
-  // Git tokens (ADR-0019/0051): every env var a `git.credentials` entry names, materialized from
-  // `.env` when set. They ride the ORCHESTRATOR's Secret — never the harness one — because the
-  // Orchestrator is what derives each Repo's credential Secret from them at boot; a Sandbox never
-  // holds one.
-  for (const entry of config.git?.credentials ?? []) {
-    if (entry.token !== undefined && io.env[entry.token]) secretData[entry.token] = io.env[entry.token]!;
-  }
+  // Git tokens (ADR-0051, B11): each entry's token, from `.env`, goes into that entry's own clone
+  // Secret (`jr2-git-<hash>`, Flux's key names), which the cache agent reads — never into this
+  // Secret, the Orchestrator's env. The Orchestrator names the Secret on a Repo and holds no value.
+  // Only when a registered Machine composes a Sandbox: nothing else clones.
+  const gitClone = carried.composesSandbox ? gitCloneSecretsOf(config.git?.credentials ?? [], (n) => io.env[n]) : [];
+  for (const s of gitClone) activity(io, `git.credentials "${s.match}": clone Secret ${s.name}`);
 
   // The HARNESS containers' env — a separate Secret (ADR-0013): Agent code executes where these
   // land, so the Instance token/signing key above must be unreachable from it. Values declared in
@@ -977,9 +978,22 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
       sandboxEffectors: placements.sandbox,
       gitPush,
+      gitClone,
     }),
     ...ctx,
   });
+  // An entry whose clone Secret this converge did not write loses it: a dropped entry, a token
+  // unset, or nothing left that clones.
+  const cloneSecrets = new Set(gitClone.map((s) => s.name));
+  for (const secret of await kube.listJson<KubeObject>({
+    kind: "secret",
+    selector: LABEL_GIT_CLONE,
+    namespace,
+    ...ctx,
+  })) {
+    if (cloneSecrets.has(secret.metadata.name)) continue;
+    await kube.deleteObject({ kind: "secret", name: secret.metadata.name, namespace, ...ctx });
+  }
   // An entry whose push Secret this converge did not write loses it: a dropped entry, a token
   // unset, or no push left anywhere.
   const pushSecrets = new Set(gitPush.secrets.map((s) => s.name));

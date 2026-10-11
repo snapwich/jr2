@@ -87,6 +87,17 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   most 4 MiB of a request; it cannot verify a longer one, so it refuses it as unsigned. The Orchestrator never sends
   one: a start whose body is longer settles `refused`, with nothing sent and no intent row, because a body built from
   context or a pick's param can reach the bound.
+- **The Orchestrator holds no value (B11).** `jr2 up` declares and writes every Secret: the placements'
+  (`jr2-instance-effector`, `jr2-effector-<pod>`) and, for each `git.credentials` entry, its clone Secret
+  (`jr2-git-<hash>`, Flux's `username`/`password`, the token from `.env`) and its push Secret (`jr2-git-push-<hash>`,
+  ADR-0051). The Orchestrator matches, names and renders: it matches a url against the fence and names the entry's
+  Secret — a Repo CR's `secretRef`, from `git-clone.json`; a Sandbox CR's `gitCredentials`, from `git-push.json` — and
+  renders a pod's files at provision; no token, key or Effect secret is in its process, its env or its own Secret. A
+  trusted jr2 component beside the Agent spends: the operator's cache agent for a fetch (ADR-0051, ADR-0053: at
+  provision and on a pod's `git fetch`), the Sandbox Effector for a push, an upload and a credentialed command, on a
+  pick. The Agent's container holds nothing on either side. A clone is not an Effect: nothing in the Machine picks it,
+  and the cache is per node, made before the pod exists, so the cache agent stays its spender. A rotated token reaches
+  the cache at the next `jr2 up`.
 - **Hand-written types, and golden fixtures.** There is no code generator. The types are Go structs in
   `effector/internal/wire` and zod schemas in `@jr2/orchestrator`, the one definition each TypeScript type is inferred
   from. Go decodes with unknown fields disallowed. The golden fixtures in `effector/testdata/wire/` keep the two equal:

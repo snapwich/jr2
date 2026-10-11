@@ -39,7 +39,8 @@ import { assertSize, type Size } from "./size.ts";
 export type GitCredential = {
   /** A prefix on the identity (`github.com/ourorg/`), or `*` for everything. */
   match: string;
-  /** Env var name holding an HTTPS token; `jr2 up` materializes its value into the Instance Secret. */
+  /** Env var name holding an HTTPS token; `jr2 up` writes its value into the entry's clone Secret
+   * (`jr2-git-<hash>`), which the cache agent spends. The Orchestrator never holds it (B11). */
   token?: string;
   /** A Secret (Flux key names: `identity`, `identity.pub`, `known_hosts`) holding a deploy key. */
   sshKey?: string;
@@ -74,7 +75,7 @@ export function matchCredential(identity: string, list: readonly GitCredential[]
 }
 
 /** The Secret a Repo CR's `secretRef` names for `url` under `entry`, picked by the url's scheme:
- * https/http spend a token (a Secret the Orchestrator derives from the env var), ssh spends the
+ * https/http spend a token (the clone Secret `jr2 up` writes from the env var), ssh spends the
  * named deploy-key Secret. `undefined` when no entry, no applicable field, or a scheme that carries
  * no credential (`git://`, a local path) — the clone is anonymous. */
 export function credentialSecretFor(

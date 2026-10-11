@@ -40,6 +40,7 @@ export * from "./model-keys.ts";
 export * from "./held-secrets.ts";
 export * from "./secret-placement.ts";
 export * from "./git-push.ts";
+export * from "./git-clone.ts";
 export * from "./custodian.ts";
 export * from "./sandbox-kube.ts";
 export {

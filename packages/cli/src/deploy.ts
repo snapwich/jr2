@@ -54,6 +54,9 @@ import {
   sandboxEffectorObjectsOf,
   GIT_PUSH_MANIFEST_KEY,
   LABEL_GIT_PUSH,
+  GIT_CLONE_MANIFEST_KEY,
+  LABEL_GIT_CLONE,
+  type GitCloneSecret,
   type GitPushManifest,
   type HarnessConfig,
   type HeldManifest,
@@ -296,6 +299,9 @@ export function instanceObjects(opts: {
   sandboxEffectors?: readonly SandboxEffectorPlan[];
   /** Each `git.credentials` entry's push Secret and the manifest the provision reads (B10). */
   gitPush?: { secrets: ReadonlyArray<{ name: string; data: Record<string, string> }>; manifest: GitPushManifest };
+  /** Each `git.credentials` entry's clone Secret (B11): the token the cache agent spends. The
+   * Orchestrator names it from `git-clone.json` and never holds it. */
+  gitClone?: readonly GitCloneSecret[];
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const priority = priorityClassNames(opts.priorityClasses);
@@ -416,8 +422,30 @@ export function instanceObjects(opts: {
         ...(opts.gitPush?.manifest.entries.length
           ? { [GIT_PUSH_MANIFEST_KEY]: JSON.stringify(opts.gitPush.manifest, null, 2) }
           : {}),
+        // The clone manifest (B11): which entries' clone Secrets exist, by name. The Orchestrator
+        // names one as a Repo's `secretRef` only when it is listed here.
+        ...(opts.gitClone?.length
+          ? {
+              [GIT_CLONE_MANIFEST_KEY]: JSON.stringify(
+                { version: 1, secrets: opts.gitClone.map((s) => s.name) },
+                null,
+                2,
+              ),
+            }
+          : {}),
       },
     },
+    // Each entry's clone Secret (B11), in Flux's key names: the operator's cache agent reads the
+    // one a Repo's `secretRef` names. The Orchestrator neither writes nor reads it.
+    ...(opts.gitClone ?? []).map(
+      (s): KubeManifest => ({
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: meta(s.name, { [LABEL_GIT_CLONE]: "true" }),
+        type: "Opaque",
+        stringData: s.data,
+      }),
+    ),
     // Each entry's push Secret (B10): what it pushes and signs with, in Flux's key names where
     // Flux has them. The operator projects one into the Sandbox Effector of a Sandbox whose push
     // the entry's match covers; nothing else mounts it.
@@ -504,7 +532,8 @@ export function instanceObjects(opts: {
                 ],
                 // The Orchestrator creates Repo resources and never clones (ADR-0051) — the cache
                 // agent on each node does, reading the credential Secret a Repo's `secretRef`
-                // names — so nothing of git's is mounted here: state and the image map only.
+                // names, which `jr2 up` wrote (B11) — so nothing of git's is mounted here and no
+                // git token is in this container's env: state, the image map and the manifests.
                 volumeMounts: [
                   { name: "state", mountPath: "/instance/.jr2" },
                   // The image map, read per provision (ADR-0038). A mount, so `jr2 up` rewriting

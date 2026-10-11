@@ -15,6 +15,7 @@ import {
   custodianRef,
   effectorKey,
   gitPushSecretName,
+  gitTokenSecretName,
   KIT_VERSION,
   harnessTokenDigest,
   leafStem,
@@ -1282,11 +1283,12 @@ test("up prints who may send what, per state, and the load warnings — a warnin
   assert.match(err, /converged/, "a warning converges on");
 });
 
-test("a bound Repo is narrated as the boot's to create; the token env vars git.credentials names ride the Secret", async () => {
+test("a bound Repo is narrated as the boot's to create; each token git.credentials names goes into its entry's clone Secret, never the Orchestrator's (B11)", async () => {
   // `jr2 up` clones nothing (ADR-0051): the Orchestrator creates a Repo resource per bound identity
   // at boot and the cache agent clones on first need, on the node that needs it. What the
-  // converge does hold is the credential: every env var an entry names, when set, lands in the
-  // Orchestrator's Secret — and nothing an entry does not name.
+  // converge does hold is the credential: each entry's token, when set, lands in that entry's own
+  // clone Secret (`jr2-git-<hash>`, Flux's key names) and `git-clone.json` names it — and the
+  // Orchestrator's Secret and env hold no git token (B11, ADR-0068).
   const root = await withWorkspace(
     await mkInstance(
       `export default { name: "myinst", git: { credentials: [` +
@@ -1302,10 +1304,29 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
-  assert.equal(instance.stringData.GH_TOKEN, "gh-secret");
-  assert.equal(instance.stringData.JR2_GIT_TOKEN, "wild-secret");
-  assert.ok(!("GL_TOKEN" in instance.stringData), "an unset var materializes nothing");
-  assert.ok(!("STRAY" in instance.stringData), "and an env var no entry names never enters the Secret");
+  for (const name of ["GH_TOKEN", "JR2_GIT_TOKEN", "GL_TOKEN", "STRAY"]) {
+    assert.ok(!(name in instance.stringData), `${name} is not in the Orchestrator's Secret`);
+  }
+  assert.ok(
+    !Object.values(instance.stringData as Record<string, string>).some((v) => v === "gh-secret" || v === "wild-secret"),
+    "no git token's value rides the Orchestrator's Secret under any name",
+  );
+  const clone = items.filter((i) => i.kind === "Secret" && i.metadata.labels?.["jr2.dev/git-clone"] === "true");
+  assert.deepEqual(
+    clone.map((s) => s.metadata.name).sort(),
+    [gitTokenSecretName("github.com/acme/"), gitTokenSecretName("*")].sort(),
+    "one clone Secret per entry whose token is set; an unset one writes none",
+  );
+  assert.deepEqual(clone.find((s) => s.metadata.name === gitTokenSecretName("github.com/acme/"))!.stringData, {
+    username: "x-access-token",
+    password: "gh-secret",
+  });
+  const held = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+  assert.deepEqual(JSON.parse(held.data["git-clone.json"]).secrets.sort(), clone.map((s) => s.metadata.name).sort());
+  const orchSecrets = items
+    .find((i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator")!
+    .spec.template.spec.containers[0].envFrom.map((e: { secretRef?: { name: string } }) => e.secretRef?.name);
+  assert.deepEqual(orchSecrets, ["jr2-instance"], "the Orchestrator's env reads the instance Secret alone");
   // The Orchestrator neither clones nor holds a key: its one claim is its state, its mounts are
   // state, the image map and the held-secret manifest (names and hosts, never a value — ADR-0059),
   // and its env is its namespace and content hash — the credential rides the Secret above and is

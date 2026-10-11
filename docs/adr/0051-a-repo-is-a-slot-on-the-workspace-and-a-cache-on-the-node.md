@@ -93,18 +93,22 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   boot is not an attach.
 - **Credentials are matched by prefix and carried by the CR, the Argo and Flux shape.** `jr2.config.ts` holds
   `git.credentials`, a list of `{ match, token?, sshKey? }`: `match` is a prefix on the identity (`github.com/ourorg/`,
-  or `*`), `token` names an env var `jr2 up` materializes into the Instance Secret, `sshKey` names a Secret holding a
-  deploy key; the url's scheme picks which field applies, and the longest match wins. When the Orchestrator creates a
-  `Repo` CR it resolves the entry and writes a `secretRef`; the cache agent reads only that, and the operator matches
-  nothing. The Secret uses Flux's key names (`username`/`password`; `identity`, `identity.pub`, `known_hosts`), so a
-  Flux or Argo user reuses the Secret they have. **The list is also the fence.** A per-run url — a run input, a ticket
-  field — is otherwise a way to spend the cluster's credential against any host: one that matches no entry is refused at
-  attach, naming the list. A static binding is code the Instance typechecked and deployed, so it is admitted without a
-  match and cloned anonymously; a private one then fails at the cache with git's error. `jr2 init` scaffolds one
-  wildcard entry — `{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }`, today's two implicit defaults made
-  visible, with a comment saying to narrow it before anything untrusted can start a run, and that it also pushes: a
-  `push()` whose Repo Slot url it matches, a per-run url included, spends the same token or key — so the open fence is
-  in the user's file and commit, never implied.
+  or `*`), `token` names an env var whose value `jr2 up` writes into that entry's own clone Secret,
+  `jr2-git-<hash of match>` (labelled, and deleted when the entry no longer has one; an unset variable writes none),
+  listing the Secrets it wrote in `git-clone.json` in `jr2-held`, names only; `sshKey` names a Secret holding a deploy
+  key; the url's scheme picks which field applies, and the longest match wins. When the Orchestrator creates a `Repo` CR
+  it resolves the entry and writes a `secretRef`, the name of a Secret `jr2 up` wrote or the user made — a token entry
+  whose clone Secret `git-clone.json` does not list gets none, and the clone is anonymous; the cache agent reads only
+  that Secret, and the operator matches nothing. The Orchestrator writes and reads no credential (ADR-0068). The Secret
+  uses Flux's key names (`username`/`password`; `identity`, `identity.pub`, `known_hosts`), so a Flux or Argo user
+  reuses the Secret they have. **The list is also the fence.** A per-run url — a run input, a ticket field — is
+  otherwise a way to spend the cluster's credential against any host: one that matches no entry is refused at attach,
+  naming the list. A static binding is code the Instance typechecked and deployed, so it is admitted without a match and
+  cloned anonymously; a private one then fails at the cache with git's error. `jr2 init` scaffolds one wildcard entry —
+  `{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }`, today's two implicit defaults made visible, with a
+  comment saying to narrow it before anything untrusted can start a run, and that it also pushes: a `push()` whose Repo
+  Slot url it matches, a per-run url included, spends the same token or key — so the open fence is in the user's file
+  and commit, never implied.
 - **An entry may carry a push credential and a signing key** (ADR-0067), checked by shape when the config loads:
   `push?: { sshKey } | { token }`, the credential a `push()` to a Binding under the entry spends — absent, the clone
   credential pushes, and an entry with no credential admits a clone, never a push; a token goes Basic over https through

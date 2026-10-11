@@ -12,9 +12,9 @@
 //                      survive a pod restart. Absent → minted into `<dir>/.jr2/secret` (dev-grade).
 //   JR2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
 //                      Sandboxes are driven in it, and the Custodians' route home is Service DNS.
-//   <git.credentials[].token>
-//                      each token env var the config names rides the instance Secret (ADR-0051):
-//                      the Orchestrator materializes it into the Repo's credential Secret.
+//
+// No git token reaches this process (B11, ADR-0068): `jr2 up` writes each entry's clone Secret, and
+// the Repo port names it from `git-clone.json` in the `jr2-held` mount.
 //
 // The first stdout line is one JSON object `{ url, workflows }` — the discovery seam a fixture (or
 // a human tailing pod logs) parses instead of racing the socket. Deployed with a data plane, the
@@ -27,11 +27,13 @@
 
 import { join } from "node:path";
 import { loadConfig } from "./config.ts";
+import { GIT_CLONE_MANIFEST_KEY, readGitCloneManifest } from "./git-clone.ts";
 import { loadWorkflows, startInstance, type RunningInstance } from "./instance.ts";
 import {
   HARNESS_CONFIGMAP,
   HARNESS_CONFIG_KEY,
   HARNESS_ENV_SECRET,
+  HELD_MOUNT,
   IMAGES_KEY,
   IMAGES_MOUNT,
   INSTANCE_HARNESS_PORT,
@@ -101,9 +103,14 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     const client = opts.kube ?? kubeClient({ env });
     // The Repo resources (ADR-0051): created by this process, cloned by the operator's cache agent
     // on every node that needs them. The port resolves `git.credentials` into each resource's
-    // `secretRef`, reading a token entry's env var off this process — the Instance Secret is
-    // `envFrom` on the Deployment, so `jr2 up` is what put it there.
-    repos = kubeRepos({ namespace, credentials, env, client });
+    // `secretRef` and only names the Secret: `jr2 up` wrote each token's clone Secret and listed
+    // them in `git-clone.json`, read here per call so a converge reaches the next attach (B11).
+    repos = kubeRepos({
+      namespace,
+      credentials,
+      cloneSecrets: async () => new Set((await readGitCloneManifest(join(HELD_MOUNT, GIT_CLONE_MANIFEST_KEY))).secrets),
+      client,
+    });
     if (dataPlane) {
       // The one watch (ADR-0063): every Sandbox of this Instance, shared by the provision, the
       // lease and the fetch ask. Started here, at boot, because its first list IS the restore

@@ -28,16 +28,13 @@ function portOn(api: FakeKube, opts: Omit<KubeReposOptions, "namespace" | "clien
 
 const created = (api: FakeKube): any[] =>
   api.calls.filter((c) => c.method === "POST" && c.target === "repos").map((c) => c.body);
-/** Every Secret applied, with its `data` read back as the strings it carries. */
-const applied = (api: FakeKube): any[] =>
-  api.calls
-    .filter((c) => c.contentType === "application/apply-patch+yaml" && c.target.startsWith("secrets/"))
-    .map((c) => ({
-      ...c.body,
-      data: Object.fromEntries(
-        Object.entries(c.body.data as Record<string, string>).map(([k, v]) => [k, Buffer.from(v, "base64").toString()]),
-      ),
-    }));
+/** Every call the port made on a Secret — B11: there is none; `jr2 up` writes them. */
+const secretCalls = (api: FakeKube): any[] => api.calls.filter((c) => c.target.startsWith("secrets"));
+/** The clone Secrets `jr2 up` wrote, by the matches of the entries they belong to. */
+const written =
+  (...matches: string[]) =>
+  async () =>
+    new Set(matches.map(gitTokenSecretName));
 const patches = (api: FakeKube): any[] =>
   api.calls
     .filter((c) => c.contentType === "application/merge-patch+json" && c.target.startsWith("repos/"))
@@ -53,25 +50,17 @@ function standing(item: object): FakeKube {
 test("ensure(bound) creates the resource: labeled bound, annotated with identity + last-attached, secretRef from the token entry", async () => {
   // The boot's ensure for a Repo a Machine binds. The credential is resolved HERE and carried by
   // the resource — the cache agent reads only the `secretRef`, the operator matches nothing
-  // (ADR-0051). An https url under a token entry whose env var is set → the token materializes
-  // as a Secret in Flux's shape, and the resource names it.
+  // (ADR-0051). An https url under a token entry whose clone Secret `jr2 up` wrote → the resource
+  // names that Secret. The Orchestrator writes no Secret and reads no value (B11, ADR-0068).
   const api = fakeKube();
   const port = portOn(api, {
     credentials: [{ match: "github.com/acme/", token: "GH_TOKEN" }],
-    env: { GH_TOKEN: "ghp_secret" },
+    cloneSecrets: written("github.com/acme/"),
     now: () => NOW,
   });
   await port.ensure({ url: HTTPS, identity, key, bound: true });
 
-  const [secret] = applied(api);
-  assert.equal(secret.metadata.name, gitTokenSecretName("github.com/acme/"));
-  assert.equal(secret.metadata.namespace, "inst");
-  assert.deepEqual(secret.metadata.labels, { "app.kubernetes.io/managed-by": "jr2" });
-  assert.deepEqual(secret.data, { username: "x-access-token", password: "ghp_secret" }, "Flux's key names");
-  assert.ok(
-    api.calls.findIndex((c) => c.target.startsWith("secrets/")) < api.calls.findIndex((c) => c.method === "POST"),
-    "the Secret exists before the resource names it",
-  );
+  assert.deepEqual(secretCalls(api), [], "no Secret is written, read or listed by the Orchestrator");
 
   const [cr] = created(api);
   assert.equal(cr.apiVersion, "core.jr2.dev/v1alpha1");
@@ -92,11 +81,11 @@ test("ensure(bound) creates the resource: labeled bound, annotated with identity
   assert.ok(api.object("repos", key), "the resource lives in the instance's namespace");
 });
 
-test("a token entry whose env var is UNSET writes no secretRef and mints no Secret — the clone is anonymous", async () => {
+test("a token entry whose clone Secret jr2 up did NOT write (its variable unset) gets no secretRef — the clone is anonymous", async () => {
   const api = fakeKube();
-  const port = portOn(api, { credentials: [{ match: "*", token: "JR2_GIT_TOKEN" }], env: {} });
+  const port = portOn(api, { credentials: [{ match: "*", token: "JR2_GIT_TOKEN" }], cloneSecrets: written() });
   await port.ensure({ url: HTTPS, identity, key, bound: true });
-  assert.deepEqual(applied(api), [], "no value → no Secret");
+  assert.deepEqual(secretCalls(api), [], "no value → no Secret");
   assert.equal(created(api)[0].spec.secretRef, undefined);
 });
 
@@ -106,10 +95,10 @@ test("an ssh url under an entry naming an sshKey → secretRef IS that Secret, a
   const api = fakeKube();
   const port = portOn(api, {
     credentials: [{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }],
-    env: { JR2_GIT_TOKEN: "set-but-irrelevant-for-ssh" },
+    cloneSecrets: written("*"),
   });
   await port.ensure({ url: SSH, identity, key, bound: true });
-  assert.deepEqual(applied(api), [], "the scheme picked sshKey; the token is not spent");
+  assert.deepEqual(secretCalls(api), [], "the scheme picked sshKey; the token is not spent");
   assert.deepEqual(created(api)[0].spec.secretRef, { name: "jr2-git-ssh" });
 });
 
@@ -120,20 +109,22 @@ test("no entry matches → no secretRef; the longest match wins when several do"
       { match: "*", token: "ANY" },
       { match: "github.com/acme/", token: "ACME" },
     ],
-    env: { ANY: "any", ACME: "acme" },
+    cloneSecrets: written("*", "github.com/acme/"),
   });
   await port.ensure({ url: HTTPS, identity, key, bound: true });
-  assert.equal(applied(api)[0].data.password, "acme", "the longest prefix's token");
   assert.deepEqual(created(api)[0].spec.secretRef, { name: gitTokenSecretName("github.com/acme/") });
 
   const none = fakeKube();
-  await portOn(none, { credentials: [{ match: "gitlab.com/", token: "GL" }], env: { GL: "gl" } }).ensure({
+  await portOn(none, {
+    credentials: [{ match: "gitlab.com/", token: "GL" }],
+    cloneSecrets: written("gitlab.com/"),
+  }).ensure({
     url: HTTPS,
     identity,
     key,
     bound: true,
   });
-  assert.deepEqual(applied(none), []);
+  assert.deepEqual(secretCalls(none), []);
   assert.equal(created(none)[0].spec.secretRef, undefined);
 });
 
@@ -144,7 +135,7 @@ test("bind() on an EXISTING resource restates the Machine's resolution: label, u
   // dropped entry is not a credential that lingers. `last-attached` is a run's clock: a boot
   // must not move it, or an unbound slot's Repo would age from the last boot, not the last run.
   const api = standing({ spec: { url: HTTPS, secretRef: { name: "old" } } });
-  const port = portOn(api, { credentials: [], env: {}, now: () => NOW });
+  const port = portOn(api, { credentials: [], now: () => NOW });
   await port.bind({ url: SSH, identity, key });
 
   const patch = api.calls.find((c) => c.method === "PATCH")!;
@@ -164,7 +155,7 @@ test("bind() CREATES a resource with no last-attached — a boot is not an attac
   // `creationTimestamp` (repo-sweep.ts) once the slot is unbound, and `jr2 status` reports no
   // "last attached" that was really a boot.
   const api = fakeKube();
-  const port = portOn(api, { credentials: [], env: {}, now: () => NOW });
+  const port = portOn(api, { credentials: [], now: () => NOW });
   await port.bind({ url: HTTPS, identity, key });
   const [cr] = created(api);
   assert.deepEqual(cr.metadata.labels, { "jr2.dev/bound": "true" });
@@ -185,10 +176,10 @@ test("ensure(bound) on an EXISTING resource moves the clock and NOTHING else —
   ];
   for (const run of runs) {
     const api = standing({ spec: { url: HTTPS } });
-    const port = portOn(api, { credentials: [{ match: "*", sshKey: "jr2-git-ssh" }], env: {}, now: () => run.at });
+    const port = portOn(api, { credentials: [{ match: "*", sshKey: "jr2-git-ssh" }], now: () => run.at });
     await port.ensure({ url: run.url, identity, key, bound: true });
     assert.deepEqual(patches(api), [{ metadata: { annotations: { "jr2.dev/last-attached": run.at.toISOString() } } }]);
-    assert.equal(applied(api).length, 0, "no Secret minted for a resource the run does not write");
+    assert.equal(secretCalls(api).length, 0, "no Secret minted for a resource the run does not write");
     assert.equal(api.object("repos", key).spec.url, HTTPS, "the spelling that stands, stands");
   }
 });
@@ -199,7 +190,7 @@ test("ensure(bound) CREATES an absent resource labeled bound — a run that outp
   // bound, this spelling's url — and the boot's bind then restates it, so the walk's spelling is
   // still the one that stands.
   const api = fakeKube();
-  const port = portOn(api, { credentials: [], env: {}, now: () => NOW });
+  const port = portOn(api, { credentials: [], now: () => NOW });
   await port.ensure({ url: SSH, identity, key, bound: true });
   const [cr] = created(api);
   assert.deepEqual(cr.metadata.labels, { "jr2.dev/bound": "true" });
@@ -211,7 +202,7 @@ test("ensure(per-run) creates if absent: unlabeled, on the clock, this spelling'
   // A run's url at first attach (ADR-0051): the resource is created unlabeled — no Machine binds
   // it, so `jr2 gc` may evict it once `last-attached` ages out. Nothing is read: absent is absent.
   const api = fakeKube();
-  const port = portOn(api, { credentials: [{ match: "*" }], env: {}, now: () => NOW });
+  const port = portOn(api, { credentials: [{ match: "*" }], now: () => NOW });
   await port.ensure({ url: HTTPS, identity, key, bound: false });
   const [cr] = created(api);
   assert.equal(cr.metadata.labels, undefined, "not bound");
@@ -234,13 +225,12 @@ test("ensure(per-run) of an EXISTING resource nothing binds restates its secretR
   });
   const port = portOn(api, {
     credentials: [{ match: "github.com/acme/", token: "GH_TOKEN", sshKey: "jr2-git-ssh" }],
-    env: { GH_TOKEN: "ghp_fixed" },
+    cloneSecrets: written("github.com/acme/"),
     now: () => later,
   });
   await port.ensure({ url: SSH, identity, key, bound: false });
 
-  const [secret] = applied(api);
-  assert.equal(secret.data.password, "ghp_fixed", "the token as the env holds it now — a rotation lands too");
+  assert.deepEqual(secretCalls(api), [], "the Secret is jr2 up's; the attach only names it");
   assert.deepEqual(patches(api), [
     {
       metadata: { annotations: { "jr2.dev/last-attached": later.toISOString() } },
@@ -254,9 +244,9 @@ test("ensure(per-run) of an EXISTING unbound resource clears a secretRef the con
     metadata: { name: key, annotations: { "jr2.dev/identity": identity } },
     spec: { url: HTTPS, secretRef: { name: "jr2-git-deadbeef" } },
   });
-  const port = portOn(api, { credentials: [], env: {}, now: () => NOW });
+  const port = portOn(api, { credentials: [], now: () => NOW });
   await port.ensure({ url: HTTPS, identity, key, bound: false });
-  assert.deepEqual(applied(api), []);
+  assert.deepEqual(secretCalls(api), []);
   assert.equal(api.object("repos", key).spec.secretRef, undefined, "a merge patch's null removed it");
   assert.deepEqual(patches(api), [
     { metadata: { annotations: { "jr2.dev/last-attached": NOW.toISOString() } }, spec: { secretRef: null } },
@@ -273,11 +263,11 @@ test("ensure(per-run) of an EXISTING resource ANOTHER Machine binds moves the cl
   });
   const port = portOn(api, {
     credentials: [{ match: "*", token: "GH_TOKEN" }],
-    env: { GH_TOKEN: "ghp_x" },
+    cloneSecrets: written("*"),
     now: () => NOW,
   });
   await port.ensure({ url: SSH, identity, key, bound: false });
-  assert.deepEqual(applied(api), [], "no Secret minted for a resource the run does not write");
+  assert.deepEqual(secretCalls(api), [], "no Secret minted for a resource the run does not write");
   assert.deepEqual(patches(api), [{ metadata: { annotations: { "jr2.dev/last-attached": NOW.toISOString() } } }]);
 });
 
@@ -286,7 +276,7 @@ test("a create failure that is not AlreadyExists propagates — the caller annou
   api.refuse((c) =>
     c.method === "POST" ? api.status(403, "Forbidden", "repos.core.jr2.dev is forbidden") : undefined,
   );
-  const port = portOn(api, { credentials: [], env: {} });
+  const port = portOn(api, { credentials: [] });
   await assert.rejects(() => port.ensure({ url: HTTPS, identity, key, bound: true }), /Forbidden/);
 });
 
@@ -297,7 +287,7 @@ test("reconcileBound unlabels every bound resource whose key the walk no longer 
   api.seed("repos", { metadata: { name: "app-11111111", labels: { "jr2.dev/bound": "true" } } });
   api.seed("repos", { metadata: { name: "old-22222222", labels: { "jr2.dev/bound": "true" } } });
   api.seed("repos", { metadata: { name: "run-44444444" } });
-  const port = portOn(api, { credentials: [], env: {} });
+  const port = portOn(api, { credentials: [] });
   await port.reconcileBound(["app-11111111", "new-33333333"]);
 
   assert.equal(api.listCalls("repos")[0]!.query.labelSelector, "jr2.dev/bound=true", "only the bound ones are read");
@@ -322,7 +312,7 @@ test("reconcileBound on a cluster with no Repo CRD unlabels nothing and does not
   api.refuse((c) =>
     c.target === "repos" ? api.status(404, "NotFound", "the server could not find the requested resource") : undefined,
   );
-  const port = portOn(api, { credentials: [], env: {} });
+  const port = portOn(api, { credentials: [] });
   await port.reconcileBound([]);
   assert.deepEqual(
     api.calls.filter((c) => c.method === "PATCH"),
@@ -335,7 +325,7 @@ test("any other refusal of the bound listing propagates — the boot announces i
   api.refuse((c) =>
     c.target === "repos" ? api.status(403, "Forbidden", "repos.core.jr2.dev is forbidden") : undefined,
   );
-  const port = portOn(api, { credentials: [], env: {} });
+  const port = portOn(api, { credentials: [] });
   await assert.rejects(() => port.reconcileBound([]), /Forbidden/);
 });
 
@@ -380,7 +370,7 @@ test("list() maps the resources — the Orchestrator's metadata and the cache ag
   };
   const api = fakeKube();
   for (const item of items.items) api.seed("repos", item as never);
-  const port = portOn(api, { credentials: [], env: {} });
+  const port = portOn(api, { credentials: [] });
   const listed = await port.list();
   assert.deepEqual(listed, [
     {
