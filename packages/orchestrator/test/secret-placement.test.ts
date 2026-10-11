@@ -531,3 +531,32 @@ test("jr2 up refuses a push with no matching entry, an entry with no credential,
     assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn([pusher("publish")], { app: undefined })));
   }
 });
+
+test("jr2 up refuses a credentialed command beside a GPG-signing push, and names ssh signing as the fix (ADR-0068)", () => {
+  const cfg = (kind: "gpgKey" | "sshKey"): JR2Config => {
+    const sign =
+      kind === "gpgKey"
+        ? { gpgKey: "signing-key", name: "jr2 bot", email: "bot@example.test" }
+        : { sshKey: "signing-key", name: "jr2 bot", email: "bot@example.test" };
+    return {
+      secrets: [{ name: "aws", value: VALUE }],
+      git: { credentials: [{ match: "github.com/ourorg/", token: "T", sign }] },
+    };
+  };
+  const both = [credentialed("deploy", ["aws"]), pusher("publish", { sign: true })];
+  // A GPG-signed push and a credentialed command in one Workspace: refused, with ssh as the fix.
+  assert.throws(
+    () => refuseEffectSecrets(cfg("gpgKey"), placedIn(both)),
+    /a credentialed command and a GPG-signing push \(Repo Slot "app"\).*gpg-agent's socket.*Sign with ssh instead \(sign: \{ sshKey/s,
+  );
+  // The same refusal reaches the placement, not the early check alone.
+  assert.throws(() => secretPlacementsOf(cfg("gpgKey"), placedIn(both)), /gpg-agent's socket/s);
+  // ssh signing starts no agent and reads a file the child cannot: the same Workspace is accepted.
+  assert.doesNotThrow(() => refuseEffectSecrets(cfg("sshKey"), placedIn(both)));
+  // An unsigned push beside the command is fine, even with a GPG entry in config.
+  assert.doesNotThrow(() =>
+    refuseEffectSecrets(cfg("gpgKey"), placedIn([credentialed("deploy", ["aws"]), pusher("publish")])),
+  );
+  // A per-run / customize() url is refused too: the url it takes at provision could match a GPG entry.
+  assert.throws(() => refuseEffectSecrets(cfg("gpgKey"), placedIn(both, { app: undefined })), /gpg-agent's socket/s);
+});

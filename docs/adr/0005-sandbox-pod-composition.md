@@ -84,9 +84,13 @@ caller supplies the credential — a human's forwarded agent in the User Contain
 container it executes in holds one (the credential-visibility story above, unchanged). An UNATTENDED publish is the
 Machine's `push()` Effect (ADR-0067): it runs in the Sandbox Effector, which holds the push credential of the
 `git.credentials` entry the Repo Slot's url falls under — the provision names that entry's Secret on the Sandbox CR and
-the operator projects it (ADR-0051) — and pushes to that url, never to origin's push url from the Agent's config. The
-Orchestrator holds no push credential (ADR-0068). Opening a pull request is an `http` Effect the author writes; jr2 has
-no forge client.
+the operator projects it (ADR-0051) — and pushes to that url, never to origin's push url from the Agent's config. A
+`git.credentials` entry's own push credential — a `push: { token }` or `push: { sshKey }` — never enters the
+Orchestrator: `jr2 up` materializes it into that entry's Secret (`jr2-git-<n>`), which only the Effector is given
+(ADR-0051, B10). What the Orchestrator does hold, in its own Secret, is the clone token it reads to build each Repo's
+clone credential at boot (ADR-0019); where an entry declares no separate `push` field, that clone token is also what the
+push spends (B6.2), so it is not a value the Orchestrator is kept from. Opening a pull request is an `http` Effect the
+author writes; jr2 has no forge client.
 
 ## Sharing `/work` across uids
 
