@@ -37,7 +37,7 @@ type BodyInput = Workspaced<HostInjectedInput & Door, "app">;
 type BodyContext = BodyInput & { first?: unknown; second?: unknown; before?: unknown; after?: unknown };
 
 const unused = defineEvent({ name: "noop", input: z.object({}) });
-const AUTHOR = ["-c", "user.name=jr2 e2e", "-c", "user.email=e2e@jr2.test"].join(" ");
+const AUTHOR = ["-c", "'user.name=jr2 e2e'", "-c", "user.email=e2e@jr2.test"].join(" ");
 
 /** What the Worktree looks like, read in the Harness container: status, the files, HEAD. */
 const LOOK =

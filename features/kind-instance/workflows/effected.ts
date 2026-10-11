@@ -49,7 +49,7 @@ type BodyContext = BodyInput & { output?: unknown };
 const unused = defineEvent({ name: "noop", input: z.object({}) });
 const go = defineEvent({ name: "go", input: z.object({}) });
 const token = secret("echo-token");
-const GIT = ["-c", "user.name=jr2 e2e", "-c", "user.email=e2e@jr2.test"];
+const GIT = ["-c", "'user.name=jr2 e2e'", "-c", "user.email=e2e@jr2.test"];
 
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
