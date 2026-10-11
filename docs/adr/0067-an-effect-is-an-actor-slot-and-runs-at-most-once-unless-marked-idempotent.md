@@ -129,20 +129,26 @@ the credentialed `command` — runs there too, its child confined (below).
   and its source), then `cherry`, each published commit after the merge base paired with one Agent commit by a stable
   patch-id, author line and message (a merge by its tree and non-first parents) — and when nothing pairs cleanly the
   push is `diverged` and nothing is pushed — with `force` too: `force` replaces a remote branch that moved, and never
-  stands in for a pairing. Every commit the remote lacks must be one the call signed, or the push is `diverged`.
-  `pushed` carries the published commit, its source, what the remote held before, how the new commits were found
-  (`ancestry | pair | cherry`), `unchanged` when the remote already held it, and — whenever the published commit is not
-  the Agent's own — the signed commits as a bundle for the sync step (`git bundle create` of the signed tip, with the
-  Agent's tip as its prerequisite: the signed commits, and the trees and blobs git adds beside them, which the Agent's
-  store may already hold). A signed push that publishes nothing new carries one too: when `pair` or `cherry` maps the
-  published tip itself (a restore that sends a pinned push again, a push after a sync that did not finish), the Agent's
-  branch still holds its unsigned commits. The bundle never reaches the Machine. A push sends the ledger's last push of
-  its Workspace and Repo Slot — one branch on one remote; its published commit and its source — as the pair's input
-  (`last`). The pair stands for the published tip only while the remote still holds that push: a remote that moved past
-  it (another writer) is paired by `cherry` or is `diverged`, never grafted onto. The Agent is never told to rebase: a
-  rebase repair loses a reworded message and duplicates empty commits and merges. A side branch the Agent made before
-  the push and merges later is signed again, so a duplicate signed commit can be published — with an ssh key too,
-  because the committer date is the Effector's clock and a second signing is a second commit.
+  stands in for a pairing. Then, on every push and before anything is signed, the same map runs over the new commits
+  (B14): a commit that pairs with a published one — the ledger's pair, or cherry's key against the published commits
+  after its merge base with the remote's tip, each taken once — is replaced by its signed twin in the rewritten history,
+  and only the unmapped commits are signed. Every commit the remote lacks must be one the call signed, or the push is
+  `diverged`. `pushed` carries the published commit, its source, what the remote held before, how the new commits were
+  found (`ancestry | pair | cherry`), `unchanged` when the remote already held it, and — whenever the published commit
+  is not the Agent's own — the signed commits as a bundle for the sync step (`git bundle create` of the signed tip, with
+  the Agent's tip as its prerequisite: the signed commits, and the trees and blobs git adds beside them, which the
+  Agent's store may already hold). A signed push that publishes nothing new carries one too: when `pair` or `cherry`
+  maps the published tip itself (a restore that sends a pinned push again, a push after a sync that did not finish), the
+  Agent's branch still holds its unsigned commits. The bundle never reaches the Machine. A push sends the ledger's last
+  push of its Workspace and Repo Slot — one branch on one remote; its published commit and its source — as the pair's
+  input (`last`). The pair stands for the published tip only while the remote still holds that push: a remote that moved
+  past it (another writer) is paired by `cherry` or is `diverged`, never grafted onto. The Agent is never told to
+  rebase: a rebase repair loses a reworded message and duplicates empty commits and merges. A published commit is never
+  signed twice, for every signer and key type: a side branch the Agent made before the push and merges later carries the
+  unsigned original of a commit the remote holds signed, which ancestry calls new, and the map replaces it by its twin.
+  The committer date stays the Effector's clock; a deterministic re-sign (the Agent's committer date) was rejected,
+  since it rests on one key type's property, not GPG's or ECDSA's. The map's cost is bounded by the push's size; a false
+  pair is a duplicate by definition.
 - **The sync: after a signed push, the Agent's branch moves to the signed commits**, in the Harness container
   (`POST /sync`, behind the Harness bearer, ADR-0058), from the bundle the Effector wrote, which the Orchestrator relays
   — never a shared volume: the Worktree stays read-only on the credentialed side. Under a cleared environment and a

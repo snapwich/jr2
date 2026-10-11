@@ -18,7 +18,9 @@
 // Signed: the new commits are found by ancestry — the published tip must be an ancestor of the
 // Agent's tip, which the sync step makes true after each signed push. When it is not (the sync did
 // not run), a read-only fallback pairs the published commits with the Agent's: `pair` from the
-// ledger's last push, then `cherry` by patch-id, author line and message. Nothing unsigned leaves:
+// ledger's last push, then `cherry` by patch-id, author line and message. On every push, before
+// anything is signed, the same map runs over the new commits (B14): a commit that pairs with a
+// published one is its signed twin, and is never signed again. Nothing unsigned leaves:
 // every commit the remote lacks must be one this call signed. Author line and date stay the
 // Agent's; the committer is the entry's name and email, at this Effector's clock.
 package pushkind
@@ -32,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -449,7 +452,17 @@ func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signe
 		if err != nil {
 			return nil, ptr(rejected("sign", "the Agent's commits could not be listed", tail(stderrOf(err))))
 		}
+		// Map before you sign (B14): a commit that pairs with a published one is its signed twin,
+		// and is never signed again.
+		twins, err := c.twins(ctx, list, pub)
+		if err != nil {
+			return nil, ptr(rejected("sign", err.Error(), ""))
+		}
 		for _, id := range list {
+			if twin, ok := twins[id]; ok {
+				mapped[id] = twin
+				continue
+			}
 			commit, err := c.read(ctx, id)
 			if err != nil {
 				return nil, ptr(rejected("sign", err.Error(), ""))
@@ -728,6 +741,77 @@ func (c *call) stopAgent() {
 func (c *call) tool(ctx context.Context, stdin io.Reader, name string, args ...string) ([]byte, error) {
 	cmdArgs := append([]string{name}, args...)
 	return gitclean.Exec(ctx, c.repo, stdin, cmdArgs...)
+}
+
+// twins maps each commit of list that pairs with a published commit to that commit (B14): the
+// ledger's pair — the last push's source, whose published commit the remote still holds — and
+// cherry's key (a non-merge's stable patch-id, author line and message; a merge's tree, non-first
+// parents, author line and message), each published commit taken once. It runs on every push,
+// before anything is signed, whether ancestry found the new commits or not: a side branch made
+// before a push and merged after it carries the Agent's unsigned original of a commit the remote
+// holds signed, which ancestry calls new. Read-only.
+func (c *call) twins(ctx context.Context, list []string, pub string) (map[string]string, error) {
+	out := map[string]string{}
+	if pub == "" || len(list) == 0 {
+		return out, nil
+	}
+	repo := c.repo
+	if last := c.spec.Last; last != nil && slices.Contains(list, last.Source) &&
+		(last.Published == pub || repo.IsAncestor(ctx, last.Published, pub)) {
+		out[last.Source] = last.Published
+	}
+	// The published commits a commit of list could pair with: those after each one's merge base
+	// with the remote's tip.
+	bases := map[string]bool{}
+	for _, id := range list {
+		if _, ok := out[id]; ok {
+			continue
+		}
+		if mb, err := repo.Line(ctx, "merge-base", pub, id); err == nil && mb != "" {
+			bases[mb] = true
+		}
+	}
+	// Each base on its own: one base can be another's descendant (a merge's base is the remote's tip
+	// itself), and together they would hide what the older one alone shows.
+	seen := map[string]bool{}
+	for _, twin := range out {
+		seen[twin] = true
+	}
+	var published []string
+	for _, mb := range slices.Sorted(maps.Keys(bases)) {
+		ids, err := repo.Lines(ctx, revList, pub, not, mb)
+		if err != nil {
+			return nil, errors.New("the published commits could not be listed")
+		}
+		for _, id := range ids {
+			if !seen[id] {
+				seen[id] = true
+				published = append(published, id)
+			}
+		}
+	}
+	byKey := map[string][]string{}
+	for _, id := range published {
+		k, err := c.key(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		byKey[k] = append(byKey[k], id)
+	}
+	for _, id := range list {
+		if _, ok := out[id]; ok {
+			continue
+		}
+		k, err := c.key(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ids := byKey[k]; len(ids) > 0 {
+			out[id] = ids[0]
+			byKey[k] = ids[1:]
+		}
+	}
+	return out, nil
 }
 
 // --- the cherry fallback -------------------------------------------------------------------------
