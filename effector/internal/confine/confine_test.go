@@ -16,7 +16,9 @@ import (
 // /opt/jr2/bin/effector does in a pod. Landlock is real here (the host's kernel).
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "confine" {
-		os.Exit(Main(os.Args[2:]))
+		// syscall.Exit, not os.Exit: under -coverprofile the test binary's exit hook writes
+		// "GOCOVERDIR not set" to stderr, into the output the test reads. The Effector's binary has no such hook.
+		syscall.Exit(Main(os.Args[2:]))
 	}
 	os.Exit(m.Run())
 }

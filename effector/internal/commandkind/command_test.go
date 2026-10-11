@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/snapwich/jr2/effector/internal/confine"
@@ -25,10 +26,14 @@ const gitKeyValue = "-----BEGIN OPENSSH PRIVATE KEY----- push"
 // in a pod. Landlock is real here: the host's kernel.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "keep" {
-		os.Exit(reaper.Keep(os.Args[2:]))
+		// syscall.Exit, not os.Exit: under -coverprofile the test binary's exit hook writes
+		// "GOCOVERDIR not set" to stderr, into the output the test reads. The Effector's binary has no such hook.
+		syscall.Exit(reaper.Keep(os.Args[2:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "confine" {
-		os.Exit(confine.Main(os.Args[2:]))
+		// syscall.Exit, not os.Exit: under -coverprofile the test binary's exit hook writes
+		// "GOCOVERDIR not set" to stderr, into the output the test reads. The Effector's binary has no such hook.
+		syscall.Exit(confine.Main(os.Args[2:]))
 	}
 	os.Exit(m.Run())
 }

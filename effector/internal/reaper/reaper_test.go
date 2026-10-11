@@ -18,7 +18,9 @@ import (
 // pod.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "keep" {
-		os.Exit(Keep(os.Args[2:]))
+		// syscall.Exit, not os.Exit: under -coverprofile the test binary's exit hook writes
+		// "GOCOVERDIR not set" to stderr, into the output the test reads. The Effector's binary has no such hook.
+		syscall.Exit(Keep(os.Args[2:]))
 	}
 	os.Exit(m.Run())
 }
