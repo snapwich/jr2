@@ -338,7 +338,8 @@ export function answerText(answer: PickAnswer | undefined): string {
  * is not the Agent's own (`published` ≠ `source`), by its sync's answer. The ids changed, so the
  * Agent is told what moved and what did not, and what makes the next push `diverged`. It is never
  * told to rebase: a rebase repair loses a reworded message and duplicates empty commits and merges.
- * Undefined for every other output.
+ * Undefined for every other output. An unsigned squash (B15) publishes a new commit too, so it gets
+ * this text, whose "jr2 signed your commits" is false there: its own text is not decided (ADR-0067).
  */
 export function signedPushText(output: unknown): string | undefined {
   if (typeof output !== "object" || output === null) return undefined;

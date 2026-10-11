@@ -53,7 +53,7 @@ const ws = () => ({
   bindings: { app: "https://github.com/ourorg/app.git" },
 });
 
-function machineOf(effect: AnyEffect) {
+function machineOf(effect: AnyEffect, input: object = { path: "dist/report.pdf" }) {
   return jr2Setup({
     types: {} as { context: Ctx },
     events: [go],
@@ -68,7 +68,7 @@ function machineOf(effect: AnyEffect) {
       running: {
         invoke: {
           src: "effect",
-          input: () => ({ path: "dist/report.pdf" }) as never,
+          input: () => input as never,
           onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
           onError: { target: "faulted", actions: assign({ fault: ({ event }) => (event.error as Error).message }) },
         },
@@ -82,10 +82,10 @@ function machineOf(effect: AnyEffect) {
 const target = { effector: () => ({ placement: "sandbox" as const, service: "ws-1:8082", key: EFFECTOR_KEY }) };
 const port = (fake: FakeEffector) => () => createEffectorClient({ key: EFFECTOR_KEY, transport: fake.transport });
 
-async function started(effect: AnyEffect, store?: SnapshotStore) {
+async function started(effect: AnyEffect, store?: SnapshotStore, input?: object) {
   const s = store ?? (await mkStore());
   const host = new RunHost({ store: s, ...target });
-  host.register({ name: "fx", machine: machineOf(effect), provide: () => ({}) });
+  host.register({ name: "fx", machine: machineOf(effect, input), provide: () => ({}) });
   const { runId } = await host.start("fx");
   host.sendToGate(runId, "start", { type: "go" });
   return { host, store: s, runId };
@@ -172,6 +172,25 @@ test("an unsigned push is sync `skipped`, and no sync is asked", async () => {
   const result = (rig.host.status(rig.runId)?.context as Ctx).result as Record<string, unknown>;
   assert.equal(result.sync, "skipped");
   assert.equal(syncs.calls.length, 0);
+});
+
+test("an unsigned squash published a new commit, so it is synced like a signed push, from its bundle (B15)", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const syncs = new FakeSync();
+  const rig = await started(pushWith(port(fake), { squash: true }, syncs.factory) as AnyEffect, undefined, {
+    message: "one commit",
+  });
+  await waitFor(() => fake.starts.length === 1);
+  const req = fake.starts[0]!.req as PushStartRequest;
+  assert.equal(req.push.sign, undefined);
+  assert.equal(req.push.squash, "one commit");
+  fake.settle(pushed("c".repeat(40)));
+  await waitFor(() => rig.host.status(rig.runId)?.value === "done");
+  const result = (rig.host.status(rig.runId)?.context as Ctx).result as Record<string, unknown>;
+  assert.equal(result.sync, "synced");
+  assert.equal(syncs.calls.length, 1);
+  assert.equal(syncs.calls[0]!.req.published, "c".repeat(40));
+  assert.equal(syncs.calls[0]!.req.bundle, "QlVORExF");
 });
 
 /** A Machine that pushes twice in one run, in one Workspace. */

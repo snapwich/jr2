@@ -679,9 +679,10 @@ export function pushWith<const O extends PushOptions>(
       return { last: { published: output.published, source: output.source } };
     },
     // After a pushed outcome: the sync, in the Workspace's Harness, from the bundle the Effector
-    // wrote. An unsigned push published the Agent's own commit: `skipped`, nothing to send. A
-    // signed one syncs whenever the published commit is not the Agent's — a push that published
-    // nothing new included (a pair or cherry that mapped the published tip).
+    // wrote. A push that published the Agent's own commit (unsigned, no squash): `skipped`,
+    // nothing to send. Every other push syncs — a signed one, a signed one that published nothing
+    // new (a pair or cherry that mapped the published tip), and an unsigned squash, whose commit
+    // is new (B15).
     finish: async (output, ctx) => {
       const o = output as PushWireOutput;
       if (o.outcome !== "pushed") return o;
