@@ -217,6 +217,9 @@ function fakeBuild(
     /** What `docker inspect` says a Sandbox Image declares as its `USER` — `""` (the default) is
      * the interesting case: no USER, so the pod's uid-1000 fallback applies (ADR-0037). */
     imageUser?: string;
+    /** What a Sandbox Effector's image holds (B13), by image ref: which paths, and /etc/passwd.
+     * Default: every path asked for, and a passwd entry for uid 1000 — an image a push can use. */
+    imageFiles?: (image: string, paths: readonly string[]) => { present: string[]; passwd: string };
     /** What the two stores hold when the post-converge sweep looks (ADR-0039). Empty by default,
      * so a test that is not about the sweep sees one narrated line and no removals. */
     hostImages?: ObservedImage[];
@@ -255,6 +258,15 @@ function fakeBuild(
       // list is in the registry buildx pushed it to — two reads, recorded as two lines.
       record.push(`${platforms.length > 1 ? "imagetools" : "inspect-user"} ${image}`);
       return opts.imageUser ?? "";
+    },
+    imageFiles: async (image, _platforms, paths) => {
+      record.push(`inspect-files ${image}`);
+      return (
+        opts.imageFiles?.(image, paths) ?? {
+          present: [...paths],
+          passwd: "root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000::/home/user:/bin/sh\n",
+        }
+      );
     },
     push: async (tag) => void record.push(`push ${tag}`),
     kindLoad: async (tag, cluster) => void record.push(`kind-load ${tag} → ${cluster}`),
@@ -437,6 +449,7 @@ function mkWorld(
      * none of them detect the real repo the suite happens to run inside. */
     kitDir?: string;
     imageUser?: string;
+    imageFiles?: (image: string, paths: readonly string[]) => { present: string[]; passwd: string };
     /** What the Instance typecheck says (ADR-0050). Default: it passes. */
     typecheck?: Io["typecheck"];
     hostImages?: ObservedImage[];
@@ -461,6 +474,7 @@ function mkWorld(
     build: fakeBuild(built, {
       files: over.bundleFiles,
       imageUser: over.imageUser,
+      imageFiles: over.imageFiles,
       hostImages: over.hostImages,
       nodeImages: over.nodeImages,
       sweepFails: over.sweepFails,
@@ -3540,6 +3554,68 @@ async function pushingInstance(url: string, credentials: string, sign: boolean |
   );
   return root;
 }
+
+test("jr2 up reads the Sandbox Effector's image for what each push form owes, and refuses with the fix before it applies anything (B13)", async () => {
+  const sshPushing = async () =>
+    withImage(
+      await pushingInstance(
+        "git@github.com:ourorg/app.git",
+        `[{ match: "*", sshKey: "deploy", sign: { sshKey: "signer", name: "n", email: "e@x.test" } }]`,
+        true,
+      ),
+      "default",
+    );
+  const keys = (w: World) => {
+    const b64 = (v: string) => Buffer.from(v).toString("base64");
+    w.kube.set("myinst", "secret", "deploy", {
+      metadata: { name: "deploy" },
+      data: { identity: b64("K"), known_hosts: b64("h") },
+    } as never);
+  };
+  // The image holds git and nothing of ssh: the push over ssh is refused, naming the tool.
+  const bare = mkWorld(await sshPushing(), { imageFiles: () => ({ present: [], passwd: "" }) });
+  keys(bare);
+  await assert.rejects(
+    () => up(["--yes"], bare.io),
+    /over ssh needs ssh, and its Sandbox Effector's image .* holds none/,
+  );
+  assert.ok(!bare.kube.applied.some((m) => m.includes(`"kind":"List"`)), "nothing applied");
+  // ssh, but no passwd entry for uid 1000 (the image declares no USER): adduser is the fix.
+  const nobody = mkWorld(await sshPushing(), {
+    imageFiles: (_image, paths) => ({ present: [...paths], passwd: "root:x:0:0::/root:/bin/sh\n" }),
+  });
+  keys(nobody);
+  await assert.rejects(
+    () => up(["--yes"], nobody.io),
+    /passwd entry for the uid 1000 .*RUN adduser -D -u 1000 <name>/s,
+  );
+  // ssh-keygen missing for the signed push.
+  const unsigned = mkWorld(await sshPushing(), {
+    imageFiles: (_image, paths) => ({
+      present: paths.filter((p) => !p.endsWith("/ssh-keygen")),
+      passwd: "u:x:1000:1000::/h:/bin/sh\n",
+    }),
+  });
+  keys(unsigned);
+  await assert.rejects(() => up(["--yes"], unsigned.io), /signed with an ssh key needs ssh-keygen/);
+  // Everything there: the converge goes on, and the image was read.
+  const ok = mkWorld(await sshPushing());
+  keys(ok);
+  assert.equal(await up(["--yes"], ok.io), 0);
+  assert.ok(
+    ok.built.some((l) => l.startsWith("inspect-files ")),
+    "the Effector's image was read",
+  );
+  // A token over https owes nothing beyond git: the image is not read.
+  const https = mkWorld(
+    await withImage(
+      await pushingInstance("https://github.com/ourorg/app.git", `[{ match: "*", token: "GH_TOKEN" }]`),
+      "default",
+    ),
+    { env: { GH_TOKEN: "ghp_0123456789abcdef" }, imageFiles: () => assert.fail("an https token push reads no image") },
+  );
+  assert.equal(await up(["--yes"], https.io), 0);
+});
 
 test("jr2 up refuses an unsigned squash only when the matched entry has neither sign nor committer, and names both fixes (B15)", async () => {
   const env = { GH_TOKEN: "ghp_0123456789abcdef" };

@@ -676,6 +676,9 @@ export type WorkspacePod = {
   effects: CarriedEffect[];
   /** The `workspace()`'s `effector: { image }`, as written. Absent → the Sandbox Image. */
   effector?: { image: string };
+  /** The `workspace()`'s own `image`, as written — its Sandbox Image. Absent → `images/default`,
+   * then the stock Harness (ADR-0037). */
+  image?: string;
   /** Each Repo Slot's Binding url as the Machine binds it, by slot, in order; undefined for an open
    * or per-run slot, whose url `jr2 up` cannot read. A push resolves its credential through it. */
   bindings: Record<string, string | undefined>;
@@ -742,6 +745,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
         models: [...models].sort(),
         effects: [...effects.values()],
         ...(parts.effector ? { effector: { ...parts.effector } } : {}),
+        ...(parts.image !== undefined ? { image: parts.image } : {}),
         bindings,
       });
     }

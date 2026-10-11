@@ -21,10 +21,28 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   by running it as its command, so the image around it is whatever that container runs: the tools are the author's, the
   trust boundary is jr2's binary. The Instance Effector runs the `jr2-harness` Kit image itself — it carries the binary,
   it is already pulled, and `http` needs no tool. The Sandbox Effector runs the author's image: the Sandbox Image by
-  default — ADR-0037's floor already holds `git`, so a `push` owes the author no Dockerfile; `ssh-keygen` signs, and
-  `gpg` only when a key is GPG — or the image a `workspace()` names as `effector: { image }`, for the tools and
-  credentials an author keeps out of the Agent's image. Rejected: a published `jr2-effector` tool image (git, ssh, gpg)
-  — author-built images would deprecate it, as `jr2-adapter` was.
+  default, or the image a `workspace()` names as `effector: { image }`, for the tools and credentials an author keeps
+  out of the Agent's image. Rejected: a published `jr2-effector` tool image (git, ssh, gpg) — author-built images would
+  deprecate it, as `jr2-adapter` was.
+- **What a push owes the author's image (B13).** ADR-0037's floor holds `git`; the rest is per push form, and `jr2 up`
+  reads the Effector's image it built — files off a container it creates and never starts, and the `USER` it already
+  records — and refuses, with the fix for the case found, an image that lacks what a form the Workspace holds needs.
+  Each program must be in `/usr/local/bin`, `/usr/bin` or `/bin`, where the Effector looks:
+  - ssh transport (`ssh://`, `git@`): `ssh`, and a passwd entry for the uid the Effector runs as — the image's `USER` by
+    name or number, else 1000. OpenSSH's client calls `getpwuid(getuid())` before any option and exits "No user exists
+    for uid N" without one. The fix named is a `USER` line naming a user the image holds, or
+    `adduser -D -u <uid> <name>` for a numeric or absent `USER`;
+  - ssh signing (`sign: { sshKey }`): `ssh-keygen` (`-Y sign` does no passwd lookup);
+  - GPG signing (`sign: { gpgKey }`): `gpg` and `gpg-agent`;
+  - a token over https: nothing beyond `git` — the helper is the Effector's own binary.
+
+  `http`, `upload` and the credentialed command owe nothing: the first two are Go, the last is the author's argv. A form
+  `jr2 up` cannot see — a slot the run or a `customize()` binds — is not checked, nor an image `jr2 up` did not build (a
+  registry ref), whose `USER` it does not read either. Rejected: a mounted passwd file, `nss_wrapper`, an `LD_PRELOAD`
+  shim — jr2 taking an opinion on the author's image, against ADR-0037's zero-opinion seat. A push keeps ssh's own
+  stderr apart from git's and names ssh's last line in its reason (`the remote could not be reached: ssh: …`), with both
+  in the detail: git's own words for an ssh failure name no cause.
+
 - **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file. A Sandbox Effector — the
   binary with `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs `http`, `upload`, `push` and a
   credentialed `command` (ADR-0067); the Instance Effector refuses the last three, and a file body, as a defect. Its env

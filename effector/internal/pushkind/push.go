@@ -116,6 +116,9 @@ type call struct {
 	built map[string]string
 	// gnupg is the GPG home a signing made, whose agent the call stops.
 	gnupg string
+	// sshLog is where ssh's own stderr goes, beside git's (B13): the line ssh ends on — "No user
+	// exists for uid", a refused connection, a host key — is what a reason names.
+	sshLog string
 	// agentGroup is the process group of the gpg-agent this call started: the call kills it and
 	// waits for it to end before the push settles and releases the Lock's `gpg` class (B12 rule 2).
 	agentGroup int
@@ -178,7 +181,8 @@ func (c *call) run(ctx context.Context) wire.Output {
 	if _, err := repo.Git(ctx, nil, "fetch", "-q", "--no-tags", "--", spec.URL, fetched); err != nil {
 		stderr := stderrOf(err)
 		if !strings.Contains(strings.ToLower(stderr), "couldn't find remote ref") {
-			return rejected("fetch", classify(stderr, ctx), tail(stderr))
+			reason, detail := c.failure(stderr, ctx)
+			return rejected("fetch", reason, detail)
 		}
 	} else if pub, err = repo.Line(ctx, "rev-parse", "-q", "--verify", "refs/jr2/published"); err != nil {
 		return rejected("fetch", "the published commit could not be read", "")
@@ -294,8 +298,12 @@ func (c *call) configure(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("the url is ssh, and this Effector's image holds no ssh: %w", err)
 		}
+		// ssh's own stderr goes to a file of the call's, beside git's (B13): git's words for an ssh
+		// failure name no cause. git runs this through the shell, which takes the redirection.
+		c.sshLog = filepath.Join(repo.Work, "ssh.stderr")
 		cmd := fmt.Sprintf("'%s' -F /dev/null -i '%s' -o IdentitiesOnly=yes -o IdentityAgent=none "+
-			"-o UserKnownHostsFile='%s' -o StrictHostKeyChecking=yes -o BatchMode=yes", ssh, key, known)
+			"-o UserKnownHostsFile='%s' -o StrictHostKeyChecking=yes -o BatchMode=yes 2>>'%s'", ssh, key, known,
+			c.sshLog)
 		if _, err := repo.Git(ctx, nil, "config", "core.sshCommand", cmd); err != nil {
 			return err
 		}
@@ -363,7 +371,30 @@ func (c *call) push(ctx context.Context, target, source, pub, via, bundle string
 		}
 	}
 	// No porcelain line: the connection or the authentication failed before any ref was offered.
-	return rejected("push", classify(stderr, ctx), tail(stderr))
+	reason, detail := c.failure(stderr, ctx)
+	return rejected("push", reason, detail)
+}
+
+// failure is why a fetch or a push could not reach the remote: classify's reason over git's stderr
+// and ssh's own, with ssh's last line named in it, and both tails as the detail (B13). git's own
+// words for an ssh failure ("Could not read from remote repository") name no cause; ssh's line
+// does.
+func (c *call) failure(stderr string, ctx context.Context) (string, string) {
+	ssh := ""
+	if c.sshLog != "" {
+		if raw, err := os.ReadFile(c.sshLog); err == nil {
+			ssh = strings.TrimSpace(string(raw))
+		}
+		// One call's ssh lines at a time: a later git call writes its own.
+		_ = os.Remove(c.sshLog)
+	}
+	reason := classify(stderr+"\n"+ssh, ctx)
+	if ssh == "" {
+		return reason, tail(stderr)
+	}
+	lines := strings.Split(ssh, "\n")
+	return reason + ": ssh: " + strings.TrimSpace(lines[len(lines)-1]),
+		strings.TrimSpace(tail(stderr) + "\nssh:\n" + tail(ssh))
 }
 
 // classify says why a connection failed, from git's stderr: each is an answer of the outside

@@ -50,6 +50,7 @@ function nullPort(): BuildPort {
     bundle: async () => {},
     build: async () => {},
     imageUser: async () => "",
+    imageFiles: async () => ({ present: [], passwd: "" }),
     push: async () => {},
     kindLoad: async () => {},
     hostImages: async () => [],

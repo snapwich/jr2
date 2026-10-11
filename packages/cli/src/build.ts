@@ -88,6 +88,11 @@ export type BuildPort = {
    * is on the host daemon (`docker inspect`), while a multi-platform one went straight to the
    * registry as a manifest list the daemon never held (`docker buildx imagetools inspect`). */
   imageUser(image: string, platforms: readonly string[]): Promise<string>;
+  /** What a Sandbox Effector's image holds for a push (ADR-0068, B13): which of `paths` it has,
+   * links followed, and its `/etc/passwd` (`""` when it has none). Read off a container created and
+   * never started, so nothing of the image runs. A multi-platform build is read for its first
+   * platform: the files a push needs do not differ by architecture. */
+  imageFiles(image: string, platforms: readonly string[], paths: readonly string[]): Promise<ImageFiles>;
 
   /** What this host can build for: its own platform, plus every foreign one binfmt emulation
    * registers (`docker buildx inspect`'s `Platforms:` line). The converge's binfmt preflight
@@ -1090,6 +1095,17 @@ async function pnpmWorkspaceRoot(dir: string): Promise<string | undefined> {
 
 const BIG = { maxBuffer: 64 * 1024 * 1024 };
 
+/** What {@link BuildPort.imageFiles} reads off an image. */
+export type ImageFiles = { present: string[]; passwd: string };
+
+/** The one file a `docker cp … -` tar stream carries, as text: a 512-byte header whose size field
+ * (octal, at offset 124) says how long the content after it is. */
+export function tarFileText(tar: Buffer): string {
+  if (tar.length < 512) return "";
+  const size = parseInt(tar.subarray(124, 136).toString("latin1").replace(/\0.*$/s, "").trim() || "0", 8);
+  return tar.subarray(512, 512 + (Number.isFinite(size) ? size : 0)).toString("utf8");
+}
+
 /** The real build port: pnpm + docker + kind + crictl subprocesses. */
 export const pnpmDockerBuild: BuildPort = {
   bundle: (instanceDir, outDir) => bundleInstance(instanceDir, outDir),
@@ -1123,6 +1139,37 @@ export const pnpmDockerBuild: BuildPort = {
     args.push(context);
     if (dockerfileContent) await execStdin(["docker", ...args], dockerfileContent);
     else await exec("docker", args, BIG);
+  },
+
+  async imageFiles(image, platforms, paths) {
+    const platform = platforms.length > 1 ? ["--platform", platforms[0]!] : [];
+    // `--entrypoint` names nothing that must exist: the container is created, read and removed,
+    // never started.
+    const { stdout } = await exec("docker", ["create", ...platform, "--entrypoint", "/jr2-not-run", image], BIG);
+    const container = stdout.trim();
+    try {
+      const present: string[] = [];
+      for (const path of paths) {
+        const found = await exec("docker", ["cp", "-L", `${container}:${path}`, "-"], {
+          ...BIG,
+          encoding: "buffer",
+        }).then(
+          () => true,
+          () => false,
+        );
+        if (found) present.push(path);
+      }
+      const passwd = await exec("docker", ["cp", "-L", `${container}:/etc/passwd`, "-"], {
+        ...BIG,
+        encoding: "buffer",
+      }).then(
+        ({ stdout: tar }) => tarFileText(tar as Buffer),
+        () => "",
+      );
+      return { present, passwd };
+    } finally {
+      await exec("docker", ["rm", "-f", container]).catch(() => undefined);
+    }
   },
 
   async imageUser(image, platforms) {

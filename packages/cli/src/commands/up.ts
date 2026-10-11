@@ -49,6 +49,7 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
   custodianBootstrap,
@@ -157,6 +158,7 @@ import {
   type HeldPodObjects,
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
+import { effectorImagePaths, effectorImageRefusal, type PushForm } from "../effector-image.ts";
 import {
   kubeFloorRefusal,
   podResourcesProbe,
@@ -949,6 +951,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   // registers it, and by then this line has scrolled away.
   const gitSsh = await ensureGitSsh(io, kube, config, carried.repos, namespace, ctx, values.yes === true);
 
+  // --- what each Sandbox Effector's image owes its pushes (ADR-0068, B13) ------------------------
+  // Before anything is applied: an image that lacks a push form's tools, or the passwd entry ssh
+  // needs, is refused here with the fix, not at the first push in a pod.
+  await checkEffectorImages(build, config, placements.sandbox, converged, platforms);
+
   // --- push credentials (ADR-0051, B10): one Secret per git.credentials entry, never per pod ----
   // After the deploy keys exist (a generated one included), before anything else is applied: a
   // static Binding whose entry cannot push is refused here.
@@ -1649,6 +1656,52 @@ async function resolveGitPush(
     }
   }
   return out;
+}
+
+/**
+ * What each Workspace's Sandbox Effector image owes its pushes (ADR-0068, B13), read off the image
+ * this converge built — its effector image, else its Sandbox Image — by the push forms `jr2 up` can
+ * see: a slot the Machine binds (its url's scheme, its entry's `sign`), never one the run or a
+ * `customize()` binds, whose url is the provision's. An image `jr2 up` did not build (a registry ref,
+ * the stock Harness) is not read, as its `USER` is not.
+ */
+async function checkEffectorImages(
+  build: BuildPort,
+  config: JR2Config,
+  sandbox: readonly SandboxEffectorPlan[],
+  converged: ConvergedImages,
+  platforms: readonly string[],
+): Promise<void> {
+  const list = config.git?.credentials ?? [];
+  for (const plan of sandbox) {
+    const forms: Array<{ form: PushForm; push: string }> = [];
+    for (const push of plan.pushes) {
+      if (push.url === undefined || push.match === undefined) continue;
+      const what = `the push of Repo Slot "${push.slot}" (${push.url})`;
+      if (isSshUrl(push.url)) forms.push({ form: "ssh-transport", push: what });
+      const sign = push.sign ? list.find((e) => e.match === push.match)?.sign : undefined;
+      if (sign) forms.push({ form: "gpgKey" in sign ? "gpg-sign" : "ssh-sign", push: what });
+    }
+    if (forms.length === 0) continue;
+    const image = plan.image ?? plan.sandboxImage;
+    let key = "default";
+    if (image !== undefined) {
+      if (!image.startsWith("file:")) continue;
+      key = await imageContextDigest(fileURLToPath(image));
+    }
+    const ref = converged.sandbox[key];
+    if (ref === undefined) continue;
+    const files = await build.imageFiles(ref, platforms, effectorImagePaths(forms.map((f) => f.form)));
+    const refusal = effectorImageRefusal({
+      label: plan.label,
+      ref,
+      user: converged.sandboxUser[key] ?? "",
+      forms,
+      present: new Set(files.present),
+      passwd: files.passwd,
+    });
+    if (refusal) throw new Error(refusal);
+  }
 }
 
 /** Where the git ssh key comes from — the three sources ADR-0047 offers, as a pick. */

@@ -94,6 +94,9 @@ export type SandboxEffectorPlan = {
   label: string;
   /** The `workspace()`'s `effector: { image }`, as written; absent → the Sandbox Image. */
   image?: string;
+  /** The `workspace()`'s Sandbox Image, as written; absent → `images/default`, then the stock
+   * Harness. What the Effector runs in when it names no image of its own. */
+  sandboxImage?: string;
   /** Every Effect secret its Effects name, in list order. */
   secrets: EffectSecret[];
   /** The literal values, by name — host-side only. */
@@ -268,6 +271,7 @@ function sandboxPlanOf(
     pod: workspaceHeldPod({ workflow: ws.workflow, path: ws.pod.path }),
     label: workspaceLabel(ws),
     ...(ws.pod.effector ? { image: ws.pod.effector.image } : {}),
+    ...(ws.pod.image !== undefined ? { sandboxImage: ws.pod.image } : {}),
     secrets: own,
     values: Object.fromEntries(Object.entries(values).filter(([name]) => named.has(name))),
     targets,

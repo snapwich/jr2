@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/snapwich/jr2/effector/internal/gitclean"
 	"github.com/snapwich/jr2/effector/internal/gittest"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/secrets"
@@ -417,5 +418,38 @@ func TestAPushToALocalPathIsRefusedOutsideTheTests(t *testing.T) {
 	}
 	if ran := f.pod.Ran(); len(ran) != 0 {
 		t.Fatalf("planted programs ran: %v", ran)
+	}
+}
+
+// B13: a push keeps ssh's own stderr beside git's, so its reason names ssh's line and not only
+// "the remote could not be reached" — here, a connection ssh itself reports refused.
+func TestAnSSHPushThatCannotConnectNamesSSHsOwnLine(t *testing.T) {
+	if _, err := gitclean.Look("ssh"); err != nil {
+		t.Skip("no ssh in " + gitclean.Path)
+	}
+	f := newFixture(t, "")
+	dir := filepath.Join(f.runner.GitRoot, "push")
+	if err := os.WriteFile(filepath.Join(dir, secrets.PushKeyFile), []byte("not a key\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, secrets.KnownHostsFile), []byte(""), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	f.runner.Config.Git[0].Push = &secrets.GitAuth{SSHKey: "push"}
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	req := f.request(false, nil)
+	// Nothing listens on port 1 of the loopback: ssh says so, git says only that it could not read.
+	req.Push.URL = "ssh://git@127.0.0.1:1/app.git"
+	out := f.runner.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "fetch" {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if !strings.Contains(out.Reason, "the remote could not be reached: ssh: ") ||
+		!strings.Contains(out.Reason, "port 1") {
+		t.Fatalf("the reason does not name ssh's line: %q", out.Reason)
+	}
+	if !strings.Contains(out.Push.Detail, "Could not read from remote repository") ||
+		!strings.Contains(out.Push.Detail, "ssh:\n") {
+		t.Fatalf("the detail does not keep git's and ssh's words: %q", out.Push.Detail)
 	}
 }
