@@ -149,6 +149,8 @@ export class E2EWorld {
   /** This scenario's Effect secret (ADR-0068): the kind instance's `echo-token`, which only the
    * Instance Effector holds. The steps look for every form of it in what came back. */
   echoToken?: string;
+  /** @kind: every request the port takeover wrote down (B2), read while the run's Sandbox was live. */
+  takeoverSeen?: string;
   /** The `m-…` segment a `called` run sends, which the echo counts (ADR-0068's one-send proof). */
   marker?: string;
   /** The unbound echo's url, as a pod reaches it. */

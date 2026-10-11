@@ -2759,7 +2759,9 @@ Then(
 // --- the port takeover (B2) --------------------------------------------------------------------------
 
 /** What a process the Agent can start does with the Effector's port: bind it the moment it is
- * free, write down every request it gets, and answer each with a signature it cannot make. */
+ * free, write down every request it gets, and answer each with a signature it cannot make. A poll
+ * is answered after a few seconds, as a long poll is: the step reads the log while the run is
+ * live, since the wrapper reaps the Sandbox, and the log with it, once the Effect settles. */
 const TAKEOVER = [
   String.raw`const net=require("net"),fs=require("fs");const dir="/work/takeover";fs.mkdirSync(dir,{recursive:true});`,
   String.raw`const answer=(c)=>{const b='{"state":"running"}';c.end("HTTP/1.1 202 Accepted\r\nX-Jr2-Signature: forged\r\n`,
@@ -2767,7 +2769,8 @@ const TAKEOVER = [
   String.raw`const serve=(c)=>{let buf=Buffer.alloc(0);c.on("error",()=>{});c.on("data",(d)=>{buf=Buffer.concat([buf,d]);`,
   String.raw`const h=buf.indexOf("\r\n\r\n");if(h<0)return;const m=/content-length:\s*(\d+)/i.exec(buf.subarray(0,h).toString());`,
   String.raw`const want=h+4+(m?Number(m[1]):0);if(buf.length<want)return;`,
-  String.raw`fs.appendFileSync(dir+"/requests.log",buf.subarray(0,want).toString()+"\n=====\n");buf=Buffer.alloc(0);answer(c);});};`,
+  String.raw`const req=buf.subarray(0,want).toString();fs.appendFileSync(dir+"/requests.log",req+"\n=====\n");buf=Buffer.alloc(0);`,
+  String.raw`if(req.startsWith("GET "))setTimeout(()=>answer(c),3000);else answer(c);});};`,
   String.raw`const bind=()=>{const s=net.createServer(serve);s.once("error",()=>setTimeout(bind,20));`,
   String.raw`s.listen(8082,"0.0.0.0",()=>fs.writeFileSync(dir+"/bound",String(Date.now())));};bind();`,
 ].join("");
@@ -2825,10 +2828,31 @@ When(
   },
 );
 
+/** Releases the held upload, then reads what the takeover was sent WHILE the run is live: once the
+ * Effect settles, the wrapper deletes the Sandbox CR, and the pod's `/work` goes with it. */
 When("the held Effect is released", async function (this: E2EWorld): Promise<void> {
   const gate = await openGate(this);
+  const pod = await sandboxPodOf(this);
   const r = await this.runCli(["send", this.runId!, "--gate", gate.gate, "--event", "go"]);
   assert.equal(r.code, 0, `jr2 send failed: ${r.stderr}`);
+  for (let i = 0; i < 120; i++) {
+    const seen = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "sh",
+      "-c",
+      "cat /work/takeover/requests.log 2>/dev/null || true",
+    ]).catch(() => "");
+    if (/^POST \/effects\/[\s\S]*\n=====\n/m.test(seen)) {
+      this.takeoverSeen = seen;
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error("the takeover never wrote down a start");
 });
 
 Then(
@@ -2838,16 +2862,8 @@ Then(
     const output = (await httpOutput(this)) as { outcome?: string; reason?: string; tail?: string };
     assert.equal(output.outcome, "unknown", JSON.stringify(output));
     assert.match(output.reason ?? "", /not the Sandbox Effector's/);
-    const pod = await sandboxPodOf(this);
-    const seen = await kubectl(this, [
-      "exec",
-      `pod/${pod}`,
-      "-c",
-      "harness",
-      "--",
-      "cat",
-      "/work/takeover/requests.log",
-    ]);
+    const seen = this.takeoverSeen;
+    assert.ok(seen, "what the takeover was sent was read while the run was live");
     assert.match(seen, /^POST \/effects\//m, "it received the start");
     assert.match(seen, /x-jr2-signature:/i, "the start was signed");
     assert.match(seen, /"secret":"echo-token"/, "it names the secret");
