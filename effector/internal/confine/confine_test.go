@@ -152,26 +152,63 @@ func TestAFailedProbeRunsNothing(t *testing.T) {
 	}
 }
 
-func TestSystemPathsDescendAroundWhatIsDeniedAndSkipALinkIntoIt(t *testing.T) {
+func TestSystemPathsAreTheImagesSystemPathsAloneAndDescendAroundWhatIsDenied(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	must(t, err)
-	for _, d := range []string{"usr/bin", "run/jr2/effector", "run/jr2/secrets", "run/lock", "tmp", "work"} {
+	for _, d := range []string{"usr/bin", "usr/lib", "etc/ssl", "etc/jr2-mount", "opt/jr2/bin", "run/jr2/effector",
+		"run/jr2/secrets", "run/lock", "tmp", "work", "home/user", "root", "var/lib", "srv", "mnt", "media",
+		"proc", "sys"} {
 		must(t, os.MkdirAll(filepath.Join(root, d), 0o700))
 	}
 	must(t, os.Symlink("usr/bin", filepath.Join(root, "bin")))
-	must(t, os.Symlink("run/jr2/secrets", filepath.Join(root, "s")))
-	must(t, os.Symlink("run", filepath.Join(root, "r")))
+	must(t, os.Symlink("usr/lib", filepath.Join(root, "lib")))
+	// A system path that is a link into a denied path is skipped whole.
+	must(t, os.Symlink("run/jr2/secrets", filepath.Join(root, "sbin")))
 	at := func(p string) string { return filepath.Join(root, p) }
-	rx, rw, err := SystemPaths(root, []string{at("run/jr2/effector"), at("run/jr2/secrets"), at("work")},
-		[]string{at("tmp")})
+	rx, rw, err := SystemPaths(root, []string{at("run/jr2/effector"), at("run/jr2/secrets"), at("work"),
+		at("etc/jr2-mount")})
 	must(t, err)
 	slices.Sort(rx)
-	want := []string{at("bin"), at("run/lock"), at("usr")}
+	want := []string{at("bin"), at("etc/ssl"), at("lib"), at("opt"), at("usr")}
 	if !slices.Equal(rx, want) {
 		t.Fatalf("read+exec %v, want %v", rx, want)
 	}
 	if !slices.Equal(rw, []string{at("tmp")}) {
 		t.Fatalf("read+write %v", rw)
+	}
+}
+
+// On this host: nothing outside the system paths, /tmp, the devices and the Effect's own
+// directory is allowed, so /home, /root, /var, /proc, /sys and /run are denied by omission.
+func TestForCommandAllowsNothingOutsideTheSystemPaths(t *testing.T) {
+	l := newLayout(t)
+	rules := l.rules(t)
+	allowed := append(append(append([]string{}, rules.ReadExec...), rules.ReadWrite...), rules.Read...)
+	for _, p := range allowed {
+		top := "/" + strings.SplitN(strings.TrimPrefix(p, "/"), "/", 2)[0]
+		if slices.Contains(systemNames, top) || top == "/tmp" || slices.Contains(devices, p) || p == l.effect ||
+			p == filepath.Join(l.secrets, "aws") {
+			continue
+		}
+		t.Errorf("allowed: %s", p)
+	}
+}
+
+func TestTheChildCannotReadOutsideTheSystemPaths(t *testing.T) {
+	requireLandlock(t)
+	l := newLayout(t)
+	home, err := os.UserHomeDir()
+	must(t, err)
+	for name, script := range map[string]string{
+		"/proc/net/unix": "cat /proc/net/unix",
+		"a home":         "ls " + home,
+		"/var":           "ls /var",
+		"/run":           "ls /run",
+	} {
+		out, err := confined(t, l.rules(t), l.effect, script)
+		if err == nil || !strings.Contains(out, "Permission denied") {
+			t.Errorf("%s: %v %q", name, err, out)
+		}
 	}
 }
 

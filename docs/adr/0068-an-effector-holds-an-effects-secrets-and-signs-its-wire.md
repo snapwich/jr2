@@ -47,18 +47,21 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   the domain is the one `execve` keeps. Landlock is an allow-list the kernel enforces and every descendant inherits, and
   a confined process cannot ptrace a process outside its domain, so `/proc/<effector>/mem` and
   `/proc/<effector>/environ` are closed too. The ruleset handles every filesystem right of ABI 1, and `REFER` and
-  `TRUNCATE` when the kernel offers ABI 2 and 3. It allows: read and execute on the image's system paths — every entry
-  the image holds from `/` down, except the Effector's own paths and what lies beneath them, walked one level at a time
-  around them, so the rules follow the image (`/usr`, `/bin`, `/lib*`, `/etc`, `/opt/jr2`, and what else it has) and no
-  list jr2 wrote breaks on another image; a symbolic link only when what it names holds none of them; read and write on
-  `/tmp`, the writable devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`) and
-  the Effect's own scratch (B4.5, B4.9: the checkout and `$HOME`); read on each secret file the command names, by
-  `secret("x")` and `.path` alike. It denies by omission the Effector's own paths: its key and config
-  (`/run/jr2/effector`), every secret the command does not name, the push credentials (`@git`), the Worktree (`/work`,
-  B4.5), the node caches (`/repos`) and the rest of its scratch — another Effect's, and a push's copied keys. Network is
-  not restricted. Any failure before `execve` ends the confiner with exit 126 and its reason on stderr: nothing runs
-  unconfined. The design needs ABI 1; measured from a hardened non-root pod (every capability dropped, `RuntimeDefault`
-  seccomp): kind on WSL2 6.6 — ABI 3; the home cluster's arm64 nodes (6.8) — ABI 4; spark (6.11, arm64) — ABI 5.
+  `TRUNCATE` when the kernel offers ABI 2 and 3. It allows: read and execute on the image's system paths — each of
+  `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`, `/libx32`, `/etc` and `/opt` that the image holds, whole, so the
+  rules follow the image (a path it does not hold is skipped, a link such as `/lib -> usr/lib` is followed) and break on
+  none; a symbolic link only when what it names holds none of the Effector's own paths; read and write on `/tmp`, the
+  devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`) and the Effect's own
+  scratch (B4.5, B4.9: the checkout and `$HOME`); read on each secret file the command names, by `secret("x")` and
+  `.path` alike. Everything else is denied by omission: the Effector's key and config (`/run/jr2/effector`), every
+  secret the command does not name, the push credentials (`@git`), the Worktree (`/work`, B4.5), the node caches
+  (`/repos`), the rest of its scratch — another Effect's, and a push's copied keys — and `/home`, `/root`, `/var`,
+  `/srv`, `/mnt`, `/media`, `/proc`, `/sys`, the rest of `/dev` and of `/run`, and any mount added to the container
+  later. A system path that holds one of the Effector's own paths is allowed one level down at a time around it, so a
+  mount placed inside one stays denied. Network is not restricted. Any failure before `execve` ends the confiner with
+  exit 126 and its reason on stderr: nothing runs unconfined. The design needs ABI 1; measured from a hardened non-root
+  pod (every capability dropped, `RuntimeDefault` seccomp): kind on WSL2 6.6 — ABI 3; the home cluster's arm64 nodes
+  (6.8) — ABI 4; spark (6.11, arm64) — ABI 5.
 - **Fail-closed at the pod, not at `jr2 up`.** A Sandbox Effector probes Landlock when it starts
   (`landlock_create_ruleset` with `LANDLOCK_CREATE_RULESET_VERSION`). When its Workspace holds a credentialed command
   (`effector.json`'s `commands`, which `jr2 up` writes) and the probe fails, it does not become ready: it ends, and its
@@ -274,9 +277,14 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   and a file the Agent wrote that the argv runs reads it too — and egress is open, so the claim is the three of
   ADR-0067: the Agent never reads or spends the secret from its own container, the tool sees a pinned commit and not the
   live Worktree, and the output is scrubbed. It shares the Effector's uid, so it can signal the Effector (a fault of its
-  own run, not a leak) and connect to its port, where nothing without the key is accepted. Rejected: a second container
-  per credentialed placement — its child would still share a uid with that container's Effector and could spend that
-  container's key, so it would need Landlock anyway, plus a key, a Secret, a port and a NetworkPolicy per placement.
+  own run, not a leak) and connect to its port, where nothing without the key is accepted. Landlock governs files, not
+  `connect()`: a Unix socket another Effect of the same Effector serves at the same time is reachable by its path. A
+  GPG-signed push serves one — its `gpg-agent` holds the entry's signing key until the push's call ends — so a
+  credentialed command's child that runs in that time can sign with that key without reading it. An ssh-signed push and
+  the token helper serve none. This case is open with the user and is not closed by this ADR. Rejected: a second
+  container per credentialed placement — its child would still share a uid with that container's Effector and could
+  spend that container's key, so it would need Landlock anyway, plus a key, a Secret, a port and a NetworkPolicy per
+  placement.
 - **A node with no Landlock runs no credentialed command.** Its Sandboxes that hold one fail at provision, naming the
   node; the fix is a kernel with `landlock` in its LSM list. The home cluster's nodes are arm64, so the Effector binary
   and the Kit images need `linux/arm64` builds there.

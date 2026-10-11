@@ -82,8 +82,9 @@ the credentialed `command` — runs there too, its child confined (below).
   read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the
   author's choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files
   name runs" is not claimed for it. Its claims are three: the Agent never reads or spends the secret (a container it
-  cannot exec in, and a child confined from every other secret and from the Effector's key), the tool sees a pinned
-  commit and not the live Worktree, and the output is scrubbed.
+  cannot exec in, and a child confined from the files of every other secret and of the Effector's key; a GPG-signed
+  push's agent socket is the one case Landlock does not cover, open in ADR-0068), the tool sees a pinned commit and not
+  the live Worktree, and the output is scrubbed.
 - **An `upload` is an `http` definition whose body is a Worktree file.**
   `upload({ method?, url, headers?, auth?, input?, file, contentType?, slot?, timeout?, maxBody?, idempotent? })`:
   `file(input)` returns the file's path relative to the Repo Slot's Worktree (and path segments, as `request` gives
