@@ -2828,32 +2828,44 @@ When(
   },
 );
 
+/** Releases the upload the body holds on its `hold` Gate. */
+async function releaseHeld(world: E2EWorld): Promise<void> {
+  const gate = await openGate(world);
+  const r = await world.runCli(["send", world.runId!, "--gate", gate.gate, "--event", "go"]);
+  assert.equal(r.code, 0, `jr2 send failed: ${r.stderr}`);
+}
+
+When("the held Effect is released", async function (this: E2EWorld): Promise<void> {
+  await releaseHeld(this);
+});
+
 /** Releases the held upload, then reads what the takeover was sent WHILE the run is live: once the
  * Effect settles, the wrapper deletes the Sandbox CR, and the pod's `/work` goes with it. */
-When("the held Effect is released", async function (this: E2EWorld): Promise<void> {
-  const gate = await openGate(this);
-  const pod = await sandboxPodOf(this);
-  const r = await this.runCli(["send", this.runId!, "--gate", gate.gate, "--event", "go"]);
-  assert.equal(r.code, 0, `jr2 send failed: ${r.stderr}`);
-  for (let i = 0; i < 120; i++) {
-    const seen = await kubectl(this, [
-      "exec",
-      `pod/${pod}`,
-      "-c",
-      "harness",
-      "--",
-      "sh",
-      "-c",
-      "cat /work/takeover/requests.log 2>/dev/null || true",
-    ]).catch(() => "");
-    if (/^POST \/effects\/[\s\S]*\n=====\n/m.test(seen)) {
-      this.takeoverSeen = seen;
-      return;
+When(
+  "the held Effect is released, and the takeover writes down its start",
+  async function (this: E2EWorld): Promise<void> {
+    const pod = await sandboxPodOf(this);
+    await releaseHeld(this);
+    for (let i = 0; i < 120; i++) {
+      const seen = await kubectl(this, [
+        "exec",
+        `pod/${pod}`,
+        "-c",
+        "harness",
+        "--",
+        "sh",
+        "-c",
+        "cat /work/takeover/requests.log 2>/dev/null || true",
+      ]).catch(() => "");
+      if (/^POST \/effects\/[\s\S]*\n=====\n/m.test(seen)) {
+        this.takeoverSeen = seen;
+        return;
+      }
+      await sleep(250);
     }
-    await sleep(250);
-  }
-  throw new Error("the takeover never wrote down a start");
-});
+    throw new Error("the takeover never wrote down a start");
+  },
+);
 
 Then(
   "the takeover got a signed start that carries no secret, and the Effect failed closed",

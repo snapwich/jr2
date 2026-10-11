@@ -231,7 +231,8 @@ Feature: a workspace() run drives a real Sandbox on kind
       Given the kind instance is serving
       When I start the "effected" workflow in mode "upload" detached
       Then the run's Sandbox pod has a Sandbox Effector beside the Agent
-      And the upload's answer is a response from the echo, whose body is the committed file
+      When the held Effect is released
+      Then the upload's answer is a response from the echo, whose body is the committed file
 
     Scenario: a credentialed command reads its secret from env and from its file, and its output is scrubbed
       Given the kind instance is serving
@@ -260,7 +261,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       Given the kind instance is serving
       When I start the "effected" workflow in mode "takeover" detached
       And a process in the Harness container takes the Sandbox Effector's port while the Effector is down
-      And the held Effect is released
+      And the held Effect is released, and the takeover writes down its start
       Then the takeover got a signed start that carries no secret, and the Effect failed closed
 
   Rule: a signed push leaves the Sandbox Effector signed, and the sync moves the Agent's branch to it

@@ -3,7 +3,8 @@
 // the wrapper forwards it, so a scenario reads what the Machine routed on.
 //
 //   upload   a file the body wrote and committed in the Worktree, PUT to the echo with
-//            `bearer(secret("echo-token"))`: the Effector opens it beneath the Worktree and sends it
+//            `bearer(secret("echo-token"))`: the Effector opens it beneath the Worktree and sends it.
+//            The body first waits on its `hold` Gate, so the step reads the pod while it is live
 //   env      a credentialed command that prints its secret from env and from `.path`, then the
 //            files of the commit it runs against: the output names the secret and holds no form of it
 //   dirty    the body leaves an edit uncommitted, then the same command: the answer is `dirty`, and
@@ -88,11 +89,10 @@ const body = jr2Setup({
       invoke: {
         src: "commit",
         onDone: [
-          { guard: ({ context }) => context.mode === "takeover", target: "holding" },
           { guard: ({ context }) => context.mode === "env", target: "revealing" },
           { guard: ({ context }) => context.mode === "dirty", target: "editing" },
           { guard: ({ context }) => context.mode === "key", target: "leaking" },
-          { target: "uploading" },
+          { target: "holding" },
         ],
       },
     },
