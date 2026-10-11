@@ -23,12 +23,13 @@ import { open, partsOf, workspacePodsOf, customizeLine } from "../src/parts.ts";
 import { pool, source } from "../src/pool.ts";
 import { fromPick } from "../src/pick.ts";
 import { RunHost } from "../src/run-host.ts";
+import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { secretPlacementsOf } from "../src/secret-placement.ts";
 import { httpFileWith } from "../src/sandbox-effect.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
-import { FakeHarnessExec } from "./_effects.ts";
+import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 import { agentActorWith } from "../src/actor.ts";
 
@@ -281,38 +282,82 @@ test("the pick-param check runs again on a bound argv: a param the composer's ar
   );
 });
 
-test("a run of an Effect nobody bound faults before anything is sent, naming the customize line", async () => {
-  const before = fake.starts.length;
-  const machine = jr2Setup({
-    types: {} as { context: { fault?: string } },
-    events: [],
-    actors: { comment: comment() },
-  }).createMachine({
-    id: "unbound",
-    context: {},
-    initial: "calling",
-    states: {
-      calling: {
-        invoke: {
-          src: "comment",
-          input: { key: "K-1", body: "hi" },
-          onError: { target: "faulted", actions: assign({ fault: ({ event }) => (event.error as Error).message }) },
+// A run of an Effect nobody bound, per kind: the second fence (ADR-0054). Each faults with the
+// customize line, and nothing reaches the Effector or the Harness exec, and the ledger keeps no row.
+const unbound = [
+  { kind: "http", slot: "comment", part: "url", effect: () => comment() },
+  { kind: "command", slot: "deploy", part: "argv", effect: () => commandWith(execs.factory, open) },
+  {
+    kind: "upload",
+    slot: "report",
+    part: "url",
+    effect: () => uploadWith(ports, { url: open, file: () => ({ path: "out/report.pdf" }) }),
+  },
+] as const;
+
+for (const { kind, slot, part, effect } of unbound) {
+  test(`a run of a${kind === "upload" ? "n" : ""} ${kind} Effect nobody bound faults before anything is sent, with no ledger row, naming the customize line`, async () => {
+    const sent = fake.starts.length;
+    const ran = execs.starts.length;
+    const machine = jr2Setup({
+      types: {} as { context: { fault?: string } },
+      events: [],
+      actors: { ws: fakeWorkspace(), [slot]: effect() },
+    }).createMachine({
+      id: "unbound",
+      context: {},
+      invoke: { src: "ws" },
+      initial: "calling",
+      states: {
+        calling: {
+          invoke: {
+            src: slot,
+            input: { key: "K-1", body: "hi", path: "out/report.pdf" } as never,
+            onError: { target: "faulted", actions: assign({ fault: ({ event }) => (event.error as Error).message }) },
+          },
         },
+        faulted: {},
       },
-      faulted: {},
-    },
+    });
+    const effector = () => ({ placement: "instance" as const, service: "svc:8082", key: EFFECTOR_KEY });
+    const store = await mkStore();
+    const host = new RunHost({ store, effector });
+    host.register({ name: "unbound", machine, provide: () => ({}) });
+    const { runId } = await host.start("unbound");
+    await waitFor(() => host.status(runId)?.value === "faulted");
+    const line =
+      part === "url" ? `\\{ url: "https:\\/\\/<host>\\/<path>" \\}` : `\\{ argv: \\["<program>", "<arg>"\\] \\}`;
+    assert.match(
+      (host.status(runId)?.context as { fault: string }).fault,
+      new RegExp(
+        `${kind} "${slot}" leaves its ${part} Open — nobody bound it; .*customize\\(<machine>, \\{ effects: \\{ ${slot}: ${line} \\} \\}\\).*nothing was sent \\(ADR-0054\\)`,
+      ),
+    );
+    assert.equal(fake.starts.length, sent, "nothing reached the Effector");
+    assert.equal(execs.starts.length, ran, "nothing reached the Harness exec");
+    // The save that carries the fault is on disk, and it holds no Effect row: no intent was written.
+    await until(async () => (await saved(store, runId))?.value === "faulted");
+    assert.deepEqual((await saved(store, runId))?.effects ?? {}, {}, "no ledger row");
+    await host.stop(runId);
   });
-  const effector = () => ({ placement: "instance" as const, service: "svc:8082", key: EFFECTOR_KEY });
-  const host = new RunHost({ store: await mkStore(), effector });
-  host.register({ name: "unbound", machine, provide: () => ({}) });
-  const { runId } = await host.start("unbound");
-  await waitFor(() => host.status(runId)?.value === "faulted");
-  assert.match(
-    (host.status(runId)?.context as { fault: string }).fault,
-    /http "comment" leaves its url Open — nobody bound it; .*customize\(<machine>, \{ effects: \{ comment: \{ url: "https:\/\/<host>\/<path>" \} \} \}\).*nothing was sent \(ADR-0054\)/,
-  );
-  assert.equal(fake.starts.length, before, "nothing reached the Effector");
-});
+}
+
+/** The run's saved blob: the snapshot's state value and the Effect ledger beside it. */
+async function saved(store: SnapshotStore, runId: string) {
+  const blob = (await store.load(runId))?.snapshot as
+    | { snapshot?: { value?: unknown }; effects?: Record<string, unknown> }
+    | undefined;
+  return blob && { value: blob.snapshot?.value, effects: blob.effects };
+}
+
+/** Wait for an async condition (a store read), polling. */
+async function until(check: () => Promise<boolean>, ms = 5_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!(await check())) {
+    if (Date.now() > end) throw new Error("the condition never held");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 test("an http whose body is a Worktree file may leave its url Open too, and binds the same way", () => {
   const report = httpFileWith(ports, { method: "PUT", url: open, body: file("out/report.pdf") });
