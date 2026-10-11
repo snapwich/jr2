@@ -289,7 +289,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
     `effectorKey(signing key, "instance")`, which `jr2 up` derives from the kept signing key. "Nothing stored" means
     nothing stored by the Orchestrator: the Kubernetes Secret is the store, as for every credential. The secrets are
     files under `/run/jr2/secrets`, mode 0400; the kubelet makes them readable by the pod's `fsGroup`, and the pod has
-    one container. `harness.env` and `harness.envFrom` may not name this Secret (ADR-0059's R13).
+    one container. `harness.env` and `harness.envFrom` may not name this Secret, nor a Workspace's `jr2-effector-<pod>`,
+    a Sandbox's `<sandbox>-effector`, or a `git.credentials` entry's `jr2-git-*` (ADR-0059's R13).
 - **A Workspace's Sandbox Effector's objects** (B5.1, B8). `jr2 up` reads, for each `workspace()`, the Effects placed
   there below it, down to the next `workspace()` — every `push`, `http` whose body is a Worktree file and credentialed
   `command`, from their plain data, statically — and writes two objects for a Workspace with one, none for one without:

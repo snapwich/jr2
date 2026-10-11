@@ -364,6 +364,12 @@ test("R13: the kit's Secrets never reach the Harness, by env or envFrom, whateve
     "jr2-held-tls",
     "jr2-held-ca",
     "jr2-instance-effector",
+    // Each Workspace's Sandbox Effector Secret, each git.credentials entry's clone and push Secrets,
+    // and each Sandbox's Effector key: as R13 guards the Instance Effector's.
+    "jr2-effector-ws-0123456789abcdef",
+    "jr2-git-0a1b2c3d",
+    "jr2-git-push-0a1b2c3d",
+    "ws-run-1-effector",
   ]) {
     assert.match(
       refusal({ harness: { env: [{ name: "X", valueFrom: { secretKeyRef: { name: secret, key: "k" } } }] } }),

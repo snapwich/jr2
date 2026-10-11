@@ -27,11 +27,18 @@ import { MODEL_KEYS, MODEL_KEY_PROVIDERS, SIGNING_CREDENTIALS } from "./model-ke
 import { HELD_CA_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, INSTANCE_EFFECTOR, INSTANCE_SECRET } from "./names.ts";
 
 /** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, each
- * pod's literal held values, the leaves, the CA, and the Instance Effector's (its Effect secrets and
- * key, ADR-0068). */
+ * pod's literal held values, the leaves, the CA, and every Effector's (ADR-0068) — the Instance
+ * Effector's Effect secrets and key, each Workspace's Sandbox Effector Secret (`jr2-effector-<pod>`),
+ * each Sandbox's Effector key (`<sandbox>-effector`), and each `git.credentials` entry's clone and
+ * push Secrets (`jr2-git-<hash>`, `jr2-git-push-<hash>`, ADR-0051). */
 const KIT_SECRETS: readonly string[] = [INSTANCE_SECRET, HELD_TLS_SECRET, HELD_CA_SECRET, INSTANCE_EFFECTOR];
+const KIT_SECRET_PREFIXES: readonly string[] = [`${HELD_SECRETS_SECRET}-`, "jr2-effector-", "jr2-git-"];
 const isKitSecret = (name: string): boolean =>
-  KIT_SECRETS.includes(name) || name === HELD_SECRETS_SECRET || name.startsWith(`${HELD_SECRETS_SECRET}-`);
+  KIT_SECRETS.includes(name) ||
+  name === HELD_SECRETS_SECRET ||
+  KIT_SECRET_PREFIXES.some((p) => name.startsWith(p)) ||
+  // A Sandbox's own Effector key: every Sandbox's name starts `ws-` (`workspaceName`).
+  (name.startsWith("ws-") && name.endsWith("-effector"));
 
 /**
  * The pod key of one Workspace (ADR-0059): its registered workflow and the `customize()` route to its
