@@ -682,7 +682,7 @@ export function pushWith<const O extends PushOptions>(
     // the bundle the Effector wrote — a signed push that published nothing new (a pair or cherry
     // that mapped the published tip) included. An unsigned push is `skipped`, nothing to send: one
     // that published the Agent's own commit, and an unsigned squash (B15), whose new commit design
-    // 6 does not sync; the next push pairs it from the ledger.
+    // 6 does not sync; the next push that squashes or signs pairs it from the ledger.
     finish: async (output, ctx) => {
       const o = output as PushWireOutput;
       if (o.outcome !== "pushed") return o;

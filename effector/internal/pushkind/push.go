@@ -215,8 +215,9 @@ func (c *call) run(ctx context.Context) wire.Output {
 		// Agent's own commit — a push that publishes nothing new included: a pair or cherry that
 		// maps the published tip (a restore of a pinned push, a push after a sync that did not
 		// finish) leaves the Agent's branch on its unsigned commits, and the sync moves it from
-		// this bundle. An unsigned squash is not synced, so it writes none; the next push pairs its
-		// commit from the ledger.
+		// this bundle. An unsigned squash is not synced, so it writes none; the next push that squashes
+		// or signs pairs its commit from the ledger, and a plain push, which maps nothing, is
+		// refused by the remote as non-fast-forward.
 		if spec.Sign && target != sha {
 			if bundle, out = c.bundleOf(ctx, target, sha); out != nil {
 				return *out

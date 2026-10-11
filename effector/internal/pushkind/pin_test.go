@@ -211,6 +211,17 @@ func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
 	if remoteGit(t, f, "rev-parse", pub+"^{tree}") != gittest.Git(t, f.pod.Tree, "rev-parse", sha+"^{tree}") {
 		t.Fatal("the squashed tree is not the Agent's")
 	}
+	// Only a push that squashes or signs maps: a plain push after an unsigned squash offers the
+	// Agent's own commits to a remote whose branch holds the squash, and the remote refuses it.
+	squashed := remoteRef(f)
+	f.pod.Commit("four", map[string]string{"d.txt": "d\n"})
+	plain := f.runner.Run(context.Background(), f.request(false, &wire.Pair{Published: squashed, Source: more}))
+	if plain.Outcome != wire.OutcomeRejected || !strings.Contains(plain.Reason, "non-fast-forward") {
+		t.Fatalf("a plain push after an unsigned squash: %+v", plain)
+	}
+	if remoteRef(f) != squashed {
+		t.Fatal("the remote moved under a plain push after an unsigned squash")
+	}
 
 	f.runner.Config.Git[0].Committer = nil
 	if m := f.runner.Check(req); !strings.Contains(m, "holds no committer") {

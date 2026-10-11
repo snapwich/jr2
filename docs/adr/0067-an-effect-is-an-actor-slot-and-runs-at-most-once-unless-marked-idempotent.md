@@ -165,17 +165,18 @@ the credentialed `command` — runs there too, its child confined (below).
   tip at most 3 times — so files, index, HEAD and stash do not change. Its answer is a field of the push's output beside
   the outcome: `sync: synced | already | skipped | busy | not-synced`, with `syncReason` when it moved nothing (an
   unsigned push is `skipped`, with no call and no bundle: one that published the Agent's own commit, and an unsigned
-  squash (B15), whose new commit is not synced — the Agent's branch stays on its own commits and the next push pairs the
-  published one from the ledger's last push; a signed push is synced, one that published nothing new included). A
-  Harness that cannot be reached answers `not-synced`; the push stays `pushed`. When the last push of a Repo Slot
-  answered `busy` or `not-synced`, jr2 runs its sync again before that slot's next push, in that slot's Worktree and
-  with that push's bundle, which its row keeps until a sync finished or a newer push of the slot published. The push
-  never trusts the sync's answer: the Agent owns its repository and can move the branch at any time, so the next push
-  derives everything again from the remote and the Agent's objects. After a signed push the Agent reads, beside the
-  output, what moved: that its branch now holds signed copies with new ids, or that jr2 did not move it and why; that
-  its files, index and stash did not change; and that amending, rebasing or resetting the pushed commits makes the next
-  push `diverged`. The Harness keys that paragraph on a synced push whose published commit is not the Agent's, so an
-  unsigned squash, which is not synced, does not read it.
+  squash (B15), whose new commit is not synced — the Agent's branch stays on its own commits, the next push of the slot
+  that squashes or signs pairs the published one from the ledger's last push, and a plain push of the slot maps nothing,
+  so the remote refuses it as non-fast-forward (`rejected`, "the remote's branch moved"); a signed push is synced, one
+  that published nothing new included). A Harness that cannot be reached answers `not-synced`; the push stays `pushed`.
+  When the last push of a Repo Slot answered `busy` or `not-synced`, jr2 runs its sync again before that slot's next
+  push, in that slot's Worktree and with that push's bundle, which its row keeps until a sync finished or a newer push
+  of the slot published. The push never trusts the sync's answer: the Agent owns its repository and can move the branch
+  at any time, so the next push derives everything again from the remote and the Agent's objects. After a signed push
+  the Agent reads, beside the output, what moved: that its branch now holds signed copies with new ids, or that jr2 did
+  not move it and why; that its files, index and stash did not change; and that amending, rebasing or resetting the
+  pushed commits makes the next push `diverged`. The Harness keys that paragraph on a synced push whose published commit
+  is not the Agent's, so an unsigned squash, which is not synced, does not read it.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing that stays in the group outlives it. In the Harness container a descendant
   that leaves the group (`setsid`) is not killed; it holds no credential. A credentialed command's descendant cannot
