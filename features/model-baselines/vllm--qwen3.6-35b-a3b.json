@@ -70,5 +70,9 @@
   "allowed-after-route/off": {
     "passed": 10,
     "trials": 10
+  },
+  "continue-after-signed-push/off": {
+    "passed": 9,
+    "trials": 10
   }
 }
