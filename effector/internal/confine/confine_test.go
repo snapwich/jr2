@@ -152,12 +152,16 @@ func TestAFailedProbeRunsNothing(t *testing.T) {
 	}
 }
 
-func TestSystemPathsAreTheImagesSystemPathsAloneAndDescendAroundWhatIsDenied(t *testing.T) {
+// SystemPaths follows the image: every top-level entry the image holds is allowed but the denied
+// names, so a tool under a non-FHS top-level (`/google-cloud-sdk`, `/nix`) runs, and `/proc`,
+// `/sys`, `/run`, `/home` and the rest are denied. A system path that holds one of the Effector's
+// own paths descends around it; a link into a denied path is skipped whole.
+func TestSystemPathsFollowTheImageAndDescendAroundWhatIsDenied(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	must(t, err)
 	for _, d := range []string{"usr/bin", "usr/lib", "etc/ssl", "etc/jr2-mount", "opt/jr2/bin", "run/jr2/effector",
 		"run/jr2/secrets", "run/lock", "tmp", "work", "home/user", "root", "var/lib", "srv", "mnt", "media",
-		"proc", "sys"} {
+		"proc", "sys", "google-cloud-sdk/bin", "nix/store"} {
 		must(t, os.MkdirAll(filepath.Join(root, d), 0o700))
 	}
 	must(t, os.Symlink("usr/bin", filepath.Join(root, "bin")))
@@ -169,7 +173,9 @@ func TestSystemPathsAreTheImagesSystemPathsAloneAndDescendAroundWhatIsDenied(t *
 		at("etc/jr2-mount")})
 	must(t, err)
 	slices.Sort(rx)
-	want := []string{at("bin"), at("etc/ssl"), at("lib"), at("opt"), at("usr")}
+	// The image's own tool trees are allowed — google-cloud-sdk and nix among them — and the
+	// denied names (run, home, root, var, srv, mnt, media, proc, sys, tmp) and work are not.
+	want := []string{at("bin"), at("etc/ssl"), at("google-cloud-sdk"), at("lib"), at("nix"), at("opt"), at("usr")}
 	if !slices.Equal(rx, want) {
 		t.Fatalf("read+exec %v, want %v", rx, want)
 	}
@@ -178,19 +184,28 @@ func TestSystemPathsAreTheImagesSystemPathsAloneAndDescendAroundWhatIsDenied(t *
 	}
 }
 
-// On this host: nothing outside the system paths, /tmp, the devices and the Effect's own
-// directory is allowed, so /home, /root, /var, /proc, /sys and /run are denied by omission.
-func TestForCommandAllowsNothingOutsideTheSystemPaths(t *testing.T) {
+// On this host: no path under a denied top-level (bar /tmp and the devices) and no path under one
+// of the Effector's own mounts is allowed — /home, /root, /var, /proc, /sys and /run are denied —
+// while the per-Effect scratch and the one named secret are the carve-outs.
+func TestForCommandAllowsNothingDeniedOrUnderThePseudoFilesystems(t *testing.T) {
 	l := newLayout(t)
 	rules := l.rules(t)
+	deny := []string{l.key, l.secrets, l.work, l.scratch}
+	named := filepath.Join(l.secrets, "aws")
 	allowed := append(append(append([]string{}, rules.ReadExec...), rules.ReadWrite...), rules.Read...)
 	for _, p := range allowed {
-		top := "/" + strings.SplitN(strings.TrimPrefix(p, "/"), "/", 2)[0]
-		if slices.Contains(systemNames, top) || top == "/tmp" || slices.Contains(devices, p) || p == l.effect ||
-			p == filepath.Join(l.secrets, "aws") {
+		if p == l.effect || p == named {
 			continue
 		}
-		t.Errorf("allowed: %s", p)
+		top := "/" + strings.SplitN(strings.TrimPrefix(p, "/"), "/", 2)[0]
+		if slices.Contains(deniedTop, top) && top != "/tmp" && !slices.Contains(devices, p) {
+			t.Errorf("allowed under a denied top-level: %s", p)
+		}
+		for _, d := range deny {
+			if within(p, d) {
+				t.Errorf("allowed under a denied path: %s", p)
+			}
+		}
 	}
 }
 

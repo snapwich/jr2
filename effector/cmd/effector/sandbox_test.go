@@ -68,7 +68,7 @@ func startSandboxEffectorWith(t *testing.T, p *gittest.Pod, commands bool, extra
 		"POD_IP=127.0.0.1",
 		"NODE_NAME=node-1",
 	)
-	cmd.Env = append(cmd.Env, extra...)
+	cmd.Env = dedupEnv(append(cmd.Env, extra...))
 	out := &lockedBuffer{}
 	cmd.Stdout, cmd.Stderr = out, out
 	must(t, cmd.Start())
@@ -181,6 +181,50 @@ func TestTheLandlockProbeStopsTheStartWhenTheWorkspaceHoldsACredentialedCommand(
 		!strings.Contains(raw, "landlock: unavailable on node node-1") {
 		t.Fatalf("got %d %s", status, raw)
 	}
+}
+
+// The child's PATH is the Effector container's own, as its image set it, and argv[0] is looked up
+// there (ADR-0067): a tool the image keeps on its own PATH — outside the FHS defaults — runs. The
+// binary passes its own PATH to the child; a test that set the Runner's Path by hand could not see
+// that the binary never wired it (run B3 defect).
+func TestACredentialedCommandFindsItsToolOnTheContainersPath(t *testing.T) {
+	p := gittest.NewPod(t, "work")
+	p.Commit("one", map[string]string{"a.txt": "a\n"})
+	// A tool the author's image keeps on its PATH, outside /usr/local/bin:/usr/bin:/bin.
+	bin := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(bin, "deploytool"), []byte("#!/bin/sh\necho deployed\n"), 0o755))
+	e, out := startSandboxEffectorWith(t, p, true, "PATH="+bin+":/usr/bin:/bin")
+	if e == nil {
+		t.Fatalf("the effector never served: %s", out)
+	}
+	body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
+		`"cache":"app-key"},"branch":"work","argv":["deploytool"],"env":{"AWS":{"secret":"aws"}},"tail":4000},` +
+		`"timeoutMs":30000}`
+	if status, raw := e.call(t, "POST", "/effects/tool-1", body); status != 202 {
+		t.Fatalf("got %d %s", status, raw)
+	}
+	got := e.wait(t, "tool-1")
+	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, `"code":0`) ||
+		!strings.Contains(got, `deployed`) {
+		t.Fatalf("the tool on the container's PATH did not run: %s", got)
+	}
+}
+
+// dedupEnv keeps the last value of each variable, so a test's `extra` PATH wins over the inherited
+// one and the child reads the one the test set.
+func dedupEnv(env []string) []string {
+	seen := map[string]int{}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if i, ok := seen[name]; ok {
+			out[i] = kv
+			continue
+		}
+		seen[name] = len(out)
+		out = append(out, kv)
+	}
+	return out
 }
 
 // wait polls a started Effect to its output.

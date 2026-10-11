@@ -41,8 +41,8 @@ the credentialed `command` — runs there too, its child confined (below).
 - **Placement follows the kind and what it names; it is never authored.** A `command` that names no secret, an `http`
   Effect with no Worktree file, and an `upload` and a `push` each have one place: the Harness container, the Instance
   Effector, and the Sandbox Effector of the Workspace whose body invokes it. A `command` that names a secret is placed
-  in that Sandbox Effector, and is refused there (below). There is no `placement:` key: naming a secret is what places
-  the command (ADR-0068).
+  in that Sandbox Effector, and runs there with its child confined (below). There is no `placement:` key: naming a
+  secret is what places the command (ADR-0068).
 - **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a child of the
   Harness process: the Agent's user, the Sandbox Image's tools, the same Stand-ins as the Agent's `bash` (ADR-0059), and
   no credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route
@@ -82,9 +82,12 @@ the credentialed `command` — runs there too, its child confined (below).
   read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the
   author's choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files
   name runs" is not claimed for it. Its claims are three: the Agent never reads or spends the secret (a container it
-  cannot exec in, and a child confined from the files of every other secret and of the Effector's key; a GPG-signed
-  push's agent socket is the one case Landlock does not cover, open in ADR-0068), the tool sees a pinned commit and not
-  the live Worktree, and the output is scrubbed.
+  cannot exec in, and a child confined from the files of every other secret and of the Effector's key), the tool sees a
+  pinned commit and not the live Worktree, and the output is scrubbed. Landlock governs files, not `connect()`, and a
+  GPG-signed push holds the signing key on a `gpg-agent` socket while it runs; so a credentialed command and a
+  GPG-signing `push()` cannot share one Sandbox Effector — `jr2 up` refuses the pair, naming ssh signing (which starts
+  no agent) as the fix (ADR-0068). ssh signing and the token helper serve no socket, so they run beside a credentialed
+  command.
 - **An `upload` is an `http` definition whose body is a Worktree file.**
   `upload({ method?, url, headers?, auth?, input?, file, contentType?, slot?, timeout?, maxBody?, idempotent? })`:
   `file(input)` returns the file's path relative to the Repo Slot's Worktree (and path segments, as `request` gives

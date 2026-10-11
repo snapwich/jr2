@@ -254,23 +254,29 @@ func addRule(ruleset int, path string, rights uint64) error {
 	return nil
 }
 
-// systemNames are the image's system paths: where an image keeps the programs, the libraries and
-// the configuration a tool reads (FHS). Each one the image holds is allowed whole; one it does not
-// hold is skipped, so the list follows the image (`/lib64` on one, `/lib` -> `usr/lib` on another)
-// and breaks on none. Nothing else from root down is allowed: `/home`, `/root`, `/var`, `/srv`,
-// `/mnt`, `/media`, `/proc`, `/sys` and every `/run` entry are denied by omission, and so is any
-// mount jr2 adds to the Effector's container later.
-var systemNames = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt"}
+// deniedTop are the top-level directories a credentialed command's child never reads: the kernel
+// and process pseudo-filesystems (`/proc`, `/sys`, `/dev` — the devices it needs are added one by
+// one below), the runtime trees where jr2 mounts the Effector's own files (`/run`) and its
+// writable area (`/tmp`, which writableNames adds read+write), and the volatile and per-user trees
+// that hold no tool an image ships (`/home`, `/root`, `/var`, `/srv`, `/mnt`, `/media`,
+// `/lost+found`). Everything else a top-level entry of the image holds is the image's own — the
+// programs, libraries and configuration a tool reads, under `/usr`, `/bin`, `/etc`, `/opt` or a
+// name of the image's own (`/google-cloud-sdk`, `/nix`) — and is allowed, so the rules follow the
+// image and break on no layout. jr2's own mounts are either under one of these names (`/run`) or
+// named in deny (`/work`, `/repos`, the scratch), so a mount jr2 adds later stays denied.
+var deniedTop = []string{"/proc", "/sys", "/dev", "/run", "/tmp", "/home", "/root", "/var", "/srv", "/mnt",
+	"/media", "/lost+found"}
 
 // writableNames are the entries a child may also write: its /tmp.
 var writableNames = []string{"/tmp"}
 
-// SystemPaths is what a credentialed command's child may read and run, and what it may also
-// write, under root: each of systemNames and writableNames the image holds. An entry that holds a
-// path in deny is not allowed whole; its other entries are, one level down at a time, so a mount
-// placed inside a system path stays denied. A symbolic link is allowed only when what it names
-// holds no denied path and lies beneath none: a rule follows the link, so `/lib -> /run/jr2/secrets`
-// would allow the secrets. Every path in deny is a real path (no link in it).
+// SystemPaths is what a credentialed command's child may read and run, and what it may also write,
+// under root: every top-level entry the image holds that is not in deniedTop, plus writableNames
+// (read+write). An entry that holds a path in deny is not allowed whole; its other entries are,
+// one level down at a time, so a mount placed inside a system path stays denied. A symbolic link
+// is allowed only when what it names holds no denied path and lies beneath none: a rule follows
+// the link, so `/lib -> /run/jr2/secrets` would allow the secrets. Every path in deny is a real
+// path (no link in it).
 func SystemPaths(root string, deny []string) (readExec, readWrite []string, err error) {
 	denied := func(p string) bool { return slices.ContainsFunc(deny, func(d string) bool { return within(p, d) }) }
 	holds := func(p string) bool { return slices.ContainsFunc(deny, func(d string) bool { return within(d, p) }) }
@@ -309,14 +315,26 @@ func SystemPaths(root string, deny []string) (readExec, readWrite []string, err 
 		}
 		return nil
 	}
-	for _, set := range []struct {
-		names []string
-		write bool
-	}{{systemNames, false}, {writableNames, true}} {
-		for _, name := range set.names {
-			if err := allow(joinPath(root, strings.TrimPrefix(name, "/")), set.write); err != nil {
-				return nil, nil, err
-			}
+	// Read+execute: every top-level entry the image holds, bar the denied names. The image decides
+	// what it holds; reading the root follows it. A root that cannot be read is a defect the caller
+	// turns into an outcome.
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, e := range entries {
+		name := "/" + e.Name()
+		if slices.Contains(deniedTop, name) {
+			continue
+		}
+		if err := allow(joinPath(root, e.Name()), false); err != nil {
+			return nil, nil, err
+		}
+	}
+	// Read+write: /tmp, whether the image shipped it or not.
+	for _, name := range writableNames {
+		if err := allow(joinPath(root, strings.TrimPrefix(name, "/")), true); err != nil {
+			return nil, nil, err
 		}
 	}
 	return readExec, readWrite, nil

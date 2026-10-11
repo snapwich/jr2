@@ -47,21 +47,24 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   the domain is the one `execve` keeps. Landlock is an allow-list the kernel enforces and every descendant inherits, and
   a confined process cannot ptrace a process outside its domain, so `/proc/<effector>/mem` and
   `/proc/<effector>/environ` are closed too. The ruleset handles every filesystem right of ABI 1, and `REFER` and
-  `TRUNCATE` when the kernel offers ABI 2 and 3. It allows: read and execute on the image's system paths — each of
-  `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`, `/libx32`, `/etc` and `/opt` that the image holds, whole, so the
-  rules follow the image (a path it does not hold is skipped, a link such as `/lib -> usr/lib` is followed) and break on
-  none; a symbolic link only when what it names holds none of the Effector's own paths; read and write on `/tmp`, the
-  devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`) and the Effect's own
-  scratch (B4.5, B4.9: the checkout and `$HOME`); read on each secret file the command names, by `secret("x")` and
-  `.path` alike. Everything else is denied by omission: the Effector's key and config (`/run/jr2/effector`), every
-  secret the command does not name, the push credentials (`@git`), the Worktree (`/work`, B4.5), the node caches
-  (`/repos`), the rest of its scratch — another Effect's, and a push's copied keys — and `/home`, `/root`, `/var`,
-  `/srv`, `/mnt`, `/media`, `/proc`, `/sys`, the rest of `/dev` and of `/run`, and any mount added to the container
-  later. A system path that holds one of the Effector's own paths is allowed one level down at a time around it, so a
-  mount placed inside one stays denied. Network is not restricted. Any failure before `execve` ends the confiner with
-  exit 126 and its reason on stderr: nothing runs unconfined. The design needs ABI 1; measured from a hardened non-root
-  pod (every capability dropped, `RuntimeDefault` seccomp): kind on WSL2 6.6 — ABI 3; the home cluster's arm64 nodes
-  (6.8) — ABI 4; spark (6.11, arm64) — ABI 5.
+  `TRUNCATE` when the kernel offers ABI 2 and 3. It allows: read and execute on the image's system paths — every
+  top-level directory the image holds that is not a denied name, whole, so the rules follow the image and break on no
+  layout (the usual `/usr`, `/bin`, `/etc`, `/opt`, and a tool tree of the image's own such as `/google-cloud-sdk` or
+  `/nix` alike; a link such as `/lib -> usr/lib` is followed when what it names holds none of the Effector's own paths);
+  read and write on `/tmp`, the devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`,
+  `/dev/tty`) and the Effect's own scratch (B4.5, B4.9: the checkout and `$HOME`); read on each secret file the command
+  names, by `secret("x")` and `.path` alike. The denied names — the kernel and process pseudo-filesystems (`/proc`,
+  `/sys`, the rest of `/dev`), the runtime tree where jr2 mounts the Effector's own files (`/run`, the key and config
+  under `/run/jr2/effector`), and the volatile and per-user trees that hold no tool an image ships (`/home`, `/root`,
+  `/var`, `/srv`, `/mnt`, `/media`, `/lost+found`) — are denied, and so is every path named in the Effector's own deny
+  list: the secrets the command does not name, the push credentials (`@git`), the Worktree (`/work`, B4.5), the node
+  caches (`/repos`), the rest of its scratch (another Effect's, and a push's copied keys). jr2's own mounts are always
+  under a denied name (`/run`) or in that deny list (`/work`, `/repos`, the scratch), so a mount jr2 adds later stays
+  denied. A top-level directory that holds one of the Effector's own paths is allowed one level down at a time around
+  it, so a mount placed inside one stays denied. Network is not restricted. Any failure before `execve` ends the
+  confiner with exit 126 and its reason on stderr: nothing runs unconfined. The design needs ABI 1; measured from a
+  hardened non-root pod (every capability dropped, `RuntimeDefault` seccomp): kind on WSL2 6.6 — ABI 3; the home
+  cluster's arm64 nodes (6.8) — ABI 4; spark (6.11, arm64) — ABI 5.
 - **Fail-closed at the pod, not at `jr2 up`.** A Sandbox Effector probes Landlock when it starts
   (`landlock_create_ruleset` with `LANDLOCK_CREATE_RULESET_VERSION`). When its Workspace holds a credentialed command
   (`effector.json`'s `commands`, which `jr2 up` writes) and the probe fails, it does not become ready: it ends, and its
@@ -277,11 +280,19 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   and a file the Agent wrote that the argv runs reads it too — and egress is open, so the claim is the three of
   ADR-0067: the Agent never reads or spends the secret from its own container, the tool sees a pinned commit and not the
   live Worktree, and the output is scrubbed. It shares the Effector's uid, so it can signal the Effector (a fault of its
-  own run, not a leak) and connect to its port, where nothing without the key is accepted. Landlock governs files, not
-  `connect()`: a Unix socket another Effect of the same Effector serves at the same time is reachable by its path. A
-  GPG-signed push serves one — its `gpg-agent` holds the entry's signing key until the push's call ends — so a
-  credentialed command's child that runs in that time can sign with that key without reading it. An ssh-signed push and
-  the token helper serve none. This case is open with the user and is not closed by this ADR. Rejected: a second
+  own run, not a leak) and connect to its port, where nothing without the key is accepted.
+- **A credentialed command and a GPG-signed push do not share a Sandbox Effector.** Landlock governs files, not
+  `connect()`, and a confined child can list the pod's Unix sockets (`ss -xl` over netlink `sock_diag`, which Landlock
+  does not restrict either) — so knowing or not knowing a socket's path protects nothing. A GPG-signed push imports the
+  entry's signing key into a `gpg-agent` that holds it on a socket until the push's call ends; a credentialed command's
+  child that runs in that window could `connect()` to it and sign without reading the key, which would break "the Agent
+  can neither read nor spend an Effect secret". So the pair is refused, fail-closed, before anything is built: `jr2 up`
+  refuses a Workspace that places a credentialed command and a `push()` whose matched `git.credentials` entry signs with
+  `gpgKey` (and a per-run or `customize()`-bound slot whenever any entry can, since the url it takes could match one),
+  naming ssh signing (`sign: { sshKey, name, email }`) — which starts no agent and reads the key from a file the child's
+  confinement denies — as the fix. An ssh-signed push and the token helper serve no socket, so they run beside a
+  credentialed command. Open: letting the two coexist (an ssh-only rule for such a Workspace, or a per-Effector lock
+  around a signed push) is a decision the user has not yet taken; until then the refusal stands. Rejected: a second
   container per credentialed placement — its child would still share a uid with that container's Effector and could
   spend that container's key, so it would need Landlock anyway, plus a key, a Secret, a port and a NetworkPolicy per
   placement.

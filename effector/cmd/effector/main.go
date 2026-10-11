@@ -252,6 +252,10 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 	}
 	r.Command = &commandkind.Runner{Secrets: held, SecretsDir: m.secrets, WorkRoot: work, ReposRoot: repos,
 		Scratch: filepath.Join(scratch, "command"), Scrubber: scrubber, Confiner: self,
+		// The child's PATH, and where argv[0] is looked up, is the Effector container's own — as
+		// its image set it, since the tools are the author's (ADR-0067). A tool an author image
+		// keeps on its own PATH (outside the FHS defaults) is found.
+		Path:         os.Getenv("PATH"),
 		Deny:         []string{filepath.Dir(m.key), filepath.Dir(m.config), m.secrets, gitDir, work, repos, scratch},
 		Unconfinable: unconfinable}
 	return r, nil
