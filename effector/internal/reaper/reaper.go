@@ -10,6 +10,12 @@
 // remain. An Effect is settled only after that loop, so no descendant of a settled Effect outlives
 // it with the secret its command named.
 //
+// Membership is the process group, and only that: a descendant of a LIVE Effect that leaves its
+// group (an ssh-agent a command starts, any daemon) is in no registered group once the Effector
+// adopts it, so the next settle of any other Effect kills it while its own Effect still runs.
+// jr2's own kinds start no such descendant (the push's gpg-agent keeps its group). ADR-0068 names
+// this; telling that descendant from a settled Effect's needs a decision not yet made.
+//
 // The scan and every start hold one lock, so a child that has just been forked is registered
 // before any scan can see it.
 package reaper

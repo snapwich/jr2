@@ -98,6 +98,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
      (`kill(-pgid, SIGKILL)`), then the Effector scans `/proc` for processes whose parent is the Effector and whose
      group belongs to no live Effect, kills and reaps them, and repeats until none remain. An Effect is settled only
      after that loop, so a descendant that called `setsid` or double-forked is dead once its Effect's outcome exists.
+     Membership is the process group, and only that. A descendant of a live Effect that leaves its group (an `ssh-agent`
+     a credentialed command starts, any daemon) is in no live Effect's group once the Effector adopts it, so the settle
+     of any other Effect in the same Effector kills it while its own Effect still runs. jr2's own kinds start no such
+     descendant (the push's `gpg-agent` keeps its group, rule 2); a credentialed command that starts a daemon loses it
+     when another Effect beside it settles. This kills more, never less. A rule that tells such a descendant apart from
+     one of a settled Effect is not decided.
   2. **Two classes, one lock per Sandbox Effector.** `gpg` is a push that signs with `sign.gpgKey`; `command` is a
      credentialed command. Effects of one class run together (commands with commands, GPG pushes with GPG pushes: both
      are jr2's code); a `gpg` Effect waits while any `command` Effect is live, and a `command` waits while any `gpg`
@@ -360,10 +366,11 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   `@git`, or writes the Worktree, ends with a permission error and an answer with no secret in it; one that reads its
   named secret from env and from its file succeeds; a child of the child is confined too; a failing probe stops the
   start of a Workspace that holds a credentialed command, with the node in the reason. And B12's rules run with real
-  processes: a `setsid` escapee is dead once its command has settled; a command started during a GPG push runs only
-  after the agent is gone, and the reverse, with no sample of the host's processes seeing both alive; a waiter past its
-  timeout settles timed out and never runs late; a child's `TMPDIR` write is invisible to the next child, and `/tmp`
-  refuses both.
+  processes: a `setsid` escapee, and an escapee of that escapee, is dead once its command has settled; another Effect's
+  settle kills a live Effect's escapee (the residual of rule 1); a command started during a GPG push runs only after the
+  agent is gone, and the reverse, with no sample of the host's processes seeing both alive; a waiter past its timeout
+  settles timed out and never runs late; a child's `TMPDIR` write is invisible to the next child, and `/tmp` refuses
+  both.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built

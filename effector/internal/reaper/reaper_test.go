@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -78,8 +80,8 @@ func TestASetsidEscapeeIsDeadWhenItsEffectHasSettled(t *testing.T) {
 	}
 }
 
-// A live Effect's processes are its own: another Effect's settle leaves them.
-func TestASettleLeavesTheProcessesOfAnotherLiveEffect(t *testing.T) {
+// A live Effect's processes that stay in its group are its own: another Effect's settle leaves them.
+func TestASettleLeavesTheGroupOfAnotherLiveEffect(t *testing.T) {
 	if err := SetSubreaper(); err != nil {
 		t.Fatal(err)
 	}
@@ -100,9 +102,8 @@ func TestASettleLeavesTheProcessesOfAnotherLiveEffect(t *testing.T) {
 	}
 }
 
-// A double fork — the middle process ends, the grandchild is reparented — is caught too, and so is
-// the child a stray starts after the first scan.
-func TestADoubleForkAndAStraysChildAreDeadWhenTheEffectHasSettled(t *testing.T) {
+// A double fork — the middle process ends, the grandchild is reparented — is caught too.
+func TestADoubleForkIsDeadWhenTheEffectHasSettled(t *testing.T) {
 	if err := SetSubreaper(); err != nil {
 		t.Fatal(err)
 	}
@@ -117,4 +118,72 @@ func TestADoubleForkAndAStraysChildAreDeadWhenTheEffectHasSettled(t *testing.T) 
 	if s := r.Strays(); len(s) != 0 {
 		t.Fatalf("strays remain: %v", s)
 	}
+}
+
+// B12 rule 1's "repeat until none remain": a stray that left its group holds a child that left
+// its own. The first scan sees only the outer stray (the inner one's parent is the stray, not the
+// Effector); the inner one is the Effector's only after the outer is dead, so only a second scan
+// finds it.
+func TestANestedEscapeeIsDeadWhenTheEffectHasSettled(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("no setsid(1) on this host")
+	}
+	if err := SetSubreaper(); err != nil {
+		t.Fatal(err)
+	}
+	r := New()
+	g := r.Group()
+	inner := filepath.Join(t.TempDir(), "inner")
+	outer := start(t, g, "setsid sh -c 'setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > "+inner+
+		"; exec sleep 300' </dev/null >/dev/null 2>&1 & echo $!")
+	var pin int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, _ := os.ReadFile(inner)
+		if n, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && alive(n) {
+			pin = n
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pin == 0 {
+		t.Fatal("the nested escapee did not start")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pin, syscall.SIGKILL) })
+	if ppid, _, _ := stat("/proc/" + strconv.Itoa(pin) + "/stat"); ppid == r.self {
+		t.Fatalf("the nested escapee %d is already the Effector's child: the test proves nothing", pin)
+	}
+	g.Settle()
+	if alive(outer) {
+		t.Fatal("the outer escapee outlived the settle")
+	}
+	if alive(pin) {
+		t.Fatalf("the nested escapee %d outlived the settle", pin)
+	}
+}
+
+// The residual ADR-0068 names beside B12 rule 1: membership is the process group, so a
+// descendant of a LIVE Effect that leaves its group (an ssh-agent, any daemon) is in no live
+// Effect's group once the Effector adopts it, and another Effect's settle kills it. Design B12
+// says "belong to no live Effect"; telling this descendant from a settled Effect's needs a
+// decision not yet made. This test holds the ADR's sentence true until that decision.
+func TestAnotherEffectsSettleKillsALiveEffectsEscapee(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("no setsid(1) on this host")
+	}
+	if err := SetSubreaper(); err != nil {
+		t.Fatal(err)
+	}
+	r := New()
+	a, b := r.Group(), r.Group()
+	pb := start(t, b, "setsid sh -c 'exec sleep 300' </dev/null >/dev/null 2>&1 & echo $!")
+	time.Sleep(50 * time.Millisecond)
+	if !alive(pb) {
+		t.Fatal("b's escapee did not start")
+	}
+	a.Settle()
+	if alive(pb) {
+		t.Fatal("b's escapee outlived a's settle: the residual ADR-0068 names is gone; rewrite the ADR and this test")
+	}
+	b.Settle()
 }
