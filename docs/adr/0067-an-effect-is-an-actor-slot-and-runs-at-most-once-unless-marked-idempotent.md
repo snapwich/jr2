@@ -147,12 +147,12 @@ the credentialed `command` — is written and refused (below).
   unsigned push — its published commit is the Agent's own — is `skipped`, with no call; every other `pushed` is synced,
   a signed push that published nothing new included). A Harness that cannot be reached answers `not-synced`; the push
   stays `pushed`. When the last push of a Repo Slot answered `busy` or `not-synced`, jr2 runs its sync again before that
-  slot's next push, in that slot's Worktree and with that push's bundle, which its row keeps until a sync finished. The
-  push never trusts the sync's answer: the Agent owns its repository and can move the branch at any time, so the next
-  push derives everything again from the remote and the Agent's objects. After a signed push the Agent reads, beside the
-  output, what moved: that its branch now holds signed copies with new ids, or that jr2 did not move it and why; that
-  its files, index and stash did not change; and that amending, rebasing or resetting the pushed commits makes the next
-  push `diverged`.
+  slot's next push, in that slot's Worktree and with that push's bundle, which its row keeps until a sync finished or a
+  newer push of the slot published. The push never trusts the sync's answer: the Agent owns its repository and can move
+  the branch at any time, so the next push derives everything again from the remote and the Agent's objects. After a
+  signed push the Agent reads, beside the output, what moved: that its branch now holds signed copies with new ids, or
+  that jr2 did not move it and why; that its files, index and stash did not change; and that amending, rebasing or
+  resetting the pushed commits makes the next push `diverged`.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing it started outlives it. A bounded tail (default 4096 characters) is the
   output; the full stream goes to the run's feed (Instance-token band).
@@ -178,8 +178,10 @@ the credentialed `command` — is written and refused (below).
   the settled line on the feed carries the whole response. A `push` row keeps its Repo Slot, its published commit, its
   source and its sync's answer whole — the next push of its Workspace and Repo Slot reads them as its pair, and runs a
   sync that did not finish again — and drops git's words; it drops its bundle once its sync answered `synced`, `already`
-  or `skipped`, and keeps it while the sync is `busy` or `not-synced`, because the sync that runs again moves the branch
-  from it. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One exception, bounded
+  or `skipped`, and keeps it while the sync is `busy` or `not-synced` only as long as it is the newest push of its Repo
+  Slot that published, because the sync that runs again moves the branch from it and only the newest push's sync runs
+  again. Once a newer push of the slot published, the older row's bundle goes at the next save: one bundle per Repo Slot
+  at most. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One exception, bounded
   by one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action
   may read it after a restore; a loop below the Agent's state then grows the hold by one tail per pass. The hold drops
   its chain when the pick is answered.

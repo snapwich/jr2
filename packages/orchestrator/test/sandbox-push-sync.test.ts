@@ -188,12 +188,13 @@ test("a sync that never unbundled runs again before the next push with the bundl
 });
 
 test("the tail rule for a push: the bundle stays while the sync is busy or not-synced, and goes once a sync finished", () => {
+  // Each row is the newest push of its own Repo Slot.
   const row = (sync: string): EffectRow => ({
     state: "settled",
     kind: "push",
     slot: "publish",
     sandbox: "ws-1",
-    repo: "app",
+    repo: `app-${sync}`,
     output: { outcome: "pushed", published: B, source: A, bundle: "QlVORExF", detail: "git said", sync },
     at: "t",
   });
@@ -213,6 +214,60 @@ test("the tail rule for a push: the bundle stays while the sync is busy or not-s
     assert.equal("detail" in out(id), false, "git's words are a tail");
     assert.equal(out(id).published, B, "the pair stays whole");
   }
+});
+
+test("only the newest push of a Repo Slot keeps its bundle: three pushes whose syncs never finish leave one bundle in the saved ledger", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const syncs = new FakeSync();
+  const push = pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect;
+  const rig = await run(pushes({ app: "/work/app/jr2-run-1" }, { push }, ["push", "push", "push"]));
+  const tips = [B, C, "d".repeat(40)];
+  for (let i = 0; i < 3; i++) {
+    await waitFor(() => fake.starts.length === i + 1);
+    // This push's own sync, and (from the second on) the re-run before it, never finish.
+    syncs.answers = [
+      { sync: "not-synced", reason: "the Harness could not be reached: ECONNREFUSED" },
+      { sync: "not-synced", reason: "the Harness could not be reached: ECONNREFUSED" },
+    ];
+    fake.settle({ outcome: "pushed", published: tips[i]!, source: A, via: "ancestry", bundle: `QlVORExF${i}` });
+    await waitFor(() => ctxOf(rig.host, rig.runId)?.[`out${i}`] !== undefined);
+    rig.host.sendToGate(rig.runId, `g${i}`, { type: "next" });
+  }
+  await waitFor(() => rig.host.status(rig.runId)?.value === "done");
+  // The saves after the run's last transition are on disk: one bundle, the newest push's.
+  let bundles: unknown[] = [];
+  await until(async () => {
+    const rows = Object.values(await ledger(rig.store, rig.runId));
+    bundles = rows
+      .map((r) => (r.state === "settled" ? (r.output as { bundle?: unknown }).bundle : undefined))
+      .filter((b) => b !== undefined);
+    return rows.filter((r) => r.state === "settled").length === 3 && bundles.length === 1;
+  });
+  assert.deepEqual(bundles, ["QlVORExF2"], "the newest push's bundle, and no older one");
+});
+
+test("the tail rule: a push row's bundle goes once a newer push of its Repo Slot published, kept for another slot", () => {
+  const row = (repo: string, at: string, bundle: string): EffectRow => ({
+    state: "settled",
+    kind: "push",
+    slot: "publish",
+    sandbox: "ws-1",
+    repo,
+    output: { outcome: "pushed", published: B, source: A, bundle, sync: "not-synced" },
+    at,
+  });
+  const effects: Record<string, EffectRow> = {
+    old: row("app", "2026-10-10T00:00:01Z", "b1"),
+    mid: row("app", "2026-10-10T00:00:02Z", "b2"),
+    // A newer push that did not publish is not the pair: the one before it stays the newest.
+    rejected: { ...row("app", "2026-10-10T00:00:03Z", "x"), output: { outcome: "rejected", reason: "no" } },
+    lib: row("lib", "2026-10-10T00:00:00Z", "b3"),
+  };
+  dropSavedTails(effects, {});
+  const bundle = (id: string) => (effects[id] as { output: Record<string, unknown> }).output.bundle;
+  assert.equal(bundle("old"), undefined);
+  assert.equal(bundle("mid"), "b2");
+  assert.equal(bundle("lib"), "b3");
 });
 
 test("a signed push that published nothing new (the pair mapped the published tip) still syncs, and is never `skipped`", async () => {

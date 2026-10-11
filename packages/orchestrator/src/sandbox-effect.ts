@@ -45,6 +45,7 @@ import type {
   Unknown,
   UploadParts,
 } from "./effect.ts";
+import { lastPushOf } from "./effect.ts";
 import {
   createEffectorClient,
   EffectorForged,
@@ -671,8 +672,8 @@ export function pushWith<const O extends PushOptions>(
     },
     // The ledger's last push of this Workspace's Repo Slot — one branch, one remote — is the pair
     // (design 6). Its sync, when it did not finish, runs again first, in that slot's Worktree and
-    // from the bundle the row keeps until a sync finishes (`dropSavedTails`); the push does not
-    // depend on it.
+    // from the bundle the row keeps while it is the newest push and its sync did not finish
+    // (`dropSavedTails`); the push does not depend on it.
     before: async (ctx) => {
       const rows = ctx.binding?.effectRows?.() ?? {};
       const last = lastPushOf(rows, ctx.ambient.sandbox, repoOf(ctx.ambient, ctx.slot), ctx.id);
@@ -732,28 +733,7 @@ function syncFields(answer: SyncAnswer): { sync: SyncState; syncReason?: string 
   };
 }
 
-type PushedRow = { published: string; source: string; sync?: SyncState; bundle?: string } & Record<string, unknown>;
-
-/** The ledger's last push of a Workspace's Repo Slot that published: its row, by `at`, never this
- * Effect's. A Workspace with two Repo Slots has two branches on two remotes, so two pairs. */
-export function lastPushOf(
-  rows: Readonly<Record<string, EffectRow>>,
-  sandbox: string,
-  repo: string,
-  self: string,
-): { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined {
-  let best: { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined;
-  for (const [rowId, row] of Object.entries(rows)) {
-    if (rowId === self || row.state !== "settled" || row.kind !== "push") continue;
-    if (row.sandbox !== sandbox || row.repo !== repo) continue;
-    const output = row.output as Partial<PushedRow> & { outcome?: unknown };
-    if (output?.outcome !== "pushed" || typeof output.published !== "string" || typeof output.source !== "string") {
-      continue;
-    }
-    if (best === undefined || row.at > best.row.at) best = { rowId, row, output: output as PushedRow };
-  }
-  return best;
-}
+export { lastPushOf };
 
 export function uploadWith<S extends z.ZodType | undefined = undefined>(
   portFactory: EffectorPortFactory,

@@ -38,7 +38,7 @@ import type { ActorLogic, AnyActorRef, EventObject, Snapshot } from "xstate";
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import type { HttpMethod, HttpOutput, TextPart, WireAuth } from "./effector-wire.ts";
-import type { ExecOutcome, ExecRead, ExecRequest } from "./wire.ts";
+import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
 import type { EffectorPortFactory } from "./http-effect.ts";
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
 
@@ -250,13 +250,14 @@ export function dropSavedTails(effects: Record<string, EffectRow>, persisted: un
     }
   };
   walk(persisted);
+  const newest = newestPushesOf(effects);
   for (const [id, row] of Object.entries(effects)) {
     if (row.state !== "settled" || running.has(id)) continue;
     const output = row.output as Record<string, unknown> | null;
     if (typeof output !== "object" || output === null) continue;
     // A command's tail; an http response's body and headers. What stays is short: the outcome, and
     // a response's status, content type and size.
-    const long = tailsOf(row.kind, output).filter((field) => field in output);
+    const long = tailsOf(row.kind, output, newest.has(id)).filter((field) => field in output);
     if (long.length === 0) continue;
     const outcome = Object.fromEntries(Object.entries(output).filter(([field]) => !long.includes(field)));
     effects[id] = { ...row, output: outcome };
@@ -273,12 +274,56 @@ const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   push: ["bundle", "detail"],
 };
 
-/** A kind's tail for one output. A push whose sync did not finish (`busy`, `not-synced`) keeps its
- * bundle: the sync that runs again before the next push moves the branch from it, and the Agent's
- * store may not hold the signed commits without it. Once a sync finished, the bundle goes. */
-function tailsOf(kind: EffectRow["kind"], output: Record<string, unknown>): readonly string[] {
-  if (kind === "push" && (output.sync === "busy" || output.sync === "not-synced")) return ["detail"];
+/** A kind's tail for one output. The NEWEST push of its Repo Slot whose sync did not finish
+ * (`busy`, `not-synced`) keeps its bundle: the sync that runs again before the next push of that
+ * slot moves the branch from it, and the Agent's store may not hold the signed commits without it.
+ * Once a sync finished, or once a newer push of the slot published, the bundle goes: only the
+ * newest push's sync runs again (`lastPushOf`), so an older bundle has no reader. */
+function tailsOf(kind: EffectRow["kind"], output: Record<string, unknown>, newest: boolean): readonly string[] {
+  if (kind === "push" && newest && (output.sync === "busy" || output.sync === "not-synced")) return ["detail"];
   return TAILS[kind];
+}
+
+/** A settled push row that published: its pair, and its sync's answer and bundle when it has them. */
+export type PushedRow = { published: string; source: string; sync?: SyncAnswer["sync"]; bundle?: string } & Record<
+  string,
+  unknown
+>;
+
+/** The ledger's last push of a Workspace's Repo Slot that published: its row, by `at`, never this
+ * Effect's (`self`). A Workspace with two Repo Slots has two branches on two remotes, so two pairs. */
+export function lastPushOf(
+  rows: Readonly<Record<string, EffectRow>>,
+  sandbox: string,
+  repo: string,
+  self?: string,
+): { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined {
+  let best: { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined;
+  for (const [rowId, row] of Object.entries(rows)) {
+    if (rowId === self || row.state !== "settled" || row.kind !== "push") continue;
+    if (row.sandbox !== sandbox || row.repo !== repo) continue;
+    const output = row.output as Partial<PushedRow> & { outcome?: unknown };
+    if (output?.outcome !== "pushed" || typeof output.published !== "string" || typeof output.source !== "string") {
+      continue;
+    }
+    if (best === undefined || row.at > best.row.at) best = { rowId, row, output: output as PushedRow };
+  }
+  return best;
+}
+
+/** The row id of each Repo Slot's newest push that published (`lastPushOf`), over the ledger. */
+function newestPushesOf(effects: Readonly<Record<string, EffectRow>>): Set<string> {
+  const ids = new Set<string>();
+  const seen = new Set<string>();
+  for (const row of Object.values(effects)) {
+    if (row.state !== "settled" || row.kind !== "push" || row.sandbox === undefined || row.repo === undefined) continue;
+    const key = JSON.stringify([row.sandbox, row.repo]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const last = lastPushOf(effects, row.sandbox, row.repo);
+    if (last !== undefined) ids.add(last.rowId);
+  }
+  return ids;
 }
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
