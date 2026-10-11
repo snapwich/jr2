@@ -3677,6 +3677,22 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   assert.ok(!w.kube.deleted.includes(`myinst/secret/${own.metadata.name}`), "the placing Workspace's stays");
 });
 
+test("the Orchestrator's Role reads no Secret: create and patch only, and ConfigMaps as B8 (B18, ADR-0068)", async () => {
+  // It applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, server-side, and
+  // holds no value (B11): no get, no list, no watch, no delete, no update on a Secret.
+  const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  assert.equal(await up(["--yes"], w.io), 0);
+  const role = appliedObjects(w).get("Role/jr2-orchestrator")!;
+  const on = (resource: string) =>
+    role.rules.filter((r: { apiGroups: string[]; resources: string[] }) => r.resources.includes(resource));
+  assert.deepEqual(on("secrets"), [{ apiGroups: [""], resources: ["secrets"], verbs: ["create", "patch"] }]);
+  assert.deepEqual(on("configmaps"), [{ apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] }]);
+  assert.ok(
+    !role.rules.some((r: { resources: string[] }) => r.resources.includes("*")),
+    "no wildcard resource reaches a Secret",
+  );
+});
+
 test("the Orchestrator may apply a Sandbox Effector's Service — and may not read, list or delete one (ADR-0068)", async () => {
   // It writes the headless Service at provision, server-side applied, owned by the CR.
   const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));

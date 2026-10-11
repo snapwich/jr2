@@ -97,11 +97,8 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
     example). That needs a config surface and cluster CIDRs, so it is a separate decision.
   - **A held key can be spent.** The Agent can use a key through the Custodian while its pod lives, and a SigV4 or ADC
     credential cannot be held at all ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
-  - **The Orchestrator's RBAC is namespace-wide.** Its Role can get, list, create and patch every Secret.
-    `resourceNames` can pin only the fixed names; `create`, `list` and the per-Sandbox names cannot be narrowed that
-    way. For the bearers and tokens derived from the signing key, an attacker with code execution in the Orchestrator
-    gains little, because it has the signing key already. For an Effect secret the gain is not small: the Orchestrator
-    never holds one, and the Role reads the Secrets that do: `jr2-instance-effector`, each Workspace's
-    `jr2-effector-<workspace>`, each `git.credentials` entry's `jr2-git-push-<hash>`, and every user Secret a
-    `valueFrom` names ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). This stays as it is
-    until a design removes the need.
+  - **The Orchestrator's Secret writes are namespace-wide.** Its Role may create and patch every Secret, and may not get
+    or list one ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md), B18): it applies its own
+    per-Sandbox Secrets and holds no value. RBAC cannot pin `create` to a name, and `resourceNames` has no prefix form.
+    Two residuals stay, named in ADR-0068: a PATCH answers with the object, so a caller that knows a Secret's name can
+    still read it; and a Role that creates pods (through the Sandbox CR) can mount a Secret into one.

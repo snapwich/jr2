@@ -5,7 +5,7 @@ another host. A Held secret ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-c
 it either, because the Agent can spend it through the Custodian. And the Orchestrator holds no Effect secret in its
 process or its env: it runs every Machine's code, and a secret it held would be one fault away from all of them. So jr2
 runs such an Effect in a container of its own, the **Effector**, where the Agent executes nothing and the Orchestrator
-only asks. (The Orchestrator's Role can still read the Secrets that hold them; see Consequences.)
+only asks. Its Role reads no Secret either: it may create and patch one, never get or list one (see Consequences).
 
 ## Decision
 
@@ -331,10 +331,16 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   container binds a stopped Sandbox Effector's port — must get a signed start that names a secret and holds no value of
   it, and the Effect must settle `unknown`; and a credentialed command reads its secret from env and from its file,
   scrubbed, says `dirty` over an uncommitted edit, and a child of its child cannot read the Effector's key.
-- **Open gap: the Orchestrator's Role reads Effect secrets.** Its Role can get and list every Secret in its namespace
-  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), `jr2-instance-effector` and every user Secret a
-  `valueFrom` names among them. So a fault that gives code execution in the Orchestrator reaches the Effect secrets
-  through the API, though the Orchestrator never holds one. Narrowing the Role is a separate decision.
+- **The Orchestrator's Role reads no Secret (B18).** On Secrets it has `create` and `patch` only — it server-side
+  applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector` — and no `get` and no `list`; on ConfigMaps
+  `create` and `patch` (a Sandbox's Custodian files, B8). A test holds the Role to that list. RBAC cannot pin `create`
+  to a name and `resourceNames` has no prefix form, so the per-Sandbox names cannot be enumerated. What it closes: the
+  enumeration of Secrets and the plain read, so a fault that gives code execution in the Orchestrator does not reach the
+  Effect secrets, the clone and push Secrets or a user's Secret through `get`
+  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)). Two residuals stay: a PATCH answers with the object,
+  so a caller that knows a Secret's name can still read it; and a Role that creates pods (the operator makes the
+  Sandbox's pod from the CR it writes) can mount a Secret into one — the shape every Kubernetes operator shares. Closing
+  the first fully means the operator makes the per-Sandbox Secrets instead of the Orchestrator, a later decision.
 - **The start time asks the clocks to agree.** A replica refuses a request signed before its process started, by the
   Orchestrator's clock against its own. If the Orchestrator's clock is behind by more than the time between a replica's
   start and the first request it gets, that request is refused as unsigned: to the Orchestrator an answer lost, so every

@@ -335,12 +335,12 @@ export function instanceObjects(opts: {
       metadata: meta(ORCHESTRATOR_SA),
       rules: [
         { apiGroups: ["core.jr2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
-        // patch: the token Secret is server-side applied idempotently and later ownerRef-patched.
-        {
-          apiGroups: [""],
-          resources: ["secrets"],
-          verbs: ["get", "list", "create", "delete", "patch", "update"],
-        },
+        // Secrets: create and patch, nothing else (B18, ADR-0068). The Orchestrator server-side
+        // applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, owned by the CR,
+        // and holds no value (B11): no get, no list, so it cannot read or enumerate the Effect
+        // secrets, the clone and push Secrets, or a user's Secret through the API. RBAC cannot
+        // pin `create` to a name, and `resourceNames` has no prefix form.
+        { apiGroups: [""], resources: ["secrets"], verbs: ["create", "patch"] },
         // A Sandbox's Custodian files, rendered at provision and server-side applied (ADR-0059);
         // owned by the CR, so the garbage collector deletes them with the pod.
         { apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] },
