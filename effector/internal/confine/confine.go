@@ -262,8 +262,11 @@ func addRule(ruleset int, path string, rights uint64) error {
 // `/lost+found`). Everything else a top-level entry of the image holds is the image's own — the
 // programs, libraries and configuration a tool reads, under `/usr`, `/bin`, `/etc`, `/opt` or a
 // name of the image's own (`/google-cloud-sdk`, `/nix`) — and is allowed, so the rules follow the
-// image and break on no layout. jr2's own mounts are either under one of these names (`/run`) or
-// named in deny (`/work`, `/repos`, the scratch), so a mount jr2 adds later stays denied.
+// image and break on no layout. Each jr2 mount that holds a secret or the Agent's files is under
+// one of these names (`/run`) or named in deny (`/work`, `/repos`, the scratch); the two others,
+// the runtime at `/opt/jr2` and the instance's caBundle at `/etc/jr2/effector-ca`, hold only public
+// data and are readable. A jr2 mount that holds a secret goes under `/run/jr2`: one under `/etc`,
+// `/opt` or a new top-level name is the child's to read.
 var deniedTop = []string{"/proc", "/sys", "/dev", "/run", "/tmp", "/home", "/root", "/var", "/srv", "/mnt",
 	"/media", "/lost+found"}
 

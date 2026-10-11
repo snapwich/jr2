@@ -58,13 +58,16 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   under `/run/jr2/effector`), and the volatile and per-user trees that hold no tool an image ships (`/home`, `/root`,
   `/var`, `/srv`, `/mnt`, `/media`, `/lost+found`) — are denied, and so is every path named in the Effector's own deny
   list: the secrets the command does not name, the push credentials (`@git`), the Worktree (`/work`, B4.5), the node
-  caches (`/repos`), the rest of its scratch (another Effect's, and a push's copied keys). jr2's own mounts are always
-  under a denied name (`/run`) or in that deny list (`/work`, `/repos`, the scratch), so a mount jr2 adds later stays
-  denied. A top-level directory that holds one of the Effector's own paths is allowed one level down at a time around
-  it, so a mount placed inside one stays denied. Network is not restricted. Any failure before `execve` ends the
-  confiner with exit 126 and its reason on stderr: nothing runs unconfined. The design needs ABI 1; measured from a
-  hardened non-root pod (every capability dropped, `RuntimeDefault` seccomp): kind on WSL2 6.6 — ABI 3; the home
-  cluster's arm64 nodes (6.8) — ABI 4; spark (6.11, arm64) — ABI 5.
+  caches (`/repos`), the rest of its scratch (another Effect's, and a push's copied keys). Every jr2 mount in the
+  Effector's container that holds a secret or the Agent's files is under a denied name (`/run`: the key, the config, the
+  secrets, `@git`) or in that deny list (`/work`, `/repos`, the scratch). The two others hold only public data and the
+  child may read them: the runtime volume at `/opt/jr2`, which holds the programs jr2 ships, and the instance's caBundle
+  ConfigMap at `/etc/jr2/effector-ca` (ADR-0020). So a jr2 mount that holds a secret goes under `/run/jr2`; one under
+  `/etc`, `/opt` or a new top-level name is readable by the child. A top-level directory that holds one of the
+  Effector's own paths is allowed one level down at a time around it, so a mount placed inside one stays denied. Network
+  is not restricted. Any failure before `execve` ends the confiner with exit 126 and its reason on stderr: nothing runs
+  unconfined. The design needs ABI 1; measured from a hardened non-root pod (every capability dropped, `RuntimeDefault`
+  seccomp): kind on WSL2 6.6 — ABI 3; the home cluster's arm64 nodes (6.8) — ABI 4; spark (6.11, arm64) — ABI 5.
 - **Fail-closed at the pod, not at `jr2 up`.** A Sandbox Effector probes Landlock when it starts
   (`landlock_create_ruleset` with `LANDLOCK_CREATE_RULESET_VERSION`). When its Workspace holds a credentialed command
   (`effector.json`'s `commands`, which `jr2 up` writes) and the probe fails, it does not become ready: it ends, and its

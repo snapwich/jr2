@@ -16,7 +16,7 @@ import { RunHost } from "../src/run-host.ts";
 import { pushParts, pushWith, uploadWith } from "../src/sandbox-effect.ts";
 import { createSyncPort, type SyncPortFactory } from "../src/sync-client.ts";
 import type { SyncAnswer, SyncRequest } from "../src/wire.ts";
-import { sandboxEffectorSecret, sandboxEffectorContainer } from "../src/sandbox-kube.ts";
+import { sandboxEffectorSecret, sandboxEffectorContainer, sandboxEffectorVolumes } from "../src/sandbox-kube.ts";
 import { sandboxEffectorService } from "../src/sandbox-effector.ts";
 import { effectorTarget } from "../src/instance.ts";
 import { effectorKey } from "../src/tokens.ts";
@@ -430,6 +430,44 @@ test("the Sandbox Effector container: jr2's binary, the Worktree, caches and run
   assert.ok(!names.some((n) => /TOKEN|KEY$|SECRET$/.test(n) && n !== "JR2_EFFECTOR_KEY"), "no value in its env");
   assert.ok(c.env.every((e) => !("value" in e) || String(e.value).startsWith("/") || /^\d+$/.test(String(e.value))));
   assert.equal(sandboxEffectorSecret("task-review"), "jr2-effector-task-review");
+});
+
+// ADR-0068: a credentialed command's child reads the image's top-level trees, bar the denied names
+// (`/run`, `/tmp`'s own rules, …) and the Effector's deny list (`/work`, `/repos`, the scratch). So
+// each mount the provision gives the Effector is in one of those, or one of the two public mounts
+// the child may read. A new mount fails this test until its place is chosen: a secret goes under
+// `/run/jr2`, and a mount under `/etc` or `/opt` is the child's to read.
+test("every Sandbox Effector mount that holds a secret or the Agent's files is where its child is denied; the two others are public", () => {
+  const c = sandboxEffectorContainer({
+    image: "registry.example/sandbox:1",
+    keys: ["app-14189a29"],
+    securityContext: { runAsNonRoot: true },
+    secretVolume: "effector-secrets",
+    keyVolume: "effector-key",
+    scratchVolume: "effector-scratch",
+    caVolume: "effector-ca",
+  });
+  const env = Object.fromEntries(c.env.flatMap((e) => ("value" in e ? [[e.name, String(e.value)]] : [])));
+  const denied = [env.JR2_EFFECTOR_WORK, env.JR2_EFFECTOR_REPOS, env.JR2_EFFECTOR_SCRATCH];
+  const under = (p: string, base: string) => p === base || p.startsWith(`${base}/`);
+  const publicMounts: Record<string, string> = { "/opt/jr2": "runtime", "/etc/jr2/effector-ca": "effector-ca" };
+  for (const m of c.volumeMounts) {
+    if (under(m.mountPath, "/run")) continue;
+    if (denied.some((d) => d !== undefined && under(m.mountPath, d))) continue;
+    assert.equal(publicMounts[m.mountPath], m.name, `${m.mountPath} is readable by a credentialed command's child`);
+  }
+  assert.deepEqual(denied, ["/work", "/repos", "/run/jr2/scratch"]);
+  // The secrets, @git, the key and the config: each under /run.
+  for (const p of [env.JR2_EFFECTOR_SECRETS, env.JR2_EFFECTOR_GIT, env.JR2_EFFECTOR_KEY, env.JR2_EFFECTOR_CONFIG]) {
+    assert.ok(p !== undefined && under(p, "/run/jr2"), `${p} is under /run/jr2`);
+  }
+  // The caBundle is a ConfigMap, never a Secret.
+  const ca = sandboxEffectorVolumes({
+    sandbox: "ws-1",
+    manifest: { version: 1, secret: "jr2-effector-ws-1", sources: [] },
+    caBundle: true,
+  }).find((v) => v.name === "effector-ca");
+  assert.ok(ca && "configMap" in ca);
 });
 
 test("refusals that name the fix: a squash without sign, an env that sets PATH or HOME", () => {
