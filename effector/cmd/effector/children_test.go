@@ -227,7 +227,10 @@ func requireTool(t *testing.T, name string) {
 }
 
 // overlap samples the host's processes while a run goes on, and records whether a gpg-agent of
-// the Effector's scratch and a child of the named script were ever alive at one time.
+// the Effector's scratch and a child of the named script were ever alive at one time. Both are
+// matched to this Effector's scratch — the agent by its homedir in its argv, the child by its
+// working directory, the command's tree in its Effect's scratch — so another Effector on the host
+// (a second copy of the suite) is never sampled as either.
 type overlap struct {
 	mu                 sync.Mutex
 	agent, child, both bool
@@ -259,7 +262,7 @@ func watch(scratch, script string) *overlap {
 				if strings.Contains(cmdline, "gpg-agent") && strings.Contains(cmdline, scratch) {
 					agent = true
 				}
-				if strings.HasPrefix(cmdline, "sh "+script) {
+				if strings.HasPrefix(cmdline, "sh "+script) && ofScratch(e.Name(), scratch) {
 					child = true
 				}
 			}
@@ -272,6 +275,12 @@ func watch(scratch, script string) *overlap {
 		}
 	}()
 	return o
+}
+
+// ofScratch says whether the process's working directory is under the scratch.
+func ofScratch(pid, scratch string) bool {
+	cwd, err := os.Readlink(filepath.Join("/proc", pid, "cwd"))
+	return err == nil && strings.HasPrefix(cwd, scratch+string(filepath.Separator))
 }
 
 func (o *overlap) end() (agent, child, both bool) {

@@ -378,11 +378,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   `@git`, or writes the Worktree, ends with a permission error and an answer with no secret in it; one that reads its
   named secret from env and from its file succeeds; a child of the child is confined too; a failing probe stops the
   start of a Workspace that holds a credentialed command, with the node in the reason. And B12's rules run with real
-  processes: a `setsid` escapee, and an escapee of that escapee, is dead once its command has settled; another Effect's
-  settle kills a live Effect's escapee (the residual of rule 1); a command started during a GPG push runs only after the
-  agent is gone, and the reverse, with no sample of the host's processes seeing both alive; a waiter past its timeout
-  settles timed out and never runs late; a child's `TMPDIR` write is invisible to the next child, and `/tmp` refuses
-  both.
+  processes: a `setsid` escapee, and an escapee of that escapee, is dead once its command has settled; a live command's
+  daemon, under its keeper, lives through the settle of another Effect beside it; the keeper ends what its child left
+  and answers the child's own end; a command started during a GPG push runs only after the agent is gone, and the
+  reverse, with no sample of that Effector's processes (its agent, its command's child, both matched to its scratch)
+  seeing both alive; a waiter past its timeout settles timed out and never runs late; a child's `TMPDIR` write is
+  invisible to the next child, and `/tmp` refuses both.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built
