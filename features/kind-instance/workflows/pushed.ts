@@ -3,7 +3,9 @@
 // the Machine routed on, and the wrapper forwards it, so a scenario reads it off `jr2 status`.
 //
 //   signed    the body commits in the Harness container, leaves an edit and an untracked file, and
-//             reads `git status` (`before`); then a signed push; then reads the Worktree again
+//             reads `git status` (`before`); then waits on its `hold` Gate, so the step reads the pod
+//             while it is live (the run's Sandbox goes once the run settles); then a signed push;
+//             then reads the Worktree again
 //             (`after`). The step verifies the published commit on the remote with the signing
 //             key as the one allowed signer, and that the sync moved the branch to it while the
 //             files, the index and HEAD did not change.
@@ -37,6 +39,7 @@ type BodyInput = Workspaced<HostInjectedInput & Door, "app">;
 type BodyContext = BodyInput & { first?: unknown; second?: unknown; before?: unknown; after?: unknown };
 
 const unused = defineEvent({ name: "noop", input: z.object({}) });
+const go = defineEvent({ name: "go", input: z.object({}) });
 const AUTHOR = ["-c", "'user.name=jr2 e2e'", "-c", "user.email=e2e@jr2.test"].join(" ");
 
 /** What the Worktree looks like, read in the Harness container: status, the files, HEAD. */
@@ -45,7 +48,7 @@ const LOOK =
 
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
-  events: [unused],
+  events: [unused, go],
   actors: {
     // In the Harness container: the Agent's own work, committed.
     commit: command([
@@ -80,9 +83,10 @@ const body = jr2Setup({
     editing: {
       invoke: {
         src: "edit",
-        onDone: { target: "publishing", actions: assign({ before: ({ event }) => event.output }) },
+        onDone: { target: "holding", actions: assign({ before: ({ event }) => event.output }) },
       },
     },
+    holding: { invoke: { src: "gate", id: "hold" }, on: { go: "publishing" } },
     publishing: {
       invoke: {
         src: "publish",

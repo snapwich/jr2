@@ -279,7 +279,8 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the kind instance is serving
       When I start the "pushed" workflow in mode "signed" detached
       Then the run's Sandbox pod has a Sandbox Effector beside the Agent
-      And the signed push published signed copies on the remote, which verify with the signer's key
+      When the held Effect is released
+      Then the signed push published signed copies on the remote, which verify with the signer's key
       And the sync moved the Agent's branch to the signed commit, and its files, index and HEAD did not change
 
     Scenario: a push after the Agent rewrote the pushed commit is diverged, and pushes nothing

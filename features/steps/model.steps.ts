@@ -929,9 +929,12 @@ function claimOf(world: E2EWorld): Claim {
   return claim;
 }
 
-/** Compare a count with the floor, naming every trial that fell short. */
+/** Compare a count with the floor, naming every trial that fell short. Every trial's note is
+ * printed first, whatever the count: a baseline is taken from a run that was read (ADR-0066), and a
+ * miss at or above the floor is read too. */
 function atLeast(claim: Claim, floor: number, what: string, of: (t: Trial) => boolean, cell = claim.cell): void {
   claim.floors[cell] = floor;
+  for (const t of claim.trials) console.log(`trial ${t.runId} ${cell} ${of(t) ? "pass" : "miss"}: ${t.note}`);
   const passed = claim.trials.filter(of).length;
   const failed = claim.trials.filter((t) => !of(t)).map((t) => `  ${t.runId}: ${t.note}`);
   assert.ok(
