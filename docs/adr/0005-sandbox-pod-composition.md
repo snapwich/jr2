@@ -46,8 +46,9 @@ A Sandbox pod composes up to four containers around one shared worktree volume (
   is the rule, not a gap: the containers share no mount namespace and no `/proc`, so the barrier is the container and
   the read-only mount, not the uid. Inside it, a credentialed command's child — the author's argv, often running the
   Agent's code — shares the Effector's uid, so the Effector confines it with Landlock to the image's system paths, its
-  own scratch, `/tmp` and the secret files it names (ADR-0068). No Custodian, no `harness.env`, and no env beyond where
-  its mounts are and its pod's name, address and node.
+  own scratch (its `TMPDIR` included; never `/tmp`) and the secret files it names, and ends every process it left before
+  its Effect settles (ADR-0068). No Custodian, no `harness.env`, and no env beyond where its mounts are and its pod's
+  name, address and node.
 
 The Harness and User containers mount `/work` read-write, **`/repos` read-only** — the node's Repo cache, one bare
 checkout per Repo the Sandbox names (ADR-0004, ADR-0051) — **and `/opt/jr2` read-only**, the runtime volume — so human

@@ -256,8 +256,9 @@ func addRule(ruleset int, path string, rights uint64) error {
 
 // deniedTop are the top-level directories a credentialed command's child never reads: the kernel
 // and process pseudo-filesystems (`/proc`, `/sys`, `/dev` — the devices it needs are added one by
-// one below), the runtime trees where jr2 mounts the Effector's own files (`/run`) and its
-// writable area (`/tmp`, which writableNames adds read+write), and the volatile and per-user trees
+// one below), the runtime trees where jr2 mounts the Effector's own files (`/run`), the shared
+// `/tmp` (B12 rule 3: each child writes its own TMPDIR in its Effect's scratch instead, so one
+// child never reads what another wrote), and the volatile and per-user trees
 // that hold no tool an image ships (`/home`, `/root`, `/var`, `/srv`, `/mnt`, `/media`,
 // `/lost+found`). Everything else a top-level entry of the image holds is the image's own — the
 // programs, libraries and configuration a tool reads, under `/usr`, `/bin`, `/etc`, `/opt` or a
@@ -270,21 +271,18 @@ func addRule(ruleset int, path string, rights uint64) error {
 var deniedTop = []string{"/proc", "/sys", "/dev", "/run", "/tmp", "/home", "/root", "/var", "/srv", "/mnt",
 	"/media", "/lost+found"}
 
-// writableNames are the entries a child may also write: its /tmp.
-var writableNames = []string{"/tmp"}
-
-// SystemPaths is what a credentialed command's child may read and run, and what it may also write,
-// under root: every top-level entry the image holds that is not in deniedTop, plus writableNames
-// (read+write). An entry that holds a path in deny is not allowed whole; its other entries are,
-// one level down at a time, so a mount placed inside a system path stays denied. A symbolic link
+// SystemPaths is what a credentialed command's child may read and run under root: every top-level
+// entry the image holds that is not in deniedTop. An entry that holds a path in deny is not
+// allowed whole; its other entries are, one level down at a time, so a mount placed inside a
+// system path stays denied. A symbolic link
 // is allowed only when what it names holds no denied path and lies beneath none: a rule follows
 // the link, so `/lib -> /run/jr2/secrets` would allow the secrets. Every path in deny is a real
 // path (no link in it).
-func SystemPaths(root string, deny []string) (readExec, readWrite []string, err error) {
+func SystemPaths(root string, deny []string) (readExec []string, err error) {
 	denied := func(p string) bool { return slices.ContainsFunc(deny, func(d string) bool { return within(p, d) }) }
 	holds := func(p string) bool { return slices.ContainsFunc(deny, func(d string) bool { return within(d, p) }) }
-	var allow func(p string, write bool) error
-	allow = func(p string, write bool) error {
+	var allow func(p string) error
+	allow = func(p string) error {
 		info, err := os.Lstat(p)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -307,12 +305,10 @@ func SystemPaths(root string, deny []string) (readExec, readWrite []string, err 
 				return err
 			}
 			for _, e := range entries {
-				if err := allow(joinPath(p, e.Name()), write); err != nil {
+				if err := allow(joinPath(p, e.Name())); err != nil {
 					return err
 				}
 			}
-		case write:
-			readWrite = append(readWrite, p)
 		default:
 			readExec = append(readExec, p)
 		}
@@ -323,24 +319,18 @@ func SystemPaths(root string, deny []string) (readExec, readWrite []string, err 
 	// turns into an outcome.
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	for _, e := range entries {
 		name := "/" + e.Name()
 		if slices.Contains(deniedTop, name) {
 			continue
 		}
-		if err := allow(joinPath(root, e.Name()), false); err != nil {
-			return nil, nil, err
+		if err := allow(joinPath(root, e.Name())); err != nil {
+			return nil, err
 		}
 	}
-	// Read+write: /tmp, whether the image shipped it or not.
-	for _, name := range writableNames {
-		if err := allow(joinPath(root, strings.TrimPrefix(name, "/")), true); err != nil {
-			return nil, nil, err
-		}
-	}
-	return readExec, readWrite, nil
+	return readExec, nil
 }
 
 // devices are the character devices a child may read and write: what `> /dev/null` and a tool's
@@ -348,18 +338,18 @@ func SystemPaths(root string, deny []string) (readExec, readWrite []string, err 
 var devices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty"}
 
 // ForCommand is a credentialed command's confinement (ADR-0068, B9): read and execute on the
-// image's system paths, read and write on /tmp, the devices and the Effect's own scratch
-// (`effect`), and read on each secret file the command names (`read`). Everything else is denied
-// by omission: the key, the secrets the command does not name, the push credentials, the
-// Worktree, the node caches and the rest of the scratch. deny is those paths of the Effector's
+// image's system paths, read and write on the devices and the Effect's own scratch (`effect`, which
+// holds the child's HOME and TMPDIR), and read on each secret file the command names (`read`).
+// Everything else is denied by omission: the key, the secrets the command does not name, the push
+// credentials, the Worktree, the node caches, /tmp and the rest of the scratch. deny is those paths of the Effector's
 // own, each a real path, kept out even where one lies inside a system path.
 func ForCommand(deny []string, effect string, read []string) (Rules, error) {
-	rx, rw, err := SystemPaths("/", deny)
+	rx, err := SystemPaths("/", deny)
 	if err != nil {
 		return Rules{}, err
 	}
-	rw = append(rw, devices...)
-	return Rules{ReadExec: rx, ReadWrite: append(rw, effect), Read: read}, nil
+	rw := append(slices.Clone(devices), effect)
+	return Rules{ReadExec: rx, ReadWrite: rw, Read: read}, nil
 }
 
 func joinPath(dir, name string) string {

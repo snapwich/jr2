@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,6 +42,14 @@ func startSandboxEffector(t *testing.T, p *gittest.Pod) *effector {
 // before it served.
 func startSandboxEffectorWith(t *testing.T, p *gittest.Pod, commands bool, extra ...string) (*effector, string) {
 	t.Helper()
+	return startSandboxEffectorSigning(t, p, commands, "", extra...)
+}
+
+// startSandboxEffectorSigning is startSandboxEffectorWith whose git.credentials entry signs with
+// gpgKey, an armored secret key with no passphrase, when it is not "".
+func startSandboxEffectorSigning(t *testing.T, p *gittest.Pod, commands bool, gpgKey string,
+	extra ...string) (*effector, string) {
+	t.Helper()
 	// The pod's layout, each of the Effector's own trees apart as the provision mounts them: its
 	// key and config, the secrets with @git inside, and its scratch — so no one deny entry covers
 	// another's tree, and a test sees each entry the binary gives a child.
@@ -54,7 +63,13 @@ func startSandboxEffectorWith(t *testing.T, p *gittest.Pod, commands bool, extra
 	must(t, os.WriteFile(filepath.Join(own, "key"), []byte(placementKey+"\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "secrets", "aws"), []byte(awsSecret+"\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "secrets", "git"), []byte("git-named-secret-value\n"), 0o400))
-	must(t, os.WriteFile(filepath.Join(entry, "entry.json"), []byte(`{"match":"*","order":0,"push":["token"]}`), 0o400))
+	entryJSON := `{"match":"*","order":0,"push":["token"]}`
+	if gpgKey != "" {
+		entryJSON = `{"match":"*","order":0,"push":["token"],"sign":{"format":"gpg","name":"jr2 signer",` +
+			`"email":"signer@jr2.test"}}`
+		must(t, os.WriteFile(filepath.Join(entry, "sign.private.asc"), []byte(gpgKey), 0o400))
+	}
+	must(t, os.WriteFile(filepath.Join(entry, "entry.json"), []byte(entryJSON), 0o400))
 	must(t, os.WriteFile(filepath.Join(entry, "password"), []byte("unused-token-value\n"), 0o400))
 	config := `{"version":1,"placement":"sandbox","targets":[]` +
 		map[bool]string{true: `,"commands":true}`, false: `}`}[commands]
@@ -194,21 +209,14 @@ func TestACredentialedCommandsChildIsKeptFromEveryTreeTheEffectorDenies(t *testi
 		{"read-config", "cat '" + filepath.Join(dir, "effector", "effector.json") + "'"},
 		{"read-key", "cat '" + e.keyFile + "'"},
 	}
-	// Each path lies where the system paths alone would allow it: so only the deny list can be
-	// what keeps it out, and a pass is not the layout's.
-	readExec, readWrite, err := confine.SystemPaths("/", nil)
+	// Where a path lies under a system path the ruleset would allow, only the deny list keeps it
+	// out. Under /tmp (out of the ruleset since B12 rule 3) the name already does; the deny list's
+	// own carve-outs are TestSystemPathsFollowTheImageAndDescendAroundWhatIsDenied's.
+	readExec, err := confine.SystemPaths("/", nil)
 	must(t, err)
-	allowed := func(path string) bool {
-		for _, a := range append(readExec, readWrite...) {
-			if a == "/" || path == a || strings.HasPrefix(path, a+"/") {
-				return true
-			}
-		}
-		return false
-	}
 	for _, path := range []string{p.Tree, p.Cache, gitEntry, e.keyFile} {
-		if !allowed(path) {
-			t.Fatalf("%s lies under a denied name, so this test cannot see the deny list; set TMPDIR under /tmp", path)
+		if !slices.ContainsFunc(readExec, func(a string) bool { return a == "/" || strings.HasPrefix(path, a+"/") }) {
+			t.Logf("%s lies under a denied name on this host; its denial below is the name's", path)
 		}
 	}
 	var script strings.Builder
@@ -275,22 +283,31 @@ func TestTheLandlockProbeStopsTheStartWhenTheWorkspaceHoldsACredentialedCommand(
 func TestACredentialedCommandFindsItsToolOnTheContainersPath(t *testing.T) {
 	p := gittest.NewPod(t, "work")
 	p.Commit("one", map[string]string{"a.txt": "a\n"})
-	// A tool the author's image keeps on its PATH, outside /usr/local/bin:/usr/bin:/bin.
-	bin := t.TempDir()
-	must(t, os.WriteFile(filepath.Join(bin, "deploytool"), []byte("#!/bin/sh\necho deployed\n"), 0o755))
-	e, out := startSandboxEffectorWith(t, p, true, "PATH="+bin+":/usr/bin:/bin")
+	// A tool the image keeps on its PATH, outside /usr/local/bin:/usr/bin:/bin, and under its
+	// system paths, which the child may run (a test directory under /tmp may not be, since B12
+	// rule 3): one this host keeps in /usr/sbin alone.
+	const tool = "nologin"
+	if _, err := os.Stat(filepath.Join("/usr/sbin", tool)); err != nil {
+		t.Skipf("this host keeps no %s in /usr/sbin", tool)
+	}
+	for _, dir := range []string{"/usr/local/bin", "/usr/bin", "/bin"} {
+		if _, err := os.Stat(filepath.Join(dir, tool)); err == nil {
+			t.Skipf("this host keeps %s in %s too, so the test cannot tell the two PATHs apart", tool, dir)
+		}
+	}
+	e, out := startSandboxEffectorWith(t, p, true, "PATH=/usr/sbin:/usr/bin:/bin")
 	if e == nil {
 		t.Fatalf("the effector never served: %s", out)
 	}
 	body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
-		`"cache":"app-key"},"branch":"work","argv":["deploytool"],"env":{"AWS":{"secret":"aws"}},"tail":4000},` +
+		`"cache":"app-key"},"branch":"work","argv":["` + tool + `"],"env":{"AWS":{"secret":"aws"}},"tail":4000},` +
 		`"timeoutMs":30000}`
 	if status, raw := e.call(t, "POST", "/effects/tool-1", body); status != 202 {
 		t.Fatalf("got %d %s", status, raw)
 	}
 	got := e.wait(t, "tool-1")
-	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, `"code":0`) ||
-		!strings.Contains(got, `deployed`) {
+	if !strings.Contains(got, `"outcome":"exited"`) || strings.Contains(got, `"code":127`) ||
+		!strings.Contains(got, `not available`) {
 		t.Fatalf("the tool on the container's PATH did not run: %s", got)
 	}
 }

@@ -31,8 +31,8 @@ type layout struct {
 // Agent's Worktree, and its scratch with one Effect's own directory.
 func newLayout(t *testing.T) layout {
 	t.Helper()
-	// Beside the package, not under /tmp: a pod's /tmp holds none of the Effector's mount, so the
-	// child may write /tmp whole, and a layout under /tmp would split it.
+	// Beside the package, not under /tmp: the layout's carve-outs are what a test reads here, and
+	// /tmp is denied whole (B12 rule 3).
 	dir, err := os.MkdirTemp(".", ".confine-")
 	must(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
@@ -124,11 +124,13 @@ func TestTheChildCannotReadTheKeyAnUnnamedSecretOrGitAndCannotWriteTheWorktree(t
 	}
 }
 
-func TestTheChildReadsItsNamedSecretAndWorksInItsScratchAndTmp(t *testing.T) {
+func TestTheChildReadsItsNamedSecretAndWorksInItsScratchAndItsOwnTmpdir(t *testing.T) {
 	requireLandlock(t)
 	l := newLayout(t)
+	tmp := filepath.Join(l.effect, "tmp")
+	must(t, os.Mkdir(tmp, 0o700))
 	out, err := confined(t, l.rules(t), l.effect,
-		"cat "+filepath.Join(l.secrets, "aws")+"; echo; echo made > made && cat made; "+
+		"export TMPDIR="+tmp+"; cat "+filepath.Join(l.secrets, "aws")+"; echo; echo made > made && cat made; "+
 			"d=$(mktemp -d) && echo tmp > \"$d/f\" && cat \"$d/f\" && rm -r \"$d\"; "+
 			"echo nothing > /dev/null && sh -c 'cat "+filepath.Join(l.secrets, "aws")+"'")
 	if err != nil {
@@ -136,6 +138,34 @@ func TestTheChildReadsItsNamedSecretAndWorksInItsScratchAndTmp(t *testing.T) {
 	}
 	if out != "aws-secret-value-0123\nmade\ntmp\naws-secret-value-0123" {
 		t.Fatalf("got %q", out)
+	}
+}
+
+// B12 rule 3: /tmp is out of the ruleset — a child neither writes nor reads it, so what one child
+// leaves there no other child reads.
+func TestTheChildCannotWriteOrReadTmp(t *testing.T) {
+	requireLandlock(t)
+	l := newLayout(t)
+	planted, err := os.CreateTemp("/tmp", "jr2-confine-")
+	must(t, err)
+	_, _ = planted.WriteString("another child's secret")
+	must(t, planted.Close())
+	t.Cleanup(func() { _ = os.Remove(planted.Name()) })
+	for name, script := range map[string]string{
+		"a write to /tmp": "echo x > /tmp/jr2-confine-write-" + strconv.Itoa(os.Getpid()),
+		"a read of /tmp":  "cat " + planted.Name(),
+	} {
+		out, err := confined(t, l.rules(t), l.effect, script)
+		if err == nil || !strings.Contains(out, "Permission denied") {
+			t.Errorf("%s: %v %q", name, err, out)
+		}
+		if strings.Contains(out, "another child's secret") {
+			t.Errorf("%s: the child read /tmp: %q", name, out)
+		}
+	}
+	if _, err := os.Stat("/tmp/jr2-confine-write-" + strconv.Itoa(os.Getpid())); !os.IsNotExist(err) {
+		_ = os.Remove("/tmp/jr2-confine-write-" + strconv.Itoa(os.Getpid()))
+		t.Error("the child wrote /tmp")
 	}
 }
 
@@ -169,7 +199,7 @@ func TestSystemPathsFollowTheImageAndDescendAroundWhatIsDenied(t *testing.T) {
 	// A system path that is a link into a denied path is skipped whole.
 	must(t, os.Symlink("run/jr2/secrets", filepath.Join(root, "sbin")))
 	at := func(p string) string { return filepath.Join(root, p) }
-	rx, rw, err := SystemPaths(root, []string{at("run/jr2/effector"), at("run/jr2/secrets"), at("work"),
+	rx, err := SystemPaths(root, []string{at("run/jr2/effector"), at("run/jr2/secrets"), at("work"),
 		at("etc/jr2-mount")})
 	must(t, err)
 	slices.Sort(rx)
@@ -179,12 +209,9 @@ func TestSystemPathsFollowTheImageAndDescendAroundWhatIsDenied(t *testing.T) {
 	if !slices.Equal(rx, want) {
 		t.Fatalf("read+exec %v, want %v", rx, want)
 	}
-	if !slices.Equal(rw, []string{at("tmp")}) {
-		t.Fatalf("read+write %v", rw)
-	}
 }
 
-// On this host: no path under a denied top-level (bar /tmp and the devices) and no path under one
+// On this host: no path under a denied top-level (bar the devices) and no path under one
 // of the Effector's own mounts is allowed — /home, /root, /var, /proc, /sys and /run are denied —
 // while the per-Effect scratch and the one named secret are the carve-outs.
 func TestForCommandAllowsNothingDeniedOrUnderThePseudoFilesystems(t *testing.T) {
@@ -198,7 +225,7 @@ func TestForCommandAllowsNothingDeniedOrUnderThePseudoFilesystems(t *testing.T) 
 			continue
 		}
 		top := "/" + strings.SplitN(strings.TrimPrefix(p, "/"), "/", 2)[0]
-		if slices.Contains(deniedTop, top) && top != "/tmp" && !slices.Contains(devices, p) {
+		if slices.Contains(deniedTop, top) && !slices.Contains(devices, p) {
 			t.Errorf("allowed under a denied top-level: %s", p)
 		}
 		for _, d := range deny {

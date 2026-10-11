@@ -258,10 +258,10 @@ export type CommandEnv = Readonly<Record<string, { readonly secret: string; read
 export function commandEnvParts(env: CommandEnv): Pick<CommandParts, "env" | "secrets"> {
   const out: Record<string, { secret: string; path?: true }> = {};
   for (const [name, ref] of Object.entries(env)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name === "PATH" || name === "HOME") {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name === "PATH" || name === "HOME" || name === "TMPDIR") {
       throw new Error(
-        `command(argv, { env }): "${name}" is not a variable the author sets — PATH and HOME are the Effector's ` +
-          "(ADR-0067)",
+        `command(argv, { env }): "${name}" is not a variable the author sets — PATH, HOME and TMPDIR are the ` +
+          "Effector's (ADR-0067)",
       );
     }
     const s = secret(ref.secret);

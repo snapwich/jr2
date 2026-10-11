@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/snapwich/jr2/effector/internal/confine"
+	"github.com/snapwich/jr2/effector/internal/gitclean"
 	"github.com/snapwich/jr2/effector/internal/gittest"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/wire"
@@ -98,7 +99,7 @@ func TestACommandReadsItsSecretFromEnvAndPathAndItsOutputIsScrubbed(t *testing.T
 	if !strings.Contains(tail, "env=[secret:aws]") || !strings.Contains(tail, "file=[secret:aws]") {
 		t.Fatalf("the command did not read its secret: %s", tail)
 	}
-	// The env is what the author named, plus PATH and HOME — nothing of the Effector's.
+	// The env is what the author named, plus PATH, HOME and TMPDIR — nothing of the Effector's.
 	var names []string
 	for line := range strings.SplitSeq(tail, "\n") {
 		if k, _, ok := strings.Cut(line, "="); ok && strings.ToUpper(k) == k && !strings.ContainsAny(k, " $(") {
@@ -107,7 +108,7 @@ func TestACommandReadsItsSecretFromEnvAndPathAndItsOutputIsScrubbed(t *testing.T
 	}
 	for _, n := range names {
 		switch n {
-		case "AWS_SECRET", "AWS_FILE", "PATH", "HOME", "PWD", "SHLVL", "_", "OLDPWD":
+		case "AWS_SECRET", "AWS_FILE", "PATH", "HOME", "TMPDIR", "PWD", "SHLVL", "_", "OLDPWD":
 		default:
 			t.Errorf("the child's env holds %s", n)
 		}
@@ -230,23 +231,30 @@ func TestAPinnedCommandOverACleanWorktreeIsNotDirty(t *testing.T) {
 }
 
 // The child's PATH is the Effector's own (its image's), and argv[0] is looked up there: a tool
-// the author's image keeps outside the usual places runs.
+// the author's image keeps outside the usual places runs. The tool must lie under the image's
+// system paths, which the child may run (a test directory under /tmp may not be, since B12 rule 3),
+// so it is one this host keeps in /usr/sbin alone.
 func TestACommandFindsItsToolInTheEffectorsPath(t *testing.T) {
 	p, r := setup(t)
 	p.Commit("one", nil)
-	bin := filepath.Join(p.Root, "tools")
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		t.Fatal(err)
+	const tool = "nologin"
+	if _, err := os.Stat(filepath.Join("/usr/sbin", tool)); err != nil {
+		t.Skipf("this host keeps no %s in /usr/sbin", tool)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "deploytool"), []byte("#!/bin/sh\necho deployed \"$PATH\"\n"),
-		0o700); err != nil {
-		t.Fatal(err)
+	if _, err := gitclean.Look(tool); err == nil {
+		t.Skipf("this host keeps %s in %s too, so the test cannot tell the two PATHs apart", tool, gitclean.Path)
 	}
-	r.Path = bin + ":/usr/bin:/bin"
+	r.Path = "/usr/sbin:/usr/bin:/bin"
 	req := request(t, p, "", "")
-	req.Command.Argv = []string{"deploytool"}
+	req.Command.Argv = []string{tool}
 	out := r.Run(context.Background(), req)
-	if out.Outcome != wire.OutcomeExited || *out.Command.Code != 0 || out.Command.Tail != "deployed "+r.Path+"\n" {
+	if out.Outcome != wire.OutcomeExited || out.Command.Code == nil || *out.Command.Code == 127 ||
+		!strings.Contains(out.Command.Tail, "not available") {
+		t.Fatalf("got %+v %+v", out, out.Command)
+	}
+	req = request(t, p, "", "")
+	req.Command.Argv = []string{"sh", "-c", `echo "$PATH"`}
+	if out := r.Run(context.Background(), req); out.Command == nil || out.Command.Tail != r.Path+"\n" {
 		t.Fatalf("got %+v %+v", out, out.Command)
 	}
 }
@@ -289,7 +297,7 @@ func TestTheChildCannotReachTheKeyAnUnnamedSecretGitOrTheWorktree(t *testing.T) 
 }
 
 // What the command names it reads, from env and from its file, and so does its child; it works in
-// its own scratch and in /tmp.
+// its own scratch.
 func TestTheChildReadsItsNamedSecretAndWritesItsScratch(t *testing.T) {
 	p, r := setup(t)
 	p.Commit("one", map[string]string{"a.txt": "a\n"})

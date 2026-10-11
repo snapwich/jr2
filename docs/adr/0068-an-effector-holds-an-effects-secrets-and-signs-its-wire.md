@@ -53,8 +53,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   top-level directory the image holds that is not a denied name, whole, so the rules follow the image and break on no
   layout (the usual `/usr`, `/bin`, `/etc`, `/opt`, and a tool tree of the image's own such as `/google-cloud-sdk` or
   `/nix` alike; a link such as `/lib -> usr/lib` is followed when what it names holds none of the Effector's own paths);
-  read and write on `/tmp`, the devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`,
-  `/dev/tty`) and the Effect's own scratch (B4.5, B4.9: the checkout and `$HOME`); read on each secret file the command
+  read and write on the devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`) and
+  the Effect's own scratch (B4.5, B4.9: the checkout, `$HOME` and `$TMPDIR`); read on each secret file the command
   names, by `secret("x")` and `.path` alike. The denied names — the kernel and process pseudo-filesystems (`/proc`,
   `/sys`, the rest of `/dev`), the runtime tree where jr2 mounts the Effector's own files (`/run`, the key and config
   under `/run/jr2/effector`), and the volatile and per-user trees that hold no tool an image ships (`/home`, `/root`,
@@ -70,6 +70,32 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   is not restricted. Any failure before `execve` ends the confiner with exit 126 and its reason on stderr: nothing runs
   unconfined. The design needs ABI 1; measured from a hardened non-root pod (every capability dropped, `RuntimeDefault`
   seccomp): kind on WSL2 6.6 — ABI 3; the home cluster's arm64 nodes (6.8) — ABI 4; spark (6.11, arm64) — ABI 5.
+- **One child cannot reach another (B12).** Three rules, in the Effector:
+  1. **The subreaper.** The Effector sets `PR_SET_CHILD_SUBREAPER` when it starts, so a descendant whose parent ends is
+     reparented to the Effector, never to the container's init. Every child an Effect starts runs in its own session and
+     process group (`setsid`), registered with that Effect: a descendant can then move only to a new group, or to
+     another group of its child's session, never into the Effector's own. When the Effect settles, its groups are killed
+     (`kill(-pgid, SIGKILL)`), then the Effector scans `/proc` for processes whose parent is the Effector and whose
+     group belongs to no live Effect, kills and reaps them, and repeats until none remain. An Effect is settled only
+     after that loop, so a descendant that called `setsid` or double-forked is dead once its Effect's outcome exists.
+  2. **Two classes, one lock per Sandbox Effector.** `gpg` is a push that signs with `sign.gpgKey`; `command` is a
+     credentialed command. Effects of one class run together (commands with commands, GPG pushes with GPG pushes: both
+     are jr2's code); a `gpg` Effect waits while any `command` Effect is live, and a `command` waits while any `gpg`
+     Effect is live. "Live" ends after rule 1's loop, so no descendant of a command exists when a `gpg-agent` starts.
+     The push starts its `gpg-agent` itself (`--daemon --no-detach`: it forks once and keeps the push's process group)
+     and runs `gpg` with `--no-autostart`, so no agent detaches behind it; at its end it kills the agent
+     (`gpgconf --kill gpg-agent`) and waits for it to exit before it releases the class. A waiter has its Effect's own
+     timeout, which the wait counts against: past it, it settles as a timed-out Effect of its kind — a command
+     `timeout`, a push `rejected` at stage `sign` — and never runs late. Why: Landlock governs files, not `connect()`,
+     and a confined child can list the pod's Unix sockets (`ss -xl` over netlink `sock_diag`, which Landlock does not
+     restrict either), so a credentialed command's child alive beside a `gpg-agent` that holds the signing key could
+     sign without reading the key. The two never overlap. An `http`, an `upload`, an ssh-signed push and a token push
+     hold no class: they start no agent and serve no socket (the ssh key is a file the ruleset denies; the clean
+     repository clears `SSH_AUTH_SOCK`). The lock is in the Effector's process: restore and an Orchestrator restart are
+     untouched, and an Effector restart kills every child.
+  3. **A private TMPDIR.** Each credentialed child gets `TMPDIR` set to a directory of its Effect's own scratch, which
+     goes when the outcome is read, and `/tmp` is not in the ruleset: a child neither reads nor writes it, so what one
+     child writes no other child reads.
 - **Fail-closed at the pod, not at `jr2 up`.** A Sandbox Effector probes Landlock when it starts
   (`landlock_create_ruleset` with `LANDLOCK_CREATE_RULESET_VERSION`). When its Workspace holds a credentialed command
   (`effector.json`'s `commands`, which `jr2 up` writes) and the probe fails, it does not become ready: it ends, and its
@@ -296,26 +322,13 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   and a file the Agent wrote that the argv runs reads it too — and egress is open, so the claim is the three of
   ADR-0067: the Agent never reads or spends the secret from its own container, the tool sees a pinned commit and not the
   live Worktree, and the output is scrubbed. It shares the Effector's uid, so it can signal the Effector (a fault of its
-  own run, not a leak) and connect to its port, where nothing without the key is accepted. Two more, not yet closed: a
-  descendant that calls `setsid` leaves the process group the Effector kills, so it outlives its run, confined, with the
-  secret its command named in its env (ADR-0067); and `/tmp` is one tree that every credentialed command's child reads
-  and writes, so what one child writes there — a secret it named included — a later or a concurrent child of the same
-  Effector reads, whatever that child's command names. The per-Effect scratch, by contrast, goes when its outcome is
-  read.
-- **A credentialed command and a GPG-signed push do not share a Sandbox Effector.** Landlock governs files, not
-  `connect()`, and a confined child can list the pod's Unix sockets (`ss -xl` over netlink `sock_diag`, which Landlock
-  does not restrict either) — so knowing or not knowing a socket's path protects nothing. A GPG-signed push imports the
-  entry's signing key into a `gpg-agent` that holds it on a socket until the push's call ends; a credentialed command's
-  child that runs in that window could `connect()` to it and sign without reading the key, which would break "the Agent
-  can neither read nor spend an Effect secret". So the pair is refused, fail-closed, before anything is built: `jr2 up`
-  refuses a Workspace that places a credentialed command and a `push()` whose matched `git.credentials` entry signs with
-  `gpgKey` (and a per-run or `customize()`-bound slot whenever any entry can, since the url it takes could match one),
-  naming ssh signing (`sign: { sshKey, name, email }`) — which starts no agent and reads the key from a file the child's
-  confinement denies — as the fix. An ssh-signed push and the token helper serve no socket, so they run beside a
-  credentialed command. No form of a GPG-signing push runs in a Sandbox Effector that also runs a credentialed command.
-  Rejected: a second container per credentialed placement — its child would still share a uid with that container's
-  Effector and could spend that container's key, so it would need Landlock anyway, plus a key, a Secret, a port and a
-  NetworkPolicy per placement.
+  own run, not a leak) and connect to its port, where nothing without the key is accepted. It cannot outlive its Effect
+  (B12 rule 1), share a temporary tree with another child (rule 3), or be alive beside a `gpg-agent` (rule 2).
+- **A long GPG push delays a concurrent credentialed command** by its duration, against that command's timeout, and the
+  reverse. Rejected: refusing a credentialed command beside a GPG-signing push at `jr2 up` — the hole is open only while
+  a GPG push signs, so the rule is that the two never overlap; and a second container per credentialed placement — its
+  child would still share a uid with that container's Effector and could spend that container's key, so it would need
+  Landlock anyway, plus a key, a Secret, a port and a NetworkPolicy per placement.
 - **A node with no Landlock runs no credentialed command.** Its Sandboxes that hold one fail at provision, naming the
   node; the fix is a kernel with `landlock` in its LSM list. The home cluster's nodes are arm64, so the Effector binary
   and the Kit images need `linux/arm64` builds there.
@@ -324,7 +337,11 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 - The Effector's Go tests run Landlock for real on the host's kernel: a child that reads the key, an unnamed secret or
   `@git`, or writes the Worktree, ends with a permission error and an answer with no secret in it; one that reads its
   named secret from env and from its file succeeds; a child of the child is confined too; a failing probe stops the
-  start of a Workspace that holds a credentialed command, with the node in the reason.
+  start of a Workspace that holds a credentialed command, with the node in the reason. And B12's rules run with real
+  processes: a `setsid` escapee is dead once its command has settled; a command started during a GPG push runs only
+  after the agent is gone, and the reverse, with no sample of the host's processes seeing both alive; a waiter past its
+  timeout settles timed out and never runs late; a child's `TMPDIR` write is invisible to the next child, and `/tmp`
+  refuses both.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built

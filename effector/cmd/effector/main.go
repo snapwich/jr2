@@ -22,6 +22,11 @@
 // `effector confine <rules> -- <path> <argv...>` is a credentialed command's confiner: it
 // restricts itself with Landlock and execs argv (package confine; ADR-0068, B9).
 //
+// The Effector is the child subreaper of its container (PR_SET_CHILD_SUBREAPER): every process an
+// Effect starts is ended before the Effect settles, a `setsid` escapee included (package reaper,
+// B12). A Sandbox Effector holds one lock over its two classes, so a GPG-signing push and a
+// credentialed command are never live together.
+//
 // A Sandbox Effector probes Landlock when it starts. When its Workspace holds a credentialed
 // command (`commands` in effector.json) and the kernel cannot confine a child, it does not become
 // ready: it ends, and says `landlock: unavailable on node <node> (...)` in its termination
@@ -51,6 +56,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/kinds"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
+	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/secrets"
 	"github.com/snapwich/jr2/effector/internal/server"
@@ -107,6 +113,10 @@ func run(logger *log.Logger) error {
 	started := time.Now()
 	if len(os.Args) > 1 {
 		return errors.New("usage: effector (configured by its env; see ADR-0068)")
+	}
+	// Before any Effect: a descendant whose parent ends is then this process's, never init's.
+	if err := reaper.SetSubreaper(); err != nil {
+		return fmt.Errorf("the Effector cannot be its children's subreaper: %w", err)
 	}
 	port := env("JR2_EFFECTOR_PORT", "8082")
 	rawKey, err := os.ReadFile(env("JR2_EFFECTOR_KEY", "/run/jr2/effector/key"))
@@ -226,10 +236,11 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 	gitDir := m.git
 	work := os.Getenv("JR2_EFFECTOR_WORK")
 	r := &kinds.Runner{HTTP: &httpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots,
-		WorkRoot: work}}
+		WorkRoot: work}, Reaper: reaper.New()}
 	if work == "" {
 		return r, nil
 	}
+	r.Lock = &kinds.Lock{}
 	home, _ := os.UserHomeDir()
 	scratch := env("JR2_EFFECTOR_SCRATCH", home)
 	if scratch == "" {

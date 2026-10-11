@@ -37,6 +37,9 @@ const exec = promisify(execFile);
 export const SEED_URL = "http://seed.jr2-e2e-seed.svc/app.git";
 /** The seed's push remote (ADR-0067): `push.git`, the same content as `app.git`, over ssh. */
 export const PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git";
+/** The seed's GPG push remote (ADR-0068, B12): `gpg.git`, the same content, over ssh. Its own
+ * `git.credentials` entry signs with a GPG key the scenario writes (`jr2.config.ts`). */
+export const GPG_PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc/srv/gpg.git";
 /** The host the push remote's known_hosts line names. */
 const PUSH_HOST = "seed.jr2-e2e-seed.svc";
 // Two more urls on the same host appear in kind.feature, spelled there rather than here because
@@ -105,6 +108,9 @@ export function makeRepoScript(srv = "/srv", work = "/tmp/w"): string {
     serve("app.git"),
     // The push remote (ADR-0067): the same content, its own identity, written by pushes over ssh.
     serve("push.git"),
+    // The GPG push remote (ADR-0068, B12): the same content, its own identity, so its own
+    // git.credentials entry signs with GPG while push.git's signs with ssh.
+    serve("gpg.git"),
     // A SECOND repository, same content, its own identity (ADR-0051): every kind workflow binds
     // `app.git`, so in every scenario's namespace that Repo is bound and `jr2 gc` never evicts it.
     // The eviction scenario needs a Repo nothing binds, and a per-run url spelling `app.git`
@@ -141,7 +147,7 @@ const SERVE_SSH = [
   "sed -i 's/^git:!/git:*/' /etc/shadow",
   "mkdir -p /home/git/.ssh",
   "cp /keys/deploy.pub /home/git/.ssh/authorized_keys",
-  "chown -R git:git /home/git /srv/push.git",
+  "chown -R git:git /home/git /srv/push.git /srv/gpg.git",
   "chmod 700 /home/git/.ssh && chmod 600 /home/git/.ssh/authorized_keys",
   "exec /usr/sbin/sshd -D -e -h /keys/host -o PasswordAuthentication=no -o PermitRootLogin=no -o AllowUsers=git",
 ].join(" && ");
@@ -399,6 +405,17 @@ export async function pushRemoteTip(branch: string): Promise<string> {
     `git -c safe.directory='*' -C /srv/push.git rev-parse -q --verify refs/heads/${branch} || true`,
   );
   return out.trim();
+}
+
+/** The GPG push remote's branch tip and that commit's raw object, or "" for both when it has none. */
+export async function gpgRemoteCommit(branch: string): Promise<{ tip: string; raw: string }> {
+  assert.match(branch, /^[a-z0-9][a-z0-9-]{0,60}$/, "a branch is a plain lower-case label");
+  const out = await inSeed(
+    `t=$(git -c safe.directory='*' -C /srv/gpg.git rev-parse -q --verify refs/heads/${branch} || true); ` +
+      `echo "TIP $t"; [ -z "$t" ] || git -c safe.directory='*' -C /srv/gpg.git cat-file commit "$t"`,
+  );
+  const [first, ...rest] = out.split("\n");
+  return { tip: (first ?? "").replace(/^TIP ?/, "").trim(), raw: rest.join("\n") };
 }
 
 /**

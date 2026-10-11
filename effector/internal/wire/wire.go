@@ -543,7 +543,7 @@ func (c *CommandSpec) validate() error {
 		return errors.New("command.env names no secret: a command with none runs in the Harness container")
 	}
 	for name, ref := range c.Env {
-		if !envName.MatchString(name) || name == "PATH" || name == "HOME" {
+		if !envName.MatchString(name) || name == "PATH" || name == "HOME" || name == "TMPDIR" {
 			return fmt.Errorf("command.env %q is not a variable the author may set", name)
 		}
 		if !ValidSecretName(ref.Secret) {

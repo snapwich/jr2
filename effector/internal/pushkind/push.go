@@ -38,10 +38,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/snapwich/jr2/effector/internal/beneath"
 	"github.com/snapwich/jr2/effector/internal/gitclean"
+	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/secrets"
 	"github.com/snapwich/jr2/effector/internal/wire"
@@ -109,6 +111,9 @@ type call struct {
 	built map[string]string
 	// gnupg is the GPG home a signing made, whose agent the call stops.
 	gnupg string
+	// agentGroup is the process group of the gpg-agent this call started: the call kills it and
+	// waits for it to end before the push settles and releases the Lock's `gpg` class (B12 rule 2).
+	agentGroup int
 }
 
 // Run pushes, and answers the outcome scrubbed.
@@ -118,10 +123,7 @@ func (r *Runner) Run(ctx context.Context, req *wire.StartRequest) wire.Output {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(req.TimeoutMs)*time.Millisecond)
 	defer cancel()
 	out := c.run(ctx)
-	if c.gnupg != "" {
-		// The gpg-agent the signing started goes with the call.
-		_, _ = gitclean.Exec(context.Background(), c.repo, nil, "gpgconf", "--homedir", c.gnupg, "--kill", "all")
-	}
+	c.stopAgent()
 	if c.repo != nil {
 		c.repo.Close()
 	}
@@ -646,11 +648,14 @@ func (c *call) signer(ctx context.Context) (*signerKey, error) {
 	if err := os.Mkdir(home, 0o700); err != nil {
 		return nil, err
 	}
-	if _, err := c.tool(ctx, nil, "gpg", "-q", "--batch", "--homedir", home, "--import",
+	c.gnupg = home
+	if err := c.startAgent(ctx, home); err != nil {
+		return nil, err
+	}
+	if _, err := c.tool(ctx, nil, "gpg", "-q", "--batch", "--no-autostart", "--homedir", home, "--import",
 		filepath.Join(dir, secrets.SignGPGFile)); err != nil {
 		return nil, errors.New("the GPG signing key could not be imported")
 	}
-	c.gnupg = home
 	k := &signerKey{c: c, gnupg: home}
 	// A key with a passphrase cannot sign here: the first cut takes none, and says so.
 	if _, err := k.sign(ctx, "jr2 probe\n"); err != nil {
@@ -666,13 +671,57 @@ func (k *signerKey) sign(ctx context.Context, payload string) (string, error) {
 	if k.ssh != "" {
 		out, err = k.c.tool(ctx, strings.NewReader(payload), "ssh-keygen", "-q", "-Y", "sign", "-n", "git", "-f", k.ssh)
 	} else {
-		out, err = k.c.tool(ctx, strings.NewReader(payload), "gpg", "-q", "--batch", "--no-tty", "--homedir",
-			k.gnupg, "--pinentry-mode", "loopback", "--passphrase", "", "-bsa")
+		out, err = k.c.tool(ctx, strings.NewReader(payload), "gpg", "-q", "--batch", "--no-tty", "--no-autostart",
+			"--homedir", k.gnupg, "--pinentry-mode", "loopback", "--passphrase", "", "-bsa")
 	}
 	if err != nil || len(bytes.TrimSpace(out)) == 0 {
 		return "", errors.New("the signing key did not sign")
 	}
 	return string(out), nil
+}
+
+// startAgent starts the gpg-agent of this call's GPG home and waits for its socket. It runs with
+// `--no-detach`: it forks once and keeps the process group this call started it in, which is the
+// Effect's (package reaper), so it never leaves the Effect. gpg is then run with `--no-autostart`:
+// no agent detaches behind the call's back.
+func (c *call) startAgent(ctx context.Context, home string) error {
+	launcher, err := gitclean.Daemon(ctx, c.repo, "gpg-agent", "--homedir", home, "--daemon", "--no-detach",
+		"--disable-scdaemon")
+	if err != nil {
+		return errors.New("gpg-agent could not be started: " + err.Error())
+	}
+	c.agentGroup = launcher.Process.Pid
+	// The launcher ends once the agent is forked; the agent stays in its group.
+	_ = launcher.Wait()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		// Named again each time: the socket's directory is the agent's to make, and until it exists
+		// gpgconf names another.
+		raw, err := c.tool(ctx, nil, "gpgconf", "--homedir", home, "--list-dirs", "agent-socket")
+		if err == nil {
+			if st, err := os.Stat(strings.TrimSpace(string(raw))); err == nil && st.Mode()&os.ModeSocket != 0 {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return errors.New("the gpg-agent did not open its socket")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// stopAgent ends the gpg-agent this call started — `gpgconf --kill`, then its group, if it is
+// still running after a while — and waits until it has exited (B12 rule 2): only then may a
+// credentialed command's child run beside this Effector again. The Effect's settle reaps it.
+func (c *call) stopAgent() {
+	if c.agentGroup == 0 {
+		return
+	}
+	_, _ = gitclean.Exec(context.Background(), c.repo, nil, "gpgconf", "--homedir", c.gnupg, "--kill", "gpg-agent")
+	if !reaper.Gone(c.agentGroup, 5*time.Second) {
+		_ = syscall.Kill(-c.agentGroup, syscall.SIGKILL)
+		reaper.Gone(c.agentGroup, 5*time.Second)
+	}
+	c.agentGroup = 0
 }
 
 // tool runs one of jr2's programs in the clean environment.

@@ -532,39 +532,9 @@ test("jr2 up refuses a push with no matching entry, an entry with no credential,
   }
 });
 
-test("jr2 up refuses a credentialed command beside a GPG-signing push, and names ssh signing as the fix (ADR-0068)", () => {
-  const cfg = (kind: "gpgKey" | "sshKey"): JR2Config => {
-    const sign =
-      kind === "gpgKey"
-        ? { gpgKey: "signing-key", name: "jr2 bot", email: "bot@example.test" }
-        : { sshKey: "signing-key", name: "jr2 bot", email: "bot@example.test" };
-    return {
-      secrets: [{ name: "aws", value: VALUE }],
-      git: { credentials: [{ match: "github.com/ourorg/", token: "T", sign }] },
-    };
-  };
-  const both = [credentialed("deploy", ["aws"]), pusher("publish", { sign: true })];
-  // A GPG-signed push and a credentialed command in one Workspace: refused, with ssh as the fix.
-  assert.throws(
-    () => refuseEffectSecrets(cfg("gpgKey"), placedIn(both)),
-    /a credentialed command and a GPG-signing push \(Repo Slot "app"\).*gpg-agent's socket.*Sign with ssh instead \(sign: \{ sshKey/s,
-  );
-  // The same refusal reaches the placement, not the early check alone.
-  assert.throws(() => secretPlacementsOf(cfg("gpgKey"), placedIn(both)), /gpg-agent's socket/s);
-  // ssh signing starts no agent and reads a file the child cannot: the same Workspace is accepted.
-  assert.doesNotThrow(() => refuseEffectSecrets(cfg("sshKey"), placedIn(both)));
-  // An unsigned push beside the command is fine, even with a GPG entry in config.
-  assert.doesNotThrow(() =>
-    refuseEffectSecrets(cfg("gpgKey"), placedIn([credentialed("deploy", ["aws"]), pusher("publish")])),
-  );
-  // A per-run / customize() url is refused too: the url it takes at provision could match a GPG entry.
-  assert.throws(() => refuseEffectSecrets(cfg("gpgKey"), placedIn(both, { app: undefined })), /gpg-agent's socket/s);
-});
-
-test("the GPG-beside-a-command refusal is stated as the current rule, never as an open plan (ADR-0068, ADR-0067)", async () => {
-  // design.md and design-b.md hold no rule for this pair; the refusal is what jr2 does now, and an
-  // ADR states the current decision, so neither the message nor an ADR may say "open" or
-  // "until then" of it.
+test("jr2 up accepts a credentialed command beside a GPG-signing push: the Sandbox Effector keeps them apart in time (B12, ADR-0068)", () => {
+  // B12 rule 2: the Effector's one lock keeps a GPG push and a credentialed command from being
+  // live together, so jr2 up refuses neither the pair nor a per-run slot beside a GPG entry.
   const config: JR2Config = {
     secrets: [{ name: "aws", value: VALUE }],
     git: {
@@ -573,30 +543,13 @@ test("the GPG-beside-a-command refusal is stated as the current rule, never as a
       ],
     },
   };
-  let message = "";
-  try {
-    refuseEffectSecrets(config, placedIn([credentialed("deploy", ["aws"]), pusher("publish", { sign: true })]));
-  } catch (e) {
-    message = (e as Error).message;
-  }
-  assert.match(message, /\(ADR-0068\)/);
-  assert.doesNotMatch(message, /\bopen\)|until/);
-  for (const adr of [
-    "0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md",
-    "0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md",
-  ]) {
-    const text = (await readFile(new URL(`../../../docs/adr/${adr}`, import.meta.url), "utf8")).replace(/\s+/g, " ");
-    assert.match(text, /GPG-signing `?push/, `${adr} states the GPG rule`);
-    assert.doesNotMatch(text, /until then|not yet taken/, `${adr} states a refusal as an open plan`);
-  }
-  const adr68 = (
-    await readFile(
-      new URL("../../../docs/adr/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md", import.meta.url),
-      "utf8",
-    )
-  ).replace(/\s+/g, " ");
-  assert.match(
-    adr68,
-    /No form of a GPG-signing push runs in a Sandbox Effector that also runs a credentialed command\./,
+  const both = [credentialed("deploy", ["aws"]), pusher("publish", { sign: true })];
+  assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn(both)));
+  assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn(both, { app: undefined })));
+  const plan = secretPlacementsOf(config, placedIn(both)).sandbox[0]!;
+  assert.equal(plan.commands, true);
+  assert.deepEqual(
+    plan.pushes.map((p) => p.sign),
+    [true],
   );
 });

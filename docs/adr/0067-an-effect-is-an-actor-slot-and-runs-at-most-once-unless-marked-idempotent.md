@@ -68,26 +68,26 @@ the credentialed `command` — runs there too, its child confined (below).
   secret is what places it: it runs in the Sandbox Effector of the Workspace whose body invokes it, with no `placement:`
   key. Its child runs as the Effector's uid beside the Effector's key, the secrets it does not name and the push
   credentials, and its argv may run a file the Agent wrote, so the Effector confines the child with Landlock before
-  `execve` (ADR-0068): it may read and run the image's system paths, read and write its own scratch and `/tmp`, and read
-  the secret files it names — nothing else. A node whose kernel cannot confine it runs none: the Effector of a Workspace
-  that holds one does not become ready there, and the provision fails naming the node (ADR-0068). It runs against one
-  commit: the Agent's branch tip when it starts, or — with `pin` — the commit the Effect's input names (`{ sha }`, one a
-  Gate approved). That commit is checked out into a fresh scratch of the Effect's own by the push's import procedure
-  (below), so the Agent's uncommitted edits are never seen; the answer carries `dirty: true` beside the output when the
-  Worktree held some (a status in jr2's clean repository over a copy of the Worktree's index, against the Worktree's own
-  HEAD — never the pin, so the commits the Agent made after an approved one are not edits — read as data; when it cannot
-  tell, it says dirty). The child's env is what the author named — a secret's value, or its file's path — plus `PATH`
-  and `HOME`, and nothing else; `PATH` is the Effector container's own, as its image set it (the tools are the
-  author's), and `argv[0]` is looked up there; `HOME` is the scratch's, and the scratch is removed once the outcome is
-  read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the
-  author's choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files
-  name runs" is not claimed for it. Its claims are three: the Agent never reads or spends the secret (a container it
-  cannot exec in, and a child confined from the files of every other secret and of the Effector's key), the tool sees a
-  pinned commit and not the live Worktree, and the output is scrubbed. Landlock governs files, not `connect()`, and a
-  GPG-signed push holds the signing key on a `gpg-agent` socket while it runs; so a credentialed command and a
-  GPG-signing `push()` cannot share one Sandbox Effector — `jr2 up` refuses the pair, naming ssh signing (which starts
-  no agent) as the fix (ADR-0068). ssh signing and the token helper serve no socket, so they run beside a credentialed
-  command.
+  `execve` (ADR-0068): it may read and run the image's system paths, read and write its own scratch (its `HOME` and its
+  `TMPDIR`; never `/tmp`, which every child would share), and read the secret files it names — nothing else. A node
+  whose kernel cannot confine it runs none: the Effector of a Workspace that holds one does not become ready there, and
+  the provision fails naming the node (ADR-0068). It runs against one commit: the Agent's branch tip when it starts, or
+  — with `pin` — the commit the Effect's input names (`{ sha }`, one a Gate approved). That commit is checked out into a
+  fresh scratch of the Effect's own by the push's import procedure (below), so the Agent's uncommitted edits are never
+  seen; the answer carries `dirty: true` beside the output when the Worktree held some (a status in jr2's clean
+  repository over a copy of the Worktree's index, against the Worktree's own HEAD — never the pin, so the commits the
+  Agent made after an approved one are not edits — read as data; when it cannot tell, it says dirty). The child's env is
+  what the author named — a secret's value, or its file's path — plus `PATH`, `HOME` and `TMPDIR`, and nothing else;
+  `PATH` is the Effector container's own, as its image set it (the tools are the author's), and `argv[0]` is looked up
+  there; `HOME` and `TMPDIR` are the scratch's, and the scratch is removed once the outcome is read. Its output is
+  scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the author's choice to run — a
+  tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files name runs" is not claimed
+  for it. Its claims are three: the Agent never reads or spends the secret (a container it cannot exec in, and a child
+  confined from the files of every other secret and of the Effector's key), the tool sees a pinned commit and not the
+  live Worktree, and the output is scrubbed. Landlock governs files, not `connect()`, and a GPG-signed push holds the
+  signing key on a `gpg-agent` socket while it signs; so the Sandbox Effector never runs the two at once: one lock over
+  two classes, `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068, B12). A
+  Workspace may hold both.
 - **An `upload` is an `http` definition whose body is a Worktree file.**
   `upload({ method?, url, headers?, auth?, input?, file, contentType?, slot?, timeout?, maxBody?, idempotent? })`:
   `file(input)` returns the file's path relative to the Repo Slot's Worktree (and path segments, as `request` gives
@@ -163,9 +163,10 @@ the credentialed `command` — runs there too, its child confined (below).
   that jr2 did not move it and why; that its files, index and stash did not change; and that amending, rebasing or
   resetting the pushed commits makes the next push `diverged`.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
-  exit each SIGKILL the group, so nothing that stays in the group outlives it. A descendant that leaves the group
-  (`setsid`) is not killed: a credentialed command's survivor stays confined (ADR-0068), and keeps its env — the secret
-  its command named — while it runs on in the Effector's container. A bounded tail (default 4096 characters) is the
+  exit each SIGKILL the group, so nothing that stays in the group outlives it. In the Harness container a descendant
+  that leaves the group (`setsid`) is not killed; it holds no credential. A credentialed command's descendant cannot
+  leave: the Sandbox Effector is its children's subreaper and kills and reaps every process an Effect started, a
+  `setsid` escapee included, before the Effect settles (ADR-0068, B12). A bounded tail (default 4096 characters) is the
   output; the full stream goes to the run's feed (Instance-token band).
 - **A write-ahead ledger; no second fire the author did not mark.** One row per Effect in the run's blob (ADR-0007,
   ADR-0065): an `intent` row saved at the write, with the snapshot that holds the Effect, before the request leaves; a

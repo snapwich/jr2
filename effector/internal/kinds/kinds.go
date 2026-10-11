@@ -2,14 +2,21 @@
 // http runner, `push` to the push runner, a credentialed `command` to the command runner. The
 // Instance Effector holds only the first; a Sandbox Effector holds all three, and confines a
 // credentialed command's child with Landlock (ADR-0068).
+//
+// One child cannot reach another (B12). Every Effect's processes are its own group (package
+// reaper), ended when it settles; and a Sandbox Effector's one Lock keeps a GPG-signing push and a
+// credentialed command from being live together. An Effect settles only after its processes are
+// gone, and it releases the Lock only then.
 package kinds
 
 import (
 	"context"
+	"time"
 
 	"github.com/snapwich/jr2/effector/internal/commandkind"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
+	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
@@ -18,6 +25,24 @@ type Runner struct {
 	HTTP    *httpkind.Runner
 	Push    *pushkind.Runner
 	Command *commandkind.Runner
+	// Reaper ends what each Effect started when it settles; nil, nothing is tracked.
+	Reaper *reaper.Reaper
+	// Lock is the Sandbox Effector's lock over the two classes; nil, none is held.
+	Lock *Lock
+}
+
+// Class is the Lock's class of a start, or "" for a start that holds none: `gpg` for a push that
+// signs with a GPG key, `command` for a credentialed command.
+func (r *Runner) Class(req *wire.StartRequest) string {
+	switch {
+	case req.Kind == wire.KindCommand:
+		return ClassCommand
+	case req.Kind == wire.KindPush && req.Push != nil && req.Push.Sign && r.Push != nil:
+		if e := r.Push.Config.EntryFor(req.Push.Credential, req.Push.URL); e != nil && e.Sign != nil && e.Sign.GPGKey != "" {
+			return ClassGPG
+		}
+	}
+	return ""
 }
 
 // Missing names what makes the start a defect of jr2 or config: a secret this Effector does not
@@ -65,8 +90,44 @@ func (r *Runner) Pin(req *wire.StartRequest) string {
 	return ""
 }
 
-// Run runs the start to its outcome.
+// Run runs the start to its outcome. A start of a class waits for the Lock within its own timeout;
+// past it, it settles as a timed-out Effect of its kind and never runs late. Whatever it started
+// is ended before it settles, and the Lock is released after that.
 func (r *Runner) Run(ctx context.Context, req *wire.StartRequest) wire.Output {
+	g := r.Reaper.Group()
+	ctx = reaper.With(ctx, g)
+	if class := r.Class(req); class != "" && r.Lock != nil {
+		timeout := time.Duration(req.TimeoutMs) * time.Millisecond
+		started := time.Now()
+		if !r.Lock.Acquire(ctx, class, started.Add(timeout)) {
+			g.Settle()
+			return timedOut(req, class)
+		}
+		defer r.Lock.Release()
+		// The wait is part of the Effect's timeout.
+		left := timeout - time.Since(started)
+		req.TimeoutMs = max(1, left.Milliseconds())
+	}
+	// Before the Release above: an Effect is settled only once its processes are gone.
+	defer g.Settle()
+	return r.run(ctx, req)
+}
+
+// timedOut is a start that waited past its timeout for the other class to end: it never ran.
+func timedOut(req *wire.StartRequest, class string) wire.Output {
+	other := "a GPG-signing push"
+	if class == ClassGPG {
+		other = "the credentialed commands"
+	}
+	why := "the timeout passed while it waited for " + other + " of this Sandbox Effector to end"
+	if req.Kind == wire.KindCommand {
+		return wire.Output{Outcome: wire.OutcomeTimeout, Command: &wire.CommandResult{Tail: why + "; it did not run\n"}}
+	}
+	return wire.Output{Outcome: wire.OutcomeRejected, Reason: why + "; nothing was pushed",
+		Push: &wire.PushResult{Stage: "sign"}}
+}
+
+func (r *Runner) run(ctx context.Context, req *wire.StartRequest) wire.Output {
 	switch req.Kind {
 	case wire.KindPush:
 		return r.Push.Run(ctx, req)

@@ -36,6 +36,14 @@ export default defineConfig({
         sshKey: "jr2-e2e-push-key",
         sign: { sshKey: "jr2-e2e-sign-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
       },
+      // The seed's GPG push remote (ADR-0068, B12): `gpg.git`, the `gpgsigned` workflow's Binding.
+      // The same deploy key; a GPG key the Sandbox Effector signs with, which the scenario writes
+      // from a key it makes on the host before `jr2 up`.
+      {
+        match: "seed.jr2-e2e-seed.svc/srv/gpg",
+        sshKey: "jr2-e2e-push-key",
+        sign: { gpgKey: "jr2-e2e-gpg-key", name: "jr2 e2e signer", email: "signer@jr2.test" },
+      },
     ],
   },
   // The tier's one Effect secret (ADR-0068): the `called` and `asked` workflows' http Effects name

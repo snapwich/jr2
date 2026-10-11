@@ -8,14 +8,17 @@
 // not name and the push credentials; its program is often the Agent's code. So it is confined
 // with Landlock before execve (package confine; ADR-0068, B9): the Effector execs itself as the
 // confiner, and the child may read and run the image's system paths, read and write its own
-// scratch and /tmp, and read the secret files it names — nothing else. The tool sees a pinned
+// scratch, and read the secret files it names — nothing else; not /tmp, which every child would
+// share (B12 rule 3). The tool sees a pinned
 // commit and not the live Worktree, and the output is scrubbed. The Agent's files are the author's
 // choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the
 // Agent's files name runs" is not claimed here.
 //
-// The child's env is what the author named — a secret's value, or its file's path — plus PATH and
-// HOME, and nothing else: not the Effector's key, not another secret. PATH is the Effector's own,
-// which its image set (the tools are the author's); HOME is the scratch's own.
+// The child's env is what the author named — a secret's value, or its file's path — plus PATH,
+// HOME and TMPDIR, and nothing else: not the Effector's key, not another secret. PATH is the
+// Effector's own, which its image set (the tools are the author's); HOME and TMPDIR are the
+// scratch's own. The child starts its own session, registered with its Effect's process groups
+// (package reaper): when the Effect settles, no descendant of it is left.
 // The scratch is removed once the outcome is read. Every outcome is output: `exited`, `timeout`,
 // `killed`, `unknown`.
 package commandkind
@@ -39,6 +42,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/beneath"
 	"github.com/snapwich/jr2/effector/internal/confine"
 	"github.com/snapwich/jr2/effector/internal/gitclean"
+	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
@@ -108,8 +112,8 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 	if err != nil {
 		return unknown("a clean repository could not be made: " + err.Error())
 	}
-	// The scratch goes once the outcome is read: nothing of it carries to the next run. /tmp, which
-	// every child may write, is not the Effect's own and does carry (ADR-0068).
+	// The scratch goes once the outcome is read: nothing of it carries to the next run — the
+	// child's TMPDIR included, which is in it (B12 rule 3).
 	defer repo.Close()
 
 	have, err := repo.CacheTips(ctx, []string{cache})
@@ -135,11 +139,15 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 		return unknown("the pinned commit could not be checked out")
 	}
 	home := filepath.Join(repo.Work, "home")
+	tmp := filepath.Join(repo.Work, "tmp")
+	if err := os.Mkdir(tmp, 0o700); err != nil {
+		return unknown(err.Error())
+	}
 	path := r.Path
 	if path == "" {
 		path = gitclean.Path
 	}
-	env := []string{"PATH=" + path, "HOME=" + home}
+	env := []string{"PATH=" + path, "HOME=" + home, "TMPDIR=" + tmp}
 	var named []string
 	for _, name := range slices.Sorted(maps.Keys(spec.Env)) {
 		ref := spec.Env[name]
@@ -182,11 +190,11 @@ func realPath(p string) string {
 	return p
 }
 
-// execute runs argv, confined by rules, in its own process group; on its timeout the group is
-// killed. The confiner is the process exec starts: it restricts itself and execs argv, so no
-// instruction of argv runs unconfined. The stream is scrubbed as it arrives, across chunk borders,
-// BEFORE it is cut to its tail: a secret that straddles the cut was replaced whole before the cut
-// could split it.
+// execute runs argv, confined by rules, in its own session and process group, registered with the
+// Effect's (package reaper); on its timeout the group is killed. The confiner is the process exec
+// starts: it restricts itself and execs argv, so no instruction of argv runs unconfined. The
+// stream is scrubbed as it arrives, across chunk borders, BEFORE it is cut to its tail: a secret
+// that straddles the cut was replaced whole before the cut could split it.
 func execute(ctx context.Context, confiner string, rules confine.Rules, argv []string, dir string, env []string,
 	path string, timeout time.Duration, tailLen int, scrubber *scrub.Scrubber) wire.Output {
 	program := argv[0]
@@ -202,10 +210,9 @@ func execute(ctx context.Context, confiner string, rules confine.Rules, argv []s
 	cmd := exec.Command(confiner, append([]string{"confine"}, rules.Args(program, argv)...)...)
 	cmd.Dir = dir
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stream := &tailBuffer{limit: 4 * tailLen, scrub: scrubber.Stream()}
 	cmd.Stdout, cmd.Stderr = stream, stream
-	if err := cmd.Start(); err != nil {
+	if err := reaper.Start(ctx, cmd); err != nil {
 		return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Code: new(127),
 			Tail: fmt.Sprintf("%s: %v\n", argv[0], err)}}
 	}

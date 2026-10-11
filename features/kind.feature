@@ -288,6 +288,20 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "pushed" workflow in mode "diverged" detached
       Then the push after the rewrite is diverged, and the remote still holds the first push
 
+  Rule: a GPG-signed push and a credentialed command share one Sandbox Effector, and are never live together
+    ADR-0068, B12. The `gpgsigned` workflow starts a credentialed command and a GPG-signed push at
+    once, in parallel regions of one Workspace. The Effector's one lock over its two classes runs one
+    after the other — a command's child is never alive beside the push's gpg-agent — and both
+    complete. The push's `git.credentials` entry signs with a GPG key the scenario makes on the host
+    and writes into its namespace before `jr2 up`; the Effector runs in the tier's effector image,
+    which carries gnupg.
+
+    Scenario: a credentialed command and a GPG-signed push started together both complete
+      Given the seed's GPG push remote trusts this scenario's keys
+      And the kind instance is serving
+      When I start the "gpgsigned" workflow in mode "both" detached
+      Then the credentialed command and the GPG-signed push both completed, and the remote holds the GPG-signed commit
+
   Rule: a Sandbox reaped while the orchestrator is down is never silently re-provisioned
 
     Scenario: the restored body is told its workspace is lost

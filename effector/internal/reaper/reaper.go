@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // prSetChildSubreaper is PR_SET_CHILD_SUBREAPER (linux/prctl.h).
@@ -198,23 +199,61 @@ func (r *Reaper) strays(live map[int]bool) []int {
 	return out
 }
 
-// stat reads a process's parent and process group from /proc/<pid>/stat: the fields after the
-// command's closing parenthesis are state, ppid, pgrp.
+// Gone waits until no process of group pgid is running — an exited one waiting to be reaped
+// counts as gone — or d passes, and says which.
+func Gone(pgid int, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if !running(pgid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func running(pgid int) bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		state, _, group, ok := statFields(filepath.Join("/proc", e.Name(), "stat"))
+		if ok && group == pgid && state != "Z" && state != "X" {
+			return true
+		}
+	}
+	return false
+}
+
+// stat reads a process's parent and process group from /proc/<pid>/stat.
 func stat(path string) (ppid, pgid int, ok bool) {
+	_, ppid, pgid, ok = statFields(path)
+	return ppid, pgid, ok
+}
+
+// statFields reads /proc/<pid>/stat: the fields after the command's closing parenthesis are
+// state, ppid, pgrp.
+func statFields(path string) (state string, ppid, pgid int, ok bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return 0, 0, false
+		return "", 0, 0, false
 	}
 	s := string(raw)
 	i := strings.LastIndexByte(s, ')')
 	if i < 0 {
-		return 0, 0, false
+		return "", 0, 0, false
 	}
 	fields := strings.Fields(s[i+1:])
 	if len(fields) < 3 {
-		return 0, 0, false
+		return "", 0, 0, false
 	}
 	ppid, err1 := strconv.Atoi(fields[1])
 	pgid, err2 := strconv.Atoi(fields[2])
-	return ppid, pgid, err1 == nil && err2 == nil
+	return fields[0], ppid, pgid, err1 == nil && err2 == nil
 }

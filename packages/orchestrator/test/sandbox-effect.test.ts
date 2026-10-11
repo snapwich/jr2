@@ -470,10 +470,14 @@ test("every Sandbox Effector mount that holds a secret or the Agent's files is w
   assert.ok(ca && "configMap" in ca);
 });
 
-test("refusals that name the fix: a squash without sign, an env that sets PATH or HOME", () => {
+test("refusals that name the fix: a squash without sign, an env that sets PATH, HOME or TMPDIR", () => {
   assert.throws(() => pushParts({ squash: true }), /push\(\{ squash: true, sign: true \}\)/);
   const exec = new FakeHarnessExec();
-  assert.throws(() => commandWith(exec.factory, ["x"], { env: { PATH: secret("abcdefgh") } }), /PATH and HOME/);
+  assert.throws(() => commandWith(exec.factory, ["x"], { env: { PATH: secret("abcdefgh") } }), /PATH, HOME and TMPDIR/);
+  assert.throws(
+    () => commandWith(exec.factory, ["x"], { env: { TMPDIR: secret("abcdefgh") } }),
+    /PATH, HOME and TMPDIR/,
+  );
   assert.equal(JSON.stringify(secret("aws")), '{"secret":"aws"}', "`.path` is not in a definition's plain data");
   assert.deepEqual(secret("aws").path, { secret: "aws", path: true });
 });

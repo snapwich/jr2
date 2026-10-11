@@ -34,7 +34,15 @@ import {
   repoKey,
   type RepoStatus,
 } from "@jr2/orchestrator";
-import { ensureSeed, pushRemoteTip, pushToSeed, seedKeys, SEED_URL, verifyOnPushRemote } from "./seed.ts";
+import {
+  ensureSeed,
+  gpgRemoteCommit,
+  pushRemoteTip,
+  pushToSeed,
+  seedKeys,
+  SEED_URL,
+  verifyOnPushRemote,
+} from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -2882,5 +2890,84 @@ Then(
     assert.ok(this.echoToken);
     assert.equal(leakOf(seen, this.echoToken), undefined, "no form of the secret reached it");
     assert.equal(leakOf(JSON.stringify(output), this.echoToken), undefined);
+  },
+);
+
+// --- a GPG-signed push beside a credentialed command (ADR-0068, B12) -------------------------------
+
+/** An armored GPG secret key with no passphrase, made on the host for this scenario alone. */
+async function scenarioGpgKey(): Promise<string> {
+  const home = await mkdtemp(join(tmpdir(), "jr2-e2e-gpg-"));
+  const gpg = (args: string[]) => promisify(execFile)("gpg", ["--batch", "--homedir", home, ...args]);
+  try {
+    await gpg([
+      "--pinentry-mode",
+      "loopback",
+      "--passphrase",
+      "",
+      "--quick-gen-key",
+      "jr2 e2e signer <signer@jr2.test>",
+      "ed25519",
+      "sign",
+      "never",
+    ]);
+    const { stdout } = await gpg(["--armor", "--export-secret-keys", "signer@jr2.test"]);
+    return stdout;
+  } catch (err) {
+    throw new Error(`this scenario makes its GPG key with the host's gpg, which failed: ${(err as Error).message}`);
+  } finally {
+    await promisify(execFile)("gpgconf", ["--homedir", home, "--kill", "all"]).catch(() => undefined);
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The scenario's namespace holds the two Secrets the GPG push remote's `git.credentials` entry
+ * names (`kind-instance/jr2.config.ts`): the deploy key the seed's sshd authorizes, with its
+ * known_hosts line, and a GPG signing key (`private.asc`, no passphrase), made on the host now.
+ */
+Given("the seed's GPG push remote trusts this scenario's keys", async function (this: E2EWorld): Promise<void> {
+  await ensureSeed();
+  const keys = await seedKeys();
+  assert.ok(this.namespace, "a @kind scenario has its namespace set in setupKind");
+  const objects = {
+    apiVersion: "v1",
+    kind: "List",
+    items: [
+      { apiVersion: "v1", kind: "Namespace", metadata: { name: this.namespace } },
+      {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: "jr2-e2e-push-key", namespace: this.namespace },
+        stringData: { identity: keys.deploy, "identity.pub": keys.deployPub, known_hosts: keys.knownHosts },
+      },
+      {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: "jr2-e2e-gpg-key", namespace: this.namespace },
+        stringData: { "private.asc": await scenarioGpgKey() },
+      },
+    ],
+  };
+  await kubectlInput(this, ["apply", "-f", "-"], JSON.stringify(objects));
+});
+
+Then(
+  "the credentialed command and the GPG-signed push both completed, and the remote holds the GPG-signed commit",
+  async function (this: E2EWorld): Promise<void> {
+    const run = (await httpOutput(this)) as {
+      command?: { outcome?: string; code?: number; tail?: string } | null;
+      push?: PushOut | null;
+    };
+    assert.equal(run.command?.outcome, "exited", JSON.stringify(run));
+    assert.equal(run.command.code, 0, JSON.stringify(run));
+    assert.match(run.command.tail ?? "", /deployed with \[secret:echo-token\]/, "the command ran, scrubbed");
+    assert.equal(run.push?.outcome, "pushed", JSON.stringify(run));
+    assert.ok(run.push.published && run.push.published !== run.push.source, "a signed copy, a new id");
+    const { tip, raw } = await gpgRemoteCommit(`gpgsigned-${this.marker}`);
+    assert.equal(tip, run.push.published, "the remote holds the signed commit");
+    assert.match(raw, /^gpgsig -----BEGIN PGP SIGNATURE-----/m, `a GPG signature: ${raw}`);
+    assert.match(raw, /^committer jr2 e2e signer <signer@jr2\.test> /m, "the committer is the signer");
+    assert.match(raw, /^author jr2 e2e <e2e@jr2\.test> /m, "the author is the Agent's");
   },
 );

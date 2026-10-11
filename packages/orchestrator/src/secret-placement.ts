@@ -137,41 +137,7 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
     // An empty value is refused later with the list's own rule (`sourceOf`): it is an unset variable.
     if (namedBy.has(e.name) && e.value) shortRefusal(e, e.value.length);
   }
-  for (const ws of walk.workspaces) {
-    const pushes = pushesOf(config, ws);
-    const commands = ws.pod.effects.some((e) => e.kind === "command" && (e.secrets?.length ?? 0) > 0);
-    refuseGpgWithCommand(config, ws, pushes, commands);
-  }
-}
-
-/**
- * A credentialed command and a GPG-signing push() cannot share a Sandbox Effector (ADR-0068).
- * A GPG-signed push starts gpg-agent, which holds the entry's signing key on a Unix socket
- * until the push ends; a credentialed command's child runs as the same uid at the same time, and
- * Landlock governs files, not `connect()`, so the child could sign with that key without reading
- * it — breaking "the Agent can neither spend an Effect secret". ssh signing starts no agent and
- * reads the key from a file the child's confinement denies, so it is the fix jr2 up names. A
- * per-run or customize()-bound url (no match at `jr2 up`) is refused when any entry can GPG-sign,
- * since the url it takes at provision could be that entry's.
- */
-function refuseGpgWithCommand(config: JR2Config, ws: PlacedWorkspace, pushes: SandboxPush[], commands: boolean): void {
-  if (!commands) return;
-  const list = config.git?.credentials ?? [];
-  const anyGpg = list.some((e) => e.sign !== undefined && "gpgKey" in e.sign);
-  const conflict = pushes.find((p) => {
-    if (!p.sign) return false;
-    if (p.match === undefined) return anyGpg;
-    const entry = list.find((e) => e.match === p.match);
-    return entry?.sign !== undefined && "gpgKey" in entry.sign;
-  });
-  if (conflict === undefined) return;
-  throw new Error(
-    `${workspaceLabel(ws)}: a credentialed command and a GPG-signing push (Repo Slot "${conflict.slot}") ` +
-      "cannot share a Sandbox Effector — a command's child could spend the signing key through gpg-agent's " +
-      "socket, which Landlock does not cover (ADR-0068). Sign with ssh instead " +
-      "(sign: { sshKey, name, email } on the git.credentials entry), or move the push to a Workspace with no " +
-      "credentialed command.",
-  );
+  for (const ws of walk.workspaces) pushesOf(config, ws);
 }
 
 /**
@@ -297,7 +263,6 @@ function sandboxPlanOf(
   }
   const pushes = pushesOf(config, ws);
   const commands = ws.pod.effects.some((e) => e.kind === "command" && (e.secrets?.length ?? 0) > 0);
-  refuseGpgWithCommand(config, ws, pushes, commands);
   return {
     placement: "sandbox",
     pod: workspaceHeldPod({ workflow: ws.workflow, path: ws.pod.path }),
