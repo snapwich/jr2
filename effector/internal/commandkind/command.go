@@ -108,7 +108,8 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 	if err != nil {
 		return unknown("a clean repository could not be made: " + err.Error())
 	}
-	// The scratch goes once the outcome is read: nothing carries to the next run.
+	// The scratch goes once the outcome is read: nothing of it carries to the next run. /tmp, which
+	// every child may write, is not the Effect's own and does carry (ADR-0068).
 	defer repo.Close()
 
 	have, err := repo.CacheTips(ctx, []string{cache})

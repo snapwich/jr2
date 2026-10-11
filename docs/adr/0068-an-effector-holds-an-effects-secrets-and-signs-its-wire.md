@@ -283,7 +283,12 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   and a file the Agent wrote that the argv runs reads it too — and egress is open, so the claim is the three of
   ADR-0067: the Agent never reads or spends the secret from its own container, the tool sees a pinned commit and not the
   live Worktree, and the output is scrubbed. It shares the Effector's uid, so it can signal the Effector (a fault of its
-  own run, not a leak) and connect to its port, where nothing without the key is accepted.
+  own run, not a leak) and connect to its port, where nothing without the key is accepted. Two more, not yet closed: a
+  descendant that calls `setsid` leaves the process group the Effector kills, so it outlives its run, confined, with the
+  secret its command named in its env (ADR-0067); and `/tmp` is one tree that every credentialed command's child reads
+  and writes, so what one child writes there — a secret it named included — a later or a concurrent child of the same
+  Effector reads, whatever that child's command names. The per-Effect scratch, by contrast, goes when its outcome is
+  read.
 - **A credentialed command and a GPG-signed push do not share a Sandbox Effector.** Landlock governs files, not
   `connect()`, and a confined child can list the pod's Unix sockets (`ss -xl` over netlink `sock_diag`, which Landlock
   does not restrict either) — so knowing or not knowing a socket's path protects nothing. A GPG-signed push imports the

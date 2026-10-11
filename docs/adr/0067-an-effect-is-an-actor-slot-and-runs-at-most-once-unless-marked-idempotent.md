@@ -163,7 +163,9 @@ the credentialed `command` — runs there too, its child confined (below).
   that jr2 did not move it and why; that its files, index and stash did not change; and that amending, rebasing or
   resetting the pushed commits makes the next push `diverged`.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
-  exit each SIGKILL the group, so nothing it started outlives it. A bounded tail (default 4096 characters) is the
+  exit each SIGKILL the group, so nothing that stays in the group outlives it. A descendant that leaves the group
+  (`setsid`) is not killed: a credentialed command's survivor stays confined (ADR-0068), and keeps its env — the secret
+  its command named — while it runs on in the Effector's container. A bounded tail (default 4096 characters) is the
   output; the full stream goes to the run's feed (Instance-token band).
 - **A write-ahead ledger; no second fire the author did not mark.** One row per Effect in the run's blob (ADR-0007,
   ADR-0065): an `intent` row saved at the write, with the snapshot that holds the Effect, before the request leaves; a
