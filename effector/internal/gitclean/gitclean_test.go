@@ -170,3 +170,40 @@ func TestTheCleanRepositoryTakesNoConfigFromTheEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// Hardening: jr2's own programs run by absolute path from Path, never by the PATH the Effector's
+// image set. A PATH whose first directory holds a fake git, ssh-keygen and gpg runs none of them.
+func TestJr2sProgramsRunFromPathNeverFromTheInheritedPATH(t *testing.T) {
+	fake := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "ran")
+	for _, name := range []string{"git", "ssh-keygen", "gpg"} {
+		script := "#!/bin/sh\necho " + name + " >> '" + marker + "'\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(fake, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", fake+":"+os.Getenv("PATH"))
+
+	for _, name := range []string{"git", "ssh-keygen", "gpg"} {
+		path, err := Look(name)
+		if err != nil {
+			t.Skipf("%s is not in %s on this host: %v", name, Path, err)
+		}
+		if !filepath.IsAbs(path) || strings.HasPrefix(path, fake) {
+			t.Fatalf("Look(%q) = %q, not a program of Path", name, path)
+		}
+	}
+	r, err := New(context.Background(), Options{Scratch: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Line(context.Background(), "rev-parse", "--is-bare-repository"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = Exec(context.Background(), r, nil, "ssh-keygen", "-l", "-f", "/dev/null")
+	_, _ = Exec(context.Background(), r, nil, "gpg", "--version")
+	if raw, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("a program from the inherited PATH ran: %q", raw)
+	}
+}

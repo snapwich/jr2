@@ -23,10 +23,39 @@ import (
 	"time"
 
 	"github.com/snapwich/jr2/effector/internal/beneath"
+	"github.com/snapwich/jr2/effector/internal/reaper"
 )
 
-// Path is the PATH every git call gets: the image's usual places, never the Agent's.
+// Path is the PATH every git call gets: the image's usual places, never the Agent's. jr2's own
+// programs — git, ssh, ssh-keygen, gpg, gpg-agent, gpgconf — are found here alone (Look), never
+// on the PATH the Effector's image set.
 const Path = "/usr/local/bin:/usr/bin:/bin"
+
+// Look finds one of jr2's own programs in Path and answers its absolute path. The PATH the
+// Effector inherited is never read: an image that puts a directory of its own first on PATH does
+// not choose which git runs here.
+func Look(name string) (string, error) {
+	if strings.Contains(name, "/") {
+		return "", fmt.Errorf("%q is not a program name", name)
+	}
+	for dir := range strings.SplitSeq(Path, ":") {
+		p := filepath.Join(dir, name)
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && st.Mode()&0o111 != 0 {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("%s is not in %s", name, Path)
+}
+
+// command is one of jr2's own programs, by its absolute path from Look. One that is absent gets a
+// path that does not exist, so its start fails with that name.
+func command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	path, err := Look(name)
+	if err != nil {
+		path = filepath.Join("/nonexistent", name)
+	}
+	return exec.CommandContext(ctx, path, args...)
+}
 
 // Options configure one clean repository.
 type Options struct {
@@ -163,7 +192,7 @@ func (r *Repo) GitEnv(ctx context.Context, stdin io.Reader, env []string, args .
 
 // GitTo runs git with this repository, its stdout into w.
 func (r *Repo) GitTo(ctx context.Context, w io.Writer, stdin io.Reader, env []string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + r.Dir}, args...)...)
+	cmd := command(ctx, "git", append([]string{"--git-dir=" + r.Dir}, args...)...)
 	cmd.Env = append(r.Env(), env...)
 	cmd.Dir = r.Work
 	cmd.Stdin = stdin
@@ -171,7 +200,7 @@ func (r *Repo) GitTo(ctx context.Context, w io.Writer, stdin io.Reader, env []st
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
+	if err := reaper.Run(ctx, cmd); err != nil {
 		return &Error{Args: args, Stderr: stderr.String(), Err: err}
 	}
 	return nil
@@ -179,7 +208,7 @@ func (r *Repo) GitTo(ctx context.Context, w io.Writer, stdin io.Reader, env []st
 
 func (r *Repo) run(ctx context.Context, stdin io.Reader, env []string, args ...string) ([]byte, error) {
 	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := command(ctx, "git", args...)
 	cmd.Env = append(r.Env(), env...)
 	cmd.Dir = r.Work
 	cmd.Stdin = stdin
@@ -187,17 +216,17 @@ func (r *Repo) run(ctx context.Context, stdin io.Reader, env []string, args ...s
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
+	if err := reaper.Run(ctx, cmd); err != nil {
 		return out.Bytes(), &Error{Args: args, Stderr: stderr.String(), Err: err}
 	}
 	return out.Bytes(), nil
 }
 
-// Exec runs one of jr2's own programs (ssh-keygen, gpg) in this repository's call directory, with
-// its cleared environment, and answers its stdout.
+// Exec runs one of jr2's own programs (ssh-keygen, gpg), found by Look, in this repository's call
+// directory, with its cleared environment, and answers its stdout.
 func Exec(ctx context.Context, r *Repo, stdin io.Reader, argv ...string) ([]byte, error) {
 	var out, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := command(ctx, argv[0], argv[1:]...)
 	cmd.Env = r.Env()
 	cmd.Dir = r.Work
 	if stdin != nil {
@@ -205,10 +234,24 @@ func Exec(ctx context.Context, r *Repo, stdin io.Reader, argv ...string) ([]byte
 	}
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
+	if err := reaper.Run(ctx, cmd); err != nil {
 		return out.Bytes(), &Error{Args: argv, Stderr: stderr.String(), Err: err}
 	}
 	return out.Bytes(), nil
+}
+
+// Daemon starts one of jr2's own programs, found by Look, in this repository's call directory with
+// its cleared environment, and does not wait: the caller owns the process and waits for it. Its
+// stdout and stderr are discarded.
+func Daemon(ctx context.Context, r *Repo, argv ...string) (*exec.Cmd, error) {
+	cmd := command(ctx, argv[0], argv[1:]...)
+	cmd.Env = r.Env()
+	cmd.Dir = r.Work
+	cmd.WaitDelay = time.Second
+	if err := reaper.Start(ctx, cmd); err != nil {
+		return nil, err
+	}
+	return cmd, nil
 }
 
 // Line runs git and answers its stdout's first line.

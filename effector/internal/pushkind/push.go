@@ -282,8 +282,12 @@ func (c *call) configure(ctx context.Context) error {
 		if _, err := os.Stat(known); err != nil {
 			return errors.New("the push key's known_hosts is not in this Effector's mount")
 		}
-		cmd := fmt.Sprintf("ssh -F /dev/null -i '%s' -o IdentitiesOnly=yes -o IdentityAgent=none "+
-			"-o UserKnownHostsFile='%s' -o StrictHostKeyChecking=yes -o BatchMode=yes", key, known)
+		ssh, err := gitclean.Look("ssh")
+		if err != nil {
+			return fmt.Errorf("the url is ssh, and this Effector's image holds no ssh: %w", err)
+		}
+		cmd := fmt.Sprintf("'%s' -F /dev/null -i '%s' -o IdentitiesOnly=yes -o IdentityAgent=none "+
+			"-o UserKnownHostsFile='%s' -o StrictHostKeyChecking=yes -o BatchMode=yes", ssh, key, known)
 		if _, err := repo.Git(ctx, nil, "config", "core.sshCommand", cmd); err != nil {
 			return err
 		}

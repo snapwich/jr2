@@ -34,8 +34,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   for a token; `sign.identity` or `sign.private.asc` for the signing key; see the Sandbox Effector's objects below),
   `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2 guarantees is stated per kind: for `push` and `upload`,
   git never takes config or hooks from the Agent's repository and no program the Agent's files name runs — the
-  clean-repository procedure of ADR-0067 and the opener below. For a credentialed `command` the Agent's files are the
-  author's choice to run, and the claims are the next bullet's.
+  clean-repository procedure of ADR-0067 and the opener below. jr2's own programs (`git`, `ssh`, `ssh-keygen`, `gpg`,
+  `gpg-agent`, `gpgconf`) run by an absolute path found in one fixed PATH, `/usr/local/bin:/usr/bin:/bin`, never by the
+  PATH the image set: an image that puts a directory of its own first does not choose which `git` runs. For a
+  credentialed `command` the Agent's files are the author's choice to run, and the claims are the next bullet's.
 - **A credentialed `command`'s child is confined with Landlock (B9).** The child runs as the Effector's own uid in the
   Effector's container, where the placement key, every placed secret and the push and signing keys are files that uid
   can read, and its program is often the Agent's code (`npm run deploy`, `make`, `./scripts/release.sh`, a tool's
