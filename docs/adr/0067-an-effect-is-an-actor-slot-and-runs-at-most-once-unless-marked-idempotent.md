@@ -180,9 +180,10 @@ the credentialed `command` — runs there too, its child confined (below).
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing that stays in the group outlives it. In the Harness container a descendant
   that leaves the group (`setsid`) is not killed; it holds no credential. A credentialed command's descendant cannot
-  leave: the Sandbox Effector is its children's subreaper and kills and reaps every process an Effect started, a
-  `setsid` escapee included, before the Effect settles (ADR-0068, B12). A bounded tail (default 4096 characters) is the
-  output; the full stream goes to the run's feed (Instance-token band).
+  leave: its Effect's keeper and the Sandbox Effector are subreapers, and every process an Effect started, a `setsid`
+  escapee included, is killed and reaped before the Effect settles, while a live command's daemon is not another
+  Effect's to kill (ADR-0068, B12). A descendant that keeps the output open does not hold the outcome. A bounded tail
+  (default 4096 characters) is the output; the full stream goes to the run's feed (Instance-token band).
 - **A write-ahead ledger; no second fire the author did not mark.** One row per Effect in the run's blob (ADR-0007,
   ADR-0065): an `intent` row saved at the write, with the snapshot that holds the Effect, before the request leaves; a
   `settled` row with the output, saved at the write just before the transition it drives and kept by the save that

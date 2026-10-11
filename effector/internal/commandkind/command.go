@@ -6,19 +6,21 @@
 //
 // The child runs as the Effector's uid, beside the Effector's key, the secrets the command does
 // not name and the push credentials; its program is often the Agent's code. So it is confined
-// with Landlock before execve (package confine; ADR-0068, B9): the Effector execs itself as the
-// confiner, and the child may read and run the image's system paths, read and write its own
-// scratch, and read the secret files it names — nothing else; not /tmp, which every child would
-// share (B12 rule 3). The tool sees a pinned
-// commit and not the live Worktree, and the output is scrubbed. The Agent's files are the author's
+// with Landlock before execve (package confine; ADR-0068, B9): the Effector runs its own binary
+// as the confiner, under the Effect's keeper, and the child may read and run the image's system
+// paths, read and write its own scratch, and read the secret files it names — nothing else; not
+// /tmp, which every child would share (B12 rule 3). The tool sees a pinned commit and not the
+// live Worktree, and the output is scrubbed. The Agent's files are the author's
 // choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the
 // Agent's files name runs" is not claimed here.
 //
 // The child's env is what the author named — a secret's value, or its file's path — plus PATH,
 // HOME and TMPDIR, and nothing else: not the Effector's key, not another secret. PATH is the
 // Effector's own, which its image set (the tools are the author's); HOME and TMPDIR are the
-// scratch's own. The child starts its own session, registered with its Effect's process groups
-// (package reaper): when the Effect settles, no descendant of it is left.
+// scratch's own. The child runs under a keeper of its Effect's own, which starts its own session,
+// registered with its Effect's process groups, and is the subreaper of what the child starts
+// (package reaper): a daemon the child starts is its Effect's while that Effect is live, and when
+// the Effect settles, no descendant of it is left.
 // The scratch is removed once the outcome is read. Every outcome is output: `exited`, `timeout`,
 // `killed`, `unknown`.
 package commandkind
@@ -190,11 +192,15 @@ func realPath(p string) string {
 	return p
 }
 
-// execute runs argv, confined by rules, in its own session and process group, registered with the
-// Effect's (package reaper); on its timeout the group is killed. The confiner is the process exec
-// starts: it restricts itself and execs argv, so no instruction of argv runs unconfined. The
-// stream is scrubbed as it arrives, across chunk borders, BEFORE it is cut to its tail: a secret
-// that straddles the cut was replaced whole before the cut could split it.
+// execute runs argv, confined by rules, under its Effect's own keeper (package reaper, B12 rule 1):
+// the keeper leads a session and process group of its own, registered with the Effect's, and is
+// the subreaper of everything argv starts, so a daemon argv leaves behind is the keeper's while
+// the Effect is live and never another Effect's stray. The confiner is the process the keeper
+// starts: it restricts itself and execs argv, so no instruction of argv runs unconfined. On the
+// timeout the group is killed; what the keeper held is then the Effector's, and the settle kills
+// it. A descendant that holds the stream open does not hold the outcome: past WaitDelay the
+// stream is closed. The stream is scrubbed as it arrives, across chunk borders, BEFORE it is cut
+// to its tail: a secret that straddles the cut was replaced whole before the cut could split it.
 func execute(ctx context.Context, confiner string, rules confine.Rules, argv []string, dir string, env []string,
 	path string, timeout time.Duration, tailLen int, scrubber *scrub.Scrubber) wire.Output {
 	program := argv[0]
@@ -207,12 +213,22 @@ func execute(ctx context.Context, confiner string, rules confine.Rules, argv []s
 		}
 		program = p
 	}
-	cmd := exec.Command(confiner, append([]string{"confine"}, rules.Args(program, argv)...)...)
+	confined := append([]string{confiner, "confine"}, rules.Args(program, argv)...)
+	cmd := exec.Command(confiner, reaper.KeepArgs(confiner, confined)...)
 	cmd.Dir = dir
 	cmd.Env = env
 	stream := &tailBuffer{limit: 4 * tailLen, scrub: scrubber.Stream()}
 	cmd.Stdout, cmd.Stderr = stream, stream
-	if err := reaper.Start(ctx, cmd); err != nil {
+	cmd.WaitDelay = time.Second
+	report, status, err := os.Pipe()
+	if err != nil {
+		return unknown("the command's status pipe could not be made: " + err.Error())
+	}
+	defer func() { _ = report.Close() }()
+	cmd.ExtraFiles = []*os.File{status}
+	err = reaper.Start(ctx, cmd)
+	_ = status.Close()
+	if err != nil {
 		return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Code: new(127),
 			Tail: fmt.Sprintf("%s: %v\n", argv[0], err)}}
 	}
@@ -220,7 +236,6 @@ func execute(ctx context.Context, confiner string, rules confine.Rules, argv []s
 	go func() { done <- cmd.Wait() }()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	var err error
 	timedOut := false
 	select {
 	case err = <-done:
@@ -239,19 +254,27 @@ func execute(ctx context.Context, confiner string, rules confine.Rules, argv []s
 	if timedOut {
 		return wire.Output{Outcome: wire.OutcomeTimeout, Command: &wire.CommandResult{Tail: tail}}
 	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			return wire.Output{Outcome: wire.OutcomeKilled, Command: &wire.CommandResult{
-				Signal: signalName(ws.Signal()), Tail: tail}}
+	// The child's own end, as its keeper read it; a keeper that wrote none was killed, and its own
+	// end is the answer.
+	ws, kept := reaper.KeptStatus(report)
+	if !kept {
+		var exit *exec.ExitError
+		switch {
+		case errors.As(err, &exit):
+			ws, kept = exit.Sys().(syscall.WaitStatus)
+		case err != nil && !errors.Is(err, exec.ErrWaitDelay):
+			return wire.Output{Outcome: wire.OutcomeUnknown, Reason: "the command's end could not be read: " + err.Error()}
 		}
-		code := exit.ExitCode()
-		return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Code: &code, Tail: tail}}
 	}
-	if err != nil {
-		return wire.Output{Outcome: wire.OutcomeUnknown, Reason: "the command's end could not be read: " + err.Error()}
+	if !kept {
+		return wire.Output{Outcome: wire.OutcomeUnknown, Reason: "the command's end could not be read"}
 	}
-	return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Code: new(0), Tail: tail}}
+	if ws.Signaled() {
+		return wire.Output{Outcome: wire.OutcomeKilled, Command: &wire.CommandResult{
+			Signal: signalName(ws.Signal()), Tail: tail}}
+	}
+	code := ws.ExitStatus()
+	return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Code: &code, Tail: tail}}
 }
 
 var signalNames = map[syscall.Signal]string{

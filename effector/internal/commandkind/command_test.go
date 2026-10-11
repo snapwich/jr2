@@ -11,6 +11,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/confine"
 	"github.com/snapwich/jr2/effector/internal/gitclean"
 	"github.com/snapwich/jr2/effector/internal/gittest"
+	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
@@ -23,6 +24,9 @@ const gitKeyValue = "-----BEGIN OPENSSH PRIVATE KEY----- push"
 // The test binary doubles as the confiner (`effector confine`), as the Effector's own binary does
 // in a pod. Landlock is real here: the host's kernel.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "keep" {
+		os.Exit(reaper.Keep(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "confine" {
 		os.Exit(confine.Main(os.Args[2:]))
 	}

@@ -62,12 +62,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   Effector's container, where the placement key, every placed secret and the push and signing keys are files that uid
   can read, and its program is often the Agent's code (`npm run deploy`, `make`, `./scripts/release.sh`, a tool's
   plugins). Unconfined, it could print a secret in a form the scrubber does not know, or sign a start on loopback with
-  the key. So the Effector does not exec argv itself. It execs its own binary as the confiner,
-  `effector confine <rules> -- <path> <argv...>`, which sets `PR_SET_NO_NEW_PRIVS`, makes a Landlock ruleset, adds one
-  rule per allowed path, calls `landlock_restrict_self`, and only then `execve(argv)`: three raw syscalls (444, 445,
-  446, the same on amd64 and arm64), the standard library only. The thread is locked from the probe to the `execve`, so
-  the domain is the one `execve` keeps. Landlock is an allow-list the kernel enforces and every descendant inherits, and
-  a confined process cannot ptrace a process outside its domain, so `/proc/<effector>/mem` and
+  the key. So the Effector does not exec argv itself. It runs its own binary as the confiner, under the Effect's keeper
+  (B12 rule 1), `effector confine <rules> -- <path> <argv...>`, which sets `PR_SET_NO_NEW_PRIVS`, makes a Landlock
+  ruleset, adds one rule per allowed path, calls `landlock_restrict_self`, and only then `execve(argv)`: three raw
+  syscalls (444, 445, 446, the same on amd64 and arm64), the standard library only. The thread is locked from the probe
+  to the `execve`, so the domain is the one `execve` keeps. Landlock is an allow-list the kernel enforces and every
+  descendant inherits, and a confined process cannot ptrace a process outside its domain, so `/proc/<effector>/mem` and
   `/proc/<effector>/environ` are closed too. The ruleset handles every filesystem right of ABI 1, and `REFER` and
   `TRUNCATE` when the kernel offers ABI 2 and 3. It allows: read and execute on the image's system paths — every
   top-level directory the image holds that is not a denied name, whole, so the rules follow the image and break on no
@@ -97,13 +97,21 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
      another group of its child's session, never into the Effector's own. When the Effect settles, its groups are killed
      (`kill(-pgid, SIGKILL)`), then the Effector scans `/proc` for processes whose parent is the Effector and whose
      group belongs to no live Effect, kills and reaps them, and repeats until none remain. An Effect is settled only
-     after that loop, so a descendant that called `setsid` or double-forked is dead once its Effect's outcome exists.
-     Membership is the process group, and only that. A descendant of a live Effect that leaves its group (an `ssh-agent`
-     a credentialed command starts, any daemon) is in no live Effect's group once the Effector adopts it, so the settle
-     of any other Effect in the same Effector kills it while its own Effect still runs. jr2's own kinds start no such
-     descendant (the push's `gpg-agent` keeps its group, rule 2); a credentialed command that starts a daemon loses it
-     when another Effect beside it settles. This kills more, never less. A rule that tells such a descendant apart from
-     one of a settled Effect is not decided.
+     after that loop, so a descendant that called `setsid` or double-forked is dead once its Effect's outcome exists. A
+     descendant the Effector adopts belongs to no live Effect, because an Effect whose program can start a daemon — a
+     credentialed command, whose program is the author's or the Agent's code — runs under a keeper of its own
+     (`effector keep`), between the Effector and the confiner. The keeper sets `PR_SET_CHILD_SUBREAPER`, starts the
+     confiner in the keeper's own process group and waits; it runs unconfined, outside the child's Landlock domain. A
+     descendant that leaves the group while its Effect is live (an `ssh-agent` from `eval $(ssh-agent)`, any daemon) is
+     then the keeper's, never the Effector's, and the settle of another Effect beside it does not see it. When the child
+     ends, the keeper kills and reaps every process it is the parent of, until none remains, and then reports the
+     child's own end (its exit code, or the signal that killed it) on a pipe of its own, which the child does not hold.
+     When the keeper is killed (the Effect's timeout, a stop), what it held is the Effector's, and its own Effect's
+     settle ends it. A descendant that keeps the command's output open does not hold the outcome: one second after the
+     top process ends, the output is closed. jr2's own kinds start no daemon that leaves its group (the push's
+     `gpg-agent` keeps its group, rule 2), so they need no keeper. The child shares the keeper's uid, so it can kill its
+     own keeper, as it can the Effector (B9's residual): its daemon is then the Effector's, and the settle of another
+     Effect can end it — a fault of its own run, not a leak.
   2. **Two classes, one lock per Sandbox Effector.** `gpg` is a push that signs with `sign.gpgKey`; `command` is a
      credentialed command. Effects of one class run together (commands with commands, GPG pushes with GPG pushes: both
      are jr2's code); a `gpg` Effect waits while any `command` Effect is live, and a `command` waits while any `gpg`

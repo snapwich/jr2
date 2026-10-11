@@ -70,6 +70,100 @@ func TestASetsidEscapeeOfACredentialedCommandIsDeadOnceItSettles(t *testing.T) {
 	}
 }
 
+// commandStartWithin is commandStart with its own timeout.
+func commandStartWithin(script string, timeoutMs int) string {
+	return strings.Replace(commandStart(script), `"timeoutMs":30000`, fmt.Sprintf(`"timeoutMs":%d`, timeoutMs), 1)
+}
+
+// escapee reads the pid a script printed as `escapee=<pid>`.
+func escapee(t *testing.T, got string) int {
+	t.Helper()
+	m := regexp.MustCompile(`escapee=(\d+)`).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("got %s", got)
+	}
+	pid, _ := strconv.Atoi(m[1])
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	return pid
+}
+
+// B12 rule 1, and the outcome a command's own end gives: an escapee that keeps the command's
+// output open neither holds the Effect past its top process's end nor outlives it.
+func TestAnEscapeeThatHoldsTheOutputOpenEndsWithItsCommand(t *testing.T) {
+	requireTool(t, "setsid")
+	p := gittest.NewPod(t, "work")
+	p.Commit("an escape", map[string]string{"escape.sh": "setsid sleep 25 &\necho \"escapee=$!\"\n"})
+	e, out := startSandboxEffectorWith(t, p, true)
+	if e == nil {
+		t.Fatalf("the effector never served: %s", out)
+	}
+	started := time.Now()
+	got := e.run(t, "hold-1", commandStartWithin("escape.sh", 20000))
+	if d := time.Since(started); d > 10*time.Second {
+		t.Fatalf("a command whose top process ends at once settled after %s: %s", d, got)
+	}
+	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, `"code":0`) {
+		t.Fatalf("got %s", got)
+	}
+	if pid := escapee(t, got); alive(pid) {
+		t.Fatalf("the escapee %d outlived its settled Effect", pid)
+	}
+}
+
+// The timeout bounds a credentialed command whose escapee keeps its output open: the Effect
+// settles `timeout` near its timeout, and the escapee is dead once it has.
+func TestATimeoutBoundsACommandWhoseEscapeeHoldsTheOutputOpen(t *testing.T) {
+	requireTool(t, "setsid")
+	p := gittest.NewPod(t, "work")
+	p.Commit("an escape", map[string]string{"escape.sh": "setsid sleep 300 &\necho \"escapee=$!\"\nexec sleep 300\n"})
+	e, out := startSandboxEffectorWith(t, p, true)
+	if e == nil {
+		t.Fatalf("the effector never served: %s", out)
+	}
+	started := time.Now()
+	got := e.run(t, "hold-2", commandStartWithin("escape.sh", 2000))
+	if d := time.Since(started); d > 10*time.Second {
+		t.Fatalf("a command whose timeout is 2 s settled after %s: %s", d, got)
+	}
+	if !strings.Contains(got, `"outcome":"timeout"`) {
+		t.Fatalf("got %s", got)
+	}
+	if pid := escapee(t, got); alive(pid) {
+		t.Fatalf("the escapee %d outlived its settled Effect", pid)
+	}
+}
+
+// B12 rule 1, "belong to no live Effect": a daemon a LIVE credentialed command starts — it leaves
+// the command's process group, and its parent ends — outlives the settle of another Effect beside
+// it, and is dead once its own Effect has settled.
+func TestAnotherEffectsSettleLeavesALiveCommandsDaemon(t *testing.T) {
+	requireTool(t, "setsid")
+	p := gittest.NewPod(t, "work")
+	p.Commit("a daemon", map[string]string{
+		"daemon.sh": "( setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > \"$TMPDIR/d\" )\n" +
+			"echo \"escapee=$(cat \"$TMPDIR/d\")\"\nsleep 4\n" +
+			"kill -0 \"$(cat \"$TMPDIR/d\")\" && echo daemon-alive || echo daemon-dead\n",
+		"quick.sh": "echo quick\n",
+	})
+	e, out := startSandboxEffectorWith(t, p, true)
+	if e == nil {
+		t.Fatalf("the effector never served: %s", out)
+	}
+	done := make(chan string, 1)
+	go func() { done <- e.run(t, "daemon-1", commandStart("daemon.sh")) }()
+	time.Sleep(time.Second)
+	if quick := e.run(t, "quick-1", commandStart("quick.sh")); !strings.Contains(quick, `"code":0`) {
+		t.Fatalf("got %s", quick)
+	}
+	got := <-done
+	if !strings.Contains(got, "daemon-alive") {
+		t.Fatalf("another Effect's settle killed a live command's daemon: %s", got)
+	}
+	if pid := escapee(t, got); alive(pid) {
+		t.Fatalf("the daemon %d outlived its own settled Effect", pid)
+	}
+}
+
 // B12 rule 3: each child's TMPDIR is its own, in its Effect's scratch, and goes with it; /tmp is
 // out of the ruleset, so a write there fails and the next child reads nothing the last one left.
 func TestAChildsTmpdirIsItsOwnAndTheNextChildCannotReadIt(t *testing.T) {

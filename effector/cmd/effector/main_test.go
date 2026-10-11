@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/snapwich/jr2/effector/internal/confine"
+	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/sign"
 )
 
@@ -30,6 +31,9 @@ import (
 // main() — so these tests drive the real process, its env, its mount layout and its SIGTERM.
 func TestMain(m *testing.M) {
 	// A credentialed command's confiner: the Effector execs its own binary, which here is this one.
+	if len(os.Args) > 1 && os.Args[1] == "keep" {
+		os.Exit(reaper.Keep(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "confine" {
 		os.Exit(confine.Main(os.Args[2:]))
 	}

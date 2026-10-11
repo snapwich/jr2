@@ -19,6 +19,8 @@
 //	NODE_NAME             the node the pod runs on (the downward API), for the Landlock refusal
 //
 // `effector git-credential get` is git's credential helper for a token push (package pushkind).
+// `effector keep -- <path> <argv...>` is one credentialed command's own subreaper, between the
+// Effector and the confiner (package reaper, B12 rule 1).
 // `effector confine <rules> -- <path> <argv...>` is a credentialed command's confiner: it
 // restricts itself with Landlock and execs argv (package confine; ADR-0068, B9).
 //
@@ -76,6 +78,9 @@ const placementKeyName = "effector-key"
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "git-credential" {
 		os.Exit(pushkind.Helper(os.Args[2:], os.Stdin, os.Stdout))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "keep" {
+		os.Exit(reaper.Keep(os.Args[2:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "confine" {
 		os.Exit(confine.Main(os.Args[2:]))
