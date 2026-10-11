@@ -51,12 +51,12 @@ func newFixture(t *testing.T, sign string) *fixture {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		run(t, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", signerEmail, "-f", filepath.Join(dir, "identity"))
+		run(t, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", signerEmail, "-f", filepath.Join(dir, secrets.SignSSHFile))
 		// A Secret mount's mode: group-readable, which ssh-keygen refuses unless the key is copied.
-		if err := os.Chmod(filepath.Join(dir, "identity"), 0o440); err != nil {
+		if err := os.Chmod(filepath.Join(dir, secrets.SignSSHFile), 0o440); err != nil {
 			t.Fatal(err)
 		}
-		pub, _ := os.ReadFile(filepath.Join(dir, "identity.pub"))
+		pub, _ := os.ReadFile(filepath.Join(dir, secrets.SignSSHFile+".pub"))
 		f.signer = strings.TrimSpace(string(pub))
 		entry.Sign = &secrets.GitSign{SSHKey: "sign", Name: signerName, Email: signerEmail}
 	case "gpg", "gpg-passphrase":
@@ -76,7 +76,7 @@ func newFixture(t *testing.T, sign string) *fixture {
 			"--ignore-time-conflict", "--quick-gen-key", signerName+" <"+signerEmail+">", "ed25519", "sign", "never")
 		out := run(t, "gpg", "--batch", "--homedir", home, "--pinentry-mode", "loopback", "--passphrase", pass,
 			"--armor", "--export-secret-keys", signerEmail)
-		if err := os.WriteFile(filepath.Join(dir, "private.asc"), []byte(out), 0o400); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, secrets.SignGPGFile), []byte(out), 0o400); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = exec.Command("gpgconf", "--homedir", home, "--kill", "all").Run() })

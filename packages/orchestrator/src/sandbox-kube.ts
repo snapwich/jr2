@@ -96,6 +96,7 @@ import {
   sandboxEffectorService,
   type SandboxEffectorManifest,
 } from "./sandbox-effector.ts";
+import { GIT_PUSH_MANIFEST_KEY, placedPushRefusal, readGitPushManifest } from "./git-push.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
 import {
   CONVERSATIONS_DIR,
@@ -191,15 +192,20 @@ export { sandboxEffectorSecret } from "./sandbox-effector.ts";
 
 /**
  * The Sandbox Effector's container (ADR-0067, ADR-0068), for the Sandbox CR's `sidecars` beside the
- * Custodian, so the operator changes nothing. The provision adds it for a `workspace()` whose body
+ * Custodian: the operator schedules it as it does any sidecar, and projects the CR's `gitCredentials`
+ * into it alone, by its name `effector`. The provision adds it for a `workspace()` whose body
  * holds an Effect placed there (`push`, `upload`, a credentialed `command`) — which `jr2 up` read
  * off the Machines and declared in the pod's manifest. Its image is the Sandbox Image unless the
  * `workspace()` names `effector: { image }`; its command is jr2's binary on the runtime volume; it
  * runs as its image's own `USER`. Its mounts: `/work`, `/repos/<key>` and `/opt/jr2` read-only,
  * the secrets its Effects name and the credentials its pushes spend at `/run/jr2/secrets` (0400),
  * its per-pod key (derived from the Sandbox's name, like the Sandbox token) and `effector.json` at
- * `/run/jr2/effector`, and an emptyDir scratch that is its `$HOME`. No Custodian, no
- * `harness.env`, and no env beyond where its mounts are and the downward API's name and address.
+ * `/run/jr2/effector`, and an emptyDir scratch that is its `$HOME`. The push credentials are not
+ * the provision's to mount: the operator projects each entry Secret the CR's `gitCredentials`
+ * names into `/run/jr2/secrets/@git/<name>/` (B10). No Custodian, no `harness.env`, and no env
+ * beyond where its mounts are and the downward API's name, address and node — the node is what
+ * its Landlock refusal names. It says why it ended in its termination message, which the operator
+ * publishes on the Sandbox's status (`status.effector`).
  */
 export function sandboxEffectorContainer(opts: {
   image: string;
@@ -229,8 +235,10 @@ export function sandboxEffectorContainer(opts: {
       ...(opts.caVolume ? [env("JR2_CA_FILE", `${EFFECTOR_CA_MOUNT}/ca.crt`)] : []),
       { name: "POD_NAME", valueFrom: { fieldRef: { fieldPath: "metadata.name" } } },
       { name: "POD_IP", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } },
+      { name: "NODE_NAME", valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } } },
     ],
     ports: [{ name: "effector", containerPort: SANDBOX_EFFECTOR_PORT }],
+    terminationMessagePolicy: "FallbackToLogsOnError",
     volumeMounts: [
       { name: "work", mountPath: WORK_ROOT, readOnly: true },
       RUNTIME_VOLUME_MOUNT,
@@ -720,6 +728,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     custodian: CustodianComposition,
     split: SizeSplit,
     effectorManifest?: SandboxEffectorManifest,
+    gitCredentials: readonly string[] = [],
   ) => {
     const seat = await seatFor(refs, req.image);
     const keys = repos.map((r) => r.key);
@@ -792,6 +801,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // asked. Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in
         // a Sandbox can `gc` the object store its `--shared` clones borrow from.
         repos: repos.map(({ key, url }) => ({ key, url })),
+        // The push Secret of each `git.credentials` entry this Sandbox's pushes spend (B10), by
+        // name, as a Repo CR's `secretRef` names one: the operator projects each into the Sandbox
+        // Effector alone, at `/run/jr2/secrets/@git/<name>/`. No value passes through here.
+        ...(gitCredentials.length ? { gitCredentials: gitCredentials.map((name) => ({ name })) } : {}),
         volumes: [
           // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
           // both load-bearing: every jr2-owned seat runs as an unprivileged uid, which cannot mkdir
@@ -1006,6 +1019,38 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   };
 
   /**
+   * The push Secrets a Sandbox's pushes spend (ADR-0051, B10): for each pushed Repo Slot, the url
+   * this provision attaches — static, per-run or `customize()`-bound alike — matched to its
+   * `git.credentials` entry (longest prefix, the attach match), and that entry's Secret as `jr2 up`
+   * wrote it (`git-push.json`: names only). Refused with the fix, by the same rule `jr2 up` applies
+   * to a static Binding: no entry, a local path or `git://`, `http://`, an entry whose credentials
+   * the url's scheme cannot spend or that `jr2 up` placed none for, `sign` with no `sign` field.
+   */
+  const gitCredentialsFor = async (
+    name: string,
+    repos: readonly ProvisionedRepo[],
+    pushes: ReadonlyArray<{ slot: string; sign: boolean }>,
+  ): Promise<string[]> => {
+    if (pushes.length === 0) return [];
+    const manifest = await readGitPushManifest(join(heldDir, GIT_PUSH_MANIFEST_KEY));
+    const names: string[] = [];
+    for (const { slot, sign } of pushes) {
+      const repo = repos.find((r) => r.slot === slot);
+      if (repo === undefined) {
+        throw new Error(
+          `Sandbox "${name}" cannot be provisioned: its Workspace pushes Repo Slot "${slot}", which this ` +
+            "provision does not attach",
+        );
+      }
+      const at = `Sandbox "${name}" refuses the push of Repo Slot "${slot}" (${repo.url})`;
+      const out = placedPushRefusal({ at, url: repo.url, sign }, credentials, manifest);
+      if ("refusal" in out) throw new Error(out.refusal);
+      if (!names.includes(out.entry.secret)) names.push(out.entry.secret);
+    }
+    return names;
+  };
+
+  /**
    * What the operator will hold this Sandbox's Ready on, and what an attach reads afterwards
    * (ADR-0051). `Ready` with reason `RepoCloneFailed` is terminal for the provision — the cache
    * agent could not clone onto the node the pod landed on, and the reason names it — so the wait
@@ -1170,7 +1215,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // The Sandbox Effector (ADR-0068): present when `jr2 up` placed an Effect of this Workspace
       // there, and declared it in the pod's manifest beside the Held one; absent otherwise.
       const effectorManifest = await readSandboxEffectorManifest(join(heldDir, effectorManifestKey(pod)));
-      const cr = await crFor(req, refs, repos, custodian, split, effectorManifest);
+      // Its pushes' credentials (ADR-0051, B10): each pushed slot's url, as this run binds it, is
+      // matched against the fence, and the entry's push Secret is named on the CR — or the push is
+      // refused here, before anything is written, as a per-run url outside the fence is.
+      const gitCredentials = await gitCredentialsFor(req.name, req.repos, effectorManifest?.pushes ?? []);
+      const cr = await crFor(req, refs, repos, custodian, split, effectorManifest, gitCredentials);
 
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
       // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
@@ -1254,6 +1303,12 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           if (status?.phase !== "Ready" && (harness?.restartCount ?? 0) >= CRASH_LOOP_RESTARTS) {
             throw new Error(crashLoopError(name, harness!));
           }
+          // A Sandbox Effector that ended before the pod was ever Ready (ADR-0068): it ends only
+          // for a start it cannot serve — a node whose kernel cannot confine a credentialed
+          // command's child, a mount it cannot read — and says so in its termination message,
+          // which no retry mends. Named at once, before any Turn.
+          const effector = status?.effector?.lastTerminated;
+          if (status?.phase !== "Ready" && effector !== undefined) throw new Error(effectorStartError(name, effector));
           if (ready?.reason !== undefined && REPO_HELD.has(ready.reason)) held = true;
           if (status?.phase !== "Ready") return undefined;
           // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
@@ -1490,6 +1545,20 @@ function crashLoopError(name: string, harness: NonNullable<NonNullable<SandboxOb
     (last?.reason === OOM_KILLED
       ? " — it passed its memory limit, so give the Workspace a larger Size (ADR-0060)."
       : ".")
+  );
+}
+
+/** A Sandbox Effector that could not start, in its own words (its termination message). */
+function effectorStartError(
+  name: string,
+  last: NonNullable<NonNullable<NonNullable<SandboxObject["status"]>["effector"]>["lastTerminated"]>,
+): string {
+  const words = last.message?.trim();
+  return (
+    `Sandbox "${name}" cannot start: its Sandbox Effector ended before the pod was Ready ` +
+    `(${last.reason ?? "?"}, exit ${last.exitCode ?? "?"})` +
+    (words ? `: ${words}` : "") +
+    ` — see \`kubectl logs ${name} -c effector --previous\` (ADR-0068)`
   );
 }
 

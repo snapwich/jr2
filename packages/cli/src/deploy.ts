@@ -52,6 +52,9 @@ import {
   effectorManifestKey,
   LABEL_EFFECTOR_POD,
   sandboxEffectorObjectsOf,
+  GIT_PUSH_MANIFEST_KEY,
+  LABEL_GIT_PUSH,
+  type GitPushManifest,
   type HarnessConfig,
   type HeldManifest,
   type PriorityClasses,
@@ -291,6 +294,8 @@ export function instanceObjects(opts: {
   /** Each Workspace's Sandbox Effector (ADR-0068, B5.1): its manifest rides `jr2-held`, its
    * `jr2-effector-<pod>` Secret holds its literals and `effector.json`. */
   sandboxEffectors?: readonly SandboxEffectorPlan[];
+  /** Each `git.credentials` entry's push Secret and the manifest the provision reads (B10). */
+  gitPush?: { secrets: ReadonlyArray<{ name: string; data: Record<string, string> }>; manifest: GitPushManifest };
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const priority = priorityClassNames(opts.priorityClasses);
@@ -406,12 +411,29 @@ export function instanceObjects(opts: {
         ...Object.fromEntries(
           effectors.map((e) => [effectorManifestKey(e.plan.pod), JSON.stringify(e.manifest, null, 2)]),
         ),
+        // The push manifest (B10): which entries have a push Secret, and what each can spend.
+        // Names only; the provision names the matched entry's Secret on the Sandbox CR.
+        ...(opts.gitPush?.manifest.entries.length
+          ? { [GIT_PUSH_MANIFEST_KEY]: JSON.stringify(opts.gitPush.manifest, null, 2) }
+          : {}),
       },
     },
+    // Each entry's push Secret (B10): what it pushes and signs with, in Flux's key names where
+    // Flux has them. The operator projects one into the Sandbox Effector of a Sandbox whose push
+    // the entry's match covers; nothing else mounts it.
+    ...(opts.gitPush?.secrets ?? []).map(
+      (s): KubeManifest => ({
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: meta(s.name, { [LABEL_GIT_PUSH]: "true" }),
+        type: "Opaque",
+        data: s.data,
+      }),
+    ),
     ...heldSecretObjects(opts.held, meta),
-    // Each Sandbox Effector's own Secret (ADR-0068): the literals its Effects name, each push
-    // token, and `effector.json`. A `valueFrom` and a deploy key stay in the user's Secret,
-    // projected by reference at provision.
+    // Each Sandbox Effector's own Secret (ADR-0068): the literals its Effects name and
+    // `effector.json`. A `valueFrom` stays in the user's Secret, projected by reference at
+    // provision.
     ...effectors.map(
       (e): KubeManifest => ({
         apiVersion: "v1",

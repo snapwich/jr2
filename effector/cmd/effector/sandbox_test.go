@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/base32"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -26,15 +27,31 @@ const awsSecret = "aws-secret-value-0123456789"
 // secrets and, at `@git`, the push credentials — a secret named `git` beside them included.
 func startSandboxEffector(t *testing.T, p *gittest.Pod) *effector {
 	t.Helper()
+	e, out := startSandboxEffectorWith(t, p, false)
+	if e == nil {
+		t.Fatalf("the effector never served: %s", out)
+	}
+	return e
+}
+
+// startSandboxEffectorWith starts one, its effector.json saying whether its Workspace holds a
+// credentialed command, with extra env; it answers nil and the output when the process ended
+// before it served.
+func startSandboxEffectorWith(t *testing.T, p *gittest.Pod, commands bool, extra ...string) (*effector, string) {
+	t.Helper()
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, "secrets", "@git")
-	must(t, os.MkdirAll(filepath.Join(gitDir, "push"), 0o700))
+	// The entry's own Secret, as the operator projects it: what it is, and its token.
+	entry := filepath.Join(gitDir, "jr2-git-push-0a1b2c3d")
+	must(t, os.MkdirAll(entry, 0o700))
 	must(t, os.WriteFile(filepath.Join(dir, "key"), []byte(placementKey+"\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "secrets", "aws"), []byte(awsSecret+"\n"), 0o400))
 	must(t, os.WriteFile(filepath.Join(dir, "secrets", "git"), []byte("git-named-secret-value\n"), 0o400))
-	must(t, os.WriteFile(filepath.Join(gitDir, "push", "token"), []byte("unused-token-value\n"), 0o400))
-	must(t, os.WriteFile(filepath.Join(dir, "effector.json"),
-		[]byte(`{"version":1,"placement":"sandbox","targets":[],"git":[{"match":"*","push":{"token":"push"}}]}`), 0o400))
+	must(t, os.WriteFile(filepath.Join(entry, "entry.json"), []byte(`{"match":"*","order":0,"push":["token"]}`), 0o400))
+	must(t, os.WriteFile(filepath.Join(entry, "password"), []byte("unused-token-value\n"), 0o400))
+	config := `{"version":1,"placement":"sandbox","targets":[]` +
+		map[bool]string{true: `,"commands":true}`, false: `}`}[commands]
+	must(t, os.WriteFile(filepath.Join(dir, "effector.json"), []byte(config), 0o400))
 	listen := freePort(t)
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(),
@@ -49,19 +66,28 @@ func startSandboxEffector(t *testing.T, p *gittest.Pod) *effector {
 		"JR2_EFFECTOR_SCRATCH="+filepath.Join(dir, "scratch"),
 		"POD_NAME=sandbox-effector",
 		"POD_IP=127.0.0.1",
+		"NODE_NAME=node-1",
 	)
+	cmd.Env = append(cmd.Env, extra...)
 	out := &lockedBuffer{}
 	cmd.Stdout, cmd.Stderr = out, out
 	must(t, cmd.Start())
 	e := &effector{cmd: cmd, base: "http://127.0.0.1:" + listen, out: out, keyFile: filepath.Join(dir, "key")}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	ended := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(ended) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-ended })
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if resp, err := http.Get(e.base + "/healthz"); err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == 200 {
-				return e
+				return e, ""
 			}
+		}
+		select {
+		case <-ended:
+			return nil, out.String()
+		default:
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the effector never served: %s", out.String())
@@ -91,28 +117,69 @@ func TestASandboxEffectorPinsAPushToTheAgentsTipAndPushesIt(t *testing.T) {
 	}
 }
 
-// A credentialed command's child would run as the Effector's uid: a file the Agent committed that
-// the command runs could read the placement key, the secrets the command does not name and the
-// push credentials, and send them on transformed past the scrubber. With the key, bash in the
-// Harness container signs any start. So the Sandbox Effector refuses the kind before anything runs
-// (ADR-0068), until the child is kept from the mount.
-func TestASandboxEffectorRefusesACredentialedCommandAndRunsNothing(t *testing.T) {
+// A credentialed command runs in the Sandbox Effector, and its child is confined (ADR-0068, B9):
+// a committed script that reads the placement key — the Agent's code, which the author's argv
+// runs — ends with a permission error, and the answer carries no key. Its named secret it reads,
+// from env and from its file.
+func TestASandboxEffectorRunsACredentialedCommandWhoseChildCannotReadTheKey(t *testing.T) {
 	p := gittest.NewPod(t, "work")
-	e := startSandboxEffector(t, p)
-	marker := filepath.Join(t.TempDir(), "ran")
-	p.Commit("a committed script", map[string]string{"leak.sh": "base32 -w0 < '" + e.keyFile + "' > '" + marker + "'\n"})
+	e, out := startSandboxEffectorWith(t, p, true)
+	if e == nil {
+		t.Fatalf("the effector never served: %s", out)
+	}
+	key := e.keyFile
+	p.Commit("a committed script", map[string]string{
+		"leak.sh": "base32 -w0 < '" + key + "'; cat '" + key + "'; sh -c \"cat '" + key + "'\"\n",
+		"read.sh": "printf 'env=%s\\n' \"$AWS\"; printf 'file=%s\\n' \"$(cat \"$AWS_FILE\")\"\n",
+	})
+	start := func(id, script string) string {
+		body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
+			`"cache":"app-key"},"branch":"work","argv":["sh","` + script + `"],"env":{"AWS":{"secret":"aws"},` +
+			`"AWS_FILE":{"secret":"aws","path":true}},"tail":4000},"timeoutMs":30000}`
+		if status, raw := e.call(t, "POST", "/effects/"+id, body); status != 202 {
+			t.Fatalf("got %d %s", status, raw)
+		}
+		return e.wait(t, id)
+	}
+	leaked := start("leak-1", "leak.sh")
+	if !strings.Contains(leaked, `"outcome":"exited"`) || !strings.Contains(leaked, "Permission denied") ||
+		strings.Contains(leaked, `"code":0`) {
+		t.Fatalf("got %s", leaked)
+	}
+	for _, v := range []string{placementKey, base32.StdEncoding.EncodeToString([]byte(placementKey))[:16]} {
+		if strings.Contains(leaked, v) {
+			t.Fatalf("the answer carries the key: %s", leaked)
+		}
+	}
+	read := start("read-1", "read.sh")
+	if !strings.Contains(read, `env=[secret:aws]\nfile=[secret:aws]\n`) || !strings.Contains(read, `"code":0`) {
+		t.Fatalf("got %s", read)
+	}
+}
+
+// The Landlock probe (ADR-0068, B9): on a node whose kernel cannot confine a child, a Sandbox
+// Effector whose Workspace holds a credentialed command never becomes ready, and says why with the
+// node's name — its termination message, which the Sandbox's status carries. One whose Workspace
+// holds none serves its other kinds and refuses a command start.
+func TestTheLandlockProbeStopsTheStartWhenTheWorkspaceHoldsACredentialedCommand(t *testing.T) {
+	p := gittest.NewPod(t, "work")
+	e, out := startSandboxEffectorWith(t, p, true, "JR2_EFFECTOR_TEST_NO_LANDLOCK=1")
+	if e != nil {
+		t.Fatal("the effector served on a node that cannot confine its command's child")
+	}
+	if !strings.Contains(out, "landlock: unavailable on node node-1") || !strings.Contains(out, "EOPNOTSUPP") {
+		t.Fatalf("got %s", out)
+	}
+	e, out = startSandboxEffectorWith(t, p, false, "JR2_EFFECTOR_TEST_NO_LANDLOCK=1")
+	if e == nil {
+		t.Fatalf("a Workspace with no credentialed command stopped: %s", out)
+	}
 	body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
-		`"cache":"app-key"},"branch":"work","argv":["sh","leak.sh"],"env":{"AWS":{"secret":"aws"}},"tail":4000},` +
+		`"cache":"app-key"},"branch":"work","argv":["true"],"env":{"AWS":{"secret":"aws"}},"tail":4000},` +
 		`"timeoutMs":30000}`
-	status, raw := e.call(t, "POST", "/effects/leak-1", body)
-	if status != 400 || !strings.Contains(raw, "no Sandbox Effector runs") {
+	if status, raw := e.call(t, "POST", "/effects/c-1", body); status != 400 ||
+		!strings.Contains(raw, "landlock: unavailable on node node-1") {
 		t.Fatalf("got %d %s", status, raw)
-	}
-	if status, raw := e.call(t, "GET", "/effects/leak-1", ""); status != 404 {
-		t.Fatalf("the refused start exists: %d %s", status, raw)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatal("the committed script ran")
 	}
 }
 

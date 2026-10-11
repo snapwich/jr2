@@ -47,19 +47,62 @@ func TestASecretNamedGitAndThePushCredentialsShareTheMount(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "@git", "push-0"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(dir, "@git", "push-0"), "token", "push-token-value")
+	write(t, filepath.Join(dir, "@git", "push-0"), "password", "push-token-value")
+	write(t, filepath.Join(dir, "@git", "push-0"), "username", "x-access-token")
 	got, err := Read(dir)
 	if err != nil || len(got) != 1 || got["git"] != "git-secret-value" {
 		t.Fatalf("got %v, %v", got, err)
 	}
 	creds, err := ReadGit(filepath.Join(dir, "@git"))
-	if err != nil || creds["git:push-0/token"] != "push-token-value" {
+	if err != nil || len(creds) != 1 || creds["git:push-0/password"] != "push-token-value" {
 		t.Fatalf("got %v, %v", creds, err)
 	}
 	// A file whose name is no secret's is still refused.
 	write(t, dir, "@other", "some-value-here")
 	if _, err := Read(dir); err == nil || !strings.Contains(err.Error(), "not a secret name") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// Each entry's own Secret, projected at @git/<its name>/ (ADR-0051, B10): its `entry.json` says
+// what it is, and the directory is its push and its signing key both. The list's order breaks a
+// tie on the match's length.
+func TestTheGitEntriesAreReadOffTheMount(t *testing.T) {
+	dir := t.TempDir()
+	for name, entry := range map[string]string{
+		"jr2-git-push-aaaa": `{"match":"*","order":1,"push":["ssh","token"]}`,
+		"jr2-git-push-bbbb": `{"match":"github.com/ourorg/","order":0,"push":["ssh"],` +
+			`"sign":{"format":"ssh","name":"jr2 bot","email":"bot@example.com"}}`,
+	} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(dir, name), EntryFile, entry)
+	}
+	got, err := ReadGitEntries(dir)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	c := &Config{Git: got}
+	ssh := c.EntryFor("", "git@github.com:ourorg/app.git")
+	if ssh == nil || ssh.Push.SSHKey != "jr2-git-push-bbbb" || ssh.Sign.SSHKey != "jr2-git-push-bbbb" ||
+		ssh.Sign.Email != "bot@example.com" {
+		t.Fatalf("got %+v", ssh)
+	}
+	if other := c.EntryFor("", "https://gitlab.com/x/y.git"); other == nil || other.Push.Token != "jr2-git-push-aaaa" ||
+		other.Push.SSHKey != "jr2-git-push-aaaa" || other.Sign != nil {
+		t.Fatalf("got %+v", other)
+	}
+	for _, bad := range []string{`{"match":"*","order":0,"push":["both"]}`, `{"match":"*","order":0,"push":["ssh"],"x":1}`,
+		`{"match":"","order":0,"push":["ssh"]}`, `{"match":"*","order":0,"push":[]}`,
+		`{"match":"*","order":0,"push":["ssh"],"sign":{"format":"ssh","name":"","email":"e@x"}}`} {
+		write(t, filepath.Join(dir, "jr2-git-push-aaaa"), EntryFile, bad)
+		if _, err := ReadGitEntries(dir); err == nil {
+			t.Errorf("%s was read", bad)
+		}
+	}
+	if got, err := ReadGitEntries(filepath.Join(dir, "absent")); err != nil || got != nil {
+		t.Fatalf("no mount: %v %v", got, err)
 	}
 }
 

@@ -276,6 +276,36 @@ spec:
                   of ADR-0005. Unset leaves volume ownership to the images' own uids.
                 format: int64
                 type: integer
+              gitCredentials:
+                description: |-
+                  GitCredentials are the push Secrets of the `git.credentials` entries
+                  this Sandbox's pushes spend (ADR-0051, ADR-0068): one per entry the
+                  Orchestrator matched to a pushed Repo Slot's url at provision, named
+                  as a Repo's secretRef names its Secret. The operator projects each
+                  into the sidecar named "effector" — the Sandbox Effector — beside its
+                  secrets, at `@git/<name>/` in the projected volume that container
+                  mounts at /run/jr2/secrets, one file per key jr2 writes there
+                  (`entry.json`, `username`, `password`, `identity`, `identity.pub`,
+                  `known_hosts`, `sign.identity`, `sign.private.asc`), each when the
+                  Secret holds it. No other container gets it. The operator reads no
+                  Secret: the kubelet projects it.
+                items:
+                  description: |-
+                    SandboxGitCredential names one entry's push Secret, in the Sandbox's
+                    namespace.
+                  properties:
+                    name:
+                      description: Name is the Secret's name.
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               idleTimeout:
                 description: |-
                   IdleTimeout garbage-collects the Sandbox after this duration with no
@@ -2067,8 +2097,8 @@ spec:
                   needs it mounts the same volume by name. Scheduling prefers nodes whose
                   `Repo` status reports the key present; `Ready` waits for every key to be
                   present on the pod's node and fetched since this Sandbox was created.
-                  This is the whole of what the CRD knows about git: clone and worktree
-                  stay the Orchestrator's post-Ready step (ADR-0004).
+                  With gitCredentials, this is the whole of what the CRD knows about git:
+                  clone and worktree stay the Orchestrator's post-Ready step (ADR-0004).
                 items:
                   description: SandboxRepo names one Repo a Sandbox attaches.
                   properties:
@@ -5989,6 +6019,47 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              effector:
+                description: |-
+                  Effector is the same report for the sidecar named "effector", the
+                  Sandbox Effector (ADR-0068): its restarts and how it last ended. An
+                  Effector that cannot serve says why in its termination message — a
+                  node whose kernel cannot confine a credentialed command's child says
+                  `landlock: unavailable on node <node> (...)` — so a provision fails on
+                  it before any Turn. Absent when the pod has no Effector, or until the
+                  kubelet reports it.
+                properties:
+                  lastTerminated:
+                    description: |-
+                      LastTerminated is how the container's previous run ended — the Pod's
+                      `lastState.terminated`. Absent while the container has never restarted.
+                    properties:
+                      exitCode:
+                        description: ExitCode is the run's exit code (137 for a kernel
+                          kill).
+                        format: int32
+                        type: integer
+                      finishedAt:
+                        description: FinishedAt is when the run ended.
+                        format: date-time
+                        type: string
+                      message:
+                        description: |-
+                          Message is the kubelet's termination message. For the Harness container
+                          it is the run's last log lines (`FallbackToLogsOnError`, ADR-0063), so a
+                          Harness that dies before Ready is named in its own words.
+                        type: string
+                      reason:
+                        description: Reason is the kubelet's reason, e.g. `OOMKilled`,
+                          `Error`, `Completed`.
+                        type: string
+                    type: object
+                  restartCount:
+                    description: RestartCount is the container's restartCount on the
+                      Sandbox's Pod.
+                    format: int32
+                    type: integer
+                type: object
               endpoint:
                 description: |-
                   Endpoint is the in-cluster Service DNS the Orchestrator uses to reach the

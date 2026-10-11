@@ -269,12 +269,11 @@ decision generalizes that container. It holds every credential the Harness in it
   cannot be swapped into a signature. `jr2 up` warns. The fix is the Effector
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): an Effect secret is the real value, in
   a container the Agent executes nothing in. Its `http` and `upload` kinds send a bearer, a Basic pair or a header the
-  author writes. The kind that runs a signing tool there, the credentialed `command`
-  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), is written and
-  refused at `jr2 up`: its child would run as the Effector's uid and could read the Effector's key and every secret of
-  its mount. Until it runs, a gateway that holds the credential, with a held key for the gateway, is the way.
-  `ANTHROPIC_OAUTH_TOKEN` is held like a key, but pi sends a Stand-in as `x-api-key`, which an OAuth token cannot ride;
-  hold it as `ANTHROPIC_AUTH_TOKEN` (`Authorization: Bearer`) instead.
+  author writes, and the credentialed `command`
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)) runs the signing tool
+  there (`terraform`, `aws`, `gcloud`), its child confined with Landlock from the Effector's key and every secret it
+  does not name. `ANTHROPIC_OAUTH_TOKEN` is held like a key, but pi sends a Stand-in as `x-api-key`, which an OAuth
+  token cannot ride; hold it as `ANTHROPIC_AUTH_TOKEN` (`Authorization: Bearer`) instead.
 - **Rotation of a value** reaches a live Sandbox only when its pod is replaced.
 - **The walk reads definitions, not Turns.** A pod's model keys come from the models its Agents' definitions name. A
   Turn whose invocation overrides the model with another provider's (`AgentTurnInput.model`) finds no key for that

@@ -13,7 +13,8 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   lint, `make test` and `make lint`, the standard library only. Go because the Effector is the trust boundary, and the
   safe file opener the experiments proved (`os.Root`, `openat2`) is Go's. It is configured by its env, which names where
   its own mount holds things and never a value: `JR2_EFFECTOR_PORT` (default 8082), `JR2_EFFECTOR_KEY`,
-  `JR2_EFFECTOR_CONFIG`, `JR2_EFFECTOR_SECRETS`, `JR2_CA_FILE`, `JR2_EFFECTOR_DRAIN_SECONDS`, `POD_NAME`, `POD_IP`.
+  `JR2_EFFECTOR_CONFIG`, `JR2_EFFECTOR_SECRETS`, `JR2_CA_FILE`, `JR2_EFFECTOR_DRAIN_SECONDS`, `POD_NAME`, `POD_IP`,
+  `NODE_NAME`.
 - **The binary rides `/opt/jr2`; no Effector image is published.** The `jr2-harness` image builds it in a Go stage and
   carries it at `/opt/jr2/bin/effector`, beside `rg` and `jr2-upload-pack`
   ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). A container becomes an Effector
@@ -25,24 +26,49 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   credentials an author keeps out of the Agent's image. Rejected: a published `jr2-effector` tool image (git, ssh, gpg)
   — author-built images would deprecate it, as `jr2-adapter` was.
 - **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file. A Sandbox Effector — the
-  binary with `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs `http`, `upload` and `push`
-  (ADR-0067); the Instance Effector refuses the last two, and a file body, as a defect. No Effector runs a credentialed
-  `command` (below). Its env names where its mount holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches,
-  read-only), `JR2_EFFECTOR_GIT` (the push credentials, a directory each: `identity` and `known_hosts` for an ssh key,
-  `token` for a token, `private.asc` for a GPG key), `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2
-  guarantees is stated per kind: for `push` and `upload`, git never takes config or hooks from the Agent's repository
-  and no program the Agent's files name runs — the clean-repository procedure of ADR-0067 and the opener below.
-- **A credentialed `command` is refused, at `jr2 up` and by the Sandbox Effector.** Its child would run as the
-  Effector's own uid, so it could read every file of the Effector's mount: the placement key, the Effect secrets it does
-  not name, and the push and signing credentials under the git mount. Its argv may run a file the Agent wrote (a tool's
-  plugins, a `local-exec`, a `credential_process`: the author's choice, ADR-0067), and egress from a Sandbox pod is open
-  (ADR-0059), so that file could send those values out transformed past the scrubber; with the placement key, bash in
-  the Harness container could sign any start — any argv with any secret, any push. That breaks the two claims this ADR
-  exists for: the Agent never reads or spends an Effect secret, and no Effect is reachable from bash. So `jr2 up`
-  refuses a `command` whose env names a secret, before it builds or applies anything, and names the gateway of ADR-0059
-  as the way until then; and the Sandbox Effector answers its start 400 and runs nothing. The kind's code is written
-  (the Orchestrator's `command(argv, { env, pin })`, the Effector's command runner, ADR-0067) and stays behind both
-  refusals until the child is kept from the Effector's mount; how is not decided.
+  binary with `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs `http`, `upload`, `push` and a
+  credentialed `command` (ADR-0067); the Instance Effector refuses the last three, and a file body, as a defect. Its env
+  names where its mount holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only), `JR2_EFFECTOR_GIT`
+  (the push credentials: one directory per `git.credentials` entry the Sandbox's pushes spend, the entry's own Secret as
+  the operator projects it — `entry.json`, what the entry is; `identity` and `known_hosts` for an ssh key; `password`
+  for a token; `sign.identity` or `sign.private.asc` for the signing key; see the Sandbox Effector's objects below),
+  `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2 guarantees is stated per kind: for `push` and `upload`,
+  git never takes config or hooks from the Agent's repository and no program the Agent's files name runs — the
+  clean-repository procedure of ADR-0067 and the opener below. For a credentialed `command` the Agent's files are the
+  author's choice to run, and the claims are the next bullet's.
+- **A credentialed `command`'s child is confined with Landlock (B9).** The child runs as the Effector's own uid in the
+  Effector's container, where the placement key, every placed secret and the push and signing keys are files that uid
+  can read, and its program is often the Agent's code (`npm run deploy`, `make`, `./scripts/release.sh`, a tool's
+  plugins). Unconfined, it could print a secret in a form the scrubber does not know, or sign a start on loopback with
+  the key. So the Effector does not exec argv itself. It execs its own binary as the confiner,
+  `effector confine <rules> -- <path> <argv...>`, which sets `PR_SET_NO_NEW_PRIVS`, makes a Landlock ruleset, adds one
+  rule per allowed path, calls `landlock_restrict_self`, and only then `execve(argv)`: three raw syscalls (444, 445,
+  446, the same on amd64 and arm64), the standard library only. The thread is locked from the probe to the `execve`, so
+  the domain is the one `execve` keeps. Landlock is an allow-list the kernel enforces and every descendant inherits, and
+  a confined process cannot ptrace a process outside its domain, so `/proc/<effector>/mem` and
+  `/proc/<effector>/environ` are closed too. The ruleset handles every filesystem right of ABI 1, and `REFER` and
+  `TRUNCATE` when the kernel offers ABI 2 and 3. It allows: read and execute on the image's system paths — every entry
+  the image holds from `/` down, except the Effector's own paths and what lies beneath them, walked one level at a time
+  around them, so the rules follow the image (`/usr`, `/bin`, `/lib*`, `/etc`, `/opt/jr2`, and what else it has) and no
+  list jr2 wrote breaks on another image; a symbolic link only when what it names holds none of them; read and write on
+  `/tmp`, the writable devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`) and
+  the Effect's own scratch (B4.5, B4.9: the checkout and `$HOME`); read on each secret file the command names, by
+  `secret("x")` and `.path` alike. It denies by omission the Effector's own paths: its key and config
+  (`/run/jr2/effector`), every secret the command does not name, the push credentials (`@git`), the Worktree (`/work`,
+  B4.5), the node caches (`/repos`) and the rest of its scratch — another Effect's, and a push's copied keys. Network is
+  not restricted. Any failure before `execve` ends the confiner with exit 126 and its reason on stderr: nothing runs
+  unconfined. The design needs ABI 1; measured from a hardened non-root pod (every capability dropped, `RuntimeDefault`
+  seccomp): kind on WSL2 6.6 — ABI 3; the home cluster's arm64 nodes (6.8) — ABI 4; spark (6.11, arm64) — ABI 5.
+- **Fail-closed at the pod, not at `jr2 up`.** A Sandbox Effector probes Landlock when it starts
+  (`landlock_create_ruleset` with `LANDLOCK_CREATE_RULESET_VERSION`). When its Workspace holds a credentialed command
+  (`effector.json`'s `commands`, which `jr2 up` writes) and the probe fails, it does not become ready: it ends, and its
+  termination message — written to `/dev/termination-log`, the container's `FallbackToLogsOnError` the fallback — says
+  `landlock: unavailable on node <node> (<why>)`, with the node from the downward API (`NODE_NAME`). The operator copies
+  the Effector container's restarts and last end onto the Sandbox's status (`status.effector`), and the provision fails
+  on an Effector that ended before the pod was Ready, in those words, before any Turn. A Workspace that holds no
+  credentialed command starts on such a node and refuses a command start (400, with the same reason). No `jr2 up` probe:
+  one probe Job reports one node, which says nothing in a mixed cluster, and in a uniform one the provision says the
+  same one step later; a Node's `kernelVersion` does not say whether `landlock` is in its LSM list.
 - **The wire.** `POST /effects/<id>` starts an Effect and answers at once (202, `state: running`). A second `POST` with
   the same id starts nothing and attaches (200). The answer to a `push` start names the commit it runs against
   (`pinned`), read before the answer, so the Orchestrator writes it to the ledger's intent row. `GET /effects/<id>`
@@ -113,9 +139,9 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   literal and a value in the user's own Secret alike (see the secrets list below); the Effector's refusal is for a
   Secret edited after the converge.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
-  trailing `\n` or `\r\n` is taken off, as the Custodian does. A push credential's secret files (`identity`, `token`,
-  `private.asc`) are held and scrubbed like every Effect secret. A value changed after the start reaches the Effector
-  when its pod rolls; the template digest below makes the next `jr2 up` roll it.
+  trailing `\n` or `\r\n` is taken off, as the Custodian does. A push credential's secret files (`identity`, `password`,
+  `sign.identity`, `sign.private.asc`) are held and scrubbed like every Effect secret. A value changed after the start
+  reaches the Effector when its pod rolls; the template digest below makes the next `jr2 up` roll it.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
   in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
@@ -161,10 +187,11 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   `placement:` key: naming is the placement. `jr2 up` prints one line per secret with its placements, and one per pod
   with what it holds (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
   `the Instance Effector: holds jira`,
-  `Workspace of workflow "coding": Sandbox Effector (image the Sandbox Image) holds aws; pushes with git.credentials "*"`).
-  Right after the walk, before anything is built or applied, it refuses an Effect of any kind or a `workspace()` that
-  names a secret the list does not hold (with the line to add) and a literal Effect secret shorter than 8 characters,
-  saying why. A `valueFrom` names a key of the user's Secret, which `jr2 up` checks once it reaches the cluster: the key
+  `Workspace of workflow "coding": Sandbox Effector (image the Sandbox Image) holds aws; pushes Repo Slot "app" with git.credentials "*"`
+  — for a slot the run or a `customize()` binds, `with the git.credentials entry its url matches at provision`). Right
+  after the walk, before anything is built or applied, it refuses an Effect of any kind or a `workspace()` that names a
+  secret the list does not hold (with the line to add) and a literal Effect secret shorter than 8 characters, saying
+  why. A `valueFrom` names a key of the user's Secret, which `jr2 up` checks once it reaches the cluster: the key
   exists, and its value is 8 characters or more, measured as the Effector reads the file (bytes, one trailing newline
   off). `jr2 up` keeps that length and a keyed digest of the value, never the value, and refuses a short one with the
   same line. The digest rolls each long-lived pod that reads the value once at start: the Instance Effector (its
@@ -195,17 +222,21 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
     files under `/run/jr2/secrets`, mode 0400; the kubelet makes them readable by the pod's `fsGroup`, and the pod has
     one container. `harness.env` and `harness.envFrom` may not name this Secret (ADR-0059's R13).
 - **A Workspace's Sandbox Effector's objects** (B5.1, B8). `jr2 up` reads, for each `workspace()`, the Effects placed
-  there below it, down to the next `workspace()` — every `push` and `upload`, from their plain data, statically — and
-  writes two objects for a Workspace with one, none for one without:
+  there below it, down to the next `workspace()` — every `push`, `upload` and credentialed `command`, from their plain
+  data, statically — and writes two objects for a Workspace with one, none for one without:
   - the **Secret** `jr2-effector-<pod>` (labelled with its pod key, deleted when its Workspace no longer places an
-    Effect there): each literal Effect secret those Effects name, each push token, and `effector.json` — the targets its
-    uploads call, and the `git.credentials` entries its pushes spend, each credential named by a directory under the git
-    mount;
+    Effect there): each literal Effect secret those Effects name, and `effector.json` — the targets its uploads call,
+    and `commands: true` when it holds a credentialed command;
   - the **manifest** `effector-<pod>.json` in `jr2-held` beside the pod's Held manifest: names only — the projected
-    sources of the Effector's `/run/jr2/secrets`: that Secret's keys, each `valueFrom` key of the user's own Secret and
-    each key of a deploy or signing key a push spends (`identity`, `known_hosts`, `private.asc`), all by reference, at
-    `@git/<dir>/<file>` for a credential — a directory no secret's file can take, since `@` is no character of a
-    secret's name.
+    sources of the Effector's `/run/jr2/secrets` (that Secret's keys, and each `valueFrom` key of the user's own Secret
+    by reference) and its pushes by Repo Slot (`pushes: [{ slot, sign }]`).
+
+  No push credential is placed per Workspace (B10). `jr2 up` writes each `git.credentials` entry's push and sign
+  credentials into that entry's own Secret (ADR-0051), and at provision the Orchestrator matches each pushed slot's url
+  — static, per-run or `customize()`-bound, one path — to its entry and names that entry's Secret on the Sandbox CR
+  (`gitCredentials`). The operator projects it into the Effector's `/run/jr2/secrets` at `@git/<name>/` — a directory no
+  secret's file can take, since `@` is no character of a secret's name — and into no other container. The Orchestrator
+  reads no value.
 
   The provision reads the pod's manifest, as it reads its Held one, and adds the `effector` container when one is there
   (ADR-0005): its image is the `workspace()`'s `effector: { image }`, resolved like the User Container's, or the Sandbox
@@ -239,21 +270,30 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
 - **Not a goal of scrubbing:** a transformed secret (a hash, a truncation, an encoding not listed above), a partial
   echo, a side channel. The claim is that an Effector does not return a secret it holds, in the forms it sent or in
   common encodings.
-- **No credentialed `command` runs.** The tools that sign with a credential (`terraform`, `aws` with SigV4, `gcloud`
-  with ADC) are the reason the kind exists, and none of them runs in an Effector yet: a gateway that holds the
-  credential, with a held key for the gateway, is the way (ADR-0059). Its child must first be kept from the Effector's
-  mount — the key, the secrets it does not name, the push credentials — and even then a file the Agent wrote that the
-  author's argv runs reads the secret the command names, and egress is open; the claim the kind can make is decided with
-  the mechanism.
+- **What a credentialed command's child can still do.** It reads the secret the command names — the author put it there,
+  and a file the Agent wrote that the argv runs reads it too — and egress is open, so the claim is the three of
+  ADR-0067: the Agent never reads or spends the secret from its own container, the tool sees a pinned commit and not the
+  live Worktree, and the output is scrubbed. It shares the Effector's uid, so it can signal the Effector (a fault of its
+  own run, not a leak) and connect to its port, where nothing without the key is accepted. Rejected: a second container
+  per credentialed placement — its child would still share a uid with that container's Effector and could spend that
+  container's key, so it would need Landlock anyway, plus a key, a Secret, a port and a NetworkPolicy per placement.
+- **A node with no Landlock runs no credentialed command.** Its Sandboxes that hold one fail at provision, naming the
+  node; the fix is a kernel with `landlock` in its LSM list. The home cluster's nodes are arm64, so the Effector binary
+  and the Kit images need `linux/arm64` builds there.
 - An `unknown` outcome is the Machine's to route. jr2 sends an `http` call again only when the author marked it
   `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
+- The Effector's Go tests run Landlock for real on the host's kernel: a child that reads the key, an unnamed secret or
+  `@git`, or writes the Worktree, ends with a permission error and an answer with no secret in it; one that reads its
+  named secret from env and from its file succeeds; a child of the child is confined too; a failing probe stops the
+  start of a Workspace that holds a credentialed command, with the node in the reason.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built
   (`Bearer <value>`, a Basic pair, the url, a header) cannot pass as clean; two replicas and an Orchestrator restart
   during a call, and a rollout during a call, must give one send; and the port takeover — a process in the Harness
   container binds a stopped Sandbox Effector's port — must get a signed start that names a secret and holds no value of
-  it, and the Effect must settle `unknown`.
+  it, and the Effect must settle `unknown`; and a credentialed command reads its secret from env and from its file,
+  scrubbed, says `dirty` over an uncommitted edit, and a child of its child cannot read the Effector's key.
 - **Open gap: the Orchestrator's Role reads Effect secrets.** Its Role can get and list every Secret in its namespace
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), `jr2-instance-effector` and every user Secret a
   `valueFrom` names among them. So a fault that gives code execution in the Orchestrator reaches the Effect secrets

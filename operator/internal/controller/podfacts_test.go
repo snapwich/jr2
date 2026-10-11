@@ -79,7 +79,7 @@ func TestHarnessStatus(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := &corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: tc.statuses}}
-			if got := harnessStatus(pod); !reflect.DeepEqual(got, tc.want) {
+			if got := containerStatus(pod, harnessContainerName); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("harnessStatus = %+v, want %+v", got, tc.want)
 			}
 		})

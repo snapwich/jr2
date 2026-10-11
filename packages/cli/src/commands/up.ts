@@ -72,8 +72,12 @@ import {
   partsOf,
   workspacePodsOf,
   refuseEffectSecrets,
-  refuseCredentialedCommands,
   LABEL_EFFECTOR_POD,
+  LABEL_GIT_PUSH,
+  gitPushPlansOf,
+  repoIdentity,
+  type GitPushManifest,
+  type SandboxEffectorPlan,
   secretPlacementsOf,
   storedValueLength,
   effectorKey,
@@ -322,7 +326,6 @@ export async function up(args: string[], io: Io): Promise<number> {
       : {}),
   };
   refuseEffectSecrets(config, placementWalk);
-  refuseCredentialedCommands(placementWalk);
   // Who may send what, per state (ADR-0015): the audience rule's answer for each registered
   // Machine and every Machine it composes, as its doc carries it — so an author reads who holds a
   // pick before a run finds out. Then what the build found legal and suspect: a warning, never a
@@ -923,7 +926,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // declared — each Harness pod gets the Held secrets something in it names, the Instance Effector
   // what its Effects name. The walk's refusals ran above; a `valueFrom` the user's Secrets do not
   // hold is refused here, before the instance objects are applied.
-  const placements = secretPlacementsOf(config, placementWalk, { secretKeys, valueLength, env: (n) => io.env[n] });
+  const placements = secretPlacementsOf(config, placementWalk, { secretKeys, valueLength });
   for (const line of placements.report) activity(io, line);
   for (const warning of placements.warnings) activity(io, `warning: ${warning}`);
   const held = await resolveHeld(io, kube, {
@@ -944,6 +947,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   // notice it hands back is owed to the END of the converge — a generated key is dead until a human
   // registers it, and by then this line has scrolled away.
   const gitSsh = await ensureGitSsh(io, kube, config, carried.repos, namespace, ctx, values.yes === true);
+
+  // --- push credentials (ADR-0051, B10): one Secret per git.credentials entry, never per pod ----
+  // After the deploy keys exist (a generated one included), before anything else is applied: a
+  // static Binding whose entry cannot push is refused here.
+  const gitPush = await resolveGitPush(io, kube, config, placements.sandbox, namespace, ctx);
 
   // --- provider preflight (ADR-0019): probe the endpoint FROM INSIDE the cluster ----------------
   await preflightProvider(io, kube, config, agents, namespace, ctx, caPem);
@@ -968,9 +976,22 @@ export async function up(args: string[], io: Io): Promise<number> {
       repoCache: carried.composesSandbox ? { image: operatorImage!, placement: config.sandbox } : undefined,
       ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
       sandboxEffectors: placements.sandbox,
+      gitPush,
     }),
     ...ctx,
   });
+  // An entry whose push Secret this converge did not write loses it: a dropped entry, a token
+  // unset, or no push left anywhere.
+  const pushSecrets = new Set(gitPush.secrets.map((s) => s.name));
+  for (const secret of await kube.listJson<KubeObject>({
+    kind: "secret",
+    selector: LABEL_GIT_PUSH,
+    namespace,
+    ...ctx,
+  })) {
+    if (pushSecrets.has(secret.metadata.name)) continue;
+    await kube.deleteObject({ kind: "secret", name: secret.metadata.name, namespace, ...ctx });
+  }
   // A Workspace whose body no longer places an Effect in its Sandbox Effector loses its Secret;
   // its manifest went with the ConfigMap's data above, so the next provision adds no container.
   const effectorPods = new Set(placements.sandbox.map((p) => p.pod));
@@ -1496,6 +1517,123 @@ type PodObject = {
  * landed in, the key nobody has registered yet, and the Repos that stay uncloneable until somebody
  * does. A supplied key produces none of this — it is registered already. */
 type GitSshNotice = { secret: string; publicKey: string; urls: string[] };
+
+/** What `jr2 up` writes for the push credentials (B10): each entry's Secret, its data base64, and
+ * the manifest the provision reads. */
+export type GitPushObjects = {
+  secrets: Array<{ name: string; data: Record<string, string> }>;
+  manifest: GitPushManifest;
+};
+
+/**
+ * Each `git.credentials` entry's push Secret (ADR-0051, B10), when any Workspace pushes: the
+ * entry's token from `.env` (Flux's `username`/`password`), and the keys of the Secrets its
+ * `sshKey`, `push.sshKey` and `sign` name, copied as data — base64 to base64, never decoded — so
+ * one Secret holds what the entry pushes and signs with, and the provision names it on the Sandbox
+ * of a push whose url the entry matches. An entry with nothing it can push with is not written,
+ * and says why. A push on a slot the Machine binds to a url is then checked against what was
+ * written: the token unset, the key's Secret absent, the signing key's Secret absent — each
+ * refused with its fix.
+ */
+async function resolveGitPush(
+  io: Io,
+  kube: KubeAdmin,
+  config: JR2Config,
+  sandbox: readonly SandboxEffectorPlan[],
+  namespace: string,
+  ctx: { context?: string },
+): Promise<GitPushObjects> {
+  const none: GitPushObjects = { secrets: [], manifest: { version: 1, entries: [] } };
+  if (!sandbox.some((p) => p.pushes.length > 0)) return none;
+  const { plans, skipped } = gitPushPlansOf(config.git?.credentials ?? [], (n) => io.env[n]);
+  const read = new Map<string, Record<string, string> | undefined>();
+  const dataOf = async (secret: string) => {
+    if (!read.has(secret)) {
+      const found = await kube.getJson<KubeObject & { data?: Record<string, string> }>({
+        kind: "secret",
+        name: secret,
+        namespace,
+        ...ctx,
+      });
+      read.set(secret, found ? (found.data ?? {}) : undefined);
+    }
+    return read.get(secret);
+  };
+  const out: GitPushObjects = { secrets: [], manifest: { version: 1, entries: [] } };
+  for (const plan of plans) {
+    const data: Record<string, string> = {};
+    let sshMissing: string | undefined;
+    let signMissing: string | undefined;
+    for (const source of plan.sources) {
+      if ("literal" in source) {
+        data[source.key] = Buffer.from(source.literal).toString("base64");
+        continue;
+      }
+      const held = await dataOf(source.from.secret);
+      const value = held?.[source.from.key];
+      if (value !== undefined) {
+        data[source.key] = value;
+        continue;
+      }
+      if (source.optional) continue;
+      const why =
+        held === undefined
+          ? `the Secret "${source.from.secret}" does not exist in namespace ${namespace}`
+          : `the Secret "${source.from.secret}" holds no key ${source.from.key}`;
+      if (source.key.startsWith("sign.")) signMissing ??= why;
+      else sshMissing ??= why;
+      // Not a refusal: the Secret may be written later (a scenario writes it, a human creates it).
+      // A push under the entry that needs it is refused at provision until `jr2 up` runs again.
+      activity(
+        io,
+        `warning: git.credentials "${plan.entry.match}": ${why} — a push that needs it is refused at provision ` +
+          "until it exists and jr2 up runs again (ADR-0051)",
+      );
+    }
+    const entry = { ...plan.entry };
+    if (sshMissing !== undefined) {
+      entry.push = entry.push.filter((k) => k !== "ssh");
+      for (const k of ["identity", "identity.pub", "known_hosts"]) delete data[k];
+    }
+    if (signMissing !== undefined) {
+      delete entry.sign;
+      for (const k of ["sign.identity", "sign.private.asc"]) delete data[k];
+      const json = JSON.parse(Buffer.from(data["entry.json"]!, "base64").toString("utf8")) as Record<string, unknown>;
+      delete json.sign;
+      data["entry.json"] = Buffer.from(JSON.stringify({ ...json, push: entry.push })).toString("base64");
+    } else if (sshMissing !== undefined) {
+      const json = JSON.parse(Buffer.from(data["entry.json"]!, "base64").toString("utf8")) as Record<string, unknown>;
+      data["entry.json"] = Buffer.from(JSON.stringify({ ...json, push: entry.push })).toString("base64");
+    }
+    if (entry.push.length === 0) continue;
+    out.secrets.push({ name: entry.secret, data });
+    out.manifest.entries.push(entry);
+    activity(
+      io,
+      `git.credentials "${entry.match}": push Secret ${entry.secret} — pushes over ` +
+        `${entry.push.map((k) => (k === "ssh" ? "ssh" : "https")).join(" and ")}` +
+        `${entry.sign ? `; signs with ${entry.sign}` : ""}`,
+    );
+  }
+  for (const [match, why] of skipped) activity(io, `git.credentials "${match}": ${why}`);
+  // A slot the Machine binds to an https url: its token's value is known now. An unset one is
+  // refused, with the fix, as the clone's token is.
+  for (const plan of sandbox) {
+    for (const push of plan.pushes) {
+      if (push.url === undefined || push.match === undefined) continue;
+      if (repoIdentity(push.url).scheme === "ssh") continue;
+      const placed = out.manifest.entries.find((e) => e.match === push.match);
+      const why = skipped.get(push.match);
+      if (!placed?.push.includes("token") && why !== undefined) {
+        throw new Error(
+          `${plan.label}: the push of Repo Slot "${push.slot}" (${push.url}): git.credentials entry ` +
+            `"${push.match}" cannot push — ${why} (ADR-0051)`,
+        );
+      }
+    }
+  }
+  return out;
+}
 
 /** Where the git ssh key comes from — the three sources ADR-0047 offers, as a pick. */
 type GitSshSource = { kind: "generate" } | { kind: "file"; path: string } | { kind: "paste" };

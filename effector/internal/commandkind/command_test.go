@@ -2,36 +2,65 @@ package commandkind
 
 import (
 	"context"
+	"encoding/base32"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/snapwich/jr2/effector/internal/confine"
 	"github.com/snapwich/jr2/effector/internal/gittest"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
 const secretValue = "aws-secret-0123456789"
+const keyValue = "an-effector-placement-key-0123456789abcdef"
+const otherValue = "other-secret-value"
+const gitKeyValue = "-----BEGIN OPENSSH PRIVATE KEY----- push"
 
+// The test binary doubles as the confiner (`effector confine`), as the Effector's own binary does
+// in a pod. Landlock is real here: the host's kernel.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "confine" {
+		os.Exit(confine.Main(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
+
+// setup is a Sandbox Effector's mount around a pod: its key, two secrets (the command names one),
+// a push key at @git, and its scratch.
 func setup(t *testing.T) (*gittest.Pod, *Runner) {
 	t.Helper()
 	p := gittest.NewPod(t, "work")
 	dir := filepath.Join(p.Root, "secrets")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
+	keyDir := filepath.Join(p.Root, "effector")
+	for _, d := range []string{filepath.Join(dir, "@git", "jr2-git-push-1"), keyDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "aws"), []byte(secretValue), 0o400); err != nil {
-		t.Fatal(err)
+	for file, value := range map[string]string{
+		filepath.Join(dir, "aws"):                                secretValue,
+		filepath.Join(dir, "other"):                              otherValue,
+		filepath.Join(dir, "@git", "jr2-git-push-1", "identity"): gitKeyValue,
+		filepath.Join(keyDir, "key"):                             keyValue,
+	} {
+		if err := os.WriteFile(file, []byte(value), 0o400); err != nil {
+			t.Fatal(err)
+		}
 	}
-	held := map[string]string{"aws": secretValue, "other": "other-secret-value"}
+	held := map[string]string{"aws": secretValue, "other": otherValue}
+	scratch := filepath.Join(p.Root, "scratch")
 	return p, &Runner{
 		Secrets:    held,
 		SecretsDir: dir,
 		WorkRoot:   p.Work,
 		ReposRoot:  filepath.Dir(p.Cache),
-		Scratch:    filepath.Join(p.Root, "scratch"),
+		Scratch:    scratch,
 		Scrubber:   scrub.New(held),
+		Confiner:   os.Args[0],
+		Deny:       []string{keyDir, dir, p.Work, filepath.Dir(p.Cache), scratch},
 	}
 }
 
@@ -219,5 +248,64 @@ func TestACommandFindsItsToolInTheEffectorsPath(t *testing.T) {
 	out := r.Run(context.Background(), req)
 	if out.Outcome != wire.OutcomeExited || *out.Command.Code != 0 || out.Command.Tail != "deployed "+r.Path+"\n" {
 		t.Fatalf("got %+v %+v", out, out.Command)
+	}
+}
+
+// The child of a credentialed command is confined (ADR-0068, B9): a committed script — the
+// Agent's code, run by the author's argv — that reads the placement key, a secret the command does
+// not name or the push key at @git, or writes into the Worktree, ends with a permission error, and
+// the answer carries no secret. A child of the child inherits the confinement.
+func TestTheChildCannotReachTheKeyAnUnnamedSecretGitOrTheWorktree(t *testing.T) {
+	p, r := setup(t)
+	p.Commit("one", map[string]string{"a.txt": "a\n"})
+	key := filepath.Join(p.Root, "effector", "key")
+	for name, script := range map[string]string{
+		"the placement key":            "cat " + key,
+		"the key, base32":              "base32 -w0 < " + key,
+		"an unnamed secret":            "cat " + filepath.Join(r.SecretsDir, "other"),
+		"the push key at @git":         "cat " + filepath.Join(r.SecretsDir, "@git", "jr2-git-push-1", "identity"),
+		"a write into the Worktree":    "echo x > " + filepath.Join(p.Tree, "planted.txt"),
+		"the key from a grandchild":    "sh -c 'sh -c \"cat " + key + "\"'",
+		"the Effector's scratch above": "ls " + r.Scratch,
+	} {
+		out := r.Run(context.Background(), request(t, p, script, ""))
+		if out.Outcome != wire.OutcomeExited || out.Command.Code == nil || *out.Command.Code == 0 {
+			t.Errorf("%s: the child succeeded: %+v %+v", name, out, out.Command)
+			continue
+		}
+		tail := out.Command.Tail
+		if !strings.Contains(tail, "Permission denied") {
+			t.Errorf("%s: no permission error: %q", name, tail)
+		}
+		for _, v := range []string{keyValue, otherValue, gitKeyValue, base32.StdEncoding.EncodeToString([]byte(keyValue))[:16]} {
+			if strings.Contains(tail, v) {
+				t.Errorf("%s: the answer carries a secret: %q", name, tail)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(p.Tree, "planted.txt")); !os.IsNotExist(err) {
+		t.Fatal("the child wrote into the Worktree")
+	}
+}
+
+// What the command names it reads, from env and from its file, and so does its child; it works in
+// its own scratch and in /tmp.
+func TestTheChildReadsItsNamedSecretAndWritesItsScratch(t *testing.T) {
+	p, r := setup(t)
+	p.Commit("one", map[string]string{"a.txt": "a\n"})
+	out := r.Run(context.Background(), request(t, p, `sh -c 'cat "$AWS_FILE"' > got && test "$(cat got)" = "$AWS_SECRET" `+
+		`&& echo ok > "$HOME/x" && cat "$HOME/x" && cat a.txt`, ""))
+	if out.Outcome != wire.OutcomeExited || *out.Command.Code != 0 || out.Command.Tail != "ok\na\n" {
+		t.Fatalf("got %+v %+v", out, out.Command)
+	}
+}
+
+// A node whose kernel cannot confine the child runs no credentialed command: the start is refused.
+func TestAnUnconfinableNodeRefusesTheCommand(t *testing.T) {
+	p, r := setup(t)
+	p.Commit("one", nil)
+	r.Unconfinable = "landlock: unavailable on node n1 (the kernel has no Landlock (ENOSYS))"
+	if got := r.Missing(request(t, p, "true", "")); !strings.Contains(got, "landlock: unavailable on node n1") {
+		t.Fatalf("got %q", got)
 	}
 }

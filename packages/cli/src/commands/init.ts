@@ -117,7 +117,8 @@ export default defineConfig({
     // attach refuses it, so nothing can spend this cluster's credential against an arbitrary host. \`*\` is
     // today's two implicit defaults made visible (JR2_GIT_TOKEN from .env for https, the jr2-git-ssh Secret
     // for ssh). Narrow it to your hosts (\`match: "github.com/yourorg/"\`) before anything untrusted can start
-    // a run. The longest match wins; the url's scheme picks token vs sshKey.
+    // a run. The longest match wins; the url's scheme picks token vs sshKey. It also PUSHES: a \`push()\` whose
+    // Repo Slot url it matches — a per-run url included — spends the same token or key (ADR-0051, ADR-0067).
     credentials: [{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }],
   },
   // Every secret of the Instance, one list (ADR-0068). Where each goes is read, never declared — a pod gets

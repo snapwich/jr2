@@ -6,7 +6,7 @@ wrote a raw xstate promise that a restart ran again. jr2 builds four kinds: `com
 `http`, call a URL; `upload`, send a Worktree file to a URL; and `push`, push the Workspace's branch to its Repo Slot's
 Binding. An Effect that holds a secret runs in an Effector
 ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A `command` whose env names a secret —
-the credentialed `command` — is written and refused (below).
+the credentialed `command` — runs there too, its child confined (below).
 
 ## Decision
 
@@ -64,23 +64,26 @@ the credentialed `command` — is written and refused (below).
   `path` segments and a JSON or text body. So an Agent's param reaches a path segment or a body, never the host, a
   header or a secret. It runs in the Instance Effector, which builds the request and holds the secrets (ADR-0068); the
   Orchestrator signs the call and holds none.
-- **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`, refused.**
-  `jr2 up` refuses it before it builds or applies anything, and the Sandbox Effector answers its start 400 and runs
-  nothing (ADR-0068): its child would run as the Effector's uid and could read the Effector's key, the secrets it does
-  not name and the push credentials, and its argv may run a file the Agent wrote. The kind is written behind both
-  refusals, as follows, until the child is kept from the Effector's mount. It would run in the Sandbox Effector, against
-  one commit: the Agent's branch tip when it starts, or — with `pin` — the commit the Effect's input names (`{ sha }`,
-  one a Gate approved). That commit is checked out into a fresh scratch of the Effect's own by the push's import
-  procedure (below), so the Agent's uncommitted edits are never seen; the answer carries `dirty: true` beside the output
-  when the Worktree held some (a status in jr2's clean repository over a copy of the Worktree's index, against the
-  Worktree's own HEAD — never the pin, so the commits the Agent made after an approved one are not edits — read as data;
-  when it cannot tell, it says dirty). The child's env is what the author named — a secret's value, or its file's path —
-  plus `PATH` and `HOME`, and nothing else; `PATH` is the Effector container's own, as its image set it (the tools are
-  the author's), and `argv[0]` is looked up there; `HOME` is the scratch's, and the scratch is removed once the outcome
-  is read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the
+- **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`.** Naming a
+  secret is what places it: it runs in the Sandbox Effector of the Workspace whose body invokes it, with no `placement:`
+  key. Its child runs as the Effector's uid beside the Effector's key, the secrets it does not name and the push
+  credentials, and its argv may run a file the Agent wrote, so the Effector confines the child with Landlock before
+  `execve` (ADR-0068): it may read and run the image's system paths, read and write its own scratch and `/tmp`, and read
+  the secret files it names — nothing else. A node whose kernel cannot confine it runs none: the Effector of a Workspace
+  that holds one does not become ready there, and the provision fails naming the node (ADR-0068). It runs against one
+  commit: the Agent's branch tip when it starts, or — with `pin` — the commit the Effect's input names (`{ sha }`, one a
+  Gate approved). That commit is checked out into a fresh scratch of the Effect's own by the push's import procedure
+  (below), so the Agent's uncommitted edits are never seen; the answer carries `dirty: true` beside the output when the
+  Worktree held some (a status in jr2's clean repository over a copy of the Worktree's index, against the Worktree's own
+  HEAD — never the pin, so the commits the Agent made after an approved one are not edits — read as data; when it cannot
+  tell, it says dirty). The child's env is what the author named — a secret's value, or its file's path — plus `PATH`
+  and `HOME`, and nothing else; `PATH` is the Effector container's own, as its image set it (the tools are the
+  author's), and `argv[0]` is looked up there; `HOME` is the scratch's, and the scratch is removed once the outcome is
+  read. Its output is scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the
   author's choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files
-  name runs" is not claimed for it; and a program the Agent wrote that it runs can read what the child can read, which
-  is why the kind is refused. The tool sees a pinned commit, not the live Worktree.
+  name runs" is not claimed for it. Its claims are three: the Agent never reads or spends the secret (a container it
+  cannot exec in, and a child confined from every other secret and from the Effector's key), the tool sees a pinned
+  commit and not the live Worktree, and the output is scrubbed.
 - **An `upload` is an `http` definition whose body is a Worktree file.**
   `upload({ method?, url, headers?, auth?, input?, file, contentType?, slot?, timeout?, maxBody?, idempotent? })`:
   `file(input)` returns the file's path relative to the Repo Slot's Worktree (and path segments, as `request` gives
@@ -92,26 +95,28 @@ the credentialed `command` — is written and refused (below).
   (Consequences).
 - **A `push` pushes the Workspace's branch to its Repo Slot's Binding**, from the Sandbox Effector, with no input:
   `push({ pin?, sign?, squash?, force?, slot?, timeout? })`. Its credential is the push credential of the
-  `git.credentials` entry the Binding falls under (ADR-0051), which the Effector matches as the fence does. git never
-  runs with the Agent's repository as its repository: each call makes a new bare repository in the Effector's scratch,
-  configured by jr2 under a cleared environment; it reads the Agent's branch as data (a loose ref or `packed-refs`,
-  opened beneath with no symlink, bounded); it imports the Agent's objects as data — one `pack-objects` over the Agent's
-  object store with a deadline (a FIFO in place of an object blocks an open forever), `index-pack --strict`, and a
-  connectivity check — borrowing only from the node's Repo cache; and it pushes `<commit>:refs/heads/<branch>` to the
-  Binding url, never to a remote of the Agent's config, and never to a local path (git's local transport runs that
-  repository's config and hooks, and a path in the pod can be the Agent's own repository; only the binary's tests can
-  allow one). So no config, hook, attribute or program of the Agent's runs; a test plants each in the Agent's repository
-  and proves none ran. A token goes Basic over https through a credential helper only — an `http://` url with a token is
-  `rejected` with nothing sent — and the helper is the Effector binary (`effector git-credential`), which reads the
-  token's file when git asks for the Binding's own host over https and answers nothing for any other; the clean
-  repository follows no redirect, so neither the push nor the token reaches an origin outside the entry; an ssh key is
-  copied into the call's directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The
-  commit is pinned when the push starts: the Agent's branch tip, or with `pin` the commit the input names (`{ sha }`);
-  the Effector's first answer names it, and it is written to the intent row. A pinned commit the Agent pruned fails the
-  import and is never substituted. `squash` makes one commit with the input's `{ message }`, and is built with `sign`
-  only: the squashed commit is a new commit whose committer is the `sign` entry's, and an unsigned push has no committer
-  to give it, so `push({ squash: true })` without `sign` is refused at construction (Consequences). `force` replaces
-  what the remote holds.
+  `git.credentials` entry the Repo Slot's url falls under (ADR-0051): the provision matches the url the run binds —
+  static, per-run or `customize()`-bound, one path — and names that entry's push Secret on the Sandbox, and the
+  Effector, which holds only the entries named there, matches the push's url as the fence does. git never runs with the
+  Agent's repository as its repository: each call makes a new bare repository in the Effector's scratch, configured by
+  jr2 under a cleared environment; it reads the Agent's branch as data (a loose ref or `packed-refs`, opened beneath
+  with no symlink, bounded); it imports the Agent's objects as data — one `pack-objects` over the Agent's object store
+  with a deadline (a FIFO in place of an object blocks an open forever), `index-pack --strict`, and a connectivity check
+  — borrowing only from the node's Repo cache; and it pushes `<commit>:refs/heads/<branch>` to the Binding url, never to
+  a remote of the Agent's config, and never to a local path (git's local transport runs that repository's config and
+  hooks, and a path in the pod can be the Agent's own repository; only the binary's tests can allow one). So no config,
+  hook, attribute or program of the Agent's runs; a test plants each in the Agent's repository and proves none ran. A
+  token goes Basic over https through a credential helper only — an `http://` url with a token is `rejected` with
+  nothing sent — and the helper is the Effector binary (`effector git-credential`), which reads the token's file when
+  git asks for the Binding's own host over https and answers nothing for any other; the clean repository follows no
+  redirect, so neither the push nor the token reaches an origin outside the entry; an ssh key is copied into the call's
+  directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The commit is pinned when
+  the push starts: the Agent's branch tip, or with `pin` the commit the input names (`{ sha }`); the Effector's first
+  answer names it, and it is written to the intent row. A pinned commit the Agent pruned fails the import and is never
+  substituted. `squash` makes one commit with the input's `{ message }`, and is built with `sign` only: the squashed
+  commit is a new commit whose committer is the `sign` entry's, and an unsigned push has no committer to give it, so
+  `push({ squash: true })` without `sign` is refused at construction (Consequences). `force` replaces what the remote
+  holds.
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The
@@ -166,25 +171,26 @@ the credentialed `command` — is written and refused (below).
   names its Sandbox and, once the Effector's first answer names it, the pinned commit: a restore asks the Effector for
   the id and follows it, and when the Effector no longer holds it the push is sent again with only that commit — never
   the Agent's tip now — because its run is a function of the commit and its credential, what the intent row records;
-  with no commit recorded it settles `unknown`. A credentialed command is refused before it has a row (above); the same
-  rule is written for it, since its run would be a function of (commit, argv, secrets). An `upload` follows the `http`
-  rule. An `http` intent row names its placement and no replica: the Effect asks every replica of that Effector for its
-  id and follows the one that holds it; when none does, it is sent again only when the author marked it `idempotent`,
-  and any other settles `unknown`. Retry is the author's choice — a route back into the state, or `idempotent` for a
-  call that carries its own idempotency key or only reads. No row is dropped: each settled or aborted row keeps the
-  Effect's id, kind and outcome for the run's life, the record of what the run's Effects did. A settled row's output
-  tail is dropped once the save that carries its transition is on disk; the full stream is on the feed. An `http`
-  response's body and headers are its tail: the row keeps the outcome, the status, the content type and the size, and
-  the settled line on the feed carries the whole response. A `push` row keeps its Repo Slot, its published commit, its
-  source and its sync's answer whole — the next push of its Workspace and Repo Slot reads them as its pair, and runs a
-  sync that did not finish again — and drops git's words; it drops its bundle once its sync answered `synced`, `already`
-  or `skipped`, and keeps it while the sync is `busy` or `not-synced` only as long as it is the newest push of its Repo
-  Slot that published, because the sync that runs again moves the branch from it and only the newest push's sync runs
-  again. Once a newer push of the slot published, the older row's bundle goes at the next save: one bundle per Repo Slot
-  at most. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One exception, bounded
-  by one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action
-  may read it after a restore; a loop below the Agent's state then grows the hold by one tail per pass. The hold drops
-  its chain when the pick is answered.
+  with no commit recorded it settles `unknown`. A credentialed command follows the push's rule: its intent row names its
+  Sandbox and, once the first answer names it, the pinned commit, and one the Effector lost is sent again with only that
+  commit, since its run is a function of (commit, argv, secrets). An `upload` follows the `http` rule. An `http` intent
+  row names its placement and no replica: the Effect asks every replica of that Effector for its id and follows the one
+  that holds it; when none does, it is sent again only when the author marked it `idempotent`, and any other settles
+  `unknown`. Retry is the author's choice — a route back into the state, or `idempotent` for a call that carries its own
+  idempotency key or only reads. No row is dropped: each settled or aborted row keeps the Effect's id, kind and outcome
+  for the run's life, the record of what the run's Effects did. A settled row's output tail is dropped once the save
+  that carries its transition is on disk; the full stream is on the feed. An `http` response's body and headers are its
+  tail: the row keeps the outcome, the status, the content type and the size, and the settled line on the feed carries
+  the whole response. A `push` row keeps its Repo Slot, its published commit, its source and its sync's answer whole —
+  the next push of its Workspace and Repo Slot reads them as its pair, and runs a sync that did not finish again — and
+  drops git's words; it drops its bundle once its sync answered `synced`, `already` or `skipped`, and keeps it while the
+  sync is `busy` or `not-synced` only as long as it is the newest push of its Repo Slot that published, because the sync
+  that runs again moves the branch from it and only the newest push's sync runs again. Once a newer push of the slot
+  published, the older row's bundle goes at the next save: one bundle per Repo Slot at most. So an Effect in a loop
+  grows the ledger by one short row per pass, never by its tails. One exception, bounded by one pick: while a pick is
+  outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action may read it after a restore;
+  a loop below the Agent's state then grows the hold by one tail per pass. The hold drops its chain when the pick is
+  answered.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start
@@ -228,16 +234,15 @@ the credentialed `command` — is written and refused (below).
 - **Run every command in the Sandbox Effector.** Rejected: a command that names no secret runs the Workspace's own code
   with the Sandbox Image's tools and the Agent's user, and gains nothing from a container the Agent cannot reach. Only a
   command that names a secret is placed there, because a tool that signs with its credential (`terraform apply`, `aws`
-  with SigV4) cannot be given a Stand-in (ADR-0059); it is refused there until its child is kept from the Effector's
-  mount (above).
+  with SigV4) cannot be given a Stand-in (ADR-0059); there its child is confined from the Effector's mount (above).
 - **A `placement:` key on a command.** Rejected: naming a secret is the placement, and a key could disagree with it.
 - **A trailer on each signed commit naming its source.** Rejected: forges show it, and the map must be read off every
   published commit or an unsigned one leaks; ancestry, the sync and the read-only fallback need no stored map.
 - **Take a command as a shell string.** Rejected: an Agent's param in a string is a shell injection.
 - **Repeat a command whose outcome is unknown.** Rejected for a command that names no secret: it may have acted (a push
   from a script, a spent Stand-in), and its run is the live Worktree's, which no row records. The Machine gets `unknown`
-  and decides. A credentialed command would run against a pinned commit an intent row holds, so a restore that found no
-  Effect could send it again with that commit; it is refused today (above).
+  and decides. A credentialed command runs against a pinned commit its intent row holds, so a restore that found no
+  Effect sends it again with that commit (above).
 - **Sync through a volume the Effector writes and the Harness container reads.** Rejected: the Worktree is read-only on
   the credentialed side so that nothing there is a channel into the Agent's container; the bundle rides the
   Orchestrator's one call instead.
@@ -257,8 +262,8 @@ the credentialed `command` — is written and refused (below).
 - An `http` call an Orchestrator restart caught in flight gives one send: the restored Effect finds it on the replica
   that holds it. One the Effector lost gives `unknown`, or a second send when it is `idempotent`.
 - A push the Orchestrator restart caught in flight gives one push of the pinned commit; one the Effector lost is pushed
-  again with that commit alone. Once a credentialed command runs, one the Effector lost would run again with its pinned
-  commit, so its tool could run twice against one commit.
+  again with that commit alone. A credentialed command the Effector lost runs again with its pinned commit, so its tool
+  can run twice against one commit.
 - A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (B2's wire is `POST` and `GET`),
   so D1 holds for the Machine — it does not get the output — and not for the outside world.
 - The Orchestrator reaches a Sandbox Effector by a headless Service the provision writes beside its key, owned by the
@@ -269,10 +274,10 @@ the credentialed `command` — is written and refused (below).
 - The `@kind` tier pushes to a remote of its own: the seed's sshd serves a push remote, and the tier's scenarios push
   signed over ssh and verify the published commit with the signing key as the one allowed signer, read the Agent's
   branch and Worktree after the sync, and push again after the Agent amended the pushed commit (`diverged`). A token
-  push over https has no remote there.
+  push over https has no remote there. Its credentialed-command scenarios read the secret from env and from its file,
+  scrubbed, say `dirty` over an uncommitted edit, and show a child of the child denied the Effector's key.
 - Not built: a file-body `http`. The Effector serves a Worktree file as an `http` body on the wire, with the opener
   above, and no authoring form names one; `upload` is the one that exists.
 - Owed, not built: an Open argv bound by `customize()`.
 - Not built: `squash` without `sign`. Who commits an unsigned squash (its committer name, email and date) is not
   decided; `push({ squash: true })` alone is refused at construction and on the wire.
-- Not built: a credentialed `command` that runs (above; ADR-0068).

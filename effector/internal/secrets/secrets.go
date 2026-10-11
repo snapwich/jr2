@@ -79,8 +79,12 @@ type Config struct {
 	Version   int      `json:"version"`
 	Placement string   `json:"placement"`
 	Targets   []Target `json:"targets"`
-	// Git is the `git.credentials` entries the pushes placed here spend (a Sandbox Effector's).
-	Git []GitEntry `json:"git,omitempty"`
+	// Git is the `git.credentials` entries the pushes placed here spend (a Sandbox Effector's):
+	// read off the git mount (ReadGitEntries), never off this file.
+	Git []GitEntry `json:"-"`
+	// Commands says the Workspace holds a credentialed command: a node whose kernel cannot
+	// confine its child (Landlock) stops this Effector's start (ADR-0068).
+	Commands bool `json:"commands,omitempty"`
 }
 
 // ReadConfig loads and checks the config file.
@@ -103,11 +107,6 @@ func ReadConfig(path string) (*Config, error) {
 	for i, t := range c.Targets {
 		if (t.Scheme != "https" && t.Scheme != "http") || t.Host == "" || t.Port < 1 || t.Port > 65535 {
 			return nil, fmt.Errorf("%s: targets[%d] is not { scheme: http|https, host, port }", path, i)
-		}
-	}
-	for i := range c.Git {
-		if err := c.Git[i].validate(i); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
 	return &c, nil

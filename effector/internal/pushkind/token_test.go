@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/snapwich/jr2/effector/internal/scrub"
+	"github.com/snapwich/jr2/effector/internal/secrets"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
@@ -60,7 +61,7 @@ func TestATokenPushGoesBasicThroughTheHelperAndTheTokenIsInNoOutput(t *testing.T
 	f := newFixture(t, "")
 	sha := f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
 	srv, seen := tokenServer(t, filepath.Dir(f.pod.Remote))
-	if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", "token"), []byte(token+"\n"), 0o400); err != nil {
+	if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", secrets.TokenFile), []byte(token+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
 	ca := filepath.Join(f.pod.Root, "ca.pem")
@@ -96,8 +97,8 @@ func TestATokenPushGoesBasicThroughTheHelperAndTheTokenIsInNoOutput(t *testing.T
 	}
 
 	// A wrong token: rejected, and its words carry no form of the token.
-	_ = os.Remove(filepath.Join(f.runner.GitRoot, "push", "token"))
-	if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", "token"), []byte("tok-wrong-wrong-wrong"), 0o600); err != nil {
+	_ = os.Remove(filepath.Join(f.runner.GitRoot, "push", secrets.TokenFile))
+	if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", secrets.TokenFile), []byte("tok-wrong-wrong-wrong"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
@@ -177,7 +178,7 @@ func TestARedirectTakesTheTokenToNoOtherOrigin(t *testing.T) {
 				http.Redirect(w, r, elsewhere+strings.TrimPrefix(r.URL.RequestURI(), "/redir"), http.StatusFound)
 			}))
 			t.Cleanup(binding.Close)
-			if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", "token"), []byte(token+"\n"), 0o400); err != nil {
+			if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", secrets.TokenFile), []byte(token+"\n"), 0o400); err != nil {
 				t.Fatal(err)
 			}
 			// httptest's TLS servers share one certificate, so one CA file trusts both origins.
@@ -217,7 +218,7 @@ func TestATokenPushOverHTTPIsRefusedAndSendsNothing(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(srv.Close)
-	if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", "token"), []byte(token+"\n"), 0o400); err != nil {
+	if err := os.WriteFile(filepath.Join(f.runner.GitRoot, "push", secrets.TokenFile), []byte(token+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
 	req := f.request(false, nil)

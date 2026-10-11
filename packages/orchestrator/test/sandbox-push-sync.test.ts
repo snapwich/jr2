@@ -260,7 +260,10 @@ test("the tail rule: a push row's bundle goes once a newer push of its Repo Slot
     old: row("app", "2026-10-10T00:00:01Z", "b1"),
     mid: row("app", "2026-10-10T00:00:02Z", "b2"),
     // A newer push that did not publish is not the pair: the one before it stays the newest.
-    rejected: { ...row("app", "2026-10-10T00:00:03Z", "x"), output: { outcome: "rejected", reason: "no" } },
+    rejected: {
+      ...row("app", "2026-10-10T00:00:03Z", "x"),
+      output: { outcome: "rejected", reason: "no" },
+    } as EffectRow,
     lib: row("lib", "2026-10-10T00:00:00Z", "b3"),
   };
   dropSavedTails(effects, {});

@@ -22,16 +22,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/snapwich/jr2/effector/internal/confine"
 	"github.com/snapwich/jr2/effector/internal/sign"
 )
 
 // The test binary doubles as the effector: re-executed with JR2_EFFECTOR_TEST_MAIN set, it runs
 // main() — so these tests drive the real process, its env, its mount layout and its SIGTERM.
 func TestMain(m *testing.M) {
+	// A credentialed command's confiner: the Effector execs its own binary, which here is this one.
+	if len(os.Args) > 1 && os.Args[1] == "confine" {
+		os.Exit(confine.Main(os.Args[2:]))
+	}
 	if os.Getenv("JR2_EFFECTOR_TEST_MAIN") == "1" {
 		os.Args = os.Args[:1]
 		// The tests' remotes are local paths.
 		allowLocalRemotes = true
+		// A node whose kernel cannot confine a child, for the probe's tests.
+		if os.Getenv("JR2_EFFECTOR_TEST_NO_LANDLOCK") == "1" {
+			confine.SetProbe(func() (int, error) { return 0, syscall.EOPNOTSUPP })
+		}
 		logger := log.New(os.Stdout, "", 0)
 		if err := run(logger); err != nil {
 			logger.Printf("jr2.effector action=exit reason=%q", err.Error())

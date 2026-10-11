@@ -102,8 +102,9 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   attach, naming the list. A static binding is code the Instance typechecked and deployed, so it is admitted without a
   match and cloned anonymously; a private one then fails at the cache with git's error. `jr2 init` scaffolds one
   wildcard entry — `{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }`, today's two implicit defaults made
-  visible, with a comment saying to narrow it before anything untrusted can start a run — so the open fence is in the
-  user's file and commit, never implied.
+  visible, with a comment saying to narrow it before anything untrusted can start a run, and that it also pushes: a
+  `push()` whose Repo Slot url it matches, a per-run url included, spends the same token or key — so the open fence is
+  in the user's file and commit, never implied.
 - **An entry may carry a push credential and a signing key** (ADR-0067), checked by shape when the config loads:
   `push?: { sshKey } | { token }`, the credential a `push()` to a Binding under the entry spends — absent, the clone
   credential pushes, and an entry with no credential admits a clone, never a push; a token goes Basic over https through
@@ -112,15 +113,32 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   `push({ sign: true })` signs with and the committer it signs as — explicit, so an auth key is never reused as a
   signing key; an ssh key is the default format, a GPG key is a Secret with `private.asc` and no passphrase. `name` and
   `email` are required: the Effector re-creates the commits, and a forge verifies a signature only when the committer
-  email belongs to the account that holds the key. The author line stays the Agent's. `jr2 up` resolves each `push()` on
-  a bound Repo Slot to the entry its Binding matches, and refuses, with the line to add, a push whose Binding no entry
-  matches, an entry that holds no credential the url's scheme can spend (a token over https, an ssh key over ssh),
-  `sign: true` on an entry with no `sign` field, and a Binding that is a local path (git's local transport runs that
-  repository's config and hooks). A push on a slot whose url the run or a `customize()` chooses is refused the same way:
-  `jr2 up` cannot read its url, so it can show no entry that matches it, and a push there is not built. The Sandbox
-  Effector holds only the entries its pushes spend — each credential a directory of its secrets mount, a deploy or
-  signing key projected from its Secret by reference, a token written into the Workspace's `jr2-effector-<pod>` Secret —
-  and matches a push's url as the fence does, longest match first, and refuses a url outside the entry.
+  email belongs to the account that holds the key. The author line stays the Agent's.
+- **The pod's maker places the push credential, by reference, when the url is known (B10).** When a registered Machine
+  pushes, `jr2 up` writes each entry's push and sign credentials into that entry's own Secret,
+  `jr2-git-push-<hash of match>` (labelled, and deleted when the entry no longer has one), never per Workspace: the
+  token from `.env` in Flux's key names (`username`, `password`); the keys of the Secret its ssh key names, copied as
+  data and never decoded (`identity`, `identity.pub`, `known_hosts`); the signing key as `sign.identity` or
+  `sign.private.asc`; and `entry.json`, what the entry is (its match, what it pushes with, the committer it signs as).
+  An entry with no `push` field pushes with its clone credentials, each over its own scheme, so the scaffold's wildcard
+  holds both. An entry with nothing it can place — its token unset, its key's Secret absent — gets no Secret, and
+  `jr2 up` says why. It writes `git-push.json` in `jr2-held` beside them: which entries have a Secret and what each can
+  spend, names only. At provision the Orchestrator matches each pushed slot's url — static, per-run or
+  `customize()`-bound, one path — against the fence (longest prefix, the attach match), and the Sandbox CR carries the
+  matched entry's Secret name (`gitCredentials`, the `secretRef` shape); the operator projects it into the Sandbox
+  Effector alone (ADR-0005). The Orchestrator reads no value. The Effector holds only the entries named there and
+  matches a push's url as the fence does, longest match first, and refuses a url outside the entry.
+- **A push is refused with a fix that works, at `jr2 up` for a static Binding and at provision for any url.** One rule
+  (`pushRefusal`): a url no entry matches (the line to add), a local path (git's local transport runs that repository's
+  config and hooks) or `git://`, an `http://` url — a push credential goes over https or ssh only: a token over http is
+  the token in the clear, and no ssh key is spent over http, so the fix is the https url — an entry that holds no
+  credential the url's scheme can spend (a token over https, an ssh key over ssh: the `push` field to add), and
+  `sign: true` on an entry with no `sign` field (the field to add). `jr2 up` reads a static Binding's entry as written,
+  then checks what it could place: a token whose variable is unset, a key whose Secret is absent, each named. The
+  provision reads the same entry as `jr2 up` placed it, so a per-run url is refused at attach for the same reasons, as a
+  url outside the fence is, before anything is written. Accepted costs: `jr2 up`'s report is exact for a static Binding
+  and says "the entry its url matches" for a per-run slot; a wildcard entry gives a per-run push the catch-all
+  credential, the fence's existing choice.
 - **Freshness degrades, absence does not.** A fetch that fails on a warm cache lets the attach proceed on the objects it
   has, announced as stale with git's own error. A stale attach is stale until the next fetch anyone inside the pod runs:
   the worktree's `origin` asks the cache, and the cache asks the remote (ADR-0053) — the pod still holds no credential

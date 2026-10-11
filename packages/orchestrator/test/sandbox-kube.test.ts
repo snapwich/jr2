@@ -31,6 +31,7 @@ import {
 import { watchSandboxes } from "../src/sandbox-watch.ts";
 import { effectorKey, harnessToken, harnessTokenDigest } from "../src/tokens.ts";
 import { effectorManifestKey, sandboxEffectorObjectsOf, sandboxEffectorService } from "../src/sandbox-effector.ts";
+import { GIT_PUSH_MANIFEST_KEY, gitPushSecretName } from "../src/git-push.ts";
 import type { RepoResources } from "../src/repos.ts";
 import type { AttachRequest } from "../src/wire.ts";
 import {
@@ -1136,16 +1137,21 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
     secrets: [{ name: "aws", source: { kind: "literal" as const } }],
     values: { aws: "aws-secret-value" },
     targets: [],
-    git: [{ match: "*", push: { sshKey: "push-0" } }],
-    gitFiles: [
-      { dir: "push-0", file: "identity", source: { kind: "secret" as const, secret: "deploy-key", key: "identity" } },
-    ],
+    pushes: [{ slot: "app", sign: false }],
+    commands: true,
     effects: ["w/publish"],
   };
   const { manifest } = sandboxEffectorObjectsOf(plan);
   await writeFile(join(heldDir, effectorManifestKey(plan.pod)), JSON.stringify(manifest));
+  await writeFile(join(heldDir, GIT_PUSH_MANIFEST_KEY), JSON.stringify(PUSH_MANIFEST));
   const placed = cluster();
-  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, heldDir, ...placed.exec }).provision({
+  await kubeSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    heldDir,
+    ...placed.exec,
+    credentials: [{ match: "*", token: "T" }],
+  }).provision({
     name: "sb-fx",
     runId: "r",
     workflow: "w",
@@ -1177,6 +1183,18 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   ]);
   // The Harness container mounts none of them.
   for (const m of spec.volumeMounts) assert.ok(!String(m.name).startsWith("effector"), m.name);
+  // The push credential (B10): the matched entry's push Secret, by name, for the operator to
+  // project into the Effector alone — no value, no key of it, in the CR.
+  assert.deepEqual(spec.gitCredentials, [{ name: gitPushSecretName("*") }]);
+  assert.ok(!JSON.stringify(spec).includes("password"));
+  // Its node, for the Landlock refusal; its last words, for the provision's fault.
+  assert.deepEqual(
+    effector.env.find((e: { name: string }) => e.name === "NODE_NAME"),
+    { name: "NODE_NAME", valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } } },
+  );
+  assert.equal(effector.terminationMessagePolicy, "FallbackToLogsOnError");
+  // effector.json says the Workspace holds a credentialed command.
+  assert.match(sandboxEffectorObjectsOf(plan).secret.stringData["effector.json"]!, /"commands": true/);
   // The key: derived from the Sandbox's name, in a Secret the CR owns.
   const key = applies(placed.calls, "secrets").find((s) => s.metadata.name === "sb-fx-effector");
   assert.equal(Buffer.from(key.data.key, "base64").toString(), effectorKey(Buffer.from("k"), "sb-fx"));
@@ -1192,7 +1210,13 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   assert.deepEqual(svc.spec.ports, [{ name: "effector", port: 8082, targetPort: 8082 }]);
   // The default image is the Sandbox Image, in the Harness's seat.
   const dflt = cluster();
-  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, heldDir, ...dflt.exec }).provision({
+  await kubeSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    heldDir,
+    ...dflt.exec,
+    credentials: [{ match: "*", token: "T" }],
+  }).provision({
     name: "sb-fx2",
     runId: "r",
     workflow: "w",
@@ -1202,6 +1226,122 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   const fx2 = spec2.sidecars.find((c: { name: string }) => c.name === "effector");
   assert.equal(fx2.image, spec2.image);
   assert.deepEqual(fx2.securityContext, spec2.securityContext);
+});
+
+/** What `jr2 up` wrote for the push credentials: the wildcard pushes with a token, and signs. */
+const PUSH_MANIFEST = {
+  version: 1,
+  entries: [{ match: "*", order: 0, secret: gitPushSecretName("*"), push: ["token"], sign: "ssh" }],
+};
+
+/** A heldDir whose one Workspace pushes Repo Slot `slot`, and the push manifest beside it. */
+async function pushingHeld(slot: string, sign: boolean, push = PUSH_MANIFEST): Promise<string> {
+  const heldDir = await mkHeld(EMPTY_HELD);
+  const plan = {
+    placement: "sandbox" as const,
+    pod: workspaceHeldPod({ workflow: "w", path: [] }),
+    label: "w",
+    secrets: [],
+    values: {},
+    targets: [],
+    pushes: [{ slot, sign }],
+    commands: false,
+    effects: ["w/publish"],
+  };
+  await writeFile(
+    join(heldDir, effectorManifestKey(plan.pod)),
+    JSON.stringify(sandboxEffectorObjectsOf(plan).manifest),
+  );
+  await writeFile(join(heldDir, GIT_PUSH_MANIFEST_KEY), JSON.stringify(push));
+  return heldDir;
+}
+
+test("a push on a per-run slot takes the one path: its url, matched at provision, names its entry's push Secret on the CR (B10)", async () => {
+  const heldDir = await pushingHeld("target", true);
+  const { exec, calls } = cluster();
+  await kubeSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    heldDir,
+    ...exec,
+    credentials: [{ match: "*", token: "T" }],
+  }).provision({
+    name: "sb-run",
+    runId: "r",
+    workflow: "w",
+    path: [],
+    repos: [{ slot: "target", url: "https://github.com/ourorg/x.git", perRun: true }],
+  });
+  assert.deepEqual(crOf(calls).spec.gitCredentials, [{ name: gitPushSecretName("*") }]);
+});
+
+test("a per-run push the entry cannot spend is refused at provision, before any write, with the fix (B10)", async () => {
+  const refused = async (
+    url: string,
+    opts: { sign?: boolean; push?: typeof PUSH_MANIFEST; credentials?: object[] },
+  ) => {
+    const heldDir = await pushingHeld("target", opts.sign ?? false, opts.push);
+    const { exec, calls } = cluster();
+    const port = kubeSandbox({
+      imagesPath: await mkImages(REFS),
+      ...provisionable,
+      heldDir,
+      ...exec,
+      credentials: (opts.credentials ?? [{ match: "*", token: "T" }]) as never,
+    });
+    let message = "";
+    await assert.rejects(
+      port.provision({
+        name: "sb-x",
+        runId: "r",
+        workflow: "w",
+        path: [],
+        repos: [{ slot: "target", url, perRun: true }],
+      }),
+      (err: Error) => ((message = err.message), true),
+    );
+    assert.deepEqual(calls, [], "nothing applied");
+    return message;
+  };
+  // A token over http: the token in the clear; the fix is the https url, which then pushes.
+  assert.match(
+    await refused("http://github.com/ourorg/x.git", {}),
+    /Sandbox "sb-x" refuses the push of Repo Slot "target" \(http:\/\/github\.com\/ourorg\/x\.git\) over http:\/\/, .*bind the slot to the https url/,
+  );
+  // An ssh url and an entry that pushes with a token only.
+  assert.match(
+    await refused("git@github.com:ourorg/x.git", {}),
+    /holds no credential a push over ssh can spend .*add push: \{ sshKey:/,
+  );
+  // An entry jr2 up wrote no push Secret for (its token unset at jr2 up).
+  assert.match(
+    await refused("https://github.com/ourorg/x.git", { push: { version: 1, entries: [] } }),
+    /jr2 up placed no push credential for git\.credentials entry "\*" .*run jr2 up again/,
+  );
+  // A signed push on an entry with no sign field.
+  assert.match(
+    await refused("https://github.com/ourorg/x.git", {
+      sign: true,
+      push: { version: 1, entries: [{ ...PUSH_MANIFEST.entries[0]!, sign: undefined as never }] },
+    }),
+    /signed, and git\.credentials entry "\*" holds no sign field — add sign: \{ sshKey:/,
+  );
+});
+
+test("a Sandbox Effector that ends before the pod is Ready fails the provision in its own words — Landlock's refusal with its node (ADR-0068, B9)", async () => {
+  const message = "landlock: unavailable on node kind-worker (the kernel has no Landlock (ENOSYS))";
+  const { exec } = cluster([
+    {
+      phase: "Pending",
+      effector: { restartCount: 1, lastTerminated: { reason: "Error", exitCode: 1, message } },
+    },
+  ]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  await assert.rejects(port.provision({ name: "sb-ll", runId: "r", workflow: "w", ...withApp }), (err: Error) => {
+    assert.match(err.message, /Sandbox "sb-ll" cannot start: its Sandbox Effector ended before the pod was Ready/);
+    assert.match(err.message, /landlock: unavailable on node kind-worker/);
+    return true;
+  });
 });
 
 test("a CR apply that fails writes no Custodian ConfigMap (ADR-0001)", async () => {
@@ -2129,7 +2269,7 @@ test("a Sandbox Effector's Service name: `fx-` in place of `ws-`, so as long as 
   assert.ok(sandboxEffectorService("sb-fx").length <= 63);
 });
 
-test("a secret named `git` and a push's credentials take apart paths in the Effector's mount, where it reads them", () => {
+test("a secret named `git` takes no path of the push credentials, which the operator projects at @git in the same mount", () => {
   const plan = {
     placement: "sandbox" as const,
     pod: workspaceHeldPod({ workflow: "w", path: [] }),
@@ -2140,20 +2280,20 @@ test("a secret named `git` and a push's credentials take apart paths in the Effe
     ],
     values: { git: "abcdefgh12345" },
     targets: [],
-    git: [{ match: "*", push: { token: "push-0" } }],
-    gitFiles: [
-      { dir: "push-0", file: "token", source: { kind: "literal" as const, value: "T" } },
-      { dir: "sign-0", file: "identity", source: { kind: "secret" as const, secret: "team", key: "identity" } },
-    ],
+    pushes: [{ slot: "app", sign: false }],
+    commands: false,
     effects: ["w/publish", "w/send"],
   };
-  const { manifest } = sandboxEffectorObjectsOf(plan);
+  const { manifest, secret } = sandboxEffectorObjectsOf(plan);
   const paths = manifest.sources.flatMap((s) => s.secret.items.map((i) => i.path));
   assert.ok(paths.includes("git"), "the secret is the file of its name");
-  // No path is a file where another needs a directory: one projected volume holds every one.
-  for (const p of paths) {
-    for (const q of paths) assert.ok(p === q || !q.startsWith(`${p}/`), `${p} is a file and a directory of ${q}`);
-  }
+  // No push credential rides the Workspace's own objects any more (B10): its pushes, by slot.
+  assert.ok(
+    paths.every((p) => !p.startsWith("@")),
+    `the mount's own paths: ${paths.join(", ")}`,
+  );
+  assert.deepEqual(manifest.pushes, [{ slot: "app", sign: false }]);
+  assert.deepEqual(Object.keys(secret.stringData).sort(), ["effector.json", "secret.git"]);
   const container = sandboxEffectorContainer({
     image: "img",
     keys: [],
@@ -2164,9 +2304,6 @@ test("a secret named `git` and a push's credentials take apart paths in the Effe
   });
   const gitVar = container.env.find((e) => e.name === "JR2_EFFECTOR_GIT");
   const gitDir = gitVar && "value" in gitVar ? gitVar.value : "";
-  assert.ok(gitDir.startsWith("/run/jr2/secrets/"));
-  const rel = gitDir.slice("/run/jr2/secrets/".length);
-  const creds = paths.filter((p) => p.startsWith(`${rel}/`));
-  assert.deepEqual(creds.sort(), [`${rel}/push-0/token`, `${rel}/sign-0/identity`]);
-  assert.ok(!paths.some((p) => !p.startsWith(`${rel}/`) && p.split("/")[0] === rel), "no secret takes the git dir");
+  // Where the operator projects them: `@git` under the secrets mount, a name no secret can take.
+  assert.equal(gitDir, "/run/jr2/secrets/@git");
 });

@@ -14,6 +14,7 @@ import {
   CUSTODIAN_PROGRAM,
   custodianRef,
   effectorKey,
+  gitPushSecretName,
   KIT_VERSION,
   harnessTokenDigest,
   leafStem,
@@ -3381,11 +3382,23 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
           ],
           values: { aws: "aws-secret-value-0123" },
           targets: [],
-          git: [{ match: "*", push: { token: "push-0" } }],
-          gitFiles: [{ dir: "push-0", file: "token", source: { kind: "literal", value: "ghp_token_value_0123" } }],
+          pushes: [{ slot: "app", sign: true, url: "https://github.com/acme/app.git", match: "*" }],
+          commands: true,
           effects: ["ticket/deploy", "ticket/publish"],
         },
       ],
+      gitPush: {
+        secrets: [
+          {
+            name: "jr2-git-push-0a1b2c3d",
+            data: { "entry.json": "e30=", password: Buffer.from("ghp_token_value_0123").toString("base64") },
+          },
+        ],
+        manifest: {
+          version: 1,
+          entries: [{ match: "*", order: 0, secret: "jr2-git-push-0a1b2c3d", push: ["token"], sign: "ssh" }],
+        },
+      },
     }),
   ) as { items: Array<Record<string, any>> };
   const cm = list.items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
@@ -3394,29 +3407,32 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
     version: 1,
     secret: `jr2-effector-${pod}`,
     sources: [
-      {
-        secret: {
-          name: `jr2-effector-${pod}`,
-          items: [
-            { key: "secret.aws", path: "aws" },
-            { key: "git.push-0.token", path: "@git/push-0/token" },
-          ],
-        },
-      },
+      { secret: { name: `jr2-effector-${pod}`, items: [{ key: "secret.aws", path: "aws" }] } },
       { secret: { name: "team", items: [{ key: "kubeconfig", path: "kube" }] } },
     ],
+    // Its pushes by Repo Slot (B10): the provision matches each url and names the entry's Secret.
+    pushes: [{ slot: "app", sign: true }],
+  });
+  // The push manifest: names only.
+  assert.deepEqual(JSON.parse(cm.data["git-push.json"]), {
+    version: 1,
+    entries: [{ match: "*", order: 0, secret: "jr2-git-push-0a1b2c3d", push: ["token"], sign: "ssh" }],
   });
   assert.ok(!JSON.stringify(cm).includes("aws-secret-value") && !JSON.stringify(cm).includes("ghp_token"), "no value");
   const secret = list.items.find((i) => i.kind === "Secret" && i.metadata.name === `jr2-effector-${pod}`)!;
   assert.equal(secret.metadata.labels["jr2.dev/effector-pod"], pod);
   assert.equal(secret.stringData["secret.aws"], "aws-secret-value-0123");
-  assert.equal(secret.stringData["git.push-0.token"], "ghp_token_value_0123");
+  assert.ok(!JSON.stringify(secret).includes("ghp_token"), "no push token in the Workspace's Secret");
   assert.deepEqual(JSON.parse(secret.stringData["effector.json"]), {
     version: 1,
     placement: "sandbox",
     targets: [],
-    git: [{ match: "*", push: { token: "push-0" } }],
+    commands: true,
   });
+  // The entry's own push Secret, labeled so a stale one is found.
+  const push = list.items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-git-push-0a1b2c3d")!;
+  assert.equal(push.metadata.labels["jr2.dev/git-push"], "true");
+  assert.equal(Buffer.from(push.data.password, "base64").toString(), "ghp_token_value_0123");
   assert.equal("kube" in secret.stringData || "secret.kube" in secret.stringData, false, "a valueFrom is never copied");
 });
 
@@ -3489,6 +3505,122 @@ test("the Orchestrator may apply a Sandbox's Custodian ConfigMap — and may not
   assert.deepEqual(rules, [{ apiGroups: [""], resources: ["configmaps"], verbs: ["create", "patch"] }]);
 });
 
+/** An instance whose one workflow pushes Repo Slot `app`, bound to `url`. */
+async function pushingInstance(url: string, credentials: string, sign = false): Promise<string> {
+  const root = await mkInstance(`export default { name: "myinst", git: { credentials: ${credentials} } };\n`);
+  await writeFile(
+    join(root, "workflows", "publish.ts"),
+    `import { jr2Setup, push, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const publish = push(${sign ? "{ sign: true }" : ""});\n` +
+      `const body = jr2Setup({ events: [], actors: { publish } })\n` +
+      `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "publish", onDone: "done" } }, done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  return root;
+}
+
+test("jr2 up writes one push Secret per git.credentials entry — the token, the keys copied as data — and names none per Workspace (B10)", async () => {
+  const root = await pushingInstance(
+    "https://github.com/ourorg/app.git",
+    `[{ match: "*", token: "GH_TOKEN", sshKey: "jr2-git-ssh", sign: { sshKey: "signer", name: "jr2 bot", email: "bot@example.test" } }]`,
+    true,
+  );
+  const w = mkWorld(root, { env: { GH_TOKEN: "ghp_0123456789abcdef" } });
+  const b64 = (v: string) => Buffer.from(v).toString("base64");
+  w.kube.set("myinst", "secret", "jr2-git-ssh", {
+    metadata: { name: "jr2-git-ssh" },
+    data: { identity: b64("PRIVATE-PUSH"), known_hosts: b64("github.com ssh-ed25519 AAAA") },
+  } as never);
+  w.kube.set("myinst", "secret", "signer", {
+    metadata: { name: "signer" },
+    data: { identity: b64("PRIVATE-SIGN") },
+  } as never);
+  w.kube.set("myinst", "secret", "jr2-git-push-stale", {
+    metadata: { name: "jr2-git-push-stale", labels: { "jr2.dev/git-push": "true" } },
+  });
+  assert.equal(await up(["--yes"], w.io), 0);
+  const objects = appliedObjects(w);
+  const name = gitPushSecretName("*");
+  const secret = objects.get(`Secret/${name}`)!;
+  assert.ok(secret, "the entry's push Secret");
+  const data = Object.fromEntries(
+    Object.entries(secret.data as Record<string, string>).map(([k, v]) => [k, Buffer.from(v, "base64").toString()]),
+  );
+  assert.equal(data.username, "x-access-token");
+  assert.equal(data.password, "ghp_0123456789abcdef");
+  assert.equal(data.identity, "PRIVATE-PUSH");
+  assert.equal(data.known_hosts, "github.com ssh-ed25519 AAAA");
+  assert.equal(data["sign.identity"], "PRIVATE-SIGN");
+  assert.deepEqual(JSON.parse(data["entry.json"]!), {
+    match: "*",
+    order: 0,
+    push: ["ssh", "token"],
+    sign: { format: "ssh", name: "jr2 bot", email: "bot@example.test" },
+  });
+  const held = objects.get("ConfigMap/jr2-held")!;
+  assert.deepEqual(JSON.parse(held.data["git-push.json"]).entries, [
+    { match: "*", order: 0, secret: name, push: ["ssh", "token"], sign: "ssh" },
+  ]);
+  assert.ok(!JSON.stringify(held).includes("ghp_"), "the manifest holds no value");
+  const own = [...objects.values()].find(
+    (o) => o.kind === "Secret" && String(o.metadata.name).startsWith("jr2-effector-"),
+  );
+  assert.ok(!JSON.stringify(own ?? {}).includes("ghp_"), "no push token in the Workspace's Secret");
+  assert.ok(w.kube.deleted.includes("myinst/secret/jr2-git-push-stale"), "a stale entry's Secret goes");
+  assert.match(w.err.join("\n"), /pushes Repo Slot "app" with git\.credentials "\*"/, "the report names the entry");
+});
+
+test("a key's Secret absent at jr2 up is a warning, and the entry's Secret is written without it — the provision refuses the push that needs it (B10)", async () => {
+  const root = await pushingInstance(
+    "git@github.com:ourorg/app.git",
+    `[{ match: "*", sshKey: "deploy", sign: { sshKey: "signer", name: "n", email: "e@x.test" } }]`,
+    true,
+  );
+  const w = mkWorld(root);
+  w.kube.set("myinst", "secret", "deploy", {
+    metadata: { name: "deploy" },
+    data: { identity: Buffer.from("K").toString("base64"), known_hosts: Buffer.from("h").toString("base64") },
+  } as never);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(
+    w.err.join("\n"),
+    /warning: git\.credentials "\*": the Secret "signer" does not exist in namespace myinst/,
+  );
+  const held = appliedObjects(w).get("ConfigMap/jr2-held")!;
+  assert.deepEqual(JSON.parse(held.data["git-push.json"]).entries, [
+    { match: "*", order: 0, secret: gitPushSecretName("*"), push: ["ssh"] },
+  ]);
+});
+
+test("jr2 up refuses, before it applies anything, a token over http, and a token whose variable is unset — and the fix works (B10)", async () => {
+  const http = mkWorld(
+    await pushingInstance("http://git.example.com/acme/app.git", `[{ match: "*", token: "GH_TOKEN" }]`),
+    {
+      env: { GH_TOKEN: "ghp_0123456789abcdef" },
+    },
+  );
+  await assert.rejects(
+    () => up(["--yes"], http.io),
+    /over http:\/\/, and jr2 sends a push credential over https or ssh only/,
+  );
+  assert.deepEqual(http.kube.applied, [], "nothing applied");
+  // The fix it names: the https url.
+  const https = mkWorld(
+    await pushingInstance("https://git.example.com/acme/app.git", `[{ match: "*", token: "GH_TOKEN" }]`),
+    {
+      env: { GH_TOKEN: "ghp_0123456789abcdef" },
+    },
+  );
+  assert.equal(await up(["--yes"], https.io), 0);
+  const unset = mkWorld(
+    await pushingInstance("https://git.example.com/acme/app.git", `[{ match: "*", token: "GH_TOKEN" }]`),
+  );
+  await assert.rejects(
+    () => up(["--yes"], unset.io),
+    /the push of Repo Slot "app" \(https:\/\/git\.example\.com\/acme\/app\.git\): git\.credentials entry "\*" cannot push — its token's variable GH_TOKEN is not set — set it in \.env/,
+  );
+});
+
 test("a Workspace that no longer places an Effect in its Sandbox Effector loses its Secret; one that does keeps it (ADR-0068)", async () => {
   const root = await mkInstance(
     `export default { name: "myinst", secrets: [{ name: "aws", value: "aws-secret-value-0123" }] };\n`,
@@ -3522,29 +3654,6 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   assert.equal(await up(["--yes"], w.io), 0);
   assert.ok(w.kube.deleted.includes("myinst/secret/jr2-effector-gone"), "the stale Workspace's Secret goes");
   assert.ok(!w.kube.deleted.includes(`myinst/secret/${own.metadata.name}`), "the placing Workspace's stays");
-});
-
-test("jr2 up refuses a credentialed command before it applies anything, and says why (ADR-0068)", async () => {
-  // Its child would run as the Sandbox Effector's uid and could read the Effector's key and every
-  // secret there; the refusal stays until the child is kept from that mount.
-  const root = await mkInstance(
-    `export default { name: "myinst", secrets: [{ name: "aws", value: "aws-secret-value-0123" }] };\n`,
-  );
-  await writeFile(
-    join(root, "workflows", "deploy.ts"),
-    `import { command, jr2Setup, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const deploy = command(["terraform", "apply"], { env: { AWS: secret("aws") } });\n` +
-      `const body = jr2Setup({ events: [], actors: { deploy } })\n` +
-      `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "deploy", onDone: "done" } }, done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
-  );
-  const w = mkWorld(root);
-  await assert.rejects(
-    () => up(["--yes"], w.io),
-    /the command Effect "deploy" names secret\("aws"\), and jr2 does not run a credentialed command yet/,
-  );
-  assert.deepEqual(w.built, [], "nothing was built");
-  assert.deepEqual(w.kube.applied, [], "nothing was applied");
 });
 
 test("the Orchestrator may apply a Sandbox Effector's Service — and may not read, list or delete one (ADR-0068)", async () => {

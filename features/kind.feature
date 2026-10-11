@@ -216,20 +216,40 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the echo received the run's call exactly once
       And the Instance Effector's rollout completes
 
-  Rule: an upload runs in the Workspace's Sandbox Effector, which the Agent cannot read
+  Rule: an upload and a credentialed command run in the Workspace's Sandbox Effector, which the Agent cannot read
     ADR-0067, ADR-0068. The `effected` workflow's body commits a file in the Harness container, then
-    runs an `upload` that `jr2 up` placed in this Workspace's Sandbox Effector: the file, to the echo
-    with `bearer(secret("echo-token"))`. The provision adds the `effector` container to the pod; the
-    Harness container mounts none of its volumes. Every string that comes back is scrubbed. The
-    Orchestrator reaches the Effector by the headless Service the provision writes beside it, which
-    resolves to the pod's own address. Not covered: a credentialed `command` — `jr2 up` refuses one
-    until its child is kept from the Effector's mount (ADR-0068).
+    runs an Effect that `jr2 up` placed in this Workspace's Sandbox Effector: an `upload` of the
+    file to the echo with `bearer(secret("echo-token"))`, or a credentialed `command` whose env names
+    the token by value and by `.path`. The provision adds the `effector` container to the pod; the
+    Harness container mounts none of its volumes. A credentialed command runs against the pinned
+    commit in a scratch of its own, so an uncommitted edit is never seen and the answer says
+    `dirty`; its child is confined with Landlock, so the Effector's key is no file it can read.
+    Every string that comes back is scrubbed. The Orchestrator reaches the Effector by the headless
+    Service the provision writes beside it, which resolves to the pod's own address.
 
     Scenario: an upload sends a committed Worktree file, and the answer names the secret
       Given the kind instance is serving
       When I start the "effected" workflow in mode "upload" detached
       Then the run's Sandbox pod has a Sandbox Effector beside the Agent
       And the upload's answer is a response from the echo, whose body is the committed file
+
+    Scenario: a credentialed command reads its secret from env and from its file, and its output is scrubbed
+      Given the kind instance is serving
+      When I start the "effected" workflow in mode "env" detached
+      Then the credentialed command read its secret from env and from its file, and its output names it
+
+    Scenario: a credentialed command never sees an uncommitted edit, and says the tree was dirty
+      Given the kind instance is serving
+      When I start the "effected" workflow in mode "dirty" detached
+      Then the credentialed command saw the commit and not the edit, and says dirty
+
+    Scenario: a credentialed command's child cannot read the Effector's key
+      B9. The author's argv runs a script the Agent committed, which reads the Effector's key from
+      a child of its child. Landlock denies it: the command ends with a permission error, and the
+      answer and the feed carry no form of the key.
+      Given the kind instance is serving
+      When I start the "effected" workflow in mode "key" detached
+      Then the credentialed command's child was denied the Effector's key, and the answer holds no form of it
 
     Scenario: a process that takes the Effector's port gets a signed start it cannot answer, and the Effect fails closed
       B2. The body holds on its Gate; the step starts a process in the Harness container, as the

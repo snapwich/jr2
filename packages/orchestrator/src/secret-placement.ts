@@ -7,7 +7,8 @@
 //     cannot execute code, ADR-0031, so nothing else is theirs to use);
 //   - an Effector: what its Effects name with `secret("name")` — the Instance Effector what its
 //     `http` Effects name; a Workspace's Sandbox Effector what its `upload`s and credentialed
-//     `command`s name, and the `git.credentials` entries its `push`es spend (ADR-0067).
+//     `command`s name. The push credential its `push`es spend is not placed here: the provision
+//     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, B10).
 //
 // `hosts`, `headers` and `paths` are an entry's BINDING — where a Custodian may put the value — and
 // never its placement. Both is both, and `jr2 up` reports it per pod; an entry nothing names goes
@@ -25,10 +26,10 @@ import {
   type HeldBinding,
   type HeldLookups,
 } from "./held-secrets.ts";
-import { matchCredential, type GitCredential, type JR2Config } from "./config.ts";
+import type { JR2Config } from "./config.ts";
+import { declaredPushKinds, pushRefusal } from "./git-push.ts";
 import { INSTANCE_HARNESS_HELD_POD } from "./names.ts";
 import type { CarriedEffect, WorkspacePod } from "./parts.ts";
-import { repoIdentity } from "./repo-identity.ts";
 
 /** The shortest Effect secret jr2 accepts (ADR-0068) — the Effector refuses a shorter file at start. */
 export const EFFECT_SECRET_MIN_LENGTH = 8;
@@ -80,18 +81,10 @@ export type HeldPodPlan = {
   byProvider: string[];
 };
 
-/** One `git.credentials` entry a Sandbox Effector's pushes spend, as its `effector.json` names it:
- * each credential a directory under the git mount (ADR-0068). */
-export type SandboxGitEntry = {
-  match: string;
-  push: { sshKey: string } | { token: string };
-  sign?: { sshKey: string; name: string; email: string } | { gpgKey: string; name: string; email: string };
-};
-
-/** One file of a git directory: a key of the user's Secret, by reference, or a token's value. */
-export type SandboxGitFile =
-  | { dir: string; file: string; source: { kind: "secret"; secret: string; key: string } }
-  | { dir: string; file: string; source: { kind: "literal"; value: string } };
+/** One push of a Workspace (ADR-0067, B10): its Repo Slot, whether it signs, and — for a slot the
+ * Machine binds to a url — that url and the `git.credentials` entry it matches. A slot the run or a
+ * `customize()` binds has no url here: the provision matches it. */
+export type SandboxPush = { slot: string; sign: boolean; url?: string; match?: string };
 
 /** A Workspace's Sandbox Effector (ADR-0068, B5.1): what `jr2 up` writes for it. */
 export type SandboxEffectorPlan = {
@@ -107,9 +100,11 @@ export type SandboxEffectorPlan = {
   values: Record<string, string>;
   /** The targets its `upload`s name, with their secrets. */
   targets: EffectorTargetConfig[];
-  /** The entries its pushes spend, and the files of their directories. */
-  git: SandboxGitEntry[];
-  gitFiles: SandboxGitFile[];
+  /** Its pushes, by Repo Slot: what the provision resolves to an entry's push Secret. */
+  pushes: SandboxPush[];
+  /** Whether it holds a credentialed `command`: a node whose kernel cannot confine the child
+   * (Landlock) stops the Effector's start, and the provision fails (ADR-0068, B9). */
+  commands: boolean;
   /** Its Effects, as `<workflow>/<slot>`. */
   effects: string[];
 };
@@ -142,27 +137,7 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
     // An empty value is refused later with the list's own rule (`sourceOf`): it is an unset variable.
     if (namedBy.has(e.name) && e.value) shortRefusal(e, e.value.length);
   }
-  for (const ws of walk.workspaces) pushEntriesOf(config, ws);
-}
-
-/**
- * A credentialed `command` is refused at `jr2 up` (ADR-0068): its child would run as the Sandbox
- * Effector's uid, so a file the Agent wrote that the command runs could read the Effector's key and
- * every secret and push credential of its mount — and with the key, bash in the Harness container
- * could sign any start. The Sandbox Effector refuses the kind too. The refusal stays until the
- * child is kept from that mount.
- */
-export function refuseCredentialedCommands(walk: PlacementWalk): void {
-  for (const { workflow, effect } of walk.effects) {
-    if (effect.kind !== "command" || !effect.secrets?.length) continue;
-    throw new Error(
-      `workflow "${workflow}": the command Effect "${effect.name}" names secret("${effect.secrets[0]}"), and jr2 ` +
-        "does not run a credentialed command yet — its process would run as the Sandbox Effector's uid, so a file " +
-        "the Agent wrote that it runs could read the Effector's key and every secret and push credential there. " +
-        "Until it is kept from them, a gateway that holds the credential, with a held key for the gateway, is the " +
-        "way (ADR-0059, ADR-0068)",
-    );
-  }
+  for (const ws of walk.workspaces) pushesOf(config, ws);
 }
 
 /**
@@ -173,10 +148,7 @@ export function refuseCredentialedCommands(walk: PlacementWalk): void {
 export function secretPlacementsOf(
   config: JR2Config,
   walk: PlacementWalk,
-  lookups: Pick<HeldLookups, "secretKeys" | "valueLength"> & {
-    /** A token's value, by its env var (`.env`): a push token is written into its Effector's Secret. */
-    env?: (name: string) => string | undefined;
-  } = {},
+  lookups: Pick<HeldLookups, "secretKeys" | "valueLength"> = {},
 ): SecretPlacements {
   const { entries, namedBy, http } = namesOf(config, walk);
   const { pods, redundant } = heldPodsOf(config, walk, new Set(entries.map((e) => e.name)));
@@ -249,28 +221,35 @@ export function secretPlacementsOf(
   const sandbox: SandboxEffectorPlan[] = [];
   for (const ws of walk.workspaces) {
     if (ws.pod.effects.length === 0) continue;
-    const plan = sandboxPlanOf(config, ws, secrets, values, lookups.env ?? (() => undefined));
+    const plan = sandboxPlanOf(config, ws, secrets, values);
     if (sandbox.some((p) => p.pod === plan.pod)) continue;
     sandbox.push(plan);
     const holds = plan.secrets.map((s) => s.name);
-    const pushes = plan.git.map((g) => g.match);
+    // Exact for a slot the Machine binds; for one the run or a customize() binds, the entry is
+    // the one its url matches at provision (B10).
+    const pushes = plan.pushes.map(
+      (p) =>
+        `Repo Slot "${p.slot}" with ` +
+        (p.match !== undefined
+          ? `git.credentials "${p.match}"`
+          : "the git.credentials entry its url matches at provision"),
+    );
     report.push(
       `${plan.label}: Sandbox Effector (image ${plan.image ?? "the Sandbox Image"}) holds ` +
         `${holds.length ? holds.join(", ") : "no Effect secret"}` +
-        `${pushes.length ? `; pushes with git.credentials ${pushes.map((m) => `"${m}"`).join(", ")}` : ""}`,
+        `${pushes.length ? `; pushes ${pushes.join(", ")}` : ""}`,
     );
   }
   return { held: pods, claimed, ...(instance ? { instance } : {}), sandbox, report, warnings };
 }
 
-/** A Workspace's Sandbox Effector: the secrets its Effects name, the targets its uploads call, and
- * the `git.credentials` entries its pushes spend. */
+/** A Workspace's Sandbox Effector: the secrets its Effects name, the targets its uploads call, its
+ * pushes by Repo Slot, and whether it holds a credentialed command. */
 function sandboxPlanOf(
   config: JR2Config,
   ws: PlacedWorkspace,
   secrets: EffectSecret[],
   values: Record<string, string>,
-  env: (name: string) => string | undefined,
 ): SandboxEffectorPlan {
   const named = new Set(ws.pod.effects.flatMap((e) => e.secrets ?? []));
   const own = secrets.filter((s) => named.has(s.name));
@@ -282,54 +261,6 @@ function sandboxPlanOf(
       x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();
     if (!targets.some(same)) targets.push(t);
   }
-  const git: SandboxGitEntry[] = [];
-  const gitFiles: SandboxGitFile[] = [];
-  const list = config.git?.credentials ?? [];
-  for (const { entry, url } of pushEntriesOf(config, ws)) {
-    const i = list.indexOf(entry);
-    if (git.some((g) => g.match === entry.match)) continue;
-    const scheme = repoIdentity(url).scheme;
-    const pushDir = `push-${i}`;
-    const spend = entry.push ?? (scheme === "ssh" ? { sshKey: entry.sshKey! } : { token: entry.token! });
-    if ("sshKey" in spend) {
-      for (const file of ["identity", "known_hosts"]) {
-        gitFiles.push({ dir: pushDir, file, source: { kind: "secret", secret: spend.sshKey, key: file } });
-      }
-    } else {
-      const value = env(spend.token);
-      if (!value) {
-        throw new Error(
-          `${ws.workflow}: the push credential of git.credentials entry "${entry.match}" is the token in ` +
-            `${spend.token}, which is not set — set it in .env, as the clone's token is (ADR-0051)`,
-        );
-      }
-      gitFiles.push({ dir: pushDir, file: "token", source: { kind: "literal", value } });
-    }
-    const out: SandboxGitEntry = {
-      match: entry.match,
-      push: "sshKey" in spend ? { sshKey: pushDir } : { token: pushDir },
-    };
-    if (entry.sign) {
-      const signDir = `sign-${i}`;
-      const { name, email } = entry.sign;
-      if ("gpgKey" in entry.sign) {
-        gitFiles.push({
-          dir: signDir,
-          file: "private.asc",
-          source: { kind: "secret", secret: entry.sign.gpgKey, key: "private.asc" },
-        });
-        out.sign = { gpgKey: signDir, name, email };
-      } else {
-        gitFiles.push({
-          dir: signDir,
-          file: "identity",
-          source: { kind: "secret", secret: entry.sign.sshKey, key: "identity" },
-        });
-        out.sign = { sshKey: signDir, name, email };
-      }
-    }
-    git.push(out);
-  }
   return {
     placement: "sandbox",
     pod: workspaceHeldPod({ workflow: ws.workflow, path: ws.pod.path }),
@@ -338,82 +269,38 @@ function sandboxPlanOf(
     secrets: own,
     values: Object.fromEntries(Object.entries(values).filter(([name]) => named.has(name))),
     targets,
-    git,
-    gitFiles,
+    pushes: pushesOf(config, ws),
+    commands: ws.pod.effects.some((e) => e.kind === "command" && (e.secrets?.length ?? 0) > 0),
     effects: ws.pod.effects.map((e) => `${ws.workflow}/${e.name}`),
   };
 }
 
 /**
- * The `git.credentials` entry each push of a Workspace spends (ADR-0051, B6.2), or the refusal
- * with the line to add: a push whose Binding no entry matches, an entry that holds no credential
- * the url's scheme can spend (anonymous admits a clone, never a push), and `sign: true` on an
- * entry with no `sign` field. A local path is never pushed to. A push on a slot whose url the run
- * chooses (per-run, open) is refused too: no entry can be matched to a url `jr2 up` cannot read.
+ * Each push of a Workspace, by Repo Slot (ADR-0051, B6.2, B10), or the refusal with the fix — for a
+ * slot the Machine binds to a url, whose entry `jr2 up` can see: a url no entry matches, a local
+ * path or `git://`, an `http://` url (a push credential goes over https or ssh only), an entry that
+ * holds no credential the url's scheme can spend (anonymous admits a clone, never a push), and
+ * `sign: true` on an entry with no `sign` field. A slot the run or a `customize()` binds is checked
+ * the same way at provision, against the url it then has.
  */
-function pushEntriesOf(config: JR2Config, ws: PlacedWorkspace): Array<{ entry: GitCredential; url: string }> {
-  const out: Array<{ entry: GitCredential; url: string }> = [];
+function pushesOf(config: JR2Config, ws: PlacedWorkspace): SandboxPush[] {
+  const out: SandboxPush[] = [];
   const slots = Object.keys(ws.pod.bindings);
+  const list = config.git?.credentials ?? [];
   for (const effect of ws.pod.effects) {
     if (effect.kind !== "push") continue;
     const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
     if (slot === undefined) continue;
+    const sign = effect.sign === true;
     const url = ws.pod.bindings[slot];
     if (url === undefined) {
-      // jr2 up cannot show a matching entry for a url it cannot read, so it refuses the push, as
-      // it refuses one no entry matches (design 6, B6.2). A push on such a slot is not built.
-      throw new Error(
-        `workflow "${ws.workflow}": push "${effect.name}" pushes Repo Slot "${slot}", whose url the run or a ` +
-          "customize() chooses — jr2 up matches a push's Binding to its git.credentials entry before the run, " +
-          "and cannot read this one, so it refuses the push; bind the slot to a url in the workspace() (ADR-0051)",
-      );
+      if (!out.some((p) => p.slot === slot && p.sign === sign)) out.push({ slot, sign });
+      continue;
     }
     const at = `workflow "${ws.workflow}": push "${effect.name}" pushes Repo Slot "${slot}" (${url})`;
-    const { scheme, identity } = repoIdentity(url);
-    if (scheme === "local") {
-      throw new Error(
-        `${at}, a local path — jr2 never pushes to one: git's local transport runs that repository's config and hooks (ADR-0067)`,
-      );
-    }
-    if (scheme === "git") {
-      throw new Error(`${at} over git://, which carries no credential — bind the slot over https or ssh (ADR-0051)`);
-    }
-    const entry = matchCredential(identity, config.git?.credentials ?? []);
-    if (entry === undefined) {
-      const fix =
-        scheme === "ssh"
-          ? `{ match: "${identity.split("/").slice(0, 2).join("/")}/", sshKey: "<a Secret with identity and known_hosts>" }`
-          : `{ match: "${identity.split("/").slice(0, 2).join("/")}/", token: "<the env var that holds the token>" }`;
-      throw new Error(
-        `${at}, and no git.credentials entry matches "${identity}" — a push spends the entry its Binding ` +
-          `matches; add one: git: { credentials: [${fix}] } (ADR-0051)`,
-      );
-    }
-    const spend = entry.push ?? (scheme === "ssh" ? entry.sshKey : entry.token);
-    const fits =
-      entry.push === undefined
-        ? spend !== undefined
-        : scheme === "ssh"
-          ? "sshKey" in entry.push
-          : "token" in entry.push;
-    if (!fits) {
-      const line =
-        scheme === "ssh"
-          ? `push: { sshKey: "<a Secret with identity and known_hosts>" }`
-          : `push: { token: "<the env var that holds the token>" }`;
-      throw new Error(
-        `${at}, and git.credentials entry "${entry.match}" holds no credential a push over ${scheme} can spend — ` +
-          `an entry with none admits a clone, never a push; add ${line} to it (ADR-0051)`,
-      );
-    }
-    if (effect.sign && entry.sign === undefined) {
-      throw new Error(
-        `${at} signed, and git.credentials entry "${entry.match}" holds no sign field — add ` +
-          `sign: { sshKey: "<a Secret with identity>", name: "<committer name>", email: "<committer email>" } ` +
-          "to it; the email must belong to the forge account that holds the key (ADR-0051, ADR-0067)",
-      );
-    }
-    out.push({ entry, url });
+    const checked = pushRefusal({ at, url, sign }, list, declaredPushKinds, (entry) => entry.sign !== undefined);
+    if ("refusal" in checked) throw new Error(checked.refusal);
+    if (!out.some((p) => p.slot === slot && p.sign === sign)) out.push({ slot, sign, url, match: checked.entry.match });
   }
   return out;
 }

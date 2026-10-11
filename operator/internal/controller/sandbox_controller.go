@@ -101,7 +101,25 @@ const (
 	// Harness container alone, when the CR sizes one (ADR-0060).
 	shmVolumeName = "shm"
 	shmMountPath  = "/dev/shm"
+	// effectorContainerName is the Sandbox Effector's sidecar (ADR-0068): the
+	// one container the push Secrets of spec.gitCredentials are projected into.
+	effectorContainerName = "effector"
+	// effectorSecretsPath is where that container mounts its secrets; the
+	// push Secrets sit beside them, under effectorGitDir.
+	effectorSecretsPath = "/run/jr2/secrets"
+	effectorGitDir      = "@git"
+	// effectorGitVolume is the volume the operator makes for them when that
+	// container mounts no projected volume at effectorSecretsPath.
+	effectorGitVolume = "effector-git"
 )
+
+// gitCredentialKeys are the keys of an entry's push Secret jr2 writes
+// (ADR-0051): Flux's names for a token and an ssh key, the signing key, and
+// what the entry is. Each is projected when the Secret holds it.
+var gitCredentialKeys = []string{
+	"entry.json", "username", "password", "identity", "identity.pub", "known_hosts",
+	"sign.identity", "sign.private.asc",
+}
 
 // noDisruption is on every Sandbox pod (ADR-0060): moving the pod loses
 // `/work`, so neither the cluster autoscaler nor Karpenter may consolidate it
@@ -674,6 +692,8 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 		sidecars[i] = c
 	}
 
+	volumes := append(append(append([]corev1.Volume{}, sandbox.Spec.Volumes...), repoVolumes...), shmVolumes...)
+	volumes, sidecars = projectGitCredentials(sandbox.Spec.GitCredentials, volumes, sidecars)
 	containers := append([]corev1.Container{primary}, sidecars...)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -695,7 +715,7 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			// context.
 			InitContainers: sandbox.Spec.InitContainers,
 			Containers:     containers,
-			Volumes:        append(append(append([]corev1.Volume{}, sandbox.Spec.Volumes...), repoVolumes...), shmVolumes...),
+			Volumes:        volumes,
 			// The whole Size at pod level (KEP-2837) and the priority class,
 			// both verbatim (ADR-0060): every number and name is the
 			// Orchestrator's, so this operator reads no config.
@@ -720,6 +740,67 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			SecurityContext:              podSecurityContextFor(sandbox),
 		},
 	}
+}
+
+// projectGitCredentials puts each push Secret the Sandbox names into the
+// Sandbox Effector's mount (ADR-0051, ADR-0068), at `@git/<name>/<key>`
+// beside its secrets: as more sources of the projected volume that container
+// mounts at /run/jr2/secrets, or — when it mounts none there — of a volume of
+// their own mounted at /run/jr2/secrets/@git. Each source is optional per key
+// (a token's Secret holds no ssh key), and the kubelet reads the Secret, never
+// the operator. With no "effector" sidecar, nothing is projected: no other
+// container may hold a push credential.
+func projectGitCredentials(refs []corev1alpha1.SandboxGitCredential, volumes []corev1.Volume,
+	sidecars []corev1.Container) ([]corev1.Volume, []corev1.Container) {
+	if len(refs) == 0 {
+		return volumes, sidecars
+	}
+	effector := -1
+	for i, c := range sidecars {
+		if c.Name == effectorContainerName {
+			effector = i
+		}
+	}
+	if effector < 0 {
+		return volumes, sidecars
+	}
+	sources := func(prefix string) []corev1.VolumeProjection {
+		out := make([]corev1.VolumeProjection, 0, len(refs))
+		for _, ref := range refs {
+			items := make([]corev1.KeyToPath, 0, len(gitCredentialKeys))
+			for _, key := range gitCredentialKeys {
+				items = append(items, corev1.KeyToPath{Key: key, Path: prefix + ref.Name + "/" + key})
+			}
+			out = append(out, corev1.VolumeProjection{Secret: &corev1.SecretProjection{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+				Items:                items,
+				Optional:             ptr.To(true),
+			}})
+		}
+		return out
+	}
+	for _, m := range sidecars[effector].VolumeMounts {
+		if m.MountPath != effectorSecretsPath {
+			continue
+		}
+		for i := range volumes {
+			if volumes[i].Name != m.Name || volumes[i].Projected == nil {
+				continue
+			}
+			v := volumes[i].DeepCopy()
+			v.Projected.Sources = append(v.Projected.Sources, sources(effectorGitDir+"/")...)
+			volumes[i] = *v
+			return volumes, sidecars
+		}
+	}
+	volumes = append(volumes, corev1.Volume{Name: effectorGitVolume, VolumeSource: corev1.VolumeSource{
+		Projected: &corev1.ProjectedVolumeSource{Sources: sources(""), DefaultMode: ptr.To[int32](0o400)},
+	}})
+	c := sidecars[effector].DeepCopy()
+	c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: effectorGitVolume,
+		MountPath: effectorSecretsPath + "/" + effectorGitDir, ReadOnly: true})
+	sidecars[effector] = *c
+	return volumes, sidecars
 }
 
 // repoVolumesFor returns one hostPath volume per Repo the Sandbox names — the
@@ -922,7 +1003,11 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// The pod facts the Orchestrator reads instead of the Pod (ADR-0063): the
 	// Harness container's restarts and last end (a memory kill is named from
 	// it, ADR-0061), and the scheduler's words on placement.
-	sandbox.Status.Harness = harnessStatus(pod)
+	sandbox.Status.Harness = containerStatus(pod, harnessContainerName)
+	// The Sandbox Effector's too (ADR-0068): an Effector that cannot serve —
+	// a node whose kernel cannot confine a credentialed command's child —
+	// says why in its termination message, and the provision fails on it.
+	sandbox.Status.Effector = containerStatus(pod, effectorContainerName)
 	sandbox.Status.Waiting = containerWaiting(pod)
 	meta.SetStatusCondition(&sandbox.Status.Conditions, scheduledCondition(pod, sandbox.Generation))
 
@@ -995,11 +1080,11 @@ func endpointFor(sandbox *corev1alpha1.Sandbox) string {
 	return fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
 }
 
-// harnessStatus copies the Harness container's restarts and last end off the
-// Pod (ADR-0063), or nil while the kubelet has not reported the container.
-func harnessStatus(pod *corev1.Pod) *corev1alpha1.SandboxHarnessStatus {
+// containerStatus copies one container's restarts and last end off the Pod
+// (ADR-0063), or nil while the kubelet has not reported the container.
+func containerStatus(pod *corev1.Pod, name string) *corev1alpha1.SandboxHarnessStatus {
 	for _, c := range pod.Status.ContainerStatuses {
-		if c.Name != harnessContainerName {
+		if c.Name != name {
 			continue
 		}
 		out := &corev1alpha1.SandboxHarnessStatus{RestartCount: c.RestartCount}

@@ -60,6 +60,12 @@ export type SandboxStatus = {
   /** Every waiting container of the current pod, init containers first, in the kubelet's words
    * (ADR-0063) — the only evidence of a container that never starts. */
   waiting?: ContainerWaiting[];
+  /** The Sandbox Effector's restarts and last end (ADR-0068): `message` is its termination
+   * message — why it could not serve, `landlock: unavailable on node <node> (...)` among them. */
+  effector?: {
+    restartCount?: number;
+    lastTerminated?: { reason?: string; exitCode?: number; finishedAt?: string; message?: string };
+  };
 };
 
 /** A Sandbox's phase as the operator publishes it. `Lost` is terminal (ADR-0021). */

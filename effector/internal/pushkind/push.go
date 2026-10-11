@@ -227,7 +227,7 @@ func (c *call) credential() ([]string, string, error) {
 		if c.entry.Push.Token == "" {
 			return nil, "", errors.New("the url is https and the git.credentials entry's push credential is an ssh key")
 		}
-		file := filepath.Join(c.r.GitRoot, c.entry.Push.Token, "token")
+		file := filepath.Join(c.r.GitRoot, c.entry.Push.Token, secrets.TokenFile)
 		if _, err := os.Stat(file); err != nil {
 			return nil, "", errors.New("the push token's file is not in this Effector's mount")
 		}
@@ -274,11 +274,11 @@ func (c *call) configure(ctx context.Context) error {
 		}
 	case gitclean.SchemeSSH:
 		dir := filepath.Join(c.r.GitRoot, c.entry.Push.SSHKey)
-		key, err := copyKey(filepath.Join(dir, "identity"), filepath.Join(repo.Work, "push-key"))
+		key, err := copyKey(filepath.Join(dir, secrets.PushKeyFile), filepath.Join(repo.Work, "push-key"))
 		if err != nil {
 			return errors.New("the push key could not be read from this Effector's mount")
 		}
-		known := filepath.Join(dir, "known_hosts")
+		known := filepath.Join(dir, secrets.KnownHostsFile)
 		if _, err := os.Stat(known); err != nil {
 			return errors.New("the push key's known_hosts is not in this Effector's mount")
 		}
@@ -632,7 +632,7 @@ func (c *call) signer(ctx context.Context) (*signerKey, error) {
 	s := c.entry.Sign
 	dir := filepath.Join(c.r.GitRoot, s.SSHKey+s.GPGKey)
 	if s.SSHKey != "" {
-		key, err := copyKey(filepath.Join(dir, "identity"), filepath.Join(c.repo.Work, "sign-key"))
+		key, err := copyKey(filepath.Join(dir, secrets.SignSSHFile), filepath.Join(c.repo.Work, "sign-key"))
 		if err != nil {
 			return nil, errors.New("the signing key could not be read from this Effector's mount")
 		}
@@ -643,7 +643,7 @@ func (c *call) signer(ctx context.Context) (*signerKey, error) {
 		return nil, err
 	}
 	if _, err := c.tool(ctx, nil, "gpg", "-q", "--batch", "--homedir", home, "--import",
-		filepath.Join(dir, "private.asc")); err != nil {
+		filepath.Join(dir, secrets.SignGPGFile)); err != nil {
 		return nil, errors.New("the GPG signing key could not be imported")
 	}
 	c.gnupg = home

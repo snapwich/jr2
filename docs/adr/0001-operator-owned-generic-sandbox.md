@@ -7,17 +7,20 @@ once, never recreated: a pod that is gone or terminal makes the Sandbox `Lost` (
 enough for the operator to place the pod and mount each node cache read-only (ADR-0051) — and knows nothing about
 clones, worktrees, or Agents; those are layered on by the Orchestrator after the Sandbox reaches `Ready`. The operator
 also publishes what the Orchestrator needs to know about the pod onto the Sandbox's status — `podUID`, a scheduling
-condition with the scheduler's message, the Harness container's restarts and last terminated reason — because the
-Orchestrator watches Sandboxes and never reads a Pod ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)).
+condition with the scheduler's message, the Harness container's restarts and last terminated reason, and the same for
+the Sandbox Effector's container — because the Orchestrator watches Sandboxes and never reads a Pod
+([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)).
 
 We chose the operator over the Orchestrator calling the Kubernetes API directly because the custom resource _is_ the
 durable desired state: Sandboxes survive an Orchestrator restart, and garbage collection / readiness / retries live in
 one reconciler instead of being threaded through the Machine. We kept the CRD generic (rather than coding/worktree-aware
 with an init-container clone) so the operator stays workflow-agnostic — matching jr2's thesis that the framework is a
 grab-bag of composable pieces, with git/worktree being just one piece a coding Machine bolts on. The operator is
-git-aware to exactly the extent of the `Repo` CRD and the cache agent that keeps a bare checkout per node (ADR-0051): a
-fetch is infrastructure, shared by every Sandbox on the node; a worktree is a Machine's. The cost is an extra runtime
-step (worktree setup as its own state that can fail independently) and an operator to build and maintain.
+git-aware to exactly the extent of the `Repo` CRD and the cache agent that keeps a bare checkout per node (ADR-0051),
+and of `gitCredentials`, the push Secrets a Sandbox names, which it projects into the sidecar named `effector` alone
+(ADR-0051, ADR-0068): a fetch is infrastructure, shared by every Sandbox on the node; a worktree is a Machine's. The
+cost is an extra runtime step (worktree setup as its own state that can fail independently) and an operator to build and
+maintain.
 
 ## The Harness is the primary container; sidecars are opaque fragments
 

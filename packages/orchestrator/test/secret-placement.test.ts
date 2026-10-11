@@ -11,7 +11,6 @@ import type { JR2Config } from "../src/config.ts";
 import { heldSecretsOf, workspaceHeldPod } from "../src/held-secrets.ts";
 import type { CarriedEffect, WorkspacePod } from "../src/parts.ts";
 import {
-  refuseCredentialedCommands,
   refuseEffectSecrets,
   secretPlacementsOf,
   storedValueLength,
@@ -381,18 +380,6 @@ test("a secret a credentialed command or an upload names is an Effect secret in 
   assert.deepEqual(plan.effects, ["ticket/deploy", "ticket/report"]);
 });
 
-test("a credentialed command is refused at jr2 up; a command that names no secret, an upload and a push are not (ADR-0068)", () => {
-  // The child would run as the Sandbox Effector's uid and could read its key and every secret of
-  // its mount: the kind is withheld until the child is kept from them.
-  assert.throws(
-    () => refuseCredentialedCommands(placedIn([upload("report", ["files"]), credentialed("deploy", ["aws"])])),
-    /the command Effect "deploy" names secret\("aws"\), and jr2 does not run a credentialed command yet/,
-  );
-  assert.doesNotThrow(() =>
-    refuseCredentialedCommands(placedIn([credentialed("lint", []), upload("report", ["files"]), pusher("publish")])),
-  );
-});
-
 test("a Sandbox kind's secret missing from the list, or shorter than 8 characters, is refused as an http one is", () => {
   assert.throws(
     () => refuseEffectSecrets({ secrets: [] }, placedIn([credentialed("deploy", ["aws"])])),
@@ -418,16 +405,15 @@ test("a Workspace with no Effect placed in its Sandbox Effector gets none; one n
         }),
       ],
     }),
-    { env: (n) => (n === "GH_TOKEN" ? "ghp_0123456789abcdef" : undefined) },
   );
   assert.equal(named.sandbox[0]?.image, "registry.example/tools:1");
   assert.match(
     named.report.at(-1)!,
-    /Sandbox Effector \(image registry\.example\/tools:1\) holds no Effect secret; pushes with git\.credentials "github\.com\/ourorg\/"/,
+    /Sandbox Effector \(image registry\.example\/tools:1\) holds no Effect secret; pushes Repo Slot "app" with git\.credentials "github\.com\/ourorg\/"/,
   );
 });
 
-test("a push spends the git.credentials entry its Binding matches: the clone credential, or its push and sign fields", () => {
+test("a push is its Repo Slot and the entry its url matches; no credential rides the Workspace's plan (B10)", () => {
   const config: JR2Config = {
     git: {
       credentials: [
@@ -446,31 +432,30 @@ test("a push spends the git.credentials entry its Binding matches: the clone cre
     placedIn([pusher("publish", { sign: true })], { app: "git@github.com:ourorg/app.git" }),
   );
   const plan = out.sandbox[0]!;
-  assert.deepEqual(plan.git, [
-    {
-      match: "github.com/ourorg/",
-      push: { sshKey: "push-1" },
-      sign: { sshKey: "sign-1", name: "jr2 bot", email: "bot@example.test" },
-    },
+  assert.deepEqual(plan.pushes, [
+    { slot: "app", sign: true, url: "git@github.com:ourorg/app.git", match: "github.com/ourorg/" },
   ]);
-  assert.deepEqual(plan.gitFiles, [
-    { dir: "push-1", file: "identity", source: { kind: "secret", secret: "deploy-key", key: "identity" } },
-    { dir: "push-1", file: "known_hosts", source: { kind: "secret", secret: "deploy-key", key: "known_hosts" } },
-    { dir: "sign-1", file: "identity", source: { kind: "secret", secret: "signing-key", key: "identity" } },
-  ]);
-  // Absent `push`, the clone credential pushes: a token goes to the Effector's own Secret.
-  const clone = secretPlacementsOf(
-    { git: { credentials: [{ match: "*", token: "GH_TOKEN" }] } },
-    placedIn([pusher("publish")]),
-    { env: (n) => (n === "GH_TOKEN" ? "ghp_0123456789abcdef" : undefined) },
+  assert.deepEqual(plan.secrets, [], "the push credential is not one of the Workspace's secrets");
+  assert.equal(plan.commands, false);
+  // A slot the run or a customize() binds: the provision matches its url, and the report says so.
+  const perRun = secretPlacementsOf(
+    { git: { credentials: [{ match: "*", token: "T" }] } },
+    placedIn([pusher("publish")], { app: undefined }),
   );
-  assert.deepEqual(clone.sandbox[0]!.git, [{ match: "*", push: { token: "push-0" } }]);
-  assert.deepEqual(clone.sandbox[0]!.gitFiles, [
-    { dir: "push-0", file: "token", source: { kind: "literal", value: "ghp_0123456789abcdef" } },
-  ]);
+  assert.deepEqual(perRun.sandbox[0]!.pushes, [{ slot: "app", sign: false }]);
+  assert.match(
+    perRun.report.at(-1)!,
+    /pushes Repo Slot "app" with the git\.credentials entry its url matches at provision/,
+  );
+  // A credentialed command marks the plan, so the Effector fails closed on a node with no Landlock.
+  const cmd = secretPlacementsOf(
+    { secrets: [{ name: "aws", value: VALUE }] },
+    placedIn([credentialed("deploy", ["aws"])]),
+  );
+  assert.equal(cmd.sandbox[0]!.commands, true);
 });
 
-test("jr2 up refuses a push with no matching entry, an entry with no credential, and sign with no sign field — each with the line to add", () => {
+test("jr2 up refuses a push with no matching entry, an entry with no credential, http, and sign with no sign field — each with a fix that works", () => {
   assert.throws(
     () =>
       refuseEffectSecrets(
@@ -507,12 +492,36 @@ test("jr2 up refuses a push with no matching entry, an entry with no credential,
       ),
     /a local path — jr2 never pushes to one/,
   );
-  // A slot the run chooses: no entry can be matched to a url jr2 up cannot read, so the push is
-  // refused like one no entry matches — with a wildcard entry that could spend it too.
-  for (const config of [{}, { git: { credentials: [{ match: "*", token: "T" }] } }]) {
+  // A token over http (run B3's defect): jr2 up accepted it and the Effector refused every push.
+  // Refused here; the fix it names — the https url — is accepted.
+  for (const credentials of [[{ match: "*", token: "T" }], [{ match: "*", push: { token: "T" } }]]) {
     assert.throws(
-      () => refuseEffectSecrets(config, placedIn([pusher("publish")], { app: undefined })),
-      /push "publish" pushes Repo Slot "app", whose url the run or a customize\(\) chooses — .*refuses the push; bind the slot/,
+      () =>
+        refuseEffectSecrets(
+          { git: { credentials } },
+          placedIn([pusher("publish")], { app: "http://git.example.com/acme/app.git" }),
+        ),
+      /pushes Repo Slot "app" \(http:\/\/git\.example\.com\/acme\/app\.git\) over http:\/\/, and jr2 sends a push credential over https or ssh only .*bind the slot to the https url/,
     );
+    assert.doesNotThrow(() =>
+      refuseEffectSecrets(
+        { git: { credentials } },
+        placedIn([pusher("publish")], { app: "https://git.example.com/acme/app.git" }),
+      ),
+    );
+  }
+  // An ssh key over http cannot be spent either.
+  assert.throws(
+    () =>
+      refuseEffectSecrets(
+        { git: { credentials: [{ match: "*", sshKey: "k" }] } },
+        placedIn([pusher("publish")], { app: "http://git.example.com/acme/app.git" }),
+      ),
+    /over http:\/\//,
+  );
+  // A slot the run or a customize() binds is not refused at jr2 up: the provision checks its url
+  // by the same rule (B10).
+  for (const config of [{}, { git: { credentials: [{ match: "*", token: "T" }] } }]) {
+    assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn([pusher("publish")], { app: undefined })));
   }
 });

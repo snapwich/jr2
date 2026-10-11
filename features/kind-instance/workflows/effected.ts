@@ -4,13 +4,17 @@
 //
 //   upload   a file the body wrote and committed in the Worktree, PUT to the echo with
 //            `bearer(secret("echo-token"))`: the Effector opens it beneath the Worktree and sends it
+//   env      a credentialed command that prints its secret from env and from `.path`, then the
+//            files of the commit it runs against: the output names the secret and holds no form of it
+//   dirty    the body leaves an edit uncommitted, then the same command: the answer is `dirty`, and
+//            the command saw the commit, not the edit
+//   key      a credentialed command whose argv runs a committed script — the Agent's code — that
+//            reads the Effector's key from a child of its child: Landlock confines the child, so it
+//            ends with a permission error and the answer carries no key (ADR-0068, B9)
 //   takeover the body commits, then waits on its `hold` Gate while the step takes the Effector's
 //            port from the Harness container (B2: the Effector is down, a process the Agent could
 //            start binds :8082); the step's answer runs the same upload, whose start reaches that
 //            process signed and is answered by it unsigned: the Effect settles `unknown`
-//
-// No credentialed command: `jr2 up` refuses one (ADR-0068) until its child is kept from the
-// Effector's mount, and a refusal here would stop the whole tier's `jr2 up`.
 //
 // The echo is the suite's (`steps/seed.ts`); `echo-token` is the tier's one Effect secret, which
 // these Effects place in this Workspace's Sandbox Effector (and the `called` workflow's in the
@@ -35,7 +39,7 @@ const SEED = { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" };
 const ECHO = "http://echo.jr2-e2e-seed.svc";
 
 const door = z.object({
-  mode: z.enum(["upload", "takeover"]),
+  mode: z.enum(["upload", "env", "dirty", "key", "takeover"]),
   marker: z.string().regex(/^m-[a-z0-9]+$/),
 });
 type Door = z.infer<typeof door>;
@@ -55,8 +59,11 @@ const body = jr2Setup({
     commit: command([
       "sh",
       "-c",
-      `printf 'report of the run\\n' > report.txt && git add report.txt && git ${GIT.join(" ")} commit -q -m report`,
+      `printf 'report of the run\\n' > report.txt && printf 'sh -c "cat /run/jr2/effector/key"\\n' > leak.sh && ` +
+        `git add report.txt leak.sh && git ${GIT.join(" ")} commit -q -m report`,
     ]),
+    // In the Harness container: an edit left uncommitted.
+    edit: command(["sh", "-c", "printf 'edited, not committed\\n' > report.txt"]),
     // In the Sandbox Effector.
     send: upload({
       url: `${ECHO}/upload`,
@@ -65,6 +72,11 @@ const body = jr2Setup({
       file: ({ marker }) => ({ path: "report.txt", segments: [marker] }),
       contentType: "text/plain",
     }),
+    reveal: command(["sh", "-c", 'echo "env=$TOKEN"; echo "file=$(cat "$TOKEN_FILE")"; cat report.txt'], {
+      env: { TOKEN: token, TOKEN_FILE: token.path },
+    }),
+    // The author's argv runs the Agent's committed script.
+    leak: command(["sh", "leak.sh"], { env: { TOKEN: token } }),
   },
 }).createMachine({
   id: "effected",
@@ -75,7 +87,26 @@ const body = jr2Setup({
     committing: {
       invoke: {
         src: "commit",
-        onDone: [{ guard: ({ context }) => context.mode === "takeover", target: "holding" }, { target: "uploading" }],
+        onDone: [
+          { guard: ({ context }) => context.mode === "takeover", target: "holding" },
+          { guard: ({ context }) => context.mode === "env", target: "revealing" },
+          { guard: ({ context }) => context.mode === "dirty", target: "editing" },
+          { guard: ({ context }) => context.mode === "key", target: "leaking" },
+          { target: "uploading" },
+        ],
+      },
+    },
+    editing: { invoke: { src: "edit", onDone: "revealing" } },
+    revealing: {
+      invoke: {
+        src: "reveal",
+        onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
+      },
+    },
+    leaking: {
+      invoke: {
+        src: "leak",
+        onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
     holding: { invoke: { src: "gate", id: "hold" }, on: { go: "uploading" } },

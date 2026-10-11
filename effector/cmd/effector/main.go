@@ -16,8 +16,17 @@
 //	JR2_EFFECTOR_SCRATCH  this Effector's own writable scratch (default $HOME)
 //	JR2_EFFECTOR_DRAIN_SECONDS  how long a stopping replica waits for its Effects (default 30)
 //	POD_NAME, POD_IP      the replica's name and address (the downward API)
+//	NODE_NAME             the node the pod runs on (the downward API), for the Landlock refusal
 //
 // `effector git-credential get` is git's credential helper for a token push (package pushkind).
+// `effector confine <rules> -- <path> <argv...>` is a credentialed command's confiner: it
+// restricts itself with Landlock and execs argv (package confine; ADR-0068, B9).
+//
+// A Sandbox Effector probes Landlock when it starts. When its Workspace holds a credentialed
+// command (`commands` in effector.json) and the kernel cannot confine a child, it does not become
+// ready: it ends, and says `landlock: unavailable on node <node> (...)` in its termination
+// message, which the operator publishes on the Sandbox's status — so the provision fails before
+// any Turn.
 package main
 
 import (
@@ -37,6 +46,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/snapwich/jr2/effector/internal/commandkind"
+	"github.com/snapwich/jr2/effector/internal/confine"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/kinds"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
@@ -60,12 +71,28 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "git-credential" {
 		os.Exit(pushkind.Helper(os.Args[2:], os.Stdin, os.Stdout))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "confine" {
+		os.Exit(confine.Main(os.Args[2:]))
+	}
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 	if err := run(logger); err != nil {
-		logger.Printf("jr2.effector action=exit reason=%q", err.Error())
-		os.Exit(1)
+		exit(logger, err)
 	}
 }
+
+// exit ends a start that cannot serve, in its log and in the container's termination message —
+// the kubelet's `/dev/termination-log`, which the operator copies onto the Sandbox's status.
+func exit(logger *log.Logger, err error) {
+	logger.Printf("jr2.effector action=exit reason=%q", err.Error())
+	if f, openErr := os.OpenFile(terminationLog, os.O_WRONLY|os.O_TRUNC, 0); openErr == nil {
+		_, _ = f.WriteString(err.Error())
+		_ = f.Close()
+	}
+	os.Exit(1)
+}
+
+// terminationLog is the kubelet's termination-message file; it exists only in a pod.
+const terminationLog = "/dev/termination-log"
 
 func env(name, fallback string) string {
 	if v := os.Getenv(name); v != "" {
@@ -104,6 +131,12 @@ func run(logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The git credentials are the entries the Orchestrator named on the Sandbox for the urls its
+	// pushes spend, each one's own Secret projected here (ADR-0051, B10): what an entry is rides
+	// in it, not in effector.json.
+	if config.Git, err = secrets.ReadGitEntries(gitDir); err != nil {
+		return err
+	}
 	roots, err := trust(os.Getenv("JR2_CA_FILE"))
 	if err != nil {
 		return err
@@ -125,7 +158,9 @@ func run(logger *log.Logger) error {
 	maps.Copy(every, gitHeld)
 	every[placementKeyName] = string(key)
 	scrubber := scrub.New(every)
-	runner, err := kindsFor(config, held, scrubber, roots, gitDir)
+	runner, err := kindsFor(config, held, scrubber, roots, mount{
+		key: env("JR2_EFFECTOR_KEY", "/run/jr2/effector/key"), config: env("JR2_EFFECTOR_CONFIG",
+			"/run/jr2/effector/effector.json"), secrets: secretsDir, git: gitDir})
 	if err != nil {
 		return err
 	}
@@ -178,10 +213,17 @@ func run(logger *log.Logger) error {
 	return httpServer.Shutdown(shutdown)
 }
 
+// mount is where this Effector's own files are: what a credentialed command's child is kept from.
+type mount struct{ key, config, secrets, git string }
+
 // kindsFor is this placement's kinds: `http` alone in the Instance Effector; in a Sandbox
-// Effector (JR2_EFFECTOR_WORK set) also upload and push. The credentialed command is refused.
+// Effector (JR2_EFFECTOR_WORK set) also upload, push and the credentialed command, whose child is
+// confined with Landlock. When the kernel cannot confine one, a Workspace that holds a
+// credentialed command stops the start (the Effector never becomes ready); one that holds none
+// runs its other kinds, and a command start is refused.
 func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Scrubber, roots *x509.CertPool,
-	gitDir string) (*kinds.Runner, error) {
+	m mount) (*kinds.Runner, error) {
+	gitDir := m.git
 	work := os.Getenv("JR2_EFFECTOR_WORK")
 	r := &kinds.Runner{HTTP: &httpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots,
 		WorkRoot: work}}
@@ -201,9 +243,17 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 	r.Push = &pushkind.Runner{Config: config, WorkRoot: work, ReposRoot: repos, GitRoot: gitDir,
 		Scratch: filepath.Join(scratch, "push"), Helper: self, CAFile: os.Getenv("JR2_CA_FILE"), Scrubber: scrubber,
 		AllowLocal: allowLocalRemotes}
-	// No credentialed command: its child would run as this process's uid and could read the
-	// placement key, the secrets it does not name and the push credentials. r.Command stays nil
-	// until the child is kept from this mount (ADR-0068); the start is refused, and runs nothing.
+	unconfinable := ""
+	if _, err := confine.Probe(); err != nil {
+		unconfinable = fmt.Sprintf("landlock: unavailable on node %s (%v)", env("NODE_NAME", "unknown"), err)
+		if config.Commands {
+			return nil, errors.New(unconfinable)
+		}
+	}
+	r.Command = &commandkind.Runner{Secrets: held, SecretsDir: m.secrets, WorkRoot: work, ReposRoot: repos,
+		Scratch: filepath.Join(scratch, "command"), Scrubber: scrubber, Confiner: self,
+		Deny:         []string{filepath.Dir(m.key), filepath.Dir(m.config), m.secrets, gitDir, work, repos, scratch},
+		Unconfinable: unconfinable}
 	return r, nil
 }
 

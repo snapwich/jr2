@@ -16,9 +16,11 @@ import (
 
 // SandboxSpec is the desired state of a Sandbox: pure infrastructure.
 //
-// Per ADR-0001 the CRD is agent-agnostic — it knows nothing about git,
+// Per ADR-0001 the CRD is agent-agnostic — it knows nothing about clones,
 // worktrees, or Agents. Agents are injected one layer up as plain Container
-// fragments in Sidecars; the operator schedules them without understanding them.
+// fragments in Sidecars; the operator schedules them without understanding
+// them, save two names: "user" (exempt from hardening) and "effector" (the
+// one container gitCredentials are projected into).
 type SandboxSpec struct {
 	// Image is the primary container image (the Harness).
 	// +required
@@ -172,12 +174,38 @@ type SandboxSpec struct {
 	// needs it mounts the same volume by name. Scheduling prefers nodes whose
 	// `Repo` status reports the key present; `Ready` waits for every key to be
 	// present on the pod's node and fetched since this Sandbox was created.
-	// This is the whole of what the CRD knows about git: clone and worktree
-	// stay the Orchestrator's post-Ready step (ADR-0004).
+	// With gitCredentials, this is the whole of what the CRD knows about git:
+	// clone and worktree stay the Orchestrator's post-Ready step (ADR-0004).
 	// +listType=map
 	// +listMapKey=key
 	// +optional
 	Repos []SandboxRepo `json:"repos,omitempty"`
+
+	// GitCredentials are the push Secrets of the `git.credentials` entries
+	// this Sandbox's pushes spend (ADR-0051, ADR-0068): one per entry the
+	// Orchestrator matched to a pushed Repo Slot's url at provision, named
+	// as a Repo's secretRef names its Secret. The operator projects each
+	// into the sidecar named "effector" — the Sandbox Effector — beside its
+	// secrets, at `@git/<name>/` in the projected volume that container
+	// mounts at /run/jr2/secrets, one file per key jr2 writes there
+	// (`entry.json`, `username`, `password`, `identity`, `identity.pub`,
+	// `known_hosts`, `sign.identity`, `sign.private.asc`), each when the
+	// Secret holds it. No other container gets it. The operator reads no
+	// Secret: the kubelet projects it.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	GitCredentials []SandboxGitCredential `json:"gitCredentials,omitempty"`
+}
+
+// SandboxGitCredential names one entry's push Secret, in the Sandbox's
+// namespace.
+type SandboxGitCredential struct {
+	// Name is the Secret's name.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
 }
 
 // SandboxRepo names one Repo a Sandbox attaches.
@@ -279,6 +307,16 @@ type SandboxStatus struct {
 	// +optional
 	Harness *SandboxHarnessStatus `json:"harness,omitempty"`
 
+	// Effector is the same report for the sidecar named "effector", the
+	// Sandbox Effector (ADR-0068): its restarts and how it last ended. An
+	// Effector that cannot serve says why in its termination message — a
+	// node whose kernel cannot confine a credentialed command's child says
+	// `landlock: unavailable on node <node> (...)` — so a provision fails on
+	// it before any Turn. Absent when the pod has no Effector, or until the
+	// kubelet reports it.
+	// +optional
+	Effector *SandboxHarnessStatus `json:"effector,omitempty"`
+
 	// Waiting is every container of the current Pod that is waiting, init
 	// containers first, with the kubelet's reason and message (ADR-0063). A
 	// container that never starts — a root image under runAsNonRoot, a bad
@@ -303,9 +341,10 @@ type SandboxStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// SandboxHarnessStatus is the primary container's restarts and last end, as
-// the kubelet reports them on the Pod (ADR-0063). The operator copies them; it
-// reads no meaning into them.
+// SandboxHarnessStatus is one container's restarts and last end — the
+// primary container's, or the Sandbox Effector's — as the kubelet reports
+// them on the Pod (ADR-0063). The operator copies them; it reads no meaning
+// into them.
 type SandboxHarnessStatus struct {
 	// RestartCount is the container's restartCount on the Sandbox's Pod.
 	// +optional

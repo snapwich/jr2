@@ -4,13 +4,14 @@
 // push's import procedure (package gitclean), never in the live Worktree. So the Agent's
 // uncommitted edits are never seen; the answer says `dirty` when there were some.
 //
-// No Effector holds this runner yet (package kinds; ADR-0068): the child runs as the Effector's
-// uid, so a file the Agent wrote that argv runs could read every file of the Effector's mount — its
-// key, the secrets the command does not name, the push credentials. The runner stays behind that
-// refusal until the child is kept from the mount. The tool sees a pinned commit and not the live
-// Worktree, and the output is scrubbed. The Agent's files are the author's choice to run — a
-// tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files name
-// runs" is not claimed here.
+// The child runs as the Effector's uid, beside the Effector's key, the secrets the command does
+// not name and the push credentials; its program is often the Agent's code. So it is confined
+// with Landlock before execve (package confine; ADR-0068, B9): the Effector execs itself as the
+// confiner, and the child may read and run the image's system paths, read and write its own
+// scratch and /tmp, and read the secret files it names — nothing else. The tool sees a pinned
+// commit and not the live Worktree, and the output is scrubbed. The Agent's files are the author's
+// choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the
+// Agent's files name runs" is not claimed here.
 //
 // The child's env is what the author named — a secret's value, or its file's path — plus PATH and
 // HOME, and nothing else: not the Effector's key, not another secret. PATH is the Effector's own,
@@ -36,6 +37,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/snapwich/jr2/effector/internal/beneath"
+	"github.com/snapwich/jr2/effector/internal/confine"
 	"github.com/snapwich/jr2/effector/internal/gitclean"
 	"github.com/snapwich/jr2/effector/internal/scrub"
 	"github.com/snapwich/jr2/effector/internal/wire"
@@ -55,10 +57,23 @@ type Runner struct {
 	Path string
 	// ImportDeadline bounds every read of the Agent's objects. Default 120 s.
 	ImportDeadline time.Duration
+	// Confiner is the binary that confines the child and execs it (`<Confiner> confine ...`): the
+	// Effector's own.
+	Confiner string
+	// Deny is what the child may not reach, beside what no rule names: the Effector's key and
+	// config, its secrets and push credentials, the Worktree, the node caches, its whole scratch.
+	Deny []string
+	// Unconfinable, when set, is why this node cannot confine a child (the Landlock probe's
+	// answer): a credentialed command is then refused before it runs.
+	Unconfinable string
 }
 
-// Missing names a secret the command names that the Effector does not hold, or "".
+// Missing names a secret the command names that the Effector does not hold, or why no child can
+// run here, or "".
 func (r *Runner) Missing(req *wire.StartRequest) string {
+	if r.Unconfinable != "" {
+		return "a credentialed command, whose child this node cannot confine: " + r.Unconfinable
+	}
 	for _, name := range req.Secrets() {
 		if _, ok := r.Secrets[name]; !ok {
 			return name
@@ -124,34 +139,66 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 		path = gitclean.Path
 	}
 	env := []string{"PATH=" + path, "HOME=" + home}
+	var named []string
 	for _, name := range slices.Sorted(maps.Keys(spec.Env)) {
 		ref := spec.Env[name]
+		file := filepath.Join(r.SecretsDir, ref.Secret)
+		named = append(named, file)
 		if ref.Path {
-			env = append(env, name+"="+filepath.Join(r.SecretsDir, ref.Secret))
+			env = append(env, name+"="+file)
 		} else {
 			env = append(env, name+"="+r.Secrets[ref.Secret])
 		}
 	}
-	out := execute(ctx, spec.Argv, tree, env, path, timeout, spec.Tail, r.Scrubber)
+	rules, err := confine.ForCommand(realPaths(r.Deny), realPath(repo.Work), named)
+	if err != nil {
+		return unknown("the child's confinement could not be read: " + err.Error())
+	}
+	out := execute(ctx, r.Confiner, rules, spec.Argv, tree, env, path, timeout, spec.Tail, r.Scrubber)
 	if out.Command != nil {
 		out.Command.Dirty = dirty
 	}
 	return out
 }
 
-// execute runs argv in its own process group; on its timeout the group is killed. The stream is
-// scrubbed as it arrives, across chunk borders, BEFORE it is cut to its tail: a secret that
-// straddles the cut was replaced whole before the cut could split it.
-func execute(ctx context.Context, argv []string, dir string, env []string, path string, timeout time.Duration,
-	tailLen int, scrubber *scrub.Scrubber) wire.Output {
-	cmd := exec.Command(argv[0], argv[1:]...)
-	if !strings.Contains(argv[0], "/") {
-		// Looked up in the PATH the child is given.
-		if p, err := lookPath(argv[0], path); err == nil {
-			cmd.Path = p
-			cmd.Err = nil
-		}
+// realPaths is each path with its links resolved, as a Landlock rule sees it; one that does not
+// exist is kept as written.
+func realPaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, realPath(p))
 	}
+	return out
+}
+
+func realPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return p
+}
+
+// execute runs argv, confined by rules, in its own process group; on its timeout the group is
+// killed. The confiner is the process exec starts: it restricts itself and execs argv, so no
+// instruction of argv runs unconfined. The stream is scrubbed as it arrives, across chunk borders,
+// BEFORE it is cut to its tail: a secret that straddles the cut was replaced whole before the cut
+// could split it.
+func execute(ctx context.Context, confiner string, rules confine.Rules, argv []string, dir string, env []string,
+	path string, timeout time.Duration, tailLen int, scrubber *scrub.Scrubber) wire.Output {
+	program := argv[0]
+	if !strings.Contains(program, "/") {
+		// Looked up in the PATH the child is given.
+		p, err := lookPath(program, path)
+		if err != nil {
+			return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Code: new(127),
+				Tail: fmt.Sprintf("%s: %v\n", program, err)}}
+		}
+		program = p
+	}
+	cmd := exec.Command(confiner, append([]string{"confine"}, rules.Args(program, argv)...)...)
 	cmd.Dir = dir
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
