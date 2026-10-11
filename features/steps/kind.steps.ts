@@ -2615,23 +2615,42 @@ Then(
   },
 );
 
+/** The Effector's key of this run's Sandbox, read from the Secret the provision wrote for it
+ * (`<sandbox>-effector`) WHILE the run is live: the Secret is owned by the Sandbox CR, and the
+ * wrapper's teardown deletes the CR before the run is `done`, so the Secret is gone by then. */
+async function liveEffectorKey(world: E2EWorld): Promise<string> {
+  for (let i = 0; i < 360; i++) {
+    const sandbox = (await sandboxesFor(world))[0]?.metadata?.name;
+    if (sandbox !== undefined) {
+      const data = await kubectl(world, [
+        "get",
+        "secret",
+        `${sandbox}-effector`,
+        "-o",
+        "jsonpath={.data.key}",
+        "--ignore-not-found",
+      ]).catch(() => "");
+      if (data.trim() !== "") return Buffer.from(data.trim(), "base64").toString("utf8");
+    }
+    const { status } = await wsStatus(world);
+    if (status === "done" || status === "error") break;
+    await sleep(250);
+  }
+  throw new Error(`the Effector's key of run ${world.runId}'s Sandbox was never read while the run was live`);
+}
+
 /** The child of the child read `/run/jr2/effector/key` and Landlock refused it (B9). The key is
- * read from the Secret the provision wrote for this Sandbox (`<sandbox>-effector`), so the check
+ * read from the Secret the provision wrote for this Sandbox, while the run is live, so the check
  * looks for its value and its encodings, not only for the scrubber's mark. */
 Then(
   "the credentialed command's child was denied the Effector's key, and the answer holds no form of it",
   async function (this: E2EWorld): Promise<void> {
+    const key = await liveEffectorKey(this);
+    assert.ok(key.length >= 32, "the Effector's key was read");
     const output = (await httpOutput(this)) as { outcome?: string; code?: number; tail?: string };
     assert.equal(output.outcome, "exited", JSON.stringify(output));
     assert.notEqual(output.code, 0, JSON.stringify(output));
     assert.match(output.tail ?? "", /Permission denied/, JSON.stringify(output));
-    const sandbox = (await sandboxesFor(this))[0]?.metadata?.name;
-    assert.ok(sandbox, "the run's Sandbox is gone");
-    const key = Buffer.from(
-      await kubectl(this, ["get", "secret", `${sandbox}-effector`, "-o", "jsonpath={.data.key}"]),
-      "base64",
-    ).toString("utf8");
-    assert.ok(key.length >= 32, "the Effector's key was read");
     assert.equal(leakOf(JSON.stringify(output), key), undefined, "the answer holds no form of the key");
     const feed = await this.runCli(["logs", this.runId!]);
     assert.equal(leakOf(feed.stdout + feed.stderr, key), undefined, "the feed holds no form of it");
