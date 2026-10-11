@@ -980,7 +980,8 @@ export async function lockfileInstall(instanceDir: string): Promise<InstallComma
  * input (above); `.jr2/` because it is CLI-local state; `.git/` because history is not image
  * content; `.env`/`.env.*` and `.npmrc` because those are the two files a user keeps credentials
  * in — `jr2 init` writes `.env` into the scaffold's `.gitignore` saying exactly that, and `jr2 up`
- * reads it HOST-side into the Orchestrator's Secret (ADR-0019). Copied, they would bake a
+ * reads it HOST-side into the Secrets it writes for the pods that spend each value, never into
+ * the Orchestrator's (ADR-0019, ADR-0068). Copied, they would bake a
  * credential into an image layer AND into the content address that names it, so rotating a key
  * would re-tag and roll the Orchestrator. The workspace branch already drops both: `pnpm deploy`
  * filters through npm-packlist. A registry the frozen install needs reaches it the way a

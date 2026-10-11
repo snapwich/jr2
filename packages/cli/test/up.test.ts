@@ -3478,6 +3478,27 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
   assert.equal("kube" in secret.stringData || "secret.kube" in secret.stringData, false, "a valueFrom is never copied");
 });
 
+test("no ADR, glossary entry or source says `jr2 up` reads `.env` into the Orchestrator's Secret (B11, ADR-0068)", async () => {
+  // The converge test that holds `jr2-instance` to jr2's own keys holds the code: each git token
+  // goes to its entry's clone Secret. A sentence that sends `.env` into the Orchestrator's Secret
+  // tells a reader the Orchestrator holds a value — ADR-0043 and two comments on the bundle stage
+  // said so after B11.
+  const stale = /(?:\.env`?|reads it) [^.]{0,40}into the Orchestrator's (?:Secret|env)/i;
+  const texts: Array<[string, string]> = [["CONTEXT.md", await readFile(join(REPO_ROOT, "CONTEXT.md"), "utf8")]];
+  for (const dir of ["docs/adr", "packages/cli/src", "packages/cli/test", "packages/orchestrator/src"]) {
+    for (const file of await readdir(join(REPO_ROOT, dir), { recursive: true })) {
+      if (!/\.(md|ts)$/.test(file) || file === "up.test.ts") continue;
+      texts.push([`${dir}/${file}`, await readFile(join(REPO_ROOT, dir, file), "utf8")]);
+    }
+  }
+  assert.ok(texts.length > 1, "the texts were read");
+  for (const [file, raw] of texts) {
+    // A comment's line breaks carry `//` or `*`; drop them so a sentence reads as one line.
+    const text = raw.replace(/\s*(?:\/\/|\*)\s+/g, " ").replace(/\s+/g, " ");
+    assert.equal(stale.exec(text)?.[0], undefined, `${file} still sends .env into the Orchestrator's Secret`);
+  }
+});
+
 test("no ADR and no glossary entry says `jr2 up` writes a Sandbox's Custodian configuration (ADR-0059)", async () => {
   // `jr2 up` DECLARES; a pod's maker renders its files — the Orchestrator a Sandbox's at provision.
   // A sentence that gives `jr2 up` the whole of Envoy's configuration tells a reader the

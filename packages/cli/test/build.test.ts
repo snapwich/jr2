@@ -942,7 +942,8 @@ test("a standalone instance is staged from its committed bytes, never from its n
   //
   // `.env*` and `.npmrc` are the sharper case, and the reason this asserts the WHOLE listing: they
   // are where a user is told to keep credentials (`jr2 init` gitignores `.env` in those words), and
-  // `jr2 up` reads `.env` host-side into the Orchestrator's Secret. Copied, an API key would sit in
+  // `jr2 up` reads `.env` host-side into the Secrets it writes for the pods that spend each value
+  // (never the Orchestrator's, ADR-0068). Copied, an API key would sit in
   // an image layer and in the content address naming it — so rotating the key alone would re-tag
   // the image and roll the Orchestrator.
   const instance = await mkTree(

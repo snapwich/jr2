@@ -107,12 +107,13 @@ checks the bundle exists, naming both ways out (join the workspace, or commit a 
   workspace. pnpm is a **contributor prerequisite** (like go for the operator), and in the one installed-mode shape that
   reaches this branch it is a prerequisite the user already met: they wrote the `pnpm-workspace.yaml` that selects it.
 - **Standalone**: stage a copy of the instance (minus `node_modules/`, `.jr2/`, `.git/`, and the credential files
-  `.env*`/`.npmrc` — `jr2 up` reads `.env` host-side into the Orchestrator's Secret, ADR-0019, so a copy would bake a
-  key into an image layer and into the tag addressing it) and run a **frozen install from the lockfile**, dispatched on
-  which lockfile is present: `package-lock.json` → `npm ci --omit=dev`; `pnpm-lock.yaml` →
-  `pnpm install --prod --frozen-lockfile` (with `node-linker=hoisted`, so the bundle is flat real files regardless of
-  PM); `bun.lock[b]` → `bun install --production --frozen-lockfile`. A private registry reaches that install through the
-  environment (`npm_config_registry`) or the user-level npmrc, never through image content.
+  `.env*`/`.npmrc` — `jr2 up` reads `.env` host-side into the Secrets it writes for the pods that spend each value,
+  ADR-0019 and ADR-0068, so a copy would bake a key into an image layer and into the tag addressing it) and run a
+  **frozen install from the lockfile**, dispatched on which lockfile is present: `package-lock.json` →
+  `npm ci --omit=dev`; `pnpm-lock.yaml` → `pnpm install --prod --frozen-lockfile` (with `node-linker=hoisted`, so the
+  bundle is flat real files regardless of PM); `bun.lock[b]` → `bun install --production --frozen-lockfile`. A private
+  registry reaches that install through the environment (`npm_config_registry`) or the user-level npmrc, never through
+  image content.
 
 The lockfile — not the user's `node_modules/` — is the input, and that is forced, not stylistic: the GitOps/CI path
 (ADR-0008's instance repo, the planned `jr2 build`) runs from a clean checkout where **no `node_modules` exists**, a
