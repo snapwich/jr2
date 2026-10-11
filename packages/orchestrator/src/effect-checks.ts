@@ -4,7 +4,9 @@
 //     Effect is read by SOMETHING — the check is per state, not per invoke: by the input of any invoke
 //     of that state, an Effect's or not (a second invoke beside the state's work is a legal pattern)
 //     — `fromPick` for each param that is a key of the Effect's input (a command's argv slots) or that
-//     its `fill` reads, every param on an invoke that is no Effect, a plain mapper probed with a
+//     its `fill` reads, every param on an invoke that is no Effect, every param on a command whose
+//     argv is Open (its slots are the composer's; `customize()` runs this check again on the bound
+//     argv, ADR-0054), a plain mapper probed with a
 //     recording event — or read by the entering transition's guard, or stored by an `assign` on the entering
 //     transition or on the entry of any state it enters (its targets, their ancestors below the
 //     transition's domain, their initial descendants — xstate's entry set — and what an eventless
