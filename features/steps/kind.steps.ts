@@ -2587,7 +2587,7 @@ Then("the run's Sandbox pod has a Sandbox Effector beside the Agent", async func
 });
 
 Then(
-  "the upload's answer is a response from the echo, whose body is the committed file",
+  "the file-body http's answer is a response from the echo, whose body is the committed file",
   async function (this: E2EWorld): Promise<void> {
     const output = await httpOutput(this);
     assert.equal(output.outcome, "response", JSON.stringify(output));
@@ -2836,7 +2836,7 @@ When(
   },
 );
 
-/** Releases the upload the body holds on its `hold` Gate. */
+/** Releases the file-body http the body holds on its `hold` Gate. */
 async function releaseHeld(world: E2EWorld): Promise<void> {
   const gate = await openGate(world);
   const r = await world.runCli(["send", world.runId!, "--gate", gate.gate, "--event", "go"]);
@@ -2847,7 +2847,7 @@ When("the held Effect is released", async function (this: E2EWorld): Promise<voi
   await releaseHeld(this);
 });
 
-/** Releases the held upload, then reads what the takeover was sent WHILE the run is live: once the
+/** Releases the held file-body http, then reads what the takeover was sent WHILE the run is live: once the
  * Effect settles, the wrapper deletes the Sandbox CR, and the pod's `/work` goes with it. */
 When(
   "the held Effect is released, and the takeover writes down its start",

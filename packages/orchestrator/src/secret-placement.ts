@@ -6,8 +6,8 @@
 //   - the Instance Harness: the model keys of the `"none"` Agents it hosts, and nothing else (they
 //     cannot execute code, ADR-0031, so nothing else is theirs to use);
 //   - an Effector: what its Effects name with `secret("name")` — the Instance Effector what its
-//     `http` Effects name; a Workspace's Sandbox Effector what its `upload`s and credentialed
-//     `command`s name. The push credential its `push`es spend is not placed here: the provision
+//     `http` Effects name; a Workspace's Sandbox Effector what its file-body `http`s and
+//     credentialed `command`s name. The push credential its `push`es spend is not placed here: the provision
 //     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, B10).
 //
 // `hosts`, `headers` and `paths` are an entry's BINDING — where a Custodian may put the value — and
@@ -101,7 +101,7 @@ export type SandboxEffectorPlan = {
   secrets: EffectSecret[];
   /** The literal values, by name — host-side only. */
   values: Record<string, string>;
-  /** The targets its `upload`s name, with their secrets. */
+  /** The targets its file-body `http`s name, with their secrets. */
   targets: EffectorTargetConfig[];
   /** Its pushes, by Repo Slot: what the provision resolves to an entry's push Secret. */
   pushes: SandboxPush[];
@@ -246,7 +246,7 @@ export function secretPlacementsOf(
   return { held: pods, claimed, ...(instance ? { instance } : {}), sandbox, report, warnings };
 }
 
-/** A Workspace's Sandbox Effector: the secrets its Effects name, the targets its uploads call, its
+/** A Workspace's Sandbox Effector: the secrets its Effects name, the targets its file-body https call, its
  * pushes by Repo Slot, and whether it holds a credentialed command. */
 function sandboxPlanOf(
   config: JR2Config,
@@ -258,7 +258,7 @@ function sandboxPlanOf(
   const own = secrets.filter((s) => named.has(s.name));
   const targets: EffectorTargetConfig[] = [];
   for (const effect of ws.pod.effects) {
-    if (effect.kind !== "upload" && effect.kind !== "http") continue;
+    if (effect.kind !== "http") continue;
     const t = { ...effect.target, secrets: [...effect.secrets].sort() };
     const same = (x: EffectorTargetConfig) =>
       x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();
@@ -411,13 +411,24 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
     byName.set(e.name, e);
   }
   // Every Effect that names a secret names it, whatever its kind: an `http` one in the Instance
-  // Effector, an `upload` and a credentialed `command` in their Workspace's Sandbox Effector.
+  // Effector, a file-body `http` and a credentialed `command` in their Workspace's Sandbox Effector.
   const namedBy = new Map<string, Array<{ label: string; where: string }>>();
-  const http = walk.effects.filter((p): p is HttpPlaced => p.effect.kind === "http");
+  const http = walk.effects.filter(
+    (p): p is HttpPlaced => p.effect.kind === "http" && p.effect.placement === "instance",
+  );
   const sandboxOf = new Map<string, string>();
   for (const ws of walk.workspaces) {
     for (const e of ws.pod.effects)
       sandboxOf.set(`${ws.workflow}/${e.name}`, `the Sandbox Effector of ${workspaceLabel(ws)}`);
+  }
+  // A Worktree file body needs a Worktree (B19): one no workspace() invokes has none to read.
+  for (const { workflow, effect } of walk.effects) {
+    if (effect.kind !== "http" || !effect.file || sandboxOf.has(`${workflow}/${effect.name}`)) continue;
+    throw new Error(
+      `workflow "${workflow}": the http Effect "${effect.name}" sends a Worktree file as its body, and no ` +
+        "workspace() invokes it — outside a Workspace there is no Worktree to read; invoke it from a " +
+        "workspace()'s body, or send a json or text body (ADR-0068)",
+    );
   }
   for (const { workflow, effect } of walk.effects) {
     const label = `${workflow}/${effect.name}`;

@@ -3,7 +3,7 @@
 // secret, and writes two objects per Workspace that places an Effect there:
 //
 //   - the Secret `jr2-effector-<pod>`: each literal Effect secret, and `effector.json` (the targets
-//     its uploads call, and whether it holds a credentialed command);
+//     its file-body https call, and whether it holds a credentialed command);
 //   - the manifest `effector-<pod>.json` in `jr2-held`: names only, never a value — the projected
 //     sources that make the Effector's `/run/jr2/secrets` (that Secret's keys, and each `valueFrom`
 //     key of the user's own Secret by reference), and its pushes by Repo Slot.

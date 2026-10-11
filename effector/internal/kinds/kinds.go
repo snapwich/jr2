@@ -1,5 +1,5 @@
-// Package kinds routes a start to the kind that runs it (ADR-0067): `http` and `upload` to the
-// http runner, `push` to the push runner, a credentialed `command` to the command runner. The
+// Package kinds routes a start to the kind that runs it (ADR-0067): `http` — a file body (B19)
+// included — to the http runner, `push` to the push runner, a credentialed `command` to the command runner. The
 // Instance Effector holds only the first; a Sandbox Effector holds all three, and confines a
 // credentialed command's child with Landlock (ADR-0068).
 //
@@ -59,10 +59,6 @@ func (r *Runner) Missing(req *wire.StartRequest) string {
 			return "a credentialed command, which runs in a Sandbox Effector"
 		}
 		return r.Command.Missing(req)
-	case wire.KindUpload:
-		if r.HTTP.WorkRoot == "" {
-			return "an upload, which runs in a Sandbox Effector"
-		}
 	}
 	if req.Body != nil && req.Body.File != nil && r.HTTP.WorkRoot == "" {
 		return "a file body, which runs in a Sandbox Effector"

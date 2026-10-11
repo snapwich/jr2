@@ -47,7 +47,7 @@ export default defineConfig({
     ],
   },
   // The tier's one Effect secret (ADR-0068): the `called` and `asked` workflows' http Effects name
-  // it, so it is placed in the Instance Effector, and the `effected` workflow's upload and
+  // it, so it is placed in the Instance Effector, and the `effected` workflow's file-body http and
   // credentialed command name it, so it is placed in that Workspace's Sandbox Effector — no
   // `workspace()` lists it and no provider reads it, so no Custodian holds it. Per scenario, from env like the provider key; in-cluster it reads undefined, which is
   // safe: the Orchestrator never sees an Effect secret.

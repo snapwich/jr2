@@ -1,11 +1,12 @@
-// The Sandbox Effector's kinds (ADR-0067, ADR-0068): `upload`, `push`, and a `command` that names a
-// secret. Each is an actor slot like `http()`; each runs in the Sandbox Effector of the Workspace
-// whose body invokes it — a container beside the Agent in its Sandbox pod, with the Worktree
-// mounted read-only, that holds the Effect secrets and the push credential the Agent never reads.
+// The Sandbox Effector's kinds (ADR-0067, ADR-0068): an `http` whose body is a Worktree file, a
+// `push`, and a `command` that names a secret. Each is an actor slot; each runs in the Sandbox
+// Effector of the Workspace whose body invokes it — a container beside the Agent in its Sandbox pod,
+// with the Worktree mounted read-only, that holds the Effect secrets and the push credential the
+// Agent never reads.
 //
 //   publish: push({ sign: true }),
-//   report:  upload({ method: "PUT", url: "https://files.example.com/r", auth: bearer(secret("files")),
-//                     input: z.object({ path: z.string() }), file: ({ path }) => ({ path }) }),
+//   report:  http({ method: "PUT", url: "https://files.example.com/r", auth: bearer(secret("files")),
+//                   input: z.object({ path: z.string() }), body: file(({ path }) => path) }),
 //   deploy:  command(["terraform", "apply", "-auto-approve"], { env: { AWS_PROFILE_FILE: secret("aws").path } }),
 //
 // What this module adds to the Effector's wire (http-effect.ts has the http kind's):
@@ -18,7 +19,7 @@
 //     the Effect asks its Effector for its id: found, it is followed. Not found: a push and a
 //     credentialed command are sent again with only the pinned commit the intent row holds — a run
 //     is a function of (commit, argv, secrets), never of the Agent's tip now — and with none
-//     recorded settle `unknown`; an upload is sent again only when marked `idempotent`.
+//     recorded settle `unknown`; a file-body http is sent again only when marked `idempotent`.
 //   - THE PAIR AND THE SYNC. A push sends the ledger's last push of its Workspace and Repo Slot (its
 //     published commit and its source) as `last`, the input of the Effector's `pair` fallback. After a signed
 //     push the Orchestrator relays the signed commits' bundle to the Workspace's Harness, which
@@ -41,9 +42,9 @@ import type {
   EffectMarker,
   EffectRow,
   EffectSnapshot,
+  HttpParts,
   PushParts,
   Unknown,
-  UploadParts,
 } from "./effect.ts";
 import { lastPushOf } from "./effect.ts";
 import {
@@ -65,7 +66,14 @@ import {
   type RepoRef,
   type StartRequest,
 } from "./effector-wire.ts";
-import { httpParts, secret, startRequestOf, type EffectorPortFactory, type HttpDefinition } from "./http-effect.ts";
+import {
+  httpParts,
+  secret,
+  startRequestOf,
+  type EffectorPortFactory,
+  type FromInput,
+  type HttpDefinition,
+} from "./http-effect.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import { repoKey } from "./repo-identity.ts";
 import { harnessSyncPort, type SyncPortFactory } from "./sync-client.ts";
@@ -210,41 +218,20 @@ export function pushStartOf(
   };
 }
 
-/** An upload's definition: http's, with the file the input names in place of a body. */
-export type UploadDefinition<S extends z.ZodType | undefined = undefined> = Omit<
-  HttpDefinition<S>,
-  "request" | "method"
-> & {
-  method?: "PUT" | "POST" | "PATCH";
-  /** The file, relative to the Worktree — and path segments, as http's `request` gives them. */
-  file: (input: S extends z.ZodType ? z.infer<S> : void) => { path: string; segments?: readonly string[] };
-  contentType?: string;
-  slot?: string;
-};
-
-export function uploadParts<S extends z.ZodType | undefined>(def: UploadDefinition<S>): UploadParts {
-  const http = httpParts({ ...def, method: def.method ?? "PUT" } as HttpDefinition<S>);
-  return {
-    ...http,
-    kind: "upload",
-    ...(def.slot !== undefined ? { slot: def.slot } : {}),
-    ...(def.contentType !== undefined ? { contentType: def.contentType } : {}),
-  };
-}
-
-/** The upload's start for one run. */
-export function uploadStartOf(
-  parts: UploadParts,
+/** A file-body http's start for one run (B19): the definition's parts, the url's segments, and the
+ * Worktree file as the body. */
+export function fileStartOf(
+  parts: HttpParts,
   worktree: string,
-  file: { path: string; segments?: readonly string[] },
+  run: { path: string; segments?: readonly string[] },
 ): HttpStartRequest {
-  if (typeof file?.path !== "string") throw new Error("upload: `file` returned no path");
-  const http = startRequestOf({ ...parts, kind: "http" }, file.segments ? { path: file.segments } : {});
-  return {
-    ...http,
-    kind: "upload",
-    body: { file: { worktree, path: file.path, ...(parts.contentType ? { contentType: parts.contentType } : {}) } },
-  };
+  if (typeof run?.path !== "string") throw new Error("http: `file()` gave no path");
+  if (run.segments !== undefined && !run.segments.every((s) => typeof s === "string")) {
+    throw new Error("http: `file()`'s segments are not a list of strings");
+  }
+  const http = startRequestOf(parts, run.segments ? { path: run.segments } : {});
+  const contentType = parts.file?.contentType;
+  return { ...http, body: { file: { worktree, path: run.path, ...(contentType ? { contentType } : {}) } } };
 }
 
 /** A credentialed command's env as its definition names it. */
@@ -310,7 +297,7 @@ type KindContext = {
 
 /** How one Sandbox kind builds its start and what a restore may send again. */
 type KindSpec = {
-  kind: "upload" | "push" | "command";
+  kind: "http" | "push" | "command";
   idempotent: boolean;
   /** A restore that finds no Effect sends it again with only the pinned commit. */
   repeatsPinned: boolean;
@@ -333,7 +320,7 @@ const running = new WeakMap<AnyActorRef, AbortController>();
 
 function sandboxLogic<I, O>(
   portFactory: EffectorPortFactory,
-  parts: UploadParts | PushParts | CommandParts,
+  parts: HttpParts | PushParts | CommandParts,
   spec: KindSpec,
 ): EffectLogic<I, O> {
   const logic: ActorLogic<EffectSnapshot<O, I>, EventObject, I> = {
@@ -467,7 +454,7 @@ async function drive<I, O>(
       await send(spec.build(snapshot.input, ambient, slot, pinned, extra), pinned);
       return;
     }
-    if (spec.kind === "upload" && spec.idempotent) {
+    if (spec.kind === "http" && spec.idempotent) {
       mark({ stage: "started", text: `${spec.label(ambient)} (sent again: it is idempotent)` });
       await send(spec.build(snapshot.input, ambient, slot), undefined);
       return;
@@ -730,28 +717,36 @@ function syncFields(answer: SyncAnswer): { sync: SyncState; syncReason?: string 
 
 export { lastPushOf };
 
-export function uploadWith<S extends z.ZodType | undefined = undefined>(
+/** An http whose body is a Worktree file (B19), over an injected port factory — the seam `http()`
+ * and the unit tests share. It runs in the Sandbox Effector of the Workspace whose body invokes it. */
+export function httpFileWith<S extends z.ZodType | undefined = undefined>(
   portFactory: EffectorPortFactory,
-  def: UploadDefinition<S>,
+  def: HttpDefinition<S>,
 ): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput> {
-  const parts = uploadParts(def);
+  const parts = httpParts(def);
+  const body = def.body!.file;
+  const fromInput = <T>(v: FromInput<S, T> | undefined, input: unknown): T | undefined =>
+    typeof v === "function" ? (v as (i: unknown) => T)(input) : v;
   return sandboxLogic(portFactory, parts, {
-    kind: "upload",
+    kind: "http",
     idempotent: parts.idempotent,
     repeatsPinned: false,
-    label: () => `upload ${parts.method} ${parts.target.scheme}://${parts.target.host}`,
-    repoOf: (ambient, slot) => slotOf("upload", slot, parts.slot, ambient),
+    label: () => `http ${parts.method} ${parts.target.scheme}://${parts.target.host} (a Worktree file)`,
+    repoOf: (ambient, slot) => slotOf("http", slot, body.slot, ambient),
     build: (input, ambient, slot) => {
       let value: unknown = input;
       if (def.input !== undefined) {
         const parsed = def.input.safeParse(input);
-        if (!parsed.success)
-          throw new Error(`upload "${slot}": its input does not match the definition's input schema`);
+        if (!parsed.success) throw new Error(`http "${slot}": its input does not match the definition's input schema`);
         value = parsed.data;
       }
-      const repoSlot = slotOf("upload", slot, parts.slot, ambient);
+      const repoSlot = slotOf("http", slot, body.slot, ambient);
       const worktree = posix.relative(WORK_ROOT, ambient.repos[repoSlot]!);
-      return uploadStartOf(parts, worktree, (def.file as (i: unknown) => { path: string; segments?: string[] })(value));
+      const segments = fromInput<readonly string[]>(body.segments, value);
+      return fileStartOf(parts, worktree, {
+        path: fromInput<string>(body.path, value)!,
+        ...(segments !== undefined ? { segments } : {}),
+      });
     },
   });
 }
@@ -795,17 +790,6 @@ export function credentialedCommandWith(
  */
 export function push<const O extends PushOptions>(options?: O): EffectLogic<PushInput<O> | void, PushOutput> {
   return pushWith(sandboxEffectorPort, options);
-}
-
-/**
- * THE authoring surface for an upload (ADR-0067): a Worktree file to a url, with auth as `http()`
- * takes it, from the Sandbox Effector. A path that is a symlink, leaves the Worktree, is a FIFO or
- * has more than one link is output `refused`, with nothing sent.
- */
-export function upload<S extends z.ZodType | undefined = undefined>(
-  def: UploadDefinition<S>,
-): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput> {
-  return uploadWith(sandboxEffectorPort, def);
 }
 
 export { DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_TAIL };

@@ -1,5 +1,5 @@
 {
-  "kind": "upload",
+  "kind": "http",
   "method": "PUT",
   "url": [{ "text": "https://files.example.com/reports" }],
   "auth": { "bearer": { "secret": "files" } },

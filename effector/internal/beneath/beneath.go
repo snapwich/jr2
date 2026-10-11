@@ -1,5 +1,5 @@
 // Package beneath opens a file the Agent named, under a directory the Agent can write (ADR-0067's
-// `upload`, a file-body `http`, a ref of the Agent's repository read as data). The Agent owns
+// a file-body `http`, a ref of the Agent's repository read as data). The Agent owns
 // every byte under that directory, so the path and every component on it are hostile.
 //
 // The opener is openat2(2) from a directory fd, with RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS,

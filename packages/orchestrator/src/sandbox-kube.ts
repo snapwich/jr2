@@ -194,7 +194,7 @@ export { sandboxEffectorSecret } from "./sandbox-effector.ts";
  * The Sandbox Effector's container (ADR-0067, ADR-0068), for the Sandbox CR's `sidecars` beside the
  * Custodian: the operator schedules it as it does any sidecar, and projects the CR's `gitCredentials`
  * into it alone, by its name `effector`. The provision adds it for a `workspace()` whose body
- * holds an Effect placed there (`push`, `upload`, a credentialed `command`) — which `jr2 up` read
+ * holds an Effect placed there (`push`, a file-body `http`, a credentialed `command`) — which `jr2 up` read
  * off the Machines and declared in the pod's manifest. Its image is the Sandbox Image unless the
  * `workspace()` names `effector: { image }`; its command is jr2's binary on the runtime volume; it
  * runs as its image's own `USER`. Its mounts: `/work`, `/repos/<key>` and `/opt/jr2` read-only,

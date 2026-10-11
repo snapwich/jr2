@@ -88,17 +88,11 @@ export type HttpParts = {
   readonly maxBody: number;
   /** Marked by the author: a restore that cannot find the Effect sends it again. */
   readonly idempotent: boolean;
-};
-
-/**
- * An `upload` Effect's plain data (ADR-0067): an http request whose body is a Worktree file — the
- * http parts, and the file's Repo Slot. It runs in the Sandbox Effector.
- */
-export type UploadParts = Omit<HttpParts, "kind"> & {
-  readonly kind: "upload";
-  /** The Repo Slot whose Worktree holds the file. Needed only where the Workspace carries several. */
-  readonly slot?: string;
-  readonly contentType?: string;
+  /** The body is a Worktree file (`body: file(...)`, B19): the Effect runs in the Sandbox Effector
+   * of the Workspace whose body invokes it. `slot` is the Repo Slot whose Worktree holds the file —
+   * needed only where the Workspace carries several. Absent: a json, text or no body, in the
+   * Instance Effector. */
+  readonly file?: { readonly slot?: string; readonly contentType?: string };
 };
 
 /**
@@ -120,23 +114,22 @@ export type PushParts = {
 };
 
 /** Every kind's parts. */
-export type EffectParts = CommandParts | HttpParts | UploadParts | PushParts;
+export type EffectParts = CommandParts | HttpParts | PushParts;
 
 /** The kinds, as their parts name them. */
-export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "upload", "push"]);
+export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "push"]);
 
 /**
  * Where an Effect runs, derived from its kind and what it names, never authored (ADR-0067,
  * ADR-0068): a `command` that names no secret in the Harness container of its Workspace; an
- * `http` Effect with no Worktree file in the Instance Effector; an `upload`, a `push` and a
- * `command` that names a secret in the Sandbox Effector of its Workspace.
+ * `http` Effect with no Worktree file in the Instance Effector; an `http` whose body is a Worktree
+ * file, a `push` and a `command` that names a secret in the Sandbox Effector of its Workspace.
  */
 export type Placement = "harness" | "instance" | "sandbox";
 export function placementOf(parts: EffectParts): Placement {
   switch (parts.kind) {
     case "http":
-      return "instance";
-    case "upload":
+      return parts.file ? "sandbox" : "instance";
     case "push":
       return "sandbox";
     case "command":
@@ -202,10 +195,10 @@ export type EffectRow =
   /** An Effect of the Sandbox Effector (ADR-0067): its Sandbox, and — for a push or a credentialed
    * command — the commit it runs against, written once the start's answer names it. A restore
    * re-attaches by id, or sends a push or a credentialed command again with only that commit, and
-   * sends an upload again only when it is marked idempotent. */
+   * sends an http with a Worktree file body again only when it is marked idempotent. */
   | {
       state: "intent";
-      kind: "upload" | "push" | "command";
+      kind: "http" | "push" | "command";
       slot: string;
       placement: "sandbox";
       sandbox: string;
@@ -268,7 +261,6 @@ export function dropSavedTails(effects: Record<string, EffectRow>, persisted: un
 const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   command: ["tail"],
   http: ["body", "headers"],
-  upload: ["body", "headers"],
   // A push row keeps its sha and pair data whole (`published`, `source`) and its sync's answer:
   // the next push reads them. The signed commits' bundle and git's words are its tail.
   push: ["bundle", "detail"],

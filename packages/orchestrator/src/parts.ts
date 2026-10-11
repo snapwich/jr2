@@ -391,15 +391,16 @@ export type CarriedEffect = {
 } &
   /** A command; one whose env names a secret runs in the Sandbox Effector (ADR-0067). */
   (| { kind: "command"; argv: string[]; slot?: string; secrets?: string[]; pin?: true }
-    /** An http Effect (ADR-0068), or an upload (an http request whose body is a Worktree file): its
-     * method, its fixed target, and the secrets it names — what places each secret, and what its
-     * Effector's config allows. */
+    /** An http Effect (ADR-0068): its method, its fixed target, and the secrets it names — what
+     * places each secret, and what its Effector's config allows. `file`: its body is a Worktree
+     * file (B19), so it runs in its Workspace's Sandbox Effector, on Repo Slot `slot` when named. */
     | {
-        kind: "http" | "upload";
+        kind: "http";
         method: string;
         target: { scheme: "http" | "https"; host: string; port: number };
         secrets: string[];
         idempotent: boolean;
+        file?: true;
         slot?: string;
       }
     /** A push (ADR-0067, ADR-0051): the Workspace's branch to its Repo Slot's Binding. It names no
@@ -612,18 +613,19 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
 /** One Effect slot's plain data, as `jr2 up` and the placement read it. */
 export function carriedEffectOf(name: string, path: OpenSlot["path"], parts: EffectParts): CarriedEffect {
   const placement = placementOf(parts);
-  if (parts.kind === "http" || parts.kind === "upload") {
+  if (parts.kind === "http") {
     return {
       name,
       path,
-      kind: parts.kind,
+      kind: "http",
       placement,
       method: parts.method,
       target: { ...parts.target },
       secrets: [...parts.secrets],
       idempotent: parts.idempotent,
       timeoutMs: parts.timeoutMs,
-      ...(parts.kind === "upload" && parts.slot !== undefined ? { slot: parts.slot } : {}),
+      ...(parts.file ? { file: true as const } : {}),
+      ...(parts.file?.slot !== undefined ? { slot: parts.file.slot } : {}),
     };
   }
   if (parts.kind === "push") {
@@ -670,7 +672,7 @@ export type WorkspacePod = {
    * `workspace()` that is not `workspace: "none"` (those run at the Instance Harness, ADR-0031),
    * down to the next `workspace()`, which is a pod of its own. Sorted, deduped. */
   models: string[];
-  /** The Effects placed in this pod's Sandbox Effector (ADR-0068, B5.1): every `push`, `upload` and
+  /** The Effects placed in this pod's Sandbox Effector (ADR-0068, B5.1): every `push`, file-body `http` and
    * credentialed `command` slot below the `workspace()`, down to the next `workspace()` — read off
    * their plain data, statically. Empty → the pod gets no Sandbox Effector and no Secret. */
   effects: CarriedEffect[];

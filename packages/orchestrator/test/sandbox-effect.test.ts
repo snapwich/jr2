@@ -1,4 +1,4 @@
-// The Sandbox Effector's kinds from the Orchestrator's side (ADR-0067): push, upload and the
+// The Sandbox Effector's kinds from the Orchestrator's side (ADR-0067): push, a file-body http and the
 // credentialed command, driven through the real signed client against the in-process fake
 // Effector (ADR-0010) — the start each builds from the Workspace's handles, the commit the intent
 // row keeps, and the restore rule per kind.
@@ -10,10 +10,10 @@ import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { commandWith, inputKeysOf, isEffect, placementOf, type EffectLogic, type EffectRow } from "../src/effect.ts";
 import { createEffectorClient, type CommandStartRequest, type PushStartRequest } from "../src/effector-wire.ts";
-import { bearer, secret } from "../src/http-effect.ts";
+import { bearer, file, http, secret } from "../src/http-effect.ts";
 import { partsOf } from "../src/parts.ts";
 import { RunHost } from "../src/run-host.ts";
-import { pushParts, pushWith, uploadWith } from "../src/sandbox-effect.ts";
+import { httpFileWith, pushParts, pushWith } from "../src/sandbox-effect.ts";
 import { createSyncPort, type SyncPortFactory } from "../src/sync-client.ts";
 import type { SyncAnswer, SyncRequest } from "../src/wire.ts";
 import { sandboxEffectorSecret, sandboxEffectorContainer, sandboxEffectorVolumes } from "../src/sandbox-kube.ts";
@@ -348,19 +348,21 @@ test("a port takeover: a process on the Sandbox Effector's address gets a signed
   assert.equal(exec.starts.length, 0, "nothing ran in the Harness container");
 });
 
-test("an upload names its Worktree file; restored with no Effector holding it, unknown unless idempotent", async () => {
+test("an http whose body is a Worktree file names it, in the Sandbox Effector; restored with no Effector holding it, unknown unless idempotent (B19)", async () => {
+  const input = z.object({ path: z.string() });
   const def = {
+    method: "PUT" as const,
     url: "https://files.example.com/reports",
     auth: bearer(secret("files")),
-    input: z.object({ path: z.string() }),
-    file: ({ path }: { path: string }) => ({ path }),
+    input,
+    body: file<typeof input>(({ path }) => path),
   };
   const fake = new FakeEffector(["sandbox"]);
-  const effect = (idempotent = false) => uploadWith(port(fake), { ...def, idempotent }) as AnyEffect;
+  const effect = (idempotent = false) => httpFileWith(port(fake), { ...def, idempotent }) as AnyEffect;
   const rig = await started(effect());
   await waitFor(() => fake.starts.length === 1);
   const req = fake.starts[0]!.req as { kind: string; method: string; body: unknown };
-  assert.equal(req.kind, "upload");
+  assert.equal(req.kind, "http");
   assert.equal(req.method, "PUT");
   assert.deepEqual(req.body, { file: { worktree: "app/jr2-run-1", path: "dist/report.pdf" } });
   await rig.host.stop(rig.runId);
@@ -370,7 +372,7 @@ test("an upload names its Worktree file; restored with no Effector holding it, u
   assert.equal(((host.status(rig.runId)?.context as Ctx).result as { outcome: string }).outcome, "unknown");
 
   const twice = new FakeEffector(["sandbox"]);
-  const again = (idempotent: boolean) => uploadWith(port(twice), { ...def, idempotent }) as AnyEffect;
+  const again = (idempotent: boolean) => httpFileWith(port(twice), { ...def, idempotent }) as AnyEffect;
   const rig2 = await started(again(true));
   await waitFor(() => twice.starts.length === 1);
   await rig2.host.stop(rig2.runId);
@@ -381,13 +383,32 @@ test("an upload names its Worktree file; restored with no Effector holding it, u
   await waitFor(() => host2.status(rig2.runId)?.value === "done");
 });
 
+test("http({ body: file(...) }) is refused, with the fix, with a method that sends no body and beside a request (B19)", () => {
+  const url = "https://files.example.com/r";
+  assert.throws(() => http({ method: "GET", url, body: file("a") }), /a file body is sent with PUT, POST, PATCH/);
+  assert.throws(
+    () => http({ method: "PUT", url, body: file("a"), request: () => ({ path: ["x"] }) }),
+    /with a file body the run's part is file\(\)'s .* write no `request`/,
+  );
+  // Placement follows the body: a file body is the Sandbox Effector's, any other the Instance's.
+  assert.equal(placementOf(http({ method: "PUT", url, body: file("a", { slot: "app" }) }).effect), "sandbox");
+  assert.equal(placementOf(http({ method: "PUT", url, request: () => ({ text: "a" }) }).effect), "instance");
+  assert.deepEqual(
+    http({ method: "POST", url, body: file("a", { slot: "app", contentType: "text/plain" }) }).effect.file,
+    {
+      slot: "app",
+      contentType: "text/plain",
+    },
+  );
+});
+
 test("the kinds' plain data: placement, the brand, what jr2 up reads", () => {
   const exec = new FakeHarnessExec();
   const fake = new FakeEffector(["sandbox"]);
   const plain = commandWith(exec.factory, ["pnpm", "test"]);
   const credentialed = commandWith(exec.factory, ["deploy"], { env: { TOKEN: secret("deploy-token") } }, port(fake));
   const pusher = pushWith(port(fake), { sign: true, pin: true });
-  const up = uploadWith(port(fake), { url: "https://x.example.com/u", file: () => ({ path: "a" }) });
+  const up = httpFileWith(port(fake), { method: "PUT", url: "https://x.example.com/u", body: file("a") });
   assert.equal(placementOf(plain.effect), "harness");
   assert.equal(placementOf(credentialed.effect), "sandbox");
   assert.equal(placementOf(pusher.effect), "sandbox");
@@ -399,7 +420,7 @@ test("the kinds' plain data: placement, the brand, what jr2 up reads", () => {
     "credentialed:command:sandbox",
     "plain:command:harness",
     "pusher:push:sandbox",
-    "up:upload:sandbox",
+    "up:http:sandbox",
   ]);
   const carried = partsOf([machine]).effects.find((e) => e.name === "credentialed") as { secrets?: string[] };
   assert.deepEqual(carried.secrets, ["deploy-token"]);

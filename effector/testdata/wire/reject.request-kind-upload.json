@@ -1,0 +1,8 @@
+{
+  "kind": "upload",
+  "method": "PUT",
+  "url": [{ "text": "https://files.example.com/reports" }],
+  "body": { "file": { "worktree": "app/jr2-run-1", "path": "dist/report.pdf" } },
+  "timeoutMs": 30000,
+  "maxBody": 65536
+}

@@ -268,8 +268,8 @@ decision generalizes that container. It holds every credential the Harness in it
 - **Signing credentials cannot be held.** A SigV4 or ADC credential signs the request with the secret, and a Stand-in
   cannot be swapped into a signature. `jr2 up` warns. The fix is the Effector
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): an Effect secret is the real value, in
-  a container the Agent executes nothing in. Its `http` and `upload` kinds send a bearer, a Basic pair or a header the
-  author writes, and the credentialed `command`
+  a container the Agent executes nothing in. Its `http` kind sends a bearer, a Basic pair or a header the author writes,
+  and the credentialed `command`
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)) runs the signing tool
   there (`terraform`, `aws`, `gcloud`), its child confined with Landlock from the Effector's key and every secret it
   does not name. `ANTHROPIC_OAUTH_TOKEN` is held like a key, but pi sends a Stand-in as `x-api-key`, which an OAuth

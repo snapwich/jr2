@@ -35,7 +35,7 @@ export const WireAuthShape = z.union([
 ]);
 export type WireAuth = z.infer<typeof WireAuthShape>;
 
-/** A Worktree file (ADR-0067's `upload`, a file-body `http`): the Worktree, relative to the work
+/** A Worktree file (a file-body `http`, B19): the Worktree, relative to the work
  * root, and the file, relative to the Worktree. The Sandbox Effector opens both beneath, with no
  * symlink, and refuses a FIFO and a file with more than one link — output, with nothing sent. */
 export const FileRefShape = z.strictObject({
@@ -71,9 +71,9 @@ const HEADER_NAME = /^[a-z0-9!#$%&'*+.^_`|~-]+$/;
 export const isEffectHeader = (name: string): boolean =>
   HEADER_NAME.test(name) && !FRAMING_HEADERS.has(name) && !name.startsWith("proxy-");
 
-/** An `http` start, or an `upload`'s (an http request whose body is a Worktree file). */
+/** An `http` start; its body may be a Worktree file (B19), which only a Sandbox Effector serves. */
 export const HttpStartShape = z.strictObject({
-  kind: z.enum(["http", "upload"]),
+  kind: z.literal("http"),
   method: HttpMethodShape,
   url: z.array(TextPartShape),
   path: z.array(z.string()).optional(),

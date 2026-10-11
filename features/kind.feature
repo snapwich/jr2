@@ -216,9 +216,9 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the echo received the run's call exactly once
       And the Instance Effector's rollout completes
 
-  Rule: an upload and a credentialed command run in the Workspace's Sandbox Effector, which the Agent cannot read
+  Rule: a file-body http and a credentialed command run in the Workspace's Sandbox Effector, which the Agent cannot read
     ADR-0067, ADR-0068. The `effected` workflow's body commits a file in the Harness container, then
-    runs an Effect that `jr2 up` placed in this Workspace's Sandbox Effector: an `upload` of the
+    runs an Effect that `jr2 up` placed in this Workspace's Sandbox Effector: an `http` whose body is the
     file to the echo with `bearer(secret("echo-token"))`, or a credentialed `command` whose env names
     the token by value and by `.path`. The provision adds the `effector` container to the pod; the
     Harness container mounts none of its volumes. A credentialed command runs against the pinned
@@ -227,12 +227,12 @@ Feature: a workspace() run drives a real Sandbox on kind
     Every string that comes back is scrubbed. The Orchestrator reaches the Effector by the headless
     Service the provision writes beside it, which resolves to the pod's own address.
 
-    Scenario: an upload sends a committed Worktree file, and the answer names the secret
+    Scenario: an http whose body is a committed Worktree file sends it, and the answer names the secret
       Given the kind instance is serving
       When I start the "effected" workflow in mode "upload" detached
       Then the run's Sandbox pod has a Sandbox Effector beside the Agent
       When the held Effect is released
-      Then the upload's answer is a response from the echo, whose body is the committed file
+      Then the file-body http's answer is a response from the echo, whose body is the committed file
 
     Scenario: a credentialed command reads its secret from env and from its file, and its output is scrubbed
       Given the kind instance is serving
@@ -255,7 +255,7 @@ Feature: a workspace() run drives a real Sandbox on kind
     Scenario: a process that takes the Effector's port gets a signed start it cannot answer, and the Effect fails closed
       B2. The body holds on its Gate; the step starts a process in the Harness container, as the
       Agent could, that binds :8082 the moment it is free, then stops the Effector, whose
-      container restarts into a port taken. Released, the upload's start reaches
+      container restarts into a port taken. Released, the file-body http's start reaches
       that process: signed, naming the secret, carrying no value of it. Its answer carries no
       signature the key verifies, so it is no answer: the Effect settles `unknown`.
       Given the kind instance is serving

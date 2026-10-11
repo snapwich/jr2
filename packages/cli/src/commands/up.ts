@@ -275,22 +275,17 @@ export async function up(args: string[], io: Io): Promise<number> {
     activity(io, `effects: workflow "${w.name}" — what it runs outside itself (ADR-0067)`);
     for (const e of effects) {
       const where = e.path?.length ? ` (on ${e.path.map((k) => `"${k}"`).join(" → ")})` : "";
+      const slot = e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
       if (e.kind === "http") {
         const names = e.secrets.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
+        // Its body decides where it runs (B19): a Worktree file needs its Workspace's Sandbox Effector.
+        const where2 = e.file
+          ? `in the Sandbox Effector, a Worktree file as its body${slot}`
+          : "in the Instance Effector";
         activity(
           io,
           `  ${e.name}${where}: http ${e.method} ${targetText({ target: e.target })} — ${e.timeoutMs / 1000}s, ` +
-            `in the Instance Effector${names}${e.idempotent ? ", idempotent" : ""}`,
-        );
-        continue;
-      }
-      const slot = e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
-      if (e.kind === "upload") {
-        const names = e.secrets.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
-        activity(
-          io,
-          `  ${e.name}${where}: upload ${e.method} ${targetText({ target: e.target })} — ${e.timeoutMs / 1000}s, ` +
-            `in the Sandbox Effector${slot}${names}${e.idempotent ? ", idempotent" : ""}`,
+            `${where2}${names}${e.idempotent ? ", idempotent" : ""}`,
         );
         continue;
       }

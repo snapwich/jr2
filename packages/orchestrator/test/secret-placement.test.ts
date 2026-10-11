@@ -309,11 +309,13 @@ test("the hover text of `secrets` and `SecretEntry` states the rule these tests 
 
 // --- The Sandbox Effector's placement (ADR-0067, ADR-0068, B5.1, B6.2) ----------------------------
 
+/** An http whose body is a Worktree file (B19): placed in its Workspace's Sandbox Effector. */
 const upload = (name: string, secrets: string[]): CarriedEffect =>
   ({
     name,
     path: [],
-    kind: "upload",
+    kind: "http",
+    file: true,
     placement: "sandbox",
     method: "PUT",
     target: { scheme: "https", host: "files.example.com", port: 443 },
@@ -353,7 +355,18 @@ const placedIn = (
   return walk({ effects: effects.map((effect) => ({ workflow: "ticket", effect })), workspaces: [pod] });
 };
 
-test("a secret a credentialed command or an upload names is an Effect secret in its Workspace's Sandbox Effector, never 'named by nothing'", () => {
+test("jr2 up refuses an http whose body is a Worktree file and that no workspace() invokes, naming the fix (B19)", () => {
+  const config: JR2Config = { secrets: [{ name: "files", value: VALUE }] };
+  const outside: PlacementWalk = { effects: [{ workflow: "w", effect: upload("report", ["files"]) }], workspaces: [] };
+  assert.throws(
+    () => refuseEffectSecrets(config, outside),
+    /workflow "w": the http Effect "report" sends a Worktree file as its body, and no workspace\(\) invokes it .*invoke it from a workspace\(\)'s body, or send a json or text body/,
+  );
+  assert.throws(() => secretPlacementsOf(config, outside), /no workspace\(\) invokes it/);
+  assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn([upload("report", ["files"])])));
+});
+
+test("a secret a credentialed command or a file-body http names is an Effect secret in its Workspace's Sandbox Effector, never 'named by nothing'", () => {
   const config: JR2Config = {
     secrets: [
       { name: "aws", value: VALUE },

@@ -227,7 +227,7 @@ func run(logger *log.Logger) error {
 type mount struct{ key, config, secrets, git string }
 
 // kindsFor is this placement's kinds: `http` alone in the Instance Effector; in a Sandbox
-// Effector (JR2_EFFECTOR_WORK set) also upload, push and the credentialed command, whose child is
+// Effector (JR2_EFFECTOR_WORK set) also a file-body http, push and the credentialed command, whose child is
 // confined with Landlock. When the kernel cannot confine one, a Workspace that holds a
 // credentialed command stops the start (the Effector never becomes ready); one that holds none
 // runs its other kinds, and a command start is refused.

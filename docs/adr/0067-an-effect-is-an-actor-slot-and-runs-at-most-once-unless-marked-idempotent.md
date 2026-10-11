@@ -2,9 +2,9 @@
 
 An Effect is work a Machine does outside itself. A Machine already runs Agents and Gates as actors (ADR-0049); work such
 as running the tests had no place of its own, so an author either asked an Agent to do it (and trusted its word) or
-wrote a raw xstate promise that a restart ran again. jr2 builds four kinds: `command`, run a program in the Workspace;
-`http`, call a URL; `upload`, send a Worktree file to a URL; and `push`, push the Workspace's branch to its Repo Slot's
-Binding. An Effect that holds a secret runs in an Effector
+wrote a raw xstate promise that a restart ran again. jr2 builds three kinds: `command`, run a program in the Workspace;
+`http`, call a URL — with a JSON or text body, or a Worktree file as its body; and `push`, push the Workspace's branch
+to its Repo Slot's Binding. An Effect that holds a secret runs in an Effector
 ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A `command` whose env names a secret —
 the credentialed `command` — runs there too, its child confined (below).
 
@@ -14,13 +14,13 @@ the credentialed `command` — runs there too, its child confined (below).
   `src: "tests"`, with an `onDone` that routes on its output. xstate gives the rest: the Effect stops when its state
   exits, its input persists with the snapshot, a `src` typo is a compile error, and `.provide()` is the unit-test seam.
   The slot carries its parts as plain data — kind, placement, timeout; a `command`'s argv, Repo Slot and the secrets its
-  env names; an `http` or `upload` Effect's method, fixed host and the names of the secrets it names; a `push`'s `pin`,
-  `sign`, `squash` and `force` — which `jr2 up` prints and the Machine doc carries, read without running anything. An
-  Effect written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the slot form in the
-  message: xstate gives it a generated key that moves when a state is renamed, so the ledger, the report and the Machine
-  doc would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not reach it. The same rule
-  holds for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`, and every Effect kind is one (the brand
-  `isEffect` reads).
+  env names; an `http` Effect's method, fixed host, the names of the secrets it names and whether its body is a Worktree
+  file; a `push`'s `pin`, `sign`, `squash` and `force` — which `jr2 up` prints and the Machine doc carries, read without
+  running anything. An Effect written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the
+  slot form in the message: xstate gives it a generated key that moves when a state is renamed, so the ledger, the
+  report and the Machine doc would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not
+  reach it. The same rule holds for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`, and every
+  Effect kind is one (the brand `isEffect` reads).
 - **Between a pick and its work: `fromPick`, `paramsOf`, `answer`.** All optional; a plain mapper is legal.
   `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
   `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security
@@ -39,10 +39,11 @@ the credentialed `command` — runs there too, its child confined (below).
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.
 - **Placement follows the kind and what it names; it is never authored.** A `command` that names no secret, an `http`
-  Effect with no Worktree file, and an `upload` and a `push` each have one place: the Harness container, the Instance
-  Effector, and the Sandbox Effector of the Workspace whose body invokes it. A `command` that names a secret is placed
-  in that Sandbox Effector, and runs there with its child confined (below). There is no `placement:` key: naming a
-  secret is what places the command (ADR-0068).
+  Effect whose body is not a Worktree file, and a `push` each have one place: the Harness container, the Instance
+  Effector, and the Sandbox Effector of the Workspace whose body invokes it. A `command` that names a secret, and an
+  `http` whose body is a Worktree file, are placed in that Sandbox Effector — the command runs there with its child
+  confined (below). There is no `placement:` key and no kind per placement: naming a secret places a command, and the
+  body places an `http` (B19) — one name per thing, so there is no `upload` kind beside it (ADR-0068).
 - **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a child of the
   Harness process: the Agent's user, the Sandbox Image's tools, the same Stand-ins as the Agent's `bash` (ADR-0059), and
   no credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route
@@ -50,20 +51,29 @@ the credentialed `command` — runs there too, its child confined (below).
   refused at invoke. Its cwd is a Repo Slot's Worktree: the one slot, or the slot it names (`slot`); several and none
   named is refused (ADR-0051).
 - **Every outcome is output**: `exited | timeout | killed | unknown` for a `command`;
-  `response | unreachable | refused | unknown` for an `http` or `upload` Effect;
-  `pushed | rejected | diverged | unknown` for a `push`. A command not found is `exited` 127; a path segment that is
-  `.`, `..` or empty, and an upload's path that is a symlink, leaves the Worktree, is absolute, is a FIFO or has more
-  than one link, are `refused` with nothing sent — an Agent's param can cause each. `onError` is only a jr2 or config
-  defect: no Workspace, an argv slot with no value, an input that misses the definition's schema, no Effector to send
-  to.
+  `response | unreachable | refused | unknown` for an `http` Effect; `pushed | rejected | diverged | unknown` for a
+  `push`. A command not found is `exited` 127; a path segment that is `.`, `..` or empty, and a file body's path that is
+  a symlink, leaves the Worktree, is absolute, is a FIFO or has more than one link, are `refused` with nothing sent — an
+  Agent's param can cause each. `onError` is only a jr2 or config defect: no Workspace, an argv slot with no value, an
+  input that misses the definition's schema, no Effector to send to.
 - **An `http` Effect is a definition plus one function.**
-  `http({ method, url, headers?, auth?, input?, request?, timeout?, maxBody?, idempotent? })`. The url's scheme and host
-  are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template, and one
-  after a `?` or a `#` is refused when the Machine loads — so the host is fixed by the definition and never a param.
-  `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`. `request(input)` returns the run's part alone:
-  `path` segments and a JSON or text body. So an Agent's param reaches a path segment or a body, never the host, a
-  header or a secret. It runs in the Instance Effector, which builds the request and holds the secrets (ADR-0068); the
-  Orchestrator signs the call and holds none.
+  `http({ method, url, headers?, auth?, input?, request?, body?, timeout?, maxBody?, idempotent? })`. The url's scheme
+  and host are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template,
+  and one after a `?` or a `#` is refused when the Machine loads — so the host is fixed by the definition and never a
+  param. `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`. `request(input)` returns the run's part
+  alone: `path` segments and a JSON or text body. So an Agent's param reaches a path segment or a body, never the host,
+  a header or a secret. It runs in the Instance Effector, which builds the request and holds the secrets (ADR-0068); the
+  Orchestrator signs the call and holds none. Its body may instead be a Worktree file (B19),
+  `body: file(path, { slot?, segments?, contentType? })`: the file's path relative to the Repo Slot's Worktree (the one
+  slot, or the one `slot` names), and the url's path segments — each a value or a function of the input; no `request` is
+  written beside it, since `file()` carries the run's part. Such an `http` is placed in the Sandbox Effector of the
+  Workspace whose body invokes it, and `jr2 up` refuses one that no `workspace()` invokes, where no Worktree exists to
+  read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox Effector opens the file with `openat2` beneath the work
+  root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_XDEV`, non-blocking — then
+  `fstat`: a symlink at any component (one that stays inside included), `..`, an absolute path, a FIFO, a directory and
+  a file with more than one link are refused, in words, as output. The content type is `file()`'s, else a `content-type`
+  header of the definition's, else `application/octet-stream`. A later body form (a multipart file and fields) is one
+  more body on `http`, never a kind.
 - **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`.** Naming a
   secret is what places it: it runs in the Sandbox Effector of the Workspace whose body invokes it, with no `placement:`
   key. Its child runs as the Effector's uid beside the Effector's key, the secrets it does not name and the push
@@ -88,15 +98,6 @@ the credentialed `command` — runs there too, its child confined (below).
   signing key on a `gpg-agent` socket while it signs; so the Sandbox Effector never runs the two at once: one lock over
   two classes, `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068, B12). A
   Workspace may hold both.
-- **An `upload` is an `http` definition whose body is a Worktree file.**
-  `upload({ method?, url, headers?, auth?, input?, file, contentType?, slot?, timeout?, maxBody?, idempotent? })`:
-  `file(input)` returns the file's path relative to the Repo Slot's Worktree (and path segments, as `request` gives
-  them). The Sandbox Effector opens it with `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
-  `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_XDEV`, non-blocking — then `fstat`: a symlink at any component (one that stays
-  inside included), `..`, an absolute path, a FIFO, a directory and a file with more than one link are refused, in
-  words, as output. The method defaults to `PUT`, the content type to the definition's or `application/octet-stream`.
-  The Effector serves a file body for `http` the same way, through the same opener; no authoring form names one yet
-  (Consequences).
 - **A `push` pushes the Workspace's branch to its Repo Slot's Binding**, from the Sandbox Effector, with no input:
   `push({ pin?, sign?, squash?, force?, slot?, timeout? })`. Its credential is the push credential of the
   `git.credentials` entry the Repo Slot's url falls under (ADR-0051): the provision matches the url the run binds —
@@ -190,24 +191,24 @@ the credentialed `command` — runs there too, its child confined (below).
   the Agent's tip now — because its run is a function of the commit and its credential, what the intent row records;
   with no commit recorded it settles `unknown`. A credentialed command follows the push's rule: its intent row names its
   Sandbox and, once the first answer names it, the pinned commit, and one the Effector lost is sent again with only that
-  commit, since its run is a function of (commit, argv, secrets). An `upload` follows the `http` rule. An `http` intent
-  row names its placement and no replica: the Effect asks every replica of that Effector for its id and follows the one
-  that holds it; when none does, it is sent again only when the author marked it `idempotent`, and any other settles
-  `unknown`. Retry is the author's choice — a route back into the state, or `idempotent` for a call that carries its own
-  idempotency key or only reads. No row is dropped: each settled or aborted row keeps the Effect's id, kind and outcome
-  for the run's life, the record of what the run's Effects did. A settled row's output tail is dropped once the save
-  that carries its transition is on disk; the full stream is on the feed. An `http` response's body and headers are its
-  tail: the row keeps the outcome, the status, the content type and the size, and the settled line on the feed carries
-  the whole response. A `push` row keeps its Repo Slot, its published commit, its source and its sync's answer whole —
-  the next push of its Workspace and Repo Slot reads them as its pair, and runs a sync that did not finish again — and
-  drops git's words; it drops its bundle once its sync answered `synced`, `already` or `skipped`, and keeps it while the
-  sync is `busy` or `not-synced` only as long as it is the newest push of its Repo Slot that published, because the sync
-  that runs again moves the branch from it and only the newest push's sync runs again. Once a newer push of the slot
-  published, the older row's bundle goes at the next save: one bundle per Repo Slot at most. So an Effect in a loop
-  grows the ledger by one short row per pass, never by its tails. One exception, bounded by one pick: while a pick is
-  outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action may read it after a restore;
-  a loop below the Agent's state then grows the hold by one tail per pass. The hold drops its chain when the pick is
-  answered.
+  commit, since its run is a function of (commit, argv, secrets). An `http` intent row names its placement — the
+  Instance Effector, or the Sandbox of a file-body `http` — and no replica: the Effect asks every replica of that
+  Effector for its id and follows the one that holds it; when none does, it is sent again only when the author marked it
+  `idempotent`, and any other settles `unknown`. Retry is the author's choice — a route back into the state, or
+  `idempotent` for a call that carries its own idempotency key or only reads. No row is dropped: each settled or aborted
+  row keeps the Effect's id, kind and outcome for the run's life, the record of what the run's Effects did. A settled
+  row's output tail is dropped once the save that carries its transition is on disk; the full stream is on the feed. An
+  `http` response's body and headers are its tail: the row keeps the outcome, the status, the content type and the size,
+  and the settled line on the feed carries the whole response. A `push` row keeps its Repo Slot, its published commit,
+  its source and its sync's answer whole — the next push of its Workspace and Repo Slot reads them as its pair, and runs
+  a sync that did not finish again — and drops git's words; it drops its bundle once its sync answered `synced`,
+  `already` or `skipped`, and keeps it while the sync is `busy` or `not-synced` only as long as it is the newest push of
+  its Repo Slot that published, because the sync that runs again moves the branch from it and only the newest push's
+  sync runs again. Once a newer push of the slot published, the older row's bundle goes at the next save: one bundle per
+  Repo Slot at most. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One
+  exception, bounded by one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because
+  an `answer` action may read it after a restore; a loop below the Agent's state then grows the hold by one tail per
+  pass. The hold drops its chain when the pick is answered.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start
@@ -225,10 +226,10 @@ the credentialed `command` — runs there too, its child confined (below).
   unknown"; the Machine does not get it — the state that asked has left. An `http` Effect has no cancel route: its
   state's exit stops the polling, and the abort goes to the ledger and the feed the same way, "the Effector may still
   send it; outcome unknown". The Effector finishes the call and drops an outcome nobody reads. The Sandbox kinds have no
-  cancel route either: an `upload` and a `push` that a state exit cut run on in the Sandbox Effector to their end, and
-  the abort says "the Sandbox Effector may still run it; outcome unknown". Two stops are not exits: the host parking the
-  run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor). The Effect then re-attaches on
-  restore, or settles `unknown`. There is no "finally": cleanup is a state.
+  cancel route either: a file-body `http` and a `push` that a state exit cut run on in the Sandbox Effector to their
+  end, and the abort says "the Sandbox Effector may still run it; outcome unknown". Two stops are not exits: the host
+  parking the run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor). The Effect then
+  re-attaches on restore, or settles `unknown`. There is no "finally": cleanup is a state.
 - **Must-finish is a pattern.** An Effect that must not be cut goes in its own state, whose only exit is its `onDone`,
   and that state handles the ancestor's events itself.
 - **No fire-and-forget form.** Two patterns keep D1: an Effect in its own state; or a second invoke with no `onDone`
@@ -293,6 +294,6 @@ the credentialed `command` — runs there too, its child confined (below).
   branch and Worktree after the sync, and push again after the Agent amended the pushed commit (`diverged`). A token
   push over https has no remote there. Its credentialed-command scenarios read the secret from env and from its file,
   scrubbed, say `dirty` over an uncommitted edit, and show a child of the child denied the Effector's key.
-- Not built: a file-body `http`. The Effector serves a Worktree file as an `http` body on the wire, with the opener
-  above, and no authoring form names one; `upload` is the one that exists.
+- **One kind, `http`, whatever its body (B19).** Rejected: `upload()` beside `http({ body: file() })` — two spellings of
+  one Effect, and a kind that, not a body, decided the placement.
 - Owed, not built: an Open argv bound by `customize()`.

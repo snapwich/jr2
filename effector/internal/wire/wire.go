@@ -18,10 +18,10 @@ import (
 )
 
 // The kinds an Effector runs. The Instance Effector runs `http` with no Worktree file; the
-// Sandbox Effector runs `upload`, `push`, `command` and a file-body `http` (ADR-0067).
+// Sandbox Effector runs `push`, `command` and an `http` whose body is a Worktree file (ADR-0067,
+// B19: one kind, whose body decides the placement).
 const (
 	KindHTTP    = "http"
-	KindUpload  = "upload"
 	KindPush    = "push"
 	KindCommand = "command"
 )
@@ -447,7 +447,7 @@ func (r *StartRequest) Validate() error {
 		return errors.New("timeoutMs is not positive")
 	}
 	switch r.Kind {
-	case KindHTTP, KindUpload:
+	case KindHTTP:
 		if r.Push != nil || r.Command != nil {
 			return fmt.Errorf("a %s start carries a push or a command", r.Kind)
 		}
@@ -592,9 +592,6 @@ func (r *StartRequest) validateHTTP() error {
 		if f := r.Body.File; f != nil && !relative(f.Worktree) {
 			return fmt.Errorf("body.file.worktree %q is not relative to the work root", f.Worktree)
 		}
-	}
-	if r.Kind == KindUpload && (r.Body == nil || r.Body.File == nil) {
-		return errors.New("an upload carries a Worktree file as its body")
 	}
 	if r.MaxBody <= 0 {
 		return errors.New("maxBody is not positive")

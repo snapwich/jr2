@@ -131,10 +131,9 @@ runs in it only when it names an Effect secret, and then against a pinned commit
 placements: the Sandbox Effector and the Instance Effector. _Avoid_: Courier, Actuator, Clerk, machine container, tool
 image
 
-**Sandbox Effector**: The Effector as a container in a Sandbox pod, with the Worktree mounted read-only — for `push`,
-`upload`, an `http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is the
-Sandbox Image unless the `workspace()` names another. Present only when a Machine needs it. _Avoid_: sidecar, worker,
-runner
+**Sandbox Effector**: The Effector as a container in a Sandbox pod, with the Worktree mounted read-only — for `push`, an
+`http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is the Sandbox Image
+unless the `workspace()` names another. Present only when a Machine needs it. _Avoid_: sidecar, worker, runner
 
 **Instance Effector**: The Effector as its own stateless pod, one per Instance — for an `http` Effect that reads no
 Worktree file. _Avoid_: sidecar, worker, runner
@@ -322,8 +321,8 @@ narrative a Workspace Harness prints (ADR-0023): Emits land in that log because 
 _Avoid_: event (the down-channel thing a Gate or an Agent delivers, which does drive a Machine), log (an Emit is
 deliberate vocabulary, not a diagnostic)
 
-**Effect**: Work a Machine does outside itself — run a command, call a URL, upload a file, push a branch. _Avoid_:
-action (xstate's word), side effect, job, task, step, operation, errand, tool
+**Effect**: Work a Machine does outside itself — run a command, call a URL (a Worktree file can be its body), push a
+branch. _Avoid_: action (xstate's word), side effect, job, task, step, operation, errand, tool
 
 **Workspace**: A long-lived Sandbox bound to a unit of work, modeled as a child Machine. Entering the state creates the
 Sandbox and its worktree; the child Machine's states manage what happens inside (e.g. coding, review, merge); reaching

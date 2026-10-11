@@ -66,7 +66,7 @@ export type InstanceOptions = {
    * The entrypoint derives it from the pod's namespace; absent, an http Effect faults pointedly. */
   instanceEffector?: string;
   /** A Sandbox Effector's address, `host:port`, by its Sandbox's name (ADR-0068) — where a push, an
-   * upload or a credentialed command is sent. The entrypoint derives it from the pod's namespace and
+   * file-body http or a credentialed command is sent. The entrypoint derives it from the pod's namespace and
    * the Service the provision writes; absent, those Effects fault pointedly. */
   sandboxEffector?: (sandbox: string) => string;
   /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.jr2/secret`, minted on

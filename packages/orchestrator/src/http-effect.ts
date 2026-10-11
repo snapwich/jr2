@@ -9,8 +9,19 @@
 //     request: ({ key, body }) => ({ path: [key, "comment"], json: { body } }),
 //   })
 //
+// Its body may be a Worktree file instead (B19), and then it runs in the Sandbox Effector of the
+// Workspace whose body invokes it, which opens the file beneath the Worktree with no symlink:
+//
+//   report: http({
+//     method: "PUT",
+//     url: "https://files.example.com/reports",
+//     auth: bearer(secret("files")),
+//     input: z.object({ marker: z.string() }),
+//     body: file("dist/report.pdf", { segments: ({ marker }) => [marker], contentType: "application/pdf" }),
+//   })
+//
 // The definition is plain data `jr2 up` reads without running anything (`HttpParts`): the kind,
-// the placement (`instance`), the fixed host, the secret names. `request` is the one function: it
+// the placement (`instance`, or `sandbox` for a file body), the fixed host, the secret names. `request` is the one function: it
 // maps the Effect's typed input to the run's part of the request — `path` segments and a body —
 // and nothing else, so an Agent's param reaches a path segment or a body and never the host, a
 // header or a secret. The Effector builds the request; the Orchestrator holds no secret.
@@ -57,6 +68,7 @@ import {
   type WireBody,
 } from "./effector-wire.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
+import { httpFileWith, sandboxEffectorPort } from "./sandbox-effect.ts";
 
 // --- Naming a secret -----------------------------------------------------------------------------
 
@@ -131,6 +143,52 @@ function asText(v: string | Secret | Text): Text {
   throw new Error(`expected a string, a secret("name") or a text\`…\`, got ${JSON.stringify(v)}`);
 }
 
+// --- A Worktree file as the body (B19) ------------------------------------------------------------
+
+/** A value of a file body's part: as written, or from the Effect's input. */
+export type FromInput<S, T> = T | ((input: S extends z.ZodType ? z.infer<S> : void) => T);
+
+/** `file(path, { slot?, segments?, contentType? })`: a Worktree file as an `http` body. */
+export type FileBody<S extends z.ZodType | undefined = undefined> = {
+  readonly file: {
+    /** The file, relative to the Repo Slot's Worktree. */
+    readonly path: FromInput<S, string>;
+    /** The Repo Slot whose Worktree holds it — needed only where the Workspace carries several. */
+    readonly slot?: string;
+    /** Path segments appended to the url, as `request`'s `path` is for a json or text body. */
+    readonly segments?: FromInput<S, readonly string[]>;
+    /** Default: a `content-type` header of the definition's, else `application/octet-stream`. */
+    readonly contentType?: string;
+  };
+};
+
+/**
+ * A Worktree file as an `http` body (B19): `body: file("dist/report.pdf")`. The Effect then runs in
+ * the Sandbox Effector of the Workspace whose body invokes it, which opens the file beneath the
+ * Worktree — a symlink at any component, `..`, an absolute path, a FIFO, a directory and a file
+ * with more than one link are output `refused`, with nothing sent. `path` and `segments` may be
+ * functions of the Effect's input.
+ */
+export function file<S extends z.ZodType | undefined = undefined>(
+  path: FromInput<S, string>,
+  options: { slot?: string; segments?: FromInput<S, readonly string[]>; contentType?: string } = {},
+): FileBody<S> {
+  if (typeof path !== "string" && typeof path !== "function") {
+    throw new Error("file(path): the path is a string, or a function of the Effect's input that returns one");
+  }
+  return {
+    file: {
+      path,
+      ...(options.slot !== undefined ? { slot: options.slot } : {}),
+      ...(options.segments !== undefined ? { segments: options.segments } : {}),
+      ...(options.contentType !== undefined ? { contentType: options.contentType } : {}),
+    },
+  };
+}
+
+/** The methods that send a file body. */
+const FILE_METHODS: readonly HttpMethod[] = ["PUT", "POST", "PATCH"];
+
 // --- The definition ------------------------------------------------------------------------------
 
 /** What `request` returns: the run's part of the request. Everything else is the definition's. */
@@ -157,6 +215,10 @@ export type HttpDefinition<S extends z.ZodType | undefined = undefined> = {
   input?: S;
   /** The run's part of the request, from the input. */
   request?: (input: S extends z.ZodType ? z.infer<S> : void) => HttpRequestParts;
+  /** A Worktree file as the body: `file(path, { slot?, segments?, contentType? })` (B19). Then the
+   * Effect runs in its Workspace's Sandbox Effector, and `request` is not written: `file()`'s
+   * `segments` are the path. */
+  body?: FileBody<S>;
   /** Default 30s. Past it with no answer: output `unknown`. */
   timeout?: Duration;
   /** Bytes of a text body returned. Default 65536. */
@@ -218,6 +280,23 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
   for (const name of secrets) secret(name);
   const maxBody = def.maxBody ?? DEFAULT_MAX_BODY;
   if (!Number.isInteger(maxBody) || maxBody <= 0) throw new Error("http({ maxBody }): a positive number of bytes");
+  const body = def.body?.file;
+  if (def.body !== undefined && (typeof body !== "object" || body === null)) {
+    throw new Error(
+      "http({ body }): a body is file(path, { slot?, segments?, contentType? }) — json and text come from `request`",
+    );
+  }
+  if (body && !FILE_METHODS.includes(def.method)) {
+    throw new Error(
+      `http({ method: "${def.method}", body: file(...) }): a file body is sent with ${FILE_METHODS.join(", ")} (ADR-0068)`,
+    );
+  }
+  if (body && def.request !== undefined) {
+    throw new Error(
+      "http({ body: file(...), request }): with a file body the run's part is file()'s — its path, from the input " +
+        "if it must be, and its `segments` — so write no `request` (ADR-0068)",
+    );
+  }
   return {
     kind: "http",
     method: def.method,
@@ -230,6 +309,14 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
     timeoutMs: def.timeout === undefined ? DEFAULT_TIMEOUT_MS : parseDuration(def.timeout),
     maxBody,
     idempotent: def.idempotent === true,
+    ...(body
+      ? {
+          file: {
+            ...(body.slot !== undefined ? { slot: body.slot } : {}),
+            ...(body.contentType !== undefined ? { contentType: body.contentType } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -647,13 +734,15 @@ function parseDuration(d: Duration): number {
 /**
  * THE authoring surface for an `http` Effect (ADR-0068): `actors: { comment: http({ method, url,
  * auth: bearer(secret("jira")), input, request }) }`, invoked as `src: "comment"`. It runs in the
- * Instance Effector, which `jr2 up` converges because this definition is placed there; the
+ * Instance Effector, which `jr2 up` converges because this definition is placed there — or, with
+ * `body: file(...)`, in the Sandbox Effector of the Workspace whose body invokes it (B19). The
  * Orchestrator signs the call and holds no secret. Every outcome is output:
  * `response | unreachable | refused | unknown`.
  */
 export function http<S extends z.ZodType | undefined = undefined>(
   def: HttpDefinition<S>,
 ): EffectLogic<HttpInput<S>, HttpOutput> {
+  if (def.body !== undefined) return httpFileWith(sandboxEffectorPort, def);
   return httpWith(
     (target) => createEffectorClient({ key: target.key, transport: nodeEffectorTransport(target.service) }),
     def,

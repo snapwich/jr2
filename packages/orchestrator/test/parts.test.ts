@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
 import { customizeLine, open, partsOf, workspacePodsOf } from "../src/parts.ts";
 import { agent, command } from "../src/harness-client.ts";
-import { secret } from "../src/http-effect.ts";
-import { push, upload } from "../src/sandbox-effect.ts";
+import { file, http, secret } from "../src/http-effect.ts";
+import { push } from "../src/sandbox-effect.ts";
 import { arg, commandWith } from "../src/effect.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { pool, source } from "../src/pool.ts";
@@ -627,7 +627,7 @@ test("each Workspace's pod carries the Effects placed in its Sandbox Effector, d
       publish: push(),
       helper: jr2Setup({
         events: [],
-        actors: { report: upload({ url: "https://files.example.com/r", file: () => ({ path: "r" }) }) },
+        actors: { report: http({ method: "PUT", url: "https://files.example.com/r", body: file("r") }) },
       }).createMachine({ id: "helper" }),
       nested: workspace(inner, { repos: { lib: "https://example.test/lib.git" }, spec: () => ({ branch: "inner" }) }),
     },
@@ -640,8 +640,9 @@ test("each Workspace's pod carries the Effects placed in its Sandbox Effector, d
   const [outer, nested] = workspacePodsOf(ws);
   assert.deepEqual(
     outer!.effects.map((e) => `${e.name}:${e.kind}`).sort(),
-    ["deploy:command", "publish:push", "report:upload"],
-    "a command that names no secret runs in the Harness; the nested Workspace's push is its own",
+    ["deploy:command", "publish:push", "report:http"],
+    "a command that names no secret runs in the Harness; an http whose body is a Worktree file runs here; " +
+      "the nested Workspace's push is its own",
   );
   assert.deepEqual(outer!.effector, { image: "registry.example/tools:1" });
   assert.deepEqual(outer!.bindings, { app: "https://example.test/app.git", other: undefined });

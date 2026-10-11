@@ -2,9 +2,10 @@
 // Workspace's Sandbox Effector, with no Agent. The body's final output IS the Effect's output, and
 // the wrapper forwards it, so a scenario reads what the Machine routed on.
 //
-//   upload   a file the body wrote and committed in the Worktree, PUT to the echo with
-//            `bearer(secret("echo-token"))`: the Effector opens it beneath the Worktree and sends it.
-//            The body first waits on its `hold` Gate, so the step reads the pod while it is live
+//   upload   an `http` whose body is a file the body wrote and committed in the Worktree
+//            (`body: file(...)`, B19), PUT to the echo with `bearer(secret("echo-token"))`: the
+//            Sandbox Effector opens it beneath the Worktree and sends it. The body first waits on its
+//            `hold` Gate, so the step reads the pod while it is live
 //   env      a credentialed command that prints its secret from env and from `.path`, then the
 //            files of the commit it runs against: the output names the secret and holds no form of it
 //   dirty    the body leaves an edit uncommitted, then the same command: the answer is `dirty`, and
@@ -14,7 +15,7 @@
 //            ends with a permission error and the answer carries no key (ADR-0068, B9)
 //   takeover the body commits, then waits on its `hold` Gate while the step takes the Effector's
 //            port from the Harness container (B2: the Effector is down, a process the Agent could
-//            start binds :8082); the step's answer runs the same upload, whose start reaches that
+//            start binds :8082); the step's answer runs the same file-body http, whose start reaches that
 //            process signed and is answered by it unsigned: the Effect settles `unknown`
 //
 // The echo is the suite's (`steps/seed.ts`); `echo-token` is the tier's one Effect secret, which
@@ -27,9 +28,10 @@ import {
   bearer,
   command,
   defineEvent,
+  file,
+  http,
   jr2Setup,
   secret,
-  upload,
   workspace,
   type HostInjectedInput,
   type Workspaced,
@@ -50,6 +52,7 @@ type BodyContext = BodyInput & { output?: unknown };
 const unused = defineEvent({ name: "noop", input: z.object({}) });
 const go = defineEvent({ name: "go", input: z.object({}) });
 const token = secret("echo-token");
+const sendInput = z.object({ marker: z.string() });
 const GIT = ["-c", "'user.name=jr2 e2e'", "-c", "user.email=e2e@jr2.test"];
 
 const body = jr2Setup({
@@ -65,13 +68,13 @@ const body = jr2Setup({
     ]),
     // In the Harness container: an edit left uncommitted.
     edit: command(["sh", "-c", "printf 'edited, not committed\\n' > report.txt"]),
-    // In the Sandbox Effector.
-    send: upload({
+    // In the Sandbox Effector: its body is a Worktree file, which places it there (B19).
+    send: http({
+      method: "PUT",
       url: `${ECHO}/upload`,
       auth: bearer(token),
-      input: z.object({ marker: z.string() }),
-      file: ({ marker }) => ({ path: "report.txt", segments: [marker] }),
-      contentType: "text/plain",
+      input: sendInput,
+      body: file<typeof sendInput>("report.txt", { segments: ({ marker }) => [marker], contentType: "text/plain" }),
     }),
     reveal: command(["sh", "-c", 'echo "env=$TOKEN"; echo "file=$(cat "$TOKEN_FILE")"; cat report.txt'], {
       env: { TOKEN: token, TOKEN_FILE: token.path },

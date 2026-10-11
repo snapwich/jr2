@@ -3761,14 +3761,19 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   );
   await writeFile(
     join(root, "workflows", "deploy.ts"),
-    `import { bearer, jr2Setup, secret, upload, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const deploy = upload({ url: "https://files.example.com/r", auth: bearer(secret("aws")), file: () => ({ path: "r.txt" }) });\n` +
+    `import { bearer, file, http, jr2Setup, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const deploy = http({ method: "PUT", url: "https://files.example.com/r", auth: bearer(secret("aws")), body: file("r.txt") });\n` +
       `const body = jr2Setup({ events: [], actors: { deploy } })\n` +
       `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "deploy", onDone: "done" } }, done: { type: "final" } } });\n` +
       `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
   );
   const first = mkWorld(root);
   assert.equal(await up(["--yes"], first.io), 0);
+  // An http whose body is a Worktree file is the Sandbox Effector's (B19): its body places it.
+  assert.match(
+    first.err.join("\n"),
+    /deploy: http PUT https:\/\/files\.example\.com — 30s, in the Sandbox Effector, a Worktree file as its body, secrets "aws"/,
+  );
   const items = first.kube.applied
     .filter((m) => m.startsWith("{"))
     .flatMap(

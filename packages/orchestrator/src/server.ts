@@ -183,7 +183,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // Where an http Effect runs (ADR-0068): the Instance Effector's headless Service. `jr2 up`
     // converges it whenever a registered Machine carries an http Effect.
     ...(namespace ? { instanceEffector: `${INSTANCE_EFFECTOR}.${namespace}.svc:${EFFECTOR_PORT}` } : {}),
-    // Where a push, an upload or a credentialed command runs (ADR-0068): a Sandbox's Effector, by
+    // Where a push, a file-body http or a credentialed command runs (ADR-0068): a Sandbox's Effector, by
     // the headless Service the provision writes beside it when `jr2 up` placed an Effect there.
     ...(namespace
       ? {

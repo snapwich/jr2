@@ -19,15 +19,14 @@ import {
   responseMac,
   type EffectorTransport,
 } from "../src/effector-wire.ts";
-import { basic, bearer, httpParts, secret, startRequestOf, text } from "../src/http-effect.ts";
+import { basic, bearer, file, httpParts, secret, startRequestOf, text } from "../src/http-effect.ts";
 import type { CommandParts } from "../src/effect.ts";
 import {
   commandEnvParts,
   commandStartOf,
   pushParts,
   pushStartOf,
-  uploadParts,
-  uploadStartOf,
+  fileStartOf,
   type CommandEnv,
 } from "../src/sandbox-effect.ts";
 import { effectorKey } from "../src/tokens.ts";
@@ -120,12 +119,12 @@ test("every request fixture is what a definition encodes", () => {
       repo("https://github.com/ourorg/app.git"),
       "jr2/run-1",
     ),
-    "request.upload-file.json": uploadStartOf(
-      uploadParts({
+    "request.http-file-body.json": fileStartOf(
+      httpParts({
+        method: "PUT",
         url: "https://files.example.com/reports",
         auth: bearer(secret("files")),
-        contentType: "application/pdf",
-        file: () => ({ path: "dist/report.pdf" }),
+        body: file("dist/report.pdf", { contentType: "application/pdf" }),
       }),
       "app/jr2-run-1",
       { path: "dist/report.pdf" },

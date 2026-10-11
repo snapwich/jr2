@@ -43,15 +43,16 @@ export type MachineTransitionDoc = {
  * `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one. */
 export type EffectDoc =
   | { kind: "command"; argv: string[]; timeoutMs: number; slot?: string; secrets?: string[]; pin?: true }
-  /** An http Effect (ADR-0068) or an upload: its method, its fixed target, the secrets it names —
-   * never a value. */
+  /** An http Effect (ADR-0068): its method, its fixed target, the secrets it names — never a value
+   * — and `file` when its body is a Worktree file (B19). */
   | {
-      kind: "http" | "upload";
+      kind: "http";
       method: string;
       target: string;
       secrets: string[];
       timeoutMs: number;
       idempotent: boolean;
+      file?: true;
     }
   /** A push (ADR-0067): which options the author set. */
   | { kind: "push"; sign: boolean; squash: boolean; force: boolean; pin: boolean; timeoutMs: number; slot?: string };
@@ -383,9 +384,17 @@ export function serializeMachine(workflow: string, machine: AnyStateMachine): Ma
 
 /** An Effect's plain data as the doc carries it: what it runs, read without running anything. */
 function effectDoc(parts: EffectParts): EffectDoc {
-  if (parts.kind === "http" || parts.kind === "upload") {
+  if (parts.kind === "http") {
     const { method, secrets, timeoutMs, idempotent } = parts;
-    return { kind: parts.kind, method, target: targetText(parts), secrets: [...secrets], timeoutMs, idempotent };
+    return {
+      kind: "http",
+      method,
+      target: targetText(parts),
+      secrets: [...secrets],
+      timeoutMs,
+      idempotent,
+      ...(parts.file ? { file: true as const } : {}),
+    };
   }
   if (parts.kind === "push") {
     const { sign, squash, force, pin, timeoutMs, slot } = parts;

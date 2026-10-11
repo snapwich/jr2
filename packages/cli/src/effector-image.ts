@@ -12,8 +12,8 @@
 //   - a token over https: nothing beyond `git`, the Sandbox Image floor (the helper is jr2's binary).
 //
 // The uid is the image's: its `USER` line by name or number, else 1000 (ADR-0037's fallback).
-// `http`, `upload` and the credentialed command owe nothing: the first two are Go, the last is the
-// author's argv.
+// `http` (a Worktree file body included) and the credentialed command owe nothing: the first is
+// Go, the last is the author's argv.
 
 /** Where the Effector looks for jr2's own programs: effector/internal/gitclean's Path. */
 export const EFFECTOR_TOOL_DIRS = ["/usr/local/bin", "/usr/bin", "/bin"] as const;

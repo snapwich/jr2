@@ -36,26 +36,28 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   - GPG signing (`sign: { gpgKey }`): `gpg` and `gpg-agent`;
   - a token over https: nothing beyond `git` — the helper is the Effector's own binary.
 
-  `http`, `upload` and the credentialed command owe nothing: the first two are Go, the last is the author's argv. A form
-  `jr2 up` cannot see — a slot the run or a `customize()` binds — is not checked, nor an image `jr2 up` did not build (a
-  registry ref), whose `USER` it does not read either. Rejected: a mounted passwd file, `nss_wrapper`, an `LD_PRELOAD`
-  shim — jr2 taking an opinion on the author's image, against ADR-0037's zero-opinion seat. A push keeps ssh's own
-  stderr apart from git's and names ssh's last line in its reason (`the remote could not be reached: ssh: …`), with both
-  in the detail: git's own words for an ssh failure name no cause.
+  `http` — a Worktree file body included — and the credentialed command owe nothing: the first is Go, the last is the
+  author's argv. A form `jr2 up` cannot see — a slot the run or a `customize()` binds — is not checked, nor an image
+  `jr2 up` did not build (a registry ref), whose `USER` it does not read either. Rejected: a mounted passwd file,
+  `nss_wrapper`, an `LD_PRELOAD` shim — jr2 taking an opinion on the author's image, against ADR-0037's zero-opinion
+  seat. A push keeps ssh's own stderr apart from git's and names ssh's last line in its reason
+  (`the remote could not be reached: ssh: …`), with both in the detail: git's own words for an ssh failure name no
+  cause.
 
 - **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file. A Sandbox Effector — the
-  binary with `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs `http`, `upload`, `push` and a
-  credentialed `command` (ADR-0067); the Instance Effector refuses the last three, and a file body, as a defect. Its env
-  names where its mount holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only), `JR2_EFFECTOR_GIT`
-  (the push credentials: one directory per `git.credentials` entry the Sandbox's pushes spend, the entry's own Secret as
-  the operator projects it — `entry.json`, what the entry is; `identity` and `known_hosts` for an ssh key; `password`
-  for a token; `sign.identity` or `sign.private.asc` for the signing key; see the Sandbox Effector's objects below),
-  `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2 guarantees is stated per kind: for `push` and `upload`,
-  git never takes config or hooks from the Agent's repository and no program the Agent's files name runs — the
-  clean-repository procedure of ADR-0067 and the opener below. jr2's own programs (`git`, `ssh`, `ssh-keygen`, `gpg`,
-  `gpg-agent`, `gpgconf`) run by an absolute path found in one fixed PATH, `/usr/local/bin:/usr/bin:/bin`, never by the
-  PATH the image set: an image that puts a directory of its own first does not choose which `git` runs. For a
-  credentialed `command` the Agent's files are the author's choice to run, and the claims are the next bullet's.
+  binary with `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs an `http` whose body is a Worktree
+  file, `push` and a credentialed `command` (ADR-0067); the Instance Effector refuses the last two, and a file body, as
+  a defect. Its env names where its mount holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only),
+  `JR2_EFFECTOR_GIT` (the push credentials: one directory per `git.credentials` entry the Sandbox's pushes spend, the
+  entry's own Secret as the operator projects it — `entry.json`, what the entry is; `identity` and `known_hosts` for an
+  ssh key; `password` for a token; `sign.identity` or `sign.private.asc` for the signing key; see the Sandbox Effector's
+  objects below), `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2 guarantees is stated per kind: for `push`
+  and a file body, git never takes config or hooks from the Agent's repository and no program the Agent's files name
+  runs — the clean-repository procedure of ADR-0067 and the opener below. jr2's own programs (`git`, `ssh`,
+  `ssh-keygen`, `gpg`, `gpg-agent`, `gpgconf`) run by an absolute path found in one fixed PATH,
+  `/usr/local/bin:/usr/bin:/bin`, never by the PATH the image set: an image that puts a directory of its own first does
+  not choose which `git` runs. For a credentialed `command` the Agent's files are the author's choice to run, and the
+  claims are the next bullet's.
 - **A credentialed `command`'s child is confined with Landlock (B9).** The child runs as the Effector's own uid in the
   Effector's container, where the placement key, every placed secret and the push and signing keys are files that uid
   can read, and its program is often the Agent's code (`npm run deploy`, `make`, `./scripts/release.sh`, a tool's
@@ -107,10 +109,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
      `timeout`, a push `rejected` at stage `sign` — and never runs late. Why: Landlock governs files, not `connect()`,
      and a confined child can list the pod's Unix sockets (`ss -xl` over netlink `sock_diag`, which Landlock does not
      restrict either), so a credentialed command's child alive beside a `gpg-agent` that holds the signing key could
-     sign without reading the key. The two never overlap. An `http`, an `upload`, an ssh-signed push and a token push
-     hold no class: they start no agent and serve no socket (the ssh key is a file the ruleset denies; the clean
-     repository clears `SSH_AUTH_SOCK`). The lock is in the Effector's process: restore and an Orchestrator restart are
-     untouched, and an Effector restart kills every child.
+     sign without reading the key. The two never overlap. An `http` (a file body included), an ssh-signed push and a
+     token push hold no class: they start no agent and serve no socket (the ssh key is a file the ruleset denies; the
+     clean repository clears `SSH_AUTH_SOCK`). The lock is in the Effector's process: restore and an Orchestrator
+     restart are untouched, and an Effector restart kills every child.
   3. **A private TMPDIR.** Each credentialed child gets `TMPDIR` set to a directory of its Effect's own scratch, which
      goes when the outcome is read, and `/tmp` is not in the ruleset: a child neither reads nor writes it, so what one
      child writes no other child reads.
@@ -140,10 +142,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   Secret — a Repo CR's `secretRef`, from `git-clone.json`; a Sandbox CR's `gitCredentials`, from `git-push.json` — and
   renders a pod's files at provision; no token, key or Effect secret is in its process, its env or its own Secret. A
   trusted jr2 component beside the Agent spends: the operator's cache agent for a fetch (ADR-0051, ADR-0053: at
-  provision and on a pod's `git fetch`), the Sandbox Effector for a push, an upload and a credentialed command, on a
-  pick. The Agent's container holds nothing on either side. A clone is not an Effect: nothing in the Machine picks it,
-  and the cache is per node, made before the pod exists, so the cache agent stays its spender. A rotated token reaches
-  the cache at the next `jr2 up`.
+  provision and on a pod's `git fetch`), the Sandbox Effector for a push, a file-body `http` and a credentialed command,
+  on a pick. The Agent's container holds nothing on either side. A clone is not an Effect: nothing in the Machine picks
+  it, and the cache is per node, made before the pod exists, so the cache agent stays its spender. A rotated token
+  reaches the cache at the next `jr2 up`.
 - **Hand-written types, and golden fixtures.** There is no code generator. The types are Go structs in
   `effector/internal/wire` and zod schemas in `@jr2/orchestrator`, the one definition each TypeScript type is inferred
   from. Go decodes with unknown fields disallowed. The golden fixtures in `effector/testdata/wire/` keep the two equal:
@@ -245,13 +247,14 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   (`{ name, value | valueFrom.secretKeyRef, hosts?, headers?, paths? }`). A pod gets the secrets something in it names:
   a Workspace's pod the Held secrets its `workspace()` lists under `secrets: [...]` and the model keys its Agents'
   providers read; the Instance Harness the model keys of its `"none"` Agents only; an Effector what its Effects name
-  with `secret("name")` (an `http` Effect: the Instance Effector; an `upload`: the Sandbox Effector of the Workspace
-  whose body invokes it, B5.1). `hosts`, `headers` and `paths` are a Held secret's binding, never its placement
-  (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the held manifest, the Custodian config and
-  the held values' Secret of each Harness pod come from it. Both is both, and `jr2 up` reports it per pod. An entry
-  nothing names goes nowhere, and `jr2 up` warns: `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no
-  `placement:` key: naming is the placement. `jr2 up` prints one line per secret with its placements, and one per pod
-  with what it holds (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
+  with `secret("name")` (an `http` Effect: the Instance Effector; an `http` whose body is a Worktree file: the Sandbox
+  Effector of the Workspace whose body invokes it, B5.1). `hosts`, `headers` and `paths` are a Held secret's binding,
+  never its placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the held manifest, the
+  Custodian config and the held values' Secret of each Harness pod come from it. Both is both, and `jr2 up` reports it
+  per pod. An entry nothing names goes nowhere, and `jr2 up` warns:
+  `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no `placement:` key: naming is the placement.
+  `jr2 up` prints one line per secret with its placements, and one per pod with what it holds
+  (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,
   `the Instance Effector: holds jira`,
   `Workspace of workflow "coding": Sandbox Effector (image the Sandbox Image) holds aws; pushes Repo Slot "app" with git.credentials "*"`
   — for a slot the run or a `customize()` binds, `with the git.credentials entry its url matches at provision`). Right
@@ -288,11 +291,11 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
     files under `/run/jr2/secrets`, mode 0400; the kubelet makes them readable by the pod's `fsGroup`, and the pod has
     one container. `harness.env` and `harness.envFrom` may not name this Secret (ADR-0059's R13).
 - **A Workspace's Sandbox Effector's objects** (B5.1, B8). `jr2 up` reads, for each `workspace()`, the Effects placed
-  there below it, down to the next `workspace()` — every `push`, `upload` and credentialed `command`, from their plain
-  data, statically — and writes two objects for a Workspace with one, none for one without:
+  there below it, down to the next `workspace()` — every `push`, `http` whose body is a Worktree file and credentialed
+  `command`, from their plain data, statically — and writes two objects for a Workspace with one, none for one without:
   - the **Secret** `jr2-effector-<pod>` (labelled with its pod key, deleted when its Workspace no longer places an
-    Effect there): each literal Effect secret those Effects name, and `effector.json` — the targets its uploads call,
-    and `commands: true` when it holds a credentialed command;
+    Effect there): each literal Effect secret those Effects name, and `effector.json` — the targets its file-body
+    `http`s call, and `commands: true` when it holds a credentialed command;
   - the **manifest** `effector-<pod>.json` in `jr2-held` beside the pod's Held manifest: names only — the projected
     sources of the Effector's `/run/jr2/secrets` (that Secret's keys, and each `valueFrom` key of the user's own Secret
     by reference) and its pushes by Repo Slot (`pushes: [{ slot, sign }]`).
