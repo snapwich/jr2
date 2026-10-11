@@ -337,7 +337,7 @@ export function instanceObjects(opts: {
         { apiGroups: ["core.jr2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
         // Secrets: create and patch, nothing else (B18, ADR-0068). The Orchestrator server-side
         // applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, owned by the CR,
-        // and holds no value (B11): no get, no list, so it cannot read or enumerate the Effect
+        // and holds no git credential and no Effect secret (B11): no get, no list, so it cannot read or enumerate the Effect
         // secrets, the clone and push Secrets, or a user's Secret through the API. RBAC cannot
         // pin `create` to a name, and `resourceNames` has no prefix form.
         { apiGroups: [""], resources: ["secrets"], verbs: ["create", "patch"] },

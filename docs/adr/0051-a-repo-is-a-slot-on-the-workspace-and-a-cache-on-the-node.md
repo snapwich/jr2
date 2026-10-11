@@ -99,9 +99,9 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   key; the url's scheme picks which field applies, and the longest match wins. When the Orchestrator creates a `Repo` CR
   it resolves the entry and writes a `secretRef`, the name of a Secret `jr2 up` wrote or the user made — a token entry
   whose clone Secret `git-clone.json` does not list gets none, and the clone is anonymous; the cache agent reads only
-  that Secret, and the operator matches nothing. The Orchestrator writes and reads no credential (ADR-0068). The Secret
-  uses Flux's key names (`username`/`password`; `identity`, `identity.pub`, `known_hosts`), so a Flux or Argo user
-  reuses the Secret they have. **The list is also the fence.** A per-run url — a run input, a ticket field — is
+  that Secret, and the operator matches nothing. The Orchestrator writes and reads no git credential (ADR-0068). The
+  Secret uses Flux's key names (`username`/`password`; `identity`, `identity.pub`, `known_hosts`), so a Flux or Argo
+  user reuses the Secret they have. **The list is also the fence.** A per-run url — a run input, a ticket field — is
   otherwise a way to spend the cluster's credential against any host: one that matches no entry is refused at attach,
   naming the list. A static binding is code the Instance typechecked and deployed, so it is admitted without a match and
   cloned anonymously; a private one then fails at the cache with git's error. `jr2 init` scaffolds one wildcard entry —

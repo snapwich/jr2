@@ -1,5 +1,6 @@
 // The clone credentials (ADR-0051, ADR-0068, B11): the token a Repo's cache clone spends. `jr2 up`
-// declares and writes every Secret; the Orchestrator matches and names, and holds no value.
+// declares and writes every Secret that holds a git credential; the Orchestrator matches and names,
+// and holds no git credential.
 //
 //   - `jr2 up` writes each `git.credentials` entry's token, read from `.env`, into that entry's
 //     own Secret, `jr2-git-<hash of match>` (`gitTokenSecretName`), in Flux's key names

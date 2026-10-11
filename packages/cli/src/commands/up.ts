@@ -849,7 +849,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   };
   // Git tokens (ADR-0051, B11): each entry's token, from `.env`, goes into that entry's own clone
   // Secret (`jr2-git-<hash>`, Flux's key names), which the cache agent reads — never into this
-  // Secret, the Orchestrator's env. The Orchestrator names the Secret on a Repo and holds no value.
+  // Secret, the Orchestrator's env. The Orchestrator names the Secret on a Repo and holds no git token.
   // Only when a registered Machine composes a Sandbox: nothing else clones.
   const gitClone = carried.composesSandbox ? gitCloneSecretsOf(config.git?.credentials ?? [], (n) => io.env[n]) : [];
   for (const s of gitClone) activity(io, `git.credentials "${s.match}": clone Secret ${s.name}`);

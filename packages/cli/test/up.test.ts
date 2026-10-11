@@ -1321,6 +1321,13 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   for (const name of ["GH_TOKEN", "JR2_GIT_TOKEN", "GL_TOKEN", "STRAY"]) {
     assert.ok(!(name in instance.stringData), `${name} is not in the Orchestrator's Secret`);
   }
+  // What it does hold is jr2's own, as ADR-0068 names it: the signing key, the Instance token, the
+  // Instance Harness's token — and nothing else.
+  assert.deepEqual(
+    Object.keys(instance.stringData).sort(),
+    ["JR2_INSTANCE_HARNESS_TOKEN", "JR2_INSTANCE_TOKEN", "JR2_SIGNING_KEY"],
+    "the Orchestrator's Secret holds jr2's own keys alone",
+  );
   assert.ok(
     !Object.values(instance.stringData as Record<string, string>).some((v) => v === "gh-secret" || v === "wild-secret"),
     "no git token's value rides the Orchestrator's Secret under any name",
