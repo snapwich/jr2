@@ -1,8 +1,8 @@
 // What a push owes the author's Effector image (ADR-0068, B13). The Sandbox Effector runs in the
 // author's image — the Sandbox Image by default — and runs jr2's own programs from one fixed PATH
 // (`/usr/local/bin:/usr/bin:/bin`, never the image's own). So, per push form the Workspace holds,
-// `jr2 up` reads the image it built and refuses, with the fix, an image that lacks what that form
-// needs:
+// `jr2 up` reads the image it built — or, for the stock Harness image, which the kit builds, knows
+// what it holds — and refuses, with the fix, an image that lacks what that form needs:
 //
 //   - ssh transport (`ssh://`, `git@`): `ssh`, and a passwd entry for the uid the Effector runs as —
 //     OpenSSH's client calls `getpwuid(getuid())` before any option, and exits "No user exists for
@@ -35,6 +35,20 @@ const PACKAGES: Record<string, string> = {
   gpg: "gnupg",
   "gpg-agent": "gnupg",
 };
+
+/**
+ * What the stock Harness image holds of the forms' programs, and its /etc/passwd: the fallback
+ * Sandbox Image, which the Sandbox Effector runs in when the Workspace names no image and the
+ * instance has no `images/default`. The kit builds it (deploy/harness/Dockerfile, its last stage:
+ * `node:24-slim` with `git` and `ca-certificates`, `USER 1000`, node's uid), so `jr2 up` knows it in both worlds
+ * without reading it — a published one is never pulled to the host for this. A test holds the
+ * Dockerfile to it.
+ */
+export const STOCK_HARNESS_IMAGE = {
+  present: ["/usr/bin/git"],
+  passwd: "root:x:0:0:root:/root:/bin/bash\nnode:x:1000:1000::/home/node:/bin/bash\n",
+  user: "1000",
+} as const;
 
 /** Every path the forms' programs may be at: each program in each of the Effector's tool dirs. */
 export function effectorImagePaths(forms: readonly PushForm[]): string[] {
@@ -78,6 +92,8 @@ export function effectorImageRefusal(input: {
   forms: ReadonlyArray<{ form: PushForm; push: string }>;
   present: ReadonlySet<string>;
   passwd: string;
+  /** The image is the stock Harness image: the fix is an image of the author's, not an install. */
+  stock?: boolean;
 }): string | undefined {
   const { label, ref } = input;
   for (const { form, push } of input.forms) {
@@ -85,6 +101,14 @@ export function effectorImageRefusal(input: {
       if (EFFECTOR_TOOL_DIRS.some((dir) => input.present.has(`${dir}/${tool}`))) continue;
       const why =
         form === "ssh-transport" ? "over ssh" : form === "ssh-sign" ? "signed with an ssh key" : "signed with GPG";
+      if (input.stock) {
+        return (
+          `${label}: ${push} ${why} needs ${tool}, and its Sandbox Effector runs in the stock Harness image ${ref}, ` +
+          `which holds git alone — the Workspace names no image and the instance has no images/default; give it an ` +
+          `image that holds ${tool} (${PACKAGES[tool]}): an images/default Sandbox Image, the workspace()'s image, ` +
+          `or its effector: { image } (ADR-0068)`
+        );
+      }
       return (
         `${label}: ${push} ${why} needs ${tool}, and its Sandbox Effector's image ${ref} holds none in ` +
         `${EFFECTOR_TOOL_DIRS.join(", ")} — the Effector runs jr2's programs from there alone; install it in the ` +

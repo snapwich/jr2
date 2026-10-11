@@ -26,8 +26,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   deprecate it, as `jr2-adapter` was.
 - **What a push owes the author's image (B13).** ADR-0037's floor holds `git`; the rest is per push form, and `jr2 up`
   reads the Effector's image it built — files off a container it creates and never starts, and the `USER` it already
-  records — and refuses, with the fix for the case found, an image that lacks what a form the Workspace holds needs.
-  Each program must be in `/usr/local/bin`, `/usr/bin` or `/bin`, where the Effector looks:
+  records — or, for the stock Harness image (the fallback Sandbox Image, when the Workspace names no image and the
+  instance has no `images/default`), knows what the kit built into it: `git` alone, and `USER 1000`, which its passwd
+  holds. It refuses, with the fix for the case found, an image that lacks what a form the Workspace holds needs. Each
+  program must be in `/usr/local/bin`, `/usr/bin` or `/bin`, where the Effector looks:
   - ssh transport (`ssh://`, `git@`): `ssh`, and a passwd entry for the uid the Effector runs as — the image's `USER` by
     name or number, else 1000. OpenSSH's client calls `getpwuid(getuid())` before any option and exits "No user exists
     for uid N" without one. The fix named is a `USER` line naming a user the image holds, or
@@ -37,10 +39,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   - a token over https: nothing beyond `git` — the helper is the Effector's own binary.
 
   `http` — a Worktree file body included — and the credentialed command owe nothing: the first is Go, the last is the
-  author's argv. A form `jr2 up` cannot see — a slot the run or a `customize()` binds — is not checked, nor an image
-  `jr2 up` did not build (a registry ref), whose `USER` it does not read either. Rejected: a mounted passwd file,
-  `nss_wrapper`, an `LD_PRELOAD` shim — jr2 taking an opinion on the author's image, against ADR-0037's zero-opinion
-  seat. A push keeps ssh's own stderr apart from git's and names ssh's last line in its reason
+  author's argv. In the stock Harness image only a token over https passes; for the others the fix named is an image of
+  the author's that holds the program — an `images/default` Sandbox Image, the `workspace()`'s image, or its
+  `effector: { image }`. A form `jr2 up` cannot see — a slot the run or a `customize()` binds — is not checked, nor an
+  author's image `jr2 up` did not build (a registry ref), whose `USER` it does not read either. Rejected: a mounted
+  passwd file, `nss_wrapper`, an `LD_PRELOAD` shim — jr2 taking an opinion on the author's image, against ADR-0037's
+  zero-opinion seat. A push keeps ssh's own stderr apart from git's and names ssh's last line in its reason
   (`the remote could not be reached: ssh: …`), with both in the detail: git's own words for an ssh failure name no
   cause.
 

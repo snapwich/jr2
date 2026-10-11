@@ -3613,6 +3613,23 @@ test("jr2 up reads the Sandbox Effector's image for what each push form owes, an
     ok.built.some((l) => l.startsWith("inspect-files ")),
     "the Effector's image was read",
   );
+  // No image named and no images/default: the Effector runs in the stock Harness image, which the
+  // kit built with git alone — an ssh push is refused before anything is applied, and no image is
+  // read for it.
+  const stock = mkWorld(
+    await pushingInstance(
+      "git@github.com:ourorg/app.git",
+      `[{ match: "*", sshKey: "deploy", sign: { sshKey: "signer", name: "n", email: "e@x.test" } }]`,
+      true,
+    ),
+    { imageFiles: () => assert.fail("the stock Harness image is known, not read") },
+  );
+  keys(stock);
+  await assert.rejects(
+    () => up(["--yes"], stock.io),
+    /over ssh needs ssh, and its Sandbox Effector runs in the stock Harness image .*, which holds git alone/,
+  );
+  assert.ok(!stock.kube.applied.some((m) => m.includes(`"kind":"List"`)), "nothing applied");
   // A token over https owes nothing beyond git: the image is not read.
   const https = mkWorld(
     await withImage(
@@ -3622,6 +3639,12 @@ test("jr2 up reads the Sandbox Effector's image for what each push form owes, an
     { env: { GH_TOKEN: "ghp_0123456789abcdef" }, imageFiles: () => assert.fail("an https token push reads no image") },
   );
   assert.equal(await up(["--yes"], https.io), 0);
+  // …in the stock Harness image too.
+  const stockHttps = mkWorld(
+    await pushingInstance("https://github.com/ourorg/app.git", `[{ match: "*", token: "GH_TOKEN" }]`),
+    { env: { GH_TOKEN: "ghp_0123456789abcdef" }, imageFiles: () => assert.fail("an https token push reads no image") },
+  );
+  assert.equal(await up(["--yes"], stockHttps.io), 0);
 });
 
 test("jr2 up refuses an unsigned squash only when the matched entry has neither sign nor committer, and names both fixes (B15)", async () => {
@@ -3648,12 +3671,15 @@ test("jr2 up refuses an unsigned squash only when the matched entry has neither 
     name: "jr2 bot",
     email: "bot@example.test",
   });
-  // A signed squash needs no committer: the signer commits.
+  // A signed squash needs no committer: the signer commits (in an image that holds ssh-keygen).
   const signed = mkWorld(
-    await pushingInstance(
-      url,
-      `[{ match: "*", token: "GH_TOKEN", sign: { sshKey: "signer", name: "n", email: "e@x.test" } }]`,
-      "{ squash: true, sign: true }",
+    await withImage(
+      await pushingInstance(
+        url,
+        `[{ match: "*", token: "GH_TOKEN", sign: { sshKey: "signer", name: "n", email: "e@x.test" } }]`,
+        "{ squash: true, sign: true }",
+      ),
+      "default",
     ),
     { env },
   );
@@ -3661,10 +3687,13 @@ test("jr2 up refuses an unsigned squash only when the matched entry has neither 
 });
 
 test("jr2 up writes one push Secret per git.credentials entry — the token, the keys copied as data — and names none per Workspace (B10)", async () => {
-  const root = await pushingInstance(
-    "https://github.com/ourorg/app.git",
-    `[{ match: "*", token: "GH_TOKEN", sshKey: "jr2-git-ssh", sign: { sshKey: "signer", name: "jr2 bot", email: "bot@example.test" } }]`,
-    true,
+  const root = await withImage(
+    await pushingInstance(
+      "https://github.com/ourorg/app.git",
+      `[{ match: "*", token: "GH_TOKEN", sshKey: "jr2-git-ssh", sign: { sshKey: "signer", name: "jr2 bot", email: "bot@example.test" } }]`,
+      true,
+    ),
+    "default",
   );
   const w = mkWorld(root, { env: { GH_TOKEN: "ghp_0123456789abcdef" } });
   const b64 = (v: string) => Buffer.from(v).toString("base64");
@@ -3712,10 +3741,13 @@ test("jr2 up writes one push Secret per git.credentials entry — the token, the
 });
 
 test("a key's Secret absent at jr2 up is a warning, and the entry's Secret is written without it — the provision refuses the push that needs it (B10)", async () => {
-  const root = await pushingInstance(
-    "git@github.com:ourorg/app.git",
-    `[{ match: "*", sshKey: "deploy", sign: { sshKey: "signer", name: "n", email: "e@x.test" } }]`,
-    true,
+  const root = await withImage(
+    await pushingInstance(
+      "git@github.com:ourorg/app.git",
+      `[{ match: "*", sshKey: "deploy", sign: { sshKey: "signer", name: "n", email: "e@x.test" } }]`,
+      true,
+    ),
+    "default",
   );
   const w = mkWorld(root);
   w.kube.set("myinst", "secret", "deploy", {

@@ -158,7 +158,7 @@ import {
   type HeldPodObjects,
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
-import { effectorImagePaths, effectorImageRefusal, type PushForm } from "../effector-image.ts";
+import { effectorImagePaths, effectorImageRefusal, STOCK_HARNESS_IMAGE, type PushForm } from "../effector-image.ts";
 import {
   kubeFloorRefusal,
   podResourcesProbe,
@@ -1657,8 +1657,10 @@ async function resolveGitPush(
  * What each Workspace's Sandbox Effector image owes its pushes (ADR-0068, B13), read off the image
  * this converge built — its effector image, else its Sandbox Image — by the push forms `jr2 up` can
  * see: a slot the Machine binds (its url's scheme, its entry's `sign`), never one the run or a
- * `customize()` binds, whose url is the provision's. An image `jr2 up` did not build (a registry ref,
- * the stock Harness) is not read, as its `USER` is not.
+ * `customize()` binds, whose url is the provision's. The stock Harness image — the fallback when the
+ * Workspace names no image and there is no `images/default` — is the kit's, so what it holds is
+ * known, not read (STOCK_HARNESS_IMAGE). An author's image `jr2 up` did not build (a registry ref)
+ * is not read, as its `USER` is not.
  */
 async function checkEffectorImages(
   build: BuildPort,
@@ -1685,7 +1687,21 @@ async function checkEffectorImages(
       key = await imageContextDigest(fileURLToPath(image));
     }
     const ref = converged.sandbox[key];
-    if (ref === undefined) continue;
+    if (ref === undefined) {
+      if (image !== undefined) continue;
+      // No image named and no images/default: the Effector runs in the stock Harness image.
+      const refusal = effectorImageRefusal({
+        label: plan.label,
+        ref: converged.harness,
+        user: STOCK_HARNESS_IMAGE.user,
+        forms,
+        present: new Set(STOCK_HARNESS_IMAGE.present),
+        passwd: STOCK_HARNESS_IMAGE.passwd,
+        stock: true,
+      });
+      if (refusal) throw new Error(refusal);
+      continue;
+    }
     const files = await build.imageFiles(ref, platforms, effectorImagePaths(forms.map((f) => f.form)));
     const refusal = effectorImageRefusal({
       label: plan.label,
