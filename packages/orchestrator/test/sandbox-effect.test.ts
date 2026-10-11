@@ -8,7 +8,15 @@ import assert from "node:assert/strict";
 import { assign } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { commandWith, inputKeysOf, isEffect, placementOf, type EffectLogic, type EffectRow } from "../src/effect.ts";
+import {
+  commandWith,
+  inputKeysOf,
+  isEffect,
+  placementOf,
+  type EffectLogic,
+  type EffectRow,
+  type HttpParts,
+} from "../src/effect.ts";
 import { createEffectorClient, type CommandStartRequest, type PushStartRequest } from "../src/effector-wire.ts";
 import { bearer, file, http, secret } from "../src/http-effect.ts";
 import { partsOf } from "../src/parts.ts";
@@ -394,7 +402,8 @@ test("http({ body: file(...) }) is refused, with the fix, with a method that sen
   assert.equal(placementOf(http({ method: "PUT", url, body: file("a", { slot: "app" }) }).effect), "sandbox");
   assert.equal(placementOf(http({ method: "PUT", url, request: () => ({ text: "a" }) }).effect), "instance");
   assert.deepEqual(
-    http({ method: "POST", url, body: file("a", { slot: "app", contentType: "text/plain" }) }).effect.file,
+    (http({ method: "POST", url, body: file("a", { slot: "app", contentType: "text/plain" }) }).effect as HttpParts)
+      .file,
     {
       slot: "app",
       contentType: "text/plain",
