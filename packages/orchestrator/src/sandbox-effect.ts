@@ -678,15 +678,15 @@ export function pushWith<const O extends PushOptions>(
       }
       return { last: { published: output.published, source: output.source } };
     },
-    // After a pushed outcome: the sync, in the Workspace's Harness, from the bundle the Effector
-    // wrote. A push that published the Agent's own commit (unsigned, no squash): `skipped`,
-    // nothing to send. Every other push syncs — a signed one, a signed one that published nothing
-    // new (a pair or cherry that mapped the published tip), and an unsigned squash, whose commit
-    // is new (B15).
+    // After a SIGNED push's pushed outcome (design 6): the sync, in the Workspace's Harness, from
+    // the bundle the Effector wrote — a signed push that published nothing new (a pair or cherry
+    // that mapped the published tip) included. An unsigned push is `skipped`, nothing to send: one
+    // that published the Agent's own commit, and an unsigned squash (B15), whose new commit design
+    // 6 does not sync; the next push pairs it from the ledger.
     finish: async (output, ctx) => {
       const o = output as PushWireOutput;
       if (o.outcome !== "pushed") return o;
-      if (o.published === o.source) return { ...o, sync: "skipped" satisfies SyncState };
+      if (!parts.sign || o.published === o.source) return { ...o, sync: "skipped" satisfies SyncState };
       const answer = await syncOf(ctx).sync(
         {
           worktree: worktreeOf(ctx),

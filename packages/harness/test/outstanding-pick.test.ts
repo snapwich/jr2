@@ -305,6 +305,9 @@ test("after a signed push the Agent reads what moved, by the sync's answer; neve
       'rebase or reset them, the next push stops with "diverged".',
   );
   assert.equal(signedPushText({ ...pushed, source: pushed.published, sync: "skipped" }), undefined, "unsigned");
+  // An unsigned squash (B15) publishes a new commit and is not synced (design 6: the sync follows a signed push), so
+  // it reads no signed-push paragraph: "jr2 signed your commits" would be false there.
+  assert.equal(signedPushText({ ...pushed, sync: "skipped" }), undefined, "unsigned squash");
   assert.equal(signedPushText({ outcome: "diverged", reason: "x" }), undefined);
   for (const text of [synced, busy!]) assert.doesNotMatch(text, /\b(please )?rebase (your|onto)/i);
 });

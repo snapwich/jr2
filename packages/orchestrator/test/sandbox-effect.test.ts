@@ -174,7 +174,7 @@ test("an unsigned push is sync `skipped`, and no sync is asked", async () => {
   assert.equal(syncs.calls.length, 0);
 });
 
-test("an unsigned squash published a new commit, so it is synced like a signed push, from its bundle (B15)", async () => {
+test("an unsigned squash published a new commit and is not synced: the sync follows a signed push (B15, design 6)", async () => {
   const fake = new FakeEffector(["sandbox"]);
   const syncs = new FakeSync();
   const rig = await started(pushWith(port(fake), { squash: true }, syncs.factory) as AnyEffect, undefined, {
@@ -187,10 +187,9 @@ test("an unsigned squash published a new commit, so it is synced like a signed p
   fake.settle(pushed("c".repeat(40)));
   await waitFor(() => rig.host.status(rig.runId)?.value === "done");
   const result = (rig.host.status(rig.runId)?.context as Ctx).result as Record<string, unknown>;
-  assert.equal(result.sync, "synced");
-  assert.equal(syncs.calls.length, 1);
-  assert.equal(syncs.calls[0]!.req.published, "c".repeat(40));
-  assert.equal(syncs.calls[0]!.req.bundle, "QlVORExF");
+  assert.equal(result.published, "c".repeat(40));
+  assert.equal(result.sync, "skipped", "the Agent reads no signed-push paragraph");
+  assert.equal(syncs.calls.length, 0, "no sync was sent");
 });
 
 /** A Machine that pushes twice in one run, in one Workspace. */

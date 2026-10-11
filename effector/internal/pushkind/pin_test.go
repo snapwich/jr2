@@ -193,6 +193,21 @@ func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
 	if raw := remoteGit(t, f, "cat-file", "commit", pub); strings.Contains(raw, "gpgsig") {
 		t.Fatalf("an unsigned squash carries a signature: %s", raw)
 	}
+	if out.Push.Bundle != "" {
+		t.Fatal("an unsigned squash wrote a sync bundle: the sync follows a signed push (design 6)")
+	}
+	// Not synced, the Agent's branch stays on its own commits: the next squash pairs the published
+	// commit from the ledger's last push and squashes only what is new onto it.
+	more := f.pod.Commit("three", map[string]string{"c.txt": "c\n"})
+	next := f.request(false, &wire.Pair{Published: pub, Source: sha})
+	next.Push.Squash = &msg
+	out = f.runner.Run(context.Background(), next)
+	if out.Outcome != wire.OutcomePushed || out.Push.Via != "pair" || out.Push.Source != more {
+		t.Fatalf("the next squash: %+v %+v", out, out.Push)
+	}
+	if got := remoteGit(t, f, "rev-parse", remoteRef(f)+"^"); got != pub {
+		t.Fatalf("the next squash's parent is %s, not the published %s", got, pub)
+	}
 	if remoteGit(t, f, "rev-parse", pub+"^{tree}") != gittest.Git(t, f.pod.Tree, "rev-parse", sha+"^{tree}") {
 		t.Fatal("the squashed tree is not the Agent's")
 	}
