@@ -474,7 +474,7 @@ test("jr2 up refuses a push with no matching entry, an entry with no credential,
         { git: { credentials: [{ match: "*", token: "T" }] } },
         placedIn([pusher("publish")], { app: "git@github.com:ourorg/app.git" }),
       ),
-    /over ssh can spend.*add push: \{ sshKey:/,
+    /over ssh can spend; add sshKey: "<a Secret with identity and known_hosts>" to it/,
   );
   assert.throws(
     () =>
@@ -517,7 +517,13 @@ test("jr2 up refuses a push with no matching entry, an entry with no credential,
         { git: { credentials: [{ match: "*", sshKey: "k" }] } },
         placedIn([pusher("publish")], { app: "http://git.example.com/acme/app.git" }),
       ),
-    /over http:\/\//,
+    /over http:\/\/, .*bind the slot to the ssh url \(git\.credentials entry "\*" then pushes with its ssh key\)/,
+  );
+  assert.doesNotThrow(() =>
+    refuseEffectSecrets(
+      { git: { credentials: [{ match: "*", sshKey: "k" }] } },
+      placedIn([pusher("publish")], { app: "git@git.example.com:acme/app.git" }),
+    ),
   );
   // A slot the run or a customize() binds is not refused at jr2 up: the provision checks its url
   // by the same rule (B10).

@@ -8,6 +8,7 @@ import {
   gitPushPlansOf,
   gitPushSecretName,
   placedPushRefusal,
+  pushRefusal,
   type GitPushManifest,
 } from "../src/git-push.ts";
 import { gitTokenSecretName, type GitCredential } from "../src/config.ts";
@@ -89,4 +90,141 @@ test("an entry whose config signs, and whose Secret jr2 up wrote with no signing
   assert.ok("refusal" in out);
   assert.match(out.refusal, /jr2 up placed no signing key for git\.credentials entry "github\.com\/ourorg\/"/);
   assert.doesNotMatch(out.refusal, /add sign:/);
+});
+
+// Each refusal names a fix; following it must clear the refusal, never trade it for the next one
+// (run B3's slice 5 findings: a single-segment match that was not a prefix, http told to add a
+// token before it was told https, an ssh-only entry told its https url pushes with a token, and a
+// push field told to take a second credential).
+test("each push refusal names a fix, and the fix it names is accepted", () => {
+  const fixes: {
+    name: string;
+    list: GitCredential[];
+    url: string;
+    says: RegExp;
+    fixed: { list: GitCredential[]; url: string };
+  }[] = [
+    {
+      name: "no entry, a single-segment url",
+      list: [],
+      url: "https://gitea.local/app.git",
+      says: /add one: git: \{ credentials: \[\{ match: "gitea\.local\/", token:/,
+      fixed: { list: [{ match: "gitea.local/", token: "T" }], url: "https://gitea.local/app.git" },
+    },
+    {
+      name: "no entry, ssh with a port",
+      list: [],
+      url: "ssh://git@host:2222/app.git",
+      says: /match: "host:2222\/", sshKey:/,
+      fixed: { list: [{ match: "host:2222/", sshKey: "k" }], url: "ssh://git@host:2222/app.git" },
+    },
+    {
+      name: "no entry, http",
+      list: [],
+      url: "http://git.example.com/org/app.git",
+      says: /bind the slot to the https url, and add the entry it then spends: .*match: "git\.example\.com\/org\/", token:/,
+      fixed: { list: [{ match: "git.example.com/org/", token: "T" }], url: "https://git.example.com/org/app.git" },
+    },
+    {
+      name: "http, an entry with a token",
+      list: [{ match: "*", token: "T" }],
+      url: "http://git.example.com/org/app.git",
+      says: /bind the slot to the https url \(git\.credentials entry "\*" then pushes with its token\)/,
+      fixed: { list: [{ match: "*", token: "T" }], url: "https://git.example.com/org/app.git" },
+    },
+    {
+      name: "http, an ssh-only entry",
+      list: [{ match: "git.example.com/", sshKey: "deploy" }],
+      url: "http://git.example.com/org/app.git",
+      says: /bind the slot to the ssh url \(git\.credentials entry "git\.example\.com\/" then pushes with its ssh key\)/,
+      fixed: { list: [{ match: "git.example.com/", sshKey: "deploy" }], url: "git@git.example.com:org/app.git" },
+    },
+    {
+      name: "http, a push sshKey entry",
+      list: [{ match: "git.example.com/", push: { sshKey: "deploy" } }],
+      url: "http://git.example.com/org/app.git",
+      says: /bind the slot to the ssh url/,
+      fixed: {
+        list: [{ match: "git.example.com/", push: { sshKey: "deploy" } }],
+        url: "ssh://git@git.example.com/org/app.git",
+      },
+    },
+    {
+      name: "http, an entry with no credential",
+      list: [{ match: "*" }],
+      url: "http://git.example.com/org/app.git",
+      says: /bind the slot to the https url, and add push: \{ token: .* \} to git\.credentials entry "\*"/,
+      fixed: { list: [{ match: "*", push: { token: "T" } }], url: "https://git.example.com/org/app.git" },
+    },
+    {
+      name: "https, a push sshKey entry",
+      list: [{ match: "git.example.com/", push: { sshKey: "deploy" } }],
+      url: "https://git.example.com/org/app.git",
+      says: /its push field names an ssh key, and a push field names one credential; bind the slot to the ssh url/,
+      fixed: {
+        list: [{ match: "git.example.com/", push: { sshKey: "deploy" } }],
+        url: "git@git.example.com:org/app.git",
+      },
+    },
+    {
+      name: "ssh, a push token entry",
+      list: [{ match: "git.example.com/", push: { token: "T" } }],
+      url: "git@git.example.com:org/app.git",
+      says: /its push field names a token, .*bind the slot to the https url/,
+      fixed: {
+        list: [{ match: "git.example.com/", push: { token: "T" } }],
+        url: "https://git.example.com/org/app.git",
+      },
+    },
+    {
+      name: "https, an entry with a clone ssh key only",
+      list: [{ match: "*", sshKey: "deploy" }],
+      url: "https://git.example.com/org/app.git",
+      says: /add token: "<the env var that holds the token>" to it/,
+      fixed: { list: [{ match: "*", sshKey: "deploy", token: "T" }], url: "https://git.example.com/org/app.git" },
+    },
+    {
+      name: "ssh, an entry with a clone token only",
+      list: [{ match: "*", token: "T" }],
+      url: "git@git.example.com:org/app.git",
+      says: /add sshKey: "<a Secret with identity and known_hosts>" to it/,
+      fixed: { list: [{ match: "*", token: "T", sshKey: "deploy" }], url: "git@git.example.com:org/app.git" },
+    },
+    {
+      name: "https, an entry with no credential",
+      list: [{ match: "*" }],
+      url: "https://git.example.com/org/app.git",
+      says: /add push: \{ token: .* \} to it/,
+      fixed: { list: [{ match: "*", push: { token: "T" } }], url: "https://git.example.com/org/app.git" },
+    },
+  ];
+  const signs = (entry: GitCredential) => entry.sign !== undefined;
+  for (const c of fixes) {
+    const before = pushRefusal({ at: "a push", url: c.url, sign: false }, c.list, declaredPushKinds, signs);
+    assert.ok("refusal" in before, `${c.name}: refused`);
+    assert.match(before.refusal, c.says, c.name);
+    const after = pushRefusal({ at: "a push", url: c.fixed.url, sign: false }, c.fixed.list, declaredPushKinds, signs);
+    assert.ok("entry" in after, `${c.name}: the fix is accepted — ${"refusal" in after ? after.refusal : ""}`);
+    // The fix keeps what the entry pushed with before.
+    const was = c.list.length === 0 ? [] : declaredPushKinds(c.list[0]!);
+    for (const kind of was) assert.ok(declaredPushKinds(c.fixed.list[0]!).includes(kind), `${c.name}: keeps ${kind}`);
+  }
+});
+
+test("at the provision, an http url whose entry's token was unset is told the https url, and the https url then names the unset token", () => {
+  const list: GitCredential[] = [{ match: "*", token: "UNSET" }];
+  const manifest: GitPushManifest = { version: 1, entries: [] };
+  const http = placedPushRefusal({ at: "a push", url: "http://git.example.com/o/a.git", sign: false }, list, manifest);
+  assert.ok("refusal" in http);
+  assert.match(
+    http.refusal,
+    /bind the slot to the https url \(git\.credentials entry "\*" then pushes with its token\)/,
+  );
+  const https = placedPushRefusal(
+    { at: "a push", url: "https://git.example.com/o/a.git", sign: false },
+    list,
+    manifest,
+  );
+  assert.ok("refusal" in https);
+  assert.match(https.refusal, /jr2 up placed no push credential for git\.credentials entry "\*"/);
 });

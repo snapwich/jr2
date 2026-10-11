@@ -81,10 +81,14 @@ export type PushNeed = {
  * Why a push of `need.url` cannot be spent, with the fix that works, or undefined. `kinds` says
  * what an entry can push with — as written (`jr2 up`, `declaredPushKinds`) or as placed (the
  * provision, the manifest; undefined when `jr2 up` placed nothing for it); `signs` whether it holds
- * a signing key. Refused: a local path and `git://` (jr2 never pushes there), a url no entry
- * matches, `http://` (a credential over cleartext http is the credential in the clear: a token
- * goes over https only and an ssh key over ssh only), an entry whose credentials the url's scheme
+ * a signing key. Refused: a local path and `git://` (jr2 never pushes there), `http://` (a
+ * credential over cleartext http is the credential in the clear: a token goes over https only and
+ * an ssh key over ssh only), a url no entry matches, an entry whose credentials the url's scheme
  * cannot spend, and `sign: true` on an entry with no `sign` field.
+ *
+ * Each fix is one the next check accepts: the match it names is a prefix of the url's identity;
+ * an `http://` url is told the url its entry CAN push to, or the https url and the token to add;
+ * a field it names to add never takes away a credential the entry already pushes with.
  */
 export function pushRefusal(
   need: PushNeed,
@@ -103,37 +107,60 @@ export function pushRefusal(
     return { refusal: `${at} over git://, which carries no credential — bind the slot over https or ssh (ADR-0051)` };
   }
   const entry = matchCredential(identity, list);
+  const held = entry === undefined ? [] : (kinds(entry) ?? []);
+  if (scheme === "http") {
+    const why =
+      `${at} over http://, and jr2 sends a push credential over https or ssh only — a token over http is the ` +
+      "token in the clear, and no ssh key is spent over http";
+    if (entry === undefined) {
+      return {
+        refusal:
+          `${why}; bind the slot to the https url, and add the entry it then spends: ` +
+          `git: { credentials: [{ match: "${matchFor(identity)}", token: "${TOKEN_ENV}" }] } (ADR-0051)`,
+      };
+    }
+    if (held.includes("token")) {
+      return {
+        refusal: `${why}; bind the slot to the https url (git.credentials entry "${entry.match}" then pushes with its token) (ADR-0051)`,
+      };
+    }
+    if (held.includes("ssh")) {
+      return {
+        refusal: `${why}; bind the slot to the ssh url (git.credentials entry "${entry.match}" then pushes with its ssh key) (ADR-0051)`,
+      };
+    }
+    return {
+      refusal:
+        `${why}; bind the slot to the https url, and add ${addLine(entry, "token")} to git.credentials entry ` +
+        `"${entry.match}" — it holds no push credential (ADR-0051)`,
+    };
+  }
+  const want: PushKind = scheme === "ssh" ? "ssh" : "token";
   if (entry === undefined) {
-    const prefix = identity.split("/").slice(0, 2).join("/");
-    const fix =
-      scheme === "ssh"
-        ? `{ match: "${prefix}/", sshKey: "<a Secret with identity and known_hosts>" }`
-        : `{ match: "${prefix}/", token: "<the env var that holds the token>" }`;
+    const field = want === "ssh" ? `sshKey: "${SSH_SECRET}"` : `token: "${TOKEN_ENV}"`;
     return {
       refusal:
         `${at}, and no git.credentials entry matches "${identity}" — a push spends the entry its url ` +
-        `matches; add one: git: { credentials: [${fix}] } (ADR-0051)`,
+        `matches; add one: git: { credentials: [{ match: "${matchFor(identity)}", ${field} }] } (ADR-0051)`,
     };
   }
-  if (scheme === "http") {
-    return {
-      refusal:
-        `${at} over http://, and jr2 sends a push credential over https or ssh only — a token over http is the ` +
-        `token in the clear, and no ssh key is spent over http; bind the slot to the https url ` +
-        `(git.credentials entry "${entry.match}" then pushes with its token) (ADR-0051)`,
-    };
-  }
-  const held = kinds(entry) ?? [];
-  const want: PushKind = scheme === "ssh" ? "ssh" : "token";
   if (!held.includes(want)) {
-    const line =
-      want === "ssh"
-        ? `push: { sshKey: "<a Secret with identity and known_hosts>" }`
-        : `push: { token: "<the env var that holds the token>" }`;
+    const other: PushKind = want === "ssh" ? "token" : "ssh";
+    const why = `${at}, and git.credentials entry "${entry.match}" holds no credential a push over ${scheme} can spend`;
+    // Its `push` field is the one credential it pushes with, and the field names one: the url that
+    // spends it is the fix, as a second credential there would take the first away.
+    if (entry.push !== undefined && held.includes(other)) {
+      return {
+        refusal:
+          `${why} — its push field names ${other === "ssh" ? "an ssh key" : "a token"}, and a push field names ` +
+          `one credential; bind the slot to ${other === "ssh" ? "the ssh url" : "the https url"} (ADR-0051)`,
+      };
+    }
     return {
       refusal:
-        `${at}, and git.credentials entry "${entry.match}" holds no credential a push over ${scheme} can spend — ` +
-        `an entry with none admits a clone, never a push; add ${line} to it (ADR-0051)`,
+        held.length === 0
+          ? `${why} — an entry with none admits a clone, never a push; add ${addLine(entry, want)} to it (ADR-0051)`
+          : `${why}; add ${addLine(entry, want)} to it (ADR-0051)`,
     };
   }
   if (need.sign && !signs(entry)) {
@@ -145,6 +172,24 @@ export function pushRefusal(
     };
   }
   return { entry };
+}
+
+const TOKEN_ENV = "<the env var that holds the token>";
+const SSH_SECRET = "<a Secret with identity and known_hosts>";
+
+/** The `match` a new entry needs to catch `identity`: its host and every directory above the
+ * repository — always a prefix of the identity (`gitea.local/app` → `gitea.local/`). */
+function matchFor(identity: string): string {
+  return identity.slice(0, identity.lastIndexOf("/") + 1);
+}
+
+/** The field that gives `entry` a push credential of `kind` and keeps each one it pushes with: a
+ * clone credential (`token`, `sshKey`) when it holds one and no `push` field — a clone credential
+ * pushes too, and a `push` field would replace it — else a `push` field. */
+function addLine(entry: GitCredential, kind: PushKind): string {
+  const value = kind === "ssh" ? `sshKey: "${SSH_SECRET}"` : `token: "${TOKEN_ENV}"`;
+  if (entry.push === undefined && (entry.token !== undefined || entry.sshKey !== undefined)) return value;
+  return `push: { ${value} }`;
 }
 
 /** The refusal against the manifest `jr2 up` wrote: what the provision checks for any url. An entry
@@ -163,8 +208,11 @@ export function placedPushRefusal(
     (entry) => placed(entry)?.sign !== undefined,
   );
   if (!("refusal" in out)) return { entry: placed(out.entry)! };
-  // As written, would the entry push? Then what is missing is what `jr2 up` could not place.
   const written = pushRefusal(need, list, declaredPushKinds, (entry) => entry.sign !== undefined);
+  // An http:// url is never pushed: the url to bind instead is read from the entry as written, so
+  // a token whose variable was unset is named as the entry's, and the https url then says so.
+  if (repoIdentity(need.url).scheme === "http" && "refusal" in written) return written;
+  // As written, would the entry push? Then what is missing is what `jr2 up` could not place.
   if ("refusal" in written) return out;
   const entry = written.entry;
   const what =

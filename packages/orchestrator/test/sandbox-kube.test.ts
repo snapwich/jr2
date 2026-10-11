@@ -1311,7 +1311,7 @@ test("a per-run push the entry cannot spend is refused at provision, before any 
   // An ssh url and an entry that pushes with a token only.
   assert.match(
     await refused("git@github.com:ourorg/x.git", {}),
-    /holds no credential a push over ssh can spend .*add push: \{ sshKey:/,
+    /holds no credential a push over ssh can spend; add sshKey: "<a Secret with identity and known_hosts>" to it/,
   );
   // An entry jr2 up wrote no push Secret for (its token unset at jr2 up).
   assert.match(

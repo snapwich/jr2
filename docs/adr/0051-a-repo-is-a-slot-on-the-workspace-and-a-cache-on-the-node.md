@@ -129,16 +129,23 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   Effector alone (ADR-0005). The Orchestrator reads no value. The Effector holds only the entries named there and
   matches a push's url as the fence does, longest match first, and refuses a url outside the entry.
 - **A push is refused with a fix that works, at `jr2 up` for a static Binding and at provision for any url.** One rule
-  (`pushRefusal`): a url no entry matches (the line to add), a local path (git's local transport runs that repository's
-  config and hooks) or `git://`, an `http://` url — a push credential goes over https or ssh only: a token over http is
-  the token in the clear, and no ssh key is spent over http, so the fix is the https url — an entry that holds no
-  credential the url's scheme can spend (a token over https, an ssh key over ssh: the `push` field to add), and
-  `sign: true` on an entry with no `sign` field (the field to add). `jr2 up` reads a static Binding's entry as written,
-  then checks what it could place: a token whose variable is unset, a key whose Secret is absent, each named. The
-  provision reads the same entry as `jr2 up` placed it, so a per-run url is refused at attach for the same reasons, as a
-  url outside the fence is, before anything is written. Accepted costs: `jr2 up`'s report is exact for a static Binding
-  and says "the entry its url matches" for a per-run slot; a wildcard entry gives a per-run push the catch-all
-  credential, the fence's existing choice.
+  (`pushRefusal`), and the fix each refusal names is one the same rule then accepts: a url no entry matches (the entry
+  to add, its `match` the url's host and directories, so always a prefix of the url); a local path (git's local
+  transport runs that repository's config and hooks) or `git://`; an `http://` url — a push credential goes over https
+  or ssh only: a token over http is the token in the clear, and no ssh key is spent over http — told the url its entry
+  can push to (https for a token, ssh for an ssh key) or, when no entry or no credential is there, the https url and the
+  token to add; an entry that holds no credential the url's scheme can spend (a token over https, an ssh key over ssh):
+  the clone field to add when it holds a clone credential and no `push` field, since a `push` field would replace that
+  credential, the `push` field when it holds none, and the other scheme's url when its `push` field already names the
+  other credential, since a `push` field names one; and `sign: true` on an entry with no `sign` field (the field to
+  add). `jr2 up` reads a static Binding's entry as written, then refuses an https Binding whose entry's token variable
+  is unset. A key's Secret, or a signing key's, that is absent at `jr2 up` is a warning, not a refusal: it may be
+  written after (ADR-0047's prompt, a human); the entry's Secret is written without that key, and the provision refuses
+  the push that needs it, naming the Secret to create and `jr2 up` to run again. The provision reads the same entry as
+  `jr2 up` placed it, so a per-run url is refused at attach for the same reasons, as a url outside the fence is, before
+  anything is written. Accepted costs: `jr2 up`'s report is exact for a static Binding and says "the entry its url
+  matches" for a per-run slot; a wildcard entry gives a per-run push the catch-all credential, the fence's existing
+  choice.
 - **Freshness degrades, absence does not.** A fetch that fails on a warm cache lets the attach proceed on the objects it
   has, announced as stale with git's own error. A stale attach is stale until the next fetch anyone inside the pod runs:
   the worktree's `origin` asks the cache, and the cache asks the remote (ADR-0053) — the pod still holds no credential

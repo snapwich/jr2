@@ -1531,9 +1531,11 @@ export type GitPushObjects = {
  * `sshKey`, `push.sshKey` and `sign` name, copied as data — base64 to base64, never decoded — so
  * one Secret holds what the entry pushes and signs with, and the provision names it on the Sandbox
  * of a push whose url the entry matches. An entry with nothing it can push with is not written,
- * and says why. A push on a slot the Machine binds to a url is then checked against what was
- * written: the token unset, the key's Secret absent, the signing key's Secret absent — each
- * refused with its fix.
+ * and says why. A push on a slot the Machine binds to an https url whose entry's token is unset is
+ * refused, with its fix. A key's Secret that is absent, or a signing key's, is a warning, not a
+ * refusal: the Secret may be written after `jr2 up` (ADR-0047's prompt, a scenario, a human), and
+ * the entry's Secret is written without that key, so the provision refuses the push that needs it
+ * until the Secret exists and `jr2 up` runs again.
  */
 async function resolveGitPush(
   io: Io,
