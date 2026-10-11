@@ -154,7 +154,12 @@ recover, finish — are exercised only one scripted tool call at a time.
   publishes again, and finishes. The first push's answer carries the paragraph after a signed push. The measure is the
   Machine's record of the second push: `pushed`; an Agent that rewrites the pushed commits after their ids changed makes
   it `diverged`. A trial whose first push did not publish a signed copy is void. Its floor is `push-follow`'s, 9 of 10:
-  the answer is the newest thing the model read. Written; not yet run, so it has no baseline.
+  the answer is the newest thing the model read. Its first run (home-lab vLLM, 2026-10-11) read 9 of 10, none void, at
+  its floor: now a baseline (4316bdb). For it the tier's shared instance gained a push credentials entry
+  (`features/model-instance/jr2.config.ts`) and its Effector image a passwd entry for uid 1000 (9cd3935). The user
+  approved this on 2026-10-11 as not a setup change: the rule guards what the model is put in front of, and a credential
+  entry and a passwd line change nothing the model reads. No existing claim's prompt, workflow or floor changed, and
+  every existing cell held its baseline after the change.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but
@@ -195,7 +200,9 @@ recover, finish — are exercised only one scripted tool call at a time.
   fires, so the stale list the claim needs never reaches the model and every trial would be void. The timer now has no
   target: it shuts the review window, and the guards of `revise`, `submit` and `publish` read it, so after it fires only
   `publish` is allowed in `reviewing`. The prompt, the floor and the pass are unchanged: the call after the correction
-  receipt is `publish`. Both setups have run: `mode-stop` and `mode-refusal` cleared their floors 10 of 10.
+  receipt is `publish`. Both setups have run: `mode-stop` and `mode-refusal` cleared their floors 10 of 10. The user
+  approved `mode-refusal`'s setup change (e20cc0d) on 2026-10-11: a forced change that measures nothing new, with the
+  prompt, the floor and the pass criterion unchanged, and 10 of 10 on 6f91bcc and on 9cd3935.
 
 - The drivers' readings of the printed conversation, of a workflow's modes and of a restarted Harness container are
   plain functions in `features/lib/model-said.ts`, and what each claim workflow means by "finished" is a table in
