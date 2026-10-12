@@ -95,7 +95,16 @@ const SECRET_NAME = /^[A-Za-z0-9._-]{1,253}$/;
 
 /** Name a secret: `secret("jira")`. */
 export function secret(name: string): Secret {
-  if (!SECRET_NAME.test(name) || name.startsWith(".")) {
+  // A secret's NAME is not an Open part (ADR-0054): the Open parts are an http url and a
+  // command's argv. A url whose secret the composer names is left Open whole.
+  if ((name as unknown) === open) {
+    throw new Error(
+      "secret(open): a secret's name is not an Open part — leave the whole url Open " +
+        "(`url: open`) and let the composer bind it with its secret in its path; the auth, the headers " +
+        "and a command's env name their secrets in the definition (ADR-0054)",
+    );
+  }
+  if (typeof name !== "string" || !SECRET_NAME.test(name) || name.startsWith(".")) {
     throw new Error(
       `secret("${name}"): a secret's name is letters, digits, ".", "_" and "-", and does not start with "." — ` +
         "it is the file the Effector reads it from (ADR-0068)",

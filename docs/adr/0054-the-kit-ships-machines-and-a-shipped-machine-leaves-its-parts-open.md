@@ -35,27 +35,27 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   the program its `command` runs
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), so it may leave
   either Open: `http({ method, url: open, auth, input, request })`,
-  `http({ method: "PUT", url: open, body: file(path) })`, `command(open, { env, pin })`. Everything else the definition
-  says stays the package's — the method, the headers, the auth and the secrets they name, the input, `request`, the env,
-  `pin` — and is checked when the Machine is built. The composer binds the part with
-  `customize(machine, { effects: { <slot>: { url } } })` or `{ argv }`: a url is a string or a `text` with a secret in
-  its path, an argv is the usual list. It is bound ONCE, to a value: never a mapper over the door, so a host is fixed in
-  the definition or bound before any run, and no run chooses one. Binding builds the Effect again with its constructor,
-  so a bound part meets every rule the constructor checks — a literal host, no secret in a query, a non-empty argv — and
-  `jr2 up` reads it as written: the placement, the secrets its url names, and the Effector's fence
-  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)) are the bound host's. Only an Open part
-  is offered: a part the author fixed is no key of `effects` and is refused at the call, and a part bound once is fixed
-  from then on, so a second composer cannot move it. `effects` reaches through `workspace()`'s body, `pool()`'s worker
-  and a composed Machine's `actors`, as `agents` does, typed off the slot's logic. An Open argv's slots are the
-  composer's, so the load walk counts every pick param as read by it when the Machine is built, and `customize()` runs
-  the walk's pick-param check again once the argv is bound — a param the bound argv does not read is refused there, and
-  a warning it gives for the bound argv is the bound Machine's, as it is the same Machine's written with that argv. The
-  compiler's check does not reach a bound argv: an Open argv's input is one string per key, so nothing at build or at
-  `customize()` checks that the invoke supplies each slot the bound argv names, and a slot it does not supply faults
-  when the Effect starts — its state's `onError`, with nothing run. The `jr2 up` walk reports an Open Effect beside Open
-  Repo Slots and Agents and refuses the converge naming the `effects` line; the Effect refuses to run while Open, as the
-  second fence — its state's `onError`, with nothing sent and no ledger row. The Open part is the whole url or the whole
-  argv.
+  `http({ method: "PUT", url: open, body: file(path) })`, `command(open, { env, pin })`. The url and the argv are the
+  Open parts of an Effect that exist; everything else the definition says is the package's as written — the method, the
+  headers, the auth and the secrets they name, the input, `request`, the env, `pin` — and is checked when the Machine is
+  built. The composer binds the part with `customize(machine, { effects: { <slot>: { url } } })` or `{ argv }`: a url is
+  a string or a `text` with a secret in its path, an argv is the usual list. It is bound ONCE, to a value: never a
+  mapper over the door, so a host is fixed in the definition or bound before any run, and no run chooses one. Binding
+  builds the Effect again with its constructor, so a bound part meets every rule the constructor checks — a literal
+  host, no secret in a query, a non-empty argv — and `jr2 up` reads it as written: the placement, the secrets its url
+  names, and the Effector's fence ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)) are the
+  bound host's. Only an Open part is offered: a part the author fixed is no key of `effects` and is refused at the call,
+  and a part bound once is fixed from then on, so a second composer cannot move it. `effects` reaches through
+  `workspace()`'s body, `pool()`'s worker and a composed Machine's `actors`, as `agents` does, typed off the slot's
+  logic. An Open argv's slots are the composer's, so the load walk counts every pick param as read by it when the
+  Machine is built, and `customize()` runs the walk's pick-param check again once the argv is bound — a param the bound
+  argv does not read is refused there, and a warning it gives for the bound argv is the bound Machine's, as it is the
+  same Machine's written with that argv. The compiler's check does not reach a bound argv: an Open argv's input is one
+  string per key, so nothing at build or at `customize()` checks that the invoke supplies each slot the bound argv
+  names, and a slot it does not supply faults when the Effect starts — its state's `onError`, with nothing run. The
+  `jr2 up` walk reports an Open Effect beside Open Repo Slots and Agents and refuses the converge naming the `effects`
+  line; the Effect refuses to run while Open, as the second fence — its state's `onError`, with nothing sent and no
+  ledger row. The Open part is the whole url or the whole argv.
 - **The per-run Dial is the escape hatch, not the default.** A shipped Machine's door may carry `model` and
   `thinkingLevel` (ADR-0018's two Dials) and fold them into each invoke's input; the bound definition is what `jr2 up`
   preflights, the door value overrides it for one run's Turns. Nothing in jr2 changes for this — it is the Machine's own
@@ -100,5 +100,11 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
 - A `customize` that binds a model is now the common consumer line, not the exotic one; `jr2 up`'s refusal for an Open
   Agent prints it, as it does for an Open Repo Slot and an Open Effect (its `effects` line).
 - No Machine in `@jr2/machines` leaves an Effect Open yet; `task` carries no Effect.
+- Not built: an Open secret name (`secret(open)`, bound by `customize()`). Its shape is not decided — which places take
+  it (a url, `bearer`, `basic`, a header, a command's env, a `.path`) and what one binding does with more than one Open
+  secret — so `secret(open)` is refused when the Machine is built, with a message that names the Open url. A secret in a
+  url's path is bound with the url: the package leaves the url Open and each composer binds it with its own secret, so
+  two copies of one Machine spend two teams' secrets. A secret that the auth, a header or the env names is not yet the
+  composer's.
 - The `triaged-task` mechanics test went with `examples/coding`, and the cross-Machine conversation pin it exercised
   went with ADR-0057; the `@kind` `consulted`/`advised` fixtures hold Instance Harness placement.

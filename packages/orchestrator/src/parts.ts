@@ -452,7 +452,7 @@ export type CarriedSize = {
 /** One Effect slot a Machine carries (ADR-0067), by its slot key and the `customize()` route to its
  * Machine, with the plain data `jr2 up` prints: the kind, where it runs, a command's argv (an argv
  * slot reads `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one.
- * `open` names the part a package left Open (ADR-0054) — an http or upload url, which then has no
+ * `open` names the part a package left Open (ADR-0054) — an http url, which then has no
  * target yet, or a command's argv, which reads `<open>` — and the walk reports it for `jr2 up` to
  * refuse; once `customize()` binds it, the slot carries the bound Effect and `open` is absent. */
 export type CarriedEffect = {

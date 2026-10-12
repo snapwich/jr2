@@ -95,6 +95,32 @@ test("an Open url or argv is carried with the sentinel, and the walk reports it 
   assert.equal(byName.lint && "open" in byName.lint, false, "a part the author fixed is not reported");
 });
 
+test("a secret's name is not an Open part: secret(open) is refused at build, and a per-team secret rides an Open url", () => {
+  // ADR-0054: the Open parts are an http url and a command's argv. `secret(open)` used to
+  // fail with the runtime's "Cannot convert a Symbol value to a string"; it now names the rule.
+  assert.throws(() => secret(open as never), /secret\(open\): a secret's name is not an Open part.*ADR-0054/);
+  assert.throws(() => bearer(secret(open as never)), /not an Open part/);
+  assert.throws(() => text`https://hooks.example.com/services/${secret(open as never)}`, /not an Open part/);
+  // A url that carries its secret in its path is left Open whole: two bindings of one Machine, two
+  // teams' secrets, each placed for its own copy.
+  const forTeam = (name: string) =>
+    customize(notifier(), {
+      effects: {
+        comment: { url: text`https://hooks.example.com/services/${secret(name)}` },
+        deploy: { argv: ["make"] },
+      },
+    });
+  const secretsOf = (m: unknown) =>
+    (partsOf([m as never]).effects.find((e) => e.name === "comment") as { secrets: string[] }).secrets;
+  assert.deepEqual(secretsOf(forTeam("hook-team-a")), ["hook-team-a", "tracker-token"]);
+  assert.deepEqual(secretsOf(forTeam("hook-team-b")), ["hook-team-b", "tracker-token"]);
+  // No `secret` key binds a name: the binding is a url or an argv.
+  assert.throws(
+    () => customize(notifier(), { effects: { comment: { secret: "hook-team-a" } as never } }),
+    /leaves its url Open — bind it with/,
+  );
+});
+
 test("binding builds the Effect again, whole: the bound host, its secrets, the bound argv — and the original is untouched", () => {
   const stock = notifier();
   const bound = customize(stock, {
