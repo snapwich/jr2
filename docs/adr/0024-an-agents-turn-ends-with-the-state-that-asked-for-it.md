@@ -79,59 +79,61 @@ single-threaded.
   those a timer or another event that names no Agent started on a state below the Agent's state while its pick is
   outstanding, which the Rest rule makes that pick's work (below two Agents' states, one inside the other, the nearer
   one's) — so the work a pick began stays its Agent's, whether the pick is still outstanding, was answered while the
-  child ran, or was answered on its own `POST`, and the record holds through a restore. A child started on an event that
-  names no Agent anywhere else is no Agent's. The other Agent's pick keeps its default answer, and when the Agent the
-  event names has no pick being answered, it sets nothing. When the event names no Agent (a timer, a Gate's answer, an
-  outside send, the done event of a child no Agent's pick started), it shapes the pick in its own send; outside one, it
-  shapes the one such pick outstanding only while one Agent's state is active. Outside a pick's own send, while two
-  Agents' states are active, it sets nothing, whatever is outstanding: the event cannot say whose pick it is. On an
-  entry or an exit below no Agent's state it sets nothing, whatever is outstanding, and the load walk warns, naming the
-  Agent states it could be moved under: an entry or exit there is no transition an Agent's event takes. One action
-  object written in two places runs from each by that place's rule alone, never by their sum: written below two Agents'
-  states, from A's state it shapes only A's pick and from B's only B's; written below A's state and on a transition
-  below none, from A's state it shapes only A's pick and from the transition the pick of the Agent the event names;
-  written on an entry or exit below no Agent's state as well, it sets nothing as that entry or exit. An `answer` that
-  runs while no pick of that Agent is being answered (a state's first entry, a later Turn's re-entry, another Agent's
-  region of a parallel state) sets nothing. A reply comes from a child invoked on an active state below the Agent's
-  state, or from a party whose Gate invoke id or Agent slot is invoked there (its sender, ADR-0015). The events the
-  Machine sent itself (a `raise`, a `sendTo(self)`, a timer) are no reply, and neither is an event from outside that set
-  (a Gate in a sibling region, a root Gate, an outside send), nor a child's error: every outcome of work is its output,
-  and an error is a jr2 or config defect, so by default its message never reaches the model. The operator reads it:
-  while a pick is outstanding, an error from a child below the Agent's state goes on the run's feed (`child-error`: the
-  Agent, its pick, the child and the message; Instance-token band, as `fault` is), and `jr2 run` and `jr2 logs` print
-  it. An author who wants the Agent told passes it explicitly: `answer(...)` on the `onError` route (ADR-0067), or an
-  `onError` route to a state whose prompt carries it. With none, the answer carries no reply, and its words say only
-  that ("No reply came back for it"): never that nothing ran, because a timer or an outside event may have stopped work
-  that did run. The pick's `POST` answers at once with `outstanding` and a delivery id, and the Harness long-polls the
-  answer inside the one tool call (ADR-0002, ADR-0013). A child that settles inside the pick's own send — a decision
-  Machine that is final as it starts — replies before the `POST` answers: when that reply leaves the workflow at Rest,
-  or out of the Agent's state, the `POST` itself is the answer, with `answered` and nothing to poll. So is a guard
-  straight back: a pick that enters a state and leaves it again inside its own send (an `always` back), with no reply,
-  leaves the state value as it was, and is answered with `straightBack` — the one answer that says "it moved the
-  workflow, and nothing ran". An outstanding pick's answer never carries it. A pick that changes the state value moved
-  to a mode, and gets the plain receipt with its Allowed picks; a pick with no target went nowhere, and gets the same,
-  as does a pick whose target is the state it was taken in (it enters nothing it leaves). A route that leaves the
-  Agent's state ends the Turn like any other: the poll reads `turnComplete`, the next state's prompt is the author's,
-  and the answer is a `pick-answer` notice to the Agent that picked: the next Turn of the conversation the picking Turn
-  continued (`continue: true`, ADR-0062). A FRESH picking Turn's conversation is never heard again, and a later
-  continued Turn of the same slot never made the pick, so its answer goes nowhere: the ledger keeps no notice for it.
-  The route of a reply includes the events the Machine sends itself AT ONCE while it runs (a `raise`, or a
-  `sendTo(self)` with no delay, in `onDone` or in the next state's entry): a reply whose route leaves the Agent's state
-  that way is the answer, never stopped. Something other than the route can leave the Agent's state while the pick's
-  work still runs below it — a timer the Machine set (a Turn timeout `after`, a named delay, a delayed `raise` or
-  `sendTo(self)`), an event from outside the states below, a Gate's event, the Agent's own end. The exit stops that work
-  (an invoke is stopped when its state exits), and the answer says so (`stopped`): the poll reads "The workflow left the
-  state that asked for this turn while it ran your pick, and that stopped the pick's work before it finished: your turn
-  is over." with the receipts' stop instruction, and the next continued Turn's notice reads "Your pick `X` did not
-  finish: the workflow left the state that asked for your last turn while it ran, and that stopped it." Both keep the
-  last reply an earlier link gave, if any, and state it: an earlier link's reply is never dropped because a later link
-  was stopped. The run host tells a fired timer from an event sent at once by the scheduler's own table: it watches what
-  the actor system arms, cancels and fires (`timers.ts`, the same xstate internals as the timer table, ADR-0007). Back
-  at Rest INSIDE the Agent's state — a per-step timeout `after` on the child state that exits the work — the answer is
-  the last reply since the pick, with the Allowed picks; with no reply since the pick, the answer carries none. A
-  restored hold is the Turn of the first registration of its address in the restored tree: a restore that ends that Turn
-  and starts another at the same address before anything settles answers the pick with `turnComplete`. There is no
-  default time bound on a held Turn; the Console shows each outstanding pick "held since".
+  child ran, or was answered on its own `POST`, and the record holds through a restore. The record keys each child by
+  the chain of invoke ids from the root down to it, since an invoke id is local to its Machine: two Machines of one
+  tree, and the workers of a pool, which run one body, may each have a child of one id, and one never reads or changes
+  the other's entry. A child started on an event that names no Agent anywhere else is no Agent's. The other Agent's pick
+  keeps its default answer, and when the Agent the event names has no pick being answered, it sets nothing. When the
+  event names no Agent (a timer, a Gate's answer, an outside send, the done event of a child no Agent's pick started),
+  it shapes the pick in its own send; outside one, it shapes the one such pick outstanding only while one Agent's state
+  is active. Outside a pick's own send, while two Agents' states are active, it sets nothing, whatever is outstanding:
+  the event cannot say whose pick it is. On an entry or an exit below no Agent's state it sets nothing, whatever is
+  outstanding, and the load walk warns, naming the Agent states it could be moved under: an entry or exit there is no
+  transition an Agent's event takes. One action object written in two places runs from each by that place's rule alone,
+  never by their sum: written below two Agents' states, from A's state it shapes only A's pick and from B's only B's;
+  written below A's state and on a transition below none, from A's state it shapes only A's pick and from the transition
+  the pick of the Agent the event names; written on an entry or exit below no Agent's state as well, it sets nothing as
+  that entry or exit. An `answer` that runs while no pick of that Agent is being answered (a state's first entry, a
+  later Turn's re-entry, another Agent's region of a parallel state) sets nothing. A reply comes from a child invoked on
+  an active state below the Agent's state, or from a party whose Gate invoke id or Agent slot is invoked there (its
+  sender, ADR-0015). The events the Machine sent itself (a `raise`, a `sendTo(self)`, a timer) are no reply, and neither
+  is an event from outside that set (a Gate in a sibling region, a root Gate, an outside send), nor a child's error:
+  every outcome of work is its output, and an error is a jr2 or config defect, so by default its message never reaches
+  the model. The operator reads it: while a pick is outstanding, an error from a child below the Agent's state goes on
+  the run's feed (`child-error`: the Agent, its pick, the child and the message; Instance-token band, as `fault` is),
+  and `jr2 run` and `jr2 logs` print it. An author who wants the Agent told passes it explicitly: `answer(...)` on the
+  `onError` route (ADR-0067), or an `onError` route to a state whose prompt carries it. With none, the answer carries no
+  reply, and its words say only that ("No reply came back for it"): never that nothing ran, because a timer or an
+  outside event may have stopped work that did run. The pick's `POST` answers at once with `outstanding` and a delivery
+  id, and the Harness long-polls the answer inside the one tool call (ADR-0002, ADR-0013). A child that settles inside
+  the pick's own send — a decision Machine that is final as it starts — replies before the `POST` answers: when that
+  reply leaves the workflow at Rest, or out of the Agent's state, the `POST` itself is the answer, with `answered` and
+  nothing to poll. So is a guard straight back: a pick that enters a state and leaves it again inside its own send (an
+  `always` back), with no reply, leaves the state value as it was, and is answered with `straightBack` — the one answer
+  that says "it moved the workflow, and nothing ran". An outstanding pick's answer never carries it. A pick that changes
+  the state value moved to a mode, and gets the plain receipt with its Allowed picks; a pick with no target went
+  nowhere, and gets the same, as does a pick whose target is the state it was taken in (it enters nothing it leaves). A
+  route that leaves the Agent's state ends the Turn like any other: the poll reads `turnComplete`, the next state's
+  prompt is the author's, and the answer is a `pick-answer` notice to the Agent that picked: the next Turn of the
+  conversation the picking Turn continued (`continue: true`, ADR-0062). A FRESH picking Turn's conversation is never
+  heard again, and a later continued Turn of the same slot never made the pick, so its answer goes nowhere: the ledger
+  keeps no notice for it. The route of a reply includes the events the Machine sends itself AT ONCE while it runs (a
+  `raise`, or a `sendTo(self)` with no delay, in `onDone` or in the next state's entry): a reply whose route leaves the
+  Agent's state that way is the answer, never stopped. Something other than the route can leave the Agent's state while
+  the pick's work still runs below it — a timer the Machine set (a Turn timeout `after`, a named delay, a delayed
+  `raise` or `sendTo(self)`), an event from outside the states below, a Gate's event, the Agent's own end. The exit
+  stops that work (an invoke is stopped when its state exits), and the answer says so (`stopped`): the poll reads "The
+  workflow left the state that asked for this turn while it ran your pick, and that stopped the pick's work before it
+  finished: your turn is over." with the receipts' stop instruction, and the next continued Turn's notice reads "Your
+  pick `X` did not finish: the workflow left the state that asked for your last turn while it ran, and that stopped it."
+  Both keep the last reply an earlier link gave, if any, and state it: an earlier link's reply is never dropped because
+  a later link was stopped. The run host tells a fired timer from an event sent at once by the scheduler's own table: it
+  watches what the actor system arms, cancels and fires (`timers.ts`, the same xstate internals as the timer table,
+  ADR-0007). Back at Rest INSIDE the Agent's state — a per-step timeout `after` on the child state that exits the work —
+  the answer is the last reply since the pick, with the Allowed picks; with no reply since the pick, the answer carries
+  none. A restored hold is the Turn of the first registration of its address in the restored tree: a restore that ends
+  that Turn and starts another at the same address before anything settles answers the pick with `turnComplete`. There
+  is no default time bound on a held Turn; the Console shows each outstanding pick "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

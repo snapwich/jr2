@@ -231,15 +231,35 @@ type Sending = {
 };
 
 /**
- * The Agent whose event `event` is (ADR-0024, ADR-0067): a pick's sender, or the Agent whose pick
- * started the child whose done or error event it is (`startedBy`). Undefined when the event names
- * no Agent: a timer, a Gate's answer, an outside send, a child no Agent's pick started.
+ * The key of the child `childId` of `parent` in the run's record of which Agent started each child
+ * (`startedBy`, ADR-0067): the invoke ids from below the root down to `parent`, then `childId`, each
+ * encoded and joined by `/`. An invoke id is local to its Machine — two Machines of one tree, and
+ * every worker of a pool, may each have a child `job` — and the chain is not. A child of the root
+ * keeps its bare id. The ids are the snapshot's, so a restore gives the same key.
  */
-function agentOfEvent(event: AnyEventObject, startedBy: Record<string, string>): string | undefined {
+function childKey(parent: AnyActorRef, childId: string): string {
+  const ids = [childId];
+  for (let at: AnyActorRef | undefined = parent; at?._parent !== undefined; at = at._parent) ids.unshift(at.id);
+  return ids.map(encodeURIComponent).join("/");
+}
+
+/**
+ * The Agent whose event `event` is, as `taker` takes it (ADR-0024, ADR-0067): a pick's sender, or
+ * the Agent whose pick started the child of `taker` whose done or error event it is (`startedBy`).
+ * Undefined when the event names no Agent: a timer, a Gate's answer, an outside send, a child no
+ * Agent's pick started.
+ */
+function agentOfEvent(
+  event: AnyEventObject,
+  startedBy: Record<string, string>,
+  taker: AnyActorRef,
+): string | undefined {
   const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
   if (sender?.party === "agent") return sender.id;
   const child = /^xstate\.(?:done|error)\.actor\.(.+)$/.exec(event.type)?.[1];
-  return child !== undefined && Object.hasOwn(startedBy, child) ? startedBy[child] : undefined;
+  if (child === undefined) return undefined;
+  const key = childKey(taker, child);
+  return Object.hasOwn(startedBy, key) ? startedBy[key] : undefined;
 }
 
 /** How many of `snapshot`'s active states invoke an Agent. With two or more, an event that names no
@@ -250,13 +270,13 @@ function activeAgentStates(snapshot: AnyMachineSnapshot): number {
   return active.filter((node) => partiesAt(node, machine).some((party) => party.party === "agent")).length;
 }
 
-/** The invoke ids of every child in `actor`'s tree, at any depth. */
-function liveChildIds(actor: AnyActorRef, into = new Set<string>()): Set<string> {
+/** The `childKey` of every child in `actor`'s tree, at any depth. */
+function liveChildKeys(actor: AnyActorRef, into = new Set<string>()): Set<string> {
   const children = (actor.getSnapshot() as { children?: Record<string, AnyActorRef> } | undefined)?.children ?? {};
   for (const child of Object.values(children)) {
     if (!child) continue;
-    into.add(child.id);
-    liveChildIds(child, into);
+    into.add(childKey(actor, child.id));
+    liveChildKeys(child, into);
   }
   return into;
 }
@@ -264,7 +284,7 @@ function liveChildIds(actor: AnyActorRef, into = new Set<string>()): Set<string>
 /** `startedBy` as the save keeps it: only children still in the run's tree (ADR-0067). Read at the
  * save, a microtask after the snapshot, so a done event the Machine took has run its route. */
 function liveStartedBy(startedBy: Record<string, string>, actor: AnyActorRef): Record<string, string> {
-  const live = liveChildIds(actor);
+  const live = liveChildKeys(actor);
   for (const id of Object.keys(startedBy)) if (!live.has(id)) delete startedBy[id];
   return startedBy;
 }
@@ -697,7 +717,9 @@ type RunBlob = {
    */
   effects?: Record<string, EffectRow>;
   /**
-   * Which Agent started each live child (ADR-0067), by the child's invoke id: the Agent whose pick's
+   * Which Agent started each live child (ADR-0067), by the child's key — the invoke ids from below
+   * the root down to the child, encoded and joined by `/` (`childKey`), so a child of one Machine is
+   * never another Machine's child of the same local id: the Agent whose pick's
    * own send started it, or whose event the Machine was taking when it started. A done event of that
    * child names that Agent, so an `answer` on a transition below no Agent's state that the done event
    * takes shapes that Agent's pick and no other — whether the pick that started it is still
@@ -1390,7 +1412,7 @@ export class RunHost {
     const sending = this.sending && this.sending.reg.runId === runId ? this.sending : undefined;
     const open = [...holds.values()].filter((hold) => hold.answer === undefined && seatedFor(regOf(hold)));
     if (seat === null && event !== undefined) {
-      const agent = agentOfEvent(event, startedBy);
+      const agent = agentOfEvent(event, startedBy, machine);
       if (agent !== undefined) {
         if (sending && sending.reg.sender?.id === agent) return seatedFor(sending.reg) ? sending : undefined;
         return open.find((hold) => hold.agent === agent);
@@ -2086,8 +2108,9 @@ export class RunHost {
           if (logic && typeof logic === "object" && "root" in logic) placeAnswers(logic);
           if (sending && child._parent !== undefined && child._parent === sending.reg.invoker) {
             const agent = sending.reg.sender?.id;
-            if (agent !== undefined) startedBy[child.id] = agent;
-            else delete startedBy[child.id];
+            const key = childKey(child._parent, child.id);
+            if (agent !== undefined) startedBy[key] = agent;
+            else delete startedBy[key];
           }
         }
         // …and so are the children its later work starts: a child started while the Machine takes an
@@ -2104,11 +2127,11 @@ export class RunHost {
           childrenAfter.set(taker, after);
           const started = [...after].filter((c) => !before.has(c)).map((c) => c.id);
           if (started.length > 0 && !this.sending) {
-            const agent = agentOfEvent(ev.event as AnyEventObject, startedBy);
+            const agent = agentOfEvent(ev.event as AnyEventObject, startedBy, taker);
             for (const id of started) {
               const owner = agent ?? this.outstandingAbove(taker, snapshot as AnyMachineSnapshot, id, holds);
-              if (owner !== undefined) startedBy[id] = owner;
-              else delete startedBy[id];
+              if (owner !== undefined) startedBy[childKey(taker, id)] = owner;
+              else delete startedBy[childKey(taker, id)];
             }
           }
         }

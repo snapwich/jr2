@@ -18,6 +18,7 @@ import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { HarnessRestarts, SandboxPort } from "../src/workspace.ts";
+import { pool, source } from "../src/pool.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const ev = (name: string, input: z.ZodObject = z.object({})) => defineEvent({ name, input });
@@ -1436,4 +1437,175 @@ test("a child a timer in the Agent's state started is recorded as its Agent's; a
   const answeredB = await polledB;
   assert.deepEqual(answeredB?.answer, { kind: "output", actor: "waiterB", output: { waited: "doneB" } });
   await second.close();
+});
+
+/** A child Machine that ends when its Gate is answered `go`. */
+const gateWaiter = (gate: string) =>
+  jr2Setup({ events: [ev("go")] }).createMachine({
+    initial: "w",
+    states: { w: { invoke: { src: "gate", id: gate, input: {} }, on: { go: "f" } }, f: { type: "final" } },
+    output: () => ({ waited: gate }),
+  });
+
+/** A port factory that keeps each client it makes, so a test reads the instance ids it admitted. */
+const keptPorts = (into: MockFlueClient[]) => () => {
+  const client = new MockFlueClient();
+  into.push(client);
+  return client;
+};
+
+// The record of which Agent started a child is scoped to the Machine that invoked it (ADR-0067):
+// invoke ids are local to each Machine, so two Machines of one run tree may each have a child `job`.
+// One Machine's record never names the other's child, and it holds through a restore.
+test("two Machines of one tree each start a child `job`: its done event below no Agent's state shapes the pick of its own Machine's Agent, before and after a restore", async () => {
+  const endpoint = "http://harness.invalid";
+  const clients = { alpha: [] as MockFlueClient[], beta: [] as MockFlueClient[] };
+  /** A plain Machine with one Agent, whose pick starts the child `job`. */
+  const member = (agentName: "alpha" | "beta", pick: string, gate: string) =>
+    jr2Setup({
+      events: [ev(pick)],
+      actors: {
+        [agentName]: agentActorWith(
+          keptPorts(clients[agentName]),
+          agentName === "alpha" ? coderDefinition : reviewerDefinition,
+        ),
+        work: gateWaiter(gate),
+      },
+    }).createMachine({
+      id: agentName,
+      // Below no Agent's state: this Machine's root, on its own child's done event.
+      on: { "xstate.done.actor.job": { actions: answer(({ event }) => `${agentName}'s root saw ${event.type}`) } },
+      initial: "working",
+      states: {
+        working: {
+          invoke: { src: agentName, input: { prompt: agentName, endpoint, continue: true } },
+          initial: "rest",
+          states: { rest: {}, waiting: { invoke: { src: "work", id: "job" } } },
+          on: { [pick]: ".waiting" },
+        },
+      },
+    });
+  const def = (): WorkflowDef => ({
+    name: "two",
+    machine: jr2Setup({
+      events: [],
+      actors: { m1: member("alpha", "pick_a", "doneA"), m2: member("beta", "pick_b", "doneB") },
+    }).createMachine({
+      id: "two",
+      type: "parallel",
+      states: { r1: { invoke: { src: "m1", id: "m1" } }, r2: { invoke: { src: "m2", id: "m2" } } },
+    }),
+    provide: () => ({}),
+  });
+  const store = await mkStore();
+  const host = new RunHost({ store });
+  host.register(def());
+  const { runId } = await host.start("two");
+  await waitFor(() => (clients.alpha[0]?.admits.length ?? 0) > 0 && (clients.beta[0]?.admits.length ?? 0) > 0);
+  const ia = clients.alpha[0]!.admits[0]!.instanceId;
+  const ib = clients.beta[0]!.admits[0]!.instanceId;
+  // A's pick starts m1's `job`; then B's pick starts m2's `job`, a child of the same local id.
+  const pa = host.sendToAgent(ia, { type: "pick_a" });
+  const pb = host.sendToAgent(ib, { type: "pick_b" });
+  assert.equal(pa.outstanding, true);
+  assert.equal(pb.outstanding, true);
+  const gateOf = (name: string) => host.gates(runId).find((g) => g.gate.endsWith(name))?.gate;
+  await waitFor(() => gateOf("doneA") !== undefined && gateOf("doneB") !== undefined);
+  const gateA = gateOf("doneA")!;
+  const gateB = gateOf("doneB")!;
+  const polledA = host.awaitDelivery(ia, pa.deliveryId);
+  host.sendToGate(runId, gateA, { type: "go" });
+  assert.deepEqual((await polledA)?.answer, { kind: "answer", value: "alpha's root saw xstate.done.actor.job" });
+  await new Promise((r) => setTimeout(r, 20));
+  await host.stop(runId);
+
+  // After a restore, m2's record still names m2's child.
+  const second = new RunHost({ store });
+  second.register(def());
+  assert.deepEqual((await second.restore()).reattached, [runId]);
+  const polledB = second.awaitDelivery(ib, pb.deliveryId);
+  second.sendToGate(runId, gateB, { type: "go" });
+  assert.deepEqual((await polledB)?.answer, { kind: "answer", value: "beta's root saw xstate.done.actor.job" });
+  await second.close();
+});
+
+// Every worker of a pool runs one body, so the workers' children share their invoke ids: a child one
+// worker starts never changes the record of another worker's child (ADR-0067, ADR-0017).
+test("a pool of two workers: a child `job` one worker's timer started leaves the other worker's record, and that worker's `job` done event shapes its pick", async () => {
+  const endpoint = "http://harness.invalid";
+  const clientsA: MockFlueClient[] = [];
+  const clientsB: MockFlueClient[] = [];
+  /** B's work: a Machine whose own timer starts a child that is `job` in that Machine. */
+  const helper = jr2Setup({ events: [], actors: { inner: gateWaiter("inner") } }).createMachine({
+    initial: "wait",
+    states: { wait: { after: { 20: "run" } }, run: { invoke: { src: "inner", id: "job" } } },
+  });
+  type Item = { id: string };
+  const worker = jr2Setup({
+    types: {} as { context: { item: Item }; input: { item: Item } },
+    events: [ev("pick_a"), ev("pick_b")],
+    actors: {
+      coderA: agentActorWith(keptPorts(clientsA), coderDefinition),
+      coderB: agentActorWith(keptPorts(clientsB), reviewerDefinition),
+      work: gateWaiter("doneA"),
+      helper,
+    },
+  }).createMachine({
+    id: "worker",
+    context: ({ input }) => ({ item: input.item }),
+    type: "parallel",
+    // Below no Agent's state: the worker's root, on A's child's done event.
+    on: { "xstate.done.actor.job": { actions: answer(({ event }) => `the worker saw ${event.type}`) } },
+    states: {
+      ra: {
+        invoke: { src: "coderA", input: { prompt: "A", endpoint, continue: true } },
+        initial: "rest",
+        states: { rest: {}, waiting: { invoke: { src: "work", id: "job" } } },
+        on: { pick_a: ".waiting" },
+      },
+      rb: {
+        invoke: { src: "coderB", input: { prompt: "B", endpoint, continue: true } },
+        initial: "rest",
+        states: { rest: {}, helping: { invoke: { src: "helper", id: "help" } } },
+        on: { pick_b: ".helping" },
+      },
+    },
+  });
+  const items: Item[] = [{ id: "W-1" }, { id: "W-2" }];
+  const machine = pool(worker, {
+    id: "run",
+    source: source<Item>({
+      next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+        const item = items.find((i) => !input.active.includes(i.id)) ?? null;
+        if (item) items.splice(items.indexOf(item), 1);
+        return { item, open: 0 };
+      }),
+      pollEvery: 60_000,
+    }),
+    itemId: (i) => i.id,
+    cap: 2,
+    itemInput: (i) => ({ item: i }),
+    onDrained: "final",
+  });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "run", machine, provide: () => ({}) });
+  const { runId } = await host.start("run");
+  await waitFor(
+    () =>
+      clientsA.length === 2 && clientsB.length === 2 && [...clientsA, ...clientsB].every((c) => c.admits.length > 0),
+  );
+  const a1 = clientsA[0]!.admits[0]!.instanceId;
+  const b2 = clientsB[1]!.admits[0]!.instanceId;
+  // Worker 1: A's pick starts its `job`. Worker 2: B's pick starts its helper, whose timer — an
+  // event that names no Agent — starts the helper's own `job`.
+  const pa = host.sendToAgent(a1, { type: "pick_a" });
+  assert.equal(pa.outstanding, true);
+  const pb = host.sendToAgent(b2, { type: "pick_b" });
+  assert.equal(pb.outstanding, true);
+  await waitFor(() => host.gates(runId).some((g) => g.gate.endsWith("inner")));
+  const gateA = host.gates(runId).find((g) => g.gate.endsWith("doneA"))!.gate;
+  const polledA = host.awaitDelivery(a1, pa.deliveryId);
+  host.sendToGate(runId, gateA, { type: "go" });
+  assert.deepEqual((await polledA)?.answer, { kind: "answer", value: "the worker saw xstate.done.actor.job" });
+  await host.close();
 });
