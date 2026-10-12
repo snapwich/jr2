@@ -245,7 +245,8 @@ func TestASideBranchMadeInsideASquashedRangePublishesWhatItDescendsFrom(t *testi
 // Effector then lost the Effect, and the restore sends the same start again (the same pin, the same
 // pairs: the push in flight has no settled row). The remote's tip is this squash's exact image, so
 // the push settles `pushed`, `unchanged`, with the sync bundle and its own `squashed` — signed or
-// unsigned. A later push of the Repo Slot, its ledger now holding the push's pair, is pushed too.
+// unsigned. A later push of the Repo Slot, its ledger now holding the push's pair, is pushed too,
+// and so is that push sent again: its exact image's parent is the newest pair's published commit.
 func TestASquashSentAgainOnRestoreIsThisPushsOwnCommit(t *testing.T) {
 	for _, sign := range []bool{true, false} {
 		name := map[bool]string{true: "signed", false: "unsigned"}[sign]
@@ -285,6 +286,18 @@ func TestASquashSentAgainOnRestoreIsThisPushsOwnCommit(t *testing.T) {
 			}
 			if got := remoteGit(t, f, "rev-parse", remoteRef(f)+"^"); got != first.Push.Published {
 				t.Fatalf("the next squash's parent is %s, not the first squash %s", got, first.Push.Published)
+			}
+			// That push, not the slot's first, is sent again on restore: its start carries the
+			// first push's pair, so the exact image's parent is that pair's published commit — not
+			// the merge base with the base, which is main's tip.
+			again = f.runner.Run(context.Background(), next)
+			if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged ||
+				again.Push.Published != out.Push.Published || again.Push.Source != c ||
+				again.Push.Squashed != out.Push.Squashed || again.Push.Bundle == "" {
+				t.Fatalf("next sent again: %+v %+v", again, again.Push)
+			}
+			if remoteRef(f) != out.Push.Published {
+				t.Fatal("the remote's branch moved")
 			}
 		})
 	}
