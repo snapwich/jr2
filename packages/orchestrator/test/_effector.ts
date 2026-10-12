@@ -29,6 +29,8 @@ export class FakeEffector {
   readonly replicas: FakeReplica[] = [];
   /** Every start that started an Effect: id and request, in order. */
   readonly starts: Array<{ id: string; req: StartRequest; replica: string }> = [];
+  /** Every Effect a signed DELETE stopped, by id. */
+  readonly stopped: string[] = [];
   /** Every request, as method and path. */
   readonly calls: Array<{ method: string; path: string; address: string }> = [];
   /** How long a poll holds before it answers `running`. */
@@ -125,6 +127,16 @@ export class FakeEffector {
       }
       const held = replica.effects.get(id);
       if (!held) return answer(404, stateOf(undefined));
+      if (method === "DELETE") {
+        // The stop route: a credentialed command's group is stopped; a push or an http has none.
+        if (held.req.kind !== "command") return answer(405, { error: "POST or GET" });
+        this.stopped.push(id);
+        if (!held.output) {
+          held.output = { outcome: "killed", signal: "SIGTERM", tail: "" };
+          for (const wake of [...held.waiters]) wake();
+        }
+        return answer(200, stateOf(held));
+      }
       if (!held.output) {
         await new Promise<void>((resolve) => {
           const timer = setTimeout(done, this.hold);

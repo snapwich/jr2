@@ -17,6 +17,10 @@
 //             port from the Harness container (ADR-0068: the Effector is down, a process the Agent could
 //             start binds :8082); the step's answer runs the same file-body http, whose start reaches that
 //             process signed and is answered by it unsigned: the Effect settles `unknown`
+//   stop      a credentialed command that sleeps, beside a `cut` Gate: the step's answer exits the
+//             state, the Orchestrator sends the Effector a signed DELETE, and the Effector ends the
+//             command's process group (ADR-0067). The body then waits on its `after` Gate, so the
+//             step reads the Effector container while the pod is live
 //
 // The echo is the suite's (`steps/seed.ts`); `echo-token` is the tier's one Effect secret, which
 // these Effects place in this Workspace's Sandbox Effector (and the `called` workflow's in the
@@ -42,7 +46,7 @@ const SEED = { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" };
 const ECHO = "http://echo.jr2-e2e-seed.svc";
 
 const door = z.object({
-  mode: z.enum(["file-body", "env", "dirty", "key", "takeover"]),
+  mode: z.enum(["file-body", "env", "dirty", "key", "takeover", "stop"]),
   marker: z.string().regex(/^m-[a-z0-9]+$/),
 });
 type Door = z.infer<typeof door>;
@@ -81,6 +85,9 @@ const body = jr2Setup({
     }),
     // The author's argv runs the Agent's committed script.
     leak: command(["sh", "leak.sh"], { env: { TOKEN: token } }),
+    // A credentialed command that runs until its state exits: `sleep 7213` is what the step looks
+    // for among the Effector container's processes.
+    linger: command(["sleep", "7213"], { env: { TOKEN: token } }),
   },
 }).createMachine({
   id: "effected",
@@ -95,6 +102,7 @@ const body = jr2Setup({
           { guard: ({ context }) => context.mode === "env", target: "revealing" },
           { guard: ({ context }) => context.mode === "dirty", target: "editing" },
           { guard: ({ context }) => context.mode === "key", target: "leaking" },
+          { guard: ({ context }) => context.mode === "stop", target: "lingering" },
           { target: "holding" },
         ],
       },
@@ -112,6 +120,15 @@ const body = jr2Setup({
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
+    // The Gate's answer exits the state while the command runs: its stop (ADR-0067).
+    lingering: {
+      invoke: [
+        { src: "linger", onDone: "after" },
+        { src: "gate", id: "cut" },
+      ],
+      on: { go: "after" },
+    },
+    after: { invoke: { src: "gate", id: "after" }, on: { go: "settled" } },
     holding: { invoke: { src: "gate", id: "hold" }, on: { go: "sending" } },
     sending: {
       invoke: {

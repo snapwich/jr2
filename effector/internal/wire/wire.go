@@ -42,6 +42,11 @@ const (
 	OutcomeKilled  = "killed"
 )
 
+// ErrStopped is the cause a credentialed command's run is cancelled with when the Orchestrator
+// sends `DELETE /effects/<id>`: the state that invoked it exited, or the run was cancelled
+// (ADR-0067). The command's process group gets SIGTERM, then SIGKILL past a grace.
+var ErrStopped = errors.New("the Effect was stopped: the state that invoked it exited")
+
 // A pushed squash's `squashed`: the one commit it published is signed, or not.
 const (
 	SquashedSigned   = "signed"

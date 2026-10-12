@@ -11,6 +11,7 @@ package kinds
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/snapwich/jr2/effector/internal/commandkind"
@@ -97,6 +98,11 @@ func (r *Runner) Run(ctx context.Context, req *wire.StartRequest) wire.Output {
 		started := time.Now()
 		if !r.Lock.Acquire(ctx, class, started.Add(timeout)) {
 			g.Settle()
+			if errors.Is(context.Cause(ctx), wire.ErrStopped) {
+				// Stopped while it waited for the other class (ADR-0067): it never ran.
+				return wire.Output{Outcome: wire.OutcomeUnknown,
+					Reason: "its state exited before the command started; it did not run"}
+			}
 			return timedOut(req, class)
 		}
 		defer r.Lock.Release()

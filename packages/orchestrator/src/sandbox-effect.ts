@@ -30,7 +30,10 @@
 //     field beside the push's outcome. When the newest push's sync did not finish, it is run again
 //     before the next push. The push never trusts it.
 //   - D1. When its state exits, the Orchestrator stops polling and records the abort, "outcome
-//     unknown". There is no cancel route: the Effector runs a started Effect to its end.
+//     unknown". A credentialed command is stopped: one signed DELETE on its own path, and the
+//     Effector ends its process group (SIGTERM, then SIGKILL past a grace). A push and a file-body
+//     http are one request each and have no stop: the Effector runs them to their end. A park is
+//     not an exit, and stops nothing.
 
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
@@ -60,6 +63,7 @@ import {
   nodeEffectorTransport,
   type CommandStartRequest,
   type CommandWireOutput,
+  type EffectorPort,
   type EffectState,
   type HttpOutput,
   type HttpStartRequest,
@@ -322,7 +326,14 @@ type KindSpec = {
 
 type StartExtra = { pairs?: readonly Pair[] };
 
-const running = new WeakMap<AnyActorRef, AbortController>();
+/** An Effect's run: its abort, and — for a credentialed command, once its Effector is known — the
+ * port its stop goes through (ADR-0067). */
+type Running = { controller: AbortController; port?: EffectorPort };
+const running = new WeakMap<AnyActorRef, Running>();
+
+/** How long a stop's DELETE may take: the Effector answers once the command's group is gone,
+ * SIGTERM then SIGKILL past its grace, within its poll's hold. */
+const STOP_WAIT_MS = 60_000;
 
 function sandboxLogic<I, O>(
   portFactory: EffectorPortFactory,
@@ -354,7 +365,7 @@ function sandboxLogic<I, O>(
     start: (snapshot, { self, system }) => {
       if (snapshot.status !== "active") return;
       const controller = new AbortController();
-      running.set(self, controller);
+      running.set(self, { controller });
       void drive(self, system, snapshot, spec, portFactory, controller.signal).catch((error: unknown) => {
         if (controller.signal.aborted) return;
         if (self.getSnapshot().status === "active") self.send({ type: "jr2.effect.error", error } as Fault);
@@ -427,6 +438,9 @@ async function drive<I, O>(
     );
   }
   const port = portFactory(target);
+  // A credentialed command's stop goes through this port when its state exits (ADR-0067).
+  const run = running.get(self);
+  if (spec.kind === "command" && run) run.port = port;
   const ctx: KindContext = { ambient, binding, id, slot, signal, mark };
 
   const find = async (): Promise<{ found: EffectState | undefined } | undefined> => {
@@ -569,12 +583,26 @@ function repoField(spec: KindSpec, ambient: AmbientHandles, slot: string): { rep
 }
 
 function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): void {
-  running.get(self)?.abort();
+  const run = running.get(self);
+  run?.controller.abort();
   running.delete(self);
   const binding = boundRun(system);
   if (binding?.hostStopping) return;
   const row = binding?.effectRow?.(effectId);
   if (row?.state !== "intent" || !("sandbox" in row)) return;
+  // A credentialed command is stopped where it runs: one signed DELETE on its own path, and its
+  // Sandbox Effector ends its process group (ADR-0067). A push and a file-body http are one request
+  // each, and have no stop.
+  const port = row.kind === "command" ? run?.port : undefined;
+  port?.stop(effectId, AbortSignal.timeout(STOP_WAIT_MS)).catch((err: unknown) => {
+    binding?.marker?.({
+      kind: "effect",
+      slot: row.slot,
+      effect: effectId,
+      stage: "aborted",
+      text: `the stop did not reach its Sandbox Effector (${err instanceof Error ? err.message : String(err)}); it may run until its timeout`,
+    });
+  });
   binding?.recordEffect?.(
     effectId,
     { state: "aborted", kind: row.kind, slot: row.slot, at: new Date().toISOString() },
@@ -585,7 +613,9 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
     slot: row.slot,
     effect: effectId,
     stage: "aborted",
-    text: "its state exited while it ran: no longer followed; the Sandbox Effector may still run it; outcome unknown",
+    text: port
+      ? "its state exited while it ran: its Sandbox Effector was asked to stop it; outcome unknown"
+      : "its state exited while it ran: no longer followed; the Sandbox Effector may still run it; outcome unknown",
   });
 }
 

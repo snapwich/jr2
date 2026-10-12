@@ -148,7 +148,14 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 - **The wire.** `POST /effects/<id>` starts an Effect and answers at once (202, `state: running`). A second `POST` with
   the same id starts nothing and attaches (200). The answer to a `push` start names the commit it runs against
   (`pinned`), read before the answer, so the Orchestrator writes it to the ledger's intent row. `GET /effects/<id>`
-  long-polls: it holds up to 25 s and answers `running`, or `settled` with the output. A malformed request starts
+  long-polls: it holds up to 25 s and answers `running`, or `settled` with the output. `DELETE /effects/<id>` stops a
+  credentialed command whose state exited, or whose run was cancelled (ADR-0067): the Effector sends SIGTERM to the
+  command's process group, waits 5 s, sends SIGKILL, and runs rule 1's settle loop below; the command's keeper catches
+  SIGTERM and waits on, so the child's own end is still reported. It answers as a poll does, the outcome once settled,
+  and that outcome counts as read. The route is the command's alone: a `push` and an `http` Effect are one request each
+  and end on their own, so a DELETE on one answers 405 as an unknown method does, and a DELETE of an Effect the replica
+  does not hold answers 404 with `state: unknown`, as a poll does. A DELETE is verified like every request: an unsigned
+  one gets 401 and stops nothing, so no process in the Harness container can stop a command. A malformed request starts
   nothing and gets 400 with the reason; a request that names a secret the Effector does not hold is malformed.
   `/healthz` is the kubelet's probe, unsigned, and says only whether the replica takes new Effects. A replica reads at
   most 4 MiB of a request; it cannot verify a longer one, so it refuses it as unsigned. The Orchestrator never sends
@@ -210,7 +217,7 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   (`POD_IP:port`). A poll to a replica that does not hold the Effect gets 404 with `state: unknown` and that replica's
   name. A replica that gets SIGTERM refuses a new Effect (503, `error: stopping`, which starts nothing), finishes the
   Effects in flight, and stays until each outcome was read or `JR2_EFFECTOR_DRAIN_SECONDS` is spent. An outcome nobody
-  reads is dropped 10 minutes after it settled: there is no cancel route.
+  reads is dropped 10 minutes after it settled: the Orchestrator stops polling an Effect whose state exited.
 - **Scrubbing, last, before the answer is signed.** Every string that leaves goes through it: an http body, its headers'
   values and names (a name reaches the Effector case-folded, so it is matched with case folded), error text — and then
   the whole encoded answer. It matches every secret the Effector holds, not only the ones the current Effect names — and
@@ -353,7 +360,7 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 
 - **The log is a contract.** `jr2.effector` lines: `ready placement=… replica=… secrets=<names> targets=N`,
   `action=start effect=… kind=… method=… host=…` (a push logs `host=-`), `action=settle effect=… outcome=… status=…`,
-  `action=drop`, `action=drain`. Never a value, a path, a query, a header or a body.
+  `action=stop effect=…`, `action=drop`, `action=drain`. Never a value, a path, a query, a header or a body.
 
 ## Considered options
 
@@ -400,7 +407,9 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   command's child matched to its scratch, and the agent known from a witness in place of `gpg-agent` that tells the test
   before the launcher runs and, after it exits, which processes the agent left, so an agent that lives less than one
   sample is never missed; a waiter past its timeout settles timed out and never runs late; a child's `TMPDIR` write is
-  invisible to the next child, and `/tmp` refuses both.
+  invisible to the next child, and `/tmp` refuses both; a signed DELETE ends a credentialed command's group, a child
+  that ignores SIGTERM is killed past the grace, an unsigned DELETE stops nothing, and a DELETE on a push or an `http`
+  path answers 405.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built
@@ -408,7 +417,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   during a call, and a rollout during a call, must give one send; and the port takeover — a process in the Harness
   container binds a stopped Sandbox Effector's port — must get a signed start that names a secret and holds no value of
   it, and the Effect must settle `unknown`; and a credentialed command reads its secret from env and from its file,
-  scrubbed, says `dirty` over an uncommitted edit, and a child of its child cannot read the Effector's key.
+  scrubbed, says `dirty` over an uncommitted edit, a child of its child cannot read the Effector's key, and a command
+  whose state exited is gone from the Effector container.
 - **The Orchestrator's Role reads no Secret.** On Secrets it has `create` and `patch` only — it server-side applies its
   own per-Sandbox `<sandbox>-token` and `<sandbox>-effector` — and no `get` and no `list`; on ConfigMaps `create` and
   `patch` (a Sandbox's Custodian files, ADR-0059). A test holds the Role to that list. RBAC cannot pin `create` to a

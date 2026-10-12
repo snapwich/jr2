@@ -39,7 +39,7 @@
 //     replica gets one, the Effect settles `unknown` and is not sent again — no retry changes the
 //     key the answer is checked with, and such a process can make the call fail, never answer it.
 //   - D1. When its state exits, the Orchestrator stops polling and records the abort, "outcome
-//     unknown", on the ledger and the feed. There is no cancel route: the Effector finishes the call
+//     unknown", on the ledger and the feed. An http Effect has no stop route: the Effector finishes the call
 //     and drops an outcome nobody reads.
 
 import { randomUUID } from "node:crypto";
@@ -718,7 +718,7 @@ async function drive<I, O>(
 /**
  * The state that invoked this Effect exited (D1) — or the host is parking the run. Parking keeps
  * the call for the restore to find. An exit stops the polling and records the abort, "outcome
- * unknown": there is no cancel route, so the Effector finishes the call and drops an outcome nobody
+ * unknown": an http Effect has no stop route, so the Effector finishes the call and drops an outcome nobody
  * reads. The Machine never hears it.
  */
 function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): void {

@@ -294,7 +294,7 @@ export interface EffectorTransport {
   /** One request to one replica. Rejects on a transport failure; a status is an answer. */
   send(
     address: string,
-    method: "POST" | "GET",
+    method: "POST" | "GET" | "DELETE",
     path: string,
     headers: Record<string, string>,
     body: string,
@@ -328,6 +328,10 @@ export interface EffectorPort {
   /** Ask every replica: the state of the one that holds it, or undefined when every replica
    * answered that it holds no such Effect. Rejects when a replica could not answer. */
   find(id: string, signal: AbortSignal): Promise<EffectState | undefined>;
+  /** DELETE: stop a credentialed command whose state exited (ADR-0067), on the replica that holds
+   * it — its state once stopped, or undefined when no replica holds it. Sent once to each replica,
+   * signed like every request. A push and an http Effect have no stop. */
+  stop(id: string, signal: AbortSignal): Promise<EffectState | undefined>;
 }
 
 /** The signed client over a transport. `key` is the placement's (`effectorKey`). */
@@ -341,7 +345,7 @@ export function createEffectorClient(opts: {
 
   const exchange = async (
     address: string,
-    method: "POST" | "GET",
+    method: "POST" | "GET" | "DELETE",
     id: string,
     body: string,
     signal: AbortSignal,
@@ -419,6 +423,15 @@ export function createEffectorClient(opts: {
       const addresses = await transport.replicas(signal);
       const states = await Promise.all(addresses.map((address) => ask(address, id, signal)));
       return states.find((s) => s.state !== "unknown");
+    },
+    stop: async (id, signal) => {
+      for (const address of await transport.replicas(signal)) {
+        const answer = await exchange(address, "DELETE", id, "", signal);
+        if (answer.status === 404) continue;
+        if (answer.status === 200) return state(answer, "a stop");
+        throw new Error(`the Effector at ${address} answered a stop with ${answer.status}: ${refusal(answer)}`);
+      }
+      return undefined;
     },
   };
 }

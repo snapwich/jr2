@@ -1,14 +1,18 @@
 // Package server is the Effector's wire (ADR-0068): `POST /effects/<id>` starts an Effect and
 // answers at once; a second POST with the same id starts nothing and attaches to the one that
-// runs. `GET /effects/<id>` long-polls for its outcome. Every request is verified before anything
-// else — an unsigned, mis-signed or replayed request gets 401 and an empty body, so it learns
-// nothing, not even whether an Effect exists — and every answer is scrubbed, then signed.
+// runs. `GET /effects/<id>` long-polls for its outcome. `DELETE /effects/<id>` stops a credentialed
+// command whose state exited (ADR-0067): its process group gets SIGTERM, then SIGKILL past a
+// grace, and the answer is its outcome, as a poll's; a push and an http Effect are one request
+// each and end on their own, so a DELETE on one answers as an unknown method does. Every request
+// is verified before anything else — an unsigned, mis-signed or replayed request gets 401 and an
+// empty body, so it learns nothing, not even whether an Effect exists — and every answer is
+// scrubbed, then signed.
 //
 // Replica-aware: an answer names the replica (its pod) that holds the Effect, and a poll to
 // a replica that does not hold it says so (`state: unknown`, with that replica's name). A replica
 // that is stopping refuses new Effects (503), finishes the ones in flight, and stays up until each
-// outcome was read or its drain time is spent. A result nobody polls is dropped after a while: there
-// is no cancel route, and the Orchestrator stops polling when the state that asked has exited.
+// outcome was read or its drain time is spent. A result nobody polls is dropped after a while: the
+// Orchestrator stops polling when the state that asked has exited.
 package server
 
 import (
@@ -63,6 +67,8 @@ type effect struct {
 	output             *wire.Output
 	settledAt          time.Time
 	read               bool
+	// stop cancels the run with wire.ErrStopped: a credentialed command's stop route.
+	stop context.CancelCauseFunc
 }
 
 // Server is one replica's Effects.
@@ -122,9 +128,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.start(r.Context(), reply, id, body)
 	case http.MethodGet:
 		s.poll(r.Context(), reply, id)
+	case http.MethodDelete:
+		s.stop(r.Context(), reply, id)
 	default:
 		reply(http.StatusMethodNotAllowed, wire.Refusal{Error: "POST or GET"})
 	}
+}
+
+// stop is the stop route: a credentialed command's run is cancelled with wire.ErrStopped, and the
+// answer is a poll's — its outcome once it settled, within the hold. Its outcome counts as read:
+// nobody polls a stopped Effect. A push or an http Effect has no stop: one request each, they end
+// on their own, and a DELETE on one answers as an unknown method does.
+func (s *Server) stop(ctx context.Context, reply func(int, any), id string) {
+	s.mu.Lock()
+	e, ok := s.effects[id]
+	s.mu.Unlock()
+	if !ok {
+		reply(http.StatusNotFound, wire.EffectState{Effect: id, Replica: s.opts.Replica, State: wire.StateUnknown})
+		return
+	}
+	if e.kind != wire.KindCommand {
+		reply(http.StatusMethodNotAllowed, wire.Refusal{Error: "POST or GET"})
+		return
+	}
+	s.opts.Log.Printf("jr2.effector action=stop effect=%s", id)
+	e.stop(wire.ErrStopped)
+	s.poll(ctx, reply, id)
 }
 
 // reply scrubs the answer's bytes, signs them, and writes them.
@@ -172,7 +201,10 @@ func (s *Server) start(_ context.Context, reply func(int, any), id string, body 
 		reply(http.StatusServiceUnavailable, wire.Refusal{Error: "stopping", Replica: &s.opts.Replica})
 		return
 	}
-	e := &effect{kind: req.Kind, method: req.Method, host: hostOf(&req), done: make(chan struct{})}
+	// Not the request's context: the Effect runs to its outcome whoever is listening, until it
+	// settles or a stop cancels it.
+	run, stop := context.WithCancelCause(context.Background())
+	e := &effect{kind: req.Kind, method: req.Method, host: hostOf(&req), done: make(chan struct{}), stop: stop}
 	s.effects[id] = e
 	// Read before the answer, so the Orchestrator writes the commit to the intent row: a restore
 	// repeats only that commit.
@@ -182,8 +214,8 @@ func (s *Server) start(_ context.Context, reply func(int, any), id string, body 
 
 	s.opts.Log.Printf("jr2.effector action=start effect=%s kind=%s method=%s host=%s", id, e.kind, e.method, e.host)
 	go func() {
-		// Not the request's context: the Effect runs to its outcome whoever is listening.
-		out := s.opts.Runner.Run(context.Background(), &req)
+		out := s.opts.Runner.Run(run, &req)
+		stop(nil)
 		s.mu.Lock()
 		e.output = &out
 		e.settledAt = time.Now()

@@ -252,6 +252,17 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "effected" workflow in mode "key" detached
       Then the credentialed command's child was denied the Effector's key, and the answer holds no form of it
 
+    Scenario: a state that exits stops its credentialed command, and its process is gone from the Effector
+      ADR-0067, ADR-0068. The credentialed command sleeps beside a Gate. The Gate's answer exits the
+      state; the Orchestrator sends the Effector a signed DELETE on the Effect's own path, and the
+      Effector ends the command's process group. The body then waits on its next Gate, so the pod
+      is live while the step reads the Effector container's processes.
+      Given the kind instance is serving
+      When I start the "effected" workflow in mode "stop" detached
+      Then the credentialed command is running in the Sandbox Effector
+      When the state that runs the credentialed command exits
+      Then the credentialed command's process is gone from the Sandbox Effector
+
     Scenario: a process that takes the Effector's port gets a signed start it cannot answer, and the Effect fails closed
       ADR-0068. The body holds on its Gate; the step starts a process in the Harness container, as the
       Agent could, that binds :8082 the moment it is free, then stops the Effector, whose

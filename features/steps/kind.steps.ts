@@ -2893,6 +2893,68 @@ Then(
   },
 );
 
+// --- a stopped state stops its credentialed command (ADR-0067) --------------------------------
+
+/** The processes of the Sandbox Effector container whose argv is the `effected` workflow's
+ * `sleep 7213`. The pattern is `721[3]`, so the grep that reads `/proc` never matches itself. */
+async function lingering(world: E2EWorld, pod: string): Promise<string[]> {
+  const out = await kubectl(world, [
+    "exec",
+    `pod/${pod}`,
+    "-c",
+    "effector",
+    "--",
+    "sh",
+    "-c",
+    "grep -l '721[3]' /proc/[0-9]*/cmdline 2>/dev/null || true",
+  ]);
+  return out.split("\n").filter((line) => line.trim() !== "");
+}
+
+/** Waits until the run's open Gate is the named one: the state before it has exited. */
+async function gateOpen(world: E2EWorld, gate: string): Promise<void> {
+  let last: WsStatus | undefined;
+  for (let i = 0; i < 240; i++) {
+    last = await wsStatus(world);
+    if ((last.gates ?? []).some((g) => g.gate === gate)) return;
+    await sleep(500);
+  }
+  throw new Error(`the run never opened Gate ${gate} (last: ${JSON.stringify(last)})`);
+}
+
+Then("the credentialed command is running in the Sandbox Effector", async function (this: E2EWorld): Promise<void> {
+  await gateOpen(this, "cut");
+  const pod = await sandboxPodOf(this);
+  for (let i = 0; i < 120; i++) {
+    if ((await lingering(this, pod)).length > 0) return;
+    await sleep(500);
+  }
+  throw new Error("the credentialed command never ran in the Sandbox Effector");
+});
+
+When("the state that runs the credentialed command exits", async function (this: E2EWorld): Promise<void> {
+  const r = await this.runCli(["send", this.runId!, "--gate", "cut", "--event", "go"]);
+  assert.equal(r.code, 0, `jr2 send failed: ${r.stderr}`);
+  await gateOpen(this, "after");
+});
+
+Then(
+  "the credentialed command's process is gone from the Sandbox Effector",
+  async function (this: E2EWorld): Promise<void> {
+    const pod = await sandboxPodOf(this);
+    // SIGTERM ends `sleep` at once; the grace before SIGKILL is 5 s.
+    let left: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      left = await lingering(this, pod);
+      if (left.length === 0) break;
+      await sleep(500);
+    }
+    assert.deepEqual(left, [], "the stopped command still runs in the Sandbox Effector");
+    const r = await this.runCli(["send", this.runId!, "--gate", "after", "--event", "go"]);
+    assert.equal(r.code, 0, `jr2 send failed: ${r.stderr}`);
+  },
+);
+
 // --- a GPG-signed push beside a credentialed command (ADR-0068) -------------------------------
 
 /** An armored GPG secret key with no passphrase, made on the host for this scenario alone. */

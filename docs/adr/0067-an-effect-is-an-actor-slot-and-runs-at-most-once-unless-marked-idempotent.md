@@ -267,18 +267,25 @@ the credentialed `command` — runs there too, its child confined (below).
   stopping (it starts nothing then), is sent to another; any other failure asks every replica first, and the restore
   rule above decides when none holds it. A replica that stops answering for an Effect it was followed on — gone, or
   restarted — is the same case.
-- **D1: an Effect is stopped when its state exits.** The exec's group is killed. The kill is sent again until the
-  Harness keeps it, for at most the command's timeout (past it the Harness's own timer has ended the group); a kill that
-  never reaches it is said on the feed. A fast exit can send the kill while the start is still on the wire: the Harness
-  keeps a kill of an id it does not know, and the start that arrives after it runs nothing. The abort goes to the ledger
-  (`aborted`, saved with the transition that exited the state — a cancel's final save carries it) and the feed, "outcome
-  unknown"; the Machine does not get it — the state that asked has left. An `http` Effect has no cancel route: its
-  state's exit stops the polling, and the abort goes to the ledger and the feed the same way, "the Effector may still
-  send it; outcome unknown". The Effector finishes the call and drops an outcome nobody reads. The Sandbox kinds have no
-  cancel route either: a file-body `http` and a `push` that a state exit cut run on in the Sandbox Effector to their
-  end, and the abort says "the Sandbox Effector may still run it; outcome unknown". Two stops are not exits: the host
-  parking the run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor). The Effect then
-  re-attaches on restore, or settles `unknown`. There is no "finally": cleanup is a state.
+- **D1: an Effect is stopped when its state exits.** A `command` that names no secret: the exec's group is killed. The
+  kill is sent again until the Harness keeps it, for at most the command's timeout (past it the Harness's own timer has
+  ended the group); a kill that never reaches it is said on the feed. A fast exit can send the kill while the start is
+  still on the wire: the Harness keeps a kill of an id it does not know, and the start that arrives after it runs
+  nothing. A credentialed `command`: when its actor stops before its process ends — the state exits, or the run is
+  cancelled — the Orchestrator sends one `DELETE /effects/<id>` on the Effect's own path to its Sandbox Effector, signed
+  like every Effector request (ADR-0068), so nothing in the Harness container can send it. The Effector sends SIGTERM to
+  the command's process group, waits 5 s, then sends SIGKILL, and runs its settle loop (ADR-0068's subreaper rule), so
+  no process the command started outlives it; the Effect settles with the end that signal gave — `killed` with the
+  signal, or `exited` with the code of a program that caught SIGTERM and exited. A stop that does not reach the Effector
+  is said on the feed. The abort goes to the ledger (`aborted`, saved with the transition that exited the state — a
+  cancel's final save carries it) and the feed, "outcome unknown"; the Machine does not get it — the state that asked
+  has left. An `http` Effect has no stop route: its state's exit stops the polling, and the abort goes to the ledger and
+  the feed the same way, "the Effector may still send it; outcome unknown". The Effector finishes the call and drops an
+  outcome nobody reads. A file-body `http` and a `push` have none either: each is one request that ends on its own, and
+  one a state exit cut runs on in the Sandbox Effector to its end; the abort says "the Sandbox Effector may still run
+  it; outcome unknown". Two stops are not exits: the host parking the run (`hostStopping`, ADR-0024) and an Orchestrator
+  shutdown (it stops no actor). Neither stops a command; the Effect then re-attaches on restore, or settles `unknown`.
+  There is no "finally": cleanup is a state.
 - **Must-finish is a pattern.** An Effect that must not be cut goes in its own state, whose only exit is its `onDone`,
   and that state handles the ancestor's events itself.
 - **No fire-and-forget form.** Two patterns keep D1: an Effect in its own state; or a second invoke with no `onDone`
@@ -339,8 +346,10 @@ the credentialed `command` — runs there too, its child confined (below).
   writer's copy of the squash is `rejected`, never synced. The committer name and email are text anyone can write, so an
   unsigned squash's own commit is told from a copy by its content and that text alone; a signed one's also by a
   signature that only the slot's key makes.
-- A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (its wire is `POST` and `GET`,
-  ADR-0068), so D1 holds for the Machine — it does not get the output — and not for the outside world.
+- A state exit stops a credentialed command where it runs, and not a file-body `http` or a `push`: the Effector's stop
+  route is the command's alone (ADR-0068), so for those two D1 holds for the Machine — it does not get the output — and
+  not for the outside world. The stop is sent once: a DELETE that reaches the Effector before the command's start (a
+  fast exit while the start is still on the wire) finds no Effect, and the command then runs to its end or its timeout.
 - The Orchestrator reaches a Sandbox Effector by a headless Service the provision writes beside its key, owned by the
   Sandbox CR (`fx-` in place of the Sandbox name's `ws-`): its name resolves to the pod's own address, the one each
   request is signed for (ADR-0068), and it publishes that address while the pod is not ready, so a restore can ask the
@@ -350,4 +359,5 @@ the credentialed `command` — runs there too, its child confined (below).
   signed over ssh and verify the published commit with the signing key as the one allowed signer, read the Agent's
   branch and Worktree after the sync, and push again after the Agent amended the pushed commit (`diverged`). A token
   push over https has no remote there. Its credentialed-command scenarios read the secret from env and from its file,
-  scrubbed, say `dirty` over an uncommitted edit, and show a child of the child denied the Effector's key.
+  scrubbed, say `dirty` over an uncommitted edit, show a child of the child denied the Effector's key, and show a
+  command whose state exited gone from the Effector container.

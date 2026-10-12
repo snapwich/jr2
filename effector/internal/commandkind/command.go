@@ -21,6 +21,8 @@
 // registered with its Effect's process groups, and is the subreaper of what the child starts
 // (package reaper): a daemon the child starts is its Effect's while that Effect is live, and when
 // the Effect settles, no descendant of it is left.
+// A stop (`DELETE /effects/<id>`: its state exited) cancels the run with wire.ErrStopped: the
+// group gets SIGTERM, then SIGKILL past StopGrace, and the outcome is the end that gave.
 // The scratch is removed once the outcome is read. Every outcome is output: `exited`, `timeout`,
 // `killed`, `unknown`.
 package commandkind
@@ -203,6 +205,9 @@ func realPath(p string) string {
 // to its tail: a secret that straddles the cut was replaced whole before the cut could split it.
 func execute(ctx context.Context, confiner string, rules confine.Rules, argv []string, dir string, env []string,
 	path string, timeout time.Duration, tailLen int, scrubber *scrub.Scrubber) wire.Output {
+	if errors.Is(context.Cause(ctx), wire.ErrStopped) {
+		return unknown("its state exited before the command started")
+	}
 	program := argv[0]
 	if !strings.Contains(program, "/") {
 		// Looked up in the PATH the child is given.
@@ -244,9 +249,12 @@ func execute(ctx context.Context, confiner string, rules confine.Rules, argv []s
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		err = <-done
 	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
-		return wire.Output{Outcome: wire.OutcomeUnknown, Reason: "the Effector stopped while it ran"}
+		if !errors.Is(context.Cause(ctx), wire.ErrStopped) {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			<-done
+			return wire.Output{Outcome: wire.OutcomeUnknown, Reason: "the Effector stopped while it ran"}
+		}
+		err = stop(cmd.Process.Pid, done)
 	}
 	// What the group left behind goes too.
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -275,6 +283,26 @@ func execute(ctx context.Context, confiner string, rules confine.Rules, argv []s
 	}
 	code := ws.ExitStatus()
 	return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Code: &code, Tail: tail}}
+}
+
+// StopGrace is how long a stopped command's group has, after SIGTERM, before SIGKILL.
+const StopGrace = 5 * time.Second
+
+// stop ends a command whose state exited (the stop route, ADR-0067): SIGTERM to the keeper's
+// process group — the child's to answer; the keeper ignores it and waits, so the child's own end is
+// still reported — then SIGKILL to the group if it still runs after StopGrace. It answers the
+// keeper's end; the Effect's settle then ends whatever left the group.
+func stop(pgid int, done <-chan error) error {
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	grace := time.NewTimer(StopGrace)
+	defer grace.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-grace.C:
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		return <-done
+	}
 }
 
 var signalNames = map[syscall.Signal]string{

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -48,6 +49,10 @@ func Keep(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "jr2: the command was not run: no subreaper: %v\n", err)
 		return 126
 	}
+	// A stop (ADR-0067) sends SIGTERM to the keeper's whole group: it is the child's to answer.
+	// The keeper catches it and waits on, so the child's own end is still reported; a SIGKILL past
+	// the grace ends both. Caught, not ignored: an ignored signal would stay ignored in the child.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGTERM)
 	cmd := &exec.Cmd{Path: args[1], Args: args[2:], Env: os.Environ(),
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
 	if err := cmd.Start(); err != nil {
