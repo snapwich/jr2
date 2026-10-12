@@ -20,10 +20,13 @@
 // Agent's own. When it is not (the sync did not run), a read-only fallback pairs the published
 // commits with the Agent's: `pair` from the ledger's pairs — every push of the Repo Slot that
 // published, which the start carries — then `cherry` by patch-id, author line and message. A
-// squash the remote already holds as this push's exact image is this push's own commit (a restore
-// that sends it again). On every push, before anything is signed, the same map runs over the new
-// commits (ADR-0067): a commit whose published twin is a faithful image of it — its tree, its
-// parents as mapped — is replaced by that twin, and is never signed again. Nothing unsigned leaves:
+// squash the remote already holds as this push's exact image — its committer jr2's squash
+// committer, and with `sign` a signature the slot's key verifies — is this push's own commit (a
+// restore that sends it again); the same content under another committer, or with no verifying
+// signature, is not jr2's, and the push is `rejected`. On every push, before anything is signed,
+// the same map runs over the new commits (ADR-0067): a commit whose published twin is a faithful
+// image of it — its tree, its parents as mapped — is replaced by that twin, and is never signed
+// again. Nothing unsigned leaves:
 // every commit the remote lacks must be one this call signed. Author line and date stay the
 // Agent's; the committer is the entry's name and email, at this Effector's clock.
 package pushkind
@@ -494,7 +497,7 @@ func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signe
 		}
 	}
 	mapped := map[string]string{}
-	from, via, done, out := c.rangeOf(ctx, sha, pub, base, mapped)
+	from, via, done, out := c.rangeOf(ctx, sha, pub, base, signer, mapped)
 	if done != nil || out != nil {
 		return done, out
 	}
@@ -598,10 +601,11 @@ func (c *call) bundleOf(ctx context.Context, target, sha string) (string, *wire.
 
 // rangeOf finds what to sign: the commits after `from`, and which Agent commit stands for the
 // published tip (written into mapped) — by ancestry, the newest pair whose published commit is the
-// remote's tip, or cherry; a squash whose exact image the remote holds is this push's own commit;
-// none of them is `diverged`, with or without `force`. A non-nil signed or output ends the push
-// there.
-func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
+// remote's tip, or cherry; a squash whose exact image the remote holds is this push's own commit,
+// and one whose content the remote holds under another committer or with no verifying signature
+// is `rejected`; none of them is `diverged`, with or without `force`. A non-nil signed or output
+// ends the push there.
+func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string, signer *signerKey,
 	mapped map[string]string) ([]string, string, *signed, *wire.Output) {
 	repo := c.repo
 	var from []string
@@ -620,8 +624,13 @@ func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 			}
 			mapped[source] = pub
 			from, via = []string{source}, "pair"
-		case c.ownSquash(ctx, pub, sha, base):
-			// This push, sent before: the remote holds its squash (ADR-0067). It publishes nothing new.
+		case c.squashImage(ctx, pub, sha, base):
+			// This push, sent before, when the remote's squash is jr2's own (ADR-0067): it publishes
+			// nothing new. Otherwise another writer made it, and nothing is pushed.
+			if why := c.notOwn(ctx, pub, signer); why != "" {
+				return nil, "", nil, ptr(rejected("push", "the remote's branch holds this squash's tree, parent and "+
+					"message in a commit jr2 did not make: "+why+"; nothing was pushed", ""))
+			}
 			return nil, "", &signed{target: pub, own: true}, nil
 		default:
 			x, ok := c.cherry(ctx, pub, sha, base)
@@ -644,13 +653,11 @@ func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 	return from, via, nil, nil
 }
 
-// ownSquash says whether the published tip pub is this squash's exact image of the Agent's sha:
-// the source's tree, author line and encoding, the Machine's message, and as its one parent the
-// newest pair's published commit — on a first push, the merge base with the base — as sign makes
-// it. A full comparison of those fields, not a pairing. The committer line and the signature are
-// not compared: a tip that matches under another committer, or unsigned, is taken as this push's
-// own (a limit ADR-0067 names).
-func (c *call) ownSquash(ctx context.Context, pub, sha string, base []string) bool {
+// squashImage says whether the published tip pub holds this squash of the Agent's sha: the
+// source's tree, author line and encoding, the Machine's message, and as its one parent the newest
+// pair's published commit — on a first push, the merge base with the base — as sign makes it. A
+// full comparison of those fields, not a pairing; notOwn then says whether jr2 made it.
+func (c *call) squashImage(ctx context.Context, pub, sha string, base []string) bool {
 	if c.spec.Squash == nil {
 		return false
 	}
@@ -667,6 +674,71 @@ func (c *call) ownSquash(ctx context.Context, pub, sha string, base []string) bo
 	}
 	return tip.tree == source.tree && tip.author == source.author && tip.encoding == source.encoding &&
 		tip.message == squashMessage(*c.spec.Squash) && slices.Equal(tip.parents, nonEmpty(parent))
+}
+
+// notOwn says why the published tip pub, which holds this squash, is not jr2's own, or "": its
+// committer's name and email are not jr2's squash committer's, or — with `sign` — no signature on
+// it verifies against the slot's signing key (ADR-0067). Dates and signature bytes are not
+// compared: a restore sends the push again at a later clock, and a signature need not be
+// deterministic.
+func (c *call) notOwn(ctx context.Context, pub string, signer *signerKey) string {
+	tip, err := c.read(ctx, pub)
+	if err != nil {
+		return "it could not be read"
+	}
+	name, email := c.committer(c.spec.Sign)
+	if tip.committer != name+" <"+email+">" {
+		return "its committer is not jr2's squash committer"
+	}
+	if signer == nil {
+		return ""
+	}
+	payload, sig, err := c.signatureOf(ctx, pub)
+	switch {
+	case err != nil || sig == "":
+		return "it carries no signature, and the push signs"
+	case !signer.verifies(ctx, payload, sig):
+		return "its signature does not verify against the slot's signing key"
+	}
+	return ""
+}
+
+// committer is the name and email jr2 commits with: a signed commit's are the signer's; an
+// unsigned squash's the entry's committer, or the signer's identity when the entry names no
+// committer (ADR-0067).
+func (c *call) committer(signed bool) (string, string) {
+	if signed || c.entry.Committer == nil {
+		return c.entry.Sign.Name, c.entry.Sign.Email
+	}
+	return c.entry.Committer.Name, c.entry.Committer.Email
+}
+
+// signatureOf answers commit id's signed payload — the object with its gpgsig header taken out —
+// and that header's signature, or "" when it carries none.
+func (c *call) signatureOf(ctx context.Context, id string) (string, string, error) {
+	raw, err := c.repo.Git(ctx, nil, "cat-file", "commit", id)
+	if err != nil {
+		return "", "", fmt.Errorf("commit %s could not be read", short(id))
+	}
+	head, msg, _ := strings.Cut(string(raw), "\n\n")
+	var kept, sig []string
+	inSig := false
+	for line := range strings.SplitSeq(head, "\n") {
+		if rest, ok := strings.CutPrefix(line, "gpgsig "); ok {
+			inSig, sig = true, append(sig, rest)
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, " "); ok && inSig {
+			sig = append(sig, rest)
+			continue
+		}
+		inSig = false
+		kept = append(kept, line)
+	}
+	if len(sig) == 0 {
+		return "", "", nil
+	}
+	return strings.Join(kept, "\n") + "\n\n" + msg, strings.Join(sig, "\n") + "\n", nil
 }
 
 // squashMessage is the squashed commit's message: the Machine's, ending in a newline.
@@ -693,7 +765,9 @@ func short(sha string) string {
 
 type commit struct {
 	tree, author, encoding, message string
-	parents                         []string
+	// committer is the committer line's name and email, without its date.
+	committer string
+	parents   []string
 }
 
 // read parses one commit object: its tree, parents, author line (the Agent's, kept whole: author
@@ -714,6 +788,10 @@ func (c *call) read(ctx context.Context, id string) (*commit, error) {
 			out.parents = append(out.parents, value)
 		case "author":
 			out.author = value
+		case "committer":
+			if who, _, ok := strings.Cut(value, "> "); ok {
+				out.committer = who + ">"
+			}
 		case "encoding":
 			out.encoding = value
 		}
@@ -738,14 +816,7 @@ func (c *call) write(ctx context.Context, s *signerKey, tree string, parents []s
 		now = c.r.Now
 	}
 	fmt.Fprintf(&body, "author %s\n", author)
-	// A signed commit's committer is the signer's; an unsigned squash's the entry's committer, or
-	// the signer's identity when the entry names no committer (ADR-0067).
-	name, email := "", ""
-	if s != nil || c.entry.Committer == nil {
-		name, email = c.entry.Sign.Name, c.entry.Sign.Email
-	} else {
-		name, email = c.entry.Committer.Name, c.entry.Committer.Email
-	}
+	name, email := c.committer(s != nil)
 	fmt.Fprintf(&body, "committer %s <%s> %d +0000\n", name, email, now().Unix())
 	if encoding != "" {
 		fmt.Fprintf(&body, "encoding %s\n", encoding)
@@ -822,6 +893,37 @@ func (k *signerKey) sign(ctx context.Context, payload string) (string, error) {
 		return "", errors.New("the signing key did not sign")
 	}
 	return string(out), nil
+}
+
+// verifies says whether sig is a signature of payload by this signing key: `ssh-keygen -Y verify`
+// with the key's public half as the one allowed signer, or `gpg --verify` against the call's
+// keyring, which holds this key alone and must report a valid signature.
+func (k *signerKey) verifies(ctx context.Context, payload, sig string) bool {
+	dir := k.c.repo.Work
+	sigFile := filepath.Join(dir, "restore.sig")
+	if os.WriteFile(sigFile, []byte(sig), 0o600) != nil {
+		return false
+	}
+	if k.ssh != "" {
+		pub, err := k.c.tool(ctx, nil, "ssh-keygen", "-y", "-f", k.ssh)
+		if err != nil {
+			return false
+		}
+		allowed := filepath.Join(dir, "allowed_signers")
+		if os.WriteFile(allowed, []byte("jr2 "+strings.TrimSpace(string(pub))+"\n"), 0o600) != nil {
+			return false
+		}
+		_, err = k.c.tool(ctx, strings.NewReader(payload), "ssh-keygen", "-Y", "verify", "-f", allowed, "-I", "jr2",
+			"-n", "git", "-s", sigFile)
+		return err == nil
+	}
+	payloadFile := filepath.Join(dir, "restore.payload")
+	if os.WriteFile(payloadFile, []byte(payload), 0o600) != nil {
+		return false
+	}
+	out, err := k.c.tool(ctx, nil, "gpg", "--batch", "--no-tty", "--no-autostart", "--homedir", k.gnupg,
+		"--status-fd", "1", "--verify", sigFile, payloadFile)
+	return err == nil && bytes.Contains(out, []byte("[GNUPG:] VALIDSIG "))
 }
 
 // startAgent starts the gpg-agent of this call's GPG home. It runs with `--no-detach`: it forks
