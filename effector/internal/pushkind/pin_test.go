@@ -244,8 +244,8 @@ func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
 
 // ADR-0067: `squashed` says what the published commit is, not what this push's options ask for.
 // A push that publishes nothing new maps the published tip, which an earlier push of the Repo Slot
-// made, maybe with other options: the ledger's last push carries its own `squashed` beside its
-// pair, and the output names that. Two such cases: an unsigned squash whose sync did not finish,
+// made, maybe with other options: that push's pair carries its own `squashed`, and the output names
+// that. Two such cases: an unsigned squash whose sync did not finish,
 // then a signed push of the same tip — the published commit is an unsigned squash, never "signed
 // copies"; and signed copies whose sync did not finish, then a squash of the same tip — the
 // published commits are signed copies, never "one squashed commit". A squash this push makes is

@@ -187,7 +187,7 @@ test("a sync that never unbundled runs again before the next push with the bundl
   );
 });
 
-test("the tail rule for a push: the bundle stays while the sync is busy or not-synced, and goes once a sync finished", () => {
+test("the tail rule for a push: the bundle stays while the sync is busy or not-synced, and goes once a sync finished; the pair and its `squashed` stay whole", () => {
   // Each row is the newest push of its own Repo Slot.
   const row = (sync: string): EffectRow => ({
     state: "settled",
@@ -195,7 +195,15 @@ test("the tail rule for a push: the bundle stays while the sync is busy or not-s
     slot: "publish",
     sandbox: "ws-1",
     repo: `app-${sync}`,
-    output: { outcome: "pushed", published: B, source: A, bundle: "QlVORExF", detail: "git said", sync },
+    output: {
+      outcome: "pushed",
+      published: B,
+      source: A,
+      squashed: "signed",
+      bundle: "QlVORExF",
+      detail: "git said",
+      sync,
+    },
     at: "t",
   });
   const effects: Record<string, EffectRow> = {
@@ -213,7 +221,12 @@ test("the tail rule for a push: the bundle stays while the sync is busy or not-s
   for (const id of Object.keys(effects)) {
     assert.equal("detail" in out(id), false, "git's words are a tail");
     assert.equal(out(id).published, B, "the pair stays whole");
+    assert.equal(out(id).source, A, "the pair stays whole");
+    assert.equal(out(id).squashed, "signed", "the pair stays whole");
+    assert.equal(out(id).sync !== undefined, true, "the sync's answer stays");
   }
+  // Every later push of the Repo Slot sends the saved row as one of its pairs.
+  assert.deepEqual(pushPairsOf(effects, "ws-1", "app-synced"), [{ published: B, source: A, squashed: "signed" }]);
 });
 
 test("only the newest push of a Repo Slot keeps its bundle: three pushes whose syncs never finish leave one bundle in the saved ledger", async () => {

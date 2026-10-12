@@ -207,8 +207,8 @@ export type EffectRow =
       at: string;
     }
   /** `sandbox` and `repo`: the Workspace and the Repo Slot an Effect of the Sandbox Effector ran on
-   * — a push's next push reads its pair from the last row of its own Workspace and Repo Slot (one
-   * branch, one remote), and runs that row's unfinished sync again in that slot's Worktree. */
+   * — every later push of its own Workspace and Repo Slot (one branch, one remote) sends its pair,
+   * and the newest push's unfinished sync runs again in that slot's Worktree. */
   | {
       state: "settled";
       kind: EffectParts["kind"];
@@ -261,8 +261,9 @@ export function dropSavedTails(effects: Record<string, EffectRow>, persisted: un
 const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   command: ["tail"],
   http: ["body", "headers"],
-  // A push row keeps its sha and pair data whole (`published`, `source`) and its sync's answer:
-  // the next push reads them. The sync's bundle and git's words are its tail.
+  // A push row keeps its pair whole (`published`, `source`, `squashed`) and its sync's answer:
+  // every later push of its Repo Slot sends the pair (`pushPairsOf`), and the newest push's sync
+  // runs again when it did not finish. The sync's bundle and git's words are its tail.
   push: ["bundle", "detail"],
 };
 
