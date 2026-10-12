@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/snapwich/jr2/effector/internal/gitclean"
 	"github.com/snapwich/jr2/effector/internal/gittest"
 )
 
@@ -230,20 +233,224 @@ func requireTool(t *testing.T, name string) {
 	}
 }
 
-// overlap samples the host's processes while a run goes on, and records whether a gpg-agent of
-// the Effector's scratch and a child of the named script were ever alive at one time. Both are
-// matched to this Effector's scratch — the agent by its homedir in its argv, the child by its
-// working directory, the command's tree in its Effect's scratch — so another Effector on the host
-// (a second copy of the suite) is never sampled as either.
-type overlap struct {
-	mu                 sync.Mutex
-	agent, child, both bool
-	stop               chan struct{}
-	done               chan struct{}
+// The overlap tests must see every gpg-agent the push starts, however short its life: since the
+// agent is ready when its launcher exits (ADR-0068), it can live less than one scan of /proc, and a
+// sampler would then miss it. So the Effector's gpg-agent is a witness — this test binary — that
+// tells the test before it starts the real launcher and, once the launcher has exited, which
+// processes the agent left in its group, and waits for the test's answer each time. Until the test
+// has answered, nothing the push does next can happen: the agent's whole life is inside the time
+// the test counts it live, with no scan between.
+
+// agentWitness is the toolset's gpg-agent: `agent-witness <socket> <real gpg-agent> args...`.
+func agentWitness(args []string) int {
+	if len(args) < 2 {
+		return 2
+	}
+	sock, real := args[0], args[1]
+	if !tell(sock, "starting") {
+		return 1
+	}
+	cmd := exec.Command(real, args[2:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	code := 0
+	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			return 1
+		}
+		code = exit.ExitCode()
+	}
+	// The agent keeps this process's group (it runs with --no-detach): every live member of the
+	// group but this one is the agent.
+	var left []string
+	for _, p := range procs() {
+		if p.group == os.Getpid() && p.pid != os.Getpid() {
+			left = append(left, fmt.Sprintf("%d:%s", p.pid, p.start))
+		}
+	}
+	if !tell(sock, strings.TrimSpace("left "+strings.Join(left, " "))) {
+		return 1
+	}
+	return code
 }
 
-func watch(scratch, script string) *overlap {
-	o := &overlap{stop: make(chan struct{}), done: make(chan struct{})}
+// tell sends the test one line and waits for its answer.
+func tell(sock, line string) bool {
+	conn, err := net.DialTimeout("unix", sock, 10*time.Second)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte(line + "\n")); err != nil {
+		return false
+	}
+	ack := make([]byte, 3)
+	_, err = io.ReadFull(conn, ack)
+	return err == nil
+}
+
+// proc is one live process: its id, process group, and start time (which tells it from a later
+// process given the same id).
+type proc struct {
+	pid, group int
+	start      string
+}
+
+func procs() []proc {
+	var out []proc
+	entries, _ := os.ReadDir("/proc")
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		if p, ok := procOf(pid); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// procOf reads a process from /proc/<pid>/stat; a zombie, or one that has gone, is not live.
+func procOf(pid int) (proc, bool) {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return proc{}, false
+	}
+	s := string(raw)
+	fields := strings.Fields(s[strings.LastIndexByte(s, ')')+1:])
+	// After the command's name: state is stat's field 3, pgrp its field 5, starttime its field 22.
+	if len(fields) < 20 || fields[0] == "Z" || fields[0] == "X" {
+		return proc{}, false
+	}
+	group, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return proc{}, false
+	}
+	return proc{pid: pid, group: group, start: fields[19]}, true
+}
+
+// agents is the test's side of the witness: whether an agent was ever started, and whether one may
+// be live now.
+type agents struct {
+	mu                sync.Mutex
+	started, reported bool
+	left              []proc
+}
+
+// listen serves the witness's lines on a socket of its own, for the rest of the test.
+func (a *agents) listen(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "w") // short: a socket's path holds 108 bytes
+	must(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s")
+	l, err := net.Listen("unix", sock)
+	must(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			var line []byte
+			buf := make([]byte, 256)
+			for !strings.Contains(string(line), "\n") {
+				n, err := conn.Read(buf)
+				line = append(line, buf[:n]...)
+				if err != nil {
+					break
+				}
+			}
+			a.heard(strings.TrimSpace(string(line)))
+			_, _ = conn.Write([]byte("ok\n"))
+			_ = conn.Close()
+		}
+	}()
+	return sock
+}
+
+func (a *agents) heard(line string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if line == "starting" {
+		a.started = true
+		return
+	}
+	a.reported = true
+	for f := range strings.FieldsSeq(strings.TrimPrefix(line, "left")) {
+		id, start, _ := strings.Cut(f, ":")
+		pid, _ := strconv.Atoi(id)
+		a.left = append(a.left, proc{pid: pid, start: start})
+	}
+}
+
+// live says whether an agent may be alive now: from before its launcher ran until each process it
+// left in its group has gone.
+func (a *agents) live() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.started {
+		return false
+	}
+	if !a.reported {
+		return true
+	}
+	for _, d := range a.left {
+		if p, ok := procOf(d.pid); ok && p.start == d.start {
+			return true
+		}
+	}
+	return false
+}
+
+// seen says whether an agent ran and the witness found the processes it left: without them, live
+// could not tell when the agent ended.
+func (a *agents) seen() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.started && len(a.left) > 0
+}
+
+// witnessTools is jr2's programs for the Effector as the host has them, with the witness in place
+// of gpg-agent; the Effector looks its programs up there (TestMain).
+func witnessTools(t *testing.T, sock string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"git", "gpg", "ssh", "ssh-keygen"} {
+		if path, err := gitclean.Look(name); err == nil {
+			must(t, os.Symlink(path, filepath.Join(dir, name)))
+		}
+	}
+	real, err := gitclean.Look("gpg-agent")
+	if err != nil {
+		t.Skip("no gpg-agent on this host")
+	}
+	self, err := os.Executable()
+	must(t, err)
+	script := fmt.Sprintf("#!/bin/sh\nexec %q agent-witness %q %q \"$@\"\n", self, sock, real)
+	must(t, os.WriteFile(filepath.Join(dir, "gpg-agent"), []byte(script), 0o755))
+	return dir
+}
+
+// overlap samples the host's processes while a run goes on, and records whether a child of the
+// named script and the push's gpg-agent were ever alive at one time. The child is matched to this
+// Effector's scratch by its working directory — the command's tree in its Effect's scratch — so
+// another Effector on the host (a second copy of the suite) is never sampled as it. A scan counts
+// for "both" only when the agent was live before it began and still live after it ended: the agent
+// is live once per test, so it was live through the whole scan, and a child the scan saw was alive
+// beside it.
+type overlap struct {
+	mu          sync.Mutex
+	child, both bool
+	agents      *agents
+	stop        chan struct{}
+	done        chan struct{}
+}
+
+func watch(a *agents, scratch, script string) *overlap {
+	o := &overlap{agents: a, stop: make(chan struct{}), done: make(chan struct{})}
 	go func() {
 		defer close(o.done)
 		for {
@@ -252,7 +459,8 @@ func watch(scratch, script string) *overlap {
 				return
 			default:
 			}
-			agent, child := false, false
+			before := a.live()
+			child := false
 			entries, _ := os.ReadDir("/proc")
 			for _, e := range entries {
 				if _, err := strconv.Atoi(e.Name()); err != nil {
@@ -263,17 +471,14 @@ func watch(scratch, script string) *overlap {
 					continue
 				}
 				cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
-				if strings.Contains(cmdline, "gpg-agent") && strings.Contains(cmdline, scratch) {
-					agent = true
-				}
 				if strings.HasPrefix(cmdline, "sh "+script) && ofScratch(e.Name(), scratch) {
 					child = true
 				}
 			}
+			after := a.live()
 			o.mu.Lock()
-			o.agent = o.agent || agent
 			o.child = o.child || child
-			o.both = o.both || (agent && child)
+			o.both = o.both || (child && before && after)
 			o.mu.Unlock()
 			time.Sleep(2 * time.Millisecond)
 		}
@@ -292,18 +497,21 @@ func (o *overlap) end() (agent, child, both bool) {
 	<-o.done
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.agent, o.child, o.both
+	return o.agents.seen(), o.child, o.both
 }
 
 // startSigning is a Sandbox Effector whose entry signs with GPG and whose Workspace holds a
-// credentialed command, and the scratch its Effects run in.
-func startSigning(t *testing.T, p *gittest.Pod) (*effector, string) {
+// credentialed command, its gpg-agent the witness; and the scratch its Effects run in.
+func startSigning(t *testing.T, p *gittest.Pod) (*effector, string, *agents) {
 	t.Helper()
-	e, out := startSandboxEffectorSigning(t, p, true, gpgKey(t))
+	key := gpgKey(t)
+	a := &agents{}
+	tools := witnessTools(t, a.listen(t))
+	e, out := startSandboxEffectorSigning(t, p, true, key, "JR2_EFFECTOR_TEST_TOOLS="+tools)
 	if e == nil {
 		t.Fatalf("the effector never served: %s", out)
 	}
-	return e, filepath.Join(filepath.Dir(filepath.Dir(e.keyFile)), "scratch")
+	return e, filepath.Join(filepath.Dir(filepath.Dir(e.keyFile)), "scratch"), a
 }
 
 // ADR-0068 rule 2: a credentialed command started while a GPG-signing push runs waits for the push —
@@ -311,8 +519,8 @@ func startSigning(t *testing.T, p *gittest.Pod) (*effector, string) {
 func TestACommandStartedDuringAGPGPushRunsOnlyAfterTheAgentIsGone(t *testing.T) {
 	p := gittest.NewPod(t, "work")
 	p.Commit("a slow script", map[string]string{"slow.sh": "sleep 0.3; echo ran\n"})
-	e, scratch := startSigning(t, p)
-	o := watch(scratch, "slow.sh")
+	e, scratch, a := startSigning(t, p)
+	o := watch(a, scratch, "slow.sh")
 	if status, raw := e.call(t, "POST", "/effects/push-1", signedPushStart(p, 30000)); status != 202 {
 		t.Fatalf("got %d %s", status, raw)
 	}
@@ -338,8 +546,8 @@ func TestACommandStartedDuringAGPGPushRunsOnlyAfterTheAgentIsGone(t *testing.T) 
 func TestAGPGPushStartedDuringACommandStartsItsAgentOnlyAfterTheCommand(t *testing.T) {
 	p := gittest.NewPod(t, "work")
 	p.Commit("a slow script", map[string]string{"slow.sh": "sleep 0.5; echo ran\n"})
-	e, scratch := startSigning(t, p)
-	o := watch(scratch, "slow.sh")
+	e, scratch, a := startSigning(t, p)
+	o := watch(a, scratch, "slow.sh")
 	if status, raw := e.call(t, "POST", "/effects/cmd-1", commandStart("slow.sh")); status != 202 {
 		t.Fatalf("got %d %s", status, raw)
 	}
@@ -376,7 +584,7 @@ func TestAGPGPushStartedDuringACommandStartsItsAgentOnlyAfterTheCommand(t *testi
 func TestAWaiterPastItsTimeoutSettlesTimedOutAndNeverRunsLate(t *testing.T) {
 	p := gittest.NewPod(t, "work")
 	p.Commit("a slow script", map[string]string{"slow.sh": "sleep 1.5; echo ran\n"})
-	e, _ := startSigning(t, p)
+	e, _, _ := startSigning(t, p)
 	if status, raw := e.call(t, "POST", "/effects/cmd-1", commandStart("slow.sh")); status != 202 {
 		t.Fatalf("got %d %s", status, raw)
 	}

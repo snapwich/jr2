@@ -396,9 +396,11 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   cannot reach another" run with real processes: a `setsid` escapee, and an escapee of that escapee, is dead once its
   command has settled; a live command's daemon, under its keeper, lives through the settle of another Effect beside it;
   the keeper ends what its child left and answers the child's own end; a command started during a GPG push runs only
-  after the agent is gone, and the reverse, with no sample of that Effector's processes (its agent, its command's child,
-  both matched to its scratch) seeing both alive; a waiter past its timeout settles timed out and never runs late; a
-  child's `TMPDIR` write is invisible to the next child, and `/tmp` refuses both.
+  after the agent is gone, and the reverse, with no sample of that Effector's processes seeing both alive — the
+  command's child matched to its scratch, and the agent known from a witness in place of `gpg-agent` that tells the test
+  before the launcher runs and, after it exits, which processes the agent left, so an agent that lives less than one
+  sample is never missed; a waiter past its timeout settles timed out and never runs late; a child's `TMPDIR` write is
+  invisible to the next child, and `/tmp` refuses both.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built

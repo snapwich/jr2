@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/snapwich/jr2/effector/internal/confine"
+	"github.com/snapwich/jr2/effector/internal/gitclean"
 	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/sign"
 )
@@ -41,6 +42,10 @@ func TestMain(m *testing.M) {
 		// "GOCOVERDIR not set" to stderr, into the output the test reads. The Effector's binary has no such hook.
 		syscall.Exit(confine.Main(os.Args[2:]))
 	}
+	// The overlap tests' gpg-agent, which tells the test when an agent starts and what it left.
+	if len(os.Args) > 1 && os.Args[1] == "agent-witness" {
+		syscall.Exit(agentWitness(os.Args[2:]))
+	}
 	if os.Getenv("JR2_EFFECTOR_TEST_MAIN") == "1" {
 		os.Args = os.Args[:1]
 		// The tests' remotes are local paths.
@@ -48,6 +53,10 @@ func TestMain(m *testing.M) {
 		// A node whose kernel cannot confine a child, for the probe's tests.
 		if os.Getenv("JR2_EFFECTOR_TEST_NO_LANDLOCK") == "1" {
 			confine.SetProbe(func() (int, error) { return 0, syscall.EOPNOTSUPP })
+		}
+		// A toolset of the test's own for jr2's programs: the overlap tests' gpg-agent witness.
+		if tools := os.Getenv("JR2_EFFECTOR_TEST_TOOLS"); tools != "" {
+			gitclean.Path = tools
 		}
 		logger := log.New(os.Stdout, "", 0)
 		if err := run(logger); err != nil {
