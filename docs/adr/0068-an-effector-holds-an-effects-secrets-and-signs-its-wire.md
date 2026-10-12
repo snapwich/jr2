@@ -35,7 +35,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
     for uid N" without one. The fix named is a `USER` line naming a user the image holds, or
     `adduser -D -u <uid> <name>` for a numeric or absent `USER`;
   - ssh signing (`sign: { sshKey }`): `ssh-keygen` (`-Y sign` does no passwd lookup);
-  - GPG signing (`sign: { gpgKey }`): `gpg` and `gpg-agent`;
+  - GPG signing (`sign: { gpgKey }`): `gpg` and `gpg-agent`, and no `gpgconf`: the agent makes its socket before its
+    launcher exits, so the launcher's exit 0 is its readiness, and the push stops it with a signal;
   - a token over https: nothing beyond `git` — the helper is the Effector's own binary.
 
   `http` — a Worktree file body included — and the credentialed command owe nothing: the first is Go, the last is the
@@ -58,10 +59,9 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   objects below), `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2 guarantees is stated per kind: for `push`
   and a file body, git never takes config or hooks from the Agent's repository and no program the Agent's files name
   runs — the clean-repository procedure of ADR-0067 and the opener below. jr2's own programs (`git`, `ssh`,
-  `ssh-keygen`, `gpg`, `gpg-agent`, `gpgconf`) run by an absolute path found in one fixed PATH,
-  `/usr/local/bin:/usr/bin:/bin`, never by the PATH the image set: an image that puts a directory of its own first does
-  not choose which `git` runs. For a credentialed `command` the Agent's files are the author's choice to run, and the
-  claims are the next bullet's.
+  `ssh-keygen`, `gpg`, `gpg-agent`) run by an absolute path found in one fixed PATH, `/usr/local/bin:/usr/bin:/bin`,
+  never by the PATH the image set: an image that puts a directory of its own first does not choose which `git` runs. For
+  a credentialed `command` the Agent's files are the author's choice to run, and the claims are the next bullet's.
 - **A credentialed `command`'s child is confined with Landlock (B9).** The child runs as the Effector's own uid in the
   Effector's container, where the placement key, every placed secret and the push and signing keys are files that uid
   can read, and its program is often the Agent's code (`npm run deploy`, `make`, `./scripts/release.sh`, a tool's
@@ -121,16 +121,17 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
      are jr2's code); a `gpg` Effect waits while any `command` Effect is live, and a `command` waits while any `gpg`
      Effect is live. "Live" ends after rule 1's loop, so no descendant of a command exists when a `gpg-agent` starts.
      The push starts its `gpg-agent` itself (`--daemon --no-detach`: it forks once and keeps the push's process group)
-     and runs `gpg` with `--no-autostart`, so no agent detaches behind it; at its end it kills the agent
-     (`gpgconf --kill gpg-agent`) and waits for it to exit before it releases the class. A waiter has its Effect's own
-     timeout, which the wait counts against: past it, it settles as a timed-out Effect of its kind — a command
-     `timeout`, a push `rejected` at stage `sign` — and never runs late. Why: Landlock governs files, not `connect()`,
-     and a confined child can list the pod's Unix sockets (`ss -xl` over netlink `sock_diag`, which Landlock does not
-     restrict either), so a credentialed command's child alive beside a `gpg-agent` that holds the signing key could
-     sign without reading the key. The two never overlap. An `http` (a file body included), an ssh-signed push and a
-     token push hold no class: they start no agent and serve no socket (the ssh key is a file the ruleset denies; the
-     clean repository clears `SSH_AUTH_SOCK`). The lock is in the Effector's process: restore and an Orchestrator
-     restart are untouched, and an Effector restart kills every child.
+     and runs `gpg` with `--no-autostart`, so no agent detaches behind it; the agent is ready when its launcher exits 0.
+     At its end the push sends SIGTERM to the agent's process group, then SIGKILL if it still runs after a while, and
+     waits for it to exit before it releases the class. A waiter has its Effect's own timeout, which the wait counts
+     against: past it, it settles as a timed-out Effect of its kind — a command `timeout`, a push `rejected` at stage
+     `sign` — and never runs late. Why: Landlock governs files, not `connect()`, and a confined child can list the pod's
+     Unix sockets (`ss -xl` over netlink `sock_diag`, which Landlock does not restrict either), so a credentialed
+     command's child alive beside a `gpg-agent` that holds the signing key could sign without reading the key. The two
+     never overlap. An `http` (a file body included), an ssh-signed push and a token push hold no class: they start no
+     agent and serve no socket (the ssh key is a file the ruleset denies; the clean repository clears `SSH_AUTH_SOCK`).
+     The lock is in the Effector's process: restore and an Orchestrator restart are untouched, and an Effector restart
+     kills every child.
   3. **A private TMPDIR.** Each credentialed child gets `TMPDIR` set to a directory of its Effect's own scratch, which
      goes when the outcome is read, and `/tmp` is not in the ruleset: a child neither reads nor writes it, so what one
      child writes no other child reads.

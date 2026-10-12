@@ -64,6 +64,8 @@ func newFixture(t *testing.T, sign string) *fixture {
 		f.signer = strings.TrimSpace(string(pub))
 		entry.Sign = &secrets.GitSign{SSHKey: "sign", Name: signerName, Email: signerEmail}
 	case "gpg", "gpg-passphrase":
+		// The agents this test starts — its own key's, and each push's — leave no socket directory.
+		gittest.SweepSocketDirs(t)
 		dir := filepath.Join(gitRoot, "sign")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -83,7 +85,7 @@ func newFixture(t *testing.T, sign string) *fixture {
 		if err := os.WriteFile(filepath.Join(dir, secrets.SignGPGFile), []byte(out), 0o400); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = exec.Command("gpgconf", "--homedir", home, "--kill", "all").Run() })
+		t.Cleanup(func() { gittest.RemoveSocketDir(home) })
 		entry.Sign = &secrets.GitSign{GPGKey: "sign", Name: signerName, Email: signerEmail}
 	}
 	f.runner = &Runner{
@@ -335,6 +337,81 @@ func TestAGPGSignedPushVerifiesAndAPassphrasedKeyIsRefusedByName(t *testing.T) {
 	}
 	if remoteRef(p) != "" {
 		t.Fatal("something was pushed unsigned")
+	}
+}
+
+// toolset makes jr2's programs a directory that holds only the named ones, linked to the host's,
+// for the rest of the test: an image that carries those and nothing else.
+func toolset(t *testing.T, names ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range names {
+		path, err := gitclean.Look(name)
+		if err != nil {
+			t.Skipf("no %s on this host", name)
+		}
+		if err := os.Symlink(path, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := gitclean.Path
+	gitclean.Path = dir
+	t.Cleanup(func() { gitclean.Path = old })
+}
+
+// agentsOf lists the gpg-agent processes whose home is under scratch.
+func agentsOf(scratch string) []string {
+	var found []string
+	entries, _ := os.ReadDir("/proc")
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
+		if strings.Contains(cmdline, "gpg-agent") && strings.Contains(cmdline, scratch) {
+			found = append(found, e.Name()+": "+cmdline)
+		}
+	}
+	return found
+}
+
+// A GPG-signed push runs gpg and gpg-agent alone (ADR-0068): the agent is ready when its launcher
+// exits 0, and the push stops it with SIGTERM to its process group. An image with no gpgconf signs,
+// and no agent outlives the push.
+func TestAGPGSignedPushNeedsNoGpgconf(t *testing.T) {
+	if _, err := exec.LookPath("gpg"); err != nil {
+		t.Skip("no gpg")
+	}
+	f := newFixture(t, "gpg")
+	toolset(t, "git", "gpg", "gpg-agent")
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	out := f.push(true, nil)
+	if out.Outcome != wire.OutcomePushed {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if raw := remoteGit(t, f, "cat-file", "commit", remoteRef(f)); !strings.Contains(raw, "-----BEGIN PGP SIGNATURE-----") {
+		t.Fatalf("not signed: %s", raw)
+	}
+	if left := agentsOf(f.runner.Scratch); len(left) != 0 {
+		t.Fatalf("a gpg-agent outlived the push: %v", left)
+	}
+}
+
+// An image with gpg and no gpg-agent cannot sign with GPG, and the reason names the program.
+func TestAGPGSignedPushWithNoGpgAgentNamesIt(t *testing.T) {
+	if _, err := exec.LookPath("gpg"); err != nil {
+		t.Skip("no gpg")
+	}
+	f := newFixture(t, "gpg")
+	toolset(t, "git", "gpg")
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	out := f.push(true, nil)
+	if out.Outcome != wire.OutcomeRejected || out.Push.Stage != "sign" || !strings.Contains(out.Reason, "gpg-agent") {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if remoteRef(f) != "" {
+		t.Fatal("something was pushed")
 	}
 }
 

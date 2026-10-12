@@ -9,9 +9,40 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// SweepSocketDirs removes, when the test ends, the GnuPG socket directories its agents left. When
+// /run/user/<uid>/gnupg exists, GnuPG puts the sockets of an agent whose home is not the default
+// in a d.<hash> directory there; the agent's end removes its sockets, never the directory. Only a
+// directory made during the test and empty at its end is removed: a live agent's holds its
+// sockets. Register it before anything that starts an agent, so it runs after their cleanups.
+func SweepSocketDirs(t *testing.T) {
+	t.Helper()
+	dir := filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "gnupg")
+	before := map[string]bool{}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		before[e.Name()] = true
+	}
+	t.Cleanup(func() {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "d.") && !before[e.Name()] {
+				_ = os.Remove(filepath.Join(dir, e.Name())) // refused for a directory that is not empty
+			}
+		}
+	})
+}
+
+// RemoveSocketDir stops every agent of a GnuPG home the test made and removes its socket
+// directory, for a test's cleanup. The test's host has gpgconf; the Effector needs none.
+func RemoveSocketDir(home string) {
+	_ = exec.Command("gpgconf", "--homedir", home, "--kill", "all").Run()
+	_ = exec.Command("gpgconf", "--homedir", home, "--remove-socketdir").Run()
+}
 
 // Pod is one test's pod-shaped tree.
 type Pod struct {

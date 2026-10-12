@@ -2916,7 +2916,9 @@ async function scenarioGpgKey(): Promise<string> {
   } catch (err) {
     throw new Error(`this scenario makes its GPG key with the host's gpg, which failed: ${(err as Error).message}`);
   } finally {
+    // The host's agent for this home leaves no socket directory under /run/user/<uid>/gnupg.
     await promisify(execFile)("gpgconf", ["--homedir", home, "--kill", "all"]).catch(() => undefined);
+    await promisify(execFile)("gpgconf", ["--homedir", home, "--remove-socketdir"]).catch(() => undefined);
     await rm(home, { recursive: true, force: true });
   }
 }

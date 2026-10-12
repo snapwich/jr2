@@ -202,10 +202,12 @@ func gpgKey(t *testing.T) string {
 	t.Helper()
 	requireTool(t, "gpg")
 	requireTool(t, "gpg-agent")
+	// The agents this test starts — this key's, and each signing push's — leave no socket directory.
+	gittest.SweepSocketDirs(t)
 	home, err := os.MkdirTemp("", "g")
 	must(t, err)
 	t.Cleanup(func() {
-		_ = exec.Command("gpgconf", "--homedir", home, "--kill", "all").Run()
+		gittest.RemoveSocketDir(home)
 		_ = os.RemoveAll(home)
 	})
 	gen := exec.Command("gpg", "--batch", "--homedir", home, "--pinentry-mode", "loopback", "--passphrase", "",

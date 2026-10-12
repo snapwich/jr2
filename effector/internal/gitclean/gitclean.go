@@ -27,9 +27,10 @@ import (
 )
 
 // Path is the PATH every git call gets: the image's usual places, never the Agent's. jr2's own
-// programs — git, ssh, ssh-keygen, gpg, gpg-agent, gpgconf — are found here alone (Look), never
-// on the PATH the Effector's image set.
-const Path = "/usr/local/bin:/usr/bin:/bin"
+// programs — git, ssh, ssh-keygen, gpg, gpg-agent — are found here alone (Look), never on the
+// PATH the Effector's image set. A variable only so a test can name a toolset that lacks one; the
+// binary never sets it.
+var Path = "/usr/local/bin:/usr/bin:/bin"
 
 // Look finds one of jr2's own programs in Path and answers its absolute path. The PATH the
 // Effector inherited is never read: an image that puts a directory of its own first on PATH does
