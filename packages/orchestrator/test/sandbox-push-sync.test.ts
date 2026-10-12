@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { assign, type AnyStateMachine } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { dropSavedTails, type EffectLogic, type EffectRow } from "../src/effect.ts";
+import { dropSavedTails, pushPairsOf, type EffectLogic, type EffectRow } from "../src/effect.ts";
 import { createEffectorClient, type PushStartRequest } from "../src/effector-wire.ts";
 import { RunHost, type RunFeedEvent } from "../src/run-host.ts";
 import { lastPushOf, pushWith } from "../src/sandbox-effect.ts";
@@ -318,6 +318,43 @@ test("the pair is the last push of the same Workspace AND Repo Slot that publish
   assert.equal(lastPushOf(rows, "ws-1", "app", "self")?.output.published, "1".repeat(40));
   assert.equal(lastPushOf(rows, "ws-1", "lib", "self")?.output.published, "2".repeat(40));
   assert.equal(lastPushOf(rows, "ws-2", "lib", "self"), undefined);
+});
+
+test("only `pushed` rows give pairs, oldest first: a diverged row's published commit is the remote's, never a copy of its source", () => {
+  const row = (at: string, output: Record<string, unknown>, sandbox = "ws-1"): EffectRow => ({
+    state: "settled",
+    kind: "push",
+    slot: "publish",
+    sandbox,
+    repo: "app",
+    output,
+    at,
+  });
+  const sha = (c: string) => c.repeat(40);
+  const rows: Record<string, EffectRow> = {
+    // Written out of order: the pairs are sorted by `at`, not by the ledger's keys.
+    late: row("2026-01-01T00:00:05Z", { outcome: "pushed", published: sha("5"), source: sha("e"), squashed: "signed" }),
+    early: row("2026-01-01T00:00:01Z", { outcome: "pushed", published: sha("1"), source: sha("a") }),
+    diverged: row("2026-01-01T00:00:02Z", {
+      outcome: "diverged",
+      reason: "the published commit is not in the history of the Agent's tip",
+      published: sha("2"),
+      source: sha("b"),
+    }),
+    rejected: row("2026-01-01T00:00:03Z", {
+      outcome: "rejected",
+      reason: "non-fast-forward",
+      published: sha("3"),
+      source: sha("c"),
+    }),
+    unknown: row("2026-01-01T00:00:04Z", { outcome: "unknown", published: sha("4"), source: sha("d") }),
+    other: row("2026-01-01T00:00:06Z", { outcome: "pushed", published: sha("6"), source: sha("f") }, "ws-2"),
+    self: row("2026-01-01T00:00:07Z", { outcome: "pushed", published: sha("7"), source: sha("7") }),
+  };
+  assert.deepEqual(pushPairsOf(rows, "ws-1", "app", "self"), [
+    { published: sha("1"), source: sha("a") },
+    { published: sha("5"), source: sha("e"), squashed: "signed" },
+  ]);
 });
 
 test("D1 for the Sandbox kinds: its state exits while it runs — polling stops, the ledger and the feed say `outcome unknown`", async () => {
