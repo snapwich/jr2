@@ -102,6 +102,8 @@ func NewVerifier(key []byte, address string, started time.Time, now func() time.
 // started at, or — when the wall clock stepped back since — now less how long it has run. A step
 // back is a host's clock sync (NTP, a VM's clock correction); without it, every request signed in
 // the step's length after it would read as signed before the process started, and be refused.
+// The cost, which ADR-0068 names: a request signed in the step's length BEFORE the start is taken
+// too, if it is inside the window and its nonce is unseen — a request carries only a wall time.
 func (v *Verifier) startedNow(now time.Time) time.Time {
 	if moved := time.UnixMilli(now.Add(-v.since()).UnixMilli()); moved.Before(v.started) {
 		return moved
@@ -137,7 +139,8 @@ func (v *Verifier) Verify(method, path, at, nonce, signature string, body []byte
 		}
 	}
 	// The nonces of the process before this one are gone: a request signed before this process
-	// started is refused, so a restart forgets no replay.
+	// started (read by startedNow) is refused, so a restart forgets no replay signed earlier than
+	// the start less any step back of the wall clock since it (startedNow's cost).
 	if sent.Before(v.startedNow(now)) || sent.Before(now.Add(-Window)) || sent.After(now.Add(Window)) {
 		return ErrRefused
 	}

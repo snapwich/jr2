@@ -130,6 +130,34 @@ func TestAWallClockThatStepsBackRefusesNoRequestSignedAfterTheStart(t *testing.T
 	}
 }
 
+// ADR-0068's named residual: a step back of the wall clock since the start reopens the step's own
+// length before the start. Started at S, a second of run, the wall clock now reads S−1.5 s, so the
+// start reads S−2.5 s: a request signed at S−2 s — before this process started — is accepted, one
+// signed before S−2.5 s is refused. With no step back, a request signed before S is refused.
+func TestAStepBackOfTheWallClockReopensItsOwnLengthBeforeTheStart(t *testing.T) {
+	started := time.UnixMilli(1_700_000_000_000)
+	body := []byte(`{"kind":"http"}`)
+	verify := func(v *Verifier, at time.Time, nonce string) error {
+		ms := strconv.FormatInt(at.UnixMilli(), 10)
+		return v.Verify("POST", "/effects/e1", ms, nonce, RequestMAC(key, "POST", addr, "/effects/e1", ms, nonce, body), body)
+	}
+	now := started.Add(-1500 * time.Millisecond)
+	stepped := NewVerifier(key, addr, started, func() time.Time { return now })
+	stepped.since = func() time.Duration { return time.Second }
+	if err := verify(stepped, started.Add(-2*time.Second), "nonce-inside-the-step-0"); err != nil {
+		t.Fatalf("a request signed inside the step's length before the start is refused: %v", err)
+	}
+	if err := verify(stepped, started.Add(-2500*time.Millisecond-time.Millisecond), "nonce-past-the-step-00"); err != ErrRefused {
+		t.Fatalf("a request signed before the step's length is not refused: %v", err)
+	}
+	steady := started.Add(time.Second)
+	still := NewVerifier(key, addr, started, func() time.Time { return steady })
+	still.since = func() time.Duration { return time.Second }
+	if err := verify(still, started.Add(-time.Millisecond), "nonce-before-the-start"); err != ErrRefused {
+		t.Fatalf("with no step back, a request signed before the start is not refused: %v", err)
+	}
+}
+
 // The golden signatures (ADR-0068): the TypeScript client signs and verifies the same fixtures.
 func TestTheGoldenSignatures(t *testing.T) {
 	var req struct {

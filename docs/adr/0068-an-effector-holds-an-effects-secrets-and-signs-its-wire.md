@@ -189,11 +189,13 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   the monotonic clock — or more than 5 minutes from its clock, or a nonce it saw inside that window: 401, an empty body,
   no signature, before any route is read. A replica keeps the nonces it saw in its process memory; the address and the
   start time cover what that memory cannot. So a start sent again — to another replica of the placement (a rollout runs
-  two), or to the same replica after its process restarted — starts nothing. A refused caller learns nothing, not even
-  whether an Effect exists. Reason: a process that takes the Effector's port while the Effector is down learns no secret
-  from a request and can forge neither a request nor an answer. It can read a request's input, which is not secret, and
-  it can make the call fail, which is output. A start it took, sent to the Effector once it is back, was signed before
-  that process started.
+  two), or to the same replica after its process restarted — starts nothing, except where the replica's wall clock
+  stepped back since its start: then a start signed in that step's length before the start, and inside the window, is
+  taken (a cost under Consequences). A refused caller learns nothing, not even whether an Effect exists. Reason: a
+  process that takes the Effector's port while the Effector is down learns no secret from a request and can forge
+  neither a request nor an answer. It can read a request's input, which is not secret, and it can make the call fail,
+  which is output. A start it took, sent to the Effector once it is back, was signed before that process started, and is
+  refused unless the wall clock stepped back since by more than the time between that signing and the start.
 - **The Orchestrator's side.** `@jr2/orchestrator` speaks the wire through an injected transport (the unit tests' seam,
   [ADR-0010](0010-bdd-acceptance-tests.md)). The Instance Effector's address is derived from the namespace,
   `jr2-instance-effector.<namespace>.svc:8082`, and its key from the signing key (`effectorKey`): the Orchestrator
@@ -420,3 +422,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   start and the first request it gets, that request is refused as unsigned: to the Orchestrator an answer lost, so every
   replica is asked, and a call not marked `idempotent` settles `unknown` with nothing sent. The clocks of a cluster's
   nodes agree far closer than that.
+- **A step back of a replica's own clock reopens its length before the start.** A request carries only a wall time, so
+  the start is read on the wall clock as it reads now: when that clock stepped back since the start (a clock sync), the
+  start moves back by the step, or every request signed in the step's length after it would be refused (on a WSL2 host
+  the clock stepped back about 1.6 s every 30.7 s). A start signed in that length before the process started, inside the
+  5-minute window, with a nonce the new process has not seen, is then taken. This is the port takeover's replay: a
+  process in the pod takes a signed start while the Effector is down and sends it to the new process after a step back.
+  It can start only an Effect the Orchestrator itself signed, with its input, once more; the restore rule's one fire
+  holds only when no step back that long falls between the signing and the replay. A request carries no monotonic
+  reading, so the Effector cannot tell such a start from one signed just after a step back.
