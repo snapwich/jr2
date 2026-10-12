@@ -26,9 +26,9 @@ because they are one problem: **what a Machine depends on that is not inside it.
   - **An Effect is an actor slot too**
     ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), and its plain-data
     parts ride the slot: the kind, where it runs, a `command`'s argv, an `http` Effect's method, fixed host and the
-    names of the secrets it names — or the `open` sentinel where a package left the url or the argv for its composer
-    ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). `jr2 up` reads them without running
-    anything, and a secret named there is what places it.
+    names of the secrets it names — or the `open` sentinel where a package left the url, the argv or a secret's name for
+    its composer ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). `jr2 up` reads them
+    without running anything, and a secret named there is what places it.
   - **The Sandbox Image is a `workspace()` option**, static: `workspace(body, { input, image, repos, spec })` (`repos`
     is ADR-0051's, and follows the same rule). `image` is a string in one of two shapes — a `file:` URL
     (`import.meta.resolve("./image")`, a docker context the module ships) or a registry ref — or absent, which keeps
@@ -45,25 +45,27 @@ because they are one problem: **what a Machine depends on that is not inside it.
   ADR-0011 adopted for Vocabulary.
 - **Customization is `customize(machine, parts)`**, a plain function in the family of `workspace()` and `pool()`,
   returning a plain `StateMachine`. `parts` has the declaration's own shape, recursively partial:
-  `{ agents?: { <slot>?: Partial<AgentDefinition> }, effects?: { <slot>?: { url } | { argv } }, image?, user?, repos?: { <slot>?: Binding }, actors?: { <child>?: parts } }`
+  `{ agents?: { <slot>?: Partial<AgentDefinition> }, effects?: { <slot>?: { url } | { argv } | { secret } }, image?, user?, repos?: { <slot>?: Binding }, actors?: { <child>?: parts } }`
   — the two image seats together, since ADR-0005 gives the User Container the same static option, and the Repo Slots
-  beside them, since ADR-0051 makes a Repo a `workspace()` slot a composer binds. `effects` binds an Effect's Open url
-  or argv, once ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)): the slot's
-  logic is built again with the bound part and substituted as an Agent override is. Internally an Agent override is
-  xstate's `machine.provide({ actors: { researcher: agent(merged) } })`, with the override layered over the stock
-  definition; a child override is the same call one level down, recursing — each level is exactly the one-level reach
-  ADR-0015 found `provide` has, held by the composer who owns the child object, never host-side injection. jr2's
-  wrappers are transparent: `customize(research, { agents })` reaches the body through the `body` slot (and `pool()`'s
-  `worker`, at any depth), so a consumer never writes `body`. The images and the Repo bindings are the parts `provide`
-  cannot carry (xstate copies only implementations, and every part is keyed on the config it passes through by
-  reference), so those fields clone the wrapper's config and rebuild it with the same implementations, re-attaching what
-  the original carried. A bound argv's load warnings are such a part too: `customize()` rebuilds the Machine the author
-  wrote the same way, with the vocabulary, the seats and the door it carried and the warnings the walk gives for the
-  bound argv, so no attachment is keyed on anything but the config. Only DECLARED parts can be retuned, and the compiler
-  is what says so: the slots are read off xstate's own `TActor` parameter, so an Agent, a Repo Slot, or a child the
-  Machine does not carry is a type error (ADR-0050), and the runtime refuses the same call naming the Machine's own
-  slots. Rejected: a `.with()` method on the machine — it needs a jr2-owned machine type over xstate's, which ADR-0015
-  avoided, and it vanishes after any `.provide()`; a callable-machine hybrid — verified to work, reads as a trick.
+  beside them, since ADR-0051 makes a Repo a `workspace()` slot a composer binds. `effects` binds an Effect's Open url,
+  argv or secret name, once — an Effect with an Open secret and an Open url or argv takes one object with both keys,
+  `{ url, secret }` or `{ argv, secret }`
+  ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)): the slot's logic is built
+  again with the bound part and substituted as an Agent override is. Internally an Agent override is xstate's
+  `machine.provide({ actors: { researcher: agent(merged) } })`, with the override layered over the stock definition; a
+  child override is the same call one level down, recursing — each level is exactly the one-level reach ADR-0015 found
+  `provide` has, held by the composer who owns the child object, never host-side injection. jr2's wrappers are
+  transparent: `customize(research, { agents })` reaches the body through the `body` slot (and `pool()`'s `worker`, at
+  any depth), so a consumer never writes `body`. The images and the Repo bindings are the parts `provide` cannot carry
+  (xstate copies only implementations, and every part is keyed on the config it passes through by reference), so those
+  fields clone the wrapper's config and rebuild it with the same implementations, re-attaching what the original
+  carried. A bound argv's load warnings are such a part too: `customize()` rebuilds the Machine the author wrote the
+  same way, with the vocabulary, the seats and the door it carried and the warnings the walk gives for the bound argv,
+  so no attachment is keyed on anything but the config. Only DECLARED parts can be retuned, and the compiler is what
+  says so: the slots are read off xstate's own `TActor` parameter, so an Agent, a Repo Slot, or a child the Machine does
+  not carry is a type error (ADR-0050), and the runtime refuses the same call naming the Machine's own slots. Rejected:
+  a `.with()` method on the machine — it needs a jr2-owned machine type over xstate's, which ADR-0015 avoided, and it
+  vanishes after any `.provide()`; a callable-machine hybrid — verified to work, reads as a trick.
 - **A package exports a Machine, nothing beside it.** The door (ADR-0033), the vocabulary, the Agents, and the image all
   ride the exported object. The three uses:
 
