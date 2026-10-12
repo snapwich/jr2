@@ -13,6 +13,8 @@ import { partsOf, placedEffectsOf, workspacePodsOf, type CarriedEffect, type Wor
 import { bearer, file, http, secret } from "../src/http-effect.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
+import { pool, source } from "../src/pool.ts";
+import { fromPromise } from "xstate";
 import {
   refuseEffectSecrets,
   secretPlacementsOf,
@@ -171,15 +173,52 @@ test("a workspace() that lists a name the secrets list does not hold is refused 
   );
 });
 
-test("two Workspaces that would share a pod key are a defect of the walk, never one pod (ADR-0059)", () => {
-  // Every Workspace has a route of its own, an inline-invoked one included, so no two share a key;
-  // one that did would place one Workspace's secrets in the other's pod.
+test("two Workspaces that would share a pod key are refused, never one pod (ADR-0059)", () => {
+  // One pod key for two Workspaces would place one Workspace's secrets in the other's pod.
   const config: JR2Config = { secrets: [{ name: "JIRA_TOKEN", value: VALUE, hosts: ["jira.example.com"] }] };
   const twice = { path: undefined, route: [{ inline: "xstate.invoke.0.w.a" }] } as Partial<WorkspacePod>;
   assert.throws(
     () => secretPlacementsOf(config, walk({ workspaces: [ws({ ...twice, secrets: ["JIRA_TOKEN"] }), ws(twice)] })),
-    /two Workspaces share the pod key ws-[0-9a-f]{16} .*a defect of the walk/,
+    /two Workspaces share the pod key ws-[0-9a-f]{16} .*cannot keep their secrets apart/,
   );
+});
+
+test("a workspace() reached through another workspace()'s body shares its route, and jr2 up refuses the Machine with the fix, with or without a secret (ADR-0059)", () => {
+  const repos = { app: "https://example.test/app.git" };
+  const spec = () => ({ branch: "b" });
+  const body = jr2Setup({ events: [] }).createMachine({ id: "body" });
+  const workers = pool(workspace(body, { repos, spec }), {
+    source: source<{ id: string }>({ next: fromPromise(async () => null) }),
+    itemId: (i) => i.id,
+  });
+  const shapes = {
+    "workspace(workspace(...))": workspace(workspace(body, { repos, spec }), { repos, spec }),
+    "workspace(pool(workspace(...)))": workspace(workers, { repos, spec }),
+  };
+  for (const [shape, root] of Object.entries(shapes)) {
+    const placed = placementOf("w", root);
+    assert.deepEqual(
+      placed.workspaces.map((w) => w.pod.route),
+      [[], []],
+      `${shape}: a wrapper's body adds no hop`,
+    );
+    assert.throws(
+      () => secretPlacementsOf({}, placed),
+      (e: Error) =>
+        e.message.includes("two Workspaces share the pod key") &&
+        e.message.includes("one is reached through the other's body") &&
+        e.message.includes("actors: { <name>: workspace(...) }"),
+      shape,
+    );
+  }
+  // The fix the refusal names: the inner workspace() under a key of a plain Machine's actors, that
+  // Machine the outer one's body. Each Workspace then has a pod of its own.
+  const plain = jr2Setup({ events: [], actors: { inner: workspace(body, { repos, spec }) } }).createMachine({
+    id: "plain",
+  });
+  const fixed = secretPlacementsOf({}, placementOf("w", workspace(plain, { repos, spec })));
+  const keys = fixed.held.map((p) => p.pod);
+  assert.equal(new Set(keys).size, 2, `two pod keys: ${keys.join(", ")}`);
 });
 
 test("an Effect secret shorter than 8 characters is refused, and says why", () => {

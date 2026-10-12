@@ -214,15 +214,19 @@ decision generalizes that container. It holds every credential the Harness in it
   the `actors` slot keys down to its `workspace()`, a wrapper's body skipped, where a plain Machine invoked inline adds
   xstate's generated invoke src for that hop (`xstate.invoke.<index>.<state id>`), held so it can never equal a slot
   key. `jr2 up` computes it from the state node, and the provision reads it off the live actor tree, so both derive one
-  key; every Workspace has its own, and a key reached by slot keys alone is what it was. A Workspace reached through a
-  Machine object handed to `spawnChild`, which no walk can see, fails at provision with the slot form. One function,
-  `custodianComposition`, builds what a pod gains from its pod's manifest; `kubeSandbox` and `instanceHarnessObjects`
-  both call it, so the two pod shapes cannot drift. The Instance Harness's pod template carries `jr2.dev/held-digest`,
-  an HMAC over its pod's held-secret inputs keyed with the signing key, so a held-secret edit rolls it at the next
-  `jr2 up`. Its Custodian reads each value and its files once at start, so the inputs are its two rendered files, the
-  program, a literal's value, a `valueFrom`'s reference, and a digest of the value in the user's Secret, keyed with the
-  signing key: `jr2 up` reads that Secret to check the key exists, and keeps the digest in place of the value, so a
-  value edited there rolls the pod too. A live Sandbox keeps what its Custodian read at start.
+  key. A key reached by slot keys alone is what it was. A wrapper's body adds no hop, so a `workspace()` reached through
+  another `workspace()`'s body (`workspace(workspace(...))`, `workspace(pool(workspace(...)))`) has the outer one's key:
+  `jr2 up` refuses that Machine, with or without a secret, since the two pods' secrets could not be kept apart, and
+  names the fix (the inner `workspace()` under a key of a plain Machine's `actors`, which has a route of its own); every
+  other Workspace has a key of its own. A Workspace reached through a Machine object handed to `spawnChild`, which no
+  walk can see, fails at provision with the slot form. One function, `custodianComposition`, builds what a pod gains
+  from its pod's manifest; `kubeSandbox` and `instanceHarnessObjects` both call it, so the two pod shapes cannot drift.
+  The Instance Harness's pod template carries `jr2.dev/held-digest`, an HMAC over its pod's held-secret inputs keyed
+  with the signing key, so a held-secret edit rolls it at the next `jr2 up`. Its Custodian reads each value and its
+  files once at start, so the inputs are its two rendered files, the program, a literal's value, a `valueFrom`'s
+  reference, and a digest of the value in the user's Secret, keyed with the signing key: `jr2 up` reads that Secret to
+  check the key exists, and keeps the digest in place of the value, so a value edited there rolls the pod too. A live
+  Sandbox keeps what its Custodian read at start.
 
 ## Considered options
 

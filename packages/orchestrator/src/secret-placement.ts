@@ -225,11 +225,8 @@ export function secretPlacementsOf(
   for (const ws of walk.workspaces) {
     if (ws.pod.effects.length === 0) continue;
     const plan = sandboxPlanOf(config, ws, secrets, values);
-    // Every Workspace has a route of its own (ADR-0059), so no two plans share a pod key; one that
-    // did would give a Workspace's Effector another's secrets, and is a defect of the walk.
-    if (sandbox.some((p) => p.pod === plan.pod)) {
-      throw new Error(`jr2: two Workspaces share the pod key ${plan.pod} (${plan.label}) — a defect of the walk`);
-    }
+    // Two plans of one pod key would give a Workspace's Effector another's secrets (ADR-0059).
+    if (sandbox.some((p) => p.pod === plan.pod)) throw sharedPodKey(plan.pod, plan.label);
     sandbox.push(plan);
     const holds = plan.secrets.map((s) => s.name);
     // Exact for a slot the Machine binds; for one the run or a customize() binds, the entry is
@@ -350,10 +347,27 @@ function workspaceLabel({ workflow, pod }: PlacedWorkspace): string {
 }
 
 /**
+ * The refusal of two Workspaces that share a pod key (ADR-0059). A placement route skips a
+ * wrapper's body, so a `workspace()` reached through another `workspace()`'s body — its body, or a
+ * `pool()` that is its body — has the outer one's route and its pod key: their Held and Effect
+ * secrets could not be kept apart, so `jr2 up` stops on the Machine, with or without a secret. Under
+ * a key of a plain Machine's `actors` the inner one has a route of its own.
+ */
+function sharedPodKey(pod: string, label: string): Error {
+  return new Error(
+    `jr2: two Workspaces share the pod key ${pod} (${label}): one is reached through the other's body — ` +
+      "workspace(workspace(...)) or workspace(pool(workspace(...))) — and a wrapper's body adds no hop to a " +
+      "placement route, so jr2 up cannot keep their secrets apart. Compose the inner workspace() under a key " +
+      "of a plain Machine's actors (actors: { <name>: workspace(...) }) and make that Machine the outer " +
+      "workspace()'s body (ADR-0059)",
+  );
+}
+
+/**
  * Each Harness pod and the Held secrets it gets: a Workspace's `secrets` plus its Agents' providers'
  * claims, the Instance Harness's `"none"` Agents' claims. A `workspace()` that lists a name the list
- * does not hold is refused with the line to add. Every Workspace has a route of its own, an
- * inline-invoked one included, so no two pods share a key.
+ * does not hold is refused with the line to add. Two pods of one key are refused
+ * ({@link sharedPodKey}).
  */
 function heldPodsOf(
   config: JR2Config,
@@ -384,9 +398,7 @@ function heldPodsOf(
       names: ordered([...ws.pod.secrets, ...byProvider]),
       byProvider: ordered(byProvider),
     };
-    if (pods.some((p) => p.pod === plan.pod)) {
-      throw new Error(`jr2: two Workspaces share the pod key ${plan.pod} (${label}) — a defect of the walk`);
-    }
+    if (pods.some((p) => p.pod === plan.pod)) throw sharedPodKey(plan.pod, label);
     pods.push(plan);
   }
   if (walk.instanceHarness) {

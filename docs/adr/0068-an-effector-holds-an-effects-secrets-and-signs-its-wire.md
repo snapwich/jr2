@@ -321,10 +321,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
 - **A Workspace's Sandbox Effector's objects** (ADR-0059). `jr2 up` reads, for each `workspace()`, the Effects placed
   there below it, down to the next `workspace()` — every `push`, `http` whose body is a Worktree file and credentialed
   `command`, from their plain data, statically — and writes two objects for a Workspace with one, none for one without.
-  Each Workspace is keyed by its own placement route (ADR-0059), an inline-invoked one included, so two Workspaces never
-  share these objects; two plans of one pod key are a defect of the walk, and `jr2 up` stops on it. The walk lists the
-  Effects per route, not per Machine: a Machine composed both in a `workspace()` and outside one is placed, and checked,
-  at each:
+  Each Workspace is keyed by its placement route (ADR-0059), an inline-invoked one included, and `jr2 up` refuses a
+  Machine in which two Workspaces would share one key (a `workspace()` reached through another's body, ADR-0059), so two
+  Workspaces never share these objects. The walk lists the Effects per route, not per Machine: a Machine composed both
+  in a `workspace()` and outside one is placed, and checked, at each:
   - the **Secret** `jr2-effector-<pod>` (labelled with its pod key, deleted when its Workspace no longer places an
     Effect there): each literal Effect secret those Effects name, and `effector.json` — the targets its file-body
     `http`s call, and `commands: true` when it holds a credentialed command;
