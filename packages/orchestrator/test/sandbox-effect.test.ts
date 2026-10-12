@@ -409,6 +409,27 @@ test("an http whose body is a Worktree file names it, in the Sandbox Effector; r
   await waitFor(() => host2.status(rig2.runId)?.value === "done");
 });
 
+test("a file body has one content type: file()'s contentType and a content-type header together are refused (ADR-0067)", () => {
+  const url = "https://files.example.com/r";
+  assert.throws(
+    () =>
+      http({
+        method: "PUT",
+        url,
+        headers: { "content-type": "text/plain" },
+        body: file("a", { contentType: "application/pdf" }),
+      }),
+    /http\(\{ headers, body: file\(path, \{ contentType \}\) \}\): "content-type" is set by file\(\)'s contentType — write one of them/,
+  );
+  // Either one alone is legal.
+  assert.doesNotThrow(() => http({ method: "PUT", url, headers: { "content-type": "text/plain" }, body: file("a") }));
+  assert.doesNotThrow(() => http({ method: "PUT", url, body: file("a", { contentType: "application/pdf" }) }));
+  // Without a file body, a content-type header is the request's own.
+  assert.doesNotThrow(() =>
+    http({ method: "POST", url, headers: { "content-type": "text/plain" }, request: () => ({ text: "a" }) }),
+  );
+});
+
 test("http({ body: file(...) }) is refused, with the fix, with a method that sends no body and beside a request (B19)", () => {
   const url = "https://files.example.com/r";
   assert.throws(() => http({ method: "GET", url, body: file("a") }), /a file body is sent with PUT, POST, PATCH/);

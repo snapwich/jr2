@@ -157,7 +157,8 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
     readonly slot?: string;
     /** Path segments appended to the url, as `request`'s `path` is for a json or text body. */
     readonly segments?: FromInput<S, readonly string[]>;
-    /** Default: a `content-type` header of the definition's, else `application/octet-stream`. */
+    /** The body's content type: this or a `content-type` header of the definition's, not both (a
+     * definition with both is refused). With neither it is `application/octet-stream`. */
     readonly contentType?: string;
   };
 };
@@ -289,6 +290,12 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
   if (body && !FILE_METHODS.includes(def.method)) {
     throw new Error(
       `http({ method: "${def.method}", body: file(...) }): a file body is sent with ${FILE_METHODS.join(", ")} (ADR-0068)`,
+    );
+  }
+  if (body?.contentType !== undefined && headers["content-type"] !== undefined) {
+    throw new Error(
+      'http({ headers, body: file(path, { contentType }) }): "content-type" is set by file()\'s contentType — write ' +
+        "one of them (ADR-0067)",
     );
   }
   if (body && def.request !== undefined) {

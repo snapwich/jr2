@@ -71,9 +71,10 @@ the credentialed `command` — runs there too, its child confined (below).
   read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox Effector opens the file with `openat2` beneath the work
   root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_XDEV`, non-blocking — then
   `fstat`: a symlink at any component (one that stays inside included), `..`, an absolute path, a FIFO, a directory and
-  a file with more than one link are refused, in words, as output. The content type is `file()`'s, else a `content-type`
-  header of the definition's, else `application/octet-stream`. A later body form (a multipart file and fields) is one
-  more body on `http`, never a kind.
+  a file with more than one link are refused, in words, as output. The content type is `file()`'s `contentType` or a
+  `content-type` header of the definition's, not both: a definition with both is refused when the Machine loads ("write
+  one of them", as for `auth` beside an `authorization` header). With neither it is `application/octet-stream`. A later
+  body form (a multipart file and fields) is one more body on `http`, never a kind.
 - **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`.** Naming a
   secret is what places it: it runs in the Sandbox Effector of the Workspace whose body invokes it, with no `placement:`
   key. Its child runs as the Effector's uid beside the Effector's key, the secrets it does not name and the push
