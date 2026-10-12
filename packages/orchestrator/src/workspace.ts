@@ -42,6 +42,7 @@ import {
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
 import {
+  actorRoute,
   actorSlotPath,
   assertRepoSlot,
   attachSandboxParts,
@@ -54,6 +55,7 @@ import {
   type JR2Repos,
   type JR2Wrapper,
   type RepoSlot,
+  type PlacementRoute,
   type SandboxParts,
   type WrapperActors,
 } from "./parts.ts";
@@ -182,9 +184,9 @@ export type PlaceRequest = {
   name: string;
   runId: string;
   workflow: string;
-  /** The `customize()` route from the registered Machine to this `workspace()` — undefined past an
-   * inline invoke. With `workflow`, it names the pod whose Held secrets `jr2 up` placed (ADR-0059). */
-  path: string[] | undefined;
+  /** The placement route from the registered Machine to this `workspace()` (`actorRoute`). With
+   * `workflow`, it names the pod whose Held secrets and Sandbox Effector `jr2 up` placed (ADR-0059). */
+  route: PlacementRoute;
   image?: string;
   user?: string;
   workGroup?: number;
@@ -818,8 +820,10 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     // persisted, because a per-run mapper's answer is this run's fact.
     const parts = sandboxPartsOf(invokingMachine(self));
     const user = userSeatOf(parts.user);
-    const route = actorSlotPath(self._parent);
-    const bindings = resolveBindings({ workflow: binding.workflow, path: route }, parts.repos, input.runInput);
+    const path = actorSlotPath(self._parent);
+    // Read before the port: a Workspace no walk can see placed nothing, and is refused with the slot form.
+    const route = actorRoute(self._parent);
+    const bindings = resolveBindings({ workflow: binding.workflow, path }, parts.repos, input.runInput);
     const port = sandboxOf(system);
     const name = workspaceName(binding.runId, input.wsId);
     const wrapper = self._parent;
@@ -846,7 +850,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
         name,
         runId: binding.runId,
         workflow: binding.workflow,
-        path: route,
+        route,
         // The image strings straight through (ADR-0037/0005) — the port owns resolution, and the
         // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
         ...(parts.image !== undefined ? { image: parts.image } : {}),

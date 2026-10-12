@@ -315,6 +315,40 @@ export type CarriedRepo = { url: string; ref?: string; identity: string; key: st
  */
 export type OpenSlot = { slot: string | undefined; path: readonly string[] | undefined };
 
+/**
+ * One hop of a placement route (ADR-0059, ADR-0068): the `actors` slot key a child is invoked by,
+ * or — for a plain child Machine written INLINE on a state's invoke — xstate's generated invoke
+ * src for that hop (`xstate.invoke.<index>.<state id>`), which the static walk computes from the
+ * state node and the run reads off the live child. An inline hop is an object, so it can never
+ * equal a slot key.
+ */
+export type RouteHop = string | { readonly inline: string };
+
+/**
+ * Where a placement sits: the chain of hops from the registered root down to it, a wrapper's
+ * transparent body skipped as {@link OpenSlot}'s `path` skips it. Unlike `path`, a route goes on
+ * past an inline Machine, so every placement — a Workspace's pod, an Effect — has a route of its
+ * own, and the pod keys of two Workspaces never collide. Where `path` is defined the route is that
+ * same list of slot keys, so a pod key reached by slot keys alone is what it was.
+ */
+export type PlacementRoute = readonly RouteHop[];
+
+/** The hop xstate gives the `index`-th invoke of state node `stateId` when its `src` is inline. */
+export const inlineHop = (index: number, stateId: string): RouteHop => ({
+  inline: `xstate.invoke.${index}.${stateId}`,
+});
+
+/** A route as a human reads it, for a label: ` → "review"`, ` → invoked inline in state "w.a"`. */
+export function routeText(route: PlacementRoute): string {
+  return route
+    .map((hop) =>
+      typeof hop === "string"
+        ? ` → "${hop}"`
+        : ` → invoked inline in state "${hop.inline.replace(/^xstate\.invoke\.\d+\./, "")}"`,
+    )
+    .join("");
+}
+
 /** Which kind of Open part a fix line binds — the two `customize()` keys (ADR-0051, ADR-0054). */
 export type OpenPart = "repo" | "agent";
 
@@ -367,6 +401,34 @@ export function actorSlotPath(actor: AnyActorRef | undefined): string[] | undefi
 }
 
 /**
+ * The runtime twin of the walk's `route` (ADR-0059): the placement route from a run's root actor
+ * down to `actor`, read off the live actor tree. A child invoked by a slot key adds that key, as
+ * {@link actorSlotPath} does; a plain Machine invoked inline adds xstate's generated src as an
+ * inline hop, which the walk computes from the state node — so `jr2 up` and the provision derive
+ * one pod key. Never undefined: an actor the walk cannot see — a Machine object handed to
+ * `spawnChild`, whose `src` is the logic itself — is refused with the slot form.
+ */
+export function actorRoute(actor: AnyActorRef | undefined): RouteHop[] {
+  const route: RouteHop[] = [];
+  for (let node = actor; node?._parent; node = node._parent) {
+    const src = (node as { src?: unknown }).src;
+    const parent = asMachine((node._parent as { logic?: unknown }).logic);
+    if (typeof src === "string" && (!parent || Object.hasOwn(parent.implementations.actors, src))) {
+      if (!parent || wrapperBodyOf(parent) !== src) route.unshift(src);
+    } else if (typeof src === "string" && /^xstate\.invoke\.\d+\./.test(src)) {
+      route.unshift({ inline: src });
+    } else {
+      throw new Error(
+        `actor "${node.id}" was spawned from a logic object, which no walk can see, so jr2 up placed nothing ` +
+          "for what it composes — a Part is reached through keys of actors, so it has a name that the ledger, " +
+          'the report and customize() share: actors: { <name>: <machine> }, then spawnChild("<name>") (ADR-0059)',
+      );
+    }
+  }
+  return route;
+}
+
+/**
  * One `workspace()` a Machine composes, and the Size it states (ADR-0060) — what `jr2 up` resolves
  * against the Instance default and splits, so a split that leaves the Harness below its floor is
  * refused at the converge rather than at the first provision, and a Size no Sandbox node could hold
@@ -374,6 +436,8 @@ export function actorSlotPath(actor: AnyActorRef | undefined): string[] | undefi
  */
 export type CarriedSize = {
   path: readonly string[] | undefined;
+  /** The placement route to it (ADR-0059). */
+  route: PlacementRoute;
   /** The Machine's Size, as stated; absent when it states none. */
   resources?: Size;
   /** The User Container's split, as stated; absent when it states none. */
@@ -386,6 +450,8 @@ export type CarriedSize = {
 export type CarriedEffect = {
   name: string;
   path: readonly string[] | undefined;
+  /** The placement route to its Machine (ADR-0068): what its placement key reads, never `path`. */
+  route: PlacementRoute;
   placement: Placement;
   timeoutMs: number;
 } &
@@ -411,7 +477,8 @@ export type CarriedEffect = {
 /** Everything the registered Machines carry that a converge or a boot must act on. */
 export type CarriedParts = {
   agents: CarriedAgent[];
-  /** Every Effect slot, in walk order — one per Machine and slot key. */
+  /** Every Effect slot, in walk order — one per Machine and slot key, at the first route the walk
+   * reached its Machine by. The placement reads {@link placedEffectsOf}: one per route. */
   effects: CarriedEffect[];
   images: CarriedImage[];
   /** Every bound Repo, deduped by identity, in walk order. */
@@ -435,13 +502,14 @@ export function asMachine(logic: unknown): AnyStateMachine | undefined {
   return (logic as AnyStateMachine | undefined)?.root ? (logic as AnyStateMachine) : undefined;
 }
 
-/** Every machine object written INLINE on one state's invokes. A named `src` resolves through
+/** Every machine object written INLINE on one state's invokes, with the hop xstate gives it (its
+ * generated src, from the invoke's index on the state). A named `src` resolves through
  * `implementations.actors` instead and is walked there. */
-function inlineMachines(node: StateNode<any, any>): AnyStateMachine[] {
+function inlineMachines(node: StateNode<any, any>): Array<{ machine: AnyStateMachine; hop: RouteHop }> {
   const config = [node.config.invoke ?? []].flat() as Array<{ src?: unknown }>;
-  return config.flatMap((inv) => {
+  return config.flatMap((inv, index) => {
     const machine = asMachine(inv?.src);
-    return machine ? [machine] : [];
+    return machine ? [{ machine, hop: inlineHop(index, node.id) }] : [];
   });
 }
 
@@ -568,15 +636,11 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     }
   };
 
-  const walkStates = (node: StateNode<any, any>, visit: (machine: AnyStateMachine) => void): void => {
-    for (const machine of inlineMachines(node)) visit(machine);
-    for (const child of Object.values(node.states as Record<string, StateNode<any, any>>)) walkStates(child, visit);
-  };
-
   // `path` is the `customize()` route from the registered root to `machine` (see `OpenSlot`):
   // a named child slot extends it, a wrapper's transparent body does not, and an inline invoke
   // ends it — nothing downstream of an actor without a slot key can be named by a composer.
-  const walk = (machine: AnyStateMachine, path: OpenSlot["path"]): void => {
+  // `route` is the placement route, which an inline invoke extends by its hop (`PlacementRoute`).
+  const walk = (machine: AnyStateMachine, path: OpenSlot["path"], route: PlacementRoute): void => {
     if (walked.has(machine)) return;
     walked.add(machine);
     refuseInlineParts(machine);
@@ -590,6 +654,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
       collectRepos(path, parts.repos);
       sizes.push({
         path,
+        route,
         ...(parts.resources !== undefined ? { resources: parts.resources } : {}),
         ...(user.resources !== undefined ? { user: user.resources } : {}),
       });
@@ -597,26 +662,71 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(path, name, logic.definition);
-      else if (isEffect(logic)) effects.push(carriedEffectOf(name, path, logic.effect));
+      else if (isEffect(logic)) effects.push(carriedEffectOf(name, path, route, logic.effect));
       else {
         const child = asMachine(logic);
-        if (child) walk(child, path === undefined ? undefined : name === body ? path : [...path, name]);
+        if (child) walk(child, slotPath(path, name, body), name === body ? route : [...route, name]);
       }
     }
-    walkStates(machine.root, (inline) => walk(inline, undefined));
+    walkStates(machine.root, (inline, hop) => walk(inline, undefined, [...route, hop]));
   };
 
-  for (const machine of machines) walk(machine, []);
+  for (const machine of machines) walk(machine, [], []);
   return { agents, effects, images, repos, openSlots, openAgents, sizes, composesSandbox: sandboxed };
 }
 
+/** The `customize()` route to a child of slot `name`: a wrapper's body does not extend it. */
+function slotPath(path: OpenSlot["path"], name: string, body: string | undefined): OpenSlot["path"] {
+  return path === undefined ? undefined : name === body ? path : [...path, name];
+}
+
+/**
+ * Every Effect the registered Machine `root` places, at every route it is reached by — one entry
+ * per route, as {@link workspacePodsOf} lists pods: a Machine invoked under two slot keys places
+ * its Effects twice, and each is checked where it is. What the placement walk reads (ADR-0068),
+ * never {@link partsOf}'s list, which holds one entry per Machine. A cycle (a recursive pool
+ * worker) stops at the Machine on its own route.
+ */
+export function placedEffectsOf(root: AnyStateMachine): CarriedEffect[] {
+  const effects: CarriedEffect[] = [];
+  const walk = (
+    machine: AnyStateMachine,
+    path: OpenSlot["path"],
+    route: PlacementRoute,
+    on: Set<AnyStateMachine>,
+  ): void => {
+    if (on.has(machine)) return;
+    on.add(machine);
+    const body = wrapperBodyOf(machine);
+    for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
+      if (isAgent(logic)) continue;
+      if (isEffect(logic)) {
+        effects.push(carriedEffectOf(name, path, route, logic.effect));
+        continue;
+      }
+      const child = asMachine(logic);
+      if (child) walk(child, slotPath(path, name, body), name === body ? route : [...route, name], on);
+    }
+    walkStates(machine.root, (inline, hop) => walk(inline, undefined, [...route, hop], on));
+    on.delete(machine);
+  };
+  walk(root, [], [], new Set());
+  return effects;
+}
+
 /** One Effect slot's plain data, as `jr2 up` and the placement read it. */
-export function carriedEffectOf(name: string, path: OpenSlot["path"], parts: EffectParts): CarriedEffect {
+export function carriedEffectOf(
+  name: string,
+  path: OpenSlot["path"],
+  route: PlacementRoute,
+  parts: EffectParts,
+): CarriedEffect {
   const placement = placementOf(parts);
   if (parts.kind === "http") {
     return {
       name,
       path,
+      route,
       kind: "http",
       placement,
       method: parts.method,
@@ -633,6 +743,7 @@ export function carriedEffectOf(name: string, path: OpenSlot["path"], parts: Eff
     return {
       name,
       path,
+      route,
       kind: "push",
       placement,
       sign,
@@ -648,6 +759,7 @@ export function carriedEffectOf(name: string, path: OpenSlot["path"], parts: Eff
   return {
     name,
     path,
+    route,
     kind: "command",
     placement,
     argv: argvText(argv),
@@ -661,11 +773,13 @@ export function carriedEffectOf(name: string, path: OpenSlot["path"], parts: Eff
 /**
  * One Workspace a Machine composes, as its pod's Held secrets are placed (ADR-0059): what the pod
  * names. Located like a {@link CarriedSize} — `path` is the `customize()` route to its
- * `workspace()`, the same route the run host reads off the live actor at provision
- * (`actorSlotPath`), so `jr2 up` and the provision name one pod alike.
+ * `workspace()`, and `route` its placement route, the same route the run host reads off the live
+ * actor at provision (`actorRoute`), so `jr2 up` and the provision name one pod alike.
  */
 export type WorkspacePod = {
   path: readonly string[] | undefined;
+  /** The pod's placement route: what its pod key reads (`workspaceHeldPod`). */
+  route: PlacementRoute;
   /** The `workspace()`'s own `secrets: [...]`, as written. */
   secrets: string[];
   /** The model of every bound Agent whose Turn runs in this pod: each Agent below the
@@ -699,15 +813,16 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
   const modelsIn = (
     machine: AnyStateMachine,
     models: Set<string>,
-    route: Set<AnyStateMachine>,
+    on: Set<AnyStateMachine>,
     effects: Map<string, CarriedEffect>,
     path: OpenSlot["path"],
+    route: PlacementRoute,
   ): void => {
-    if (route.has(machine)) return;
-    route.add(machine);
+    if (on.has(machine)) return;
+    on.add(machine);
     const body = wrapperBodyOf(machine);
-    const visit = (child: AnyStateMachine, at: OpenSlot["path"]) => {
-      if (!composesSandbox(child)) modelsIn(child, models, route, effects, at);
+    const visit = (child: AnyStateMachine, at: OpenSlot["path"], to: PlacementRoute) => {
+      if (!composesSandbox(child)) modelsIn(child, models, on, effects, at, to);
     };
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) {
@@ -716,23 +831,28 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
         continue;
       }
       if (isEffect(logic)) {
-        const effect = carriedEffectOf(name, path, logic.effect);
-        if (effect.placement === "sandbox") effects.set(JSON.stringify([path ?? null, name]), effect);
+        const effect = carriedEffectOf(name, path, route, logic.effect);
+        if (effect.placement === "sandbox") effects.set(JSON.stringify([route, name]), effect);
         continue;
       }
       const child = asMachine(logic);
-      if (child) visit(child, path === undefined ? undefined : name === body ? path : [...path, name]);
+      if (child) visit(child, slotPath(path, name, body), name === body ? route : [...route, name]);
     }
-    walkStates(machine.root, (inline) => visit(inline, undefined));
-    route.delete(machine);
+    walkStates(machine.root, (inline, hop) => visit(inline, undefined, [...route, hop]));
+    on.delete(machine);
   };
-  const walk = (machine: AnyStateMachine, path: OpenSlot["path"], route: Set<AnyStateMachine>): void => {
-    if (route.has(machine)) return;
-    route.add(machine);
+  const walk = (
+    machine: AnyStateMachine,
+    path: OpenSlot["path"],
+    route: PlacementRoute,
+    on: Set<AnyStateMachine>,
+  ): void => {
+    if (on.has(machine)) return;
+    on.add(machine);
     if (composesSandbox(machine)) {
       const models = new Set<string>();
       const effects = new Map<string, CarriedEffect>();
-      modelsIn(machine, models, new Set(), effects, path);
+      modelsIn(machine, models, new Set(), effects, path, route);
       const parts = sandboxPartsOf(machine);
       const bindings: Record<string, string | undefined> = {};
       if (parts.repos !== open) {
@@ -743,6 +863,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
       }
       pods.push({
         path,
+        route,
         secrets: [...(parts.secrets ?? [])],
         models: [...models].sort(),
         effects: [...effects.values()],
@@ -754,17 +875,17 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       const child = isAgent(logic) || isEffect(logic) ? undefined : asMachine(logic);
-      if (child) walk(child, path === undefined ? undefined : name === body ? path : [...path, name], route);
+      if (child) walk(child, slotPath(path, name, body), name === body ? route : [...route, name], on);
     }
-    walkStates(machine.root, (inline) => walk(inline, undefined, route));
-    route.delete(machine);
+    walkStates(machine.root, (inline, hop) => walk(inline, undefined, [...route, hop], on));
+    on.delete(machine);
   };
-  walk(root, [], new Set());
+  walk(root, [], [], new Set());
   return pods;
 }
 
-/** Every machine object written inline below `node`, at any depth of its state tree. */
-function walkStates(node: StateNode<any, any>, visit: (machine: AnyStateMachine) => void): void {
-  for (const machine of inlineMachines(node)) visit(machine);
+/** Every machine object written inline below `node`, at any depth of its state tree, with its hop. */
+function walkStates(node: StateNode<any, any>, visit: (machine: AnyStateMachine, hop: RouteHop) => void): void {
+  for (const { machine, hop } of inlineMachines(node)) visit(machine, hop);
   for (const child of Object.values(node.states as Record<string, StateNode<any, any>>)) walkStates(child, visit);
 }

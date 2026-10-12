@@ -25,6 +25,7 @@ import { isIP } from "node:net";
 import type { JR2Config, HarnessEnvVar } from "./config.ts";
 import { MODEL_KEYS, MODEL_KEY_PROVIDERS, SIGNING_CREDENTIALS } from "./model-keys.ts";
 import { HELD_CA_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, INSTANCE_EFFECTOR, INSTANCE_SECRET } from "./names.ts";
+import type { PlacementRoute } from "./parts.ts";
 
 /** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, each
  * pod's literal held values, the leaves, the CA, and every Effector's (ADR-0068) — the Instance
@@ -41,13 +42,14 @@ const isKitSecret = (name: string): boolean =>
   (name.startsWith("ws-") && name.endsWith("-effector"));
 
 /**
- * The pod key of one Workspace (ADR-0059): its registered workflow and the `customize()` route to its
- * `workspace()` — what `jr2 up` reads off the walk and the run host off the live actor
- * (`actorSlotPath`), so both name one pod alike. A digest, so it is a name a Secret and a ConfigMap
- * key can carry; `ws-` keeps it apart from the Instance Harness's.
+ * The pod key of one Workspace (ADR-0059): its registered workflow and the placement route to its
+ * `workspace()` (`PlacementRoute`) — what `jr2 up` reads off the walk and the run host off the live
+ * actor (`actorRoute`), so both name one pod alike. Every Workspace has a route of its own, an
+ * inline-invoked one included, so two Workspaces never share a key. A digest, so it is a name a
+ * Secret and a ConfigMap key can carry; `ws-` keeps it apart from the Instance Harness's.
  */
-export function workspaceHeldPod(at: { workflow: string; path: readonly string[] | undefined }): string {
-  const key = JSON.stringify([at.workflow, at.path ?? null]);
+export function workspaceHeldPod(at: { workflow: string; route: PlacementRoute }): string {
+  const key = JSON.stringify([at.workflow, at.route]);
   return `ws-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
 }
 

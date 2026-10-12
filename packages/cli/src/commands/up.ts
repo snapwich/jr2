@@ -71,6 +71,7 @@ import {
   machineBodies,
   matchCredential,
   partsOf,
+  placedEffectsOf,
   workspacePodsOf,
   refuseEffectSecrets,
   LABEL_EFFECTOR_POD,
@@ -318,7 +319,8 @@ export async function up(args: string[], io: Io): Promise<number> {
     .filter((a) => a.definition.workspace === "none" && typeof a.definition.model === "string")
     .map((a) => a.definition.model as string);
   const placementWalk: PlacementWalk = {
-    effects: workflows.flatMap((w) => partsOf([w.machine]).effects.map((effect) => ({ workflow: w.name, effect }))),
+    // Per route, not per Machine object: a Machine placed twice is checked where each copy runs (ADR-0068).
+    effects: workflows.flatMap((w) => placedEffectsOf(w.machine).map((effect) => ({ workflow: w.name, effect }))),
     workspaces: workflows.flatMap((w) => workspacePodsOf(w.machine).map((pod) => ({ workflow: w.name, pod }))),
     ...(agents.some((a) => a.definition.workspace === "none")
       ? { instanceHarness: { models: [...new Set(menuOnlyModels)].sort() } }

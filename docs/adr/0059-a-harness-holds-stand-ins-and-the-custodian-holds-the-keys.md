@@ -210,8 +210,12 @@ decision generalizes that container. It holds every credential the Harness in it
   pod no longer needs. `jr2-held-tls` (every bound target's leaf) and `jr2-held-ca` are the Instance's. The Orchestrator
   mounts `jr2-held` at `/etc/jr2/held` and reads the manifest of the Workspace it provisions, per provision — the
   `jr2-images` pattern ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)); a Workspace `jr2 up` never walked has
-  none, and its provision is refused, naming `jr2 up`. Two Workspaces of one workflow invoked inline have no route, so
-  they are one pod key; `jr2 up` refuses them when they would hold different names. One function,
+  none, and its provision is refused, naming `jr2 up`. A pod key is the workflow and the Workspace's placement route:
+  the `actors` slot keys down to its `workspace()`, a wrapper's body skipped, where a plain Machine invoked inline adds
+  xstate's generated invoke src for that hop (`xstate.invoke.<index>.<state id>`), held so it can never equal a slot
+  key. `jr2 up` computes it from the state node, and the provision reads it off the live actor tree, so both derive one
+  key; every Workspace has its own, and a key reached by slot keys alone is what it was. A Workspace reached through a
+  Machine object handed to `spawnChild`, which no walk can see, fails at provision with the slot form. One function,
   `custodianComposition`, builds what a pod gains from its pod's manifest; `kubeSandbox` and `instanceHarnessObjects`
   both call it, so the two pod shapes cannot drift. The Instance Harness's pod template carries `jr2.dev/held-digest`,
   an HMAC over its pod's held-secret inputs keyed with the signing key, so a held-secret edit rolls it at the next

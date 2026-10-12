@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import type { JR2Config } from "../src/config.ts";
 import { heldSecretsOf, workspaceHeldPod } from "../src/held-secrets.ts";
-import { partsOf, workspacePodsOf, type CarriedEffect, type WorkspacePod } from "../src/parts.ts";
+import { partsOf, placedEffectsOf, workspacePodsOf, type CarriedEffect, type WorkspacePod } from "../src/parts.ts";
 import { bearer, file, http, secret } from "../src/http-effect.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
@@ -28,6 +28,7 @@ const httpEffect = (name: string, secrets: string[], extra: Partial<CarriedEffec
   effect: {
     name,
     path: [],
+    route: [],
     kind: "http",
     placement: "instance",
     method: "POST",
@@ -41,13 +42,13 @@ const httpEffect = (name: string, secrets: string[], extra: Partial<CarriedEffec
 
 const ws = (pod: Partial<WorkspacePod> = {}, workflow = "ticket") => ({
   workflow,
-  pod: { path: [], secrets: [], models: [], effects: [], bindings: {}, ...pod } as WorkspacePod,
+  pod: { path: [], route: [], secrets: [], models: [], effects: [], bindings: {}, ...pod } as WorkspacePod,
 });
 
 const walk = (w: Partial<PlacementWalk>): PlacementWalk => ({ effects: [], workspaces: [], ...w });
 
 const heldIn = (out: ReturnType<typeof secretPlacementsOf>, pod: string) => out.held.find((p) => p.pod === pod)?.names;
-const ROOT = workspaceHeldPod({ workflow: "ticket", path: [] });
+const ROOT = workspaceHeldPod({ workflow: "ticket", route: [] });
 
 test("a Workspace holds what its workspace() lists and its Agents' providers claim; the Instance Harness its 'none' Agents' keys only", () => {
   const config: JR2Config = {
@@ -120,7 +121,7 @@ test("both is both, reported per pod: Held where a workspace() lists it, and an 
     config,
     walk({
       effects: [httpEffect("mirror", ["SHARED_KEY"])],
-      workspaces: [ws({ secrets: ["SHARED_KEY"] }), ws({ path: ["review"] })],
+      workspaces: [ws({ secrets: ["SHARED_KEY"] }), ws({ path: ["review"], route: ["review"] })],
     }),
   );
   assert.deepEqual(out.report, [
@@ -129,7 +130,7 @@ test("both is both, reported per pod: Held where a workspace() lists it, and an 
     'Workspace of workflow "ticket" → "review": Custodian holds nothing',
     "the Instance Effector: holds SHARED_KEY",
   ]);
-  assert.deepEqual(heldIn(out, workspaceHeldPod({ workflow: "ticket", path: ["review"] })), []);
+  assert.deepEqual(heldIn(out, workspaceHeldPod({ workflow: "ticket", route: ["review"] })), []);
   assert.deepEqual(out.instance?.values, { SHARED_KEY: VALUE });
 });
 
@@ -170,23 +171,15 @@ test("a workspace() that lists a name the secrets list does not hold is refused 
   );
 });
 
-test("two inline Workspaces of one workflow that would hold different names are refused; the same names are one pod", () => {
+test("two Workspaces that would share a pod key are a defect of the walk, never one pod (ADR-0059)", () => {
+  // Every Workspace has a route of its own, an inline-invoked one included, so no two share a key;
+  // one that did would place one Workspace's secrets in the other's pod.
   const config: JR2Config = { secrets: [{ name: "JIRA_TOKEN", value: VALUE, hosts: ["jira.example.com"] }] };
+  const twice = { path: undefined, route: [{ inline: "xstate.invoke.0.w.a" }] } as Partial<WorkspacePod>;
   assert.throws(
-    () =>
-      secretPlacementsOf(
-        config,
-        walk({ workspaces: [ws({ path: undefined, secrets: ["JIRA_TOKEN"] }), ws({ path: undefined })] }),
-      ),
-    /invokes two workspace\(\)s inline whose pods would hold different Held secrets/,
+    () => secretPlacementsOf(config, walk({ workspaces: [ws({ ...twice, secrets: ["JIRA_TOKEN"] }), ws(twice)] })),
+    /two Workspaces share the pod key ws-[0-9a-f]{16} .*a defect of the walk/,
   );
-  const same = secretPlacementsOf(
-    config,
-    walk({
-      workspaces: [ws({ path: undefined, secrets: ["JIRA_TOKEN"] }), ws({ path: undefined, secrets: ["JIRA_TOKEN"] })],
-    }),
-  );
-  assert.equal(same.held.length, 1);
 });
 
 test("an Effect secret shorter than 8 characters is refused, and says why", () => {
@@ -317,6 +310,7 @@ const fileBodyHttp = (name: string, secrets: string[]): CarriedEffect =>
   ({
     name,
     path: [],
+    route: [],
     kind: "http",
     file: true,
     placement: "sandbox",
@@ -330,6 +324,7 @@ const credentialed = (name: string, secrets: string[]): CarriedEffect =>
   ({
     name,
     path: [],
+    route: [],
     kind: "command",
     placement: "sandbox",
     argv: ["terraform", "apply"],
@@ -340,6 +335,7 @@ const pusher = (name: string, extra: Partial<Extract<CarriedEffect, { kind: "pus
   ({
     name,
     path: [],
+    route: [],
     kind: "push",
     placement: "sandbox",
     sign: false,
@@ -591,10 +587,7 @@ test("a file-body http no workspace() invokes is refused by its path, though a w
       ws: workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }),
     },
   }).createMachine({ id: "outer" });
-  const placed: PlacementWalk = {
-    effects: partsOf([outer]).effects.map((effect) => ({ workflow: "w", effect })),
-    workspaces: workspacePodsOf(outer).map((pod) => ({ workflow: "w", pod })),
-  };
+  const placed = placementOf("w", outer);
   assert.deepEqual(
     placed.effects.map((p) => p.effect.name),
     ["report", "report"],
@@ -608,7 +601,7 @@ test("a file-body http no workspace() invokes is refused by its path, though a w
 
   // The Workspace's own one alone is placed in its Sandbox Effector, and its secret is labelled so.
   const inside: PlacementWalk = {
-    effects: placed.effects.filter((p) => p.effect.path?.length),
+    effects: placed.effects.filter((p) => p.effect.route.length),
     workspaces: placed.workspaces,
   };
   assert.equal(inside.effects.length, 1);
@@ -617,4 +610,105 @@ test("a file-body http no workspace() invokes is refused by its path, though a w
     out.report[0]!,
     /^secret files: an Effect secret in the Sandbox Effector of Workspace of workflow "w" → "ws" \(w\/report\)$/,
   );
+});
+
+/** What jr2 up walks for one registered Machine: its Effects at every route, its Workspaces. */
+const placementOf = (workflow: string, machine: Parameters<typeof workspacePodsOf>[0]): PlacementWalk => ({
+  effects: placedEffectsOf(machine).map((effect) => ({ workflow, effect })),
+  workspaces: workspacePodsOf(machine).map((pod) => ({ workflow, pod })),
+});
+
+/** A plain Machine whose one state invokes `inner` inline. */
+const invokingInline = (id: string, inner: unknown) =>
+  jr2Setup({ events: [] }).createMachine({ id, initial: "a", states: { a: { invoke: { src: inner as never } } } });
+
+test("a file-body http in an inline plain Machine is refused, though another inline Machine holds a workspace() with one of the same slot name (ADR-0068)", () => {
+  // Every placement has a route of its own: an inline hop is xstate's generated invoke src, so the
+  // two `report`s below the two inline Machines are two Effects, and only one is in a Workspace.
+  const report = () =>
+    http({ method: "PUT", url: "https://files.example.com/r", body: file("r"), auth: bearer(secret("files")) });
+  const inner = jr2Setup({ events: [], actors: { report: report() } }).createMachine({ id: "inner" });
+  const withWs = jr2Setup({
+    events: [],
+    actors: { ws: workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }) },
+  }).createMachine({ id: "withWs", initial: "a", states: { a: { invoke: { src: "ws" } } } });
+  const bare = jr2Setup({ events: [], actors: { report: report() } }).createMachine({ id: "bare" });
+  const root = jr2Setup({ events: [] }).createMachine({
+    id: "w",
+    type: "parallel",
+    states: { one: { invoke: { src: withWs } }, two: { invoke: { src: bare } } },
+  });
+  const placed = placementOf("w", root);
+  assert.deepEqual(
+    placed.effects.map((p) => [p.effect.name, p.effect.path, p.effect.route]),
+    [
+      ["report", undefined, [{ inline: "xstate.invoke.0.w.one" }, "ws"]],
+      ["report", undefined, [{ inline: "xstate.invoke.0.w.two" }]],
+    ],
+    "two routes; `path` stays undefined past an inline Machine",
+  );
+  const config: JR2Config = { secrets: [{ name: "files", value: VALUE }] };
+  assert.throws(
+    () => refuseEffectSecrets(config, placed),
+    /workflow "w": the http Effect "report" sends a Worktree file as its body, and no workspace\(\) invokes it/,
+  );
+});
+
+test("two Workspaces composed through inline plain Machines each get their own Sandbox Effector plan and secret (ADR-0059, ADR-0068)", () => {
+  const upload = (name: string) =>
+    http({ method: "PUT", url: "https://files.example.com/r", body: file("r"), auth: bearer(secret(name)) });
+  const composing = (id: string, name: string) => {
+    const inner = jr2Setup({ events: [], actors: { report: upload(name) } }).createMachine({ id: `${id}-inner` });
+    const ws = workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
+    return jr2Setup({ events: [], actors: { ws } }).createMachine({
+      id,
+      initial: "a",
+      states: { a: { invoke: { src: "ws" } } },
+    });
+  };
+  const root = jr2Setup({ events: [] }).createMachine({
+    id: "w",
+    type: "parallel",
+    states: { one: { invoke: { src: composing("p1", "alpha") } }, two: { invoke: { src: composing("p2", "bravo") } } },
+  });
+  const config: JR2Config = {
+    secrets: [
+      { name: "alpha", value: VALUE },
+      { name: "bravo", value: VALUE },
+    ],
+  };
+  const out = secretPlacementsOf(config, placementOf("w", root));
+  assert.deepEqual(
+    out.sandbox.map((p) => [p.label, p.secrets.map((s) => s.name)]),
+    [
+      ['Workspace of workflow "w" → invoked inline in state "w.one" → "ws"', ["alpha"]],
+      ['Workspace of workflow "w" → invoked inline in state "w.two" → "ws"', ["bravo"]],
+    ],
+  );
+  assert.notEqual(out.sandbox[0]!.pod, out.sandbox[1]!.pod, "two pod keys");
+  assert.match(
+    out.report.join("\n"),
+    /secret bravo: an Effect secret in the Sandbox Effector of Workspace of workflow "w" → invoked inline in state "w\.two" → "ws" \(w\/report\)/,
+  );
+});
+
+test("a Machine placed twice — { ws: workspace(M), plain: M } — is refused for its route outside the Workspace, in both key orders (ADR-0068)", () => {
+  const report = http({
+    method: "PUT",
+    url: "https://files.example.com/r",
+    body: file("r"),
+    auth: bearer(secret("files")),
+  });
+  const config: JR2Config = { secrets: [{ name: "files", value: VALUE }] };
+  for (const wsFirst of [true, false]) {
+    const m = jr2Setup({ events: [], actors: { report } }).createMachine({ id: "m" });
+    const ws = workspace(m, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
+    const actors = wsFirst ? { ws, plain: m } : { plain: m, ws };
+    const root = jr2Setup({ events: [], actors }).createMachine({ id: "w" });
+    assert.throws(
+      () => refuseEffectSecrets(config, placementOf("w", root)),
+      /workflow "w": the http Effect "report" sends a Worktree file as its body, and no workspace\(\) invokes it/,
+      wsFirst ? "ws first" : "plain first",
+    );
+  }
 });

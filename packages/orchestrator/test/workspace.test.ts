@@ -5,12 +5,13 @@
 // cluster itself is e2e-tier.
 
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { assign, fromPromise, setup } from "xstate";
+import { assign, fromPromise, setup, spawnChild } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { customize } from "../src/customize.ts";
-import { open, sandboxPartsOf, workspacePodsOf } from "../src/parts.ts";
+import { open, sandboxPartsOf, workspacePodsOf, type PlacementRoute } from "../src/parts.ts";
 import { workspaceHeldPod } from "../src/held-secrets.ts";
 import {
   leaseDelay,
@@ -107,7 +108,7 @@ class FakeSandbox implements SandboxPort {
   /** The Size each provision was handed, as the Machine states it (ADR-0060). */
   sizes: Array<{ resources?: unknown; userResources?: unknown }> = [];
   /** The `customize()` route each provision was asked for, read off the live actor (ADR-0059). */
-  paths: Array<readonly string[] | undefined> = [];
+  routes: PlacementRoute[] = [];
   /** What each attach was asked to attach — the persisted bindings, as the port sees them. */
   attached: Array<Array<{ slot: string; url: string; ref?: string }>> = [];
 
@@ -120,7 +121,7 @@ class FakeSandbox implements SandboxPort {
     this.images.push(req.image);
     this.composition.push({ user: req.user, workGroup: req.workGroup });
     this.repos.push(req.repos);
-    this.paths.push(req.path);
+    this.routes.push(req.route);
     this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
     if (!this.holdPlacing) return;
     await new Promise<void>((resolve, reject) => {
@@ -620,9 +621,9 @@ const recorder = jr2Setup({
 
 test("a provision reads the pod key jr2 up writes, at every route an author can write; an inline workspace() is refused (ADR-0059, ADR-0049)", async () => {
   // `jr2 up` keys each Workspace's held manifest by the walk's route; the provision keys its read by
-  // the route off the live actor. An inline `invoke: { src: ws }` would have no slot key on either
-  // side — xstate's generated `xstate.invoke.<n>.<id>` is no route — so a Workspace, like every
-  // Part, is a key of `actors`, and the build refuses the inline form with the slot form.
+  // the route off the live actor (`actorRoute`). A Workspace, like every Part, is a key of `actors`,
+  // and the build refuses the inline form with the slot form; a plain Machine invoked inline above
+  // it is a hop of its own — xstate's generated src, which the walk computes from the state node.
   const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
   const invoking = (id: string, src: unknown, actors: Record<string, unknown> = {}) =>
     jr2Setup({ events: [], actors: actors as never }).createMachine({
@@ -639,22 +640,66 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
     root: ws,
     named,
     nested: invoking("nested", "outer", { outer: named }),
+    inline: invoking("inline-above", named),
+    "inline-twice": invoking("twice", invoking("inner", named)),
+  };
+  const routes: Record<string, unknown[]> = {
+    root: [],
+    named: ["review"],
+    nested: ["outer", "review"],
+    inline: [{ inline: "xstate.invoke.0.inline-above.x" }, "review"],
+    "inline-twice": [{ inline: "xstate.invoke.0.twice.x" }, { inline: "xstate.invoke.0.inner.x" }, "review"],
   };
   for (const [workflow, machine] of Object.entries(shapes)) {
     const sandbox = new FakeSandbox();
     const host = new RunHost({ store: await mkStore(), sandbox });
     host.register({ name: workflow, machine: machine as never, provide: () => ({}) });
     await host.start(workflow);
-    await waitFor(() => sandbox.paths.length === 1);
+    await waitFor(() => sandbox.routes.length === 1);
     const walked = workspacePodsOf(machine as never);
     assert.equal(walked.length, 1, workflow);
-    assert.deepEqual(sandbox.paths[0], walked[0]!.path, `${workflow}: the live route is the walk's`);
+    assert.deepEqual(walked[0]!.route, routes[workflow], `${workflow}: the walk's route`);
+    assert.deepEqual(sandbox.routes[0], walked[0]!.route, `${workflow}: the live route is the walk's`);
     assert.equal(
-      workspaceHeldPod({ workflow, path: sandbox.paths[0] }),
-      workspaceHeldPod({ workflow, path: walked[0]!.path }),
+      workspaceHeldPod({ workflow, route: sandbox.routes[0]! }),
+      workspaceHeldPod({ workflow, route: walked[0]!.route }),
       `${workflow}: one pod key`,
     );
   }
+  // A pod key reached by slot keys alone is what it was before routes went on past an inline hop.
+  assert.equal(
+    workspaceHeldPod({ workflow: "nested", route: ["outer", "review"] }),
+    `ws-${createHash("sha256")
+      .update(JSON.stringify(["nested", ["outer", "review"]]))
+      .digest("hex")
+      .slice(0, 16)}`,
+  );
+});
+
+test("a Workspace reached through a Machine handed to spawnChild as an object fails at provision with the slot form (ADR-0059)", async () => {
+  // No walk can see it, so jr2 up placed nothing for it: its provision names the fix, never a pod.
+  const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
+  const holder = jr2Setup({ events: [], actors: { review: ws } }).createMachine({
+    id: "holder",
+    initial: "x",
+    states: { x: { invoke: { src: "review", onDone: "done" } }, done: { type: "final" } },
+  });
+  const root = jr2Setup({ events: [] }).createMachine({
+    id: "spawner",
+    entry: spawnChild(holder as never),
+    initial: "waiting",
+    states: { waiting: {} },
+  });
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "spawner", machine: root as never, provide: () => ({}) });
+  const { runId } = await host.start("spawner");
+  await waitFor(() => host.status(runId) === undefined);
+  assert.match(
+    (await host.read(runId))?.fault ?? "",
+    /spawned from a logic object, which no walk can see.*spawnChild\("<name>"\)/,
+  );
+  assert.deepEqual(sandbox.routes, [], "nothing was provisioned");
 });
 
 test("slots resolve in declaration order; the handles are keyed by slot, in that order, and name no workdir", async () => {

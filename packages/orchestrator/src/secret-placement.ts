@@ -29,7 +29,7 @@ import {
 import type { JR2Config } from "./config.ts";
 import { declaredPushKinds, pushRefusal } from "./git-push.ts";
 import { INSTANCE_HARNESS_HELD_POD } from "./names.ts";
-import type { CarriedEffect, WorkspacePod } from "./parts.ts";
+import { routeText, type CarriedEffect, type WorkspacePod } from "./parts.ts";
 
 /** The shortest Effect secret jr2 accepts (ADR-0068) — the Effector refuses a shorter file at start. */
 export const EFFECT_SECRET_MIN_LENGTH = 8;
@@ -225,7 +225,11 @@ export function secretPlacementsOf(
   for (const ws of walk.workspaces) {
     if (ws.pod.effects.length === 0) continue;
     const plan = sandboxPlanOf(config, ws, secrets, values);
-    if (sandbox.some((p) => p.pod === plan.pod)) continue;
+    // Every Workspace has a route of its own (ADR-0059), so no two plans share a pod key; one that
+    // did would give a Workspace's Effector another's secrets, and is a defect of the walk.
+    if (sandbox.some((p) => p.pod === plan.pod)) {
+      throw new Error(`jr2: two Workspaces share the pod key ${plan.pod} (${plan.label}) — a defect of the walk`);
+    }
     sandbox.push(plan);
     const holds = plan.secrets.map((s) => s.name);
     // Exact for a slot the Machine binds; for one the run or a customize() binds, the entry is
@@ -268,7 +272,7 @@ function sandboxPlanOf(
   const commands = ws.pod.effects.some((e) => e.kind === "command" && (e.secrets?.length ?? 0) > 0);
   return {
     placement: "sandbox",
-    pod: workspaceHeldPod({ workflow: ws.workflow, path: ws.pod.path }),
+    pod: workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route }),
     label: workspaceLabel(ws),
     ...(ws.pod.effector ? { image: ws.pod.effector.image } : {}),
     ...(ws.pod.image !== undefined ? { sandboxImage: ws.pod.image } : {}),
@@ -339,19 +343,17 @@ function effectorPlan(http: HttpPlaced[], secrets: EffectSecret[], values: Recor
 
 type HttpPlaced = { workflow: string; effect: Extract<CarriedEffect, { method: string }> };
 
-/** A Workspace as a human reads it: its workflow and the `customize()` route to it. */
+/** A Workspace as a human reads it: its workflow and the placement route to it, an inline hop as
+ * `invoked inline in state <id>`. */
 function workspaceLabel({ workflow, pod }: PlacedWorkspace): string {
-  if (pod.path === undefined) return `Workspace of workflow "${workflow}" (invoked inline)`;
-  const route = pod.path.map((k) => ` → "${k}"`).join("");
-  return `Workspace of workflow "${workflow}"${route}`;
+  return `Workspace of workflow "${workflow}"${routeText(pod.route)}`;
 }
 
 /**
  * Each Harness pod and the Held secrets it gets: a Workspace's `secrets` plus its Agents' providers'
  * claims, the Instance Harness's `"none"` Agents' claims. A `workspace()` that lists a name the list
- * does not hold is refused with the line to add. Two Workspaces of one workflow that the walk cannot
- * tell apart (each invoked inline, so neither has a route) are one pod key, and are refused when
- * they would hold different names — the provision could not tell which one it places.
+ * does not hold is refused with the line to add. Every Workspace has a route of its own, an
+ * inline-invoked one included, so no two pods share a key.
  */
 function heldPodsOf(
   config: JR2Config,
@@ -377,20 +379,15 @@ function heldPodsOf(
     const byProvider = providerClaims(config, ws.pod.models);
     for (const name of ws.pod.secrets) if (byProvider.includes(name)) redundant.push({ label, name });
     const plan: HeldPodPlan = {
-      pod: workspaceHeldPod({ workflow: ws.workflow, path: ws.pod.path }),
+      pod: workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route }),
       label,
       names: ordered([...ws.pod.secrets, ...byProvider]),
       byProvider: ordered(byProvider),
     };
-    const same = pods.find((p) => p.pod === plan.pod);
-    if (same === undefined) pods.push(plan);
-    else if (same.names.join() !== plan.names.join()) {
-      throw new Error(
-        `workflow "${ws.workflow}" invokes two workspace()s inline whose pods would hold different Held secrets ` +
-          `(${same.names.join(", ") || "none"} and ${plan.names.join(", ") || "none"}) — a Workspace with no ` +
-          "customize() route cannot be told from another at provision. Declare each under setup({ actors }) (ADR-0059)",
-      );
+    if (pods.some((p) => p.pod === plan.pod)) {
+      throw new Error(`jr2: two Workspaces share the pod key ${plan.pod} (${label}) — a defect of the walk`);
     }
+    pods.push(plan);
   }
   if (walk.instanceHarness) {
     const byProvider = ordered(providerClaims(config, walk.instanceHarness.models));
@@ -416,10 +413,10 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
   const http = walk.effects.filter(
     (p): p is HttpPlaced => p.effect.kind === "http" && p.effect.placement === "instance",
   );
-  // Keyed by the Effect's route and slot name, as workspacePodsOf keys a pod's Effects: two slots of
-  // one name in one workflow — one in a workspace(), one outside it — are two Effects.
-  const keyOf = (workflow: string, effect: CarriedEffect) =>
-    JSON.stringify([workflow, effect.path ?? null, effect.name]);
+  // Keyed by the Effect's placement route and slot name, as workspacePodsOf keys a pod's Effects:
+  // two slots of one name in one workflow — one in a workspace(), one outside it — are two Effects,
+  // and so is one Machine's slot reached by two routes (ADR-0068).
+  const keyOf = (workflow: string, effect: CarriedEffect) => JSON.stringify([workflow, effect.route, effect.name]);
   const sandboxOf = new Map<string, string>();
   for (const ws of walk.workspaces) {
     for (const e of ws.pod.effects)

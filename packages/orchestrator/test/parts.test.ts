@@ -272,7 +272,7 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
     openAgents: [],
     // The Workspace states no Size, and is still reported: the converge resolves it against the
     // Instance default and the kit's, and splits it (ADR-0060).
-    sizes: [{ path: ["feature"] }],
+    sizes: [{ path: ["feature"], route: ["feature"] }],
     composesSandbox: true,
   });
 });
@@ -538,8 +538,13 @@ test("the walk reports every workspace()'s Size and User Container split, locate
   });
   const parts = partsOf([top, unsized]);
   assert.deepEqual(parts.sizes, [
-    { path: ["review"], resources: { limits: { memory: "3Gi" } }, user: { limits: { memory: "256Mi" } } },
-    { path: [] },
+    {
+      path: ["review"],
+      route: ["review"],
+      resources: { limits: { memory: "3Gi" } },
+      user: { limits: { memory: "256Mi" } },
+    },
+    { path: [], route: [] },
   ]);
   // The object form's image is still a part the walk collects — a `file:` context would be built.
   assert.equal(partsOf([carrier("plain", "coder", "p/m")]).sizes.length, 0, "no workspace(), no Size");
@@ -560,6 +565,7 @@ test("an Effect slot is carried as plain data: its kind, where it runs, its argv
     {
       name: "lint",
       path: [],
+      route: [],
       kind: "command",
       placement: "harness",
       argv: ["pnpm", "lint", "<path>"],
@@ -608,13 +614,13 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
   };
   const innerPod = { secrets: ["INNER_KEY"], models: ["xai/grok"], effects: [], bindings };
   assert.deepEqual(workspacePodsOf(root), [
-    { path: ["a"], ...outerPod },
-    { path: ["a", "nested"], ...innerPod },
+    { path: ["a"], route: ["a"], ...outerPod },
+    { path: ["a", "nested"], route: ["a", "nested"], ...innerPod },
     // The same workspace() under a second slot key is a second pod.
-    { path: ["b"], ...outerPod },
-    { path: ["b", "nested"], ...innerPod },
+    { path: ["b"], route: ["b"], ...outerPod },
+    { path: ["b", "nested"], route: ["b", "nested"], ...innerPod },
   ]);
-  assert.deepEqual(workspacePodsOf(outer)[0], { path: [], ...outerPod }, "the registered root is route []");
+  assert.deepEqual(workspacePodsOf(outer)[0], { path: [], route: [], ...outerPod }, "the registered root is route []");
 });
 
 test("each Workspace's pod carries the Effects placed in its Sandbox Effector, down to the next workspace(), and its effector image (ADR-0068)", () => {

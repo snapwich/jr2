@@ -3292,7 +3292,7 @@ test("one secret both Held and named by an Effect is both, and the report says s
   assert.match(out, /the Instance Effector: holds JIRA_TOKEN/);
   // The Workspace's pod has its own manifest and its own values' Secret; the Effector its own.
   const objects = appliedObjects(w);
-  const pod = workspaceHeldPod({ workflow: "coding", path: [] });
+  const pod = workspaceHeldPod({ workflow: "coding", route: [] });
   assert.deepEqual(objects.get(`Secret/jr2-held-secrets-${pod}`)?.stringData, { JIRA_TOKEN: "jira-token-value-0123" });
   const cm = objects.get("ConfigMap/jr2-held")!;
   assert.deepEqual(
@@ -3359,7 +3359,7 @@ test("jr2-held grows by one manifest per Workspace and holds the program once â€
   // apply's 256 KiB annotation. `jr2 up` DECLARES; a pod's maker renders its own files.
   const heldOf = (n: number): HeldObjects => ({
     pods: Array.from({ length: n }, (_, i) => ({
-      pod: workspaceHeldPod({ workflow: `w${i}`, path: [] }),
+      pod: workspaceHeldPod({ workflow: `w${i}`, route: [] }),
       manifest: wsManifest(i),
       values: {},
     })),
@@ -3402,7 +3402,7 @@ test("jr2-held grows by one manifest per Workspace and holds the program once â€
 });
 
 test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names only; its Secret holds its literals and effector.json (ADR-0068)", () => {
-  const pod = workspaceHeldPod({ workflow: "ticket", path: [] });
+  const pod = workspaceHeldPod({ workflow: "ticket", route: [] });
   const list = JSON.parse(
     instanceObjects({
       name: "myinst",

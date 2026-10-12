@@ -331,6 +331,7 @@ test("the definition is plain data jr2 up reads: kind, placement, fixed host, se
     {
       name: "comment",
       path: [],
+      route: [],
       kind: "http",
       placement: "instance",
       method: "POST",

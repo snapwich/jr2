@@ -1202,7 +1202,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // where `.env` exists, per Workspace — the one its workflow and its route name — and this
       // process reads that pod's manifest, never its own config, whose `.env` values are absent
       // in-cluster. A Workspace `jr2 up` never walked has none, and is refused by name.
-      const pod = workspaceHeldPod({ workflow: req.workflow, path: req.path });
+      const pod = workspaceHeldPod({ workflow: req.workflow, route: req.route });
       const manifest = await readHeldManifest(join(heldDir, heldManifestKey(pod)));
       const custodian = custodianComposition(manifest, {
         image: refs.custodian,
