@@ -150,7 +150,7 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   (`pinned`), read before the answer, so the Orchestrator writes it to the ledger's intent row. `GET /effects/<id>`
   long-polls: it holds up to 25 s and answers `running`, or `settled` with the output. `DELETE /effects/<id>` stops a
   credentialed command whose state exited, or whose run was cancelled (ADR-0067): the Effector sends SIGTERM to the
-  command's process group, waits 5 s, sends SIGKILL, and runs rule 1's settle loop below; the command's keeper catches
+  command's process group, waits 5 s, sends SIGKILL, and runs rule 1's settle loop above; the command's keeper catches
   SIGTERM and waits on, so the child's own end is still read. The outcome is `exited` with `signal`, the one the stop
   sent last, and `code` when the program caught SIGTERM and exited with one; an `exited` with neither is malformed. A
   command stopped before its program started (it waited for the lock of rule 2, or its pin was being checked out) is
@@ -159,14 +159,15 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   request each and end on their own, so a DELETE on one answers 405 as an unknown method does. A DELETE of an Effect the
   replica does not hold answers 404 with `state: unknown`, as a poll does, and the replica keeps the stop: a fast exit
   can send it while the command's start is still on the wire, and a command start with that id that arrives after it
-  runs nothing — it attaches to the kept stop, settled `unknown` with the reason that it did not run. The replica keeps
-  such a stop for twice the signing window at least, past which a start signed before it is refused by its time. A
-  DELETE is verified like every request: an unsigned one gets 401 and stops nothing, so no process in the Harness
-  container can stop a command. A malformed request starts nothing and gets 400 with the reason; a request that names a
-  secret the Effector does not hold is malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the
-  replica takes new Effects. A replica reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it
-  as unsigned. The Orchestrator never sends one: a start whose body is longer settles with nothing sent and no intent
-  row, as its kind's own outcome (ADR-0067) — an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed
+  runs nothing — it attaches to the kept stop, settled `unknown` with the reason that it did not run; a `push` or an
+  `http` start with that id drops the kept stop and runs, since the stop route is not theirs. The replica keeps such a
+  stop for twice the signing window at least, past which a start signed before it is refused by its time. A DELETE is
+  verified like every request: an unsigned one gets 401 and stops nothing, so no process in the Harness container can
+  stop a command. A malformed request starts nothing and gets 400 with the reason; a request that names a secret the
+  Effector does not hold is malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the replica
+  takes new Effects. A replica reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it as
+  unsigned. The Orchestrator never sends one: a start whose body is longer settles with nothing sent and no intent row,
+  as its kind's own outcome (ADR-0067) — an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed
   `command` `exited` 127 — because a body built from context or a pick's param can reach the bound.
 - **The Orchestrator holds no git credential and no Effect secret.** `jr2 up` declares and writes every Secret that
   holds a git credential or an Effect secret: the placements' (`jr2-instance-effector`, `jr2-effector-<pod>`) and, for
@@ -368,8 +369,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   may not read, list or delete one.
 
 - **The log is a contract.** `jr2.effector` lines: `ready placement=… replica=… secrets=<names> targets=N`,
-  `action=start effect=… kind=… method=… host=…` (a push logs `host=-`), `action=settle effect=… outcome=… status=…`,
-  `action=stop effect=…`, `action=drop`, `action=drain`. Never a value, a path, a query, a header or a body.
+  `action=start effect=… kind=… method=… host=…` (a push logs `host=-`), `action=settle effect=… outcome=…` (and
+  `status=…` for an http response), `action=stop effect=…`, `action=stop-kept effect=…` (a stop of an Effect the replica
+  did not hold, kept), `action=drop effect=… reason=unread`, `action=drain`, `action=drain-ended waiting=N`, and
+  `action=exit reason=…` for a start that cannot serve. Never a value, a path, a query, a header or a body.
 
 ## Considered options
 
