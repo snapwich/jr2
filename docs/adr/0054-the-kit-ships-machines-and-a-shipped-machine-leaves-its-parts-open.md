@@ -31,6 +31,27 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   who never reads the file spends money on a model they did not choose, silently, which is the failure class `jr2 up`
   exists to make loud. Rejected: a Machine factory `task({ model })` — ADR-0049 settled that a package exports a Machine
   and retunes with `customize`, and a factory reopens that.
+- **Open widens to an Effect's url and argv, bound once.** A package cannot know the host its `http` Effect calls, or
+  the program its `command` runs
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)), so it may leave
+  either Open: `http({ method, url: open, auth, input, request })`,
+  `http({ method: "PUT", url: open, body: file(path) })`, `command(open, { env, pin })`. Everything else the definition
+  says stays the package's — the method, the headers, the auth and the secrets they name, the input, `request`, the env,
+  `pin` — and is checked when the Machine is built. The composer binds the part with
+  `customize(machine, { effects: { <slot>: { url } } })` or `{ argv }`: a url is a string or a `text` with a secret in
+  its path, an argv is the usual list. It is bound ONCE, to a value: never a mapper over the door, so a host is fixed in
+  the definition or bound before any run, and no run chooses one. Binding builds the Effect again with its constructor,
+  so a bound part meets every rule a written one meets — a literal host, no secret in a query, a non-empty argv — and
+  `jr2 up` reads it as written: the placement, the secrets its url names, and the Effector's fence
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)) are the bound host's. Only an Open part
+  is offered: a part the author fixed is no key of `effects` and is refused at the call, and a part bound once is fixed
+  from then on, so a second composer cannot move it. `effects` reaches through `workspace()`'s body, `pool()`'s worker
+  and a composed Machine's `actors`, as `agents` does, typed off the slot's logic. An Open argv's slots are the
+  composer's, so the load walk counts every pick param as read by it when the Machine is built, and `customize()` runs
+  the walk's pick-param check again once the argv is bound — a param the bound argv does not read is refused there. The
+  `jr2 up` walk reports an Open Effect beside Open Repo Slots and Agents and refuses the converge naming the `effects`
+  line; the Effect refuses to run while Open, as the second fence — its state's `onError`, with nothing sent and no
+  ledger row. The Open part is the whole url or the whole argv.
 - **The per-run Dial is the escape hatch, not the default.** A shipped Machine's door may carry `model` and
   `thinkingLevel` (ADR-0018's two Dials) and fold them into each invoke's input; the bound definition is what `jr2 up`
   preflights, the door value overrides it for one run's Turns. Nothing in jr2 changes for this — it is the Machine's own
@@ -73,6 +94,7 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
 - CONTEXT.md gains **Open** as a term, and the Workflow entry says the kit ships Machines. Eleven earlier ADRs cite
   `examples/`; the citations are retargeted in place.
 - A `customize` that binds a model is now the common consumer line, not the exotic one; `jr2 up`'s refusal for an Open
-  Agent prints it, as it does for an Open Repo Slot.
+  Agent prints it, as it does for an Open Repo Slot and an Open Effect (its `effects` line).
+- No Machine in `@jr2/machines` leaves an Effect Open yet; `task` carries no Effect.
 - The `triaged-task` mechanics test went with `examples/coding`, and the cross-Machine conversation pin it exercised
   went with ADR-0057; the `@kind` `consulted`/`advised` fixtures hold Instance Harness placement.

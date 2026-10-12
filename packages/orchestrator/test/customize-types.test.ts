@@ -31,7 +31,9 @@ import { z } from "zod";
 import { isAgent } from "../src/agent.ts";
 import { customize } from "../src/customize.ts";
 import { open } from "../src/parts.ts";
-import { agent } from "../src/harness-client.ts";
+import { agent, command } from "../src/harness-client.ts";
+import { arg } from "../src/effect.ts";
+import { http, secret, text } from "../src/http-effect.ts";
 import { pool, source } from "../src/pool.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace, type WorkspaceMachine, type Workspaced } from "../src/workspace.ts";
@@ -252,6 +254,45 @@ function refusedUnderOpenMap(): void {
   void workspace(body, { input: door, repos: open, spec: () => ({ branch: "feat" }) });
 }
 
+// --- 8: an Effect's Open parts (ADR-0054) -----------------------------------------------------------
+// `effects` offers exactly the Effect slots whose url or argv the package left `open`, each with the
+// binding its kind takes, through the wrappers as `agents` goes — and nothing on a Machine with none.
+
+const effectful = jr2Setup({
+  events: [],
+  actors: {
+    call: http({ method: "POST", url: open }),
+    deploy: command(open),
+    lint: command(["pnpm", "lint"]),
+    tracked: http({ method: "GET", url: "https://fixed.example.com" }),
+  },
+}).createMachine({ id: "effectful", initial: "idle", states: { idle: {} } });
+
+void customize(effectful, {
+  effects: { call: { url: text`https://t.example.com/${secret("path")}` }, deploy: { argv: ["make", arg("env")] } },
+});
+void customize(
+  workspace(effectful, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "f" }) }),
+  {
+    effects: { call: { url: "https://t.example.com" } },
+  },
+);
+
+function refusedEffects(): void {
+  // @ts-expect-error a command's Open part is its argv, not a url
+  void customize(effectful, { effects: { deploy: { url: "https://x.example.com" } } });
+  // @ts-expect-error an http Effect's Open part is its url, not an argv
+  void customize(effectful, { effects: { call: { argv: ["x"] } } });
+  // @ts-expect-error a part the author fixed is not offered: its host stays the definition's
+  void customize(effectful, { effects: { tracked: { url: "https://other.example.com" } } });
+  // @ts-expect-error nor a fixed argv
+  void customize(effectful, { effects: { lint: { argv: ["pnpm", "test"] } } });
+  // @ts-expect-error bound once, to a value — never a mapper over the run
+  void customize(effectful, { effects: { call: { url: () => "https://x.example.com" } } });
+  // @ts-expect-error a Machine with no Open Effect takes no `effects`
+  void customize(research, { effects: { fetchIt: { url: "https://x.example.com" } } });
+}
+
 test("customize()'s type-level claims are the compiler's; this run pins the runtime half", () => {
   // A retune is definition-level and total: what comes back carries the override layered over the
   // stock definition, whatever the type says about the keys.
@@ -272,6 +313,7 @@ test("customize()'s type-level claims are the compiler's; this run pins the runt
       refusedRepos,
       refusedUnderOpenMap,
       refusedSizes,
+      refusedEffects,
     ].every((f) => !!f),
   );
 });

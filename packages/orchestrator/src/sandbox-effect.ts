@@ -71,12 +71,15 @@ import {
 } from "./effector-wire.ts";
 import {
   httpParts,
+  openHttpParts,
   secret,
   startRequestOf,
   type EffectorPortFactory,
   type FromInput,
   type HttpDefinition,
 } from "./http-effect.ts";
+import { open } from "./open.ts";
+import { openEffectLogic, type OpenEffect } from "./open-effect.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import { repoKey } from "./repo-identity.ts";
 import { harnessSyncPort, type SyncPortFactory } from "./sync-client.ts";
@@ -731,8 +734,26 @@ export { lastPushOf };
  * and the unit tests share. It runs in the Sandbox Effector of the Workspace whose body invokes it. */
 export function httpFileWith<S extends z.ZodType | undefined = undefined>(
   portFactory: EffectorPortFactory,
+  def: HttpDefinition<S> & { url: typeof open },
+): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput> & OpenEffect<"url">;
+export function httpFileWith<S extends z.ZodType | undefined = undefined>(
+  portFactory: EffectorPortFactory,
+  def: HttpDefinition<S>,
+): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput>;
+export function httpFileWith<S extends z.ZodType | undefined = undefined>(
+  portFactory: EffectorPortFactory,
   def: HttpDefinition<S>,
 ): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput> {
+  if (def.url === open) {
+    // An Open url (ADR-0054), as http's own: the unbound logic binds by building this Effect again,
+    // whole, with the composer's url — a file body changes where it runs, not how it binds.
+    return openEffectLogic(openHttpParts(def), "url", (binding) => {
+      if (!("url" in binding)) {
+        throw new Error("an http Effect's Open part is its url — bind it with { url }, not an argv");
+      }
+      return httpFileWith(portFactory, { ...def, url: binding.url }) as EffectLogic<unknown, unknown>;
+    });
+  }
   const parts = httpParts(def);
   const body = def.body!.file;
   const fromInput = <T>(v: FromInput<S, T> | undefined, input: unknown): T | undefined =>

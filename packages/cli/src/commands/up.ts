@@ -247,6 +247,8 @@ export async function up(args: string[], io: Io): Promise<number> {
         adr: "ADR-0051",
       })),
       ...walked.openAgents.map((o) => ({ ...o, part: "agent" as const, what: `Agent "${o.slot}"`, adr: "ADR-0054" })),
+      // An Effect's Open url or argv (ADR-0054): no host to fence and no program to run until bound.
+      ...walked.openEffects.map((o) => ({ ...o, what: `the ${o.part} of Effect "${o.slot}"`, adr: "ADR-0054" })),
     ];
     for (const { slot, path, part, what, adr } of opened) {
       if (path === undefined) {
@@ -285,7 +287,7 @@ export async function up(args: string[], io: Io): Promise<number> {
           : "in the Instance Effector";
         activity(
           io,
-          `  ${e.name}${where}: http ${e.method} ${targetText({ target: e.target })} — ${e.timeoutMs / 1000}s, ` +
+          `  ${e.name}${where}: http ${e.method} ${e.target ? targetText({ target: e.target }) : "<open>"} — ${e.timeoutMs / 1000}s, ` +
             `${where2}${names}${e.idempotent ? ", idempotent" : ""}`,
         );
         continue;

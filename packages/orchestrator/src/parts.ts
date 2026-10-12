@@ -50,6 +50,7 @@ import { fileURLToPath } from "node:url";
 import type { AnyActorRef, AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
 import { isAgent, isOpenAgent, type AgentDeclaration } from "./agent.ts";
 import { argvText, isEffect, placementOf, type EffectParts, type Placement } from "./effect.ts";
+import { effectBindingLine, type OpenEffectPart } from "./open-effect.ts";
 import { isImageContext } from "./images.ts";
 import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
@@ -349,8 +350,9 @@ export function routeText(route: PlacementRoute): string {
     .join("");
 }
 
-/** Which kind of Open part a fix line binds — the two `customize()` keys (ADR-0051, ADR-0054). */
-export type OpenPart = "repo" | "agent";
+/** Which kind of Open part a fix line binds — a Repo Slot (`repos`, ADR-0051), an Agent's model
+ * (`agents`, ADR-0054), or an Effect's url or argv (`effects`, ADR-0054). */
+export type OpenPart = "repo" | "agent" | OpenEffectPart;
 
 /**
  * The `customize` line that binds an Open part, given the identifier the composer holds the
@@ -361,7 +363,8 @@ export type OpenPart = "repo" | "agent";
  *
  * An Agent binds through `agents` instead, and the placeholder is the model spelling ADR-0018
  * demands — `<provider>/<model>`, not a bare model id, since the prefix is what picks the
- * endpoint. `repo` is the default because a Repo Slot was the first Open part and reads as the
+ * endpoint. An Effect binds through `effects`: its url, or its argv (open-effect.ts). `repo` is the
+ * default because a Repo Slot was the first Open part and reads as the
  * unmarked case. An Open MAP has no slot to print (`slot` undefined): the placeholder `<slot>`
  * stands where the composer's own word goes, since choosing it is the composer's half of the line.
  */
@@ -374,7 +377,9 @@ export function customizeLine(
   const binds =
     part === "agent"
       ? `{ agents: { ${slot}: { model: "<provider>/<model>" } } }`
-      : `{ repos: { ${slot ?? "<slot>"}: "<url>" } }`;
+      : part === "url" || part === "argv"
+        ? effectBindingLine(slot ?? "<slot>", part)
+        : `{ repos: { ${slot ?? "<slot>"}: "<url>" } }`;
   const inner = path.reduceRight((parts, key) => `{ actors: { ${key}: ${parts} } }`, binds);
   return `customize(${machine}, ${inner})`;
 }
@@ -446,7 +451,10 @@ export type CarriedSize = {
 
 /** One Effect slot a Machine carries (ADR-0067), by its slot key and the `customize()` route to its
  * Machine, with the plain data `jr2 up` prints: the kind, where it runs, a command's argv (an argv
- * slot reads `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one. */
+ * slot reads `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one.
+ * `open` names the part a package left Open (ADR-0054) — an http or upload url, which then has no
+ * target yet, or a command's argv, which reads `<open>` — and the walk reports it for `jr2 up` to
+ * refuse; once `customize()` binds it, the slot carries the bound Effect and `open` is absent. */
 export type CarriedEffect = {
   name: string;
   path: readonly string[] | undefined;
@@ -456,18 +464,20 @@ export type CarriedEffect = {
   timeoutMs: number;
 } &
   /** A command; one whose env names a secret runs in the Sandbox Effector (ADR-0067). */
-  (| { kind: "command"; argv: string[]; slot?: string; secrets?: string[]; pin?: true }
+  (| { kind: "command"; argv: string[]; slot?: string; secrets?: string[]; pin?: true; open?: "argv" }
     /** An http Effect (ADR-0068): its method, its fixed target, and the secrets it names — what
      * places each secret, and what its Effector's config allows. `file`: its body is a Worktree
-     * file (ADR-0067), so it runs in its Workspace's Sandbox Effector, on Repo Slot `slot` when named. */
+     * file (ADR-0067), so it runs in its Workspace's Sandbox Effector, on Repo Slot `slot` when named.
+     * An Open url has no target, and names only the secrets its headers and auth name. */
     | {
         kind: "http";
         method: string;
-        target: { scheme: "http" | "https"; host: string; port: number };
+        target?: { scheme: "http" | "https"; host: string; port: number };
         secrets: string[];
         idempotent: boolean;
         file?: true;
         slot?: string;
+        open?: "url";
       }
     /** A push (ADR-0067, ADR-0051): the Workspace's branch to its Repo Slot's Binding. It names no
      * secret: `jr2 up` resolves its credential through `git.credentials`. */
@@ -489,6 +499,9 @@ export type CarriedParts = {
   /** Every Agent whose model is still Open (ADR-0054), in walk order — the same refusal, by the
    * same route, and the reason these are two lists rather than one: the fix lines differ. */
   openAgents: OpenSlot[];
+  /** Every Effect whose url or argv is still Open (ADR-0054), in walk order — the same refusal, by
+   * the same route; `part` says which line binds it. */
+  openEffects: Array<OpenSlot & { part: OpenEffectPart }>;
   /** Every `workspace()` reached, with the Size it states, in walk order (ADR-0060). */
   sizes: CarriedSize[];
   /** Whether any Machine reached, at any depth, composes a Sandbox — the data-plane switch. */
@@ -578,6 +591,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const repos: CarriedRepo[] = [];
   const openSlots: OpenSlot[] = [];
   const openAgents: OpenSlot[] = [];
+  const openEffects: CarriedParts["openEffects"] = [];
   const sizes: CarriedSize[] = [];
   let sandboxed = false;
   const seen = new Set<string>();
@@ -662,8 +676,12 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(path, name, logic.definition);
-      else if (isEffect(logic)) effects.push(carriedEffectOf(name, path, route, logic.effect));
-      else {
+      else if (isEffect(logic)) {
+        const effect = carriedEffectOf(name, path, route, logic.effect);
+        effects.push(effect);
+        if (effect.kind !== "push" && effect.open !== undefined)
+          openEffects.push({ slot: name, path, part: effect.open });
+      } else {
         const child = asMachine(logic);
         if (child) walk(child, slotPath(path, name, body), name === body ? route : [...route, name]);
       }
@@ -672,7 +690,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   };
 
   for (const machine of machines) walk(machine, [], []);
-  return { agents, effects, images, repos, openSlots, openAgents, sizes, composesSandbox: sandboxed };
+  return { agents, effects, images, repos, openSlots, openAgents, openEffects, sizes, composesSandbox: sandboxed };
 }
 
 /** The `customize()` route to a child of slot `name`: a wrapper's body does not extend it. */
@@ -730,7 +748,7 @@ export function carriedEffectOf(
       kind: "http",
       placement,
       method: parts.method,
-      target: { ...parts.target },
+      ...(parts.target === open ? { open: "url" as const } : { target: { ...parts.target } }),
       secrets: [...parts.secrets],
       idempotent: parts.idempotent,
       timeoutMs: parts.timeoutMs,
@@ -767,6 +785,7 @@ export function carriedEffectOf(
     ...(slot !== undefined ? { slot } : {}),
     ...(secrets?.length ? { secrets: [...secrets] } : {}),
     ...(pin ? { pin } : {}),
+    ...(argv === open ? { open: "argv" as const } : {}),
   };
 }
 

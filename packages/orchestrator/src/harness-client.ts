@@ -54,9 +54,12 @@ import {
   type CommandInput,
   type CommandOptions,
   type CommandOutput,
+  type OpenCommandInput,
   type EffectLogic,
   type ExecPort,
 } from "./effect.ts";
+import { open } from "./open.ts";
+import type { OpenEffect } from "./open-effect.ts";
 import {
   LIVE_LONG_POLL,
   STREAM_NEXT_OFFSET_HEADER,
@@ -603,13 +606,23 @@ export function createExecPort(options: {
  * (`slot`, needed only where the Workspace carries several); outside a Workspace it is refused.
  * Every outcome is output: `exited | timeout | killed | unknown`.
  */
+export function command<const Opt extends CommandOptions = CommandOptions>(
+  argv: typeof open,
+  options?: Opt,
+): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv">;
 export function command<const A extends readonly (string | Arg)[], const Opt extends CommandOptions = CommandOptions>(
   argv: A,
-  options: Opt = {} as Opt,
-): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> {
+  options?: Opt,
+): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput>;
+export function command(
+  argv: readonly (string | Arg)[] | typeof open,
+  options: CommandOptions = {},
+  // The implementation of the overloads above: each one states the input type.
+): EffectLogic<any, CommandOutput> {
+  // An Open argv (ADR-0054) is the composer's to bind with `customize()`; see open-effect.ts.
   return commandWith(
     (endpoint, bearer) => createExecPort({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
-    argv,
+    argv as readonly (string | Arg)[],
     options,
   );
 }

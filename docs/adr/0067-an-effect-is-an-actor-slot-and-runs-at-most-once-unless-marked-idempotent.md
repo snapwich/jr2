@@ -16,11 +16,15 @@ the credentialed `command` — runs there too, its child confined (below).
   The slot carries its parts as plain data — kind, placement, timeout; a `command`'s argv, Repo Slot and the secrets its
   env names; an `http` Effect's method, fixed host, the names of the secrets it names and whether its body is a Worktree
   file; a `push`'s `pin`, `sign`, `squash` and `force` — which `jr2 up` prints and the Machine doc carries, read without
-  running anything. An Effect written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the
-  slot form in the message: xstate gives it a generated key that moves when a state is renamed, so the ledger, the
-  report and the Machine doc would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not
-  reach it. The same rule holds for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`, and every
-  Effect kind is one (the brand `isEffect` reads).
+  running anything. A packaged Machine may leave an `http` url (whatever its body) or a `command`'s argv Open (`open` in
+  its place), for the composer to bind once with `customize(machine, { effects: { <slot>: { url } | { argv } } })`
+  ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); the slot then carries the
+  Effect built again with the bound part, and an Effect still Open runs nothing: its state's `onError`. An Effect
+  written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the slot form in the message:
+  xstate gives it a generated key that moves when a state is renamed, so the ledger, the report and the Machine doc
+  would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not reach it. The same rule holds
+  for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`, and every Effect kind is one (the brand
+  `isEffect` reads).
 - **Between a pick and its work: `fromPick`, `paramsOf`, `answer`.** All optional; a plain mapper is legal.
   `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
   `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security
@@ -58,26 +62,29 @@ the credentialed `command` — runs there too, its child confined (below).
   start — since an Agent's param (a squash message, an argv part) can reach the bound; a path segment that is `.`, `..`
   or empty, and a file body's path that is a symlink, leaves the Worktree, is absolute, is a FIFO or has more than one
   link, are `refused` with nothing sent — an Agent's param can cause each. `onError` is only a jr2 or config defect: no
-  Workspace, an argv slot with no value, an input that misses the definition's schema, no Effector to send to.
+  Workspace, an argv slot with no value, an input that misses the definition's schema, no Effector to send to, an Open
+  part nobody bound.
 - **An `http` Effect is a definition plus one function.**
   `http({ method, url, headers?, auth?, input?, request?, body?, timeout?, maxBody?, idempotent? })`. The url's scheme
   and host are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template,
   and one after a `?` or a `#` is refused when the Machine loads — so the host is fixed by the definition and never a
-  param. `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`. `request(input)` returns the run's part
-  alone: `path` segments and a JSON or text body. So an Agent's param reaches a path segment or a body, never the host,
-  a header or a secret. It runs in the Instance Effector, which builds the request and holds the secrets (ADR-0068); the
-  Orchestrator signs the call and holds none. Its body may instead be a Worktree file,
-  `body: file(path, { slot?, segments?, contentType? })`: the file's path relative to the Repo Slot's Worktree (the one
-  slot, or the one `slot` names), and the url's path segments — each a value or a function of the input; no `request` is
-  written beside it, since `file()` carries the run's part. Such an `http` is placed in the Sandbox Effector of the
-  Workspace whose body invokes it, and `jr2 up` refuses one that no `workspace()` invokes, where no Worktree exists to
-  read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox Effector opens the file with `openat2` beneath the work
-  root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_XDEV`, non-blocking — then
-  `fstat`: a symlink at any component (one that stays inside included), `..`, an absolute path, a FIFO, a directory and
-  a file with more than one link are refused, in words, as output. The content type is `file()`'s `contentType` or a
-  `content-type` header of the definition's, not both: a definition with both is refused when the Machine loads ("write
-  one of them", as for `auth` beside an `authorization` header). With neither it is `application/octet-stream`. A later
-  body form (a multipart file and fields) is one more body on `http`, never a kind.
+  param. A url left Open is fixed by the composer's `customize()` instead, once and before any run, under the same rules
+  (ADR-0054); a file body does not change that rule. `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`.
+  `request(input)` returns the run's part alone: `path` segments and a JSON or text body. So an Agent's param reaches a
+  path segment or a body, never the host, a header or a secret. It runs in the Instance Effector, which builds the
+  request and holds the secrets (ADR-0068); the Orchestrator signs the call and holds none. Its body may instead be a
+  Worktree file, `body: file(path, { slot?, segments?, contentType? })`: the file's path relative to the Repo Slot's
+  Worktree (the one slot, or the one `slot` names), and the url's path segments — each a value or a function of the
+  input; no `request` is written beside it, since `file()` carries the run's part. Such an `http` is placed in the
+  Sandbox Effector of the Workspace whose body invokes it, and `jr2 up` refuses one that no `workspace()` invokes, where
+  no Worktree exists to read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox Effector opens the file with
+  `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`,
+  `RESOLVE_NO_XDEV`, non-blocking — then `fstat`: a symlink at any component (one that stays inside included), `..`, an
+  absolute path, a FIFO, a directory and a file with more than one link are refused, in words, as output. The content
+  type is `file()`'s `contentType` or a `content-type` header of the definition's, not both: a definition with both is
+  refused when the Machine loads ("write one of them", as for `auth` beside an `authorization` header). With neither it
+  is `application/octet-stream`. A later body form (a multipart file and fields) is one more body on `http`, never a
+  kind.
 - **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`.** Naming a
   secret is what places it: it runs in the Sandbox Effector of the Workspace whose body invokes it, with no `placement:`
   key. Its child runs as the Effector's uid beside the Effector's key, the secrets it does not name and the push
@@ -280,7 +287,9 @@ the credentialed `command` — runs there too, its child confined (below).
   it; a Gate's event is no pick and is not checked) and a `fill` that overwrites a param are refused; code the probe
   cannot or does not run — a mapper that throws in it, an action other than an `assign` — and a pick that targets a
   history state that may enter an Effect's state are a warning; and a state below an Agent's state that invokes
-  something and that nothing enters is refused.
+  something and that nothing enters is refused. An Open argv's slots are unknown when the Machine is built, so every
+  param counts as read by it then; `customize()` runs the pick-param check again when it binds the argv, and refuses
+  there a param the bound argv does not read (ADR-0054).
 
 ## Considered options
 
@@ -336,5 +345,3 @@ the credentialed `command` — runs there too, its child confined (below).
   branch and Worktree after the sync, and push again after the Agent amended the pushed commit (`diverged`). A token
   push over https has no remote there. Its credentialed-command scenarios read the secret from env and from its file,
   scrubbed, say `dirty` over an uncommitted edit, and show a child of the child denied the Effector's key.
-
-- Owed, not built: an Open argv bound by `customize()`.

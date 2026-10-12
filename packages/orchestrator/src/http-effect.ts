@@ -45,7 +45,16 @@
 import { randomUUID } from "node:crypto";
 import type { ActorLogic, AnyActorRef, EventObject } from "xstate";
 import type { z } from "zod";
-import type { Duration, EffectLogic, EffectMarker, EffectRow, EffectSnapshot, HttpParts, Unknown } from "./effect.ts";
+import type {
+  Duration,
+  EffectLogic,
+  EffectMarker,
+  EffectRow,
+  EffectSnapshot,
+  HttpParts,
+  OpenHttpParts,
+  Unknown,
+} from "./effect.ts";
 import {
   createEffectorClient,
   EffectorForged,
@@ -68,6 +77,8 @@ import {
   type WireBody,
 } from "./effector-wire.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
+import { open } from "./open.ts";
+import { openEffectLogic, type OpenEffect } from "./open-effect.ts";
 import { httpFileWith, sandboxEffectorPort } from "./sandbox-effect.ts";
 
 // --- Naming a secret -----------------------------------------------------------------------------
@@ -207,8 +218,10 @@ export type HttpRequestParts = {
 export type HttpDefinition<S extends z.ZodType | undefined = undefined> = {
   method: HttpMethod;
   /** The url. Its scheme and host are fixed here — never a param — and a secret may sit only in
-   * its path: text`https://api.telegram.org/bot${secret("tg")}/sendMessage`. */
-  url: string | Text;
+   * its path: text`https://api.telegram.org/bot${secret("tg")}/sendMessage`. Or `open`: a packaged
+   * Machine that cannot know the host leaves the url Open, and the composer binds it once with
+   * `customize(machine, { effects: { <slot>: { url } } })` — never per run (ADR-0054). */
+  url: string | Text | typeof open;
   /** Static headers, lowercase; a value may be a `text` with a secret. */
   headers?: Readonly<Record<string, string | Text>>;
   auth?: { readonly bearer: Secret } | { readonly basic: { user: Text; password: Text } } | Text;
@@ -242,6 +255,7 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
   if (!(HTTP_METHODS as readonly string[]).includes(def.method)) {
     throw new Error(`http({ method: "${def.method}" }): the method is one of ${HTTP_METHODS.join(", ")}`);
   }
+  if (def.url === open) throw new Error("httpParts: an Open url has no target — read it with openHttpParts");
   const url = asText(def.url).text;
   const target = targetOf(url);
   const headers: Record<string, TextPart[]> = {};
@@ -325,6 +339,20 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
         }
       : {}),
   };
+}
+
+/** The url an Open definition's other parts are checked against: it names no secret, and nothing
+ * is ever sent to it — the unbound logic sends nothing (open-effect.ts). */
+const OPEN_PROBE_URL = "https://open.invalid";
+
+/**
+ * An Open url's plain data (ADR-0054): every other part checked as `httpParts` checks it, the
+ * secrets its headers and auth name, and the sentinel where the url and its target go. The
+ * secrets the bound url names join when `customize()` binds it.
+ */
+export function openHttpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S>): OpenHttpParts {
+  const { url: _url, target: _target, ...rest } = httpParts({ ...def, url: OPEN_PROBE_URL });
+  return { ...rest, url: open, target: open };
 }
 
 /** The scheme, host and port, from the url's literal head: a secret may sit only after the host,
@@ -414,8 +442,26 @@ const running = new WeakMap<AnyActorRef, Running>();
  */
 export function httpWith<S extends z.ZodType | undefined = undefined>(
   portFactory: EffectorPortFactory,
+  def: HttpDefinition<S> & { url: typeof open },
+): EffectLogic<HttpInput<S>, HttpOutput> & OpenEffect<"url">;
+export function httpWith<S extends z.ZodType | undefined = undefined>(
+  portFactory: EffectorPortFactory,
+  def: HttpDefinition<S>,
+): EffectLogic<HttpInput<S>, HttpOutput>;
+export function httpWith<S extends z.ZodType | undefined = undefined>(
+  portFactory: EffectorPortFactory,
   def: HttpDefinition<S>,
 ): EffectLogic<HttpInput<S>, HttpOutput> {
+  if (def.url === open) {
+    // An Open url (ADR-0054): unbound logic that carries the parts and binds by building this Effect
+    // again, whole, with the composer's url — so the bound one is checked like any definition.
+    return openEffectLogic(openHttpParts(def), "url", (binding) => {
+      if (!("url" in binding)) {
+        throw new Error("an http Effect's Open part is its url — bind it with { url }, not an argv");
+      }
+      return httpWith(portFactory, { ...def, url: binding.url }) as EffectLogic<unknown, unknown>;
+    });
+  }
   const parts = httpParts(def);
   type I = HttpInput<S>;
   type O = HttpOutput;
@@ -746,6 +792,12 @@ function parseDuration(d: Duration): number {
  * Orchestrator signs the call and holds no secret. Every outcome is output:
  * `response | unreachable | refused | unknown`.
  */
+export function http<S extends z.ZodType | undefined = undefined>(
+  def: HttpDefinition<S> & { url: typeof open },
+): EffectLogic<HttpInput<S>, HttpOutput> & OpenEffect<"url">;
+export function http<S extends z.ZodType | undefined = undefined>(
+  def: HttpDefinition<S>,
+): EffectLogic<HttpInput<S>, HttpOutput>;
 export function http<S extends z.ZodType | undefined = undefined>(
   def: HttpDefinition<S>,
 ): EffectLogic<HttpInput<S>, HttpOutput> {

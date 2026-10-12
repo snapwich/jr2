@@ -363,10 +363,11 @@ statement (a named slot in its prompt, or a convention over the order, as `task`
 edits"). _Avoid_: role, alias, repo name, workdir, primary repo
 
 **Open**: A part a Machine declares but deliberately leaves for its composer to bind with `customize()` — a Repo Slot
-with no url, a Repo Slot map with no slots, an Agent with no model. The shape a packaged Machine ships in, because a
-package cannot know the repository, how many checkouts sit beside it, or pay for the model. `jr2 up` refuses an Open
-part nobody bound and names the line that binds it; a run never sees one. _Avoid_: unset, default (an Open part has none
-— that is the point), placeholder
+with no url, a Repo Slot map with no slots, an Agent with no model, an Effect with no url or no argv. The shape a
+packaged Machine ships in, because a package cannot know the repository, how many checkouts sit beside it, the host its
+Effect calls or the program it runs, or pay for the model. An Effect's Open part is bound once, never per run. `jr2 up`
+refuses an Open part nobody bound and names the line that binds it; a run never sees one. _Avoid_: unset, default (an
+Open part has none — that is the point), placeholder
 
 **Binding**: The `{ url, ref? }` a Repo Slot resolves to. `ref` is the base the branch Worktree is cut from; absent, the
 Repo's own default branch. _Avoid_: config, catalog entry

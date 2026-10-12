@@ -41,6 +41,8 @@ import type { HttpMethod, HttpOutput, TextPart, WireAuth } from "./effector-wire
 import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
 import type { EffectorPortFactory } from "./http-effect.ts";
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
+import { open } from "./open.ts";
+import { openEffectLogic, type OpenEffect } from "./open-effect.ts";
 
 // --- Parts: what `jr2 up` and the Machine doc read off a slot, without running anything ---------
 
@@ -113,8 +115,19 @@ export type PushParts = {
   readonly inputKeys: readonly string[];
 };
 
-/** Every kind's parts. */
-export type EffectParts = CommandParts | HttpParts | PushParts;
+/**
+ * An Effect whose url or argv a package left Open (ADR-0054): the same parts with the sentinel in
+ * that one place. The kind, the placement, the timeout and the secrets the other parts name are
+ * fixed; the Open part is the composer's to bind, once, with `customize()` (open-effect.ts).
+ */
+export type OpenCommandParts = Omit<CommandParts, "argv"> & { readonly argv: typeof open };
+export type OpenHttpParts = Omit<HttpParts, "url" | "target"> & {
+  readonly url: typeof open;
+  readonly target: typeof open;
+};
+
+/** Every kind's parts, bound or with an Open part. */
+export type EffectParts = CommandParts | HttpParts | PushParts | OpenCommandParts | OpenHttpParts;
 
 /** The kinds, as their parts name them. */
 export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "push"]);
@@ -149,22 +162,27 @@ export function isEffect(logic: unknown): logic is EffectSlot {
   );
 }
 
-/** argv as text a reader can print: an argv slot reads `<name>`. */
-export function argvText(argv: readonly (string | Arg)[]): string[] {
+/** argv as text a reader can print: an argv slot reads `<name>`; an Open argv reads `<open>`. */
+export function argvText(argv: readonly (string | Arg)[] | typeof open): string[] {
+  if (argv === open) return ["<open>"];
   return argv.map((a) => (typeof a === "string" ? a : `<${a.arg}>`));
 }
 
-/** An http Effect's target as text: `scheme://host` with the port when it is not the scheme's. */
-export function targetText(parts: { readonly target: HttpParts["target"] }): string {
+/** An http Effect's target as text: `scheme://host` with the port when it is not the scheme's; an
+ * Open url reads `<open>`. */
+export function targetText(parts: { readonly target: HttpParts["target"] | typeof open }): string {
+  if (parts.target === open) return "<open>";
   const { scheme, host, port } = parts.target;
   const standard = (scheme === "https" && port === 443) || (scheme === "http" && port === 80);
   return `${scheme}://${host.includes(":") ? `[${host}]` : host}${standard ? "" : `:${port}`}`;
 }
 
 /** The keys an Effect's input has, read off its parts: a command's argv slot names (and `sha` with
- * `pin`); an http Effect's input schema keys; a push's `sha` and `message`. */
-export function inputKeysOf(parts: EffectParts): string[] {
+ * `pin`); an http Effect's input schema keys; a push's `sha` and `message`. Undefined for an Open
+ * argv: its slots are the composer's, unknown until `customize()` binds it (ADR-0054). */
+export function inputKeysOf(parts: EffectParts): string[] | undefined {
   if (parts.kind !== "command") return [...parts.inputKeys];
+  if (parts.argv === open) return undefined;
   return [...parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg])), ...(parts.pin ? ["sha"] : [])];
 }
 
@@ -396,6 +414,11 @@ export type CommandInput<A extends readonly unknown[], P = false> = [
   ? void
   : { [K in ArgNames<A> | ([P] extends [true] ? "sha" : never)]: string };
 
+/** An Open argv's input (ADR-0054): its slots are the composer's, so any key is one string — what
+ * the package's invoke hands it, read by the argv the composer binds. */
+export type OpenCommandInput<P = false> = Readonly<Record<string, string>> &
+  ([P] extends [true] ? { sha: string } : unknown);
+
 export type Duration = `${number}s` | `${number}m` | `${number}h`;
 
 export type CommandOptions = {
@@ -429,15 +452,41 @@ const running = new WeakMap<AnyActorRef, Running>();
  * unit tests share. `argv` is never shell text: an `arg("x")` entry is ONE argument, filled from
  * the input's `x`.
  */
+export function commandWith<const Opt extends CommandOptions = CommandOptions>(
+  portFactory: ExecPortFactory,
+  argv: typeof open,
+  options?: Opt,
+  effectorPorts?: EffectorPortFactory,
+): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv">;
 export function commandWith<
   const A extends readonly (string | Arg)[],
   const Opt extends CommandOptions = CommandOptions,
 >(
   portFactory: ExecPortFactory,
   argv: A,
-  options: Opt = {} as Opt,
+  options?: Opt,
+  effectorPorts?: EffectorPortFactory,
+): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput>;
+export function commandWith(
+  portFactory: ExecPortFactory,
+  argv: readonly (string | Arg)[] | typeof open,
+  options: CommandOptions = {},
   effectorPorts: EffectorPortFactory = sandboxEffectorPort,
-): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> {
+  // The implementation of the overloads above: each one states the input type.
+): EffectLogic<any, CommandOutput> {
+  if (argv === open) {
+    // An Open argv (ADR-0054): the options are checked now, by the same constructor a bound one
+    // goes through — a probe argv takes the composer's place — and the unbound logic carries the
+    // parts with the sentinel in the argv's place. Binding calls this constructor again, whole.
+    const probe = commandWith(portFactory, ["<open>"], options, effectorPorts);
+    const parts: OpenCommandParts = { ...(probe.effect as CommandParts), argv: open };
+    return openEffectLogic(parts, "argv", (binding) => {
+      if (!("argv" in binding)) {
+        throw new Error("a command's Open part is its argv — bind it with { argv: [...] }, not a url");
+      }
+      return commandWith(portFactory, binding.argv, options, effectorPorts) as EffectLogic<unknown, unknown>;
+    });
+  }
   if (!Array.isArray(argv) || argv.length === 0) {
     throw new Error("command(argv): argv is a non-empty list — each entry one argument, never shell text");
   }
@@ -471,9 +520,9 @@ export function commandWith<
       parts,
       (input, slot) => argvOf(slot, parts, input),
       parts.pin === true,
-    ) as unknown as EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput>;
+    ) as unknown as EffectLogic<unknown, CommandOutput>;
   }
-  type I = CommandInput<A, Opt["pin"]>;
+  type I = unknown;
   type O = CommandOutput;
   const logic: ActorLogic<EffectSnapshot<O, I>, EventObject, I> = {
     getInitialSnapshot: (_scope, input) => ({

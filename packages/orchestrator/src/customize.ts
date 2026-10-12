@@ -9,11 +9,14 @@
 // `.provide()`, nothing to learn (ADR-0015's rule, restated by ADR-0049 — a `.with()` method and
 // a callable-machine hybrid were both rejected there).
 //
-// Three moves, and each is the smallest one that works:
+// Four moves, and each is the smallest one that works:
 //
 //   - An AGENT override is xstate's own `provide`: `machine.provide({ actors: { coder:
 //     agent({ ...stock, ...override }) } })`. The slot already IS the Agent (ADR-0049), so
 //     retuning one is substituting a slot's logic, which is what `provide` is for.
+//   - An EFFECT binding is the same substitution (ADR-0054): an Effect whose url or argv the
+//     package left `open` carries a binder, which builds the Effect again with the composer's part,
+//     so the bound slot is checked as a written one is. Once — a bound part is fixed from then on.
 //   - A CHILD override is the same call one level down, recursing. Each level is exactly the
 //     one-level reach ADR-0015 found `provide` has — held by the composer who owns the child
 //     object, never host-side injection into somebody else's Machine.
@@ -39,7 +42,7 @@
 // its slot MAP Open (`repos: open`, ADR-0051) declared exactly this: every slot is the composer's
 // to name, so the map they write is the declaration, not an addition to one.
 
-import { StateMachine, type AnyStateMachine, type InputFrom, type ProvidedActor } from "xstate";
+import { StateMachine, type AnyStateMachine, type InputFrom, type ProvidedActor, type UnknownActorLogic } from "xstate";
 import type { AgentLogic } from "./actor.ts";
 import { isAgent, type AgentDefinition } from "./agent.ts";
 import { agent } from "./harness-client.ts";
@@ -59,6 +62,10 @@ import {
 } from "./parts.ts";
 import { assertSize, assertUserSeat, layerSize, type Size, type UserContainer } from "./size.ts";
 import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
+import { isEffect, type Arg } from "./effect.ts";
+import { effectChecks } from "./effect-checks.ts";
+import type { Text } from "./http-effect.ts";
+import { binderOf, openPartOf, type EffectBinding, type OpenEffect, type OpenEffectPart } from "./open-effect.ts";
 
 // --- What a Machine declares, read at the TYPE level ---------------------------------------------
 // Everything below reads xstate's own `TActor` parameter — the `{ src, logic, id }` union
@@ -93,6 +100,18 @@ type LogicAt<M extends AnyStateMachine, K extends string> = Extract<SlotsOf<M>, 
 
 /** The Agent slots — told from every other slot by their logic, which no other actor kind has. */
 type AgentSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AgentLogic }>["src"];
+
+/** The Effect slots with an Open part — told by the phantom `OpenEffect` their constructor's
+ * overload states for an `open` url or argv (open-effect.ts). */
+type OpenEffectSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: OpenEffect<OpenEffectPart> }>["src"];
+
+/** What one Open Effect binds to: its url, or its argv. */
+type BindingOf<L> =
+  L extends OpenEffect<"url">
+    ? { url: string | Text }
+    : L extends OpenEffect<"argv">
+      ? { argv: readonly (string | Arg)[] }
+      : never;
 
 /** The child-Machine slots: the slots composition reaches (ADR-0049 — a nested Machine is an
  * ordinary `invoke` of an ordinary slot). */
@@ -152,6 +171,14 @@ export type Customize<M extends AnyStateMachine> = {
   agents?: [AgentSlots<Reached<M>>] extends [never]
     ? never
     : { [K in AgentSlots<Reached<M>>]?: Partial<AgentDefinition> };
+  /** Bind an Effect's Open part (ADR-0054): `{ url }` for an http Effect (whatever its body) whose url the
+   * package left Open, `{ argv }` for a command whose argv it left Open. Bound once, here — a value,
+   * never a mapper over the door, so the host is fixed before any run. Only an Effect
+   * with an Open part is offered: a part its author fixed stays fixed. A Machine with none takes
+   * `never`, as `agents` does. */
+  effects?: [OpenEffectSlots<Reached<M>>] extends [never]
+    ? never
+    : { [K in OpenEffectSlots<Reached<M>>]?: BindingOf<LogicAt<Reached<M>, K>> };
   /** Retune a Machine this one composes — the same shape, one level down. */
   actors?: [ChildSlots<Reached<M>>] extends [never]
     ? never
@@ -177,6 +204,7 @@ export type Customize<M extends AnyStateMachine> = {
 /** The same shape with the types erased — what the implementation walks. */
 type LooseParts = {
   agents?: Record<string, Partial<AgentDefinition> | undefined>;
+  effects?: Record<string, EffectBinding | undefined>;
   actors?: Record<string, LooseParts | undefined>;
   image?: string;
   user?: string | UserContainer;
@@ -190,11 +218,11 @@ type LooseParts = {
  * `deep`/`quick`), and a run of either carries what it was given.
  */
 export function customize<M extends AnyStateMachine>(machine: M, parts: Customize<M>): M {
-  const { agents, actors, image, user, repos, resources } = parts as LooseParts;
+  const { agents, effects, actors, image, user, repos, resources } = parts as LooseParts;
   let out: AnyStateMachine = machine;
   // Order matters in one direction only: the Sandbox seats and slots REBUILD the wrapper, so they
   // go last and carry the retuned implementations with them.
-  if (agents || actors) out = retune(out, { agents, actors });
+  if (agents || effects || actors) out = retune(out, { agents, effects, actors });
   const seats: Seats = {
     ...(image !== undefined ? { image } : {}),
     ...(user !== undefined ? { user } : {}),
@@ -262,6 +290,8 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
     // walk reports it again (ADR-0054).
     actors[name] = agent({ ...logic.definition, ...override });
   }
+  const bound = Object.entries(parts.effects ?? {}).filter(([, b]) => b !== undefined);
+  for (const [name, binding] of bound) actors[name] = bindEffect(machine, name, binding!);
   for (const [name, childParts] of Object.entries(parts.actors ?? {})) {
     if (!childParts) continue;
     const child = asMachine((machine.implementations.actors as Record<string, unknown>)[name]);
@@ -273,7 +303,61 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
     }
     actors[name] = customize(child, childParts as Customize<AnyStateMachine>);
   }
-  return substitute(machine, actors);
+  const out = substitute(machine, actors);
+  if (bound.length > 0) recheck(out);
+  return out;
+}
+
+/**
+ * Bind one Effect's Open part (ADR-0054): the slot must be an Effect, its part must be Open, and the
+ * binding must be the value that part takes — a url (a string, or a `text` with a secret in its
+ * path) or an argv. The binder builds the Effect again, whole, so the bound one meets every check
+ * an Effect written whole meets: the url's literal host, the argv's entries.
+ */
+function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBinding): unknown {
+  const logic = (machine.implementations.actors as Record<string, unknown>)[name];
+  if (!isEffect(logic)) {
+    throw new Error(
+      `customize(): machine "${machine.id}" carries no Effect slot "${name}" — its Effects are: ` +
+        `${listed(slotsWhere(machine, isEffect))} (ADR-0067). Only declared parts can be bound.`,
+    );
+  }
+  const part = openPartOf(logic.effect);
+  const binder = binderOf(logic);
+  if (part === undefined || binder === undefined) {
+    throw new Error(
+      `customize(): the ${logic.effect.kind} Effect "${name}" of machine "${machine.id}" leaves nothing Open — its ` +
+        "parts are fixed in its definition, and only a part a package left `open` is bound, once (ADR-0054).",
+    );
+  }
+  const value =
+    typeof binding === "object" && binding !== null ? (binding as Record<string, unknown>)[part] : undefined;
+  const keys = typeof binding === "object" && binding !== null ? Object.keys(binding) : [];
+  const shape = part === "url" ? '{ url: "https://<host>/<path>" }' : '{ argv: ["<program>", "<arg>"] }';
+  if (keys.length !== 1 || keys[0] !== part || value === undefined) {
+    throw new Error(
+      `customize(): the ${logic.effect.kind} Effect "${name}" leaves its ${part} Open — bind it with ${shape} (ADR-0054)`,
+    );
+  }
+  if (value === open || typeof value === "function") {
+    throw new Error(
+      `customize(): the ${logic.effect.kind} Effect "${name}"'s ${part} is bound once, to a value — not ` +
+        `${value === open ? "`open` again" : "a function of the run"}: no run chooses an Effect's ${part} (ADR-0054)`,
+    );
+  }
+  return binder(binding);
+}
+
+/**
+ * The load walk's Effect checks (ADR-0067), again, on a Machine whose Open argv this `customize()`
+ * bound: at build its argv slots were unknown and every pick param counted as read; now the bound
+ * argv names them, and a param it does not read is refused as at build.
+ */
+function recheck(machine: AnyStateMachine): void {
+  const defs = vocabularyOf(machine);
+  if (!defs) return;
+  const { errors } = effectChecks(machine, machine.implementations.actors as Record<string, UnknownActorLogic>, defs);
+  if (errors.length) throw new Error(`customize(): machine "${machine.id}": ${errors.join("; ")}`);
 }
 
 /** The Sandbox seats and slots, applied to the `workspace()` the chain reaches. */

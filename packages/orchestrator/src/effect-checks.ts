@@ -210,7 +210,9 @@ export function effectChecks(
       const effect = isEffect(logic) ? logic.effect : undefined;
       return {
         effect,
-        keys: effect ? inputKeysOf(effect) : [],
+        // Undefined: no Effect, or an Open argv whose slots the composer binds (ADR-0054) — it gets
+        // every param here, and `customize()` runs this check again once the argv is bound.
+        keys: effect ? inputKeysOf(effect) : undefined,
         slot: typeof inv.src === "string" ? inv.src : inv.id,
         mapper: configs[i]?.input,
       };
@@ -262,7 +264,7 @@ export function effectChecks(
               );
             }
           }
-          for (const p of params) if ((!effect || keys.includes(p)) && !overwritten.has(p)) read.add(p);
+          for (const p of params) if ((keys === undefined || keys.includes(p)) && !overwritten.has(p)) read.add(p);
         } else if (typeof mapper === "function") {
           try {
             (mapper as (args: unknown) => unknown)({
@@ -289,8 +291,8 @@ export function effectChecks(
       } else if (probed && lost.length && picked.length) {
         const inputs =
           picked.length === 1
-            ? `the Effect's input (${picked[0]!.keys.join(", ") || "none"})`
-            : `any fromPick Effect's input (${picked.map((e) => `"${e.slot}": ${e.keys.join(", ") || "none"}`).join("; ")})`;
+            ? `the Effect's input (${picked[0]!.keys?.join(", ") || "none"})`
+            : `any fromPick Effect's input (${picked.map((e) => `"${e.slot}": ${e.keys?.join(", ") || "none"}`).join("; ")})`;
         errors.push(
           `${where} with fromPick: ${lost.map((p) => `"${p}"`).join(", ")} is no key of ${inputs}, and nothing ` +
             `else reads it — the Agent supplies it and it reaches nothing; name an argv slot for it, read it in ` +

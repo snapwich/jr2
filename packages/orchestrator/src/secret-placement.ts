@@ -260,6 +260,8 @@ function sandboxPlanOf(
   const targets: EffectorTargetConfig[] = [];
   for (const effect of ws.pod.effects) {
     if (effect.kind !== "http") continue;
+    // An Open url has no target, so it allows nothing: `jr2 up` refuses it before this (ADR-0054).
+    if (effect.target === undefined) continue;
     const t = { ...effect.target, secrets: [...effect.secrets].sort() };
     const same = (x: EffectorTargetConfig) =>
       x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();
@@ -323,6 +325,8 @@ function pushesOf(config: JR2Config, ws: PlacedWorkspace): SandboxPush[] {
 function effectorPlan(http: HttpPlaced[], secrets: EffectSecret[], values: Record<string, string>): EffectorPlan {
   const targets: EffectorTargetConfig[] = [];
   for (const { effect } of http) {
+    // An Open url has no target, so it allows nothing: `jr2 up` refuses it before this (ADR-0054).
+    if (effect.target === undefined) continue;
     const t = { ...effect.target, secrets: [...effect.secrets].sort() };
     const same = (x: EffectorTargetConfig) =>
       x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();

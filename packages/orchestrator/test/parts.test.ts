@@ -138,6 +138,7 @@ const NOTHING = {
   repos: [],
   openSlots: [],
   openAgents: [],
+  openEffects: [],
   sizes: [],
   composesSandbox: false,
 };
@@ -270,6 +271,7 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
     repos: [{ url: "git@github.com:acme/app.git", identity: "github.com/acme/app", key: APP_KEY }],
     openSlots: [{ slot: "docs", path: ["feature"] }],
     openAgents: [],
+    openEffects: [],
     // The Workspace states no Size, and is still reported: the converge resolves it against the
     // Instance default and the kit's, and splits it (ADR-0060).
     sizes: [{ path: ["feature"], route: ["feature"] }],

@@ -264,11 +264,13 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
 
 - **The host is fixed, in the Effector.** The Effector's config (`effector.json`, written by `jr2 up` from the Effects'
-  plain data) lists each scheme, host and port an Effect placed there names, with the secrets that Effect names. A
-  request to another target, or with another secret, is `refused`. A redirect is the response and is never followed: it
-  would send the request, and its `Authorization`, to a host the definition did not fix. No proxy is read from the
-  environment. The trust is the system roots and the instance's `caBundle`
-  ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)).
+  plain data) lists each scheme, host and port an Effect placed there names, with the secrets that Effect names — the
+  host its definition fixes, or for a url the package left Open, the one the composer's `customize()` bound
+  ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); `jr2 up` refuses a Machine
+  whose Open url nothing bound, so no fence entry is ever a guess. A request to another target, or with another secret,
+  is `refused`. A redirect is the response and is never followed: it would send the request, and its `Authorization`, to
+  a host the definition did not fix. No proxy is read from the environment. The trust is the system roots and the
+  instance's `caBundle` ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)).
 - **One list of secrets; placement is read, never declared, and naming is placement on both sides.** The top-level
   `secrets` list replaces `harness.heldSecrets`; its entry is ADR-0059's
   (`{ name, value | valueFrom.secretKeyRef, hosts?, headers?, paths? }`). A pod gets the secrets something in it names:

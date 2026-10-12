@@ -1273,6 +1273,52 @@ test("an OPEN Agent is refused the same way, with the `agents` line that binds t
   assert.deepEqual(w.confirms, [], "and no first-contact ask for a folder that cannot deploy");
 });
 
+test("an Effect's OPEN url or argv is refused the same way, with the `effects` line that binds it (ADR-0054)", async () => {
+  // A packaged Machine cannot know the host its http Effect calls or the program its command runs;
+  // until a composer binds it there is no host to fence and no argv to run, so the walk refuses it
+  // before anything is built — both parts in one listing pass, the first named.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  await writeFile(
+    join(root, "workflows", "packaged.ts"),
+    `import { command, http, jr2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [], actors: { notify: http({ method: "POST", url: open }), deploy: command(open) } })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /refusing: workflow "packaged" leaves the url of Effect "notify" open — bind it where the Machine is registered/,
+  );
+  assert.match(
+    err,
+    /export const machine = customize\(<import>, \{ effects: \{ notify: \{ url: "https:\/\/<host>\/<path>" \} \} \}\)/,
+  );
+  assert.match(err, /ADR-0054/);
+  assert.deepEqual(w.kube.applied, [], "not even the namespace");
+  assert.deepEqual(w.built, [], "no bundle, no image build");
+
+  // Bound by the composer, the same Machine passes the walk: what `jr2 up` reads is the bound part.
+  // A fresh instance: the module cache keeps the first file's Machine under its path.
+  const boundRoot = await mkInstance(`export default { name: "myinst" };\n`);
+  await writeFile(
+    join(boundRoot, "workflows", "packaged.ts"),
+    `import { command, customize, http, jr2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [], actors: { notify: http({ method: "POST", url: open }), deploy: command(open) } })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `const shipped = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n` +
+      `export const machine = customize(shipped, { effects: { notify: { url: "https://hooks.example.com/x" }, deploy: { argv: ["make", "deploy"] } } });\n`,
+  );
+  const bound = mkWorld(boundRoot);
+  await up(["--yes"], bound.io);
+  const out = bound.err.join("\n");
+  assert.doesNotMatch(out, /leaves the (url|argv) of Effect/);
+  assert.match(out, /notify: http POST https:\/\/hooks\.example\.com — 30s, in the Instance Effector/);
+  assert.match(out, /deploy: command \["make","deploy"\]/);
+});
+
 test("up prints who may send what, per state, and the load warnings — a warning converges on (ADR-0015)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   // A Gate on the parent takes `abandon` from the Agent below: legal, and warned.
