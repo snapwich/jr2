@@ -126,7 +126,7 @@ recover, finish — are exercised only one scripted tool call at a time.
   it is `revise` — and that does not finish within its time is cancelled and counts as finished. Its time is a trial's
   bound, 15 minutes, counted from the desk's first answer. A measured trial whose run settles before then without its
   task's final — a fault — is not cut, and fails "every trial finished". The prompt, the floor and the measure did not
-  change. Both were approved on 2026-10-12 by the design session the user deferred to.
+  change. Both were decided under the user's deferral on 2026-10-12 and confirmed by the user on 2026-10-12.
 - The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link) and
   `cut-pick` (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step
   deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
@@ -176,15 +176,15 @@ recover, finish — are exercised only one scripted tool call at a time.
   made both commits before its first `publish`, published once, and finished. The claim measures the paragraph after a
   signed push, which the model reads only after a push; in such a trial the model chose its order before it read any
   post-push text and had no work left to continue, so the measured moment never occurred — the shape of the `noticed`
-  and `push-follow` voids. The setup changed for it (approved by the user on 2026-10-11): when the setup holds and there
-  is one push, the step counts the commits from `main` to that push's published commit on `push.git`, and two or more
-  make the trial void ("void: the first push carried <n> commits …"). It decides from the push's content, never from the
-  push count, so "published once, committed, finished" and "published, reset, finished" stay misses. The prompt, the
-  floor and the pass did not change, and the 8 of 10 stands: the claim passes only on a new run. The void shares the
-  claim's one bound of replacements (half the trials, rounded up) with the setup void, and a void past it counts against
-  the floor and prints as a void. At the diagnostic run's rate, 4 of 10, the bound is often spent; the claim is then
-  open, not passed. Rejected: counting the batched trial a miss (it measures the model's reading of the claim's own
-  prompt), raising the bound, or lowering the floor.
+  and `push-follow` voids. The setup changed for it (decided under the user's deferral on 2026-10-11, confirmed by the
+  user on 2026-10-12): when the setup holds and there is one push, the step counts the commits from `main` to that
+  push's published commit on `push.git`, and two or more make the trial void ("void: the first push carried <n> commits
+  …"). It decides from the push's content, never from the push count, so "published once, committed, finished" and
+  "published, reset, finished" stay misses. The prompt, the floor and the pass did not change, and the 8 of 10 stands:
+  the claim passes only on a new run. The void shares the claim's one bound of replacements (half the trials, rounded
+  up) with the setup void, and a void past it counts against the floor and prints as a void. At the diagnostic run's
+  rate, 4 of 10, the bound is often spent; the claim is then open, not passed. Rejected: counting the batched trial a
+  miss (it measures the model's reading of the claim's own prompt), raising the bound, or lowering the floor.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but
@@ -227,7 +227,7 @@ recover, finish — are exercised only one scripted tool call at a time.
     body in `starting` is void, replaced within the claim's bound; a void past the bound counts against the floor and
     prints as a void. A body that left `starting` for `faulted` (`agent.fault`) or `lost` (`workspace.lost`) settled the
     run: it is not void, and fails "every trial finished" as the finished rule above says. The prompt, the floor and the
-    pass did not change. Approved on 2026-10-12 by the design session the user deferred to.
+    pass did not change. Decided under the user's deferral on 2026-10-12 and confirmed by the user on 2026-10-12.
 
   The Rest rule (ADR-0024) changed a third, `mode-refusal`, before any run under it. Its timer moved `reviewing` on to
   `approved` while the model composed its next call; under Rest that timer holds `ask_review` outstanding until it
