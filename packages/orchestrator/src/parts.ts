@@ -361,12 +361,12 @@ export type OpenPart = "repo" | "agent" | OpenEffectPart;
  * `customize(top, { actors: { review: { repos: { target: "<url>" } } } })`. The same nesting
  * `customize()` accepts, so the line pastes.
  *
- * An Agent binds through `agents` instead, and the placeholder is the model spelling ADR-0018
+ * An Agent binds through `agents` instead, and the sample value is the model spelling ADR-0018
  * demands — `<provider>/<model>`, not a bare model id, since the prefix is what picks the
  * endpoint. An Effect binds through `effects`: its url, its argv, its secret, or one object with two
  * of them for an Effect with two Open parts (open-effect.ts). `repo` is the
  * default because a Repo Slot was the first Open part and reads as the
- * unmarked case. An Open MAP has no slot to print (`slot` undefined): the placeholder `<slot>`
+ * unmarked case. An Open MAP has no slot to print (`slot` undefined): the sample `<slot>`
  * stands where the composer's own word goes, since choosing it is the composer's half of the line.
  */
 export function customizeLine(

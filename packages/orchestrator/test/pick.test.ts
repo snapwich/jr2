@@ -511,10 +511,9 @@ test("an entry below no Agent's state sets nothing, even with one pick outstandi
   const forRoot = warnings.find((w) => w.includes('the entry of "two"'));
   assert.ok(forRoot, `the root's entry is warned: ${warnings.join(" | ")}`);
   assert.match(forRoot, /"two\.ra" or "two\.rb"/, "naming the Agent states it could be moved under");
-  assert.ok(
-    warnings.some((w) => w.includes('the entry of "two.rc.ticked"')),
-    `the region's entry is warned: ${warnings.join(" | ")}`,
-  );
+  const forRegion = warnings.find((w) => w.includes('the entry of "two.rc.ticked"'));
+  assert.ok(forRegion, `the region's entry is warned: ${warnings.join(" | ")}`);
+  assert.match(forRegion, /move it under "two\.ra" or "two\.rb"/, "naming the Agent states it could be moved under");
   const host = new RunHost({ store: await mkStore() });
   host.register({ name: "two", machine, provide: () => ({}) });
   await host.start("two");

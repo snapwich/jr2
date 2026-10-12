@@ -73,8 +73,8 @@ export function binderOf(logic: unknown): Binder | undefined {
   return typeof bind === "function" ? (bind as Binder) : undefined;
 }
 
-/** Each Open part's placeholder, as its binding takes it. */
-const PLACEHOLDER: Record<OpenEffectPart, string> = {
+/** What the fix line writes for each Open part: a sample of the value its binding takes. */
+const BINDING_SAMPLE: Record<OpenEffectPart, string> = {
   url: 'url: "https://<host>/<path>"',
   argv: 'argv: ["<program>", "<arg>"]',
   secret: 'secret: "<name>"',
@@ -83,7 +83,7 @@ const PLACEHOLDER: Record<OpenEffectPart, string> = {
 /** One binding object for these Open parts — `{ url: "…", secret: "<name>" }` for two. */
 export function effectBindingShape(parts: OpenEffectPart | readonly OpenEffectPart[]): string {
   const list = typeof parts === "string" ? [parts] : parts;
-  return `{ ${list.map((p) => PLACEHOLDER[p]).join(", ")} }`;
+  return `{ ${list.map((p) => BINDING_SAMPLE[p]).join(", ")} }`;
 }
 
 /** The fix line for an Effect's Open parts, as `customize()` takes it under `effects`. */

@@ -26,7 +26,7 @@ type AnyEffect = EffectLogic<any, unknown>;
 
 const ws = () => ({
   ...handles({ app: "/work/app/jr2-run-1" }),
-  bindings: { app: "https://github.com/ourorg/app.git" },
+  bindings: { app: "https://git.example.com/ourorg/app.git" },
 });
 
 /** A Machine whose `running` state invokes the Effect beside a Gate `exit`; `leave` exits it, and
