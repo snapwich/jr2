@@ -1,4 +1,4 @@
-// An Effect's Open parts (ADR-0054, design 2): a packaged Machine leaves an http url, or a
+// An Effect's Open parts (ADR-0054): a packaged Machine leaves an http url, or a
 // command's argv, `open`; the composer binds it once with `customize(machine, { effects })`, through
 // `workspace()` and `pool()` as `agents` goes; `jr2 up`'s walk sees the bound part as one the author
 // wrote — the placement, the secrets, the Effector's fence — and reports the part nothing bound.
@@ -28,7 +28,8 @@ import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { secretPlacementsOf } from "../src/secret-placement.ts";
 import { httpFileWith } from "../src/sandbox-effect.ts";
 import { jr2Setup } from "../src/setup.ts";
-import { loadWarningsOf } from "../src/vocabulary.ts";
+import { inputSchemaOf, loadWarningsOf, seatsOf, vocabularyOf } from "../src/vocabulary.ts";
+import { fingerprintOf } from "../src/fingerprint.ts";
 import { machineBodies, serializeMachine } from "../src/machine-doc.ts";
 import { workspace } from "../src/workspace.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
@@ -395,7 +396,7 @@ test("the pick-param check runs again on a bound argv: a param the composer's ar
 
 test("a bound argv carries the warnings the same Machine written with that argv carries, and the Open one keeps its own", () => {
   // A pick param nothing the walk can run reads, beside an action it does not run: a warning, not
-  // a refusal (design 8). Written with the argv, the build attaches it; bound, customize() must too.
+  // a refusal (ADR-0015). Written with the argv, the build attaches it; bound, customize() must too.
   // The helper takes either argv form; the slot is typed as the fromPick input, so the bindings
   // below are untyped calls (`as never`), as customize.test.ts writes them.
   const shipper = (deploy: unknown) => {
@@ -443,6 +444,61 @@ test("a bound argv carries the warnings the same Machine written with that argv 
   assert.ok(docs.some((d) => d.id === "shipper" && d.warnings.some((w) => unread.includes(w))));
   const retuned = customize(bound, { agents: { coder: { instructions: "Ship it." } } });
   assert.deepEqual(loadWarningsOf(retuned), loadWarningsOf(written));
+});
+
+test("a bound Machine's warnings, vocabulary, seats and door survive xstate's .provide(), as a run's provide makes", () => {
+  // ADR-0049: every attachment keys on machine.config, which provide() passes through. So the bound
+  // Machine has a config of its own, and a provided copy of it (RunHost's per-run seam, ADR-0015) reads
+  // the bound warnings — never the Open Machine's. The unentered mode gives the Open Machine a warning
+  // of its own, so a fallback to it is seen.
+  const shipper = (deploy: unknown) => {
+    const ship = defineEvent({ name: "ship", input: z.object({ env: z.string() }) });
+    const finish = defineEvent({ name: "finish", input: z.object({}) });
+    const coder = agentActorWith(() => new MockFlueClient(), coderDefinition);
+    return jr2Setup({
+      types: {} as { context: { ticket: string }; input: { ticket: string } },
+      events: [ship, finish],
+      actors: { coder, deploy: deploy as EffectLogic<{ env: string }, CommandOutput> },
+      actions: { noop: () => {} },
+    }).createMachine({
+      id: "shipper",
+      input: z.object({ ticket: z.string() }),
+      context: ({ input }) => ({ ticket: input.ticket }),
+      initial: "w",
+      states: {
+        w: {
+          invoke: { src: "coder", input: { prompt: "p", endpoint: "http://harness.invalid" } },
+          initial: "rest",
+          states: {
+            rest: {},
+            unentered: { on: { finish: "#shipper.done" } },
+            shipping: { invoke: { src: "deploy", input: fromPick(ship), onDone: "rest" } },
+          },
+          on: { ship: { target: ".shipping", actions: "noop" }, finish: "done" },
+        },
+        done: { type: "final" },
+      },
+    });
+  };
+  const openMachine = shipper(commandWith(execs.factory, open));
+  const written = shipper(commandWith(execs.factory, ["make", "deploy"]));
+  const bound = customize(openMachine, { effects: { deploy: { argv: ["make", "deploy"] } } } as never);
+  assert.ok(
+    loadWarningsOf(written).some((w) => /nothing the walk can run reads "env"/.test(w)),
+    "the bound argv's own warning",
+  );
+  assert.notDeepEqual(loadWarningsOf(openMachine), loadWarningsOf(written), "the Open Machine warns otherwise");
+  assert.notEqual(bound.config, openMachine.config, "the bound Machine has a config of its own");
+
+  const fake = fromPromise(async () => ({ outcome: "exited", code: 0, tail: "" }));
+  for (const provided of [bound.provide({}), bound.provide({ actors: { deploy: fake } } as never)]) {
+    assert.deepEqual(loadWarningsOf(provided), loadWarningsOf(written), "the bound warnings, after .provide()");
+    assert.deepEqual(serializeMachine("shipper", provided).warnings, loadWarningsOf(written), "and in its doc");
+    assert.equal(vocabularyOf(provided), vocabularyOf(openMachine), "the vocabulary it carried");
+    assert.deepEqual(seatsOf(provided), seatsOf(openMachine), "the seats it carried");
+    assert.equal(inputSchemaOf(provided), inputSchemaOf(openMachine), "the door it carried");
+  }
+  assert.equal(fingerprintOf(bound), fingerprintOf(openMachine), "the shape a restore compares is the Open one's");
 });
 
 // A run of an Effect nobody bound, per kind: the second fence (ADR-0054). Each faults with the

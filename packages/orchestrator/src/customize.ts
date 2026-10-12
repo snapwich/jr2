@@ -24,7 +24,9 @@
 //     and passes the CONFIG through by reference, and every part a Machine carries is keyed on
 //     that config (parts.ts, vocabulary.ts). A new image or a bound slot therefore needs a new key
 //     — so those fields clone the wrapper's config and rebuild it with the same implementations,
-//     re-attaching what the original carried.
+//     re-attaching what the original carried. The load warnings of a bound argv are the same
+//     kind of part: the Machine the author wrote is rebuilt the same way, carrying the rechecked
+//     warnings in place of the Open Machine's.
 //
 // jr2's wrappers are TRANSPARENT: `agents`/`actors` route through `workspace()`'s `body` and
 // `pool()`'s `worker`, so a consumer customizing a Workspace-rooted workflow never writes `body`
@@ -62,12 +64,13 @@ import {
 } from "./parts.ts";
 import { assertSize, assertUserSeat, layerSize, type Size, type UserContainer } from "./size.ts";
 import {
-  attachBoundWarnings,
   attachInputSchema,
+  attachLoadWarnings,
+  attachSeats,
   attachVocabulary,
-  carryBoundWarnings,
   inputSchemaOf,
   loadWarningsOf,
+  seatsOf,
   vocabularyOf,
 } from "./vocabulary.ts";
 import { isEffect, type Arg } from "./effect.ts";
@@ -273,9 +276,7 @@ function bodyOf(machine: AnyStateMachine): { slot: string; body: AnyStateMachine
 
 /** Substitute one slot's logic — the one move every level of this module makes. */
 function substitute(machine: AnyStateMachine, actors: Record<string, unknown>): AnyStateMachine {
-  const out = machine.provide({ actors } as Parameters<AnyStateMachine["provide"]>[0]);
-  carryBoundWarnings(machine, out);
-  return out;
+  return machine.provide({ actors } as Parameters<AnyStateMachine["provide"]>[0]);
 }
 
 /** Agents and children, resolved against the first Machine an author wrote. */
@@ -314,8 +315,15 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
     actors[name] = customize(child, childParts as Customize<AnyStateMachine>);
   }
   const out = substitute(machine, actors);
-  if (bound.length > 0) recheck(machine, out);
-  return out;
+  if (bound.length === 0) return out;
+  // The bound Machine's warnings differ from the Open one's, and `provide` kept the Open one's
+  // config, which is what every attachment keys on (ADR-0049) — so it gets a config of its own,
+  // carrying what the original carried and the rechecked warnings, and any later `provide()` of
+  // it (a run's, ADR-0015) keeps them.
+  const warnings = recheck(machine, out);
+  const rebuilt = cloneConfig(out);
+  attachLoadWarnings(rebuilt, warnings);
+  return rebuilt;
 }
 
 /**
@@ -365,19 +373,19 @@ function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBindi
  * bound: at build its argv slots were unknown and every pick param counted as read; now the bound
  * argv names them. A param it does not read is refused as at build, and a warning the walk gives
  * for the bound argv (a param only an action the probe does not run may read) replaces the
- * findings it gave for the Open one, so the bound Machine carries the warnings the same Machine
- * written with that argv carries.
+ * findings it gave for the Open one: the result is the warnings the same Machine written with that
+ * argv carries, which the caller attaches to the bound Machine's own config.
  */
-function recheck(before: AnyStateMachine, machine: AnyStateMachine): void {
+function recheck(before: AnyStateMachine, machine: AnyStateMachine): string[] {
   const defs = vocabularyOf(machine);
-  if (!defs) return;
+  if (!defs) return loadWarningsOf(before);
   const checks = (m: AnyStateMachine) =>
     effectChecks(m, m.implementations.actors as Record<string, UnknownActorLogic>, defs);
   const { errors, warnings } = checks(machine);
   if (errors.length) throw new Error(`customize(): machine "${machine.id}": ${errors.join("; ")}`);
   const unbound = new Set(checks(before).warnings);
   const kept = loadWarningsOf(before).filter((warning) => !unbound.has(warning));
-  attachBoundWarnings(machine, [...new Set([...kept, ...warnings])]);
+  return [...new Set([...kept, ...warnings])];
 }
 
 /** The Sandbox seats and slots, applied to the `workspace()` the chain reaches. */
@@ -462,13 +470,28 @@ function nameSlots(machine: AnyStateMachine, override: Seats["repos"]): SandboxP
  * fingerprint a restore compares (ADR-0030) — is bit-identical to the original's.
  */
 function rebuild(machine: AnyStateMachine, seats: SandboxParts): AnyStateMachine {
+  const clone = cloneConfig(machine);
+  attachSandboxParts(clone, seats);
+  return clone;
+}
+
+/**
+ * The Machine around a NEW config object — a shallow clone, so the shape and the fingerprint are
+ * the original's — with the same implementations, and every attachment the original carried
+ * re-attached under the new key (ADR-0049): the vocabulary, the door, the seats, the load
+ * warnings and a wrapper's body. What the caller attaches after is the clone's alone.
+ */
+function cloneConfig(machine: AnyStateMachine): AnyStateMachine {
   const clone = new StateMachine({ ...machine.config }, machine.implementations) as AnyStateMachine;
   const vocabulary = vocabularyOf(machine);
   if (vocabulary) attachVocabulary(clone, vocabulary);
   const door = inputSchemaOf(machine);
   if (door) attachInputSchema(clone, door);
+  const seats = seatsOf(machine);
+  if (seats.length > 0) attachSeats(clone, seats);
+  const warnings = loadWarningsOf(machine);
+  if (warnings.length > 0) attachLoadWarnings(clone, warnings);
   const slot = wrapperBodyOf(machine);
   if (slot) attachWrapperBody(clone, slot);
-  attachSandboxParts(clone, seats);
   return clone;
 }

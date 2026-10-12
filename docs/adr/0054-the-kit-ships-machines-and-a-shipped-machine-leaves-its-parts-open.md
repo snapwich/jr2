@@ -50,12 +50,14 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   logic. An Open argv's slots are the composer's, so the load walk counts every pick param as read by it when the
   Machine is built, and `customize()` runs the walk's pick-param check again once the argv is bound — a param the bound
   argv does not read is refused there, and a warning it gives for the bound argv is the bound Machine's, as it is the
-  same Machine's written with that argv. The compiler's check does not reach a bound argv: an Open argv's input is one
-  string per key, so nothing at build or at `customize()` checks that the invoke supplies each slot the bound argv
-  names, and a slot it does not supply faults when the Effect starts — its state's `onError`, with nothing run. The
-  `jr2 up` walk reports an Open Effect beside Open Repo Slots and Agents and refuses the converge naming the `effects`
-  line; the Effect refuses to run while Open, as the second fence — its state's `onError`, with nothing sent and no
-  ledger row. The Open part is the whole url or the whole argv.
+  same Machine's written with that argv: the bound Machine gets a config of its own, which carries those warnings
+  ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), so a copy `provide()` makes of it — a run's
+  — keeps them, and the Open Machine keeps its own. The compiler's check does not reach a bound argv: an Open argv's
+  input is one string per key, so nothing at build or at `customize()` checks that the invoke supplies each slot the
+  bound argv names, and a slot it does not supply faults when the Effect starts — its state's `onError`, with nothing
+  run. The `jr2 up` walk reports an Open Effect beside Open Repo Slots and Agents and refuses the converge naming the
+  `effects` line; the Effect refuses to run while Open, as the second fence — its state's `onError`, with nothing sent
+  and no ledger row. The Open part is the whole url or the whole argv.
 - **The per-run Dial is the escape hatch, not the default.** A shipped Machine's door may carry `model` and
   `thinkingLevel` (ADR-0018's two Dials) and fold them into each invoke's input; the bound definition is what `jr2 up`
   preflights, the door value overrides it for one run's Turns. Nothing in jr2 changes for this — it is the Machine's own

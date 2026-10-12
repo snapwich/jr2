@@ -57,11 +57,13 @@ because they are one problem: **what a Machine depends on that is not inside it.
   `worker`, at any depth), so a consumer never writes `body`. The images and the Repo bindings are the parts `provide`
   cannot carry (xstate copies only implementations, and every part is keyed on the config it passes through by
   reference), so those fields clone the wrapper's config and rebuild it with the same implementations, re-attaching what
-  the original carried. Only DECLARED parts can be retuned, and the compiler is what says so: the slots are read off
-  xstate's own `TActor` parameter, so an Agent, a Repo Slot, or a child the Machine does not carry is a type error
-  (ADR-0050), and the runtime refuses the same call naming the Machine's own slots. Rejected: a `.with()` method on the
-  machine — it needs a jr2-owned machine type over xstate's, which ADR-0015 avoided, and it vanishes after any
-  `.provide()`; a callable-machine hybrid — verified to work, reads as a trick.
+  the original carried. A bound argv's load warnings are such a part too: `customize()` rebuilds the Machine the author
+  wrote the same way, with the vocabulary, the seats and the door it carried and the warnings the walk gives for the
+  bound argv, so no attachment is keyed on anything but the config. Only DECLARED parts can be retuned, and the compiler
+  is what says so: the slots are read off xstate's own `TActor` parameter, so an Agent, a Repo Slot, or a child the
+  Machine does not carry is a type error (ADR-0050), and the runtime refuses the same call naming the Machine's own
+  slots. Rejected: a `.with()` method on the machine — it needs a jr2-owned machine type over xstate's, which ADR-0015
+  avoided, and it vanishes after any `.provide()`; a callable-machine hybrid — verified to work, reads as a trick.
 - **A package exports a Machine, nothing beside it.** The door (ADR-0033), the vocabulary, the Agents, and the image all
   ride the exported object. The three uses:
 
