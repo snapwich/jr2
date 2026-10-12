@@ -116,7 +116,7 @@ func run(t *testing.T, name string, args ...string) string {
 	return string(out)
 }
 
-func (f *fixture) request(sign bool, last *wire.Pair) *wire.StartRequest {
+func (f *fixture) request(sign bool, pairs []wire.Pair) *wire.StartRequest {
 	f.t.Helper()
 	spec := &wire.PushSpec{
 		Repo:       wire.RepoRef{GitDir: "app/default/.git", Worktree: "app/jr2-work", Cache: "app-key"},
@@ -124,7 +124,7 @@ func (f *fixture) request(sign bool, last *wire.Pair) *wire.StartRequest {
 		Branch:     f.pod.Branch,
 		Credential: "*",
 		Sign:       sign,
-		Last:       last,
+		Pairs:      pairs,
 	}
 	req := &wire.StartRequest{Kind: wire.KindPush, Push: spec, TimeoutMs: 60_000}
 	if err := req.Validate(); err != nil {
@@ -141,9 +141,9 @@ func (f *fixture) request(sign bool, last *wire.Pair) *wire.StartRequest {
 	return req
 }
 
-func (f *fixture) push(sign bool, last *wire.Pair) wire.Output {
+func (f *fixture) push(sign bool, pairs []wire.Pair) wire.Output {
 	f.t.Helper()
-	return f.runner.Run(context.Background(), f.request(sign, last))
+	return f.runner.Run(context.Background(), f.request(sign, pairs))
 }
 
 func remoteRef(f *fixture) string { return f.pod.RemoteTip("refs/heads/" + f.pod.Branch) }
@@ -271,11 +271,11 @@ func TestAPushAfterASignedPushWithNoSyncPairsByTheLedgerOrByCherry(t *testing.T)
 			// The sync did not run: the Agent's branch still holds its unsigned commit, and the Agent
 			// adds one.
 			sha := f.pod.Commit("three", map[string]string{"c.txt": "c\n"})
-			var last *wire.Pair
+			var pairs []wire.Pair
 			if mode == "pair" {
-				last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+				pairs = []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
 			}
-			out := f.push(true, last)
+			out := f.push(true, pairs)
 			if out.Outcome != wire.OutcomePushed || out.Push.Via != mode {
 				t.Fatalf("got %+v %+v", out, out.Push)
 			}
@@ -298,8 +298,8 @@ func TestAPushAfterTheAgentRewroteHistoryIsDivergedAndPushesNothing(t *testing.T
 		t.Fatalf("first: %+v", first)
 	}
 	gittest.Git(t, f.pod.Tree, "commit", "-q", "--amend", "-m", "reworded")
-	last := &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
-	out := f.push(true, last)
+	pairs := []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
+	out := f.push(true, pairs)
 	if out.Outcome != wire.OutcomeDiverged || out.Push.Published != first.Push.Published {
 		t.Fatalf("got %+v %+v", out, out.Push)
 	}
@@ -312,8 +312,8 @@ func TestAPushWhoseRemoteAlreadyHoldsItIsUnchanged(t *testing.T) {
 	f := newFixture(t, "ssh")
 	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
 	first := f.push(true, nil)
-	last := &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
-	again := f.push(true, last)
+	pairs := []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
+	again := f.push(true, pairs)
 	if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged || again.Push.Published != first.Push.Published {
 		t.Fatalf("got %+v %+v", again, again.Push)
 	}
@@ -450,7 +450,7 @@ func TestASignedForcePushThatCannotPairIsDivergedAndPushesNothing(t *testing.T) 
 		t.Fatalf("first: %+v", first)
 	}
 	gittest.Git(t, f.pod.Tree, "commit", "-q", "--amend", "-m", "reworded")
-	req := f.request(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+	req := f.request(true, []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}})
 	req.Push.Force = true
 	out := f.runner.Run(context.Background(), req)
 	if out.Outcome != wire.OutcomeDiverged {
@@ -476,7 +476,7 @@ func TestASignedPushThatWouldPublishAnUnsignedCommitIsDiverged(t *testing.T) {
 	tree := gittest.Git(t, f.pod.Tree, "rev-parse", two+"^{tree}")
 	merge := gittest.Git(t, f.pod.Tree, "commit-tree", tree, "-p", two, "-p", one, "-m", "merge")
 	gittest.Git(t, f.pod.Tree, "update-ref", "refs/heads/"+f.pod.Branch, merge)
-	out := f.push(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+	out := f.push(true, []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}})
 	if out.Outcome != wire.OutcomeDiverged || !strings.Contains(out.Reason, "unsigned") {
 		t.Fatalf("got %+v %+v", out, out.Push)
 	}

@@ -303,6 +303,33 @@ export function lastPushOf(
   return best;
 }
 
+/** Every pair the ledger holds for a Workspace's Repo Slot (ADR-0067): each settled push row that
+ * published, oldest first by `at`, never this Effect's (`self`) — its published commit, its source,
+ * and its own `squashed`. What a push start carries, so the Effector sees every push's pair. */
+export function pushPairsOf(
+  rows: Readonly<Record<string, EffectRow>>,
+  sandbox: string,
+  repo: string,
+  self?: string,
+): Array<{ published: string; source: string; squashed?: "signed" | "unsigned" }> {
+  const found: Array<{ at: string; pair: { published: string; source: string; squashed?: "signed" | "unsigned" } }> =
+    [];
+  for (const [rowId, row] of Object.entries(rows)) {
+    if (rowId === self || row.state !== "settled" || row.kind !== "push") continue;
+    if (row.sandbox !== sandbox || row.repo !== repo) continue;
+    const output = row.output as Partial<PushedRow> & { outcome?: unknown; squashed?: unknown };
+    if (output?.outcome !== "pushed" || typeof output.published !== "string" || typeof output.source !== "string") {
+      continue;
+    }
+    const squashed = output.squashed === "signed" || output.squashed === "unsigned" ? output.squashed : undefined;
+    found.push({
+      at: row.at,
+      pair: { published: output.published, source: output.source, ...(squashed ? { squashed } : {}) },
+    });
+  }
+  return found.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).map((f) => f.pair);
+}
+
 /** The row id of each Repo Slot's newest push that published (`lastPushOf`), over the ledger. */
 function newestPushesOf(effects: Readonly<Record<string, EffectRow>>): Set<string> {
   const ids = new Set<string>();

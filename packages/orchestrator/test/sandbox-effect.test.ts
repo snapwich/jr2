@@ -201,8 +201,8 @@ test("an unsigned squash published a commit that is not the Agent's own, and is 
   });
 });
 
-/** A Machine that pushes twice in one run, in one Workspace. */
-function twoPushes(effect: AnyEffect) {
+/** A Machine that pushes twice in one run, in one Workspace — three times with `third`. */
+function twoPushes(effect: AnyEffect, third = false) {
   return jr2Setup({
     types: {} as { context: Ctx & { first?: unknown } },
     events: [go],
@@ -217,9 +217,10 @@ function twoPushes(effect: AnyEffect) {
       first: {
         invoke: {
           src: "effect",
-          onDone: { target: "second", actions: assign({ first: ({ event }) => event.output }) },
+          onDone: { target: third ? "between" : "second", actions: assign({ first: ({ event }) => event.output }) },
         },
       },
+      between: { invoke: { src: "effect", onDone: "second" } },
       second: {
         invoke: { src: "effect", onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) } },
       },
@@ -228,7 +229,7 @@ function twoPushes(effect: AnyEffect) {
   });
 }
 
-test("the next push sends the ledger's last push of its Workspace as its pair, and runs a sync that did not finish again first", async () => {
+test("the next push sends the ledger's pushes of its Workspace's Repo Slot as its pairs, and runs a sync that did not finish again first", async () => {
   const fake = new FakeEffector(["sandbox"]);
   const syncs = new FakeSync();
   syncs.answer = { sync: "busy", reason: "a rebase of your branch is in progress" };
@@ -241,7 +242,7 @@ test("the next push sends the ledger's last push of its Workspace as its pair, a
   const { runId } = await host.start("fx");
   host.sendToGate(runId, "start", { type: "go" });
   await waitFor(() => fake.starts.length === 1);
-  assert.equal((fake.starts[0]!.req as PushStartRequest).push.last, undefined, "no push before it");
+  assert.equal((fake.starts[0]!.req as PushStartRequest).push.pairs, undefined, "no push before it: omitted, never []");
   fake.settle(pushed("b".repeat(40)));
   // The first sync answered busy: before the second push it is run again, and the push carries
   // the first push's pair.
@@ -250,7 +251,7 @@ test("the next push sends the ledger's last push of its Workspace as its pair, a
   assert.equal(syncs.calls[1]!.req.published, "b".repeat(40));
   assert.equal(syncs.calls[1]!.req.source, "a".repeat(40));
   const second = fake.starts[1]!.req as PushStartRequest;
-  assert.deepEqual(second.push.last, { published: "b".repeat(40), source: "a".repeat(40) });
+  assert.deepEqual(second.push.pairs, [{ published: "b".repeat(40), source: "a".repeat(40) }]);
   const first = (host.status(runId)?.context as { first?: Record<string, unknown> }).first!;
   assert.equal(first.sync, "busy");
   assert.equal(first.syncReason, "a rebase of your branch is in progress");
@@ -276,8 +277,34 @@ test("the pair carries the last push's `squashed`, so a push that maps its commi
   fake.settle({ ...pushed("b".repeat(40)), squashed: "unsigned" });
   await waitFor(() => fake.starts.length === 2);
   const second = fake.starts[1]!.req as PushStartRequest;
-  assert.deepEqual(second.push.last, { published: "b".repeat(40), source: "a".repeat(40), squashed: "unsigned" });
+  assert.deepEqual(second.push.pairs, [{ published: "b".repeat(40), source: "a".repeat(40), squashed: "unsigned" }]);
   fake.settle(pushed("c".repeat(40)));
+  await waitFor(() => host.status(runId)?.value === "done");
+});
+
+test("a push sends every pair the Repo Slot's ledger holds, oldest push first — not the last push's alone (ADR-0067)", async () => {
+  // A squash older than the last push still maps its source: the Effector builds its twin set from
+  // every push that published, so the start carries each one's pair, with its own `squashed`.
+  const fake = new FakeEffector(["sandbox"]);
+  const syncs = new FakeSync();
+  const host = new RunHost({ store: await mkStore(), ...target });
+  host.register({
+    name: "fx",
+    machine: twoPushes(pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect, true),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("fx");
+  host.sendToGate(runId, "start", { type: "go" });
+  await waitFor(() => fake.starts.length === 1);
+  fake.settle({ ...pushed("b".repeat(40)), squashed: "signed" });
+  await waitFor(() => fake.starts.length === 2);
+  fake.settle({ ...pushed("c".repeat(40)), source: "d".repeat(40) });
+  await waitFor(() => fake.starts.length === 3);
+  assert.deepEqual((fake.starts[2]!.req as PushStartRequest).push.pairs, [
+    { published: "b".repeat(40), source: "a".repeat(40), squashed: "signed" },
+    { published: "c".repeat(40), source: "d".repeat(40) },
+  ]);
+  fake.settle(pushed("e".repeat(40)));
   await waitFor(() => host.status(runId)?.value === "done");
 });
 

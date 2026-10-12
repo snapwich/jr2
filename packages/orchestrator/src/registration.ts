@@ -520,8 +520,8 @@ export type RunBinding = {
    * reads to deliver its output, re-attach, or settle `unknown`, and never to run twice.
    */
   effectRow?: (effectId: string) => EffectRow | undefined;
-  /** Every row of the run's Effect ledger, by Effect id — what a push reads its pair from (the
-   * ledger's last push of its Workspace, ADR-0067). */
+  /** Every row of the run's Effect ledger, by Effect id — what a push reads its pairs from (each
+   * push of its Workspace and Repo Slot that published, ADR-0067). */
   effectRows?: () => Readonly<Record<string, EffectRow>>;
   /**
    * The Effect ledger's WRITE half (ADR-0067), in the same RunBlob as the snapshot. `"now"` (the

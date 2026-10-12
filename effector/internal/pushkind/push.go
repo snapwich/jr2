@@ -16,12 +16,14 @@
 // answer came).
 //
 // Signed: the new commits are found by ancestry — the published tip must be an ancestor of the
-// Agent's tip, which the sync step makes true after each signed push. When it is not (the sync did
-// not run), a read-only fallback pairs the published commits with the Agent's: `pair` from the
-// ledger's last push, then `cherry` by patch-id, author line and message. On every push, before
-// anything is signed, the same map runs over the new commits (ADR-0067): a commit whose published
-// twin is a faithful image of it — its tree, its parents as mapped — is replaced by that twin, and
-// is never signed again. Nothing unsigned leaves:
+// Agent's tip, which the sync step makes true after each push that publishes a commit not the
+// Agent's own. When it is not (the sync did not run), a read-only fallback pairs the published
+// commits with the Agent's: `pair` from the ledger's pairs — every push of the Repo Slot that
+// published, which the start carries — then `cherry` by patch-id, author line and message. A
+// squash the remote already holds as this push's exact image is this push's own commit (a restore
+// that sends it again). On every push, before anything is signed, the same map runs over the new
+// commits (ADR-0067): a commit whose published twin is a faithful image of it — its tree, its
+// parents as mapped — is replaced by that twin, and is never signed again. Nothing unsigned leaves:
 // every commit the remote lacks must be one this call signed. Author line and date stay the
 // Agent's; the committer is the entry's name and email, at this Effector's clock.
 package pushkind
@@ -440,32 +442,45 @@ func tail(s string) string {
 // --- signing -------------------------------------------------------------------------------------
 
 // signed is what sign answers: the commit to publish, how the new commits were found, and whether
-// this call made that commit (made is false when the published tip, or a commit the remote holds,
-// stands for the Agent's tip).
+// this push made that commit — this call (made), or this same push sent before, whose squash the
+// remote holds (own). Both are false when the published tip, or a commit the remote holds, stands
+// for the Agent's tip.
 type signed struct {
 	target, via string
-	made        bool
+	made, own   bool
 }
 
 // squashedOf is the output's `squashed`: what the published commit is (ADR-0067). A commit this
-// call made is named by this call's options; a commit an earlier push made — the published tip,
-// mapped by the pair or by cherry — by that push's own `squashed`, which the ledger's last push
-// carries beside its pair. Any other commit the remote holds that cherry maps is a copy of the
-// Agent's commits: "".
+// push made is named by this push's options; a commit an earlier push made — the published tip,
+// mapped by the pair or by cherry — by that push's own `squashed`, which its pair carries: the
+// newest pair whose published commit it is. Any other commit the remote holds that cherry maps is
+// a copy of the Agent's commits: "".
 func (c *call) squashedOf(s *signed) string {
+	mine := s.made || s.own
 	switch {
-	case s.made && c.spec.Squash != nil && c.spec.Sign:
+	case mine && c.spec.Squash != nil && c.spec.Sign:
 		return wire.SquashedSigned
-	case s.made && c.spec.Squash != nil:
+	case mine && c.spec.Squash != nil:
 		return wire.SquashedUnsigned
-	case !s.made && c.spec.Last != nil && c.spec.Last.Published == s.target:
-		return c.spec.Last.Squashed
+	case !mine && c.pairFor(s.target) != nil:
+		return c.pairFor(s.target).Squashed
 	}
 	return ""
 }
 
-// not is rev-list's word for "and none of these".
-const not, revList = "--not", "rev-list"
+// pairFor is the newest pair whose published commit is published, or nil.
+func (c *call) pairFor(published string) *wire.Pair {
+	for i, pair := range slices.Backward(c.spec.Pairs) {
+		if pair.Published == published {
+			return &c.spec.Pairs[i]
+		}
+	}
+	return nil
+}
+
+// not is rev-list's word for "and none of these"; reverse and topoOrder list commits oldest first,
+// parents before children, as a map that walks them needs.
+const not, revList, reverse, topoOrder = "--not", "rev-list", "--reverse", "--topo-order"
 
 // sign makes the commits to publish: signed copies of the Agent's new commits, or one squashed
 // commit — signed with `sign`, made with the entry's committer without it (ADR-0067).
@@ -498,17 +513,14 @@ func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signe
 		if err != nil {
 			return nil, ptr(rejected("sign", err.Error(), ""))
 		}
-		msg := *c.spec.Squash
-		if !strings.HasSuffix(msg, "\n") {
-			msg += "\n"
-		}
-		target, err = c.write(ctx, signer, head.tree, nonEmpty(parent), head.author, head.encoding, msg)
+		target, err = c.write(ctx, signer, head.tree, nonEmpty(parent), head.author, head.encoding,
+			squashMessage(*c.spec.Squash))
 		if err != nil {
 			return nil, ptr(rejected("sign", err.Error(), ""))
 		}
 		mine[target] = true
 	} else {
-		args := append(append([]string{revList, "--reverse", "--topo-order", sha, not}, from...), base...)
+		args := append(append([]string{revList, reverse, topoOrder, sha, not}, from...), base...)
 		list, err := repo.Lines(ctx, args...)
 		if err != nil {
 			return nil, ptr(rejected("sign", "the Agent's commits could not be listed", tail(stderrOf(err))))
@@ -585,8 +597,10 @@ func (c *call) bundleOf(ctx context.Context, target, sha string) (string, *wire.
 }
 
 // rangeOf finds what to sign: the commits after `from`, and which Agent commit stands for the
-// published tip (written into mapped) — by ancestry, the ledger's pair, or cherry; none of them is
-// `diverged`, with or without `force`. A non-nil signed or output ends the push there.
+// published tip (written into mapped) — by ancestry, the newest pair whose published commit is the
+// remote's tip, or cherry; a squash whose exact image the remote holds is this push's own commit;
+// none of them is `diverged`, with or without `force`. A non-nil signed or output ends the push
+// there.
 func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 	mapped map[string]string) ([]string, string, *signed, *wire.Output) {
 	repo := c.repo
@@ -598,13 +612,17 @@ func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 			return nil, "", &signed{target: sha, via: "ancestry"}, nil
 		case repo.IsAncestor(ctx, pub, sha):
 			from, via = []string{pub}, "ancestry"
-		case c.spec.Last != nil && c.spec.Last.Published == pub && repo.IsAncestor(ctx, c.spec.Last.Source, sha):
-			// The sync did not run: the ledger's last push names its own pair.
-			if c.spec.Last.Source == sha {
+		case c.pairFor(pub) != nil && repo.IsAncestor(ctx, c.pairFor(pub).Source, sha):
+			// The sync did not run: the push that published the remote's tip names its own pair.
+			source := c.pairFor(pub).Source
+			if source == sha {
 				return nil, "", &signed{target: pub, via: "pair"}, nil
 			}
-			mapped[c.spec.Last.Source] = pub
-			from, via = []string{c.spec.Last.Source}, "pair"
+			mapped[source] = pub
+			from, via = []string{source}, "pair"
+		case c.ownSquash(ctx, pub, sha, base):
+			// This push, sent before: the remote holds its squash (ADR-0067). It publishes nothing new.
+			return nil, "", &signed{target: pub, own: true}, nil
 		default:
 			x, ok := c.cherry(ctx, pub, sha, base)
 			switch {
@@ -624,6 +642,37 @@ func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 	}
 
 	return from, via, nil, nil
+}
+
+// ownSquash says whether the published tip pub is this squash's exact image of the Agent's sha:
+// the source's tree, author line and encoding, the Machine's message, and as its one parent the
+// newest pair's published commit — on a first push, the merge base with the base — as sign makes
+// it. Only the committer's date and the signature can differ. A full comparison, not a pairing.
+func (c *call) ownSquash(ctx context.Context, pub, sha string, base []string) bool {
+	if c.spec.Squash == nil {
+		return false
+	}
+	parent := ""
+	if n := len(c.spec.Pairs); n > 0 {
+		parent = c.spec.Pairs[n-1].Published
+	} else if len(base) > 0 {
+		parent, _ = c.repo.Line(ctx, append([]string{"merge-base", sha}, base...)...)
+	}
+	tip, err1 := c.read(ctx, pub)
+	source, err2 := c.read(ctx, sha)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return tip.tree == source.tree && tip.author == source.author && tip.encoding == source.encoding &&
+		tip.message == squashMessage(*c.spec.Squash) && slices.Equal(tip.parents, nonEmpty(parent))
+}
+
+// squashMessage is the squashed commit's message: the Machine's, ending in a newline.
+func squashMessage(msg string) string {
+	if !strings.HasSuffix(msg, "\n") {
+		msg += "\n"
+	}
+	return msg
 }
 
 func diverged(sha, pub, reason string) (*signed, *wire.Output) {
@@ -816,8 +865,9 @@ func (c *call) tool(ctx context.Context, stdin io.Reader, name string, args ...s
 	return gitclean.Exec(ctx, c.repo, stdin, cmdArgs...)
 }
 
-// twinSet is what a commit of a push's new range may pair with: the ledger's pair — the last
-// push's source, whose published commit the remote still holds — and the published commits after
+// twinSet is what a commit of a push's new range may pair with: the ledger's pairs — each push's
+// source whose published commit the remote still holds, the newest push's when two name one
+// source — and the published commits after
 // each new commit's merge base with the remote's tip, by cherry's key (a non-merge's stable
 // patch-id, author line and message; a merge's tree, non-first parents, author line and message).
 // It is read on every push, before anything is signed, whether ancestry found the new commits or
@@ -835,9 +885,13 @@ func (c *call) twins(ctx context.Context, list []string, pub string) (*twinSet, 
 		return tw, nil
 	}
 	repo := c.repo
-	if last := c.spec.Last; last != nil && slices.Contains(list, last.Source) &&
-		(last.Published == pub || repo.IsAncestor(ctx, last.Published, pub)) {
-		tw.ledger[last.Source] = last.Published
+	// Oldest first, so the newest pair of one source is the one kept. A squash's pair names its
+	// source alone: an earlier commit of the squashed range has no faithful twin, and a side branch
+	// made at it publishes the commits it descends from (ADR-0067).
+	for _, pair := range c.spec.Pairs {
+		if slices.Contains(list, pair.Source) && (pair.Published == pub || repo.IsAncestor(ctx, pair.Published, pub)) {
+			tw.ledger[pair.Source] = pair.Published
+		}
 	}
 	bases := map[string]bool{}
 	for _, id := range list {
@@ -875,8 +929,8 @@ func (c *call) twins(ctx context.Context, list []string, pub string) (*twinSet, 
 }
 
 // of answers the published twin of commit id, or "". The ledger's pair is taken as it is: it names
-// the one exact commit the last push published for — a signed copy, or a squashed commit whose
-// parent is the published base. Any other twin is the first published commit of id's key that is
+// the one exact commit a push published for id — a signed copy, or a squashed commit whose parent
+// is the published base. Any other twin is the first published commit of id's key that is
 // a faithful image of it: id's tree, and as parents id's own parents as mapped. The key is read
 // with the mapped parents too, so a merge of the Agent's own side branch keys on the published
 // copies of its non-first parents, as its published twin does. A key alone is not enough: a commit
@@ -921,49 +975,64 @@ var nonHex = regexp.MustCompile(`[^0-9a-f]`)
 
 // cherry pairs each published commit after the merge base with ONE Agent commit by a key — a
 // non-merge's stable patch-id, author line and message; a merge's tree, non-first parents, author
-// line and message. Every published commit must pair, the paired Agent commits must all come
-// before any unpaired one, and the last paired commit must have the published tip's tree. It
-// answers that commit, which then stands for the published tip; read-only.
+// line and message. An Agent merge is keyed with its parents as mapped by the pairs made before it,
+// as the twin set keys it: its published twin's non-first parents are the published copies. Every
+// published commit must pair, the paired Agent commits must all come before any unpaired one, and
+// the last paired commit must have the published tip's tree. It answers that commit, which then
+// stands for the published tip; read-only.
 func (c *call) cherry(ctx context.Context, pub, sha string, base []string) (string, bool) {
 	repo := c.repo
 	mb, err := repo.Line(ctx, "merge-base", pub, sha)
 	if err != nil || mb == "" {
 		return "", false
 	}
-	published, err := repo.Lines(ctx, append([]string{revList, pub, not, mb}, base...)...)
+	published, err := repo.Lines(ctx, append([]string{revList, reverse, topoOrder, pub, not, mb}, base...)...)
 	if err != nil {
 		return "", false
 	}
-	left := map[string]int{}
+	left := map[string][]string{}
 	for _, id := range published {
 		k, err := c.key(ctx, id)
 		if err != nil {
 			return "", false
 		}
-		left[k]++
+		left[k] = append(left[k], id)
 	}
-	agent, err := repo.Lines(ctx, append([]string{revList, "--reverse", "--topo-order", sha, not, mb}, base...)...)
+	agent, err := repo.Lines(ctx, append([]string{revList, reverse, topoOrder, sha, not, mb}, base...)...)
 	if err != nil {
 		return "", false
 	}
+	mapped := map[string]string{}
 	x, unpaired := mb, false
 	for _, id := range agent {
-		k, err := c.key(ctx, id)
+		commit, err := c.read(ctx, id)
 		if err != nil {
 			return "", false
 		}
-		if left[k] > 0 {
+		parents := make([]string, 0, len(commit.parents))
+		for _, p := range commit.parents {
+			if m, ok := mapped[p]; ok {
+				p = m
+			}
+			parents = append(parents, p)
+		}
+		k, err := c.keyOf(ctx, id, commit, parents)
+		if err != nil {
+			return "", false
+		}
+		if len(left[k]) > 0 {
 			if unpaired {
 				return "", false
 			}
-			left[k]--
+			mapped[id] = left[k][0]
+			left[k] = left[k][1:]
 			x = id
 		} else {
 			unpaired = true
 		}
 	}
-	for _, n := range left {
-		if n != 0 {
+	for _, ids := range left {
+		if len(ids) != 0 {
 			return "", false
 		}
 	}

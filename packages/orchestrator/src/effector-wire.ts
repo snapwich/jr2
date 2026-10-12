@@ -90,9 +90,9 @@ export type HttpStartRequest = z.infer<typeof HttpStartShape>;
 export const RepoRefShape = z.strictObject({ gitDir: z.string(), worktree: z.string(), cache: z.string() });
 export type RepoRef = z.infer<typeof RepoRefShape>;
 
-/** One push's published commit and the Agent's commit it was made from: the ledger's pair, with
- * that push's own `squashed` — what its published commit is, which a later push that maps the same
- * commit names (ADR-0067). */
+/** One push's published commit and the Agent's commit it was made from: a ledger push row's pair,
+ * with that push's own `squashed` — what its published commit is, which a later push that maps the
+ * same commit names (ADR-0067). */
 export const PairShape = z.strictObject({
   published: z.string(),
   source: z.string(),
@@ -115,7 +115,9 @@ export const PushStartShape = z.strictObject({
     sign: z.boolean().optional(),
     squash: z.string().optional(),
     force: z.boolean().optional(),
-    last: PairShape.optional(),
+    /** Every pair the ledger holds for the Workspace's Repo Slot, oldest push first (ADR-0067):
+     * omitted when there is none, never empty. */
+    pairs: z.array(PairShape).min(1).optional(),
   }),
   timeoutMs: z.number().int(),
 });

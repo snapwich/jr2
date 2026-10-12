@@ -47,11 +47,11 @@ func TestAPublishedCommitIsNeverSignedTwice(t *testing.T) {
 				gittest.Git(t, tree, "checkout", "-q", f.pod.Branch)
 				gittest.Git(t, tree, "merge", "-q", "--no-ff", "-m", "merge side", "side")
 
-				var last *wire.Pair
+				var pairs []wire.Pair
 				if mode == "pair" {
-					last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+					pairs = []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
 				}
-				out := f.push(true, last)
+				out := f.push(true, pairs)
 				if out.Outcome != wire.OutcomePushed {
 					t.Fatalf("got %+v %+v", out, out.Push)
 				}
@@ -101,11 +101,11 @@ func TestACommitRevertedAndAppliedAgainIsSignedAndNotMappedToAnOlderCopy(t *test
 				}
 				gittest.Git(t, tree, "revert", "--no-edit", a)
 				gittest.Git(t, tree, "cherry-pick", a)
-				var last *wire.Pair
+				var pairs []wire.Pair
 				if mode == "pair" {
-					last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+					pairs = []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
 				}
-				req := f.request(true, last)
+				req := f.request(true, pairs)
 				req.Push.Force = force
 				out := f.runner.Run(context.Background(), req)
 				assertPushedTheAgentsTree(t, f, out, first.Push.Published, 2)
@@ -136,11 +136,11 @@ func TestARevertAndReapplyAfterASyncAndASideBranchMergeIsPushed(t *testing.T) {
 			f.pod.Commit("C", map[string]string{"c.txt": "c\n"})
 			gittest.Git(t, tree, "revert", "--no-edit", b)
 			gittest.Git(t, tree, "cherry-pick", b)
-			var last *wire.Pair
+			var pairs []wire.Pair
 			if mode == "pair" {
-				last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+				pairs = []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
 			}
-			out := f.push(true, last)
+			out := f.push(true, pairs)
 			// S, the merge, C, the revert and B applied again.
 			assertPushedTheAgentsTree(t, f, out, first.Push.Published, 5)
 		})
@@ -206,11 +206,11 @@ func TestAMergeBeforeTheFirstPushIsNeverSignedTwice(t *testing.T) {
 				gittest.Git(t, tree, "checkout", "-q", f.pod.Branch)
 				gittest.Git(t, tree, "merge", "-q", "--no-ff", "-m", "merge side", "side")
 
-				var last *wire.Pair
+				var pairs []wire.Pair
 				if mode == "pair" {
-					last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+					pairs = []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
 				}
-				out := f.push(true, last)
+				out := f.push(true, pairs)
 				assertOneCopyOfEach(t, f, "X", "A merge x", "B", "S", "merge side")
 				assertPushedTheAgentsTree(t, f, out, first.Push.Published, 2)
 			})
@@ -244,7 +244,7 @@ func TestASideBranchMadeBeforeASquashIsMergedWithoutPublishingTheSquashedCommits
 	gittest.Git(t, tree, "checkout", "-q", f.pod.Branch)
 	gittest.Git(t, tree, "merge", "-q", "--no-ff", "-m", "merge side", "side")
 
-	out := f.push(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+	out := f.push(true, []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}})
 	assertPushedTheAgentsTree(t, f, out, first.Push.Published, 2)
 	if got := remoteGit(t, f, "log", "--format=%s", remoteRef(f), "--not", "main"); got !=
 		"merge side\nS\n"+msg {
@@ -273,11 +273,11 @@ func TestATipRevertedAndAppliedAgainIsSignedAndNotMappedToItsOwnCopy(t *testing.
 				}
 				gittest.Git(t, tree, "revert", "--no-edit", b)
 				gittest.Git(t, tree, "cherry-pick", b)
-				var last *wire.Pair
+				var pairs []wire.Pair
 				if mode == "pair" {
-					last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+					pairs = []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
 				}
-				req := f.request(true, last)
+				req := f.request(true, pairs)
 				req.Push.Force = force
 				out := f.runner.Run(context.Background(), req)
 				if out.Push != nil && out.Push.Unchanged {

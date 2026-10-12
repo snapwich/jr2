@@ -43,11 +43,11 @@ func TestASignedPushThatPublishesNothingNewStillCarriesTheSyncBundle(t *testing.
 			if first.Outcome != wire.OutcomePushed {
 				t.Fatalf("first: %+v", first)
 			}
-			var last *wire.Pair
+			var pairs []wire.Pair
 			if mode == "pair" {
-				last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+				pairs = []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
 			}
-			again := f.push(true, last)
+			again := f.push(true, pairs)
 			if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged || again.Push.Via != mode ||
 				again.Push.Published != first.Push.Published || again.Push.Source != first.Push.Source {
 				t.Fatalf("got %+v %+v", again, again.Push)
@@ -155,7 +155,7 @@ func TestAPairWhoseRemoteMovedPastTheLastPushIsDiverged(t *testing.T) {
 	remoteGit(t, f, "update-ref", "refs/heads/"+f.pod.Branch, other)
 	// The sync did not run; the Agent adds a commit on its unsigned one.
 	f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
-	out := f.push(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+	out := f.push(true, []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}})
 	if out.Outcome != wire.OutcomeDiverged {
 		t.Fatalf("got %+v %+v", out, out.Push)
 	}
@@ -202,9 +202,9 @@ func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
 		t.Fatalf("an unsigned squash: bundle %d bytes, squashed %q", len(out.Push.Bundle), out.Push.Squashed)
 	}
 	// The sync did not finish, so the Agent's branch stays on its own commits: the next squash
-	// pairs the published commit from the ledger's last push and squashes only what is new onto it.
+	// pairs the published commit from that push's pair and squashes only what is new onto it.
 	more := f.pod.Commit("three", map[string]string{"c.txt": "c\n"})
-	next := f.request(false, &wire.Pair{Published: pub, Source: sha})
+	next := f.request(false, []wire.Pair{{Published: pub, Source: sha}})
 	next.Push.Squash = &msg
 	out = f.runner.Run(context.Background(), next)
 	if out.Outcome != wire.OutcomePushed || out.Push.Via != "pair" || out.Push.Source != more {
@@ -223,7 +223,7 @@ func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
 	}
 	gittest.Git(t, f.pod.Tree, "reset", "-q", "--hard", squashed)
 	four := f.pod.Commit("four", map[string]string{"d.txt": "d\n"})
-	plain := f.runner.Run(context.Background(), f.request(false, &wire.Pair{Published: squashed, Source: more}))
+	plain := f.runner.Run(context.Background(), f.request(false, []wire.Pair{{Published: squashed, Source: more}}))
 	if plain.Outcome != wire.OutcomePushed || plain.Push.Published != four || plain.Push.Squashed != "" {
 		t.Fatalf("a plain push after a synced unsigned squash: %+v %+v", plain, plain.Push)
 	}
@@ -263,8 +263,8 @@ func TestAPushThatMapsAnEarlierPushsCommitNamesWhatThatPushPublished(t *testing.
 		if first.Outcome != wire.OutcomePushed || first.Push.Squashed != wire.SquashedUnsigned {
 			t.Fatalf("first: %+v %+v", first, first.Push)
 		}
-		again := f.push(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source,
-			Squashed: first.Push.Squashed})
+		again := f.push(true, []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source,
+			Squashed: first.Push.Squashed}})
 		if again.Outcome != wire.OutcomePushed || again.Push.Published != first.Push.Published || !again.Push.Unchanged {
 			t.Fatalf("again: %+v %+v", again, again.Push)
 		}
@@ -283,7 +283,7 @@ func TestAPushThatMapsAnEarlierPushsCommitNamesWhatThatPushPublished(t *testing.
 		if first.Outcome != wire.OutcomePushed || first.Push.Squashed != "" {
 			t.Fatalf("first: %+v %+v", first, first.Push)
 		}
-		req := f.request(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+		req := f.request(true, []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}})
 		req.Push.Squash = &msg
 		again := f.runner.Run(context.Background(), req)
 		if again.Outcome != wire.OutcomePushed || again.Push.Published != first.Push.Published || !again.Push.Unchanged {
@@ -301,7 +301,7 @@ func TestAPushThatMapsAnEarlierPushsCommitNamesWhatThatPushPublished(t *testing.
 			t.Fatalf("first: %+v %+v", first, first.Push)
 		}
 		f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
-		req := f.request(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+		req := f.request(true, []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}})
 		req.Push.Squash = &msg
 		out := f.runner.Run(context.Background(), req)
 		if out.Outcome != wire.OutcomePushed || out.Push.Unchanged || out.Push.Squashed != wire.SquashedSigned {

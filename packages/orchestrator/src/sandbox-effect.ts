@@ -20,13 +20,14 @@
 //     credentialed command are sent again with only the pinned commit the intent row holds — a run
 //     is a function of (commit, argv, secrets), never of the Agent's tip now — and with none
 //     recorded settle `unknown`; a file-body http is sent again only when marked `idempotent`.
-//   - THE PAIR AND THE SYNC. A push sends the ledger's last push of its Workspace and Repo Slot (its
-//     published commit and its source) as `last`, the input of the Effector's `pair` fallback.
+//   - THE PAIRS AND THE SYNC. A push sends every push of its Workspace and Repo Slot that published
+//     (each one's published commit, source and `squashed`), oldest first, as `pairs`: the input of
+//     the Effector's `pair` fallback and of its map before signing.
 //     After every push whose published commit is not the Agent's own — signed copies, or one
 //     squashed commit, signed or not — the Orchestrator relays the bundle of the published commits
 //     to the Workspace's Harness, which moves the Agent's branch to them (`POST /sync`); its
 //     answer rides the output as `sync`, a
-//     field beside the push's outcome. When the last push's sync did not finish, it is run again
+//     field beside the push's outcome. When the newest push's sync did not finish, it is run again
 //     before the next push. The push never trusts it.
 //   - D1. When its state exits, the Orchestrator stops polling and records the abort, "outcome
 //     unknown". There is no cancel route: the Effector runs a started Effect to its end.
@@ -48,7 +49,7 @@ import type {
   PushParts,
   Unknown,
 } from "./effect.ts";
-import { lastPushOf } from "./effect.ts";
+import { lastPushOf, pushPairsOf } from "./effect.ts";
 import {
   createEffectorClient,
   EffectorForged,
@@ -194,7 +195,7 @@ export function pushStartOf(
   ref: RepoRef & { url: string },
   branch: string,
   input: { sha?: string; message?: string } | undefined,
-  last?: Pair,
+  pairs?: readonly Pair[],
 ): PushStartRequest {
   const pin = parts.pin ? input?.sha : undefined;
   if (parts.pin && (typeof pin !== "string" || !/^[0-9a-f]{40}$/.test(pin))) {
@@ -214,7 +215,7 @@ export function pushStartOf(
       ...(parts.sign ? { sign: true } : {}),
       ...(message ? { squash: message } : {}),
       ...(parts.force ? { force: true } : {}),
-      ...(last ? { last } : {}),
+      ...(pairs?.length ? { pairs: [...pairs] } : {}),
     },
     timeoutMs: parts.timeoutMs,
   };
@@ -316,7 +317,7 @@ type KindSpec = {
   deliver?: (output: unknown) => unknown;
 };
 
-type StartExtra = { last?: Pair };
+type StartExtra = { pairs?: readonly Pair[] };
 
 const running = new WeakMap<AnyActorRef, AbortController>();
 
@@ -650,17 +651,18 @@ export function pushWith<const O extends PushOptions>(
     build: (input, ambient, slot, pinned, extra) => {
       const repoSlot = slotOf("push", slot, parts.slot, ambient);
       const ref = repoRefOf(ambient, repoSlot);
-      const req = pushStartOf(parts, ref, ambient.branch, input as { sha?: string; message?: string }, extra?.last);
+      const req = pushStartOf(parts, ref, ambient.branch, input as { sha?: string; message?: string }, extra?.pairs);
       if (pinned) req.push.pin = pinned;
       return req;
     },
-    // The ledger's last push of this Workspace's Repo Slot — one branch, one remote — is the pair
-    // (ADR-0067). Its sync, when it did not finish, runs again first, in that slot's Worktree and
-    // from the bundle the row keeps while it is the newest push and its sync did not finish
-    // (`dropSavedTails`); the push does not depend on it.
+    // Every push of this Workspace's Repo Slot — one branch, one remote — that published gives the
+    // Effector a pair, oldest first (ADR-0067). The newest one's sync, when it did not finish, runs
+    // again first, in that slot's Worktree and from the bundle the row keeps while it is the newest
+    // push and its sync did not finish (`dropSavedTails`); the push does not depend on it.
     before: async (ctx) => {
       const rows = ctx.binding?.effectRows?.() ?? {};
-      const last = lastPushOf(rows, ctx.ambient.sandbox, repoOf(ctx.ambient, ctx.slot), ctx.id);
+      const repo = repoOf(ctx.ambient, ctx.slot);
+      const last = lastPushOf(rows, ctx.ambient.sandbox, repo, ctx.id);
       if (last === undefined) return {};
       const { row, rowId, output } = last;
       if (output.sync === "busy" || output.sync === "not-synced") {
@@ -678,9 +680,8 @@ export function pushWith<const O extends PushOptions>(
         ctx.mark({ stage: "output", text: `the last push's sync, run again before this push: ${answer.sync}` });
         ctx.binding?.recordEffect?.(rowId, { ...row, output: { ...output, ...syncFields(answer) } });
       }
-      // Its `squashed` rides beside the pair: a push that maps the same commit names what it is.
-      const squashed = output.squashed === "signed" || output.squashed === "unsigned" ? output.squashed : undefined;
-      return { last: { published: output.published, source: output.source, ...(squashed ? { squashed } : {}) } };
+      // Each row's `squashed` rides beside its pair: a push that maps the same commit names what it is.
+      return { pairs: pushPairsOf(rows, ctx.ambient.sandbox, repo, ctx.id) };
     },
     // After every pushed outcome whose published commit is not the Agent's own — signed copies, or
     // one squashed commit, signed or not (ADR-0067): the sync, in the Workspace's Harness, from the

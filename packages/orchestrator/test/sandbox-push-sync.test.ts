@@ -125,7 +125,7 @@ test("two Repo Slots: each push's pair and its sync re-run are its own slot's, n
   await waitFor(() => fake.starts.length === 2);
   const second = fake.starts[1]!.req as PushStartRequest;
   assert.equal(second.push.url, "https://github.com/ourorg/lib.git");
-  assert.equal(second.push.last, undefined, "lib's push names no pair of app's push");
+  assert.equal(second.push.pairs, undefined, "lib's push names no pair of app's push");
   assert.deepEqual(
     syncs.calls.map((c) => c.worktree),
     ["/work/app/jr2-run-1"],
@@ -138,7 +138,7 @@ test("two Repo Slots: each push's pair and its sync re-run are its own slot's, n
   // app's next push: app's pair, and app's sync run again in app's Worktree, with its bundle.
   await waitFor(() => fake.starts.length === 3);
   const third = fake.starts[2]!.req as PushStartRequest;
-  assert.deepEqual(third.push.last, { published: B, source: A });
+  assert.deepEqual(third.push.pairs, [{ published: B, source: A }], "app's pairs alone, never lib's");
   assert.equal(syncs.calls.length, 2);
   assert.deepEqual(syncs.calls[1], {
     worktree: "/work/app/jr2-run-1",
