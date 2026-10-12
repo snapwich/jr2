@@ -246,7 +246,8 @@ func TestASideBranchMadeInsideASquashedRangePublishesWhatItDescendsFrom(t *testi
 // pairs: the push in flight has no settled row). The remote's tip is this squash's exact image, so
 // the push settles `pushed`, `unchanged`, with the sync bundle and its own `squashed` — signed or
 // unsigned. A later push of the Repo Slot, its ledger now holding the push's pair, is pushed too,
-// and so is that push sent again: its exact image's parent is the newest pair's published commit.
+// and so is that push sent again, and the slot's third squash sent again with two pairs: the exact
+// image's parent is the newest pair's published commit.
 func TestASquashSentAgainOnRestoreIsThisPushsOwnCommit(t *testing.T) {
 	for _, sign := range []bool{true, false} {
 		name := map[bool]string{true: "signed", false: "unsigned"}[sign]
@@ -298,6 +299,24 @@ func TestASquashSentAgainOnRestoreIsThisPushsOwnCommit(t *testing.T) {
 			}
 			if remoteRef(f) != out.Push.Published {
 				t.Fatal("the remote's branch moved")
+			}
+			// The slot's third squash: its start carries two pairs, oldest first, so the exact
+			// image's parent is the NEWEST pair's published commit (the second squash), never the
+			// oldest's. Sent again on restore, it is this push's own commit.
+			d := f.pod.Commit("D", map[string]string{"d.txt": "d\n"})
+			third := f.request(sign, []wire.Pair{pairOf(first), pairOf(out)})
+			third.Push.Squash = &msg
+			last := f.runner.Run(context.Background(), third)
+			if last.Outcome != wire.OutcomePushed || last.Push.Source != d || last.Push.Unchanged {
+				t.Fatalf("third: %+v %+v", last, last.Push)
+			}
+			if got := remoteGit(t, f, "rev-parse", remoteRef(f)+"^"); got != out.Push.Published {
+				t.Fatalf("the third squash's parent is %s, not the second squash %s", got, out.Push.Published)
+			}
+			again = f.runner.Run(context.Background(), third)
+			if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged ||
+				again.Push.Published != last.Push.Published || again.Push.Source != d || again.Push.Bundle == "" {
+				t.Fatalf("third sent again: %+v %+v", again, again.Push)
 			}
 		})
 	}
