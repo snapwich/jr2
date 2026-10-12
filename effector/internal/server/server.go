@@ -98,6 +98,10 @@ func New(opts Options) *Server {
 	return &Server{opts: opts, effects: map[string]*effect{}, changed: make(chan struct{})}
 }
 
+// methodsRefusal is the 405's text: the methods an Effect's path takes. DELETE is the stop route,
+// a credentialed command's alone (ADR-0067).
+const methodsRefusal = "POST or GET; DELETE stops a credentialed command"
+
 // ServeHTTP is the wire.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The kubelet's probe: unsigned, and it says only whether this replica takes new Effects.
@@ -134,7 +138,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.stop(r.Context(), reply, id)
 	default:
-		reply(http.StatusMethodNotAllowed, wire.Refusal{Error: "POST or GET"})
+		reply(http.StatusMethodNotAllowed, wire.Refusal{Error: methodsRefusal})
 	}
 }
 
@@ -162,7 +166,7 @@ func (s *Server) stop(ctx context.Context, reply func(int, any), id string) {
 		return
 	}
 	if e.kind != wire.KindCommand {
-		reply(http.StatusMethodNotAllowed, wire.Refusal{Error: "POST or GET"})
+		reply(http.StatusMethodNotAllowed, wire.Refusal{Error: methodsRefusal})
 		return
 	}
 	s.opts.Log.Printf("jr2.effector action=stop effect=%s", id)

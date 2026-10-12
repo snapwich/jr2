@@ -152,7 +152,8 @@ export class FakeEffector {
       }
       if (method === "DELETE") {
         // The stop route: a credentialed command's group is stopped; a push or an http has none.
-        if (held.req.kind !== "command") return answer(405, { error: "POST or GET" });
+        if (held.req.kind !== "command")
+          return answer(405, { error: "POST or GET; DELETE stops a credentialed command" });
         if (this.stopsMissing) return answer(404, stateOf(undefined));
         this.stopped.push(id);
         if (!held.output) {

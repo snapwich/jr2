@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,10 @@ func TestADeleteOnAPushOrAnHttpEffectAnswersAsAnUnknownMethod(t *testing.T) {
 			del := call(t, srv.URL, "DELETE", "/effects/e1", "", key)
 			if del.status != http.StatusMethodNotAllowed || del.status != put.status || string(del.body) != string(put.body) {
 				t.Fatalf("DELETE got %d %s; PUT got %d %s", del.status, del.body, put.status, put.body)
+			}
+			// The text names every method an Effect's path takes, the stop route included.
+			if !strings.Contains(string(del.body), `"POST or GET; DELETE stops a credentialed command"`) {
+				t.Fatalf("405 text: %s", del.body)
 			}
 			// It runs on to its end.
 			close(runner.release)
