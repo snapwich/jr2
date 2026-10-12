@@ -113,11 +113,28 @@ export function attachLoadWarnings(machine: AnyStateMachine, warnings: string[])
   loadWarnings.set(machine.config, warnings);
 }
 
+/** The warnings of a Machine `customize()` bound an Open argv in (ADR-0054), keyed on that Machine
+ * itself: `provide` keeps the config, so the config's warnings are the unbound Machine's, which
+ * stays as it was. */
+const boundWarnings = new WeakMap<AnyStateMachine, string[]>();
+
+/** Attach the warnings the walk finds on a Machine `customize()` bound — jr2-internal. */
+export function attachBoundWarnings(machine: AnyStateMachine, warnings: string[]): void {
+  boundWarnings.set(machine, warnings);
+}
+
+/** Carry a bound Machine's warnings to the Machine `provide` made from it — jr2-internal. */
+export function carryBoundWarnings(from: AnyStateMachine, to: AnyStateMachine): void {
+  const warnings = boundWarnings.get(from);
+  if (warnings) boundWarnings.set(to, warnings);
+}
+
 /** What the build found legal and suspect — a mode nothing enters, a pick a Gate above takes from
  * the Agent below, one name written for two parties on one path. `jr2 up` prints them; the
- * Machine's doc carries them. Empty for a Machine not built by `jr2Setup`. */
+ * Machine's doc carries them. A Machine `customize()` bound an Open argv in carries the walk's
+ * findings for the bound argv. Empty for a Machine not built by `jr2Setup`. */
 export function loadWarningsOf(machine: AnyStateMachine): string[] {
-  return loadWarnings.get(machine.config) ?? [];
+  return boundWarnings.get(machine) ?? loadWarnings.get(machine.config) ?? [];
 }
 
 /**

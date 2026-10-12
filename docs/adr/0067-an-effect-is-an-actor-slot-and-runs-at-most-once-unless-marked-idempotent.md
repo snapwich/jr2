@@ -288,8 +288,8 @@ the credentialed `command` — runs there too, its child confined (below).
   cannot or does not run — a mapper that throws in it, an action other than an `assign` — and a pick that targets a
   history state that may enter an Effect's state are a warning; and a state below an Agent's state that invokes
   something and that nothing enters is refused. An Open argv's slots are unknown when the Machine is built, so every
-  param counts as read by it then; `customize()` runs the pick-param check again when it binds the argv, and refuses
-  there a param the bound argv does not read (ADR-0054).
+  param counts as read by it then; `customize()` runs the pick-param check again when it binds the argv, refuses there a
+  param the bound argv does not read, and gives the bound Machine the warnings the walk gives for that argv (ADR-0054).
 
 ## Considered options
 

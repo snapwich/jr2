@@ -15,7 +15,7 @@ import { assign, fromPromise } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { customize } from "../src/customize.ts";
-import { arg, commandWith, isEffect } from "../src/effect.ts";
+import { arg, commandWith, isEffect, type CommandOutput, type EffectLogic } from "../src/effect.ts";
 import { createEffectorClient } from "../src/effector-wire.ts";
 import { bearer, file, httpWith, secret, text } from "../src/http-effect.ts";
 import { binderOf } from "../src/open-effect.ts";
@@ -27,6 +27,8 @@ import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { secretPlacementsOf } from "../src/secret-placement.ts";
 import { httpFileWith } from "../src/sandbox-effect.ts";
 import { jr2Setup } from "../src/setup.ts";
+import { loadWarningsOf } from "../src/vocabulary.ts";
+import { machineBodies, serializeMachine } from "../src/machine-doc.ts";
 import { workspace } from "../src/workspace.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
 import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
@@ -282,21 +284,74 @@ test("the pick-param check runs again on a bound argv: a param the composer's ar
   );
 });
 
+test("a bound argv carries the warnings the same Machine written with that argv carries, and the Open one keeps its own", () => {
+  // A pick param nothing the walk can run reads, beside an action it does not run: a warning, not
+  // a refusal (design 8). Written with the argv, the build attaches it; bound, customize() must too.
+  // The helper takes either argv form; the slot is typed as the fromPick input, so the bindings
+  // below are untyped calls (`as never`), as customize.test.ts writes them.
+  const shipper = (deploy: unknown) => {
+    const ship = defineEvent({ name: "ship", input: z.object({ env: z.string() }) });
+    const finish = defineEvent({ name: "finish", input: z.object({}) });
+    const coder = agentActorWith(() => new MockFlueClient(), coderDefinition);
+    return jr2Setup({
+      events: [ship, finish],
+      actors: { coder, deploy: deploy as EffectLogic<{ env: string }, CommandOutput> },
+      actions: { noop: () => {} },
+    }).createMachine({
+      id: "shipper",
+      initial: "w",
+      states: {
+        w: {
+          invoke: { src: "coder", input: { prompt: "p", endpoint: "http://harness.invalid" } },
+          initial: "rest",
+          states: { rest: {}, shipping: { invoke: { src: "deploy", input: fromPick(ship), onDone: "rest" } } },
+          on: { ship: { target: ".shipping", actions: "noop" }, finish: "done" },
+        },
+        done: { type: "final" },
+      },
+    });
+  };
+  const written = shipper(commandWith(execs.factory, ["make", "deploy"]));
+  const unread = loadWarningsOf(written).filter((w) => /nothing the walk can run reads "env"/.test(w));
+  assert.equal(unread.length, 1, "the written Machine carries the warning");
+
+  const openMachine = shipper(commandWith(execs.factory, open));
+  const openWarnings = loadWarningsOf(openMachine);
+  const bound = customize(openMachine, { effects: { deploy: { argv: ["make", "deploy"] } } } as never);
+  assert.deepEqual(loadWarningsOf(bound), loadWarningsOf(written));
+  assert.deepEqual(serializeMachine("shipper", bound).warnings, loadWarningsOf(written), "the doc jr2 up prints");
+  assert.deepEqual(loadWarningsOf(openMachine), openWarnings, "the Open Machine is untouched");
+  // An argv that reads the param warns of nothing more than the same Machine written with it.
+  assert.deepEqual(
+    loadWarningsOf(customize(openMachine, { effects: { deploy: { argv: ["make", arg("env")] } } } as never)),
+    loadWarningsOf(shipper(commandWith(execs.factory, ["make", arg("env")]))),
+  );
+  // Through workspace(), the body's doc carries the bound warnings; a later customize() keeps them.
+  const wrapped = customize(workspace(openMachine, { repos, spec }), {
+    effects: { deploy: { argv: ["make", "deploy"] } },
+  } as never);
+  const docs = machineBodies(serializeMachine("shipper", wrapped));
+  assert.ok(docs.some((d) => d.id === "shipper" && d.warnings.some((w) => unread.includes(w))));
+  const retuned = customize(bound, { agents: { coder: { instructions: "Ship it." } } });
+  assert.deepEqual(loadWarningsOf(retuned), loadWarningsOf(written));
+});
+
 // A run of an Effect nobody bound, per kind: the second fence (ADR-0054). Each faults with the
 // customize line, and nothing reaches the Effector or the Harness exec, and the ledger keeps no row.
 const unbound = [
-  { kind: "http", slot: "comment", part: "url", effect: () => comment() },
-  { kind: "command", slot: "deploy", part: "argv", effect: () => commandWith(execs.factory, open) },
+  { what: "an http", kind: "http", slot: "comment", part: "url", effect: () => comment() },
+  { what: "a command", kind: "command", slot: "deploy", part: "argv", effect: () => commandWith(execs.factory, open) },
   {
-    kind: "upload",
+    what: "a file-body http",
+    kind: "http",
     slot: "report",
     part: "url",
-    effect: () => uploadWith(ports, { url: open, file: () => ({ path: "out/report.pdf" }) }),
+    effect: () => httpFileWith(ports, { method: "PUT", url: open, body: file("out/report.pdf") }),
   },
 ] as const;
 
-for (const { kind, slot, part, effect } of unbound) {
-  test(`a run of a${kind === "upload" ? "n" : ""} ${kind} Effect nobody bound faults before anything is sent, with no ledger row, naming the customize line`, async () => {
+for (const { what, kind, slot, part, effect } of unbound) {
+  test(`a run of ${what} Effect nobody bound faults before anything is sent, with no ledger row, naming the customize line`, async () => {
     const sent = fake.starts.length;
     const ran = execs.starts.length;
     const machine = jr2Setup({

@@ -48,7 +48,8 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   from then on, so a second composer cannot move it. `effects` reaches through `workspace()`'s body, `pool()`'s worker
   and a composed Machine's `actors`, as `agents` does, typed off the slot's logic. An Open argv's slots are the
   composer's, so the load walk counts every pick param as read by it when the Machine is built, and `customize()` runs
-  the walk's pick-param check again once the argv is bound — a param the bound argv does not read is refused there. The
+  the walk's pick-param check again once the argv is bound — a param the bound argv does not read is refused there, and
+  a warning it gives for the bound argv is the bound Machine's, as it is the same Machine's written with that argv. The
   `jr2 up` walk reports an Open Effect beside Open Repo Slots and Agents and refuses the converge naming the `effects`
   line; the Effect refuses to run while Open, as the second fence — its state's `onError`, with nothing sent and no
   ledger row. The Open part is the whole url or the whole argv.

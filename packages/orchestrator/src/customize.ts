@@ -61,7 +61,15 @@ import {
   type SandboxParts,
 } from "./parts.ts";
 import { assertSize, assertUserSeat, layerSize, type Size, type UserContainer } from "./size.ts";
-import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
+import {
+  attachBoundWarnings,
+  attachInputSchema,
+  attachVocabulary,
+  carryBoundWarnings,
+  inputSchemaOf,
+  loadWarningsOf,
+  vocabularyOf,
+} from "./vocabulary.ts";
 import { isEffect, type Arg } from "./effect.ts";
 import { effectChecks } from "./effect-checks.ts";
 import type { Text } from "./http-effect.ts";
@@ -265,7 +273,9 @@ function bodyOf(machine: AnyStateMachine): { slot: string; body: AnyStateMachine
 
 /** Substitute one slot's logic — the one move every level of this module makes. */
 function substitute(machine: AnyStateMachine, actors: Record<string, unknown>): AnyStateMachine {
-  return machine.provide({ actors } as Parameters<AnyStateMachine["provide"]>[0]);
+  const out = machine.provide({ actors } as Parameters<AnyStateMachine["provide"]>[0]);
+  carryBoundWarnings(machine, out);
+  return out;
 }
 
 /** Agents and children, resolved against the first Machine an author wrote. */
@@ -304,7 +314,7 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
     actors[name] = customize(child, childParts as Customize<AnyStateMachine>);
   }
   const out = substitute(machine, actors);
-  if (bound.length > 0) recheck(out);
+  if (bound.length > 0) recheck(machine, out);
   return out;
 }
 
@@ -351,13 +361,21 @@ function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBindi
 /**
  * The load walk's Effect checks (ADR-0067), again, on a Machine whose Open argv this `customize()`
  * bound: at build its argv slots were unknown and every pick param counted as read; now the bound
- * argv names them, and a param it does not read is refused as at build.
+ * argv names them. A param it does not read is refused as at build, and a warning the walk gives
+ * for the bound argv (a param only an action the probe does not run may read) replaces the
+ * findings it gave for the Open one, so the bound Machine carries the warnings the same Machine
+ * written with that argv carries.
  */
-function recheck(machine: AnyStateMachine): void {
+function recheck(before: AnyStateMachine, machine: AnyStateMachine): void {
   const defs = vocabularyOf(machine);
   if (!defs) return;
-  const { errors } = effectChecks(machine, machine.implementations.actors as Record<string, UnknownActorLogic>, defs);
+  const checks = (m: AnyStateMachine) =>
+    effectChecks(m, m.implementations.actors as Record<string, UnknownActorLogic>, defs);
+  const { errors, warnings } = checks(machine);
   if (errors.length) throw new Error(`customize(): machine "${machine.id}": ${errors.join("; ")}`);
+  const unbound = new Set(checks(before).warnings);
+  const kept = loadWarningsOf(before).filter((warning) => !unbound.has(warning));
+  attachBoundWarnings(machine, [...new Set([...kept, ...warnings])]);
 }
 
 /** The Sandbox seats and slots, applied to the `workspace()` the chain reaches. */
