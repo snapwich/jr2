@@ -31,7 +31,7 @@ import type { AgentAdmission } from "./actor.ts";
 import type { EffectMarker, EffectRow } from "./effect.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
 import type { NoticeScope, TakenNotices } from "./notices.ts";
-import type { AnswerSeats } from "./pick.ts";
+import type { AnswerSeat } from "./pick.ts";
 import type { Notice, PickAnswer } from "./wire.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
@@ -506,18 +506,18 @@ export type RunBinding = {
   hostStopping?: boolean;
   /**
    * Every reply since the pick that `machine`'s Agent has outstanding, or is delivering now, oldest
-   * first (ADR-0024) — what an `answer` action reads as its `chain` (ADR-0067). Only an Agent
-   * seated at one of `seats` — the Agents' states the action is written below, `null` for a
-   * transition below none — counts. Where `seats` does not name one Agent's state, `event` — the
-   * event whose transition runs the action — names the Agent: the sender of a pick, or the Agent
-   * whose pick started the child whose done event it is. Undefined when no such pick is being
-   * answered, or when more than one is and the event names none of them: then the action cannot
+   * first (ADR-0024) — what an `answer` action reads as its `chain` (ADR-0067). `seat` is the place
+   * the action runs from: an Agent's state, and then only that Agent's pick counts; or `null`, a
+   * transition below no Agent's state, and then `event` — the event whose transition runs the action
+   * — names the Agent: the sender of a pick, or the Agent whose pick started the child whose done
+   * event it is. Undefined when no such pick is being answered, when the event names an Agent with
+   * none, or when the event names no Agent and more than one is outstanding: then the action cannot
    * tell whose answer it shapes, and sets none.
    */
-  chainOf?: (machine: AnyActorRef, seats: AnswerSeats, event?: AnyEventObject) => PickAnswer[] | undefined;
+  chainOf?: (machine: AnyActorRef, seat: AnswerSeat, event?: AnyEventObject) => PickAnswer[] | undefined;
   /** Set what that pick's answer is (ADR-0067): it replaces the default, and the last call wins.
    * Kept with the hold, so a restore answers the same. */
-  setAnswer?: (machine: AnyActorRef, seats: AnswerSeats, value: unknown, event?: AnyEventObject) => void;
+  setAnswer?: (machine: AnyActorRef, seat: AnswerSeat, value: unknown, event?: AnyEventObject) => void;
   /**
    * The Effect ledger's READ half (ADR-0067): one Effect's row, by its id — what a restored Effect
    * reads to deliver its output, re-attach, or settle `unknown`, and never to run twice.

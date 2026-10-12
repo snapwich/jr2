@@ -1158,10 +1158,10 @@ test('work stopped back at Rest before it replied, or a child that errs: answere
   }
 });
 
-// The hold records which children its pick started (ADR-0067): a done event of one of them names the
-// pick an `answer` on a transition below no Agent's state shapes. The record is saved with the run,
-// so after a park and a restore the same done event shapes the same pick — and only it.
-test("the hold records the children its pick started; after a restore, a done event below no Agent's state shapes that pick only", async () => {
+// The run records which Agent started each child (ADR-0067): a done event of one of them names the
+// Agent whose pick an `answer` on a transition below no Agent's state shapes. The record is saved
+// with the run, so after a park and a restore the same done event shapes the same pick — and only it.
+test("the run records the Agent each pick's child is of; after a restore, a done event below no Agent's state shapes that pick only", async () => {
   const go = ev("go");
   const pickA = ev("pick_a");
   const pickB = ev("pick_b");
@@ -1229,8 +1229,8 @@ test("the hold records the children its pick started; after a restore, a done ev
   assert.equal(pa.outstanding, true);
   assert.equal(pb.outstanding, true);
   const saved = JSON.stringify((await store.load(runId))?.snapshot);
-  assert.match(saved, /"children":\["waitA"\]/, "A's hold records the child its pick started");
-  assert.match(saved, /"children":\["waitB"\]/, "and B's its own");
+  assert.match(saved, /"startedBy":\{[^}]*"waitA":"coderA"/, "the run records the Agent whose pick started A's child");
+  assert.match(saved, /"startedBy":\{[^}]*"waitB":"coderB"/, "and B's");
   await host.stop(runId);
 
   const second = new RunHost({ store });
@@ -1247,10 +1247,10 @@ test("the hold records the children its pick started; after a restore, a done ev
   await second.close();
 });
 
-// A child that the pick's later work started is that pick's too (ADR-0067): one started while the
+// A child that the pick's later work started is its Agent's too (ADR-0067): one started while the
 // Machine took a done event of the pick's own child. Saved with the run, so a restore attributes its
-// done event to the same pick.
-test("a child the pick's later work started is recorded with the hold; after a restore, its done event below no Agent's state shapes that pick only", async () => {
+// done event to the same Agent; a child that ended is dropped from the record at the save.
+test("a child the pick's later work started is recorded as its Agent's; after a restore, its done event below no Agent's state shapes that pick only", async () => {
   const go = ev("go");
   const pickA = ev("pick_a");
   const pickB = ev("pick_b");
@@ -1325,8 +1325,9 @@ test("a child the pick's later work started is recorded with the hold; after a r
   host.sendToGate(runId, "waitA1.doneA1", { type: "go" });
   await new Promise((r) => setTimeout(r, 50));
   const saved = JSON.stringify((await store.load(runId))?.snapshot);
-  assert.match(saved, /"children":\["waitA1","waitA2"\]/, "A's hold records the child its first step's end started");
-  assert.match(saved, /"children":\["waitB"\]/, "B's hold records its own child alone");
+  assert.match(saved, /"startedBy":\{[^}]*"waitA2":"coderA"/, "the child A's first step's end started is A's");
+  assert.match(saved, /"startedBy":\{[^}]*"waitB":"coderB"/, "B's child is B's");
+  assert.doesNotMatch(saved, /"waitA1":"coderA"/, "the child that ended is dropped at the save");
   await host.stop(runId);
 
   const second = new RunHost({ store });

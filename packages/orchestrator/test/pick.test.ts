@@ -360,8 +360,8 @@ test("an `answer` the walk did not find is seated at no Agent's state", () => {
 // --- An `answer` below no Agent's state, with two Agents' picks outstanding (ADR-0067, ADR-0024) ----
 // Two Agents in parallel regions of the root, each with a pick outstanding. On a TRANSITION below no
 // Agent's state, `answer` shapes the pick of the Agent whose event took it: the sender of a pick, or
-// the Agent whose pick started the child whose done event it is — the hold records which children
-// a pick started. The other Agent's pick keeps its default answer. On an ENTRY or EXIT below no
+// the Agent whose pick started the child whose done event it is — the run records which Agent
+// started each child. The other Agent's pick keeps its default answer. On an ENTRY or EXIT below no
 // Agent's state it sets nothing, and the load walk warns, naming the Agent states it could be moved
 // under.
 
@@ -652,4 +652,211 @@ test("a child that a pick's later work started is that pick's: its done event be
   fake.settle({ outcome: "exited", code: 0, tail: "b built" }, execB);
   const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
   assert.equal(answeredB?.answer?.kind, "output", "B's pick keeps its default answer");
+});
+
+// --- Each place an `answer` is written runs by its own place's rule (ADR-0067, ADR-0024) -------------
+// One action object written in two places is two seats, never their sum: run from Agent A's state it
+// shapes only A's pick, whatever the other place is, and an event that names no Agent (A's own timer)
+// never reaches B's pick from there. And the Agent that started a child is recorded with the run, not
+// with a hold: its done event names that Agent whether its pick is outstanding, answered, or was
+// answered on its own POST.
+
+/** Two Agents in regions of the root: B's `build_b` starts its command (no `onDone`: settled, it is
+ * Rest); A's region has a timer (`ra.rest` after 150 ms) and the config `ra` adds. */
+function twoWithATimer(
+  fake: FakeHarnessExec,
+  a: MockFlueClient,
+  b: MockFlueClient,
+  parts: { ra?: Record<string, unknown>; rb?: Record<string, unknown>; root?: Record<string, unknown> },
+) {
+  return jr2Setup({
+    events: [buildB],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    ...parts.root,
+    states: {
+      ra: {
+        invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, tick: {} },
+        ...parts.ra,
+      },
+      rb: {
+        invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builderB", id: "buildB" } } },
+        on: { build_b: ".building" },
+        ...parts.rb,
+      },
+    },
+  } as never) as unknown as AnyStateMachine;
+}
+
+/** B picks `build_b`; A never picks. After A's timer has fired, B's command settles: B's answer. */
+async function bAloneAfterATimer(
+  machine: AnyStateMachine,
+  fake: FakeHarnessExec,
+  a: MockFlueClient,
+  b: MockFlueClient,
+) {
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine, provide: () => ({}) });
+  const { runId } = await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const ib = b.admits[0]!.instanceId;
+  const pb = host.sendToAgent(ib, { type: "build_b" });
+  assert.equal(pb.outstanding, true);
+  await waitFor(() => fake.starts.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
+  const answered = await host.awaitDelivery(ib, pb.deliveryId);
+  // The long timers would hold the test process open.
+  await host.stop(runId);
+  return answered;
+}
+
+test("one `answer` written in A's state and in B's: run from A's timer, it leaves B's outstanding pick as it is", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const x = answer(({ event }) => `x ran on ${event.type}`);
+  const machine = twoWithATimer(fake, a, b, {
+    ra: { states: { rest: { after: { 150: { actions: x } } }, tick: {} } },
+    rb: { after: { 999_999: { actions: x } } },
+  });
+  assert.equal(seatsOfAnswer(machine, x).size, 2, "one action object, below two Agents' states");
+  const answeredB = await bAloneAfterATimer(machine, fake, a, b);
+  assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
+});
+
+test("one `answer` written in A's state and on a root transition: run from A's timer, it leaves B's outstanding pick as it is", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const x = answer(({ event }) => `x ran on ${event.type}`);
+  const machine = twoWithATimer(fake, a, b, {
+    ra: { states: { rest: { after: { 150: { actions: x } } }, tick: {} } },
+    root: { after: { 999_999: { actions: x } } },
+  });
+  assert.equal(seatsOfAnswer(machine, x).size, 2, "seated at A's state and at no Agent's state");
+  const answeredB = await bAloneAfterATimer(machine, fake, a, b);
+  assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
+});
+
+test("one `answer` on an entry in A's state and an exit in B's: entered by A's timer, it leaves B's outstanding pick as it is", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const both = answer(({ event }) => `from ${event.type}`);
+  const machine = twoWithATimer(fake, a, b, {
+    ra: { states: { rest: { after: { 150: "tick" } }, tick: { entry: both } } },
+    rb: {
+      states: { rest: {}, building: { invoke: { src: "builderB", id: "buildB" }, exit: both } },
+    },
+  });
+  assert.equal(seatsOfAnswer(machine, both).size, 2, "one action object, below two Agents' states");
+  const answeredB = await bAloneAfterATimer(machine, fake, a, b);
+  assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
+});
+
+/** A's `ship` starts work in a third region, which has no Agent (`rc`, its command `workC`); the
+ * root's transition on that work's done event answers. B's `build_b` starts B's own command. With
+ * `aWaits`, A's `ship` also enters A's own work, so A's pick is outstanding until that settles. */
+function aStartsRegionWork(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlueClient, aWaits: boolean) {
+  const ship = defineEvent({ name: "ship", input: z.object({}) });
+  return jr2Setup({
+    events: [buildB, ship, defineEvent({ name: "start_c", input: z.object({}) })],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderA: commandWith(fake.factory, ["make", "a"]),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+      workerC: commandWith(fake.factory, ["make", "c"]),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    on: {
+      ...(aWaits ? {} : { ship: { actions: raise({ type: "start_c" }) } }),
+      "xstate.done.actor.workC": { actions: answer(({ event }) => `the root saw ${event.type}`) },
+    },
+    states: {
+      ra: {
+        invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: aWaits ? { rest: {}, building: { invoke: { src: "builderA", id: "buildA" } } } : { rest: {} },
+        ...(aWaits ? { on: { ship: { target: ".building", actions: raise({ type: "start_c" }) } } } : {}),
+      },
+      rb: {
+        invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builderB", id: "buildB" } } },
+        on: { build_b: ".building" },
+      },
+      rc: {
+        initial: "idle",
+        states: { idle: {}, work: { invoke: { src: "workerC", id: "workC" } } },
+        on: { start_c: ".work" },
+      },
+    },
+  } as never) as unknown as AnyStateMachine;
+}
+
+test("a child an answered-at-once pick started is that Agent's: its done event below no Agent's state leaves B's pick as it is", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine: aStartsRegionWork(fake, a, b, false), provide: () => ({}) });
+  await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const ia = a.admits[0]!.instanceId;
+  const ib = b.admits[0]!.instanceId;
+  const pb = host.sendToAgent(ib, { type: "build_b" });
+  await waitFor(() => fake.starts.length === 1);
+  const pa = host.sendToAgent(ia, { type: "ship" });
+  assert.equal(pa.outstanding, undefined, "A's pick is answered on its own POST: A's state is at Rest");
+  await waitFor(() => fake.starts.length === 2);
+  fake.settle({ outcome: "exited", code: 0, tail: "c worked" }, fake.starts[1]!.id);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
+});
+
+test("a child an outstanding pick started that outlives the pick's answer is still that Agent's: B's pick is left as it is", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine: aStartsRegionWork(fake, a, b, true), provide: () => ({}) });
+  await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const ia = a.admits[0]!.instanceId;
+  const ib = b.admits[0]!.instanceId;
+  const pb = host.sendToAgent(ib, { type: "build_b" });
+  await waitFor(() => fake.starts.length === 1);
+  const pa = host.sendToAgent(ia, { type: "ship" });
+  assert.equal(pa.outstanding, true);
+  await waitFor(() => fake.starts.length === 3);
+  const execA = fake.starts.find((s) => s.req.argv[1] === "a")!.id;
+  const execC = fake.starts.find((s) => s.req.argv[1] === "c")!.id;
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, execA);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.equal(answeredA?.answer?.kind, "output", "A's pick is answered by its own command, before C's work ends");
+  fake.settle({ outcome: "exited", code: 0, tail: "c worked" }, execC);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
 });

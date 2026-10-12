@@ -101,18 +101,27 @@ type Node = AnyStateMachine["root"];
 /**
  * Where an `answer` is written, as the Agents' states it is below: for each place the action is
  * written (a state's entry or exit, a transition on a state, a state's initial transition), the
- * nearest state at or above it that invokes an Agent — `null` for a transition where none does. An
- * `answer` shapes only a pick of an Agent seated at one of these (ADR-0067). One on a transition
- * below no Agent's state (`null`), and one object written below two Agents' states, shape the pick
- * of the Agent whose event took the transition (the run host reads it off the event); one on an
- * entry or an exit below no Agent's state seats nowhere and shapes nothing, whatever other places
- * the same object is written in (`unseatAnswers`) — the load walk warns.
- * Read once per Machine, by the action's identity: one `answer` object written in two places
- * carries both.
+ * nearest state at or above it that invokes an Agent — `null` for a transition where none does; an
+ * entry or exit below no Agent's state seats nowhere. Read once per Machine, by the action's
+ * identity: one `answer` object written in two places carries both. At run time each place runs as
+ * its own seat (`placeAnswers`): an `answer` cannot tell where it was written, so the place is
+ * decided before the Machine runs.
  */
 export type AnswerSeats = ReadonlySet<Node | null>;
 
+/**
+ * The one place an `answer` runs from (ADR-0067): the Agent's state it is written below, or `null`
+ * on a transition below no Agent's state. At a state, it shapes only a pick of the Agent seated
+ * there. At `null`, the event that took the transition names the Agent whose pick it shapes (the run
+ * host reads it off the event).
+ */
+export type AnswerSeat = Node | null;
+
 const seatsCache = new WeakMap<AnyStateMachine, Map<unknown, Set<Node | null>>>();
+
+/** How an `answer` makes the copy of itself that runs from one seat. */
+const PLACE = Symbol("jr2.answer.place");
+type Placeable = { [PLACE]: (seat: AnswerSeat) => unknown; readonly jr2Answer: true };
 
 /** An action of `machine` as it is written — inline, or by name — resolved to its implementation. */
 function resolverOf(machine: AnyStateMachine): (a: unknown) => unknown {
@@ -133,34 +142,54 @@ function seatFinderOf(machine: AnyStateMachine): (n: Node) => Node | null {
   };
 }
 
-/** What stands where an `answer` was written on an entry or an exit below no Agent's state: an
- * `answer` that runs nothing. Still an `answer` to the load walk, which warns on it. */
-const unseatedAnswer: AnswerAction & (() => void) = Object.assign(function unseatedAnswer(): void {}, {
-  jr2Answer: true as const,
-});
+/** The `answer` a placed copy was made from: the identity `seatsOfAnswer` groups places by. */
+const originals = new WeakMap<object, unknown>();
+const originalOf = (fn: unknown): unknown => (typeof fn === "function" ? (originals.get(fn) ?? fn) : fn);
 
-const unseatedMachines = new WeakSet<AnyStateMachine>();
+/** What stands where `original` was written on an entry or an exit below no Agent's state: an
+ * `answer` that runs nothing. Still an `answer` to the load walk, which warns on it. */
+function unseatedAnswer(original: unknown): AnswerAction & (() => void) {
+  const copy = Object.assign(function unseatedAnswer(): void {}, { jr2Answer: true as const });
+  originals.set(copy, original);
+  return copy;
+}
+
+const placedMachines = new WeakSet<AnyStateMachine>();
 
 /**
- * Make every `answer` written on an entry or an exit below no Agent's state run nothing (ADR-0067):
- * each such place is given an `answer` of its own that sets nothing, so one action object written
- * there AND on a transition, or below an Agent's state, shapes a pick from those other places alone
- * — at run time an action cannot tell where it was written, so the place is decided here. Called
- * for each Machine of a run's tree as its actor is created, before its first state is entered.
+ * Give every place an `answer` is written in `machine` a copy of its own, bound to that place's
+ * seat (ADR-0067): one action object written in two places then shapes, from each, by that place's
+ * rule alone — below an Agent's state, only that Agent's pick; on a transition below none, the pick
+ * of the Agent the event names. An entry or an exit below no Agent's state is given an `answer` that
+ * sets nothing. At run time an action cannot tell where it was written, so the place is decided
+ * here. Called for each Machine of a run's tree as its actor is created, before its first state is
+ * entered. Each list is replaced, never written in place: a list the author shared between two
+ * places stays the author's.
  */
-export function unseatAnswers(machine: AnyStateMachine): void {
-  if (unseatedMachines.has(machine) || !machine?.root) return;
-  unseatedMachines.add(machine);
+export function placeAnswers(machine: AnyStateMachine): void {
+  if (placedMachines.has(machine) || !machine?.root) return;
+  placedMachines.add(machine);
   const resolve = resolverOf(machine);
   const seatAbove = seatFinderOf(machine);
+  const placed = (list: readonly unknown[], seat: AnswerSeat | "nowhere"): unknown[] =>
+    list.map((a) => {
+      const fn = resolve(a);
+      if (!isAnswer(fn)) return a;
+      if (seat === "nowhere") return unseatedAnswer(originalOf(fn));
+      const original = originalOf(fn) as Partial<Placeable>;
+      return typeof original[PLACE] === "function" ? original[PLACE](seat) : fn;
+    });
   const visit = (n: Node): void => {
-    if (seatAbove(n) === null) {
-      for (const list of [n.entry, n.exit]) {
-        list.forEach((a, i) => {
-          if (isAnswer(resolve(a))) list[i] = unseatedAnswer as unknown as (typeof list)[number];
-        });
-      }
-    }
+    const seat = seatAbove(n);
+    const writable = n as unknown as { entry: unknown[]; exit: unknown[] };
+    writable.entry = placed(n.entry, seat ?? "nowhere");
+    writable.exit = placed(n.exit, seat ?? "nowhere");
+    const transitions = [
+      ...[...n.transitions.values()].flat(),
+      ...(n.always ?? []),
+      ...(n.initial ? [n.initial] : []),
+    ] as unknown as { actions: readonly unknown[] }[];
+    for (const t of new Set(transitions)) t.actions = placed(t.actions, seat);
     for (const child of Object.values(n.states)) visit(child);
   };
   visit(machine.root);
@@ -184,19 +213,20 @@ export function seatsOfAnswer(machine: AnyStateMachine, action: unknown): Answer
       const note = (a: unknown, seated: boolean): void => {
         const fn = resolve(a);
         if (!isAnswer(fn)) return;
-        const seats = byAction!.get(fn) ?? new Set<Node | null>();
+        const key = originalOf(fn);
+        const seats = byAction!.get(key) ?? new Set<Node | null>();
         if (seated) seats.add(seat);
-        byAction!.set(fn, seats);
+        byAction!.set(key, seats);
       };
       // An entry or exit below no Agent's state is no transition an Agent's event takes: it seats
-      // nowhere, and runs nothing (`unseatAnswers`, ADR-0067).
+      // nowhere, and runs nothing (`placeAnswers`, ADR-0067).
       for (const a of onEntryOrExit) note(a, seat !== null);
       for (const a of onTransition) note(a, true);
       for (const child of Object.values(n.states)) visit(child);
     };
     if (machine?.root) visit(machine.root);
   }
-  return byAction.get(action) ?? new Set<Node | null>([null]);
+  return byAction.get(originalOf(action)) ?? new Set<Node | null>([null]);
 }
 
 /** The brand the load walk reads: this action is an `answer`. */
@@ -215,19 +245,28 @@ export function answer<
 >(
   fn: (args: { context: TContext; event: TExpressionEvent; chain: readonly ChainLink<TActor, TEvent>[] }) => unknown,
 ): ActionFunction<TContext, TExpressionEvent, TEvent, TParams, TActor, never, never, never, never> & AnswerAction {
-  const action = ({ context, event, self }: { context: TContext; event: TExpressionEvent; self: AnyActorRef }) => {
-    const binding = boundRun(self.system);
-    // The Agents' states this action is written below: it shapes only a pick of one of those.
-    const seats = seatsOfAnswer((self.getSnapshot() as AnyMachineSnapshot).machine as AnyStateMachine, action);
-    // No pick of this Machine's Agent is being answered (the state's first entry, a later Turn's):
-    // there is nothing to shape, and nothing runs.
-    const chain = binding?.chainOf?.(self, seats, event);
-    if (chain === undefined) return;
-    // Kit-internal: the host records links by slot name, which is what ChainLink states.
-    const links = linksOf(chain) as unknown as readonly ChainLink<TActor, TEvent>[];
-    binding?.setAnswer?.(self, seats, fn({ context, event, chain: links }), event);
+  // The action as it runs from one seat (`placeAnswers`): the Agent's state it is written below, or
+  // `null` on a transition below none. The object the author holds runs as `null`: the walk found it
+  // in no place it could seat (an action another action enqueues).
+  const at =
+    (seat: AnswerSeat) =>
+    ({ context, event, self }: { context: TContext; event: TExpressionEvent; self: AnyActorRef }) => {
+      const binding = boundRun(self.system);
+      // No pick of an Agent this seat reads is being answered (the state's first entry, a later
+      // Turn's, another Agent's): there is nothing to shape, and nothing runs.
+      const chain = binding?.chainOf?.(self, seat, event);
+      if (chain === undefined) return;
+      // Kit-internal: the host records links by slot name, which is what ChainLink states.
+      const links = linksOf(chain) as unknown as readonly ChainLink<TActor, TEvent>[];
+      binding?.setAnswer?.(self, seat, fn({ context, event, chain: links }), event);
+    };
+  const action = at(null);
+  const place = (seat: AnswerSeat): unknown => {
+    const copy = Object.assign(at(seat), { jr2Answer: true as const });
+    originals.set(copy, action);
+    return copy;
   };
-  return Object.assign(action, { jr2Answer: true as const }) as unknown as ActionFunction<
+  return Object.assign(action, { jr2Answer: true as const, [PLACE]: place }) as unknown as ActionFunction<
     TContext,
     TExpressionEvent,
     TEvent,

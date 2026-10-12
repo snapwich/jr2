@@ -32,7 +32,7 @@ import {
 } from "xstate";
 import { SENDER_KEY, type EventDef, type EventSemantics, type Sender } from "@jr2/agent-protocol";
 import { seatOf, senderText } from "./party.ts";
-import { unseatAnswers, type AnswerSeats } from "./pick.ts";
+import { placeAnswers, type AnswerSeat } from "./pick.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
 import { answerOf, childErrorOf, replyOf, type Hold } from "./holds.ts";
@@ -223,15 +223,43 @@ export type RunHeld = { agent: string; pick: string; since: string };
 
 /** The pick being delivered now (ADR-0024): its registration, every reply from below its Agent's
  * state inside its own send, and what an `answer` action set there (ADR-0067). */
-/** A pick in its own send: its registration, the replies so far, what an `answer` set, and the
- * children the send started (their invoke ids) — whose done events are this pick's (ADR-0067). */
 type Sending = {
   reg: Registration;
   pick: string;
   chain: PickAnswer[];
   shaped?: { value: unknown };
-  children: string[];
 };
+
+/**
+ * The Agent whose event `event` is (ADR-0067): a pick's sender, or the Agent that started the child
+ * whose done event it is (`startedBy`). Undefined when the event names no Agent: a timer, a Gate's
+ * answer, an outside send, a child no Agent started.
+ */
+function agentOfEvent(event: AnyEventObject, startedBy: Record<string, string>): string | undefined {
+  const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
+  if (sender?.party === "agent") return sender.id;
+  const child = /^xstate\.done\.actor\.(.+)$/.exec(event.type)?.[1];
+  return child !== undefined && Object.hasOwn(startedBy, child) ? startedBy[child] : undefined;
+}
+
+/** The invoke ids of every child in `actor`'s tree, at any depth. */
+function liveChildIds(actor: AnyActorRef, into = new Set<string>()): Set<string> {
+  const children = (actor.getSnapshot() as { children?: Record<string, AnyActorRef> } | undefined)?.children ?? {};
+  for (const child of Object.values(children)) {
+    if (!child) continue;
+    into.add(child.id);
+    liveChildIds(child, into);
+  }
+  return into;
+}
+
+/** `startedBy` as the save keeps it: only children still in the run's tree (ADR-0067). Read at the
+ * save, a microtask after the snapshot, so a done event the Machine took has run its route. */
+function liveStartedBy(startedBy: Record<string, string>, actor: AnyActorRef): Record<string, string> {
+  const live = liveChildIds(actor);
+  for (const id of Object.keys(startedBy)) if (!live.has(id)) delete startedBy[id];
+  return startedBy;
+}
 
 /** An `answer` action's value as the hold keeps it: JSON, because it rides the run blob and the
  * wire (ADR-0067). `undefined`, or a value with no JSON form, sets no answer — the default stands. */
@@ -660,6 +688,15 @@ type RunBlob = {
    * settled row's output tail is dropped once a save carries its transition (`dropSavedTails`).
    */
   effects?: Record<string, EffectRow>;
+  /**
+   * Which Agent started each live child (ADR-0067), by the child's invoke id: the Agent whose pick's
+   * own send started it, or whose event the Machine was taking when it started. A done event of that
+   * child names that Agent, so an `answer` on a transition below no Agent's state that the done event
+   * takes shapes that Agent's pick and no other — whether the pick that started it is still
+   * outstanding or not. Same blob, so a restore names the same Agent. A child no longer in the tree
+   * is dropped at the save.
+   */
+  startedBy?: Record<string, string>;
   fault?: string;
 };
 
@@ -680,6 +717,8 @@ type LiveRun = {
   holds: Map<string, Hold>;
   /** The Effect ledger (ADR-0067): persisted as `RunBlob.effects`, seeded on restore. */
   effects: Record<string, EffectRow>;
+  /** Which Agent started each live child (ADR-0067): persisted as `RunBlob.startedBy`, seeded on restore. */
+  startedBy: Record<string, string>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
@@ -919,6 +958,8 @@ export class RunHost {
           blob.holds,
           // …and the Effect ledger (ADR-0067): a restored Effect reads its row and never runs twice.
           blob.effects ?? {},
+          // …and which Agent started each child (ADR-0067): its done event names the same Agent.
+          blob.startedBy ?? {},
         );
         // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
         // records them again.
@@ -1117,7 +1158,7 @@ export class RunHost {
     const before = targets.length > 0 ? stateValueOf(invoking?.invoker) : undefined;
 
     const outer = this.sending;
-    const sending: Sending | undefined = invoking && { reg: invoking, pick: type, chain: [], children: [] };
+    const sending: Sending | undefined = invoking && { reg: invoking, pick: type, chain: [] };
     this.sending = sending;
     try {
       this.table.deliver(address, type, payload);
@@ -1177,7 +1218,6 @@ export class RunHost {
         ...(conversation !== undefined ? { conversation } : {}),
         ...(sending && sending.chain.length > 0 ? { chain: [...sending.chain] } : {}),
         ...(sending?.shaped !== undefined ? { shaped: sending.shaped } : {}),
-        ...(sending && sending.children.length > 0 ? { children: [...sending.children] } : {}),
       };
       this.closeHold(run.holds.get(instanceId));
       run.holds.set(instanceId, hold);
@@ -1312,68 +1352,42 @@ export class RunHost {
   }
 
   /**
-   * The pick an `answer` action in `machine` shapes (ADR-0067): only a pick of an Agent seated at
-   * one of `seats`, the Agents' states the action is written below (`null`: on a transition below
-   * none, so any of `machine`'s Agents). Where `seats` names no one Agent's state — `null`, or two
-   * Agents' states for one action object — the event that took the transition names the Agent: the
-   * sender of a pick, or the Agent whose pick started the child whose done event it is; that
-   * Agent's pick is the one shaped, and no other. Else the pick being delivered now, when it is such
-   * a pick; else the one such pick outstanding. Two outstanding at once, and an event that names
-   * neither, is no answer at all: the action cannot say whose it shapes.
+   * The pick an `answer` action in `machine` shapes (ADR-0067), from `seat`, the one place it runs
+   * from (`placeAnswers`). At an Agent's state: only a pick of the Agent seated there — the one in
+   * its own send, else the one outstanding. On a transition below no Agent's state (`null`): the
+   * event that took the transition names the Agent — the sender of a pick, or the Agent whose pick
+   * started the child whose done event it is — and that Agent's pick is the one shaped, and no
+   * other; none when that Agent has no pick being answered. An event that names no Agent (a timer, a
+   * Gate's answer, an outside send) shapes the pick in its own send, else the one outstanding; two
+   * outstanding is no answer at all: the action cannot say whose it shapes.
    */
   private answeringIn(
     machine: AnyActorRef,
-    seats: AnswerSeats,
+    seat: AnswerSeat,
     runId: string,
     holds: Map<string, Hold>,
+    startedBy: Record<string, string>,
     event?: AnyEventObject,
   ): Sending | Hold | undefined {
     const seatedFor = (reg: Registration | undefined): boolean => {
       if (reg?.invoker !== machine) return false;
-      if (seats.has(null)) return true;
+      if (seat === null) return true;
       const snapshot = machine.getSnapshot() as AnyMachineSnapshot;
-      const seat = reg.invokeId !== undefined ? seatOf(snapshot, reg.invokeId) : undefined;
-      return seat !== undefined && seats.has(seat);
+      return reg.invokeId !== undefined && seatOf(snapshot, reg.invokeId) === seat;
     };
     const regOf = (hold: Hold): Registration | undefined =>
       this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId));
-    const sending = this.sending;
+    const sending = this.sending && this.sending.reg.runId === runId ? this.sending : undefined;
     const open = [...holds.values()].filter((hold) => hold.answer === undefined && seatedFor(regOf(hold)));
-    if ((seats.has(null) || seats.size > 1) && event !== undefined) {
-      const named = this.pickOfEvent(event, sending, runId, open);
-      if (named !== undefined) {
-        const pick = named.pick;
-        if (pick === null) return undefined;
-        return seatedFor("reg" in pick ? pick.reg : regOf(pick)) ? pick : undefined;
+    if (seat === null && event !== undefined) {
+      const agent = agentOfEvent(event, startedBy);
+      if (agent !== undefined) {
+        if (sending && sending.reg.sender?.id === agent) return seatedFor(sending.reg) ? sending : undefined;
+        return open.find((hold) => hold.agent === agent);
       }
     }
-    if (sending && sending.reg.runId === runId && seatedFor(sending.reg)) return sending;
+    if (sending && seatedFor(sending.reg)) return sending;
     return open.length === 1 ? open[0] : undefined;
-  }
-
-  /**
-   * The pick of the Agent whose event `event` is (ADR-0067): a pick's sender's, or the pick that
-   * started the child whose done event it is — the pick in its own send, or an outstanding one.
-   * Undefined when the event names no Agent (a timer, a Gate's answer, a child no pick started);
-   * `{ pick: null }` when it names an Agent with no pick being answered.
-   */
-  private pickOfEvent(
-    event: AnyEventObject,
-    sending: Sending | undefined,
-    runId: string,
-    open: Hold[],
-  ): { pick: Sending | Hold | null } | undefined {
-    const live = sending && sending.reg.runId === runId ? sending : undefined;
-    const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
-    if (sender?.party === "agent") {
-      if (live && live.reg.sender?.id === sender.id) return { pick: live };
-      return { pick: open.find((hold) => hold.agent === sender.id) ?? null };
-    }
-    const child = /^xstate\.done\.actor\.(.+)$/.exec(event.type)?.[1];
-    if (child === undefined) return undefined;
-    if (live?.children.includes(child)) return { pick: live };
-    const hold = open.find((h) => h.children?.includes(child));
-    return hold ? { pick: hold } : undefined;
   }
 
   /** Wake every long poll on a hold: it was answered, replaced, or the host is going away. */
@@ -1851,6 +1865,7 @@ export class RunHost {
     noticeState?: NoticeLedgerState,
     holdState: Hold[] = [],
     effects: Record<string, EffectRow> = {},
+    startedBy: Record<string, string> = {},
   ): AnyActor {
     const notices = new NoticeLedger(noticeState, this.newId);
     const holds = new Map(holdState.map((hold) => [hold.instanceId, hold]));
@@ -1949,13 +1964,13 @@ export class RunHost {
       // The `answer` action's two halves (ADR-0067): the chain of the one pick being answered of an
       // Agent whose state the action is written below — the one in its own send first, else the one
       // outstanding — and the value that replaces its default answer.
-      chainOf: (machine, seats, event) => {
-        const pick = this.answeringIn(machine, seats, record.runId, holds, event);
+      chainOf: (machine, seat, event) => {
+        const pick = this.answeringIn(machine, seat, record.runId, holds, startedBy, event);
         if (pick === undefined) return undefined;
         return "reg" in pick ? [...pick.chain] : [...(pick.chain ?? [])];
       },
-      setAnswer: (machine, seats, value, event) => {
-        const pick = this.answeringIn(machine, seats, record.runId, holds, event);
+      setAnswer: (machine, seat, value, event) => {
+        const pick = this.answeringIn(machine, seat, record.runId, holds, startedBy, event);
         if (pick === undefined) return;
         // Not saved here: the action runs inside a transition, and the persist that follows it carries
         // the value — a save now would read the Machine before its route, and answer too early.
@@ -2019,22 +2034,25 @@ export class RunHost {
         // bubbling — and a run's Emits mostly happen in child machines (a `workspace()` body IS
         // one). A root-only subscription silently dropped exactly the Emits ADR-0022/0023 exist
         // to surface. The subscription dies with its actor; restore re-creates both.
-        // The children a pick's own send starts are that pick's (ADR-0067): their done events name
-        // the Agent an `answer` below no Agent's state shapes. An `answer` on an entry or an exit
-        // below no Agent's state runs nothing: each Machine of the tree is told so as its actor is
-        // created, before its first state is entered.
+        // The children a pick's own send starts are its Agent's (ADR-0067): their done events name
+        // the Agent an `answer` below no Agent's state shapes. Each place an `answer` is written runs
+        // as its own seat: each Machine of the tree is placed as its actor is created, before its
+        // first state is entered (`placeAnswers`).
         if (ev.type === "@xstate.actor") {
           const sending = this.sending;
           const child = ev.actorRef as AnyActorRef;
           const logic = (child as { logic?: unknown }).logic as AnyStateMachine | undefined;
-          if (logic && typeof logic === "object" && "root" in logic) unseatAnswers(logic);
+          if (logic && typeof logic === "object" && "root" in logic) placeAnswers(logic);
           if (sending && child._parent !== undefined && child._parent === sending.reg.invoker) {
-            sending.children.push(child.id);
+            const agent = sending.reg.sender?.id;
+            if (agent !== undefined) startedBy[child.id] = agent;
+            else delete startedBy[child.id];
           }
         }
         // …and so are the children its later work starts: a child started while the Machine takes an
-        // event that is already that pick's — a done event of one of its children, or its Agent's
-        // event — is that pick's too, so the work the pick began stays its own (ADR-0067).
+        // event that is already that Agent's — a done event of a child it started, or its own event —
+        // is that Agent's too, so the work its pick began stays its own (ADR-0067). A child started
+        // on an event that names no Agent is no Agent's.
         if (ev.type === "@xstate.microstep") {
           const taker = ev.actorRef as AnyActorRef;
           const before = childrenAfter.get(taker) ?? childRefsOf(taker.getSnapshot());
@@ -2042,14 +2060,11 @@ export class RunHost {
           childrenAfter.set(taker, after);
           const started = [...after].filter((c) => !before.has(c)).map((c) => c.id);
           if (started.length > 0 && !this.sending) {
-            const open = [...holds.values()].filter(
-              (h) =>
-                h.answer === undefined &&
-                (this.holdRegs.get(h) ?? this.table.lookup(agentAddress(h.instanceId)))?.invoker === taker,
-            );
-            const named = this.pickOfEvent(ev.event as AnyEventObject, undefined, record.runId, open);
-            const pick = named?.pick;
-            if (pick && !("reg" in pick)) pick.children = [...(pick.children ?? []), ...started];
+            const agent = agentOfEvent(ev.event as AnyEventObject, startedBy);
+            for (const id of started) {
+              if (agent !== undefined) startedBy[id] = agent;
+              else delete startedBy[id];
+            }
           }
         }
         if (ev.type === "@xstate.actor") {
@@ -2116,7 +2131,7 @@ export class RunHost {
         if (ev.type === "@xstate.snapshot") schedule();
       },
     });
-    live = this.track(record, actor, def, agents, epochs, notices, binding, holds, effects);
+    live = this.track(record, actor, def, agents, epochs, notices, binding, holds, effects, startedBy);
     return actor;
   }
 
@@ -2130,6 +2145,7 @@ export class RunHost {
     binding: RunBinding,
     holds: Map<string, Hold>,
     effects: Record<string, EffectRow>,
+    startedBy: Record<string, string>,
   ): LiveRun {
     const run: LiveRun = {
       record,
@@ -2140,6 +2156,7 @@ export class RunHost {
       notices,
       holds,
       effects,
+      startedBy,
       binding,
       listeners: new Set(),
       feedSoFar: [],
@@ -2209,6 +2226,7 @@ export class RunHost {
       timers: pendingTimers(run.actor, this.now()),
       holds: [...run.holds.values()],
       effects: run.effects,
+      startedBy: liveStartedBy(run.startedBy, run.actor),
       fault: run.fault,
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
