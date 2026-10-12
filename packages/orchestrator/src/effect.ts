@@ -262,13 +262,13 @@ const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   command: ["tail"],
   http: ["body", "headers"],
   // A push row keeps its sha and pair data whole (`published`, `source`) and its sync's answer:
-  // the next push reads them. The signed commits' bundle and git's words are its tail.
+  // the next push reads them. The sync's bundle and git's words are its tail.
   push: ["bundle", "detail"],
 };
 
 /** A kind's tail for one output. The NEWEST push of its Repo Slot whose sync did not finish
  * (`busy`, `not-synced`) keeps its bundle: the sync that runs again before the next push of that
- * slot moves the branch from it, and the Agent's store may not hold the signed commits without it.
+ * slot moves the branch from it, and the Agent's store may not hold the published commits without it.
  * Once a sync finished, or once a newer push of the slot published, the bundle goes: only the
  * newest push's sync runs again (`lastPushOf`), so an older bundle has no reader. */
 function tailsOf(kind: EffectRow["kind"], output: Record<string, unknown>, newest: boolean): readonly string[] {

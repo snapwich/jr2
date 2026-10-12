@@ -1,4 +1,4 @@
-// The sync after a signed push (ADR-0067), driven through REAL git in a temp layout shaped like the
+// The sync after a push whose published commit is not the Agent's own (ADR-0067), driven through REAL git in a temp layout shaped like the
 // pod's: the Agent's clone at `<slot>/default` and its branch Worktree beside it (ADR-0004). The
 // "Effector" here is a second clone that copies the Agent's commits with a new committer — what a
 // signing does to an id — and writes their bundle with the Agent's tip as its prerequisite, as the
@@ -75,13 +75,44 @@ async function pod() {
     git(effector, "bundle", "create", "-q", file, "refs/jr2/out", "--not", sha);
     return { published, source: sha, bundle: execFileSync("base64", ["-w0", file], { encoding: "utf8" }).trim() };
   };
+  // An unsigned squash, as the Effector makes it: one new commit on main with the Agent's tree, made
+  // by the entry's committer, signed by nothing; the bundle's prerequisite is the Agent's tip.
+  const squash = (sha: string) => {
+    const effector = join(root, `squash-${sha.slice(0, 8)}`);
+    git(root, "clone", "-q", "--bare", clone, effector);
+    git(effector, "fetch", "-q", clone, `${sha}:refs/jr2/agent`);
+    const published = execFileSync("git", ["commit-tree", `${sha}^{tree}`, "-p", "main", "-m", "one squashed commit"], {
+      cwd: effector,
+      env: { ...env, GIT_COMMITTER_NAME: "jr2 bot", GIT_COMMITTER_EMAIL: "bot@example.test" },
+      encoding: "utf8",
+    }).trim();
+    git(effector, "update-ref", "refs/jr2/out", published);
+    const file = join(root, `squash-${sha.slice(0, 8)}.bundle`);
+    git(effector, "bundle", "create", "-q", file, "refs/jr2/out", "--not", sha);
+    return { published, source: sha, bundle: execFileSync("base64", ["-w0", file], { encoding: "utf8" }).trim() };
+  };
   const hooks: { beforeMove?: () => Promise<void> } = {};
   const sync = syncer({
     env: { GIT_CONFIG_GLOBAL: globalConfig },
     beforeMove: () => hooks.beforeMove?.() ?? Promise.resolve(),
   });
-  return { root, work, clone, tree, git, commit, sign, sync, hooks };
+  return { root, work, clone, tree, git, commit, sign, squash, sync, hooks };
 }
+
+test("an unsigned squash is synced as signed copies are: the sync reads no signature (ADR-0067)", async () => {
+  const p = await pod();
+  await p.commit("one", "a.txt", "a\n");
+  const tip = await p.commit("two", "b.txt", "b\n");
+  const squashed = p.squash(tip);
+  assert.doesNotMatch(
+    p.git(p.root, "--git-dir", join(p.root, `squash-${tip.slice(0, 8)}`), "cat-file", "commit", squashed.published),
+    /gpgsig/,
+  );
+  const answer = await p.sync({ worktree: p.tree, branch: "jr2/work", ...squashed });
+  assert.equal(answer.sync, "synced", JSON.stringify(answer));
+  assert.equal(p.git(p.tree, "rev-parse", "refs/heads/jr2/work"), squashed.published);
+  assert.equal(p.git(p.tree, "rev-list", "--count", "jr2/work", "--not", "main"), "1", "one commit after main");
+});
 
 test("a commit the Agent makes while the sync runs is never lost: the move is a compare-and-swap, tried again from the new tip", async () => {
   const p = await pod();

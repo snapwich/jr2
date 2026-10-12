@@ -1,5 +1,5 @@
-// The sync's client (ADR-0067): after a signed push, the Orchestrator asks the Workspace's Harness to
-// move the Agent's branch to the signed commits (`POST /sync`), carrying the bundle the Sandbox
+// The sync's client (ADR-0067): after a push whose published commit is not the Agent's own, the
+// Orchestrator asks the Workspace's Harness to move the Agent's branch to it (`POST /sync`), carrying the bundle the Sandbox
 // Effector wrote. The bundle travels through here, never through a shared volume: the Worktree is
 // read-only on the credentialed side, and nothing the Effector writes is a channel into the Agent's
 // container but this one call, which moves one ref. The Harness's answer is a report the next push

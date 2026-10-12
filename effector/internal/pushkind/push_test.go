@@ -245,6 +245,9 @@ func TestASignedSSHPushPublishesSignedCopiesWithTheAgentsAuthorAndTheSignersComm
 	if out.Push.Bundle == "" {
 		t.Fatal("no sync bundle")
 	}
+	if out.Push.Squashed != "" {
+		t.Fatalf("signed copies read as a squash: %q", out.Push.Squashed)
+	}
 	if _, err := base64.StdEncoding.DecodeString(out.Push.Bundle); err != nil {
 		t.Fatal(err)
 	}

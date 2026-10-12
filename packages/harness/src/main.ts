@@ -82,7 +82,7 @@ const harnessWire = harnessServer({
   memoryKills: (listener) => guard.onKill(listener),
   // The attach (ADR-0063): the Workspace's Repos into `/work`, on the Orchestrator's call.
   attach: attacher(),
-  // The sync after a signed push (ADR-0067): the Agent's branch to the signed commits.
+  // The sync (ADR-0067): the Agent's branch to the published commits, when they are not its own.
   sync: syncer(),
   // The exec (ADR-0067): a Machine's `command` Effects, run as children of this process — the
   // Agent's user and its Stand-ins. The Instance Harness refuses them (`menuOnly`).

@@ -21,9 +21,11 @@
 //     is a function of (commit, argv, secrets), never of the Agent's tip now — and with none
 //     recorded settle `unknown`; a file-body http is sent again only when marked `idempotent`.
 //   - THE PAIR AND THE SYNC. A push sends the ledger's last push of its Workspace and Repo Slot (its
-//     published commit and its source) as `last`, the input of the Effector's `pair` fallback. After a signed
-//     push the Orchestrator relays the signed commits' bundle to the Workspace's Harness, which
-//     moves the Agent's branch to them (`POST /sync`); its answer rides the output as `sync`, a
+//     published commit and its source) as `last`, the input of the Effector's `pair` fallback.
+//     After every push whose published commit is not the Agent's own — signed copies, or one
+//     squashed commit, signed or not — the Orchestrator relays the bundle of the published commits
+//     to the Workspace's Harness, which moves the Agent's branch to them (`POST /sync`); its
+//     answer rides the output as `sync`, a
 //     field beside the push's outcome. When the last push's sync did not finish, it is run again
 //     before the next push. The push never trusts it.
 //   - D1. When its state exits, the Orchestrator stops polling and records the abort, "outcome
@@ -166,7 +168,7 @@ export type SyncState = SyncAnswer["sync"];
 
 /** A push's output, as the Machine routes on it: `pushed | rejected | diverged | unknown`, and beside
  * `pushed` the sync's answer — `synced | already | skipped | busy | not-synced`, with its reason
- * when it did not move the branch. The signed commits' bundle never reaches the Machine. */
+ * when it did not move the branch. The sync's bundle never reaches the Machine. */
 export type PushOutput =
   | Exclude<PushWireOutput, { outcome: "pushed" }>
   | (Omit<Extract<PushWireOutput, { outcome: "pushed" }>, "bundle"> & { sync: SyncState; syncReason?: string });
@@ -678,15 +680,15 @@ export function pushWith<const O extends PushOptions>(
       }
       return { last: { published: output.published, source: output.source } };
     },
-    // After a SIGNED push's pushed outcome (design 6): the sync, in the Workspace's Harness, from
-    // the bundle the Effector wrote — a signed push that published nothing new (a pair or cherry
-    // that mapped the published tip) included. An unsigned push is `skipped`, nothing to send: one
-    // that published the Agent's own commit, and an unsigned squash (B15), whose new commit design
-    // 6 does not sync; the next push that squashes or signs pairs it from the ledger.
+    // After every pushed outcome whose published commit is not the Agent's own — signed copies, or
+    // one squashed commit, signed or not (ADR-0067): the sync, in the Workspace's Harness, from the
+    // bundle the Effector wrote, a push that published nothing new (a pair or cherry that mapped
+    // the published tip) included. The decision keys on published != source, never on `sign`. A
+    // push of the Agent's own commit is `skipped`, nothing to send.
     finish: async (output, ctx) => {
       const o = output as PushWireOutput;
       if (o.outcome !== "pushed") return o;
-      if (!parts.sign || o.published === o.source) return { ...o, sync: "skipped" satisfies SyncState };
+      if (o.published === o.source) return { ...o, sync: "skipped" satisfies SyncState };
       const answer = await syncOf(ctx).sync(
         {
           worktree: worktreeOf(ctx),

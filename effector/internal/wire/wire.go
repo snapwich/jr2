@@ -42,6 +42,12 @@ const (
 	OutcomeKilled  = "killed"
 )
 
+// A pushed squash's `squashed`: the one commit it published is signed, or not.
+const (
+	SquashedSigned   = "signed"
+	SquashedUnsigned = "unsigned"
+)
+
 // States of one Effect as a replica answers for it.
 const (
 	StateRunning = "running"
@@ -214,7 +220,11 @@ type PushResult struct {
 	Via string `json:"via,omitempty"`
 	// Unchanged: the remote already held the published commit; nothing was sent.
 	Unchanged bool `json:"unchanged,omitempty"`
-	// Bundle is the signed commits, base64, for the sync step (ADR-0067): commit objects only.
+	// Squashed says the published commit is one squashed commit, and whether it is signed
+	// (SquashedSigned, SquashedUnsigned); "" for signed copies of the Agent's commits, or its own.
+	Squashed string `json:"squashed,omitempty"`
+	// Bundle is the published commits that are not the Agent's own, base64, for the sync step
+	// (ADR-0067): commit objects only.
 	Bundle string `json:"bundle,omitempty"`
 	Stage  string `json:"stage,omitempty"`
 	Detail string `json:"detail,omitempty"`
@@ -258,6 +268,7 @@ type pushedJSON struct {
 	Previous  string `json:"previous,omitempty"`
 	Via       string `json:"via,omitempty"`
 	Unchanged bool   `json:"unchanged,omitempty"`
+	Squashed  string `json:"squashed,omitempty"`
 	Bundle    string `json:"bundle,omitempty"`
 }
 
@@ -312,7 +323,7 @@ func (o Output) MarshalJSON() ([]byte, error) {
 		return json.Marshal(responseJSON{Outcome: o.Outcome, Response: *o.Response})
 	case OutcomePushed:
 		return json.Marshal(pushedJSON{Outcome: o.Outcome, Published: p.Published, Source: p.Source,
-			Previous: p.Previous, Via: p.Via, Unchanged: p.Unchanged, Bundle: p.Bundle})
+			Previous: p.Previous, Via: p.Via, Unchanged: p.Unchanged, Squashed: p.Squashed, Bundle: p.Bundle})
 	case OutcomeRejected:
 		return json.Marshal(rejectedJSON{Outcome: o.Outcome, Stage: p.Stage, Reason: o.Reason, Detail: p.Detail})
 	case OutcomeDiverged:
@@ -359,7 +370,7 @@ func (o *Output) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		*o = Output{Outcome: r.Outcome, Push: &PushResult{Published: r.Published, Source: r.Source,
-			Previous: r.Previous, Via: r.Via, Unchanged: r.Unchanged, Bundle: r.Bundle}}
+			Previous: r.Previous, Via: r.Via, Unchanged: r.Unchanged, Squashed: r.Squashed, Bundle: r.Bundle}}
 	case OutcomeRejected:
 		var r rejectedJSON
 		if err := strict(raw, &r); err != nil {

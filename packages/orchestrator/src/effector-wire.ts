@@ -172,8 +172,10 @@ export type HttpOutput = z.infer<typeof HttpOutputShape>;
 /**
  * A `push` Effect's output (ADR-0067). `pushed`: the published commit, its source (the Agent's
  * commit), what the remote held before, how the new commits were found after a signed push
- * (`ancestry | pair | cherry | force`), `unchanged` when the remote held it already, and the
- * signed commits as a bundle for the sync. `rejected`: a stage and git's words. `diverged`: the
+ * (`ancestry | pair | cherry | force`), `unchanged` when the remote held it already, `squashed`
+ * when the published commit is one squashed commit (`signed | unsigned`; absent for signed
+ * copies), and — when the published commit is not the Agent's own — the published commits as a
+ * bundle for the sync. `rejected`: a stage and git's words. `diverged`: the
  * published commit is not in the Agent's history and nothing paired it; nothing was pushed.
  */
 export const PushOutputShape = z.union([
@@ -184,6 +186,7 @@ export const PushOutputShape = z.union([
     previous: z.string().optional(),
     via: z.string().optional(),
     unchanged: z.boolean().optional(),
+    squashed: z.enum(["signed", "unsigned"]).optional(),
     bundle: z.string().optional(),
   }),
   z.strictObject({

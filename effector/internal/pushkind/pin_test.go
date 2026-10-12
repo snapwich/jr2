@@ -93,6 +93,9 @@ func TestASquashedSignedPushPublishesOneSignedCommitWithTheMachinesMessage(t *te
 	if out.Push.Bundle == "" || !unbundle(t, f, out.Push.Bundle, pub) {
 		t.Fatal("no sync bundle of the squashed commit")
 	}
+	if out.Push.Squashed != wire.SquashedSigned {
+		t.Fatalf("squashed %q, want %q", out.Push.Squashed, wire.SquashedSigned)
+	}
 }
 
 // design 6: `pin` pushes exactly the commit a Gate approved — one older than the Agent's tip
@@ -193,11 +196,13 @@ func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
 	if raw := remoteGit(t, f, "cat-file", "commit", pub); strings.Contains(raw, "gpgsig") {
 		t.Fatalf("an unsigned squash carries a signature: %s", raw)
 	}
-	if out.Push.Bundle != "" {
-		t.Fatal("an unsigned squash wrote a sync bundle: the sync follows a signed push (design 6)")
+	// Its published commit is not the Agent's own, so it is synced as a signed push is (ADR-0067):
+	// it carries the bundle, and says what it published — one squashed commit, unsigned.
+	if out.Push.Bundle == "" || out.Push.Squashed != wire.SquashedUnsigned {
+		t.Fatalf("an unsigned squash: bundle %d bytes, squashed %q", len(out.Push.Bundle), out.Push.Squashed)
 	}
-	// Not synced, the Agent's branch stays on its own commits: the next squash pairs the published
-	// commit from the ledger's last push and squashes only what is new onto it.
+	// The sync did not finish, so the Agent's branch stays on its own commits: the next squash
+	// pairs the published commit from the ledger's last push and squashes only what is new onto it.
 	more := f.pod.Commit("three", map[string]string{"c.txt": "c\n"})
 	next := f.request(false, &wire.Pair{Published: pub, Source: sha})
 	next.Push.Squash = &msg
@@ -211,16 +216,19 @@ func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
 	if remoteGit(t, f, "rev-parse", pub+"^{tree}") != gittest.Git(t, f.pod.Tree, "rev-parse", sha+"^{tree}") {
 		t.Fatal("the squashed tree is not the Agent's")
 	}
-	// Only a push that squashes or signs maps: a plain push after an unsigned squash offers the
-	// Agent's own commits to a remote whose branch holds the squash, and the remote refuses it.
+	// This sync runs: the branch moves to the squashed commit. A plain push after it is a fast-forward.
 	squashed := remoteRef(f)
-	f.pod.Commit("four", map[string]string{"d.txt": "d\n"})
-	plain := f.runner.Run(context.Background(), f.request(false, &wire.Pair{Published: squashed, Source: more}))
-	if plain.Outcome != wire.OutcomeRejected || !strings.Contains(plain.Reason, "non-fast-forward") {
-		t.Fatalf("a plain push after an unsigned squash: %+v", plain)
+	if !unbundle(t, f, out.Push.Bundle, squashed) {
+		t.Fatal("the bundle does not carry the squashed commit")
 	}
-	if remoteRef(f) != squashed {
-		t.Fatal("the remote moved under a plain push after an unsigned squash")
+	gittest.Git(t, f.pod.Tree, "reset", "-q", "--hard", squashed)
+	four := f.pod.Commit("four", map[string]string{"d.txt": "d\n"})
+	plain := f.runner.Run(context.Background(), f.request(false, &wire.Pair{Published: squashed, Source: more}))
+	if plain.Outcome != wire.OutcomePushed || plain.Push.Published != four || plain.Push.Squashed != "" {
+		t.Fatalf("a plain push after a synced unsigned squash: %+v %+v", plain, plain.Push)
+	}
+	if remoteGit(t, f, "rev-parse", remoteRef(f)+"^{tree}") != gittest.Git(t, f.pod.Tree, "rev-parse", four+"^{tree}") {
+		t.Fatal("the remote's tree is not the Agent's")
 	}
 
 	f.runner.Config.Git[0].Committer = nil

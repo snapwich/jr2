@@ -324,7 +324,7 @@ export function answerText(answer: PickAnswer | undefined): string {
       return `Its answer: \`${answer.event}\`${from}${payload}.`;
     }
     case "output": {
-      const after = signedPushText(answer.output);
+      const after = rewrittenPushText(answer.output);
       return `Its answer: the output of \`${answer.actor}\`: ${JSON.stringify(answer.output) ?? "nothing"}.${after ? ` ${after}` : ""}`;
     }
     // The Machine shaped it (ADR-0067): its words, as the workflow wrote them.
@@ -334,19 +334,21 @@ export function answerText(answer: PickAnswer | undefined): string {
 }
 
 /**
- * What the Agent reads after a SIGNED push (ADR-0067): the output of a `push` that was synced — only
- * a signed push is — and whose published commit is not the Agent's own (`published` ≠ `source`), by
- * its sync's answer. The ids changed, so the Agent is told what moved and what did not, and what
- * makes the next push `diverged`. It is never told to rebase: a rebase repair loses a reworded
- * message and duplicates empty commits and merges. Undefined for every other output, an unsigned
- * squash (`sync: skipped`, B15) included.
+ * What the Agent reads after a push whose published commit is not the Agent's own (ADR-0067):
+ * signed copies of its commits, or one squashed commit, signed or not (`squashed`). Such a push is
+ * synced, and the paragraph follows its sync's answer. The ids changed, so the Agent is told what
+ * moved and what did not, and what makes the next push `diverged`; it is told "signed" only of
+ * what was signed. It is never told to rebase: a rebase repair loses a reworded message and
+ * duplicates empty commits and merges. Undefined for every other output, a push of the Agent's own
+ * commit (`sync: skipped`) included.
  */
-export function signedPushText(output: unknown): string | undefined {
+export function rewrittenPushText(output: unknown): string | undefined {
   if (typeof output !== "object" || output === null) return undefined;
   const o = output as {
     outcome?: unknown;
     published?: unknown;
     source?: unknown;
+    squashed?: unknown;
     sync?: unknown;
     syncReason?: unknown;
   };
@@ -356,14 +358,28 @@ export function signedPushText(output: unknown): string | undefined {
   const keep =
     "Do not merge or rebase branches that you made before this push. Do not change the pushed commits: if you " +
     'amend, rebase or reset them, the next push stops with "diverged".';
-  if (o.sync === "synced" || o.sync === "already") {
+  const synced = o.sync === "synced" || o.sync === "already";
+  const why = typeof o.syncReason === "string" ? ` (${o.syncReason})` : "";
+  if (o.squashed === "signed" || o.squashed === "unsigned") {
+    const what = `jr2 squashed your commits into one ${o.squashed === "signed" ? "signed " : ""}commit and pushed it.`;
+    if (synced) {
+      return (
+        `${what} That commit has a new commit id, and jr2 moved your branch to it. Your files, your index and your ` +
+        `stash did not change. The old commit ids are in the reflog. Continue your work on your branch. ${keep}`
+      );
+    }
+    return (
+      `${what} jr2 did not move your branch to it${why}. Continue your work on your branch: the next push finds ` +
+      `the published commit. ${keep}`
+    );
+  }
+  if (synced) {
     return (
       "jr2 signed your commits and pushed the signed copies. The signed commits have new commit ids, and jr2 moved " +
       "your branch to them. Your files, your index and your stash did not change. The old commit ids are in the " +
       `reflog. Continue your work on your branch. ${keep}`
     );
   }
-  const why = typeof o.syncReason === "string" ? ` (${o.syncReason})` : "";
   return (
     `jr2 signed your commits and pushed the signed copies. jr2 did not move your branch to them${why}. Continue ` +
     `your work on your branch: the next push finds the published commits. ${keep}`

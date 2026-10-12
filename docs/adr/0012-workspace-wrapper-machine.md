@@ -57,9 +57,10 @@ container ([ADR-0005](0005-sandbox-pod-composition.md),
 [ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), which the provision adds only when an
 Effect below the `workspace()` is placed there; its image is the Sandbox Image unless the `workspace()` names
 `effector: { image }`. Each one's Worktree follows the Turn's rule (ADR-0057): the one Repo Slot's, or the slot it names
-with `slot`; a Workspace with several and none named refuses it. A push goes to that slot's Binding, and after a signed
-push the Workspace's Harness moves the Agent's branch to the published commits (the sync, ADR-0067). An Effect of these
-kinds outside any `workspace()` is refused at invoke, as an error, never as output. A `command` that names a secret runs
+with `slot`; a Workspace with several and none named refuses it. A push goes to that slot's Binding, and after every
+push whose published commit is not the Agent's own — signed copies, or one squashed commit, signed or not — the
+Workspace's Harness moves the Agent's branch to the published commits (the sync, ADR-0067). An Effect of these kinds
+outside any `workspace()` is refused at invoke, as an error, never as output. A `command` that names a secret runs
 against a pinned commit in a scratch of the Effector's own, and its child is confined with Landlock from the Effector's
 key, the secrets it does not name, the push credentials and the Worktree (ADR-0067, ADR-0068).
 

@@ -201,33 +201,36 @@ func (c *call) run(ctx context.Context) wire.Output {
 		return rejected("import", err.Error(), "")
 	}
 
-	target, via := sha, ""
-	var bundle string
-	// A squash is a new commit, signed or not (B15): it is made as a signed push's copies are.
+	res := wire.PushResult{Published: sha, Source: sha, Previous: pub}
+	// A squash is a new commit, signed or not (ADR-0067): it is made as a signed push's copies are.
 	if spec.Sign || spec.Squash != nil {
 		s, out := c.sign(ctx, sha, pub, base)
 		if out != nil {
 			return *out
 		}
-		target, via = s.target, s.via
-		// The sync's bundle, after a signed push (design 6) whenever what is published is not the
-		// Agent's own commit — a push that publishes nothing new included: a pair or cherry that
-		// maps the published tip (a restore of a pinned push, a push after a sync that did not
-		// finish) leaves the Agent's branch on its unsigned commits, and the sync moves it from
-		// this bundle. An unsigned squash is not synced, so it writes none; the next push that squashes
-		// or signs pairs its commit from the ledger, and a plain push, which maps nothing, is
-		// refused by the remote as non-fast-forward.
-		if spec.Sign && target != sha {
-			if bundle, out = c.bundleOf(ctx, target, sha); out != nil {
+		res.Published, res.Via = s.target, s.via
+		// The sync's bundle, whenever what is published is not the Agent's own commit — signed
+		// copies, or one squashed commit, signed or not (ADR-0067) — a push that publishes nothing
+		// new included: a pair or cherry that maps the published tip (a restore of a pinned push, a
+		// push after a sync that did not finish) leaves the Agent's branch on its own commits, and
+		// the sync moves it from this bundle.
+		if res.Published != sha {
+			if spec.Squash != nil {
+				res.Squashed = wire.SquashedUnsigned
+				if spec.Sign {
+					res.Squashed = wire.SquashedSigned
+				}
+			}
+			if res.Bundle, out = c.bundleOf(ctx, res.Published, sha); out != nil {
 				return *out
 			}
 		}
 	}
-	if target == pub {
-		return wire.Output{Outcome: wire.OutcomePushed, Push: &wire.PushResult{Published: pub, Source: sha,
-			Previous: pub, Via: via, Unchanged: true, Bundle: bundle}}
+	if res.Published == pub {
+		res.Unchanged = true
+		return wire.Output{Outcome: wire.OutcomePushed, Push: &res}
 	}
-	return c.push(ctx, target, sha, pub, via, bundle)
+	return c.push(ctx, res)
 }
 
 // credential is the env and the protocols of this push's git calls: a token's file for the
@@ -331,10 +334,10 @@ func nonEmpty(s string) []string {
 	return []string{s}
 }
 
-// push sends target to the Binding's ref, and reads git's porcelain answer.
-func (c *call) push(ctx context.Context, target, source, pub, via, bundle string) wire.Output {
-	spec := c.spec.Branch
-	refspec := target + ":refs/heads/" + spec
+// push sends res.Published to the Binding's ref, and reads git's porcelain answer; pushed, res is
+// the output.
+func (c *call) push(ctx context.Context, res wire.PushResult) wire.Output {
+	refspec := res.Published + ":refs/heads/" + c.spec.Branch
 	if c.spec.Force {
 		refspec = "+" + refspec
 	}
@@ -355,11 +358,10 @@ func (c *call) push(ctx context.Context, target, source, pub, via, bundle string
 		}
 		switch line[0] {
 		case ' ', '+', '*':
-			return wire.Output{Outcome: wire.OutcomePushed, Push: &wire.PushResult{Published: target,
-				Source: source, Previous: pub, Via: via, Bundle: bundle}}
+			return wire.Output{Outcome: wire.OutcomePushed, Push: &res}
 		case '=':
-			return wire.Output{Outcome: wire.OutcomePushed, Push: &wire.PushResult{Published: target,
-				Source: source, Previous: pub, Via: via, Unchanged: true, Bundle: bundle}}
+			res.Unchanged = true
+			return wire.Output{Outcome: wire.OutcomePushed, Push: &res}
 		case '!':
 			reason := "the remote refused it"
 			switch {

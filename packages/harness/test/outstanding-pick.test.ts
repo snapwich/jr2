@@ -12,7 +12,7 @@ import { EffectStateShape } from "@jr2/orchestrator";
 import { noticeText } from "../src/briefing.ts";
 import {
   answerText,
-  signedPushText,
+  rewrittenPushText,
   cutPickResult,
   outstandingRefusal,
   readMenu,
@@ -269,6 +269,10 @@ test("an Effector's outcome reads as its output, decoded off the wire as the Orc
     "response.settled-pushed.json":
       'Its answer: the output of `comment`: {"outcome":"pushed","published":"2222222222222222222222222222222222222222",' +
       '"source":"1111111111111111111111111111111111111111","via":"ancestry"}.',
+    "response.settled-pushed-squashed.json":
+      'Its answer: the output of `comment`: {"outcome":"pushed","published":"3333333333333333333333333333333333333333",' +
+      '"source":"1111111111111111111111111111111111111111","previous":"2222222222222222222222222222222222222222",' +
+      '"via":"ancestry","squashed":"unsigned"}.',
     "response.settled-rejected.json":
       'Its answer: the output of `comment`: {"outcome":"rejected","stage":"push","reason":"non-fast-forward: the ' +
       'remote\'s branch moved","detail":"! [rejected] (fetch first)"}.',
@@ -285,7 +289,7 @@ test("an Effector's outcome reads as its output, decoded off the wire as the Orc
   for (const [name, text] of Object.entries(want)) assert.equal(read(name), text, name);
 });
 
-test("after a signed push the Agent reads what moved, by the sync's answer; never a rebase to do (ADR-0067)", () => {
+test("after a push whose published commit is not the Agent's own, the Agent reads what moved, by the sync's answer; never a rebase to do (ADR-0067)", () => {
   const pushed = { outcome: "pushed", published: "2".repeat(40), source: "1".repeat(40), via: "ancestry" };
   const synced = answerText({ kind: "output", actor: "publish", output: { ...pushed, sync: "synced" } });
   assert.equal(
@@ -296,7 +300,7 @@ test("after a signed push the Agent reads what moved, by the sync's answer; neve
       "your work on your branch. Do not merge or rebase branches that you made before this push. Do not change the " +
       'pushed commits: if you amend, rebase or reset them, the next push stops with "diverged".',
   );
-  const busy = signedPushText({ ...pushed, sync: "busy", syncReason: "a rebase of your branch is in progress" });
+  const busy = rewrittenPushText({ ...pushed, sync: "busy", syncReason: "a rebase of your branch is in progress" });
   assert.equal(
     busy,
     "jr2 signed your commits and pushed the signed copies. jr2 did not move your branch to them (a rebase of your " +
@@ -304,12 +308,49 @@ test("after a signed push the Agent reads what moved, by the sync's answer; neve
       "merge or rebase branches that you made before this push. Do not change the pushed commits: if you amend, " +
       'rebase or reset them, the next push stops with "diverged".',
   );
-  assert.equal(signedPushText({ ...pushed, source: pushed.published, sync: "skipped" }), undefined, "unsigned");
-  // An unsigned squash (B15) publishes a new commit and is not synced (design 6: the sync follows a signed push), so
-  // it reads no signed-push paragraph: "jr2 signed your commits" would be false there.
-  assert.equal(signedPushText({ ...pushed, sync: "skipped" }), undefined, "unsigned squash");
-  assert.equal(signedPushText({ outcome: "diverged", reason: "x" }), undefined);
-  for (const text of [synced, busy!]) assert.doesNotMatch(text, /\b(please )?rebase (your|onto)/i);
+  assert.equal(rewrittenPushText({ ...pushed, source: pushed.published, sync: "skipped" }), undefined, "its own");
+  assert.equal(rewrittenPushText({ outcome: "diverged", reason: "x" }), undefined);
+
+  // One squashed commit: the paragraph names it, and says "signed" only of a signed one.
+  const keep =
+    "Do not merge or rebase branches that you made before this push. Do not change the pushed commits: if you " +
+    'amend, rebase or reset them, the next push stops with "diverged".';
+  const squashedSynced = (squashed: string) => rewrittenPushText({ ...pushed, squashed, sync: "synced" });
+  assert.equal(
+    squashedSynced("unsigned"),
+    "jr2 squashed your commits into one commit and pushed it. That commit has a new commit id, and jr2 moved your " +
+      "branch to it. Your files, your index and your stash did not change. The old commit ids are in the reflog. " +
+      `Continue your work on your branch. ${keep}`,
+  );
+  assert.equal(
+    squashedSynced("signed"),
+    "jr2 squashed your commits into one signed commit and pushed it. That commit has a new commit id, and jr2 moved " +
+      "your branch to it. Your files, your index and your stash did not change. The old commit ids are in the " +
+      `reflog. Continue your work on your branch. ${keep}`,
+  );
+  const squashedBusy = rewrittenPushText({
+    ...pushed,
+    squashed: "unsigned",
+    sync: "not-synced",
+    syncReason: "your repository has no branch jr2/run-1",
+  });
+  assert.equal(
+    squashedBusy,
+    "jr2 squashed your commits into one commit and pushed it. jr2 did not move your branch to it (your repository " +
+      "has no branch jr2/run-1). Continue your work on your branch: the next push finds the published commit. " +
+      keep,
+  );
+  for (const text of [squashedSynced("unsigned")!, squashedBusy!]) assert.doesNotMatch(text, /\bsigned\b/);
+  for (const text of [synced, busy!, squashedSynced("signed")!, squashedBusy!]) {
+    assert.doesNotMatch(text, /\b(please )?rebase (your|onto)/i);
+  }
+});
+
+test("a sync's reasons name the published commits, never a signature: an unsigned squash is synced too (ADR-0067)", () => {
+  const src = readFileSync(new URL("../src/sync.ts", import.meta.url), "utf8");
+  const reasons = [...src.matchAll(/reason: "([^"]*)"/g)].map((m) => m[1]!);
+  assert.ok(reasons.length >= 4, `the sync's reasons: ${reasons.join(" | ")}`);
+  for (const reason of reasons) assert.doesNotMatch(reason, /\bsigned\b|not signed/, reason);
 });
 
 test('a guard straight back alone reads "moved; nothing ran"; a move to a mode reads as the plain receipt', () => {

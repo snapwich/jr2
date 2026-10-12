@@ -174,7 +174,7 @@ test("an unsigned push is sync `skipped`, and no sync is asked", async () => {
   assert.equal(syncs.calls.length, 0);
 });
 
-test("an unsigned squash published a new commit and is not synced: the sync follows a signed push (B15, design 6)", async () => {
+test("an unsigned squash published a commit that is not the Agent's own, and is synced as a signed push is (ADR-0067)", async () => {
   const fake = new FakeEffector(["sandbox"]);
   const syncs = new FakeSync();
   const rig = await started(pushWith(port(fake), { squash: true }, syncs.factory) as AnyEffect, undefined, {
@@ -184,12 +184,21 @@ test("an unsigned squash published a new commit and is not synced: the sync foll
   const req = fake.starts[0]!.req as PushStartRequest;
   assert.equal(req.push.sign, undefined);
   assert.equal(req.push.squash, "one commit");
-  fake.settle(pushed("c".repeat(40)));
+  fake.settle({ ...pushed("c".repeat(40)), squashed: "unsigned" });
   await waitFor(() => rig.host.status(rig.runId)?.value === "done");
   const result = (rig.host.status(rig.runId)?.context as Ctx).result as Record<string, unknown>;
   assert.equal(result.published, "c".repeat(40));
-  assert.equal(result.sync, "skipped", "the Agent reads no signed-push paragraph");
-  assert.equal(syncs.calls.length, 0, "no sync was sent");
+  assert.equal(result.squashed, "unsigned", "the output tells one squashed commit from signed copies");
+  assert.equal(result.sync, "synced");
+  assert.equal("bundle" in result, false);
+  assert.equal(syncs.calls.length, 1, "the sync was sent: the decision keys on published != source, never on sign");
+  assert.deepEqual(syncs.calls[0]!.req, {
+    worktree: "/work/app/jr2-run-1",
+    branch: "jr2/run-1",
+    published: "c".repeat(40),
+    source: "a".repeat(40),
+    bundle: "QlVORExF",
+  });
 });
 
 /** A Machine that pushes twice in one run, in one Workspace. */

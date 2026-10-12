@@ -112,7 +112,7 @@ export type HarnessAppDeps = {
   /** Run the attach (ADR-0063) — `attach.ts`'s `attacher()` in production, a stub in wire tests.
    * Omitted, `POST /attach` answers 501: this Harness does not attach. */
   attach?: (req: AttachRequest) => Promise<AttachResponse>;
-  /** Run the sync after a signed push (ADR-0067) — `sync.ts`'s `syncer()` in production. Omitted,
+  /** Run the sync after a push whose published commit is not the Agent's own (ADR-0067) — `sync.ts`'s `syncer()` in production. Omitted,
    * `POST /sync` answers 501. */
   sync?: (req: SyncRequest) => Promise<SyncAnswer>;
   /** The execs a `command` Effect runs as (ADR-0067) — one `Execs` per process in production.
@@ -426,8 +426,8 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     }
   });
 
-  // The sync (ADR-0067): after a signed push, the Agent's branch moves to the signed commits — one
-  // ref, by compare-and-swap, under a clean git config. Its answer is a report; the next push
+  // The sync (ADR-0067): after a push whose published commit is not the Agent's own, the Agent's
+  // branch moves to the published commits — one ref, by compare-and-swap, under a clean git config. Its answer is a report; the next push
   // trusts none of it. The Instance Harness holds no Workspace, so it syncs nothing (ADR-0031).
   app.post("/sync", async (c) => {
     if (deps.menuOnly) {

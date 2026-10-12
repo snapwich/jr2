@@ -1,10 +1,12 @@
-// The sync (ADR-0067): after a signed push, the Agent's branch moves to the signed commits, HERE, in
-// the Harness container, on `POST /sync`. The Sandbox Effector re-created the Agent's commits as
-// signed copies and pushed them; their bundle travels to this container through the Orchestrator,
-// never through a shared volume (the Worktree stays read-only on the credentialed side). The
-// procedure is evidence E8's, step for step:
+// The sync (ADR-0067): after every push whose published commit is not the Agent's own, the Agent's
+// branch moves to the published commits, HERE, in the Harness container, on `POST /sync`. The
+// Sandbox Effector re-created the Agent's commits — as signed copies, or as one squashed commit,
+// signed or not — and pushed them; their bundle travels to this container through the
+// Orchestrator, never through a shared volume (the Worktree stays read-only on the credentialed
+// side). The sync reads no signature. The procedure:
 //
-//   0. `published == source`: an unsigned push — `skipped`, nothing changes.
+//   0. `published == source`: the push published the Agent's own commit — `skipped`, nothing
+//      changes.
 //   1. The bundle, when the request carries one: `git bundle verify`, then `git bundle unbundle`
 //      (objects only; no ref of the bundle is written).
 //   2. `published` is a commit, and its tree is `source`'s — else `not-synced`.
@@ -84,7 +86,8 @@ export function syncer(opts: SyncSeams = {}) {
 }
 
 async function sync(req: SyncRequest, seams: SyncSeams): Promise<SyncAnswer> {
-  if (req.published === req.source) return { sync: "skipped", reason: "the push was not signed: nothing to move" };
+  if (req.published === req.source)
+    return { sync: "skipped", reason: "the push published your own commit: nothing to move" };
   const home = await mkdtemp(join(tmpdir(), "jr2-sync-"));
   try {
     const env: NodeJS.ProcessEnv = {
@@ -104,18 +107,18 @@ async function sync(req: SyncRequest, seams: SyncSeams): Promise<SyncAnswer> {
       const file = join(home, "sync.bundle");
       await writeFile(file, Buffer.from(req.bundle, "base64"));
       if ((await git(["bundle", "verify", "-q", file])).code !== 0) {
-        return { sync: "not-synced", reason: "the signed commits' bundle did not verify against your repository" };
+        return { sync: "not-synced", reason: "the published commits' bundle did not verify against your repository" };
       }
       if ((await git(["bundle", "unbundle", file])).code !== 0) {
-        return { sync: "not-synced", reason: "the signed commits could not be read from their bundle" };
+        return { sync: "not-synced", reason: "the published commits could not be read from their bundle" };
       }
     }
     if ((await git(["cat-file", "-t", req.published])).out !== "commit") {
-      return { sync: "not-synced", reason: "your repository does not hold the signed commit" };
+      return { sync: "not-synced", reason: "your repository does not hold the published commit" };
     }
     const tree = async (c: string) => (await git(["rev-parse", `${c}^{tree}`])).out;
     if ((await tree(req.published)) !== (await tree(req.source))) {
-      return { sync: "not-synced", reason: "the signed commit's files are not your commit's" };
+      return { sync: "not-synced", reason: "the published commit's files are not your commit's" };
     }
     const busy = await busyWith(req, git);
     if (busy) return { sync: "busy", reason: busy };
