@@ -194,18 +194,18 @@ decision generalizes that container. It holds every credential the Harness in it
   roots are more than client-side apply's annotation can hold.
 - **Objects, per pod.** The held manifest, the Custodian's files and the literal values are each a pod's own, from the
   one derivation that places Effect secrets. A pod is keyed `instance` for the Instance Harness, and `ws-<digest>` for a
-  Workspace, the digest of its registered workflow and the `customize()` route to its `workspace()` — the route the walk
-  reads statically and the run host reads off the live actor at provision, so both name one pod alike. Nothing rendered
-  per pod lands in a shared object: `jr2 up` declares, and the pod's maker renders. `jr2-held` (always) holds
-  `held-<pod>.json` for each pod (what it holds: names, bindings, headers, never a value) and `program.lua` once per
-  Instance, so it grows by one manifest per Workspace. A pod's two rendered files, Envoy's `envoy.json` and its
-  `custodian.lua`, are in a ConfigMap of that pod's own: the Orchestrator renders a Sandbox's at provision, from the
-  manifest it reads, into `<sandbox>-custodian`, applied after the CR and owned by it like the `<sandbox>-token` Secret,
-  so it goes with the pod (the Orchestrator's Role may create and patch a ConfigMap, and no more); `jr2 up` renders the
-  Instance Harness's into `jr2-held-custodian`, applied with its StatefulSet and deleted with it. A pod's
-  `custodian-config` volume projects its own ConfigMap and `program.lua` from `jr2-held`. The reason: every Kubernetes
-  object stops at 1 MiB, and client-side apply's annotation at 256 KiB; one copy of Envoy's files per pod in `jr2-held`
-  passed that limit at nine Workspaces, and a dedupe or a server-side apply only moves the ceiling.
+  Workspace, the digest of its registered workflow and the placement route to its `workspace()` (the pod key below) —
+  the route the walk reads statically and the run host reads off the live actor at provision, so both name one pod
+  alike. Nothing rendered per pod lands in a shared object: `jr2 up` declares, and the pod's maker renders. `jr2-held`
+  (always) holds `held-<pod>.json` for each pod (what it holds: names, bindings, headers, never a value) and
+  `program.lua` once per Instance, so it grows by one manifest per Workspace. A pod's two rendered files, Envoy's
+  `envoy.json` and its `custodian.lua`, are in a ConfigMap of that pod's own: the Orchestrator renders a Sandbox's at
+  provision, from the manifest it reads, into `<sandbox>-custodian`, applied after the CR and owned by it like the
+  `<sandbox>-token` Secret, so it goes with the pod (the Orchestrator's Role may create and patch a ConfigMap, and no
+  more); `jr2 up` renders the Instance Harness's into `jr2-held-custodian`, applied with its StatefulSet and deleted
+  with it. A pod's `custodian-config` volume projects its own ConfigMap and `program.lua` from `jr2-held`. The reason:
+  every Kubernetes object stops at 1 MiB, and client-side apply's annotation at 256 KiB; one copy of Envoy's files per
+  pod in `jr2-held` passed that limit at nine Workspaces, and a dedupe or a server-side apply only moves the ceiling.
   `jr2-held-secrets-<pod>` holds one pod's literal values, labeled `jr2.dev/held-pod`, and `jr2 up` deletes the one a
   pod no longer needs. `jr2-held-tls` (every bound target's leaf) and `jr2-held-ca` are the Instance's. The Orchestrator
   mounts `jr2-held` at `/etc/jr2/held` and reads the manifest of the Workspace it provisions, per provision — the
