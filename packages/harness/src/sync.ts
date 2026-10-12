@@ -22,7 +22,7 @@
 //
 // So the files, the index, HEAD and the stash never change: one ref moves, and commit objects are
 // written. Every git call runs under a cleared environment and a config that names no hook, no
-// fsmonitor, no alternate-refs command and no maintenance (E8 case G: with them, a planted
+// fsmonitor, no alternate-refs command and no maintenance (measured: with them, a planted
 // reference-transaction hook moved the branch back after a "synced"). The answer is a report, not a
 // fact: the Agent owns the repository and can move the branch at any time, so the next push trusts
 // none of it and derives everything again from the remote and the Agent's objects.

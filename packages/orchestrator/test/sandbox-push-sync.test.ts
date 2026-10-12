@@ -1,4 +1,4 @@
-// A push's pair and its sync across pushes (ADR-0067, design 6): the pair is the ledger's last push
+// A push's pair and its sync across pushes (ADR-0067): the pair is the ledger's last push
 // of the SAME Workspace and Repo Slot, a sync that did not finish runs again before the next push
 // of that slot — from the bundle its row keeps until a sync finishes — and a signed push that
 // published nothing new still syncs. D1 for the Sandbox kinds. In-process, socket-free (ADR-0010).

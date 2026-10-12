@@ -202,7 +202,7 @@ export { sandboxEffectorSecret } from "./sandbox-effector.ts";
  * its per-pod key (derived from the Sandbox's name, like the Sandbox token) and `effector.json` at
  * `/run/jr2/effector`, and an emptyDir scratch that is its `$HOME`. The push credentials are not
  * the provision's to mount: the operator projects each entry Secret the CR's `gitCredentials`
- * names into `/run/jr2/secrets/@git/<name>/` (B10). No Custodian, no `harness.env`, and no env
+ * names into `/run/jr2/secrets/@git/<name>/` (ADR-0051). No Custodian, no `harness.env`, and no env
  * beyond where its mounts are and the downward API's name, address and node — the node is what
  * its Landlock refusal names. It says why it ended in its termination message, which the operator
  * publishes on the Sandbox's status (`status.effector`).
@@ -565,7 +565,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   ];
 
   /**
-   * The Sandbox Effector (ADR-0068, B5.1, B5.3), when `jr2 up` placed an Effect there: its
+   * The Sandbox Effector (ADR-0068), when `jr2 up` placed an Effect there: its
    * container and volumes. Its image is the one the `workspace()` names, resolved like the User
    * Container's (a `file:` context to its built ref), or the Sandbox Image; it runs as that image's
    * own `USER` — the seat rule every jr2 seat follows, ADR-0037's fallback included — hardened.
@@ -801,7 +801,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // asked. Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in
         // a Sandbox can `gc` the object store its `--shared` clones borrow from.
         repos: repos.map(({ key, url }) => ({ key, url })),
-        // The push Secret of each `git.credentials` entry this Sandbox's pushes spend (B10), by
+        // The push Secret of each `git.credentials` entry this Sandbox's pushes spend (ADR-0051), by
         // name, as a Repo CR's `secretRef` names one: the operator projects each into the Sandbox
         // Effector alone, at `/run/jr2/secrets/@git/<name>/`. No value passes through here.
         ...(gitCredentials.length ? { gitCredentials: gitCredentials.map((name) => ({ name })) } : {}),
@@ -885,7 +885,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   };
 
   /**
-   * This Sandbox's Effector key (ADR-0068, B5.1): `effectorKey(signing key, <Sandbox name>)`,
+   * This Sandbox's Effector key (ADR-0068): `effectorKey(signing key, <Sandbox name>)`,
    * derived like the Sandbox token, so a re-provision re-applies the same value, and written into a
    * Secret the CR owns, which only the `effector` container mounts.
    */
@@ -1019,7 +1019,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   };
 
   /**
-   * The push Secrets a Sandbox's pushes spend (ADR-0051, B10): for each pushed Repo Slot, the url
+   * The push Secrets a Sandbox's pushes spend (ADR-0051): for each pushed Repo Slot, the url
    * this provision attaches — static, per-run or `customize()`-bound alike — matched to its
    * `git.credentials` entry (longest prefix, the attach match), and that entry's Secret as `jr2 up`
    * wrote it (`git-push.json`: names only). Refused with the fix, by the same rule `jr2 up` applies
@@ -1216,7 +1216,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // The Sandbox Effector (ADR-0068): present when `jr2 up` placed an Effect of this Workspace
       // there, and declared it in the pod's manifest beside the Held one; absent otherwise.
       const effectorManifest = await readSandboxEffectorManifest(join(heldDir, effectorManifestKey(pod)));
-      // Its pushes' credentials (ADR-0051, B10): each pushed slot's url, as this run binds it, is
+      // Its pushes' credentials (ADR-0051): each pushed slot's url, as this run binds it, is
       // matched against the fence, and the entry's push Secret is named on the CR — or the push is
       // refused here, before anything is written, as a per-run url outside the fence is.
       const gitCredentials = await gitCredentialsFor(req.name, req.repos, effectorManifest?.pushes ?? []);

@@ -101,7 +101,7 @@ const (
 	// Harness container alone, when the CR sizes one (ADR-0060).
 	shmVolumeName = "shm"
 	shmMountPath  = "/dev/shm"
-	// effectorContainerName is the Sandbox Effector's sidecar (ADR-0068): the
+	// effectorContainerName names the Sandbox Effector in `sidecars` (ADR-0068): the
 	// one container the push Secrets of spec.gitCredentials are projected into.
 	effectorContainerName = "effector"
 	// effectorSecretsPath is where that container mounts its secrets; the
@@ -748,7 +748,7 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 // mounts at /run/jr2/secrets, or — when it mounts none there — of a volume of
 // their own mounted at /run/jr2/secrets/@git. Each source is optional per key
 // (a token's Secret holds no ssh key), and the kubelet reads the Secret, never
-// the operator. With no "effector" sidecar, nothing is projected: no other
+// the operator. With no "effector" entry in `sidecars`, nothing is projected: no other
 // container may hold a push credential.
 func projectGitCredentials(refs []corev1alpha1.SandboxGitCredential, volumes []corev1.Volume,
 	sidecars []corev1.Container) ([]corev1.Volume, []corev1.Container) {

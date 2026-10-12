@@ -52,7 +52,7 @@ func volumeNamed(pod *corev1.Pod, name string) *corev1.Volume {
 }
 
 // TestBuildPodProjectsEachGitCredentialIntoTheEffectorOnly (ADR-0051,
-// ADR-0068, B10): each push Secret the CR names becomes a source of the
+// ADR-0068): each push Secret the CR names becomes a source of the
 // Effector's secrets volume at `@git/<name>/<key>`, one item per key jr2
 // writes, optional per key, beside the secrets the Orchestrator composed. No
 // other container mounts it; the CR's own spec is not changed.

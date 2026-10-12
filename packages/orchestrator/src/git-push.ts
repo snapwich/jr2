@@ -1,4 +1,4 @@
-// The push credentials (ADR-0051, ADR-0067, B10): a `push()` spends the `git.credentials` entry its
+// The push credentials (ADR-0051, ADR-0067): a `push()` spends the `git.credentials` entry its
 // Repo Slot's url matches — longest prefix, the attach match — and that entry's push credential
 // reaches the pod by reference, placed by the pod's maker when the url is known.
 //
@@ -75,7 +75,7 @@ export type PushNeed = {
   at: string;
   url: string;
   sign: boolean;
-  /** It squashes: unsigned, the entry's `committer` makes the commit (B15). */
+  /** It squashes: unsigned, the entry's `committer` makes the commit (ADR-0067). */
   squash?: boolean;
 };
 
@@ -87,7 +87,7 @@ export type PushNeed = {
  * credential over cleartext http is the credential in the clear: a token goes over https only and
  * an ssh key over ssh only), a url no entry matches, an entry whose credentials the url's scheme
  * cannot spend, `sign: true` on an entry with no `sign` field, and an unsigned squash on an entry
- * with neither `sign` nor `committer` (B15: the squashed commit is new, and needs a committer).
+ * with neither `sign` nor `committer` (ADR-0067: the squashed commit is new, and needs a committer).
  *
  * Each fix is one the next check accepts: the match it names is a prefix of the url's identity;
  * an `http://` url is told the url its entry CAN push to, or the https url and the token to add;
@@ -255,7 +255,7 @@ export type GitPushPlan = {
 };
 
 /**
- * Each `git.credentials` entry's push Secret (B10): the entries whose declared push credentials
+ * Each `git.credentials` entry's push Secret (ADR-0051): the entries whose declared push credentials
  * `jr2 up` can place. A token whose variable is unset is left out of its entry, as a kind it
  * cannot push with; an entry with nothing left is not written. `skipped` says why, by match.
  */

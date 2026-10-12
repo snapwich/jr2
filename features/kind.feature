@@ -229,7 +229,7 @@ Feature: a workspace() run drives a real Sandbox on kind
 
     Scenario: an http whose body is a committed Worktree file sends it, and the answer names the secret
       Given the kind instance is serving
-      When I start the "effected" workflow in mode "upload" detached
+      When I start the "effected" workflow in mode "file-body" detached
       Then the run's Sandbox pod has a Sandbox Effector beside the Agent
       When the held Effect is released
       Then the file-body http's answer is a response from the echo, whose body is the committed file
@@ -245,7 +245,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the credentialed command saw the commit and not the edit, and says dirty
 
     Scenario: a credentialed command's child cannot read the Effector's key
-      B9. The author's argv runs a script the Agent committed, which reads the Effector's key from
+      ADR-0068. The author's argv runs a script the Agent committed, which reads the Effector's key from
       a child of its child. Landlock denies it: the command ends with a permission error, and the
       answer and the feed carry no form of the key.
       Given the kind instance is serving
@@ -253,7 +253,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the credentialed command's child was denied the Effector's key, and the answer holds no form of it
 
     Scenario: a process that takes the Effector's port gets a signed start it cannot answer, and the Effect fails closed
-      B2. The body holds on its Gate; the step starts a process in the Harness container, as the
+      ADR-0068. The body holds on its Gate; the step starts a process in the Harness container, as the
       Agent could, that binds :8082 the moment it is free, then stops the Effector, whose
       container restarts into a port taken. Released, the file-body http's start reaches
       that process: signed, naming the secret, carrying no value of it. Its answer carries no
@@ -290,7 +290,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the push after the rewrite is diverged, and the remote still holds the first push
 
   Rule: a GPG-signed push and a credentialed command share one Sandbox Effector, and are never live together
-    ADR-0068, B12. The `gpgsigned` workflow starts a credentialed command and a GPG-signed push at
+    ADR-0068. The `gpgsigned` workflow starts a credentialed command and a GPG-signed push at
     once, in parallel regions of one Workspace. The Effector's one lock over its two classes runs one
     after the other — a command's child is never alive beside the push's gpg-agent — and both
     complete. The push's `git.credentials` entry signs with a GPG key the scenario makes on the host

@@ -30,7 +30,7 @@ test("the make-repo script runs again on the same volume, and keeps a branch a s
   await exec("git", ["-C", join(srv, "other.git"), "rev-parse", "main"]);
   // The push remote (ADR-0067): app's content, its own repository.
   await exec("git", ["-C", join(srv, "push.git"), "rev-parse", "main"]);
-  // The GPG push remote (B12): the same content, its own repository.
+  // The GPG push remote (ADR-0068): the same content, its own repository.
   await exec("git", ["-C", join(srv, "gpg.git"), "rev-parse", "main"]);
 });
 

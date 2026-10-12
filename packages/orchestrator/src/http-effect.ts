@@ -9,7 +9,7 @@
 //     request: ({ key, body }) => ({ path: [key, "comment"], json: { body } }),
 //   })
 //
-// Its body may be a Worktree file instead (B19), and then it runs in the Sandbox Effector of the
+// Its body may be a Worktree file instead (ADR-0067), and then it runs in the Sandbox Effector of the
 // Workspace whose body invokes it, which opens the file beneath the Worktree with no symlink:
 //
 //   report: http({
@@ -143,7 +143,7 @@ function asText(v: string | Secret | Text): Text {
   throw new Error(`expected a string, a secret("name") or a text\`…\`, got ${JSON.stringify(v)}`);
 }
 
-// --- A Worktree file as the body (B19) ------------------------------------------------------------
+// --- A Worktree file as the body (ADR-0067) ------------------------------------------------------------
 
 /** A value of a file body's part: as written, or from the Effect's input. */
 export type FromInput<S, T> = T | ((input: S extends z.ZodType ? z.infer<S> : void) => T);
@@ -164,7 +164,7 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
 };
 
 /**
- * A Worktree file as an `http` body (B19): `body: file("dist/report.pdf")`. The Effect then runs in
+ * A Worktree file as an `http` body (ADR-0067): `body: file("dist/report.pdf")`. The Effect then runs in
  * the Sandbox Effector of the Workspace whose body invokes it, which opens the file beneath the
  * Worktree — a symlink at any component, `..`, an absolute path, a FIFO, a directory and a file
  * with more than one link are output `refused`, with nothing sent. `path` and `segments` may be
@@ -216,7 +216,7 @@ export type HttpDefinition<S extends z.ZodType | undefined = undefined> = {
   input?: S;
   /** The run's part of the request, from the input. */
   request?: (input: S extends z.ZodType ? z.infer<S> : void) => HttpRequestParts;
-  /** A Worktree file as the body: `file(path, { slot?, segments?, contentType? })` (B19). Then the
+  /** A Worktree file as the body: `file(path, { slot?, segments?, contentType? })` (ADR-0067). Then the
    * Effect runs in its Workspace's Sandbox Effector, and `request` is not written: `file()`'s
    * `segments` are the path. */
   body?: FileBody<S>;
@@ -742,7 +742,7 @@ function parseDuration(d: Duration): number {
  * THE authoring surface for an `http` Effect (ADR-0068): `actors: { comment: http({ method, url,
  * auth: bearer(secret("jira")), input, request }) }`, invoked as `src: "comment"`. It runs in the
  * Instance Effector, which `jr2 up` converges because this definition is placed there — or, with
- * `body: file(...)`, in the Sandbox Effector of the Workspace whose body invokes it (B19). The
+ * `body: file(...)`, in the Sandbox Effector of the Workspace whose body invokes it (ADR-0067). The
  * Orchestrator signs the call and holds no secret. Every outcome is output:
  * `response | unreachable | refused | unknown`.
  */

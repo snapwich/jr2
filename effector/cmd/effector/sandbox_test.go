@@ -139,7 +139,7 @@ func TestASandboxEffectorPinsAPushToTheAgentsTipAndPushesIt(t *testing.T) {
 	}
 }
 
-// A credentialed command runs in the Sandbox Effector, and its child is confined (ADR-0068, B9):
+// A credentialed command runs in the Sandbox Effector, and its child is confined (ADR-0068):
 // a committed script that reads the placement key — the Agent's code, which the author's argv
 // runs — ends with a permission error, and the answer carries no key. Its named secret it reads,
 // from env and from its file.
@@ -179,7 +179,7 @@ func TestASandboxEffectorRunsACredentialedCommandWhoseChildCannotReadTheKey(t *t
 	}
 }
 
-// The deny list the binary gives a credentialed command's child (ADR-0068, B9), seen from the
+// The deny list the binary gives a credentialed command's child (ADR-0068), seen from the
 // child in a layout where nothing but that list keeps the paths out: each of the Effector's own
 // trees lies where the image-following system paths would allow it. A committed script — the
 // Agent's code, which the author's argv runs — tries the Worktree (read and write), the Agent's
@@ -210,7 +210,7 @@ func TestACredentialedCommandsChildIsKeptFromEveryTreeTheEffectorDenies(t *testi
 		{"read-key", "cat '" + e.keyFile + "'"},
 	}
 	// Where a path lies under a system path the ruleset would allow, only the deny list keeps it
-	// out. Under /tmp (out of the ruleset since B12 rule 3) the name already does; the deny list's
+	// out. Under /tmp (out of the ruleset by ADR-0068 rule 3) the name already does; the deny list's
 	// own carve-outs are TestSystemPathsFollowTheImageAndDescendAroundWhatIsDenied's.
 	readExec, err := confine.SystemPaths("/", nil)
 	must(t, err)
@@ -250,7 +250,7 @@ func TestACredentialedCommandsChildIsKeptFromEveryTreeTheEffectorDenies(t *testi
 	}
 }
 
-// The Landlock probe (ADR-0068, B9): on a node whose kernel cannot confine a child, a Sandbox
+// The Landlock probe (ADR-0068): on a node whose kernel cannot confine a child, a Sandbox
 // Effector whose Workspace holds a credentialed command never becomes ready, and says why with the
 // node's name — its termination message, which the Sandbox's status carries. One whose Workspace
 // holds none serves its other kinds and refuses a command start.
@@ -279,12 +279,12 @@ func TestTheLandlockProbeStopsTheStartWhenTheWorkspaceHoldsACredentialedCommand(
 // The child's PATH is the Effector container's own, as its image set it, and argv[0] is looked up
 // there (ADR-0067): a tool the image keeps on its own PATH — outside the FHS defaults — runs. The
 // binary passes its own PATH to the child; a test that set the Runner's Path by hand could not see
-// that the binary never wired it (run B3 defect).
+// that the binary never wired it (a defect found in review).
 func TestACredentialedCommandFindsItsToolOnTheContainersPath(t *testing.T) {
 	p := gittest.NewPod(t, "work")
 	p.Commit("one", map[string]string{"a.txt": "a\n"})
 	// A tool the image keeps on its PATH, outside /usr/local/bin:/usr/bin:/bin, and under its
-	// system paths, which the child may run (a test directory under /tmp may not be, since B12
+	// system paths, which the child may run (a test directory under /tmp may not be, by ADR-0068
 	// rule 3): one this host keeps in /usr/sbin alone.
 	const tool = "nologin"
 	if _, err := os.Stat(filepath.Join("/usr/sbin", tool)); err != nil {
@@ -370,7 +370,7 @@ func (e *effector) callRaw(t *testing.T, method, path, body string) (int, string
 	return resp.StatusCode, string(raw), signed
 }
 
-// B2: a process in the Harness container takes the Effector's port while the Effector is down.
+// ADR-0068: a process in the Harness container takes the Effector's port while the Effector is down.
 // It receives the signed request, which names a secret and carries no value of one, and its
 // answer carries no signature the key verifies — so it is no answer, and the Effect fails closed.
 func TestAPortTakeoverReceivesASignedRequestThatCarriesNoSecretAndCannotAnswerIt(t *testing.T) {

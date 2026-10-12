@@ -393,7 +393,7 @@ export type CarriedEffect = {
   (| { kind: "command"; argv: string[]; slot?: string; secrets?: string[]; pin?: true }
     /** An http Effect (ADR-0068): its method, its fixed target, and the secrets it names — what
      * places each secret, and what its Effector's config allows. `file`: its body is a Worktree
-     * file (B19), so it runs in its Workspace's Sandbox Effector, on Repo Slot `slot` when named. */
+     * file (ADR-0067), so it runs in its Workspace's Sandbox Effector, on Repo Slot `slot` when named. */
     | {
         kind: "http";
         method: string;
@@ -672,7 +672,7 @@ export type WorkspacePod = {
    * `workspace()` that is not `workspace: "none"` (those run at the Instance Harness, ADR-0031),
    * down to the next `workspace()`, which is a pod of its own. Sorted, deduped. */
   models: string[];
-  /** The Effects placed in this pod's Sandbox Effector (ADR-0068, B5.1): every `push`, file-body `http` and
+  /** The Effects placed in this pod's Sandbox Effector (ADR-0068): every `push`, file-body `http` and
    * credentialed `command` slot below the `workspace()`, down to the next `workspace()` — read off
    * their plain data, statically. Empty → the pod gets no Sandbox Effector and no Secret. */
   effects: CarriedEffect[];

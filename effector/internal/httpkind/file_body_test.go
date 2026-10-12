@@ -15,7 +15,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
-// B19: an http whose body is a Worktree file sends it, opened beneath the Worktree; every path that
+// ADR-0067: an http whose body is a Worktree file sends it, opened beneath the Worktree; every path that
 // is not a regular file beneath it, with one link and no symlink, is refused with nothing sent.
 func TestAFileBodySendsAWorktreeFileAndRefusesEveryPathThatIsNotOneBeneath(t *testing.T) {
 	var got atomic.Value

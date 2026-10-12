@@ -40,7 +40,7 @@ export type GitCredential = {
   /** A prefix on the identity (`github.com/ourorg/`), or `*` for everything. */
   match: string;
   /** Env var name holding an HTTPS token; `jr2 up` writes its value into the entry's clone Secret
-   * (`jr2-git-<hash>`), which the cache agent spends. The Orchestrator never holds it (B11). */
+   * (`jr2-git-<hash>`), which the cache agent spends. The Orchestrator never holds it (ADR-0068). */
   token?: string;
   /** A Secret (Flux key names: `identity`, `identity.pub`, `known_hosts`) holding a deploy key. */
   sshKey?: string;
@@ -54,7 +54,7 @@ export type GitCredential = {
    * passphrase). Explicit: an auth key is never reused as a signing key. The committer's email must
    * belong to the forge account that holds the key, or the forge shows the signature unverified. */
   sign?: { sshKey: string; name: string; email: string } | { gpgKey: string; name: string; email: string };
-  /** Who an unsigned `push({ squash: true })` is committed by (ADR-0067, B15): the squashed commit is
+  /** Who an unsigned `push({ squash: true })` is committed by (ADR-0067): the squashed commit is
    * new, and without `sign` no signer names its committer. Its date is the Effector's clock; the
    * author line stays the Agent's. A signed push's committer is the signer's. */
   committer?: { name: string; email: string };

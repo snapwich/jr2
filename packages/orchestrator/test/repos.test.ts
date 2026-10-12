@@ -28,7 +28,7 @@ function portOn(api: FakeKube, opts: Omit<KubeReposOptions, "namespace" | "clien
 
 const created = (api: FakeKube): any[] =>
   api.calls.filter((c) => c.method === "POST" && c.target === "repos").map((c) => c.body);
-/** Every call the port made on a Secret — B11: there is none; `jr2 up` writes them. */
+/** Every call the port made on a Secret — ADR-0068: there is none; `jr2 up` writes them. */
 const secretCalls = (api: FakeKube): any[] => api.calls.filter((c) => c.target.startsWith("secrets"));
 /** The clone Secrets `jr2 up` wrote, by the matches of the entries they belong to. */
 const written =
@@ -51,7 +51,7 @@ test("ensure(bound) creates the resource: labeled bound, annotated with identity
   // The boot's ensure for a Repo a Machine binds. The credential is resolved HERE and carried by
   // the resource — the cache agent reads only the `secretRef`, the operator matches nothing
   // (ADR-0051). An https url under a token entry whose clone Secret `jr2 up` wrote → the resource
-  // names that Secret. The Orchestrator writes no Secret and reads no value (B11, ADR-0068).
+  // names that Secret. The Orchestrator writes no Secret and reads no value (ADR-0068).
   const api = fakeKube();
   const port = portOn(api, {
     credentials: [{ match: "github.com/acme/", token: "GH_TOKEN" }],

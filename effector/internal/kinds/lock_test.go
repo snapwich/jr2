@@ -8,7 +8,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
-// B12 rule 2: Effects of one class run together; an Effect of the other class waits while any is
+// ADR-0068 rule 2: Effects of one class run together; an Effect of the other class waits while any is
 // live, and a waiter that reaches its deadline is told so and holds nothing.
 func TestTheLockLetsOneClassRunTogetherAndKeepsTheOtherWaiting(t *testing.T) {
 	var l Lock

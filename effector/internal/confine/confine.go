@@ -1,5 +1,5 @@
 // Package confine keeps a credentialed command's child from the Sandbox Effector's mount with
-// Landlock (ADR-0068, B9). The child runs as the Effector's uid in the Effector's container, where
+// Landlock (ADR-0068). The child runs as the Effector's uid in the Effector's container, where
 // the placement key, every placed secret and the push and signing keys are files that uid can
 // read; its program is often the Agent's code. So the Effector does not exec argv itself: it execs
 // its own binary as the confiner (`effector confine <rules> -- <path> <argv...>`), which sets
@@ -10,7 +10,7 @@
 // the command does not name, the push credentials, the Worktree.
 //
 // Three raw syscalls (444, 445, 446: the same numbers on amd64 and arm64) and prctl; the standard
-// library only (B1). The design needs ABI 1; the rights a newer ABI adds (REFER, TRUNCATE) are
+// library only (ADR-0068). The design needs ABI 1; the rights a newer ABI adds (REFER, TRUNCATE) are
 // handled when the kernel offers them.
 package confine
 
@@ -257,7 +257,7 @@ func addRule(ruleset int, path string, rights uint64) error {
 // deniedTop are the top-level directories a credentialed command's child never reads: the kernel
 // and process pseudo-filesystems (`/proc`, `/sys`, `/dev` — the devices it needs are added one by
 // one below), the runtime trees where jr2 mounts the Effector's own files (`/run`), the shared
-// `/tmp` (B12 rule 3: each child writes its own TMPDIR in its Effect's scratch instead, so one
+// `/tmp` (ADR-0068 rule 3: each child writes its own TMPDIR in its Effect's scratch instead, so one
 // child never reads what another wrote), and the volatile and per-user trees
 // that hold no tool an image ships (`/home`, `/root`, `/var`, `/srv`, `/mnt`, `/media`,
 // `/lost+found`). Everything else a top-level entry of the image holds is the image's own — the
@@ -337,7 +337,7 @@ func SystemPaths(root string, deny []string) (readExec []string, err error) {
 // terminal need. The rest of /dev is denied by omission.
 var devices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty"}
 
-// ForCommand is a credentialed command's confinement (ADR-0068, B9): read and execute on the
+// ForCommand is a credentialed command's confinement (ADR-0068): read and execute on the
 // image's system paths, read and write on the devices and the Effect's own scratch (`effect`, which
 // holds the child's HOME and TMPDIR), and read on each secret file the command names (`read`).
 // Everything else is denied by omission: the key, the secrets the command does not name, the push

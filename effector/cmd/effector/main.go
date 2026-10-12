@@ -20,13 +20,13 @@
 //
 // `effector git-credential get` is git's credential helper for a token push (package pushkind).
 // `effector keep -- <path> <argv...>` is one credentialed command's own subreaper, between the
-// Effector and the confiner (package reaper, B12 rule 1).
+// Effector and the confiner (package reaper, ADR-0068 rule 1).
 // `effector confine <rules> -- <path> <argv...>` is a credentialed command's confiner: it
-// restricts itself with Landlock and execs argv (package confine; ADR-0068, B9).
+// restricts itself with Landlock and execs argv (package confine; ADR-0068).
 //
 // The Effector is the child subreaper of its container (PR_SET_CHILD_SUBREAPER): every process an
 // Effect starts is ended before the Effect settles, a `setsid` escapee included (package reaper,
-// B12). A Sandbox Effector holds one lock over its two classes, so a GPG-signing push and a
+// ADR-0068 rule 1). A Sandbox Effector holds one lock over its two classes, so a GPG-signing push and a
 // credentialed command are never live together.
 //
 // A Sandbox Effector probes Landlock when it starts. When its Workspace holds a credentialed
@@ -147,7 +147,7 @@ func run(logger *log.Logger) error {
 		return err
 	}
 	// The git credentials are the entries the Orchestrator named on the Sandbox for the urls its
-	// pushes spend, each one's own Secret projected here (ADR-0051, B10): what an entry is rides
+	// pushes spend, each one's own Secret projected here (ADR-0051): what an entry is rides
 	// in it, not in effector.json.
 	if config.Git, err = secrets.ReadGitEntries(gitDir); err != nil {
 		return err
@@ -166,7 +166,7 @@ func run(logger *log.Logger) error {
 		Address: net.JoinHostPort(env("POD_IP", "127.0.0.1"), port),
 	}
 
-	// Every secret this Effector holds is scrubbed (B3.2), a push's key and token included — and its
+	// Every secret this Effector holds is scrubbed (ADR-0068), a push's key and token included — and its
 	// own placement key: a key that reached the Agent would sign any start from bash.
 	every := map[string]string{}
 	maps.Copy(every, held)

@@ -2,21 +2,21 @@
 // Workspace's Sandbox Effector, with no Agent. The body's final output IS the Effect's output, and
 // the wrapper forwards it, so a scenario reads what the Machine routed on.
 //
-//   upload   an `http` whose body is a file the body wrote and committed in the Worktree
-//            (`body: file(...)`, B19), PUT to the echo with `bearer(secret("echo-token"))`: the
-//            Sandbox Effector opens it beneath the Worktree and sends it. The body first waits on its
-//            `hold` Gate, so the step reads the pod while it is live
-//   env      a credentialed command that prints its secret from env and from `.path`, then the
-//            files of the commit it runs against: the output names the secret and holds no form of it
-//   dirty    the body leaves an edit uncommitted, then the same command: the answer is `dirty`, and
-//            the command saw the commit, not the edit
-//   key      a credentialed command whose argv runs a committed script — the Agent's code — that
-//            reads the Effector's key from a child of its child: Landlock confines the child, so it
-//            ends with a permission error and the answer carries no key (ADR-0068, B9)
-//   takeover the body commits, then waits on its `hold` Gate while the step takes the Effector's
-//            port from the Harness container (B2: the Effector is down, a process the Agent could
-//            start binds :8082); the step's answer runs the same file-body http, whose start reaches that
-//            process signed and is answered by it unsigned: the Effect settles `unknown`
+//   file-body an `http` whose body is a file the body wrote and committed in the Worktree
+//             (`body: file(...)`, ADR-0067), PUT to the echo with `bearer(secret("echo-token"))`: the
+//             Sandbox Effector opens it beneath the Worktree and sends it. The body first waits on its
+//             `hold` Gate, so the step reads the pod while it is live
+//   env       a credentialed command that prints its secret from env and from `.path`, then the
+//             files of the commit it runs against: the output names the secret and holds no form of it
+//   dirty     the body leaves an edit uncommitted, then the same command: the answer is `dirty`, and
+//             the command saw the commit, not the edit
+//   key       a credentialed command whose argv runs a committed script — the Agent's code — that
+//             reads the Effector's key from a child of its child: Landlock confines the child, so it
+//             ends with a permission error and the answer carries no key (ADR-0068)
+//   takeover  the body commits, then waits on its `hold` Gate while the step takes the Effector's
+//             port from the Harness container (ADR-0068: the Effector is down, a process the Agent could
+//             start binds :8082); the step's answer runs the same file-body http, whose start reaches that
+//             process signed and is answered by it unsigned: the Effect settles `unknown`
 //
 // The echo is the suite's (`steps/seed.ts`); `echo-token` is the tier's one Effect secret, which
 // these Effects place in this Workspace's Sandbox Effector (and the `called` workflow's in the
@@ -42,7 +42,7 @@ const SEED = { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" };
 const ECHO = "http://echo.jr2-e2e-seed.svc";
 
 const door = z.object({
-  mode: z.enum(["upload", "env", "dirty", "key", "takeover"]),
+  mode: z.enum(["file-body", "env", "dirty", "key", "takeover"]),
   marker: z.string().regex(/^m-[a-z0-9]+$/),
 });
 type Door = z.infer<typeof door>;
@@ -68,10 +68,10 @@ const body = jr2Setup({
     ]),
     // In the Harness container: an edit left uncommitted.
     edit: command(["sh", "-c", "printf 'edited, not committed\\n' > report.txt"]),
-    // In the Sandbox Effector: its body is a Worktree file, which places it there (B19).
+    // In the Sandbox Effector: its body is a Worktree file, which places it there (ADR-0067).
     send: http({
       method: "PUT",
-      url: `${ECHO}/upload`,
+      url: `${ECHO}/file-body`,
       auth: bearer(token),
       input: sendInput,
       body: file<typeof sendInput>("report.txt", { segments: ({ marker }) => [marker], contentType: "text/plain" }),
@@ -112,8 +112,8 @@ const body = jr2Setup({
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
-    holding: { invoke: { src: "gate", id: "hold" }, on: { go: "uploading" } },
-    uploading: {
+    holding: { invoke: { src: "gate", id: "hold" }, on: { go: "sending" } },
+    sending: {
       invoke: {
         src: "send",
         input: ({ context }) => ({ marker: context.marker }),

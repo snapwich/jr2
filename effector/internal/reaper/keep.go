@@ -22,7 +22,7 @@ func KeepArgs(path string, argv []string) []string {
 	return append([]string{"keep", "--", path}, argv...)
 }
 
-// Keep is `effector keep -- <path> <argv...>`: one Effect's own subreaper (B12 rule 1). A
+// Keep is `effector keep -- <path> <argv...>`: one Effect's own subreaper (ADR-0068 rule 1). A
 // credentialed command's program is the author's or the Agent's code, and it can start a daemon
 // that leaves its process group. Under the Effector alone, that daemon would be the Effector's
 // once its parent ends, in no live Effect's group, and the settle of any other Effect would kill

@@ -437,7 +437,7 @@ func TestCheckRefusesAPushThisEffectorCannotSpend(t *testing.T) {
 	}
 }
 
-// design 6: "If it cannot pair cleanly: `diverged`, nothing pushed" — with `force` too. Force
+// ADR-0067: a signed push that cannot pair cleanly is `diverged`, and nothing is pushed — with `force` too. Force
 // replaces a remote branch that moved; it never stands in for a pairing.
 func TestASignedForcePushThatCannotPairIsDivergedAndPushesNothing(t *testing.T) {
 	f := newFixture(t, "ssh")
@@ -504,7 +504,7 @@ func TestAPushToALocalPathIsRefusedOutsideTheTests(t *testing.T) {
 	}
 }
 
-// B13: a push keeps ssh's own stderr beside git's, so its reason names ssh's line and not only
+// ADR-0068: a push keeps ssh's own stderr beside git's, so its reason names ssh's line and not only
 // "the remote could not be reached" — here, a connection ssh itself reports refused.
 func TestAnSSHPushThatCannotConnectNamesSSHsOwnLine(t *testing.T) {
 	if _, err := gitclean.Look("ssh"); err != nil {

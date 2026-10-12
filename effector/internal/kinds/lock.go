@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// The two classes of a Sandbox Effector's lock (ADR-0068, B12 rule 2). A `gpg` Effect is a push
+// The two classes of a Sandbox Effector's lock (ADR-0068 rule 2). A `gpg` Effect is a push
 // that signs with a GPG key: it starts a gpg-agent, which holds the key on a Unix socket that
 // Landlock does not cover. A `command` Effect is a credentialed command, whose child is often the
 // Agent's code. Effects of one class run together; an Effect of one class waits while any Effect

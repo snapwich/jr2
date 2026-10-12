@@ -64,7 +64,7 @@ func TestASecretNamedGitAndThePushCredentialsShareTheMount(t *testing.T) {
 	}
 }
 
-// Each entry's own Secret, projected at @git/<its name>/ (ADR-0051, B10): its `entry.json` says
+// Each entry's own Secret, projected at @git/<its name>/ (ADR-0051): its `entry.json` says
 // what it is, and the directory is its push and its signing key both. The list's order breaks a
 // tie on the match's length.
 func TestTheGitEntriesAreReadOffTheMount(t *testing.T) {

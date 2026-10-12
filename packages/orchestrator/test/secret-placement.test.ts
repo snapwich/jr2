@@ -293,7 +293,7 @@ test("one name listed twice is refused", () => {
 
 test("the hover text of `secrets` and `SecretEntry` states the rule these tests hold: naming places, `hosts` binds", async () => {
   // A user reads the config's doc comments, not this file. `JR2Config.secrets` once said "a Held
-  // secret where it has `hosts`" after B6.3 made naming the placement — a user who added `hosts`
+  // secret where it has `hosts`" after naming became the placement (ADR-0059) — a user who added `hosts`
   // for a Held secret got one that went nowhere (the GATEWAY_KEY case above).
   const source = await readFile(new URL("../src/config.ts", import.meta.url), "utf8");
   const docBefore = (marker: string): string => {
@@ -310,10 +310,10 @@ test("the hover text of `secrets` and `SecretEntry` states the rule these tests 
   }
 });
 
-// --- The Sandbox Effector's placement (ADR-0067, ADR-0068, B5.1, B6.2) ----------------------------
+// --- The Sandbox Effector's placement (ADR-0067, ADR-0068, ADR-0051) ----------------------------
 
-/** An http whose body is a Worktree file (B19): placed in its Workspace's Sandbox Effector. */
-const upload = (name: string, secrets: string[]): CarriedEffect =>
+/** An http whose body is a Worktree file (ADR-0067): placed in its Workspace's Sandbox Effector. */
+const fileBodyHttp = (name: string, secrets: string[]): CarriedEffect =>
   ({
     name,
     path: [],
@@ -358,15 +358,18 @@ const placedIn = (
   return walk({ effects: effects.map((effect) => ({ workflow: "ticket", effect })), workspaces: [pod] });
 };
 
-test("jr2 up refuses an http whose body is a Worktree file and that no workspace() invokes, naming the fix (B19)", () => {
+test("jr2 up refuses an http whose body is a Worktree file and that no workspace() invokes, naming the fix (ADR-0067)", () => {
   const config: JR2Config = { secrets: [{ name: "files", value: VALUE }] };
-  const outside: PlacementWalk = { effects: [{ workflow: "w", effect: upload("report", ["files"]) }], workspaces: [] };
+  const outside: PlacementWalk = {
+    effects: [{ workflow: "w", effect: fileBodyHttp("report", ["files"]) }],
+    workspaces: [],
+  };
   assert.throws(
     () => refuseEffectSecrets(config, outside),
     /workflow "w": the http Effect "report" sends a Worktree file as its body, and no workspace\(\) invokes it .*invoke it from a workspace\(\)'s body, or send a json or text body/,
   );
   assert.throws(() => secretPlacementsOf(config, outside), /no workspace\(\) invokes it/);
-  assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn([upload("report", ["files"])])));
+  assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn([fileBodyHttp("report", ["files"])])));
 });
 
 test("a secret a credentialed command or a file-body http names is an Effect secret in its Workspace's Sandbox Effector, never 'named by nothing'", () => {
@@ -376,7 +379,10 @@ test("a secret a credentialed command or a file-body http names is an Effect sec
       { name: "files", value: VALUE },
     ],
   };
-  const out = secretPlacementsOf(config, placedIn([credentialed("deploy", ["aws"]), upload("report", ["files"])]));
+  const out = secretPlacementsOf(
+    config,
+    placedIn([credentialed("deploy", ["aws"]), fileBodyHttp("report", ["files"])]),
+  );
   assert.deepEqual(out.warnings, []);
   assert.deepEqual(out.report, [
     'secret aws: an Effect secret in the Sandbox Effector of Workspace of workflow "ticket" (ticket/deploy)',
@@ -402,7 +408,11 @@ test("a Sandbox kind's secret missing from the list, or shorter than 8 character
     /the command Effect "deploy" names secret\("aws"\).*secrets: \[\{ name: "aws", value: process\.env\.AWS \}\]/,
   );
   assert.throws(
-    () => refuseEffectSecrets({ secrets: [{ name: "files", value: "abc" }] }, placedIn([upload("report", ["files"])])),
+    () =>
+      refuseEffectSecrets(
+        { secrets: [{ name: "files", value: "abc" }] },
+        placedIn([fileBodyHttp("report", ["files"])]),
+      ),
     /secrets\[0\] \(files\) is an Effect secret shorter than 8 characters/,
   );
 });
@@ -429,7 +439,7 @@ test("a Workspace with no Effect placed in its Sandbox Effector gets none; one n
   );
 });
 
-test("a push is its Repo Slot and the entry its url matches; no credential rides the Workspace's plan (B10)", () => {
+test("a push is its Repo Slot and the entry its url matches; no credential rides the Workspace's plan (ADR-0051)", () => {
   const config: JR2Config = {
     git: {
       credentials: [
@@ -508,7 +518,7 @@ test("jr2 up refuses a push with no matching entry, an entry with no credential,
       ),
     /a local path — jr2 never pushes to one/,
   );
-  // A token over http (run B3's defect): jr2 up accepted it and the Effector refused every push.
+  // A token over http (a defect found in review): jr2 up accepted it and the Effector refused every push.
   // Refused here; the fix it names — the https url — is accepted.
   for (const credentials of [[{ match: "*", token: "T" }], [{ match: "*", push: { token: "T" } }]]) {
     assert.throws(
@@ -542,14 +552,14 @@ test("jr2 up refuses a push with no matching entry, an entry with no credential,
     ),
   );
   // A slot the run or a customize() binds is not refused at jr2 up: the provision checks its url
-  // by the same rule (B10).
+  // by the same rule (ADR-0051).
   for (const config of [{}, { git: { credentials: [{ match: "*", token: "T" }] } }]) {
     assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn([pusher("publish")], { app: undefined })));
   }
 });
 
-test("jr2 up accepts a credentialed command beside a GPG-signing push: the Sandbox Effector keeps them apart in time (B12, ADR-0068)", () => {
-  // B12 rule 2: the Effector's one lock keeps a GPG push and a credentialed command from being
+test("jr2 up accepts a credentialed command beside a GPG-signing push: the Sandbox Effector keeps them apart in time (ADR-0068)", () => {
+  // ADR-0068 rule 2: the Effector's one lock keeps a GPG push and a credentialed command from being
   // live together, so jr2 up refuses neither the pair nor a per-run slot beside a GPG entry.
   const config: JR2Config = {
     secrets: [{ name: "aws", value: VALUE }],

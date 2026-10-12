@@ -33,8 +33,8 @@ A Sandbox pod composes up to four containers around one shared worktree volume (
   - **Credential visibility.** A session's secrets — a forwarded ssh agent socket above all — live in this container's
     private mount namespace, where the Agent executes nothing. The human sshs in with agent forwarding, works, and the
     socket is gone on disconnect; at no point does it share a filesystem with code the Agent runs.
-- **Sandbox Effector** — jr2-composed sidecar, added at provision only when an Effect below the `workspace()` is placed
-  there — a `push`, an `http` whose body is a Worktree file, or a credentialed `command`
+- **Sandbox Effector** — a jr2-composed container, added at provision only when an Effect below the `workspace()` is
+  placed there — a `push`, an `http` whose body is a Worktree file, or a credentialed `command`
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md),
   [ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), which `jr2 up` reads off the Machines
   and declares in the pod's manifest beside its Held one. In the pod it is the container named `effector`. Its image is

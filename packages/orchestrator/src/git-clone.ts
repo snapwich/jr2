@@ -1,4 +1,4 @@
-// The clone credentials (ADR-0051, ADR-0068, B11): the token a Repo's cache clone spends. `jr2 up`
+// The clone credentials (ADR-0051, ADR-0068): the token a Repo's cache clone spends. `jr2 up`
 // declares and writes every Secret that holds a git credential; the Orchestrator matches and names,
 // and holds no git credential.
 //

@@ -37,7 +37,7 @@ const exec = promisify(execFile);
 export const SEED_URL = "http://seed.jr2-e2e-seed.svc/app.git";
 /** The seed's push remote (ADR-0067): `push.git`, the same content as `app.git`, over ssh. */
 export const PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git";
-/** The seed's GPG push remote (ADR-0068, B12): `gpg.git`, the same content, over ssh. Its own
+/** The seed's GPG push remote (ADR-0068): `gpg.git`, the same content, over ssh. Its own
  * `git.credentials` entry signs with a GPG key the scenario writes (`jr2.config.ts`). */
 export const GPG_PUSH_URL = "ssh://git@seed.jr2-e2e-seed.svc/srv/gpg.git";
 /** The host the push remote's known_hosts line names. */
@@ -108,7 +108,7 @@ export function makeRepoScript(srv = "/srv", work = "/tmp/w"): string {
     serve("app.git"),
     // The push remote (ADR-0067): the same content, its own identity, written by pushes over ssh.
     serve("push.git"),
-    // The GPG push remote (ADR-0068, B12): the same content, its own identity, so its own
+    // The GPG push remote (ADR-0068): the same content, its own identity, so its own
     // git.credentials entry signs with GPG while push.git's signs with ssh.
     serve("gpg.git"),
     // A SECOND repository, same content, its own identity (ADR-0051): every kind workflow binds

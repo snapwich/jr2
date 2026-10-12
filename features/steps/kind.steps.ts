@@ -2647,7 +2647,7 @@ async function liveEffectorKey(world: E2EWorld): Promise<string> {
   throw new Error(`the Effector's key of run ${world.runId}'s Sandbox was never read while the run was live`);
 }
 
-/** The child of the child read `/run/jr2/effector/key` and Landlock refused it (B9). The key is
+/** The child of the child read `/run/jr2/effector/key` and Landlock refused it (ADR-0068). The key is
  * read from the Secret the provision wrote for this Sandbox, while the run is live, so the check
  * looks for its value and its encodings, not only for the scrubber's mark. */
 Then(
@@ -2764,7 +2764,7 @@ Then(
   },
 );
 
-// --- the port takeover (B2) --------------------------------------------------------------------------
+// --- the port takeover (ADR-0068) --------------------------------------------------------------------------
 
 /** What a process the Agent can start does with the Effector's port: bind it the moment it is
  * free, write down every request it gets, and answer each with a signature it cannot make. A poll
@@ -2893,7 +2893,7 @@ Then(
   },
 );
 
-// --- a GPG-signed push beside a credentialed command (ADR-0068, B12) -------------------------------
+// --- a GPG-signed push beside a credentialed command (ADR-0068) -------------------------------
 
 /** An armored GPG secret key with no passphrase, made on the host for this scenario alone. */
 async function scenarioGpgKey(): Promise<string> {

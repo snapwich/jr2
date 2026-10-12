@@ -5,8 +5,8 @@
 // `pack-objects` over the Agent's object store, with a deadline (a FIFO in place of an object
 // blocks an open forever), then `index-pack --strict`, which re-hashes and fscks every object,
 // then a connectivity check. So no config, hook, attribute, alternate-refs command or remote of
-// the Agent's is read, and no program the Agent's files name runs. Evidence: effector-push.sh,
-// run over file, HTTPS and ssh on git 2.43, 2.47 and 2.49, ran 0 of the planted programs.
+// the Agent's is read, and no program the Agent's files name runs. Measured over file, HTTPS
+// and ssh on git 2.43, 2.47 and 2.49: 0 of the planted programs ran (the tests plant each one).
 package gitclean
 
 import (

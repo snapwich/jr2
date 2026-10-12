@@ -1116,7 +1116,7 @@ test("a Sandbox's Custodian files are rendered at provision, AFTER the CR, owned
 });
 
 test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its image, its mounts, and a key the CR owns (ADR-0068)", async () => {
-  // Without a manifest the pod has no Effector: no sidecar, no key.
+  // Without a manifest the pod has no Sandbox Effector, and no key.
   const bare = cluster();
   await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...bare.exec }).provision({
     name: "sb-none",
@@ -1165,7 +1165,7 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   });
   const spec = crOf(placed.calls).spec;
   const effector = spec.sidecars.find((c: { name: string }) => c.name === "effector");
-  assert.ok(effector, "the effector sidecar");
+  assert.ok(effector, "the Sandbox Effector");
   assert.equal(effector.image, "registry.example/tools:1", "the image the workspace() names");
   assert.deepEqual(effector.command, ["/opt/jr2/bin/effector"]);
   // No limit of its own: it shares the pod's Size ceiling (pod-level resources), as a User
@@ -1188,7 +1188,7 @@ test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its
   ]);
   // The Harness container mounts none of them.
   for (const m of spec.volumeMounts) assert.ok(!String(m.name).startsWith("effector"), m.name);
-  // The push credential (B10): the matched entry's push Secret, by name, for the operator to
+  // The push credential (ADR-0051): the matched entry's push Secret, by name, for the operator to
   // project into the Effector alone — no value, no key of it, in the CR.
   assert.deepEqual(spec.gitCredentials, [{ name: gitPushSecretName("*") }]);
   assert.ok(!JSON.stringify(spec).includes("password"));
@@ -1261,7 +1261,7 @@ async function pushingHeld(slot: string, sign: boolean, push = PUSH_MANIFEST): P
   return heldDir;
 }
 
-test("a push on a per-run slot takes the one path: its url, matched at provision, names its entry's push Secret on the CR (B10)", async () => {
+test("a push on a per-run slot takes the one path: its url, matched at provision, names its entry's push Secret on the CR (ADR-0051)", async () => {
   const heldDir = await pushingHeld("target", true);
   const { exec, calls } = cluster();
   await kubeSandbox({
@@ -1280,7 +1280,7 @@ test("a push on a per-run slot takes the one path: its url, matched at provision
   assert.deepEqual(crOf(calls).spec.gitCredentials, [{ name: gitPushSecretName("*") }]);
 });
 
-test("a per-run push the entry cannot spend is refused at provision, before any write, with the fix (B10)", async () => {
+test("a per-run push the entry cannot spend is refused at provision, before any write, with the fix (ADR-0051)", async () => {
   const refused = async (
     url: string,
     opts: { sign?: boolean; push?: typeof PUSH_MANIFEST; credentials?: object[] },
@@ -1333,7 +1333,7 @@ test("a per-run push the entry cannot spend is refused at provision, before any 
   );
 });
 
-test("a Sandbox Effector that ends before the pod is Ready fails the provision in its own words — Landlock's refusal with its node (ADR-0068, B9)", async () => {
+test("a Sandbox Effector that ends before the pod is Ready fails the provision in its own words — Landlock's refusal with its node (ADR-0068)", async () => {
   const message = "landlock: unavailable on node kind-worker (the kernel has no Landlock (ENOSYS))";
   const { exec } = cluster([
     {
@@ -2319,7 +2319,7 @@ test("a secret named `git` takes no path of the push credentials, which the oper
   const { manifest, secret } = sandboxEffectorObjectsOf(plan);
   const paths = manifest.sources.flatMap((s) => s.secret.items.map((i) => i.path));
   assert.ok(paths.includes("git"), "the secret is the file of its name");
-  // No push credential rides the Workspace's own objects any more (B10): its pushes, by slot.
+  // No push credential rides the Workspace's own objects any more (ADR-0051): its pushes, by slot.
   assert.ok(
     paths.every((p) => !p.startsWith("@")),
     `the mount's own paths: ${paths.join(", ")}`,

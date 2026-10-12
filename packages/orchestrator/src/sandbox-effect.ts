@@ -149,7 +149,7 @@ export type PushOptions = {
   sign?: boolean;
   /** Squash into one commit; the Effect's input carries the message (`{ message }`). Signed, its
    * committer is the signer's; unsigned, the matching `git.credentials` entry's `committer`, which
-   * `jr2 up` requires when the entry has no `sign` (B15). */
+   * `jr2 up` requires when the entry has no `sign` (ADR-0067). */
   squash?: boolean;
   /** Replace what the remote holds. */
   force?: boolean;
@@ -220,7 +220,7 @@ export function pushStartOf(
   };
 }
 
-/** A file-body http's start for one run (B19): the definition's parts, the url's segments, and the
+/** A file-body http's start for one run (ADR-0067): the definition's parts, the url's segments, and the
  * Worktree file as the body. */
 export function fileStartOf(
   parts: HttpParts,
@@ -655,7 +655,7 @@ export function pushWith<const O extends PushOptions>(
       return req;
     },
     // The ledger's last push of this Workspace's Repo Slot — one branch, one remote — is the pair
-    // (design 6). Its sync, when it did not finish, runs again first, in that slot's Worktree and
+    // (ADR-0067). Its sync, when it did not finish, runs again first, in that slot's Worktree and
     // from the bundle the row keeps while it is the newest push and its sync did not finish
     // (`dropSavedTails`); the push does not depend on it.
     before: async (ctx) => {
@@ -720,7 +720,7 @@ function syncFields(answer: SyncAnswer): { sync: SyncState; syncReason?: string 
 
 export { lastPushOf };
 
-/** An http whose body is a Worktree file (B19), over an injected port factory — the seam `http()`
+/** An http whose body is a Worktree file (ADR-0067), over an injected port factory — the seam `http()`
  * and the unit tests share. It runs in the Sandbox Effector of the Workspace whose body invokes it. */
 export function httpFileWith<S extends z.ZodType | undefined = undefined>(
   portFactory: EffectorPortFactory,

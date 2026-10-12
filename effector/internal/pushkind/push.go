@@ -7,7 +7,7 @@
 // branch is read as data, its objects are imported into a new clean repository per call, and the
 // remote is the Binding — never a remote of the Agent's config. A token goes Basic through a
 // credential helper only, and the helper is this binary; an ssh key is a copy in the call's own
-// directory. Evidence: effector-push.sh and E8 (sign and sync).
+// directory.
 //
 // Outcomes, every one output: `pushed` (the published commit, its source — the Agent's commit —
 // and what the remote held before), `rejected` (a stage — fetch, import, sign, push — and git's
@@ -238,7 +238,7 @@ func (c *call) run(ctx context.Context) wire.Output {
 func (c *call) credential() ([]string, string, error) {
 	switch gitclean.Scheme(c.spec.URL) {
 	case gitclean.SchemeHTTP:
-		// A token goes over HTTPS only (design 6): Basic over cleartext http is the token in the clear.
+		// A token goes over HTTPS only (ADR-0067): Basic over cleartext http is the token in the clear.
 		return nil, "", errors.New("the url is http, and jr2 sends a push token over https only")
 	case gitclean.SchemeHTTPS:
 		if c.entry.Push.Token == "" {
@@ -303,7 +303,7 @@ func (c *call) configure(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("the url is ssh, and this Effector's image holds no ssh: %w", err)
 		}
-		// ssh's own stderr goes to a file of the call's, beside git's (B13): git's words for an ssh
+		// ssh's own stderr goes to a file of the call's, beside git's (ADR-0068): git's words for an ssh
 		// failure name no cause. git runs this through the shell, which takes the redirection.
 		c.sshLog = filepath.Join(repo.Work, "ssh.stderr")
 		cmd := fmt.Sprintf("'%s' -F /dev/null -i '%s' -o IdentitiesOnly=yes -o IdentityAgent=none "+
@@ -380,7 +380,7 @@ func (c *call) push(ctx context.Context, res wire.PushResult) wire.Output {
 }
 
 // failure is why a fetch or a push could not reach the remote: classify's reason over git's stderr
-// and ssh's own, with ssh's last line named in it, and both tails as the detail (B13). git's own
+// and ssh's own, with ssh's last line named in it, and both tails as the detail (ADR-0068). git's own
 // words for an ssh failure ("Could not read from remote repository") name no cause; ssh's line
 // does.
 func (c *call) failure(stderr string, ctx context.Context) (string, string) {
@@ -450,7 +450,7 @@ type signed struct{ target, via string }
 const not, revList = "--not", "rev-list"
 
 // sign makes the commits to publish: signed copies of the Agent's new commits, or one squashed
-// commit — signed with `sign`, made with the entry's committer without it (B15).
+// commit — signed with `sign`, made with the entry's committer without it (ADR-0067).
 func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signed, *wire.Output) {
 	repo := c.repo
 	var signer *signerKey
@@ -597,7 +597,7 @@ func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 				from, via = []string{x}, "cherry"
 			default:
 				// Whatever `force` says: a signed push that cannot pair cleanly publishes nothing
-				// (design 6). `force` replaces a remote whose branch moved, never a pairing.
+				// (ADR-0067). `force` replaces a remote whose branch moved, never a pairing.
 				d, o := diverged(sha, pub, fmt.Sprintf("the published commit %s is not in the history of the Agent's %s, "+
 					"and no fallback pairs it", short(pub), short(sha)))
 				return nil, "", d, o
@@ -670,7 +670,7 @@ func (c *call) write(ctx context.Context, s *signerKey, tree string, parents []s
 	}
 	fmt.Fprintf(&body, "author %s\n", author)
 	// A signed commit's committer is the signer's; an unsigned squash's the entry's committer, or
-	// the signer's identity when the entry names no committer (B15).
+	// the signer's identity when the entry names no committer (ADR-0067).
 	name, email := "", ""
 	if s != nil || c.entry.Committer == nil {
 		name, email = c.entry.Sign.Name, c.entry.Sign.Email

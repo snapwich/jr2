@@ -217,7 +217,7 @@ function fakeBuild(
     /** What `docker inspect` says a Sandbox Image declares as its `USER` — `""` (the default) is
      * the interesting case: no USER, so the pod's uid-1000 fallback applies (ADR-0037). */
     imageUser?: string;
-    /** What a Sandbox Effector's image holds (B13), by image ref: which paths, and /etc/passwd.
+    /** What a Sandbox Effector's image holds (ADR-0068), by image ref: which paths, and /etc/passwd.
      * Default: every path asked for, and a passwd entry for uid 1000 — an image a push can use. */
     imageFiles?: (image: string, paths: readonly string[]) => { present: string[]; passwd: string };
     /** What the two stores hold when the post-converge sweep looks (ADR-0039). Empty by default,
@@ -1297,12 +1297,12 @@ test("up prints who may send what, per state, and the load warnings — a warnin
   assert.match(err, /converged/, "a warning converges on");
 });
 
-test("a bound Repo is narrated as the boot's to create; each token git.credentials names goes into its entry's clone Secret, never the Orchestrator's (B11)", async () => {
+test("a bound Repo is narrated as the boot's to create; each token git.credentials names goes into its entry's clone Secret, never the Orchestrator's (ADR-0068)", async () => {
   // `jr2 up` clones nothing (ADR-0051): the Orchestrator creates a Repo resource per bound identity
   // at boot and the cache agent clones on first need, on the node that needs it. What the
   // converge does hold is the credential: each entry's token, when set, lands in that entry's own
   // clone Secret (`jr2-git-<hash>`, Flux's key names) and `git-clone.json` names it — and the
-  // Orchestrator's Secret and env hold no git token (B11, ADR-0068).
+  // Orchestrator's Secret and env hold no git token (ADR-0068).
   const root = await withWorkspace(
     await mkInstance(
       `export default { name: "myinst", git: { credentials: [` +
@@ -3147,7 +3147,7 @@ test("a value edited in the user's Secret behind a valueFrom rolls the Instance 
 });
 
 test("every text that says what jr2 up keeps of a valueFrom value names the digest beside the length (ADR-0068)", async () => {
-  // The test above holds the code: `jr2 up` keeps a value's length (B3.5) AND a keyed digest of it
+  // The test above holds the code: `jr2 up` keeps a value's length (ADR-0068) AND a keyed digest of it
   // (the roll). A sentence that says it keeps the length ALONE tells a reader the digest does not
   // exist — ADR-0068 said so after the digest landed. So no ADR and no source says "only" of it.
   let read = 0;
@@ -3452,7 +3452,7 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
       { secret: { name: `jr2-effector-${pod}`, items: [{ key: "secret.aws", path: "aws" }] } },
       { secret: { name: "team", items: [{ key: "kubeconfig", path: "kube" }] } },
     ],
-    // Its pushes by Repo Slot (B10): the provision matches each url and names the entry's Secret.
+    // Its pushes by Repo Slot (ADR-0051): the provision matches each url and names the entry's Secret.
     pushes: [{ slot: "app", sign: true }],
   });
   // The push manifest: names only.
@@ -3478,11 +3478,11 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
   assert.equal("kube" in secret.stringData || "secret.kube" in secret.stringData, false, "a valueFrom is never copied");
 });
 
-test("no ADR, glossary entry or source says `jr2 up` reads `.env` into the Orchestrator's Secret (B11, ADR-0068)", async () => {
+test("no ADR, glossary entry or source says `jr2 up` reads `.env` into the Orchestrator's Secret (ADR-0068)", async () => {
   // The converge test that holds `jr2-instance` to jr2's own keys holds the code: each git token
   // goes to its entry's clone Secret. A sentence that sends `.env` into the Orchestrator's Secret
   // tells a reader the Orchestrator holds a value — ADR-0043 and two comments on the bundle stage
-  // said so after B11.
+  // said so once.
   const stale = /(?:\.env`?|reads it) [^.]{0,40}into the Orchestrator's (?:Secret|env)/i;
   const texts: Array<[string, string]> = [["CONTEXT.md", await readFile(join(REPO_ROOT, "CONTEXT.md"), "utf8")]];
   for (const dir of ["docs/adr", "packages/cli/src", "packages/cli/test", "packages/orchestrator/src"]) {
@@ -3502,7 +3502,7 @@ test("no ADR, glossary entry or source says `jr2 up` reads `.env` into the Orche
 test("no ADR and no glossary entry says `jr2 up` writes a Sandbox's Custodian configuration (ADR-0059)", async () => {
   // `jr2 up` DECLARES; a pod's maker renders its files — the Orchestrator a Sandbox's at provision.
   // A sentence that gives `jr2 up` the whole of Envoy's configuration tells a reader the
-  // Orchestrator renders nothing: ADR-0059, -0005, -0010, -0013 and CONTEXT.md said so after B8.
+  // Orchestrator renders nothing: ADR-0059, -0005, -0010, -0013 and CONTEXT.md said so once.
   const stale = [
     /`jr2 up` writes Envoy's whole configuration/,
     /`jr2 up` writes into the Custodian's configuration/,
@@ -3583,7 +3583,7 @@ async function pushingInstance(url: string, credentials: string, sign: boolean |
   return root;
 }
 
-test("jr2 up reads the Sandbox Effector's image for what each push form owes, and refuses with the fix before it applies anything (B13)", async () => {
+test("jr2 up reads the Sandbox Effector's image for what each push form owes, and refuses with the fix before it applies anything (ADR-0068)", async () => {
   const sshPushing = async () =>
     withImage(
       await pushingInstance(
@@ -3668,7 +3668,7 @@ test("jr2 up reads the Sandbox Effector's image for what each push form owes, an
   assert.equal(await up(["--yes"], stockHttps.io), 0);
 });
 
-test("jr2 up refuses an unsigned squash only when the matched entry has neither sign nor committer, and names both fixes (B15)", async () => {
+test("jr2 up refuses an unsigned squash only when the matched entry has neither sign nor committer, and names both fixes (ADR-0067)", async () => {
   const env = { GH_TOKEN: "ghp_0123456789abcdef" };
   const url = "https://git.example.com/acme/app.git";
   const bare = mkWorld(await pushingInstance(url, `[{ match: "*", token: "GH_TOKEN" }]`, "{ squash: true }"), { env });
@@ -3707,7 +3707,7 @@ test("jr2 up refuses an unsigned squash only when the matched entry has neither 
   assert.equal(await up(["--yes"], signed.io), 0);
 });
 
-test("jr2 up writes one push Secret per git.credentials entry — the token, the keys copied as data — and names none per Workspace (B10)", async () => {
+test("jr2 up writes one push Secret per git.credentials entry — the token, the keys copied as data — and names none per Workspace (ADR-0051)", async () => {
   const root = await withImage(
     await pushingInstance(
       "https://github.com/ourorg/app.git",
@@ -3761,7 +3761,7 @@ test("jr2 up writes one push Secret per git.credentials entry — the token, the
   assert.match(w.err.join("\n"), /pushes Repo Slot "app" with git\.credentials "\*"/, "the report names the entry");
 });
 
-test("a key's Secret absent at jr2 up is a warning, and the entry's Secret is written without it — the provision refuses the push that needs it (B10)", async () => {
+test("a key's Secret absent at jr2 up is a warning, and the entry's Secret is written without it — the provision refuses the push that needs it (ADR-0051)", async () => {
   const root = await withImage(
     await pushingInstance(
       "git@github.com:ourorg/app.git",
@@ -3786,7 +3786,7 @@ test("a key's Secret absent at jr2 up is a warning, and the entry's Secret is wr
   ]);
 });
 
-test("jr2 up refuses, before it applies anything, a token over http, and a token whose variable is unset — and the fix works (B10)", async () => {
+test("jr2 up refuses, before it applies anything, a token over http, and a token whose variable is unset — and the fix works (ADR-0051)", async () => {
   const http = mkWorld(
     await pushingInstance("http://git.example.com/acme/app.git", `[{ match: "*", token: "GH_TOKEN" }]`),
     {
@@ -3829,7 +3829,7 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   );
   const first = mkWorld(root);
   assert.equal(await up(["--yes"], first.io), 0);
-  // An http whose body is a Worktree file is the Sandbox Effector's (B19): its body places it.
+  // An http whose body is a Worktree file is the Sandbox Effector's (ADR-0067): its body places it.
   assert.match(
     first.err.join("\n"),
     /deploy: http PUT https:\/\/files\.example\.com — 30s, in the Sandbox Effector, a Worktree file as its body, secrets "aws"/,
@@ -3855,9 +3855,9 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
   assert.ok(!w.kube.deleted.includes(`myinst/secret/${own.metadata.name}`), "the placing Workspace's stays");
 });
 
-test("the Orchestrator's Role reads no Secret: create and patch only, and ConfigMaps as B8 (B18, ADR-0068)", async () => {
+test("the Orchestrator's Role reads no Secret: create and patch only, and ConfigMaps as ADR-0059 states (ADR-0068)", async () => {
   // It applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, server-side, and
-  // holds no value (B11): no get, no list, no watch, no delete, no update on a Secret.
+  // holds no value (ADR-0068): no get, no list, no watch, no delete, no update on a Secret.
   const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
   assert.equal(await up(["--yes"], w.io), 0);
   const role = appliedObjects(w).get("Role/jr2-orchestrator")!;

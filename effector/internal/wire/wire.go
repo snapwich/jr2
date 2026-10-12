@@ -19,7 +19,7 @@ import (
 
 // The kinds an Effector runs. The Instance Effector runs `http` with no Worktree file; the
 // Sandbox Effector runs `push`, `command` and an `http` whose body is a Worktree file (ADR-0067,
-// B19: one kind, whose body decides the placement).
+// one kind, whose body decides the placement).
 const (
 	KindHTTP    = "http"
 	KindPush    = "push"

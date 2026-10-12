@@ -383,7 +383,7 @@ test("a port takeover: a process on the Sandbox Effector's address gets a signed
   assert.equal(exec.starts.length, 0, "nothing ran in the Harness container");
 });
 
-test("an http whose body is a Worktree file names it, in the Sandbox Effector; restored with no Effector holding it, unknown unless idempotent (B19)", async () => {
+test("an http whose body is a Worktree file names it, in the Sandbox Effector; restored with no Effector holding it, unknown unless idempotent (ADR-0067)", async () => {
   const input = z.object({ path: z.string() });
   const def = {
     method: "PUT" as const,
@@ -439,7 +439,7 @@ test("a file body has one content type: file()'s contentType and a content-type 
   );
 });
 
-test("http({ body: file(...) }) is refused, with the fix, with a method that sends no body and beside a request (B19)", () => {
+test("http({ body: file(...) }) is refused, with the fix, with a method that sends no body and beside a request (ADR-0067)", () => {
   const url = "https://files.example.com/r";
   assert.throws(() => http({ method: "GET", url, body: file("a") }), /a file body is sent with PUT, POST, PATCH/);
   assert.throws(
@@ -548,7 +548,7 @@ test("every Sandbox Effector mount that holds a secret or the Agent's files is w
   assert.ok(ca && "configMap" in ca);
 });
 
-test("an unsigned squash is built (B15); an env that sets PATH, HOME or TMPDIR is refused with the fix", () => {
+test("an unsigned squash is built (ADR-0067); an env that sets PATH, HOME or TMPDIR is refused with the fix", () => {
   assert.deepEqual(
     (({ squash, sign, inputKeys }) => ({ squash, sign, inputKeys }))(pushParts({ squash: true })),
     { squash: true, sign: false, inputKeys: ["message"] },

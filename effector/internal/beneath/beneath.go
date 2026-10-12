@@ -8,7 +8,7 @@
 // mount crossing are each refused by the kernel. Then fstat on the open fd: a FIFO, a socket, a
 // device or a directory is refused (O_NONBLOCK keeps a FIFO from blocking the open), and so is a
 // regular file with more than one link — a hard link to a file outside the directory reads that
-// file, and the kernel's resolve flags cannot see it. Evidence: the e6 upload-path experiment.
+// file, and the kernel's resolve flags cannot see it.
 package beneath
 
 import (

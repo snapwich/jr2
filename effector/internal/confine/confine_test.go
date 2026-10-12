@@ -34,7 +34,7 @@ type layout struct {
 func newLayout(t *testing.T) layout {
 	t.Helper()
 	// Beside the package, not under /tmp: the layout's carve-outs are what a test reads here, and
-	// /tmp is denied whole (B12 rule 3).
+	// /tmp is denied whole (ADR-0068 rule 3).
 	dir, err := os.MkdirTemp(".", ".confine-")
 	must(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
@@ -143,7 +143,7 @@ func TestTheChildReadsItsNamedSecretAndWorksInItsScratchAndItsOwnTmpdir(t *testi
 	}
 }
 
-// B12 rule 3: /tmp is out of the ruleset — a child neither writes nor reads it, so what one child
+// ADR-0068 rule 3: /tmp is out of the ruleset — a child neither writes nor reads it, so what one child
 // leaves there no other child reads.
 func TestTheChildCannotWriteOrReadTmp(t *testing.T) {
 	requireLandlock(t)

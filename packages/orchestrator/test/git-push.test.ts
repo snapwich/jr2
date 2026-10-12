@@ -1,4 +1,4 @@
-// The push credentials (ADR-0051, B10): one Secret per `git.credentials` entry, never per pod, and
+// The push credentials (ADR-0051): one Secret per `git.credentials` entry, never per pod, and
 // one refusal rule for `jr2 up` and the provision. In-process, socket-free (ADR-0010).
 
 import { test } from "node:test";
@@ -74,7 +74,7 @@ test("the provision's refusal reads what jr2 up wrote: the longest match, its ki
   assert.ok("refusal" in https && /over https can spend/.test(https.refusal));
   const unsigned = placedPushRefusal({ at, url: "https://bitbucket.org/x/y.git", sign: true }, LIST, manifest);
   assert.ok("refusal" in unsigned && /holds no sign field/.test(unsigned.refusal));
-  // B15: an unsigned squash on an entry with neither sign nor committer, for any url at provision.
+  // ADR-0067: an unsigned squash on an entry with neither sign nor committer, for any url at provision.
   const squash = placedPushRefusal(
     { at, url: "https://bitbucket.org/x/y.git", sign: false, squash: true },
     LIST,
@@ -106,7 +106,7 @@ test("an entry whose config signs, and whose Secret jr2 up wrote with no signing
 });
 
 // Each refusal names a fix; following it must clear the refusal, never trade it for the next one
-// (run B3's slice 5 findings: a single-segment match that was not a prefix, http told to add a
+// (defects found in review: a single-segment match that was not a prefix, http told to add a
 // token before it was told https, an ssh-only entry told its https url pushes with a token, and a
 // push field told to take a second credential).
 test("each push refusal names a fix, and the fix it names is accepted", () => {

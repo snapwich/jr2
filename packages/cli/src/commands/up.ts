@@ -278,7 +278,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       const slot = e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
       if (e.kind === "http") {
         const names = e.secrets.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
-        // Its body decides where it runs (B19): a Worktree file needs its Workspace's Sandbox Effector.
+        // Its body decides where it runs (ADR-0067): a Worktree file needs its Workspace's Sandbox Effector.
         const where2 = e.file
           ? `in the Sandbox Effector, a Worktree file as its body${slot}`
           : "in the Instance Effector";
@@ -847,7 +847,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     // the same value; live Custodians keep verifying.
     JR2_INSTANCE_HARNESS_TOKEN: sandboxToken(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
   };
-  // Git tokens (ADR-0051, B11): each entry's token, from `.env`, goes into that entry's own clone
+  // Git tokens (ADR-0051, ADR-0068): each entry's token, from `.env`, goes into that entry's own clone
   // Secret (`jr2-git-<hash>`, Flux's key names), which the cache agent reads — never into this
   // Secret, the Orchestrator's env. The Orchestrator names the Secret on a Repo and holds no git token.
   // Only when a registered Machine composes a Sandbox: nothing else clones.
@@ -891,7 +891,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // --- secrets (ADR-0059, ADR-0068): resolved HERE, host-side, where `.env` exists --------------
   // R10: a Secret an entry references must exist with its key. Read once per Secret — each key's
   // NAME, the LENGTH of its value, and a keyed digest of it, never the value — for both
-  // placements. The length is B3.5's: an Effect secret shorter than 8 characters is refused
+  // placements. The length is ADR-0068's: an Effect secret shorter than 8 characters is refused
   // wherever its value is kept (ADR-0068). The digest goes into the template digest of each
   // long-lived pod that reads the value once at start — the Instance Harness's Custodian and the
   // Instance Effector — so a value edited in the user's Secret rolls them at the next `jr2 up`.
@@ -946,12 +946,12 @@ export async function up(args: string[], io: Io): Promise<number> {
   // registers it, and by then this line has scrolled away.
   const gitSsh = await ensureGitSsh(io, kube, config, carried.repos, namespace, ctx, values.yes === true);
 
-  // --- what each Sandbox Effector's image owes its pushes (ADR-0068, B13) ------------------------
+  // --- what each Sandbox Effector's image owes its pushes (ADR-0068) ------------------------
   // Before anything is applied: an image that lacks a push form's tools, or the passwd entry ssh
   // needs, is refused here with the fix, not at the first push in a pod.
   await checkEffectorImages(build, config, placements.sandbox, converged, platforms);
 
-  // --- push credentials (ADR-0051, B10): one Secret per git.credentials entry, never per pod ----
+  // --- push credentials (ADR-0051): one Secret per git.credentials entry, never per pod ----
   // After the deploy keys exist (a generated one included), before anything else is applied: a
   // static Binding whose entry cannot push is refused here.
   const gitPush = await resolveGitPush(io, kube, config, placements.sandbox, namespace, ctx);
@@ -1534,7 +1534,7 @@ type PodObject = {
  * does. A supplied key produces none of this — it is registered already. */
 type GitSshNotice = { secret: string; publicKey: string; urls: string[] };
 
-/** What `jr2 up` writes for the push credentials (B10): each entry's Secret, its data base64, and
+/** What `jr2 up` writes for the push credentials (ADR-0051): each entry's Secret, its data base64, and
  * the manifest the provision reads. */
 export type GitPushObjects = {
   secrets: Array<{ name: string; data: Record<string, string> }>;
@@ -1542,7 +1542,7 @@ export type GitPushObjects = {
 };
 
 /**
- * Each `git.credentials` entry's push Secret (ADR-0051, B10), when any Workspace pushes: the
+ * Each `git.credentials` entry's push Secret (ADR-0051), when any Workspace pushes: the
  * entry's token from `.env` (Flux's `username`/`password`), and the keys of the Secrets its
  * `sshKey`, `push.sshKey` and `sign` name, copied as data — base64 to base64, never decoded — so
  * one Secret holds what the entry pushes and signs with, and the provision names it on the Sandbox
@@ -1654,7 +1654,7 @@ async function resolveGitPush(
 }
 
 /**
- * What each Workspace's Sandbox Effector image owes its pushes (ADR-0068, B13), read off the image
+ * What each Workspace's Sandbox Effector image owes its pushes (ADR-0068), read off the image
  * this converge built — its effector image, else its Sandbox Image — by the push forms `jr2 up` can
  * see: a slot the Machine binds (its url's scheme, its entry's `sign`), never one the run or a
  * `customize()` binds, whose url is the provision's. The stock Harness image — the fallback when the

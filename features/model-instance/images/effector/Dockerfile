@@ -1,4 +1,4 @@
-# The @model tier's Sandbox Effector image, the @kind tier's twin (ADR-0068, B4.3): what a `workspace()` names as
+# The @model tier's Sandbox Effector image, the @kind tier's twin (ADR-0068): what a `workspace()` names as
 # `effector: { image }` for the tools its Effects need and the Agent's image lacks. The tier's
 # Sandbox Image carries git and no ssh, and a signed push over ssh needs `ssh` and `ssh-keygen`
 # beside git. Zero jr2 knowledge, like a user's: jr2's binary arrives on the runtime volume and is

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// The e6 experiment's cases, as tests: a Worktree the Agent planted beside a secret outside it.
+// The opener's cases: a Worktree the Agent planted beside a secret outside it.
 func plant(t *testing.T) (work, worktree string) {
 	t.Helper()
 	base := t.TempDir()

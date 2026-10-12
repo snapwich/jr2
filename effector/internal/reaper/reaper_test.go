@@ -62,7 +62,7 @@ func waitDead(pid int) bool {
 	return false
 }
 
-// B12 rule 1: a descendant that leaves its group with setsid is reparented to the Effector, and
+// ADR-0068 rule 1: a descendant that leaves its group with setsid is reparented to the Effector, and
 // the settle kills and reaps it before it returns.
 func TestASetsidEscapeeIsDeadWhenItsEffectHasSettled(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
@@ -131,7 +131,7 @@ func TestADoubleForkIsDeadWhenTheEffectHasSettled(t *testing.T) {
 	}
 }
 
-// B12 rule 1's "repeat until none remain": a stray that left its group holds a child that left
+// ADR-0068 rule 1's "repeat until none remain": a stray that left its group holds a child that left
 // its own. The first scan sees only the outer stray (the inner one's parent is the stray, not the
 // Effector); the inner one is the Effector's only after the outer is dead, so only a second scan
 // finds it.
@@ -213,7 +213,7 @@ func readPid(t *testing.T, file string) int {
 	return 0
 }
 
-// B12 rule 1, "belong to no live Effect": a descendant of a LIVE Effect that leaves its group (an
+// ADR-0068 rule 1, "belong to no live Effect": a descendant of a LIVE Effect that leaves its group (an
 // ssh-agent, any daemon) is its keeper's, not the Effector's, so another Effect's settle leaves it.
 // Its own Effect's settle ends it.
 func TestAnotherEffectsSettleLeavesALiveEffectsEscapee(t *testing.T) {

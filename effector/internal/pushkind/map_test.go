@@ -12,7 +12,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
-// B14, map before you sign: the pair and cherry map runs on every push, before signing, so a
+// ADR-0067, map before you sign: the pair and cherry map runs on every push, before signing, so a
 // commit that pairs with a published one is replaced by its signed twin and never signed again.
 // The Agent commits B and makes a side branch at it; the push publishes B′ and the sync moves the
 // branch to B′; the side branch gains S and is merged. By ancestry B is "new" again (B′ is not B),

@@ -8,7 +8,7 @@
 //   - an Effector: what its Effects name with `secret("name")` — the Instance Effector what its
 //     `http` Effects name; a Workspace's Sandbox Effector what its file-body `http`s and
 //     credentialed `command`s name. The push credential its `push`es spend is not placed here: the provision
-//     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, B10).
+//     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, ADR-0051).
 //
 // `hosts`, `headers` and `paths` are an entry's BINDING — where a Custodian may put the value — and
 // never its placement. Both is both, and `jr2 up` reports it per pod; an entry nothing names goes
@@ -81,12 +81,12 @@ export type HeldPodPlan = {
   byProvider: string[];
 };
 
-/** One push of a Workspace (ADR-0067, B10): its Repo Slot, whether it signs, and — for a slot the
+/** One push of a Workspace (ADR-0067, ADR-0051): its Repo Slot, whether it signs, and — for a slot the
  * Machine binds to a url — that url and the `git.credentials` entry it matches. A slot the run or a
  * `customize()` binds has no url here: the provision matches it. */
 export type SandboxPush = { slot: string; sign: boolean; squash?: true; url?: string; match?: string };
 
-/** A Workspace's Sandbox Effector (ADR-0068, B5.1): what `jr2 up` writes for it. */
+/** A Workspace's Sandbox Effector (ADR-0068): what `jr2 up` writes for it. */
 export type SandboxEffectorPlan = {
   placement: "sandbox";
   /** The pod key its objects are keyed by (`workspaceHeldPod`). */
@@ -106,7 +106,7 @@ export type SandboxEffectorPlan = {
   /** Its pushes, by Repo Slot: what the provision resolves to an entry's push Secret. */
   pushes: SandboxPush[];
   /** Whether it holds a credentialed `command`: a node whose kernel cannot confine the child
-   * (Landlock) stops the Effector's start, and the provision fails (ADR-0068, B9). */
+   * (Landlock) stops the Effector's start, and the provision fails (ADR-0068). */
   commands: boolean;
   /** Its Effects, as `<workflow>/<slot>`. */
   effects: string[];
@@ -229,7 +229,7 @@ export function secretPlacementsOf(
     sandbox.push(plan);
     const holds = plan.secrets.map((s) => s.name);
     // Exact for a slot the Machine binds; for one the run or a customize() binds, the entry is
-    // the one its url matches at provision (B10).
+    // the one its url matches at provision (ADR-0051).
     const pushes = plan.pushes.map(
       (p) =>
         `Repo Slot "${p.slot}" with ` +
@@ -282,7 +282,7 @@ function sandboxPlanOf(
 }
 
 /**
- * Each push of a Workspace, by Repo Slot (ADR-0051, B6.2, B10), or the refusal with the fix — for a
+ * Each push of a Workspace, by Repo Slot (ADR-0051), or the refusal with the fix — for a
  * slot the Machine binds to a url, whose entry `jr2 up` can see: a url no entry matches, a local
  * path or `git://`, an `http://` url (a push credential goes over https or ssh only), an entry that
  * holds no credential the url's scheme can spend (anonymous admits a clone, never a push), and
@@ -298,7 +298,7 @@ function pushesOf(config: JR2Config, ws: PlacedWorkspace): SandboxPush[] {
     const slot = effect.slot ?? (slots.length === 1 ? slots[0] : undefined);
     if (slot === undefined) continue;
     const sign = effect.sign === true;
-    // An unsigned squash needs the entry's committer (B15); a signed one has the signer's.
+    // An unsigned squash needs the entry's committer (ADR-0067); a signed one has the signer's.
     const squash = effect.squash === true && !sign ? ({ squash: true } as const) : {};
     const same = (p: SandboxPush) => p.slot === slot && p.sign === sign && (p.squash === true) === "squash" in squash;
     const url = ws.pod.bindings[slot];

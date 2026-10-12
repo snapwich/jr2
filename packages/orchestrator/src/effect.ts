@@ -88,7 +88,7 @@ export type HttpParts = {
   readonly maxBody: number;
   /** Marked by the author: a restore that cannot find the Effect sends it again. */
   readonly idempotent: boolean;
-  /** The body is a Worktree file (`body: file(...)`, B19): the Effect runs in the Sandbox Effector
+  /** The body is a Worktree file (`body: file(...)`, ADR-0067): the Effect runs in the Sandbox Effector
    * of the Workspace whose body invokes it. `slot` is the Repo Slot whose Worktree holds the file —
    * needed only where the Workspace carries several. Absent: a json, text or no body, in the
    * Instance Effector. */

@@ -43,7 +43,7 @@ the credentialed `command` — runs there too, its child confined (below).
   Effector, and the Sandbox Effector of the Workspace whose body invokes it. A `command` that names a secret, and an
   `http` whose body is a Worktree file, are placed in that Sandbox Effector — the command runs there with its child
   confined (below). There is no `placement:` key and no kind per placement: naming a secret places a command, and the
-  body places an `http` (B19) — one name per thing, so there is no `upload` kind beside it (ADR-0068).
+  body places an `http` — one name per thing, so there is no `upload` kind beside it (ADR-0068).
 - **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a child of the
   Harness process: the Agent's user, the Sandbox Image's tools, the same Stand-ins as the Agent's `bash` (ADR-0059), and
   no credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route
@@ -63,7 +63,7 @@ the credentialed `command` — runs there too, its child confined (below).
   param. `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`. `request(input)` returns the run's part
   alone: `path` segments and a JSON or text body. So an Agent's param reaches a path segment or a body, never the host,
   a header or a secret. It runs in the Instance Effector, which builds the request and holds the secrets (ADR-0068); the
-  Orchestrator signs the call and holds none. Its body may instead be a Worktree file (B19),
+  Orchestrator signs the call and holds none. Its body may instead be a Worktree file,
   `body: file(path, { slot?, segments?, contentType? })`: the file's path relative to the Repo Slot's Worktree (the one
   slot, or the one `slot` names), and the url's path segments — each a value or a function of the input; no `request` is
   written beside it, since `file()` carries the run's part. Such an `http` is placed in the Sandbox Effector of the
@@ -97,8 +97,8 @@ the credentialed `command` — runs there too, its child confined (below).
   confined from the files of every other secret and of the Effector's key), the tool sees a pinned commit and not the
   live Worktree, and the output is scrubbed. Landlock governs files, not `connect()`, and a GPG-signed push holds the
   signing key on a `gpg-agent` socket while it signs; so the Sandbox Effector never runs the two at once: one lock over
-  two classes, `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068, B12). A
-  Workspace may hold both.
+  two classes, `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068). A Workspace may
+  hold both.
 - **A `push` pushes the Workspace's branch to its Repo Slot's Binding**, from the Sandbox Effector, with no input:
   `push({ pin?, sign?, squash?, force?, slot?, timeout? })`. Its credential is the push credential of the
   `git.credentials` entry the Repo Slot's url falls under (ADR-0051): the provision matches the url the run binds —
@@ -121,8 +121,8 @@ the credentialed `command` — runs there too, its child confined (below).
   answer names it, and it is written to the intent row. A pinned commit the Agent pruned fails the import and is never
   substituted. `squash` makes one commit with the input's `{ message }`, on the published base: the Agent's tree, its
   author line and date, the Machine's message. It is a new commit, so it needs a committer. With `sign`, the signer is
-  the committer, as for every signed copy. Without it (B15; signing is optional, and `squash` is an option of its own),
-  the matching `git.credentials` entry's `committer: { name, email }` commits it, at the Effector's clock — or, when the
+  the committer, as for every signed copy. Without it (signing is optional, and `squash` is an option of its own), the
+  matching `git.credentials` entry's `committer: { name, email }` commits it, at the Effector's clock — or, when the
   entry names no committer, its `sign` field's name and email. `jr2 up` refuses `squash` without `sign` only when the
   matched entry has neither `sign` nor `committer`, naming both fixes (a `committer`, or a signed push and its `sign`
   field), and the provision refuses it the same way for a slot the run or a `customize()` binds. `force` replaces what
@@ -188,7 +188,7 @@ the credentialed `command` — runs there too, its child confined (below).
   that leaves the group (`setsid`) is not killed; it holds no credential. A credentialed command's descendant cannot
   leave: its Effect's keeper and the Sandbox Effector are subreapers, and every process an Effect started, a `setsid`
   escapee included, is killed and reaped before the Effect settles, while a live command's daemon is not another
-  Effect's to kill (ADR-0068, B12). A descendant that keeps the output open does not hold the outcome. A bounded tail
+  Effect's to kill (ADR-0068). A descendant that keeps the output open does not hold the outcome. A bounded tail
   (default 4096 characters) is the output; the full stream goes to the run's feed (Instance-token band).
 - **A write-ahead ledger; no second fire the author did not mark.** One row per Effect in the run's blob (ADR-0007,
   ADR-0065): an `intent` row saved at the write, with the snapshot that holds the Effect, before the request leaves; a
@@ -275,10 +275,12 @@ the credentialed `command` — runs there too, its child confined (below).
 - **Sync through a volume the Effector writes and the Harness container reads.** Rejected: the Worktree is read-only on
   the credentialed side so that nothing there is a channel into the Agent's container; the bundle rides the
   Orchestrator's one call instead.
-- **Tell the Agent to rebase onto the published commits.** Rejected: measured (E8), a rebase repair loses a reworded
-  message, drops a re-applied commit, and duplicates empty commits and merges.
+- **Tell the Agent to rebase onto the published commits.** Rejected: measured on a real repository, a rebase repair
+  loses a reworded message, drops a re-applied commit, and duplicates empty commits and merges.
 - **A fire-and-forget Effect (`spawnChild`, or a flag).** Rejected for the reasons above; nothing the Machine starts may
   outlive the state that asked for it.
+- **An `upload()` kind beside `http({ body: file() })`.** Rejected: two spellings of one Effect, and a kind that, not a
+  body, decided the placement. One kind, `http`, whatever its body.
 
 ## Consequences
 
@@ -293,8 +295,8 @@ the credentialed `command` — runs there too, its child confined (below).
 - A push the Orchestrator restart caught in flight gives one push of the pinned commit; one the Effector lost is pushed
   again with that commit alone. A credentialed command the Effector lost runs again with its pinned commit, so its tool
   can run twice against one commit.
-- A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (B2's wire is `POST` and `GET`),
-  so D1 holds for the Machine — it does not get the output — and not for the outside world.
+- A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (its wire is `POST` and `GET`,
+  ADR-0068), so D1 holds for the Machine — it does not get the output — and not for the outside world.
 - The Orchestrator reaches a Sandbox Effector by a headless Service the provision writes beside its key, owned by the
   Sandbox CR (`fx-` in place of the Sandbox name's `ws-`): its name resolves to the pod's own address, the one each
   request is signed for (ADR-0068), and it publishes that address while the pod is not ready, so a restore can ask the
@@ -305,6 +307,5 @@ the credentialed `command` — runs there too, its child confined (below).
   branch and Worktree after the sync, and push again after the Agent amended the pushed commit (`diverged`). A token
   push over https has no remote there. Its credentialed-command scenarios read the secret from env and from its file,
   scrubbed, say `dirty` over an uncommitted edit, and show a child of the child denied the Effector's key.
-- **One kind, `http`, whatever its body (B19).** Rejected: `upload()` beside `http({ body: file() })` — two spellings of
-  one Effect, and a kind that, not a body, decided the placement.
+
 - Owed, not built: an Open argv bound by `customize()`.

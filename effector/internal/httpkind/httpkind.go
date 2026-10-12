@@ -124,7 +124,7 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest, built map[stri
 				header.Set("Content-Type", "text/plain; charset=utf-8")
 			}
 		case req.Body.File != nil:
-			// A Worktree file (a file-body http, B19): opened beneath the Worktree with no
+			// A Worktree file (a file-body http, ADR-0067): opened beneath the Worktree with no
 			// symlink, one link, a regular file — anything else is output, with nothing sent.
 			f, err := r.open(req.Body.File)
 			if err != nil {

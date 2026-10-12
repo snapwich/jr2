@@ -1,4 +1,4 @@
-// Package reaper keeps every process an Effect starts inside that Effect (ADR-0068, B12 rule 1).
+// Package reaper keeps every process an Effect starts inside that Effect (ADR-0068 rule 1).
 // The Effector is the child subreaper of its container (PR_SET_CHILD_SUBREAPER): a descendant
 // whose parent ends is reparented to the Effector, not to the container's init, so it cannot leave
 // the Effector's sight — a `setsid` and a double fork included. Every child an Effect starts runs

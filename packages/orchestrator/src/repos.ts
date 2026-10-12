@@ -76,7 +76,7 @@ export interface RepoResources {
    * resource's spec, and never the eviction clock: a boot is not an attach. Resolves the
    * `git.credentials` entry for the identity into the `secretRef` the cache agent reads: an https
    * entry names the clone Secret `jr2 up` wrote from its token, an ssh entry names its deploy-key
-   * Secret. The Orchestrator writes and reads neither (B11).
+   * Secret. The Orchestrator writes and reads neither (ADR-0068).
    */
   bind(repo: { url: string; identity: string; key: string }): Promise<void>;
   /**
@@ -121,7 +121,7 @@ export function kubeRepos(opts: KubeReposOptions): RepoResources {
 
   /**
    * The `secretRef` for one url: the entry the identity matches, then the url's scheme picks
-   * which of its fields applies (config.ts). It only names the Secret (B11): `jr2 up` wrote the
+   * which of its fields applies (config.ts). It only names the Secret (ADR-0068): `jr2 up` wrote the
    * token's, in Flux's shape, and the cache agent reads it. A token entry whose Secret `jr2 up` did
    * not write — its variable was unset — names none: the clone is anonymous, and `jr2 status` will
    * show git's refusal if the host wanted one.

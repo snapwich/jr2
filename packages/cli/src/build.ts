@@ -88,7 +88,7 @@ export type BuildPort = {
    * is on the host daemon (`docker inspect`), while a multi-platform one went straight to the
    * registry as a manifest list the daemon never held (`docker buildx imagetools inspect`). */
   imageUser(image: string, platforms: readonly string[]): Promise<string>;
-  /** What a Sandbox Effector's image holds for a push (ADR-0068, B13): which of `paths` it has,
+  /** What a Sandbox Effector's image holds for a push (ADR-0068): which of `paths` it has,
    * links followed, and its `/etc/passwd` (`""` when it has none). Read off a container created and
    * never started, so nothing of the image runs. A multi-platform build is read for its first
    * platform: the files a push needs do not differ by architecture. */

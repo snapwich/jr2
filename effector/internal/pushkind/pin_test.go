@@ -31,7 +31,7 @@ func unbundle(t *testing.T, f *fixture, bundle, published string) bool {
 	return exec.Command("git", "-C", f.pod.Tree, "cat-file", "-e", published+"^{commit}").Run() == nil
 }
 
-// design 6: "jr2 runs the sync again before the next push if it did not finish". A push that
+// ADR-0067: jr2 runs a sync that did not finish again before the next push. A push that
 // publishes nothing new because the pair or cherry maps the published tip still leaves the Agent's
 // branch on its unsigned commit, so its answer carries the bundle the sync moves the branch from.
 func TestASignedPushThatPublishesNothingNewStillCarriesTheSyncBundle(t *testing.T) {
@@ -62,7 +62,7 @@ func TestASignedPushThatPublishesNothingNewStillCarriesTheSyncBundle(t *testing.
 	}
 }
 
-// design 6: option `squash` (with a message from the Machine). The Agent's commits become one
+// ADR-0067: `squash` takes a message from the Machine. The Agent's commits become one
 // signed commit on the published base, with the Agent's tree and author and the Machine's message.
 func TestASquashedSignedPushPublishesOneSignedCommitWithTheMachinesMessage(t *testing.T) {
 	f := newFixture(t, "ssh")
@@ -98,7 +98,7 @@ func TestASquashedSignedPushPublishesOneSignedCommitWithTheMachinesMessage(t *te
 	}
 }
 
-// design 6: `pin` pushes exactly the commit a Gate approved — one older than the Agent's tip
+// ADR-0067: `pin` pushes exactly the commit a Gate approved — one older than the Agent's tip
 // included; what the Agent committed after it does not leave.
 func TestAPinnedPushPublishesTheApprovedCommitAndNothingAfterIt(t *testing.T) {
 	f := newFixture(t, "")
@@ -115,8 +115,8 @@ func TestAPinnedPushPublishesTheApprovedCommitAndNothingAfterIt(t *testing.T) {
 	}
 }
 
-// design 6: "A pinned push can be denied by the Agent (it prunes the commit) and never
-// substituted."
+// ADR-0067: the Agent can deny a pinned push (it prunes the commit), and jr2 never
+// substitutes another.
 func TestAPinnedPushOfACommitTheAgentPrunedIsRejectedAndNothingIsPushed(t *testing.T) {
 	f := newFixture(t, "")
 	f.pod.Commit("kept", map[string]string{"a.txt": "a\n"})
@@ -164,7 +164,7 @@ func TestAPairWhoseRemoteMovedPastTheLastPushIsDiverged(t *testing.T) {
 	}
 }
 
-// B15: an unsigned squash has a committer of its own. Without `sign`, the squashed commit is made
+// ADR-0067: an unsigned squash has a committer of its own. Without `sign`, the squashed commit is made
 // with the entry's `committer` and the Effector's clock, unsigned; the author and its date stay
 // the Agent's, the message is the Machine's. An entry with no committer is a defect jr2 up refuses.
 func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {

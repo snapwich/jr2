@@ -617,7 +617,7 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
   assert.deepEqual(workspacePodsOf(outer)[0], { path: [], ...outerPod }, "the registered root is route []");
 });
 
-test("each Workspace's pod carries the Effects placed in its Sandbox Effector, down to the next workspace(), and its effector image (B5.1)", () => {
+test("each Workspace's pod carries the Effects placed in its Sandbox Effector, down to the next workspace(), and its effector image (ADR-0068)", () => {
   const inner = jr2Setup({ events: [], actors: { ship: push({ sign: true }) } }).createMachine({ id: "inner" });
   const body = jr2Setup({
     events: [],

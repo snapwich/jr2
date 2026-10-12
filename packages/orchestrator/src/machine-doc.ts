@@ -44,7 +44,7 @@ export type MachineTransitionDoc = {
 export type EffectDoc =
   | { kind: "command"; argv: string[]; timeoutMs: number; slot?: string; secrets?: string[]; pin?: true }
   /** An http Effect (ADR-0068): its method, its fixed target, the secrets it names — never a value
-   * — and `file` when its body is a Worktree file (B19). */
+   * — and `file` when its body is a Worktree file (ADR-0067). */
   | {
       kind: "http";
       method: string;

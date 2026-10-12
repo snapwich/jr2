@@ -1,4 +1,4 @@
-// What a push owes the author's Effector image (ADR-0068, B13). The Sandbox Effector runs in the
+// What a push owes the author's Effector image (ADR-0068). The Sandbox Effector runs in the
 // author's image — the Sandbox Image by default — and runs jr2's own programs from one fixed PATH
 // (`/usr/local/bin:/usr/bin:/bin`, never the image's own). So, per push form the Workspace holds,
 // `jr2 up` reads the image it built — or, for the stock Harness image, which the kit builds, knows

@@ -294,12 +294,12 @@ export function instanceObjects(opts: {
   repoCache?: { image: string; placement?: SandboxPlacement };
   /** `priorityClasses` from jr2.config.ts (ADR-0060): the classes to name instead of jr2's own. */
   priorityClasses?: PriorityClasses;
-  /** Each Workspace's Sandbox Effector (ADR-0068, B5.1): its manifest rides `jr2-held`, its
+  /** Each Workspace's Sandbox Effector (ADR-0068): its manifest rides `jr2-held`, its
    * `jr2-effector-<pod>` Secret holds its literals and `effector.json`. */
   sandboxEffectors?: readonly SandboxEffectorPlan[];
-  /** Each `git.credentials` entry's push Secret and the manifest the provision reads (B10). */
+  /** Each `git.credentials` entry's push Secret and the manifest the provision reads (ADR-0051). */
   gitPush?: { secrets: ReadonlyArray<{ name: string; data: Record<string, string> }>; manifest: GitPushManifest };
-  /** Each `git.credentials` entry's clone Secret (B11): the token the cache agent spends. The
+  /** Each `git.credentials` entry's clone Secret (ADR-0068): the token the cache agent spends. The
    * Orchestrator names it from `git-clone.json` and never holds it. */
   gitClone?: readonly GitCloneSecret[];
 }): string {
@@ -335,9 +335,9 @@ export function instanceObjects(opts: {
       metadata: meta(ORCHESTRATOR_SA),
       rules: [
         { apiGroups: ["core.jr2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
-        // Secrets: create and patch, nothing else (B18, ADR-0068). The Orchestrator server-side
+        // Secrets: create and patch, nothing else (ADR-0068). The Orchestrator server-side
         // applies its own per-Sandbox `<sandbox>-token` and `<sandbox>-effector`, owned by the CR,
-        // and holds no git credential and no Effect secret (B11): no get, no list, so it cannot read or enumerate the Effect
+        // and holds no git credential and no Effect secret (ADR-0068): no get, no list, so it cannot read or enumerate the Effect
         // secrets, the clone and push Secrets, or a user's Secret through the API. RBAC cannot
         // pin `create` to a name, and `resourceNames` has no prefix form.
         { apiGroups: [""], resources: ["secrets"], verbs: ["create", "patch"] },
@@ -417,12 +417,12 @@ export function instanceObjects(opts: {
         ...Object.fromEntries(
           effectors.map((e) => [effectorManifestKey(e.plan.pod), JSON.stringify(e.manifest, null, 2)]),
         ),
-        // The push manifest (B10): which entries have a push Secret, and what each can spend.
+        // The push manifest (ADR-0051): which entries have a push Secret, and what each can spend.
         // Names only; the provision names the matched entry's Secret on the Sandbox CR.
         ...(opts.gitPush?.manifest.entries.length
           ? { [GIT_PUSH_MANIFEST_KEY]: JSON.stringify(opts.gitPush.manifest, null, 2) }
           : {}),
-        // The clone manifest (B11): which entries' clone Secrets exist, by name. The Orchestrator
+        // The clone manifest (ADR-0068): which entries' clone Secrets exist, by name. The Orchestrator
         // names one as a Repo's `secretRef` only when it is listed here.
         ...(opts.gitClone?.length
           ? {
@@ -435,7 +435,7 @@ export function instanceObjects(opts: {
           : {}),
       },
     },
-    // Each entry's clone Secret (B11), in Flux's key names: the operator's cache agent reads the
+    // Each entry's clone Secret (ADR-0068), in Flux's key names: the operator's cache agent reads the
     // one a Repo's `secretRef` names. The Orchestrator neither writes nor reads it.
     ...(opts.gitClone ?? []).map(
       (s): KubeManifest => ({
@@ -446,7 +446,7 @@ export function instanceObjects(opts: {
         stringData: s.data,
       }),
     ),
-    // Each entry's push Secret (B10): what it pushes and signs with, in Flux's key names where
+    // Each entry's push Secret (ADR-0051): what it pushes and signs with, in Flux's key names where
     // Flux has them. The operator projects one into the Sandbox Effector of a Sandbox whose push
     // the entry's match covers; nothing else mounts it.
     ...(opts.gitPush?.secrets ?? []).map(
@@ -532,7 +532,7 @@ export function instanceObjects(opts: {
                 ],
                 // The Orchestrator creates Repo resources and never clones (ADR-0051) — the cache
                 // agent on each node does, reading the credential Secret a Repo's `secretRef`
-                // names, which `jr2 up` wrote (B11) — so nothing of git's is mounted here and no
+                // names, which `jr2 up` wrote (ADR-0068) — so nothing of git's is mounted here and no
                 // git token is in this container's env: state, the image map and the manifests.
                 volumeMounts: [
                   { name: "state", mountPath: "/instance/.jr2" },

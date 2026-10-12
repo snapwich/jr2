@@ -1,5 +1,5 @@
 // A Workspace's Sandbox Effector, as `jr2 up` declares it and the provision makes it (ADR-0068,
-// B5.1, B8): the same split as the Custodian's. `jr2 up` reads the Machines, places each Effect
+// ADR-0059): the same split as the Custodian's. `jr2 up` reads the Machines, places each Effect
 // secret, and writes two objects per Workspace that places an Effect there:
 //
 //   - the Secret `jr2-effector-<pod>`: each literal Effect secret, and `effector.json` (the targets
@@ -9,9 +9,9 @@
 //     key of the user's own Secret by reference), and its pushes by Repo Slot.
 //
 // The provision reads the pod's manifest, as it reads its Held manifest, and adds the `effector`
-// container only when one is there: a Workspace with no such Effect gets no sidecar and no Secret.
+// container only when one is there: a Workspace with no such Effect gets no Sandbox Effector and no Secret.
 // For each push it matches the slot's url to a `git.credentials` entry and names that entry's push
-// Secret on the Sandbox CR (git-push.ts, B10); the operator projects it at `@git/<name>/` in the
+// Secret on the Sandbox CR (git-push.ts, ADR-0051); the operator projects it at `@git/<name>/` in the
 // same mount — a directory no secret's file can take, since `@` is no character of a secret's name
 // (SECRET_NAME). The per-pod key is derived from the Sandbox's name at provision (`effectorKey`),
 // as the Sandbox token is, and written into a Secret the Sandbox CR owns.
@@ -48,7 +48,7 @@ export type SandboxEffectorManifest = {
   /** The sources of `/run/jr2/secrets`. */
   sources: ProjectedSecret[];
   /** Its pushes, by Repo Slot: the provision names each one's entry Secret on the Sandbox CR.
-   * `squash`: an unsigned squash, which needs the entry's committer (B15). */
+   * `squash`: an unsigned squash, which needs the entry's committer (ADR-0067). */
   pushes?: Array<{ slot: string; sign: boolean; squash?: true }>;
 };
 

@@ -17,10 +17,10 @@ one reconciler instead of being threaded through the Machine. We kept the CRD ge
 with an init-container clone) so the operator stays workflow-agnostic — matching jr2's thesis that the framework is a
 grab-bag of composable pieces, with git/worktree being just one piece a coding Machine bolts on. The operator is
 git-aware to exactly the extent of the `Repo` CRD and the cache agent that keeps a bare checkout per node (ADR-0051),
-and of `gitCredentials`, the push Secrets a Sandbox names, which it projects into the sidecar named `effector` alone
-(ADR-0051, ADR-0068): a fetch is infrastructure, shared by every Sandbox on the node; a worktree is a Machine's. The
-cost is an extra runtime step (worktree setup as its own state that can fail independently) and an operator to build and
-maintain.
+and of `gitCredentials`, the push Secrets a Sandbox names, which it projects into the Sandbox Effector (the `sidecars`
+entry named `effector`) alone (ADR-0051, ADR-0068): a fetch is infrastructure, shared by every Sandbox on the node; a
+worktree is a Machine's. The cost is an extra runtime step (worktree setup as its own state that can fail independently)
+and an operator to build and maintain.
 
 ## The Harness is the primary container; sidecars are opaque fragments
 

@@ -44,7 +44,7 @@ type GitSign struct {
 	Email  string `json:"email"`
 }
 
-// GitIdentity is a committer: the one an unsigned squash is made with (B15).
+// GitIdentity is a committer: the one an unsigned squash is made with (ADR-0067).
 type GitIdentity struct {
 	Name  string `json:"name"`
 	Email string `json:"email"`

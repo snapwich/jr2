@@ -1,9 +1,9 @@
-// Package kinds routes a start to the kind that runs it (ADR-0067): `http` — a file body (B19)
+// Package kinds routes a start to the kind that runs it (ADR-0067): `http` — a file body (ADR-0067)
 // included — to the http runner, `push` to the push runner, a credentialed `command` to the command runner. The
 // Instance Effector holds only the first; a Sandbox Effector holds all three, and confines a
 // credentialed command's child with Landlock (ADR-0068).
 //
-// One child cannot reach another (B12). Every Effect's processes are its own group (package
+// One child cannot reach another (ADR-0068). Every Effect's processes are its own group (package
 // reaper), ended when it settles; and a Sandbox Effector's one Lock keeps a GPG-signing push and a
 // credentialed command from being live together. An Effect settles only after its processes are
 // gone, and it releases the Lock only then.

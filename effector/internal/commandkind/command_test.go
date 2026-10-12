@@ -241,7 +241,7 @@ func TestAPinnedCommandOverACleanWorktreeIsNotDirty(t *testing.T) {
 
 // The child's PATH is the Effector's own (its image's), and argv[0] is looked up there: a tool
 // the author's image keeps outside the usual places runs. The tool must lie under the image's
-// system paths, which the child may run (a test directory under /tmp may not be, since B12 rule 3),
+// system paths, which the child may run (a test directory under /tmp may not be, by ADR-0068 rule 3),
 // so it is one this host keeps in /usr/sbin alone.
 func TestACommandFindsItsToolInTheEffectorsPath(t *testing.T) {
 	p, r := setup(t)
@@ -268,7 +268,7 @@ func TestACommandFindsItsToolInTheEffectorsPath(t *testing.T) {
 	}
 }
 
-// The child of a credentialed command is confined (ADR-0068, B9): a committed script — the
+// The child of a credentialed command is confined (ADR-0068): a committed script — the
 // Agent's code, run by the author's argv — that reads the placement key, a secret the command does
 // not name or the push key at @git, or writes into the Worktree, ends with a permission error, and
 // the answer carries no secret. A child of the child inherits the confinement.

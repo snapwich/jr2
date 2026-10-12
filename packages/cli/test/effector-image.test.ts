@@ -1,4 +1,4 @@
-// What a push owes the author's Effector image (ADR-0068, B13): per form, the programs the
+// What a push owes the author's Effector image (ADR-0068): per form, the programs the
 // Effector runs from its fixed PATH, and for ssh a passwd entry for the uid it runs as — each
 // refused with the fix for the case found.
 

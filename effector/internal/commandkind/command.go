@@ -6,10 +6,10 @@
 //
 // The child runs as the Effector's uid, beside the Effector's key, the secrets the command does
 // not name and the push credentials; its program is often the Agent's code. So it is confined
-// with Landlock before execve (package confine; ADR-0068, B9): the Effector runs its own binary
+// with Landlock before execve (package confine; ADR-0068): the Effector runs its own binary
 // as the confiner, under the Effect's keeper, and the child may read and run the image's system
 // paths, read and write its own scratch, and read the secret files it names — nothing else; not
-// /tmp, which every child would share (B12 rule 3). The tool sees a pinned commit and not the
+// /tmp, which every child would share (ADR-0068 rule 3). The tool sees a pinned commit and not the
 // live Worktree, and the output is scrubbed. The Agent's files are the author's
 // choice to run — a tool's plugins, a `local-exec`, a `credential_process` — so "no program the
 // Agent's files name runs" is not claimed here.
@@ -115,7 +115,7 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 		return unknown("a clean repository could not be made: " + err.Error())
 	}
 	// The scratch goes once the outcome is read: nothing of it carries to the next run — the
-	// child's TMPDIR included, which is in it (B12 rule 3).
+	// child's TMPDIR included, which is in it (ADR-0068 rule 3).
 	defer repo.Close()
 
 	have, err := repo.CacheTips(ctx, []string{cache})
@@ -192,7 +192,7 @@ func realPath(p string) string {
 	return p
 }
 
-// execute runs argv, confined by rules, under its Effect's own keeper (package reaper, B12 rule 1):
+// execute runs argv, confined by rules, under its Effect's own keeper (package reaper, ADR-0068 rule 1):
 // the keeper leads a session and process group of its own, registered with the Effect's, and is
 // the subreaper of everything argv starts, so a daemon argv leaves behind is the keeper's while
 // the Effect is live and never another Effect's stray. The confiner is the process the keeper

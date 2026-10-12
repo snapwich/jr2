@@ -47,7 +47,7 @@ test("a Part written inline — an agent(), an Effect — is refused at build wi
     /machine "m": state "m\.x" invokes an Agent inline — a Part is a key of actors, so it has a name that the ledger, the report and customize\(\) share: actors: \{ <name>: agent\(\.\.\.\) \}, then invoke: \{ src: "<name>" \}/,
   );
   assert.throws(() => build(commandWith(never, ["pnpm", "test"])), /invokes an Effect inline — .*command\(\.\.\.\)/);
-  // An http whose body is a Worktree file (B19) is an Effect like any other: refused inline.
+  // An http whose body is a Worktree file (ADR-0067) is an Effect like any other: refused inline.
   assert.throws(
     () => build(http({ method: "PUT", url: "https://files.example.com/r", body: file("report.pdf") })),
     /invokes an Effect inline — .*http\(\.\.\.\)/,

@@ -1,4 +1,4 @@
-// The kind tier's GPG workflow (ADR-0068, B12): one Workspace whose Sandbox Effector holds a
+// The kind tier's GPG workflow (ADR-0068): one Workspace whose Sandbox Effector holds a
 // credentialed command AND a GPG-signing push, started together, with no Agent. The Effector's one
 // lock keeps the two from being live at once — a command's child is never alive beside the push's
 // gpg-agent — and both complete. The body's final output carries both outcomes, and the wrapper

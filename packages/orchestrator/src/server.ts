@@ -13,7 +13,7 @@
 //   JR2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
 //                      Sandboxes are driven in it, and the Custodians' route home is Service DNS.
 //
-// No git token reaches this process (B11, ADR-0068): `jr2 up` writes each entry's clone Secret, and
+// No git token reaches this process (ADR-0068): `jr2 up` writes each entry's clone Secret, and
 // the Repo port names it from `git-clone.json` in the `jr2-held` mount.
 //
 // The first stdout line is one JSON object `{ url, workflows }` — the discovery seam a fixture (or
@@ -104,7 +104,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // The Repo resources (ADR-0051): created by this process, cloned by the operator's cache agent
     // on every node that needs them. The port resolves `git.credentials` into each resource's
     // `secretRef` and only names the Secret: `jr2 up` wrote each token's clone Secret and listed
-    // them in `git-clone.json`, read here per call so a converge reaches the next attach (B11).
+    // them in `git-clone.json`, read here per call so a converge reaches the next attach (ADR-0068).
     repos = kubeRepos({
       namespace,
       credentials,

@@ -17,7 +17,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/gittest"
 )
 
-// One child cannot reach another (ADR-0068, B12), with real processes: the Effector is its
+// One child cannot reach another (ADR-0068), with real processes: the Effector is its
 // children's subreaper and ends every process an Effect started before the Effect settles; a
 // child's TMPDIR is its own; and a GPG-signing push and a credentialed command are never live in
 // one Sandbox Effector at once.
@@ -46,7 +46,7 @@ func alive(pid int) bool {
 	return len(fields) > 0 && fields[0] != "Z"
 }
 
-// B12 rule 1: a descendant of a credentialed command's child that leaves its group with setsid is
+// ADR-0068 rule 1: a descendant of a credentialed command's child that leaves its group with setsid is
 // dead once the Effect has settled.
 func TestASetsidEscapeeOfACredentialedCommandIsDeadOnceItSettles(t *testing.T) {
 	requireTool(t, "setsid")
@@ -87,7 +87,7 @@ func escapee(t *testing.T, got string) int {
 	return pid
 }
 
-// B12 rule 1, and the outcome a command's own end gives: an escapee that keeps the command's
+// ADR-0068 rule 1, and the outcome a command's own end gives: an escapee that keeps the command's
 // output open neither holds the Effect past its top process's end nor outlives it.
 func TestAnEscapeeThatHoldsTheOutputOpenEndsWithItsCommand(t *testing.T) {
 	requireTool(t, "setsid")
@@ -133,7 +133,7 @@ func TestATimeoutBoundsACommandWhoseEscapeeHoldsTheOutputOpen(t *testing.T) {
 	}
 }
 
-// B12 rule 1, "belong to no live Effect": a daemon a LIVE credentialed command starts — it leaves
+// ADR-0068 rule 1, "belong to no live Effect": a daemon a LIVE credentialed command starts — it leaves
 // the command's process group, and its parent ends — outlives the settle of another Effect beside
 // it, and is dead once its own Effect has settled.
 func TestAnotherEffectsSettleLeavesALiveCommandsDaemon(t *testing.T) {
@@ -164,7 +164,7 @@ func TestAnotherEffectsSettleLeavesALiveCommandsDaemon(t *testing.T) {
 	}
 }
 
-// B12 rule 3: each child's TMPDIR is its own, in its Effect's scratch, and goes with it; /tmp is
+// ADR-0068 rule 3: each child's TMPDIR is its own, in its Effect's scratch, and goes with it; /tmp is
 // out of the ruleset, so a write there fails and the next child reads nothing the last one left.
 func TestAChildsTmpdirIsItsOwnAndTheNextChildCannotReadIt(t *testing.T) {
 	p := gittest.NewPod(t, "work")
@@ -304,7 +304,7 @@ func startSigning(t *testing.T, p *gittest.Pod) (*effector, string) {
 	return e, filepath.Join(filepath.Dir(filepath.Dir(e.keyFile)), "scratch")
 }
 
-// B12 rule 2: a credentialed command started while a GPG-signing push runs waits for the push —
+// ADR-0068 rule 2: a credentialed command started while a GPG-signing push runs waits for the push —
 // its agent killed and gone — and both complete; no sample sees the agent and the child at once.
 func TestACommandStartedDuringAGPGPushRunsOnlyAfterTheAgentIsGone(t *testing.T) {
 	p := gittest.NewPod(t, "work")
