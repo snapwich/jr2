@@ -38,6 +38,7 @@ import {
   type StateNodeLike,
 } from "../lib/model-said.ts";
 import { FINISHED } from "../lib/model-finished.ts";
+import { bodyIn, type RunChild } from "../lib/model-status.ts";
 import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
 import { ensureSeed, pushRemoteCommitsFromMain } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
@@ -55,8 +56,6 @@ const BASELINES = fileURLToPath(new URL("../model-baselines/", import.meta.url))
 
 // --- one run, observed ----------------------------------------------------------------------------
 
-/** One live child machine under the run, as `jr2 status` reports it. */
-type RunChild = { id: string; value: unknown; children: RunChild[] };
 /** One open Gate on the run: the id `jr2 send --gate` takes, and the invoking state's `meta`. */
 type OpenGate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
 /** `jr2 status <runId>`: the root's status and value, the wrapper's context (where a body's
@@ -335,6 +334,9 @@ async function portAnswers(world: E2EWorld, pod: string, port: number): Promise<
  * container trips the guard, which kills every Agent process — the hog and the server both —
  * and puts the kill on the running Turn's stream, which is what the next Turn's notice is made
  * of. A hog that lands after the first Turn ended reaches no Turn, so the window is checked.
+ * A kill the first Turn itself sees — the model watched its server die, kept at it, and never
+ * picked `started` — leaves the next Turn, which the claim measures, unbegun: the trial is `void`
+ * (ADR-0066), told by the body never having left `starting`.
  */
 const noticed: Driver = async (world, input) => {
   const runId = await startRun(world, "noticed", { thinking: input.thinking });
@@ -370,7 +372,28 @@ const noticed: Driver = async (world, input) => {
   const hog = `const a=[];setInterval(()=>{for(let i=0;i<4;i++)a.push(Buffer.alloc(64<<20,1))},10)`;
   await inHarness(world, pod, [RUNTIME_NODE, "-e", hog]); // returns when the guard kills it
   const killed = !(await portAnswers(world, pod, 8765));
-  const { hit, last } = await waitFor(world, runId, parked, TRIAL_MS);
+  // The next Turn begins once the body leaves `starting`: watched on every poll, as its Turn is
+  // seconds long at the least.
+  let asked = false;
+  const { hit, last } = await waitFor(
+    world,
+    runId,
+    (s) => {
+      asked ||= ["asking", "inspecting", "finished"].some((state) => bodyIn(s, state));
+      return parked(s);
+    },
+    TRIAL_MS,
+  );
+  if (!hit && !asked) {
+    if (!settled(last)) await world.runCli(["send", runId, "--event", "CANCEL"]);
+    return {
+      runId,
+      measured: false,
+      finished: false,
+      void: true,
+      note: `the kill landed inside the first Turn, and the next Turn never began; ended ${last.status}`,
+    };
+  }
   if (!hit) return { runId, measured: false, finished: false, note: `never parked: ${last.status}` };
   const gate = last.gates![0]!;
   const reported = gate.meta?.running;
@@ -545,16 +568,18 @@ const PUSH_NEW = new Set(["revise", "submit"]);
 const APPROVED = "(approved)";
 /** How many more times the desk answers a coder that picked `revise` (each `revise` → `coding`). */
 const PUSH_REANSWERS = 3;
-/** The run is back in `coding` with the desk open: the coder revised after an answer. */
-const codingAgain = (s: Status): boolean =>
-  /"coding"/.test(JSON.stringify(s.value)) && gateNamed(s, "desk") !== undefined;
+/** The body is back in `coding` with the desk open: the coder revised after an answer. Read off the
+ * body's state — the run's own value is the `workspace()` wrapper's, which holds no `coding`. */
+const codingAgain = (s: Status): boolean => bodyIn(s, "coding") && gateNamed(s, "desk") !== undefined;
 
 /**
  * push-follow and push-no-refusal (ADR-0029's step-boundary check): the step answers the desk while
  * the coder's `sleep 20` runs. push-follow: the first pick the Machine took after the answer is
  * `revise` or `submit`. push-no-refusal: the first Menu call after the restated Turn part is one of
  * them too — no stale pick, refused, before it. A coder that picked before the answer, or never ran
- * the command, never reached the moment the claim measures (`void`).
+ * the command, never reached the moment the claim measures (`void`). A trial whose measure is
+ * recorded and that does not finish within its time — the coder loops `ask_approval`/`run_tests` in
+ * `coding` once the desk's answers are spent — is cancelled and counts as finished (ADR-0066).
  */
 const pushFollow: Driver = async (world, input) => {
   const runId = await startRun(world, "push-follow", input);
@@ -596,19 +621,46 @@ async function pushFollowIn(
     };
   }
   await sendToGate(world, runId, desk.gate, "approve");
+  const deadline = Date.now() + TRIAL_MS;
   // The measure is the first pick after this answer. `revise` is allowed and takes the coder back to
   // `coding`, where only the desk's answer can move it again: the desk answers again, a bounded
-  // number of times, so the trial can finish whichever reviewing pick the coder chose.
+  // number of times, so the trial can finish whichever reviewing pick the coder chose. In
+  // `reviewing` only `revise` leads back to `coding`, so the body seen there again after the first
+  // answer records the measure: `revise`.
   let last: Status;
+  let revised = false;
   for (let answers = 1; ; answers++) {
-    const back = await waitFor(world, runId, (s) => settled(s) || codingAgain(s), TRIAL_MS);
+    const back = await waitFor(world, runId, (s) => settled(s) || codingAgain(s), Math.max(deadline - Date.now(), 0));
     last = back.last;
+    if (back.hit && !settled(last)) revised = true;
     if (!back.hit || settled(last) || answers > PUSH_REANSWERS) break;
     await sendToGate(world, runId, desk.gate, "approve");
+  }
+  // Measured, and not finished within the trial's time: cancelled, and finished (ADR-0066). The ledger
+  // is the body's output, which a cancelled run has none of; the measure is what the body showed.
+  let cut = false;
+  if (!settled(last) && revised) {
+    last = (await waitFor(world, runId, settled, Math.max(deadline - Date.now(), 0))).last;
+    if (!settled(last)) {
+      await world.runCli(["send", runId, "--event", "CANCEL"]);
+      cut = true;
+    }
   }
   // The reap at settle ends the stream; what it held by then is the whole conversation.
   await Promise.race([source.follow.closed, sleep(10_000)]);
   const said = (await saidAfter(world, "coder", input.marker, source)) ?? [];
+  const restated = said.findIndex(isRestatement);
+  const firstAfter = restated === -1 ? undefined : menuCalls(said, PUSH_MENU, restated)[0]?.call;
+  const also = { "push-no-refusal": firstAfter !== undefined && PUSH_NEW.has(firstAfter) };
+  if (cut) {
+    return {
+      runId,
+      measured: true,
+      finished: true,
+      also,
+      note: `said ${told(said)}; revised after the answer, then not finished within its time: cancelled`,
+    };
+  }
   const ledger = (last.context.output?.picks ?? []) as string[];
   const approved = ledger.indexOf(APPROVED);
   if (approved !== 0) {
@@ -621,13 +673,11 @@ async function pushFollowIn(
     };
   }
   const followed = PUSH_NEW.has(ledger[approved + 1] ?? "");
-  const restated = said.findIndex(isRestatement);
-  const firstAfter = restated === -1 ? undefined : menuCalls(said, PUSH_MENU, restated)[0]?.call;
   return {
     runId,
     measured: followed,
     finished: FINISHED["push-follow"]!(last),
-    also: { "push-no-refusal": firstAfter !== undefined && PUSH_NEW.has(firstAfter) },
+    also,
     note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${last.status}/${String(last.context.output?.outcome)}`,
   };
 }

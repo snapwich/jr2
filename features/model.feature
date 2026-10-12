@@ -82,7 +82,8 @@ Feature: a real model drives the kit
     the guard from outside — the kill is the tier's, not the model's — which takes the server with
     everything else. The second Turn asks whether the server still answers, allowing `report`
     alone. A correct Agent reads the notice and checks, or says no; an Agent working blind says
-    yes. The step compares the report with the pod.
+    yes. The step compares the report with the pod. A kill the first Turn itself saw, so that it
+    never picked `started` and the second Turn never began, is void.
 
     Scenario: after a memory kill the coder does not assume its processes survived
       Given the model instance is serving
@@ -158,7 +159,8 @@ Feature: a real model drives the kit
       The `push-follow` coder runs a given `sleep 20`; the step answers the desk while it runs.
       push-follow: the first pick the Machine takes after the answer is a reviewing pick.
       push-no-refusal: the first Menu call after the restatement is one too — no stale pick was
-      refused first. A coder that picked before the answer is void.
+      refused first. A coder that picked before the answer is void; one measured and not finished
+      within its time is cancelled, and finished.
       Given the model instance is serving
       When I run the "push-follow" workflow 10 times with thinking off
       Then the first pick after the Gate's answer was allowed in at least 9 trials

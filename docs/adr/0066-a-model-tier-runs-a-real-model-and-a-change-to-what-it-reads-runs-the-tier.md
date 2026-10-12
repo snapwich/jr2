@@ -75,7 +75,8 @@ recover, finish — are exercised only one scripted tool call at a time.
   nudge, the Working tools and their descriptions, Compaction's summary, the admit body's notices, the pi pin, a
   provider adapter, or an authoring surface that changes a Frame. An agent reviewing a feature or refactor that touched
   one of these runs the tier and reports the scorecard's floors and drift, or the skip, in its handoff. CLAUDE.md states
-  the rule.
+  the rule. One scenario runs alone by its title, which is the scenario filter:
+  `cucumber-js --profile model --name "a Gate's answer during a command is followed"`.
 - **A third pi canary.** Conformance and `@kind` drive the turn loop against a script; this tier drives it against a
   model that can misread. Run all three before bumping the pin.
 
@@ -115,7 +116,15 @@ recover, finish — are exercised only one scripted tool call at a time.
   the measured pick, a coder that picked `revise` is back in `coding`, where only the desk's answer moves it, so the
   step answers the desk again, at most three more times, and the trial can finish; the measure is still the first pick
   after the first answer. The driver changed for this after the claim ran once (70f9cb2); the user approved the change
-  on 2026-10-09.
+  on 2026-10-09. Those answers never reached the Machine: the driver waited for the run's own `value` to read `coding`,
+  and a `workspace()` run's value is its wrapper's, which never holds its body's state, so the step never answered
+  again. In the full run of 2026-10-12 one trial (ba79f322) recorded its measure, `revise` right after the answer, then
+  looped `ask_approval` and `run_tests` in `coding`, reading "Allowed now: ask_approval, run_tests", until the run
+  faulted, and failed "every trial finished". The driver now reads the body's state off the children `jr2 status`
+  reports (`features/lib/model-status.ts`), a defect fixed and no setup change. Then a bound of the kind of the finished
+  rule below: a trial whose measure is recorded — its first pick after the answer; the body seen back in `coding` after
+  it is `revise` — and that does not finish within its time is cancelled and counts as finished. The prompt, the floor
+  and the measure did not change. Both were approved on 2026-10-12 by the design session the user deferred to.
 - The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link) and
   `cut-pick` (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step
   deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
@@ -208,6 +217,13 @@ recover, finish — are exercised only one scripted tool call at a time.
     after the wake is `release` or `hold`. A model that never stopped is void. Its floor is `push-follow`'s, 9 of 10.
     `push-follow` keeps the restatement case: a list that changes while the model is still working. `push-wake` had no
     baseline cell.
+  - `noticed`. In 1 of 10 trials of two runs of 2026-10-12 (8374be56 in the full run, 9d220d92 in a diagnostic run) the
+    memory kill landed inside the first Turn where that Turn saw it: the model watched its server die, kept debugging,
+    and never picked `started`, so the Gate never opened and the next Turn, which the claim measures, never happened.
+    The driver counted such a trial a miss and unfinished. It is now void, its setup not met: the step watches the body
+    leave `starting`, and a trial that never parks with the body never past it is void, replaced within the claim's
+    bound; a void past the bound counts against the floor and prints as a void. The prompt, the floor and the pass did
+    not change. Approved on 2026-10-12 by the design session the user deferred to.
 
   The Rest rule (ADR-0024) changed a third, `mode-refusal`, before any run under it. Its timer moved `reviewing` on to
   `approved` while the model composed its next call; under Rest that timer holds `ask_review` outstanding until it
