@@ -52,10 +52,13 @@ the credentialed `command` — runs there too, its child confined (below).
   named is refused (ADR-0051).
 - **Every outcome is output**: `exited | timeout | killed | unknown` for a `command`;
   `response | unreachable | refused | unknown` for an `http` Effect; `pushed | rejected | diverged | unknown` for a
-  `push`. A command not found is `exited` 127; a path segment that is `.`, `..` or empty, and a file body's path that is
-  a symlink, leaves the Worktree, is absolute, is a FIFO or has more than one link, are `refused` with nothing sent — an
-  Agent's param can cause each. `onError` is only a jr2 or config defect: no Workspace, an argv slot with no value, an
-  input that misses the definition's schema, no Effector to send to.
+  `push`. A command not found is `exited` 127. A start over the bytes an Effector reads (ADR-0068) is sent nowhere and
+  settles as its kind's own outcome — an `http` `refused`, a `push` `rejected` at stage `start` (nothing pushed), a
+  credentialed `command` `exited` 127 with the reason in its tail, the Effector's own form for a command that could not
+  start — since an Agent's param (a squash message, an argv part) can reach the bound; a path segment that is `.`, `..`
+  or empty, and a file body's path that is a symlink, leaves the Worktree, is absolute, is a FIFO or has more than one
+  link, are `refused` with nothing sent — an Agent's param can cause each. `onError` is only a jr2 or config defect: no
+  Workspace, an argv slot with no value, an input that misses the definition's schema, no Effector to send to.
 - **An `http` Effect is a definition plus one function.**
   `http({ method, url, headers?, auth?, input?, request?, body?, timeout?, maxBody?, idempotent? })`. The url's scheme
   and host are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template,

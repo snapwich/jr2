@@ -17,7 +17,14 @@ import {
   type EffectRow,
   type HttpParts,
 } from "../src/effect.ts";
-import { createEffectorClient, type CommandStartRequest, type PushStartRequest } from "../src/effector-wire.ts";
+import {
+  CommandOutputShape,
+  createEffectorClient,
+  MAX_START_BYTES,
+  PushOutputShape,
+  type CommandStartRequest,
+  type PushStartRequest,
+} from "../src/effector-wire.ts";
 import { bearer, file, http, secret } from "../src/http-effect.ts";
 import { partsOf } from "../src/parts.ts";
 import { RunHost } from "../src/run-host.ts";
@@ -356,6 +363,43 @@ test("a credentialed command runs in the Sandbox Effector; restored when its Eff
   fake.settle({ outcome: "exited", code: 0, tail: "applied\n" });
   await waitFor(() => host.status(rig.runId)?.value === "done");
   assert.equal(((host.status(rig.runId)?.context as Ctx).result as { outcome: string }).outcome, "exited");
+});
+
+test("a push or credentialed-command start over the bytes an Effector reads settles as its kind's own outcome: nothing is sent", async () => {
+  // An Agent's pick parameter can reach the bound — a squash message, an argv part. `refused` is an
+  // http outcome only (ADR-0067): a push settles `rejected` at stage `start`, nothing pushed; a
+  // command `exited` 127 with the reason in its tail.
+  const fake = new FakeEffector(["sandbox"]);
+  const huge = "y".repeat(MAX_START_BYTES);
+  const push = await started(pushWith(port(fake), { squash: true }, new FakeSync().factory) as AnyEffect, undefined, {
+    message: huge,
+  });
+  await waitFor(() => push.host.status(push.runId)?.value === "done");
+  const pushOut = (push.host.status(push.runId)?.context as Ctx).result as Record<string, unknown>;
+  assert.equal(pushOut.outcome, "rejected");
+  assert.equal(pushOut.stage, "start");
+  assert.match(String(pushOut.reason), /over the 4194304 bytes an Effector reads; nothing was pushed/);
+  assert.ok(PushOutputShape.safeParse(pushOut).success, "a push's own outcome");
+  assert.deepEqual(
+    Object.values(await ledger(push.store, push.runId)).map((r) => r.state),
+    ["settled"],
+    "no intent row: nothing was sent",
+  );
+
+  const command = commandWith(
+    new FakeHarnessExec().factory,
+    ["deploy", huge],
+    { env: { AWS: secret("aws") } },
+    port(fake),
+  );
+  const run = await started(command as AnyEffect);
+  await waitFor(() => run.host.status(run.runId)?.value === "done");
+  const commandOut = (run.host.status(run.runId)?.context as Ctx).result as Record<string, unknown>;
+  assert.equal(commandOut.outcome, "exited");
+  assert.equal(commandOut.code, 127);
+  assert.match(String(commandOut.tail), /over the 4194304 bytes an Effector reads; nothing was run\n$/);
+  assert.ok(CommandOutputShape.safeParse(commandOut).success, "a command's own outcome");
+  assert.equal(fake.starts.length, 0, "nothing reached the Effector");
 });
 
 test("a credentialed command with `pin` takes the approved commit from its input; `pin` with no secret is refused", async () => {

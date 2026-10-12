@@ -586,13 +586,17 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
   });
 }
 
-function tooLarge(req: StartRequest): HttpOutput | undefined {
+/** A start over the bytes an Effector reads is sent nowhere, and settles as its kind's own outcome
+ * (ADR-0067): an http `refused`; a push `rejected` at stage `start` — nothing pushed; a credentialed
+ * command `exited` 127 with the reason in its tail, the Effector's own form for a command that
+ * could not start. An Agent's pick parameter — a squash message, an argv part — can reach the bound. */
+function tooLarge(req: StartRequest): HttpOutput | PushWireOutput | CommandWireOutput | undefined {
   const bytes = Buffer.byteLength(JSON.stringify(req), "utf8");
   if (bytes <= MAX_START_BYTES) return undefined;
-  return {
-    outcome: "refused",
-    reason: `the request is ${bytes} bytes, over the ${MAX_START_BYTES} bytes an Effector reads; nothing was sent`,
-  };
+  const reason = `the request is ${bytes} bytes, over the ${MAX_START_BYTES} bytes an Effector reads`;
+  if (req.kind === "push") return { outcome: "rejected", stage: "start", reason: `${reason}; nothing was pushed` };
+  if (req.kind === "command") return { outcome: "exited", code: 127, tail: `${reason}; nothing was run\n` };
+  return { outcome: "refused", reason: `${reason}; nothing was sent` };
 }
 
 async function retrying<T>(call: () => Promise<T>, signal: AbortSignal): Promise<T> {

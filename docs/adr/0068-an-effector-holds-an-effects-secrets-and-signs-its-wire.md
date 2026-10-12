@@ -152,8 +152,9 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   nothing and gets 400 with the reason; a request that names a secret the Effector does not hold is malformed.
   `/healthz` is the kubelet's probe, unsigned, and says only whether the replica takes new Effects. A replica reads at
   most 4 MiB of a request; it cannot verify a longer one, so it refuses it as unsigned. The Orchestrator never sends
-  one: a start whose body is longer settles `refused`, with nothing sent and no intent row, because a body built from
-  context or a pick's param can reach the bound.
+  one: a start whose body is longer settles with nothing sent and no intent row, as its kind's own outcome (ADR-0067) —
+  an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed `command` `exited` 127 — because a body
+  built from context or a pick's param can reach the bound.
 - **The Orchestrator holds no git credential and no Effect secret.** `jr2 up` declares and writes every Secret that
   holds a git credential or an Effect secret: the placements' (`jr2-instance-effector`, `jr2-effector-<pod>`) and, for
   each `git.credentials` entry, its clone Secret (`jr2-git-<hash>`, Flux's `username`/`password`, the token from `.env`)
@@ -252,7 +253,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   - `unreachable`: nothing was sent — the name did not resolve, the connection or TLS failed.
   - `refused`: the Effector refused it and sent nothing — a path segment that is `.`, `..` or empty (an Agent's param
     can cause it, so it is output, not a fault), or a host and secrets that no Effect placed there names. The
-    Orchestrator settles a start longer than 4 MiB `refused` the same way, before it sends anything.
+    Orchestrator settles an `http` start longer than 4 MiB `refused` the same way, before it sends anything; `refused`
+    is an `http` outcome only.
   - `unknown`: the connection was made and no answer came (the timeout, a reset): the host may have acted.
 
   Each outcome other than `response` carries a `reason` in words. A pick that runs an `http` Effect is answered, by
