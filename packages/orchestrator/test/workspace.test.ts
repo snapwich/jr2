@@ -625,6 +625,8 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
   // and the build refuses the inline form with the slot form; a plain Machine invoked inline above
   // it is a hop of its own — xstate's generated src, which the walk computes from the state node.
   const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
+  // A plain Machine that holds no Workspace and never finishes: it fills an invoke index.
+  const idle = jr2Setup({ events: [] }).createMachine({ id: "idle", initial: "w", states: { w: {} } });
   const invoking = (id: string, src: unknown, actors: Record<string, unknown> = {}) =>
     jr2Setup({ events: [], actors: actors as never }).createMachine({
       id,
@@ -642,6 +644,29 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
     nested: invoking("nested", "outer", { outer: named }),
     inline: invoking("inline-above", named),
     "inline-twice": invoking("twice", invoking("inner", named)),
+    // The <index> of the hop is the invoke's place in its state's list, and the <state id> is the
+    // node's id: an explicit `id:` where the author wrote one, the dotted path where not.
+    "inline-second": jr2Setup({ events: [], actors: { idle } }).createMachine({
+      id: "second",
+      initial: "x",
+      states: { x: { invoke: [{ src: "idle" }, { src: named, onDone: "done" } as never] }, done: { type: "final" } },
+    }),
+    "inline-state-id": jr2Setup({ events: [] }).createMachine({
+      id: "explicit",
+      initial: "x",
+      states: { x: { id: "placing", invoke: { src: named, onDone: "done" } as never }, done: { type: "final" } },
+    }),
+    "inline-deep": jr2Setup({ events: [], actors: { idle } }).createMachine({
+      id: "deep",
+      initial: "a",
+      states: {
+        a: {
+          initial: "b",
+          states: { b: { invoke: [{ src: "idle" }, { src: idle }, { src: named, onDone: "#deep.done" } as never] } },
+        },
+        done: { type: "final" },
+      },
+    }),
   };
   const routes: Record<string, unknown[]> = {
     root: [],
@@ -649,6 +674,9 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
     nested: ["outer", "review"],
     inline: [{ inline: "xstate.invoke.0.inline-above.x" }, "review"],
     "inline-twice": [{ inline: "xstate.invoke.0.twice.x" }, { inline: "xstate.invoke.0.inner.x" }, "review"],
+    "inline-second": [{ inline: "xstate.invoke.1.second.x" }, "review"],
+    "inline-state-id": [{ inline: "xstate.invoke.0.placing" }, "review"],
+    "inline-deep": [{ inline: "xstate.invoke.2.deep.a.b" }, "review"],
   };
   for (const [workflow, machine] of Object.entries(shapes)) {
     const sandbox = new FakeSandbox();
@@ -674,6 +702,35 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
       .digest("hex")
       .slice(0, 16)}`,
   );
+});
+
+test("two plain Machines invoked inline in one state place two Workspaces, each with a pod key of its own (ADR-0059)", async () => {
+  // The invoke index is the half of the inline hop that tells them apart: the same Machine object
+  // at index 0 and index 1 of one state is two placements, two routes, two pods.
+  const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
+  const named = jr2Setup({ events: [], actors: { review: ws } }).createMachine({
+    id: "named",
+    initial: "x",
+    states: { x: { invoke: { src: "review", onDone: "done" } }, done: { type: "final" } },
+  });
+  const both = jr2Setup({ events: [] }).createMachine({
+    id: "both",
+    initial: "x",
+    states: { x: { invoke: [{ src: named }, { src: named }] as never } },
+  });
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "both", machine: both as never, provide: () => ({}) });
+  await host.start("both");
+  await waitFor(() => sandbox.routes.length === 2);
+  const walked = workspacePodsOf(both as never).map((pod) => pod.route);
+  assert.deepEqual(walked, [
+    [{ inline: "xstate.invoke.0.both.x" }, "review"],
+    [{ inline: "xstate.invoke.1.both.x" }, "review"],
+  ]);
+  const key = (route: PlacementRoute) => workspaceHeldPod({ workflow: "both", route });
+  assert.deepEqual(new Set(sandbox.routes.map(key)), new Set(walked.map(key)), "the live routes are the walk's");
+  assert.notEqual(key(walked[0]!), key(walked[1]!), "two pod keys");
 });
 
 test("a Workspace reached through a Machine handed to spawnChild as an object fails at provision with the slot form (ADR-0059)", async () => {
