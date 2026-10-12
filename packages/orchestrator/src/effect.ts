@@ -415,7 +415,8 @@ export type CommandInput<A extends readonly unknown[], P = false> = [
   : { [K in ArgNames<A> | ([P] extends [true] ? "sha" : never)]: string };
 
 /** An Open argv's input (ADR-0054): its slots are the composer's, so any key is one string — what
- * the package's invoke hands it, read by the argv the composer binds. */
+ * the package's invoke hands it, read by the argv the composer binds. The compiler checks no slot
+ * against it: one the invoke does not supply faults when the Effect starts (`argvOf`). */
 export type OpenCommandInput<P = false> = Readonly<Record<string, string>> &
   ([P] extends [true] ? { sha: string } : unknown);
 

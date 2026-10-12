@@ -9,8 +9,10 @@
 // An Open Effect is a slot whose logic is unbound: it carries the parts the walk reads (the
 // kind, the placement, the secrets its other parts name, the Open part marked with the sentinel)
 // and a binder, and it runs nothing. Binding calls the Effect's own constructor again with the
-// definition and the bound part, so a bound Effect is checked by every rule an Effect written
-// whole is checked by, and is the same logic. `jr2 up` refuses a registered Machine whose Open
+// definition and the bound part, so a bound Effect is checked by every rule the constructor checks
+// for an Effect written whole, and is the same logic. The compiler's check is the one it misses:
+// an Open argv's input is one string per key, so a slot the invoke does not supply faults when the
+// Effect starts. `jr2 up` refuses a registered Machine whose Open
 // part nothing bound, naming the `customize` line; the unbound logic is the second fence, for every
 // path that walk never saw — a run of it faults before anything is sent.
 //

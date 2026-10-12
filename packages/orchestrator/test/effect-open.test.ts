@@ -4,8 +4,9 @@
 // wrote — the placement, the secrets, the Effector's fence — and reports the part nothing bound.
 //
 // The claims, in order: an Open part is carried and reported, never guessed; binding builds the
-// Effect again, whole, so every check of a written Effect holds for a bound one; the original is
-// untouched; only an Open part is bound, to a value, once; the wrappers are transparent; the walk
+// Effect again, whole, so every check its constructor runs holds for a bound one; the other parts of
+// an Open Effect are checked at build; a bound argv's slot the invoke does not supply faults at run;
+// the original is untouched; only an Open part is bound, to a value, once; the wrappers are transparent; the walk
 // reads the bound host, the secrets its url names and the argv; the load walk's pick-param check
 // runs again on a bound argv; and a run of an Effect nobody bound faults before anything is sent.
 
@@ -129,6 +130,88 @@ test("a bound url meets every check a written one meets: a literal host, no secr
     /query or fragment/,
   );
   assert.throws(() => customize(notifier(), { effects: { deploy: { argv: [] } } }), /argv is a non-empty list/);
+});
+
+test("an Open Effect's other parts are checked when it is built, as a written one's are: the method, a header, the env, pin", () => {
+  // ADR-0054: everything else the definition says stays the package's and is checked at build. The
+  // Open form must refuse each with the very message the written form gives — not later, at bind.
+  const url = "https://t.example.com/api";
+  const cases: Array<[string, (part: unknown) => unknown]> = [
+    ["an http method", (u) => httpWith(ports, { method: "BOGUS" as never, url: u as never })],
+    [
+      "an http header that routes the request",
+      (u) => httpWith(ports, { method: "GET", url: u as never, headers: { host: "x" } }),
+    ],
+    [
+      "a file-body http header that frames the request",
+      (u) =>
+        httpFileWith(ports, {
+          method: "PUT",
+          url: u as never,
+          headers: { "content-length": "1" },
+          body: file("out/report.pdf"),
+        }),
+    ],
+    [
+      "a command env name the Effector owns",
+      (a) => commandWith(execs.factory, a as never, { env: { PATH: secret("path-secret") } }),
+    ],
+    ["a command `pin` with no secret", (a) => commandWith(execs.factory, a as never, { pin: true })],
+  ];
+  for (const [what, build] of cases) {
+    const written = what.startsWith("a command") ? ["make", "deploy"] : url;
+    const message = (part: unknown): string => {
+      try {
+        build(part);
+      } catch (err) {
+        return (err as Error).message;
+      }
+      return "ACCEPTED";
+    };
+    const refused = message(written);
+    assert.notEqual(refused, "ACCEPTED", `${what}: the written form is refused`);
+    assert.equal(message(open), refused, `${what}: the Open form is refused at build, with the same message`);
+  }
+});
+
+test("a bound argv's slot the invoke does not supply is no refusal at customize(): the run faults when the Effect starts, nothing run", async () => {
+  // ADR-0054/0067: an Open argv's input is one string per key, so the compiler checks no slot of the
+  // argv a composer binds, and neither does customize(). The Effect's fault is the one fence.
+  const ran = execs.starts.length;
+  const machine = jr2Setup({
+    types: {} as { context: { fault?: string } },
+    events: [],
+    actors: { ws: fakeWorkspace(), deploy: commandWith(execs.factory, open) },
+  }).createMachine({
+    id: "unsupplied",
+    context: {},
+    invoke: { src: "ws" },
+    initial: "calling",
+    states: {
+      calling: {
+        invoke: {
+          src: "deploy",
+          input: { env: "prod" },
+          onDone: "done",
+          onError: { target: "faulted", actions: assign({ fault: ({ event }) => (event.error as Error).message }) },
+        },
+      },
+      done: {},
+      faulted: {},
+    },
+  });
+  const bound = customize(machine, { effects: { deploy: { argv: ["make", arg("env"), arg("target")] } } });
+  assert.deepEqual(loadWarningsOf(bound), loadWarningsOf(machine), "customize() adds no finding for it");
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "unsupplied", machine: bound, provide: () => ({}) });
+  const { runId } = await host.start("unsupplied");
+  await waitFor(() => host.status(runId)?.value === "faulted");
+  assert.match(
+    (host.status(runId)?.context as { fault: string }).fault,
+    /command "deploy": argv slot <target> has no string value in its input/,
+  );
+  assert.equal(execs.starts.length, ran, "nothing reached the Harness exec");
+  await host.stop(runId);
 });
 
 test("only an Open part is bound, to a value, once — a fixed part, a wrong key, `open` again and a mapper are refused", () => {

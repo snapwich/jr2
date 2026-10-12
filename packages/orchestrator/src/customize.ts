@@ -322,7 +322,9 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
  * Bind one Effect's Open part (ADR-0054): the slot must be an Effect, its part must be Open, and the
  * binding must be the value that part takes — a url (a string, or a `text` with a secret in its
  * path) or an argv. The binder builds the Effect again, whole, so the bound one meets every check
- * an Effect written whole meets: the url's literal host, the argv's entries.
+ * its constructor runs: the url's literal host, the argv's entries. The compiler's check of the
+ * invoke's input against the argv's slots does not reach it (an Open argv's input is one string per
+ * key): a slot the invoke does not supply faults when the Effect starts (ADR-0054).
  */
 function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBinding): unknown {
   const logic = (machine.implementations.actors as Record<string, unknown>)[name];

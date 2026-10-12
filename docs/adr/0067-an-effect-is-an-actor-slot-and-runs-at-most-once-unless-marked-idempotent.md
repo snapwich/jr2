@@ -29,16 +29,18 @@ the credentialed `command` — runs there too, its child confined (below).
   `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
   `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security
   boundary in one expression (what the Agent supplies, what the Machine adds). The type check catches a missing or
-  mistyped key; it accepts an extra one, so the load walk refuses a param that is no key of the input (below).
-  `paramsOf(event, def)` reads the same params for a plain mapper. `answer(({ context, event, chain }) => …)` is an
-  xstate action that sets what the Agent reads when its pick is answered (ADR-0024); `chain` is every reply since the
-  pick, oldest first, each a link typed by its slot (`{ kind: "output", src, output }`) or by the Machine's events
-  (`{ kind: "event", event }`); its order and length are not typed. A link is a reply from outside the Machine; the
-  events it sent itself are skipped. The value is JSON on the wire and in the hold; one with no JSON form sets nothing.
-  An `answer` shapes only the pick of the Agent whose state it is written below (on a state's entry or exit, or on a
-  transition of a state, at or below that Agent's state); one written below no Agent's state may shape any Agent's. A
-  child's error is no link, and by default the Agent is not told (ADR-0024); an author who wants it told writes
-  `answer(...)` on the `onError` route. An Effect never takes that route for an outcome: every outcome is output.
+  mistyped key; it accepts an extra one, so the load walk refuses a param that is no key of the input (below). An Open
+  argv's input is one string per key, so the type check catches neither for it: a slot the bound argv names that the
+  input does not supply faults when the Effect starts (ADR-0054). `paramsOf(event, def)` reads the same params for a
+  plain mapper. `answer(({ context, event, chain }) => …)` is an xstate action that sets what the Agent reads when its
+  pick is answered (ADR-0024); `chain` is every reply since the pick, oldest first, each a link typed by its slot
+  (`{ kind: "output", src, output }`) or by the Machine's events (`{ kind: "event", event }`); its order and length are
+  not typed. A link is a reply from outside the Machine; the events it sent itself are skipped. The value is JSON on the
+  wire and in the hold; one with no JSON form sets nothing. An `answer` shapes only the pick of the Agent whose state it
+  is written below (on a state's entry or exit, or on a transition of a state, at or below that Agent's state); one
+  written below no Agent's state may shape any Agent's. A child's error is no link, and by default the Agent is not told
+  (ADR-0024); an author who wants it told writes `answer(...)` on the `onError` route. An Effect never takes that route
+  for an outcome: every outcome is output.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.

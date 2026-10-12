@@ -41,7 +41,7 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   `customize(machine, { effects: { <slot>: { url } } })` or `{ argv }`: a url is a string or a `text` with a secret in
   its path, an argv is the usual list. It is bound ONCE, to a value: never a mapper over the door, so a host is fixed in
   the definition or bound before any run, and no run chooses one. Binding builds the Effect again with its constructor,
-  so a bound part meets every rule a written one meets — a literal host, no secret in a query, a non-empty argv — and
+  so a bound part meets every rule the constructor checks — a literal host, no secret in a query, a non-empty argv — and
   `jr2 up` reads it as written: the placement, the secrets its url names, and the Effector's fence
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)) are the bound host's. Only an Open part
   is offered: a part the author fixed is no key of `effects` and is refused at the call, and a part bound once is fixed
@@ -50,9 +50,12 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   composer's, so the load walk counts every pick param as read by it when the Machine is built, and `customize()` runs
   the walk's pick-param check again once the argv is bound — a param the bound argv does not read is refused there, and
   a warning it gives for the bound argv is the bound Machine's, as it is the same Machine's written with that argv. The
-  `jr2 up` walk reports an Open Effect beside Open Repo Slots and Agents and refuses the converge naming the `effects`
-  line; the Effect refuses to run while Open, as the second fence — its state's `onError`, with nothing sent and no
-  ledger row. The Open part is the whole url or the whole argv.
+  compiler's check does not reach a bound argv: an Open argv's input is one string per key, so nothing at build or at
+  `customize()` checks that the invoke supplies each slot the bound argv names, and a slot it does not supply faults
+  when the Effect starts — its state's `onError`, with nothing run. The `jr2 up` walk reports an Open Effect beside Open
+  Repo Slots and Agents and refuses the converge naming the `effects` line; the Effect refuses to run while Open, as the
+  second fence — its state's `onError`, with nothing sent and no ledger row. The Open part is the whole url or the whole
+  argv.
 - **The per-run Dial is the escape hatch, not the default.** A shipped Machine's door may carry `model` and
   `thinkingLevel` (ADR-0018's two Dials) and fold them into each invoke's input; the bound definition is what `jr2 up`
   preflights, the door value overrides it for one run's Turns. Nothing in jr2 changes for this — it is the Machine's own
