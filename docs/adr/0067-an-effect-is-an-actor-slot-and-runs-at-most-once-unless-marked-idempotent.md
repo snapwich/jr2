@@ -143,20 +143,20 @@ the credentialed `command` — runs there too, its child confined (below).
   exact image — the source's tree, author line and encoding, the Machine's message, and as its one parent the newest
   pair's published commit (on a first push, the merge base with the base) — is this push's own commit, sent again by a
   restore after the Effector lost it while the push in flight had no settled row; it settles `pushed`, `unchanged`, with
-  the sync bundle and its own `squashed`. A full comparison, not a pairing: only the committer's date and the signature
-  may differ. Then, on every push and before anything is signed, the same map runs over the new commits, oldest first,
-  and a commit that has a published twin is replaced by that twin in the rewritten history; only the unmapped commits
-  are signed. The twin is a ledger pair, taken as it is — each names the one exact commit a push published for its
-  source, a signed copy or a squashed commit; the pairs of every push of the Repo Slot are read, each only while the
-  remote still holds its published commit, the newest push's when two name one source — or else a published commit after
-  the commit's merge base with the remote's tip, each taken once, that has the commit's cherry key, read with the
-  commit's parents as mapped so far (a merge of the Agent's own side branch keys on the published copies of its
-  non-first parents), and is a faithful image of it: the commit's tree, and as parents the commit's own parents as
-  mapped so far. Every commit the remote lacks must be one the call signed, or the push is `diverged`. `pushed` carries
-  the published commit, its source, what the remote held before, how the new commits were found
-  (`ancestry | pair | cherry`), `unchanged` when the remote already held it, `squashed: signed | unsigned` when the
-  published commit is one squashed commit (absent for signed copies; it names what the published commit is, not what the
-  push's options ask for: a commit the call made is named by its options, and the published tip that an earlier push
+  the sync bundle and its own `squashed`. A full comparison of those fields, not a pairing; the committer line and the
+  signature are not compared (a limit under Consequences). Then, on every push and before anything is signed, the same
+  map runs over the new commits, oldest first, and a commit that has a published twin is replaced by that twin in the
+  rewritten history; only the unmapped commits are signed. The twin is a ledger pair, taken as it is — each names the
+  one exact commit a push published for its source, a signed copy or a squashed commit; the pairs of every push of the
+  Repo Slot are read, each only while the remote still holds its published commit, the newest push's when two name one
+  source — or else a published commit after the commit's merge base with the remote's tip, each taken once, that has the
+  commit's cherry key, read with the commit's parents as mapped so far (a merge of the Agent's own side branch keys on
+  the published copies of its non-first parents), and is a faithful image of it: the commit's tree, and as parents the
+  commit's own parents as mapped so far. Every commit the remote lacks must be one the call signed, or the push is
+  `diverged`. `pushed` carries the published commit, its source, what the remote held before, how the new commits were
+  found (`ancestry | pair | cherry`), `unchanged` when the remote already held it, `squashed: signed | unsigned` when
+  the published commit is one squashed commit (absent for signed copies; it names what the published commit is, not what
+  the push's options ask for: a commit the call made is named by its options, and the published tip that an earlier push
   made, which `pair` or `cherry` maps, by that push's own `squashed`, which its pair carries), and — whenever the
   published commit is not the Agent's own — the published commits as a bundle for the sync step (`git bundle create` of
   the published tip, with the Agent's tip as its prerequisite: the new commits, and the trees and blobs git adds beside
@@ -319,6 +319,11 @@ the credentialed `command` — runs there too, its child confined (below).
 - A push the Orchestrator restart caught in flight gives one push of the pinned commit; one the Effector lost is pushed
   again with that commit alone. A credentialed command the Effector lost runs again with its pinned commit, so its tool
   can run twice against one commit.
+- A squash push sent again takes as its own a remote tip that matches this squash in its tree, author line and encoding,
+  message and parent; the committer line and the signature are not compared. So such a tip that another writer made,
+  under another committer or with no signature, settles `pushed`, `unchanged`, and the push names it by its own options:
+  a signed squash push names it `squashed: signed` whether it carries a signature or not. Whether the committer and, for
+  `sign`, a signature must match is not decided.
 - A state exit does not stop a Sandbox kind that runs: the Effector has no cancel route (its wire is `POST` and `GET`,
   ADR-0068), so D1 holds for the Machine — it does not get the output — and not for the outside world.
 - The Orchestrator reaches a Sandbox Effector by a headless Service the provision writes beside its key, owned by the

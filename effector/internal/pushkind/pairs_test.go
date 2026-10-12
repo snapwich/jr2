@@ -2,6 +2,7 @@ package pushkind
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -112,6 +113,31 @@ func TestTheNewestPairOfOneSourceWins(t *testing.T) {
 	mergeSide(t, f, "side", "S", "s.txt")
 	out := f.push(true, []wire.Pair{pairOf(first), pairOf(second)})
 	assertPushedTheAgentsTree(t, f, out, second.Push.Published, 2)
+	if n := subjects(t, f)["B"]; n != 1 {
+		t.Fatalf("the remote holds %d copies of B", n)
+	}
+}
+
+// ADR-0067: when two pairs name one source and the remote holds both published commits, the newest
+// pair wins. The Agent pushes B, signed, as B′, and the sync moves the branch to B′. A side branch
+// made at B gains S and is merged. The start carries an older pair that names B with a commit the
+// remote also holds (main's tip), then push 1's pair. B maps to B′, so S′ is published on B′; mapped
+// by the older pair, S′ would be published on main's tip.
+func TestTheNewestOfTwoHeldPairsOfOneSourceWins(t *testing.T) {
+	f := newFixture(t, "ssh")
+	tree := f.pod.Tree
+	b := f.pod.Commit("B", map[string]string{"b.txt": "b\n"})
+	gittest.Git(t, tree, "branch", "side", b)
+	first := f.push(true, nil)
+	syncTo(t, f, first)
+	mergeSide(t, f, "side", "S", "s.txt")
+	older := wire.Pair{Published: remoteGit(t, f, "rev-parse", "main"), Source: b}
+	out := f.push(true, []wire.Pair{older, pairOf(first)})
+	assertPushedTheAgentsTree(t, f, out, first.Push.Published, 2)
+	s := remoteGit(t, f, "rev-parse", out.Push.Published+"^2")
+	if got := remoteGit(t, f, "rev-parse", s+"^"); got != first.Push.Published {
+		t.Fatalf("S′ is published on %s, not on B′ %s", short(got), short(first.Push.Published))
+	}
 	if n := subjects(t, f)["B"]; n != 1 {
 		t.Fatalf("the remote holds %d copies of B", n)
 	}
@@ -282,4 +308,94 @@ func TestARemoteSquashWithAnotherMessageIsNotThisPushsOwn(t *testing.T) {
 	if out.Outcome != wire.OutcomeDiverged {
 		t.Fatalf("got %+v %+v", out, out.Push)
 	}
+}
+
+// rewriteRemoteTip replaces the remote branch's tip by a copy of it that edit changed, as another
+// writer could: the raw commit object with its gpgsig header dropped, then edit, then written.
+func rewriteRemoteTip(t *testing.T, f *fixture, edit func(head []string) []string) {
+	t.Helper()
+	raw := remoteGit(t, f, "cat-file", "commit", remoteRef(f))
+	head, msg, _ := strings.Cut(raw, "\n\n")
+	var kept []string
+	inSig := false
+	for line := range strings.SplitSeq(head, "\n") {
+		if strings.HasPrefix(line, "gpgsig ") || (inSig && strings.HasPrefix(line, " ")) {
+			inSig = true
+			continue
+		}
+		inSig = false
+		kept = append(kept, line)
+	}
+	cmd := exec.Command("git", "--git-dir="+f.pod.Remote, "hash-object", "-t", "commit", "-w", "--stdin")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Stdin = strings.NewReader(strings.Join(edit(kept), "\n") + "\n\n" + msg + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("hash-object: %v", err)
+	}
+	remoteGit(t, f, "update-ref", "refs/heads/"+f.pod.Branch, strings.TrimSpace(string(out)))
+}
+
+// ADR-0067: the restore's acceptance compares the tree, the author line and the parent as it
+// compares the message. The squash published Q; the remote's tip is then a copy of Q with one of
+// them changed — main's tree, another author, or no parent — and the same start is sent again. That
+// tip is no image of this push: `diverged`, nothing pushed, no sync bundle.
+func TestARemoteSquashWithAnotherTreeAuthorOrParentIsNotThisPushsOwn(t *testing.T) {
+	cases := map[string]func(f *fixture) func(head []string) []string{
+		"tree": func(f *fixture) func([]string) []string {
+			other := remoteGit(t, f, "rev-parse", "main^{tree}")
+			return func(head []string) []string {
+				return replaceLine(head, "tree ", "tree "+other)
+			}
+		},
+		"author": func(*fixture) func([]string) []string {
+			return func(head []string) []string {
+				for i, line := range head {
+					if rest, ok := strings.CutPrefix(line, "author "); ok {
+						_, when, _ := strings.Cut(rest, "> ")
+						head[i] = "author Someone Else <someone@elsewhere.test> " + when
+					}
+				}
+				return head
+			}
+		},
+		"parent": func(*fixture) func([]string) []string {
+			return func(head []string) []string { return replaceLine(head, "parent ", "") }
+		},
+	}
+	for name, edit := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, "ssh")
+			f.pod.Commit("A", map[string]string{"a.txt": "a\n"})
+			msg := "one squashed commit"
+			req := f.request(true, nil)
+			req.Push.Squash = &msg
+			if first := f.runner.Run(context.Background(), req); first.Outcome != wire.OutcomePushed {
+				t.Fatalf("first: %+v %+v", first, first.Push)
+			}
+			rewriteRemoteTip(t, f, edit(f))
+			tip := remoteRef(f)
+			out := f.runner.Run(context.Background(), req)
+			if out.Outcome != wire.OutcomeDiverged || (out.Push != nil && out.Push.Bundle != "") {
+				t.Fatalf("got %+v %+v", out, out.Push)
+			}
+			if remoteRef(f) != tip {
+				t.Fatal("the remote's branch moved")
+			}
+		})
+	}
+}
+
+// replaceLine replaces each header line that starts with prefix by with; an empty with drops it.
+func replaceLine(head []string, prefix, with string) []string {
+	var out []string
+	for _, line := range head {
+		switch {
+		case !strings.HasPrefix(line, prefix):
+			out = append(out, line)
+		case with != "":
+			out = append(out, with)
+		}
+	}
+	return out
 }

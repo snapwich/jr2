@@ -647,7 +647,9 @@ func (c *call) rangeOf(ctx context.Context, sha, pub string, base []string,
 // ownSquash says whether the published tip pub is this squash's exact image of the Agent's sha:
 // the source's tree, author line and encoding, the Machine's message, and as its one parent the
 // newest pair's published commit — on a first push, the merge base with the base — as sign makes
-// it. Only the committer's date and the signature can differ. A full comparison, not a pairing.
+// it. A full comparison of those fields, not a pairing. The committer line and the signature are
+// not compared: a tip that matches under another committer, or unsigned, is taken as this push's
+// own (a limit ADR-0067 names).
 func (c *call) ownSquash(ctx context.Context, pub, sha string, base []string) bool {
 	if c.spec.Squash == nil {
 		return false
