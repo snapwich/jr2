@@ -1,7 +1,9 @@
 package pushkind
 
 import (
+	"context"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -72,5 +74,98 @@ func TestAPublishedCommitIsNeverSignedTwice(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A commit maps to a published twin only when the twin is a faithful image of it: the same tree,
+// and parents that are the commit's own parents as mapped. A commit the Agent reverts and applies
+// again with cherry-pick has the key of the first one — patch-id, author line and message — and
+// the published copy of that first one is not its image: its parents are older. Mapped to it, the
+// push would offer the older copy as the new tip, refused as non-fast-forward without `force` and
+// a rewind of the remote with it. The sync did not run.
+func TestACommitRevertedAndAppliedAgainIsSignedAndNotMappedToAnOlderCopy(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		for _, mode := range []string{"pair", "cherry"} {
+			name := mode
+			if force {
+				name += "/force"
+			}
+			t.Run(name, func(t *testing.T) {
+				f := newFixture(t, "ssh")
+				tree := f.pod.Tree
+				a := f.pod.Commit("A", map[string]string{"a.txt": "a\n"})
+				f.pod.Commit("B", map[string]string{"b.txt": "b\n"})
+				first := f.push(true, nil)
+				if first.Outcome != wire.OutcomePushed {
+					t.Fatalf("first: %+v %+v", first, first.Push)
+				}
+				gittest.Git(t, tree, "revert", "--no-edit", a)
+				gittest.Git(t, tree, "cherry-pick", a)
+				var last *wire.Pair
+				if mode == "pair" {
+					last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+				}
+				req := f.request(true, last)
+				req.Push.Force = force
+				out := f.runner.Run(context.Background(), req)
+				assertPushedTheAgentsTree(t, f, out, first.Push.Published, 2)
+			})
+		}
+	}
+}
+
+// The same after a sync and the side-branch merge a published commit must not be signed twice
+// for: the Agent then commits C, reverts B and applies it again. B maps to its signed copy; the
+// commit that applies B again is new, and signed.
+func TestARevertAndReapplyAfterASyncAndASideBranchMergeIsPushed(t *testing.T) {
+	for _, mode := range []string{"pair", "cherry"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t, "ssh")
+			tree := f.pod.Tree
+			b := f.pod.Commit("B", map[string]string{"b.txt": "b\n"})
+			gittest.Git(t, tree, "branch", "side", b)
+			first := f.push(true, nil)
+			if first.Outcome != wire.OutcomePushed || !unbundle(t, f, first.Push.Bundle, first.Push.Published) {
+				t.Fatalf("first: %+v %+v", first, first.Push)
+			}
+			gittest.Git(t, tree, "reset", "-q", "--hard", first.Push.Published)
+			gittest.Git(t, tree, "checkout", "-q", "side")
+			f.pod.Commit("S", map[string]string{"s.txt": "s\n"})
+			gittest.Git(t, tree, "checkout", "-q", f.pod.Branch)
+			gittest.Git(t, tree, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+			f.pod.Commit("C", map[string]string{"c.txt": "c\n"})
+			gittest.Git(t, tree, "revert", "--no-edit", b)
+			gittest.Git(t, tree, "cherry-pick", b)
+			var last *wire.Pair
+			if mode == "pair" {
+				last = &wire.Pair{Published: first.Push.Published, Source: first.Push.Source}
+			}
+			out := f.push(true, last)
+			// S, the merge, C, the revert and B applied again.
+			assertPushedTheAgentsTree(t, f, out, first.Push.Published, 5)
+		})
+	}
+}
+
+// assertPushedTheAgentsTree: the push ended `pushed`, the remote's tip is the published commit and
+// a descendant of before with n new commits, each signed, and its tree is the Agent's.
+func assertPushedTheAgentsTree(t *testing.T, f *fixture, out wire.Output, before string, n int) {
+	t.Helper()
+	if out.Outcome != wire.OutcomePushed {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	tip := remoteRef(f)
+	if tip != out.Push.Published {
+		t.Fatalf("the remote holds %s, the output says %s", tip, out.Push.Published)
+	}
+	if got := remoteGit(t, f, "rev-list", "--count", tip, "--not", before); got != strconv.Itoa(n) {
+		t.Fatalf("%s new commits on the remote, want %d (it was rewound, or a commit was mapped to an older copy)",
+			got, n)
+	}
+	if remoteGit(t, f, "rev-parse", tip+"^{tree}") != gittest.Git(t, f.pod.Tree, "rev-parse", f.pod.Tip()+"^{tree}") {
+		t.Fatal("the remote's tree is not the Agent's")
+	}
+	for c := range strings.FieldsSeq(remoteGit(t, f, "rev-list", tip, "--not", before)) {
+		verify(t, f, c)
 	}
 }
