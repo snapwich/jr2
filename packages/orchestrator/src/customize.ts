@@ -15,8 +15,9 @@
 //     agent({ ...stock, ...override }) } })`. The slot already IS the Agent (ADR-0049), so
 //     retuning one is substituting a slot's logic, which is what `provide` is for.
 //   - An EFFECT binding is the same substitution (ADR-0054): an Effect whose url or argv the
-//     package left `open` carries a binder, which builds the Effect again with the composer's part,
-//     so the bound slot is checked as a written one is. Once — a bound part is fixed from then on.
+//     package left `open`, or whose auth, header or env names `secret(open)`, carries a binder,
+//     which builds the Effect again with the composer's parts, so the bound slot is checked as a
+//     written one is. Once — a bound part is fixed from then on.
 //   - A CHILD override is the same call one level down, recursing. Each level is exactly the
 //     one-level reach ADR-0015 found `provide` has — held by the composer who owns the child
 //     object, never host-side injection into somebody else's Machine.
@@ -121,7 +122,7 @@ type LogicAt<M extends AnyStateMachine, K extends string> = Extract<SlotsOf<M>, 
 type AgentSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AgentLogic }>["src"];
 
 /** The Effect slots with an Open part — told by the phantom `OpenEffect` their constructor's
- * overload states for an `open` url or argv (open-effect.ts). */
+ * overload states for an `open` url or argv, or a `secret(open)` (open-effect.ts). */
 type OpenEffectSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: OpenEffect<OpenEffectPart> }>["src"];
 
 /** What one Open part binds to: a url, an argv, a secret's name. */
@@ -198,11 +199,12 @@ export type Customize<M extends AnyStateMachine> = {
   agents?: [AgentSlots<Reached<M>>] extends [never]
     ? never
     : { [K in AgentSlots<Reached<M>>]?: Partial<AgentDefinition> };
-  /** Bind an Effect's Open part (ADR-0054): `{ url }` for an http Effect (whatever its body) whose url the
-   * package left Open, `{ argv }` for a command whose argv it left Open. Bound once, here — a value,
-   * never a mapper over the door, so the host is fixed before any run. Only an Effect
-   * with an Open part is offered: a part its author fixed stays fixed. A Machine with none takes
-   * `never`, as `agents` does. */
+  /** Bind an Effect's Open parts (ADR-0054): `{ url }` for an http Effect (whatever its body) whose url
+   * the package left Open, `{ argv }` for a command whose argv it left Open, `{ secret }` for an
+   * Effect that names `secret(open)` — one object with both keys for an Effect with two, so a binding
+   * that leaves one out does not compile. Bound once, here — a value, never a mapper over the door,
+   * so the host is fixed before any run. Only an Effect with an Open part is offered: a part its
+   * author fixed stays fixed. A Machine with none takes `never`, as `agents` does. */
   effects?: [OpenEffectSlots<Reached<M>>] extends [never]
     ? never
     : { [K in OpenEffectSlots<Reached<M>>]?: BindingOf<LogicAt<Reached<M>, K>> };
@@ -343,10 +345,11 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
 }
 
 /**
- * Bind one Effect's Open part (ADR-0054): the slot must be an Effect, its part must be Open, and the
- * binding must be the value that part takes — a url (a string, or a `text` with a secret in its
- * path) or an argv. The binder builds the Effect again, whole, so the bound one meets every check
- * its constructor runs: the url's literal host, the argv's entries. The compiler's check of the
+ * Bind one Effect's Open parts (ADR-0054): the slot must be an Effect, each key of the binding one
+ * of its Open parts, and each value the value that part takes — a url (a string, or a `text` with a
+ * secret in its path), an argv, or a secret's name. A key left out leaves that part Open. The binder
+ * builds the Effect again, whole, so the bound one meets every check its constructor runs: the url's
+ * literal host, the argv's entries, the secret's name. The compiler's check of the
  * invoke's input against the argv's slots does not reach it (an Open argv's input is one string per
  * key): a slot the invoke does not supply faults when the Effect starts (ADR-0054).
  */

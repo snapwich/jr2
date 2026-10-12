@@ -131,7 +131,8 @@ export type PushParts = {
 /**
  * An Effect whose url or argv a package left Open (ADR-0054): the same parts with the sentinel in
  * that one place. The kind, the placement, the timeout and the secrets the other parts name are
- * fixed; the Open part is the composer's to bind, once, with `customize()` (open-effect.ts).
+ * fixed; the Open part — and an Open secret beside it (`openSecret`) — is the composer's to bind,
+ * once, with `customize()` (open-effect.ts).
  */
 export type OpenCommandParts = Omit<CommandParts, "argv"> & { readonly argv: typeof open };
 export type OpenHttpParts = Omit<HttpParts, "url" | "target"> & {
