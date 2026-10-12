@@ -148,12 +148,19 @@ func startEffectorFor(t *testing.T, scheme, host, port string, extra ...string) 
 	}
 }
 
+// signedAt is the time a test's request carries: a minute ahead of the host's wall clock. The
+// binary refuses a request signed before its process started (ADR-0068), and a host's clock sync
+// can step the wall clock back after the start — a WSL2 host steps it back by about 1.6 s every
+// half minute — so a request signed at the clock's now, just after a start, can read as signed
+// before it. A minute ahead is inside the 5-minute window and past such a step.
+func signedAt() string { return strconv.FormatInt(time.Now().Add(time.Minute).UnixMilli(), 10) }
+
 func (e *effector) call(t *testing.T, method, path, body string) (int, string) {
 	t.Helper()
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	nonce := hex.EncodeToString(b)
-	at := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	at := signedAt()
 	req, _ := http.NewRequest(method, e.base+path, strings.NewReader(body))
 	req.Header.Set(sign.HeaderTime, at)
 	req.Header.Set(sign.HeaderNonce, nonce)

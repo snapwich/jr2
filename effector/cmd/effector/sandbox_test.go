@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -353,7 +352,7 @@ func (e *effector) callRaw(t *testing.T, method, path, body string) (int, string
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	nonce := hex.EncodeToString(b)
-	at := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	at := signedAt()
 	req, _ := http.NewRequest(method, e.base+path, strings.NewReader(body))
 	req.Header.Set(sign.HeaderTime, at)
 	req.Header.Set(sign.HeaderNonce, nonce)

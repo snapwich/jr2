@@ -107,54 +107,23 @@ func TestARequestSignedBeforeTheProcessStartedIsRefused(t *testing.T) {
 	}
 }
 
-// The wall clock can step back while the process runs — a host's clock sync; a WSL2 host steps it
-// back by more than a second every half minute. When it did, the process's start is read on the
-// wall clock as it reads now: a request signed now is accepted, and one signed before the start, in
-// that same reading, is still refused.
-func TestAWallClockThatStepsBackRefusesNoRequestSignedAfterTheStart(t *testing.T) {
+// The port takeover's replay (ADR-0068): a process in the pod took a start while the Effector was
+// down and sends it to the new process after the wall clock stepped back (a host's clock sync). The
+// start was signed before the new process started, so it is refused whatever the clock reads now —
+// a step back moves no request's time past the start.
+func TestAStepBackOfTheWallClockTakesNoRequestSignedBeforeTheStart(t *testing.T) {
 	started := time.UnixMilli(1_700_000_000_000)
-	// One second of run on the monotonic clock; the wall clock stepped back 2.5 s in it.
+	// A second of run; the wall clock stepped back 2.5 s in it.
 	now := started.Add(-1500 * time.Millisecond)
 	v := NewVerifier(key, addr, started, func() time.Time { return now })
-	v.since = func() time.Duration { return time.Second }
 	body := []byte(`{"kind":"http"}`)
-	at := strconv.FormatInt(now.UnixMilli(), 10)
-	sig := RequestMAC(key, "POST", addr, "/effects/e1", at, "nonce-after-the-step-0", body)
-	if err := v.Verify("POST", "/effects/e1", at, "nonce-after-the-step-0", sig, body); err != nil {
-		t.Fatalf("a request signed after the wall clock stepped back is refused: %v", err)
-	}
-	before := strconv.FormatInt(now.Add(-time.Second-time.Millisecond).UnixMilli(), 10)
-	sig = RequestMAC(key, "POST", addr, "/effects/e1", before, "nonce-before-the-start", body)
-	if err := v.Verify("POST", "/effects/e1", before, "nonce-before-the-start", sig, body); err != ErrRefused {
-		t.Fatalf("a request signed before the process started is not refused: %v", err)
-	}
-}
-
-// ADR-0068's named residual: a step back of the wall clock since the start reopens the step's own
-// length before the start. Started at S, a second of run, the wall clock now reads S−1.5 s, so the
-// start reads S−2.5 s: a request signed at S−2 s — before this process started — is accepted, one
-// signed before S−2.5 s is refused. With no step back, a request signed before S is refused.
-func TestAStepBackOfTheWallClockReopensItsOwnLengthBeforeTheStart(t *testing.T) {
-	started := time.UnixMilli(1_700_000_000_000)
-	body := []byte(`{"kind":"http"}`)
-	verify := func(v *Verifier, at time.Time, nonce string) error {
+	for _, at := range []time.Time{started.Add(-2 * time.Second), now, started.Add(-time.Millisecond)} {
 		ms := strconv.FormatInt(at.UnixMilli(), 10)
-		return v.Verify("POST", "/effects/e1", ms, nonce, RequestMAC(key, "POST", addr, "/effects/e1", ms, nonce, body), body)
-	}
-	now := started.Add(-1500 * time.Millisecond)
-	stepped := NewVerifier(key, addr, started, func() time.Time { return now })
-	stepped.since = func() time.Duration { return time.Second }
-	if err := verify(stepped, started.Add(-2*time.Second), "nonce-inside-the-step-0"); err != nil {
-		t.Fatalf("a request signed inside the step's length before the start is refused: %v", err)
-	}
-	if err := verify(stepped, started.Add(-2500*time.Millisecond-time.Millisecond), "nonce-past-the-step-00"); err != ErrRefused {
-		t.Fatalf("a request signed before the step's length is not refused: %v", err)
-	}
-	steady := started.Add(time.Second)
-	still := NewVerifier(key, addr, started, func() time.Time { return steady })
-	still.since = func() time.Duration { return time.Second }
-	if err := verify(still, started.Add(-time.Millisecond), "nonce-before-the-start"); err != ErrRefused {
-		t.Fatalf("with no step back, a request signed before the start is not refused: %v", err)
+		nonce := "nonce-" + ms
+		sig := RequestMAC(key, "POST", addr, "/effects/e1", ms, nonce, body)
+		if err := v.Verify("POST", "/effects/e1", ms, nonce, sig, body); err != ErrRefused {
+			t.Fatalf("a request signed at start%+dms is taken after a step back: %v", at.Sub(started).Milliseconds(), err)
+		}
 	}
 }
 

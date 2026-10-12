@@ -74,9 +74,6 @@ type Verifier struct {
 	address string
 	started time.Time
 	now     func() time.Time
-	// since is how long this process has run, on the monotonic clock: a step of the wall clock
-	// does not move it.
-	since func() time.Duration
 
 	mu   sync.Mutex
 	seen map[string]time.Time
@@ -84,31 +81,13 @@ type Verifier struct {
 
 // NewVerifier verifies with key the requests sent to address (this replica's `host:port`) and
 // signed at or after started (when this process started); now is the clock (time.Now when nil).
-// started carries the monotonic clock's reading when it is time.Now's: how long the process has
-// run is read from it, never from the wall clock.
 func NewVerifier(key []byte, address string, started time.Time, now func() time.Time) *Verifier {
 	if now == nil {
 		now = time.Now
 	}
-	origin := started
-	since := func() time.Duration { return now().Sub(origin) }
 	// To the millisecond, as a request's time is written.
 	started = time.UnixMilli(started.UnixMilli())
-	return &Verifier{key: key, address: address, started: started, now: now, since: since,
-		seen: map[string]time.Time{}}
-}
-
-// startedNow is when this process started, on the wall clock as it reads now: the wall time it
-// started at, or — when the wall clock stepped back since — now less how long it has run. A step
-// back is a host's clock sync (NTP, a VM's clock correction); without it, every request signed in
-// the step's length after it would read as signed before the process started, and be refused.
-// The cost, which ADR-0068 names: a request signed in the step's length BEFORE the start is taken
-// too, if it is inside the window and its nonce is unseen — a request carries only a wall time.
-func (v *Verifier) startedNow(now time.Time) time.Time {
-	if moved := time.UnixMilli(now.Add(-v.since()).UnixMilli()); moved.Before(v.started) {
-		return moved
-	}
-	return v.started
+	return &Verifier{key: key, address: address, started: started, now: now, seen: map[string]time.Time{}}
 }
 
 // Key is the key the verifier holds, for signing the answers.
@@ -139,9 +118,8 @@ func (v *Verifier) Verify(method, path, at, nonce, signature string, body []byte
 		}
 	}
 	// The nonces of the process before this one are gone: a request signed before this process
-	// started (read by startedNow) is refused, so a restart forgets no replay signed earlier than
-	// the start less any step back of the wall clock since it (startedNow's cost).
-	if sent.Before(v.startedNow(now)) || sent.Before(now.Add(-Window)) || sent.After(now.Add(Window)) {
+	// started is refused, so a restart forgets no replay.
+	if sent.Before(v.started) || sent.Before(now.Add(-Window)) || sent.After(now.Add(Window)) {
 		return ErrRefused
 	}
 	if _, replay := v.seen[nonce]; replay {

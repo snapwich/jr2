@@ -43,10 +43,15 @@ func (f *fakeRunner) Run(context.Context, *wire.StartRequest) wire.Output {
 	return f.output
 }
 
+// startedBefore is the process start these servers' Verifiers hold: a minute ago. The rule that a
+// request signed before the start is refused is sign's own test; here a step back of the host's
+// wall clock (a clock sync) must not read a request signed now as signed before the start.
+func startedBefore() time.Time { return time.Now().Add(-time.Minute) }
+
 func newServer(t *testing.T, runner Runner) (*Server, *httptest.Server) {
 	t.Helper()
 	s := New(Options{
-		Verifier: sign.NewVerifier(key, replicaAddress, time.Now(), nil),
+		Verifier: sign.NewVerifier(key, replicaAddress, startedBefore(), nil),
 		Runner:   runner,
 		Scrubber: scrub.New(map[string]string{"jira": "the-jira-secret-value"}),
 		Replica:  wire.Replica{Name: "effector-a", Address: replicaAddress},
@@ -151,9 +156,9 @@ func TestAReplayedRequestIsRefused(t *testing.T) {
 func TestAReplayToAnotherReplicaOrARestartedOneIsRefused(t *testing.T) {
 	runner := &fakeRunner{release: make(chan struct{})}
 	defer close(runner.release)
-	replica := func(address string) *httptest.Server {
+	replica := func(address string, started time.Time) *httptest.Server {
 		srv := httptest.NewServer(New(Options{
-			Verifier: sign.NewVerifier(key, address, time.Now(), nil),
+			Verifier: sign.NewVerifier(key, address, started, nil),
 			Runner:   runner,
 			Scrubber: scrub.New(nil),
 			Replica:  wire.Replica{Name: "effector-" + address, Address: address},
@@ -162,23 +167,24 @@ func TestAReplayToAnotherReplicaOrARestartedOneIsRefused(t *testing.T) {
 		t.Cleanup(srv.Close)
 		return srv
 	}
-	a := replica(replicaAddress)
-	at := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	a := replica(replicaAddress, startedBefore())
+	sent := time.Now()
+	at := strconv.FormatInt(sent.UnixMilli(), 10)
 	nonce := newNonce()
 	sig := sign.RequestMAC(key, "POST", replicaAddress, "/effects/e1", at, nonce, []byte(startBody))
 	if got := send(t, a.URL, "POST", "/effects/e1", startBody, at, nonce, sig); got.status != http.StatusAccepted {
 		t.Fatalf("got %d %s", got.status, got.body)
 	}
 
-	b := replica("10.0.0.2:8082")
+	b := replica("10.0.0.2:8082", startedBefore())
 	if got := send(t, b.URL, "POST", "/effects/e1", startBody, at, nonce, sig); got.status != http.StatusUnauthorized ||
 		len(got.body) != 0 {
 		t.Fatalf("the replay to another replica got %d %q", got.status, got.body)
 	}
 
-	// The same address, a new process: it never saw the nonce, and the request is older than it.
-	time.Sleep(2 * time.Millisecond)
-	restarted := replica(replicaAddress)
+	// The same address, a new process: it never saw the nonce, and the request is older than it —
+	// the process started after the signing, whatever the wall clock reads now.
+	restarted := replica(replicaAddress, sent.Add(time.Millisecond))
 	if got := send(t, restarted.URL, "POST", "/effects/e1", startBody, at, nonce, sig); got.status != http.StatusUnauthorized ||
 		len(got.body) != 0 {
 		t.Fatalf("the replay to the restarted replica got %d %q", got.status, got.body)
