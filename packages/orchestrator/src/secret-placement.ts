@@ -416,14 +416,18 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
   const http = walk.effects.filter(
     (p): p is HttpPlaced => p.effect.kind === "http" && p.effect.placement === "instance",
   );
+  // Keyed by the Effect's route and slot name, as workspacePodsOf keys a pod's Effects: two slots of
+  // one name in one workflow — one in a workspace(), one outside it — are two Effects.
+  const keyOf = (workflow: string, effect: CarriedEffect) =>
+    JSON.stringify([workflow, effect.path ?? null, effect.name]);
   const sandboxOf = new Map<string, string>();
   for (const ws of walk.workspaces) {
     for (const e of ws.pod.effects)
-      sandboxOf.set(`${ws.workflow}/${e.name}`, `the Sandbox Effector of ${workspaceLabel(ws)}`);
+      sandboxOf.set(keyOf(ws.workflow, e), `the Sandbox Effector of ${workspaceLabel(ws)}`);
   }
-  // A Worktree file body needs a Worktree (B19): one no workspace() invokes has none to read.
+  // A Worktree file body needs a Worktree (ADR-0068): one no workspace() invokes has none to read.
   for (const { workflow, effect } of walk.effects) {
-    if (effect.kind !== "http" || !effect.file || sandboxOf.has(`${workflow}/${effect.name}`)) continue;
+    if (effect.kind !== "http" || !effect.file || sandboxOf.has(keyOf(workflow, effect))) continue;
     throw new Error(
       `workflow "${workflow}": the http Effect "${effect.name}" sends a Worktree file as its body, and no ` +
         "workspace() invokes it — outside a Workspace there is no Worktree to read; invoke it from a " +
@@ -435,7 +439,7 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
     const where =
       effect.placement === "instance"
         ? "the Instance Effector"
-        : (sandboxOf.get(label) ?? "the Sandbox Effector of the Workspace that invokes it");
+        : (sandboxOf.get(keyOf(workflow, effect)) ?? "the Sandbox Effector of the Workspace that invokes it");
     for (const name of effect.secrets ?? []) {
       if (!byName.has(name)) {
         throw new Error(

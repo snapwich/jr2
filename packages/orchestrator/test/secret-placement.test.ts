@@ -9,7 +9,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import type { JR2Config } from "../src/config.ts";
 import { heldSecretsOf, workspaceHeldPod } from "../src/held-secrets.ts";
-import type { CarriedEffect, WorkspacePod } from "../src/parts.ts";
+import { partsOf, workspacePodsOf, type CarriedEffect, type WorkspacePod } from "../src/parts.ts";
+import { bearer, file, http, secret } from "../src/http-effect.ts";
+import { jr2Setup } from "../src/setup.ts";
+import { workspace } from "../src/workspace.ts";
 import {
   refuseEffectSecrets,
   secretPlacementsOf,
@@ -564,5 +567,44 @@ test("jr2 up accepts a credentialed command beside a GPG-signing push: the Sandb
   assert.deepEqual(
     plan.pushes.map((p) => p.sign),
     [true],
+  );
+});
+
+test("a file-body http no workspace() invokes is refused by its path, though a workspace() of the same workflow holds a file-body http of the same slot name", () => {
+  const report = () =>
+    http({ method: "PUT", url: "https://files.example.com/r", body: file("r"), auth: bearer(secret("files")) });
+  const inner = jr2Setup({ events: [], actors: { report: report() } }).createMachine({ id: "inner" });
+  const outer = jr2Setup({
+    events: [],
+    actors: {
+      report: report(),
+      ws: workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }),
+    },
+  }).createMachine({ id: "outer" });
+  const placed: PlacementWalk = {
+    effects: partsOf([outer]).effects.map((effect) => ({ workflow: "w", effect })),
+    workspaces: workspacePodsOf(outer).map((pod) => ({ workflow: "w", pod })),
+  };
+  assert.deepEqual(
+    placed.effects.map((p) => p.effect.name),
+    ["report", "report"],
+    "setup: the walk carries both, the outer one and the Workspace's",
+  );
+  const config: JR2Config = { secrets: [{ name: "files", value: VALUE }] };
+  assert.throws(
+    () => refuseEffectSecrets(config, placed),
+    /workflow "w": the http Effect "report" sends a Worktree file as its body, and no workspace\(\) invokes it/,
+  );
+
+  // The Workspace's own one alone is placed in its Sandbox Effector, and its secret is labelled so.
+  const inside: PlacementWalk = {
+    effects: placed.effects.filter((p) => p.effect.path?.length),
+    workspaces: placed.workspaces,
+  };
+  assert.equal(inside.effects.length, 1);
+  const out = secretPlacementsOf(config, inside);
+  assert.match(
+    out.report[0]!,
+    /^secret files: an Effect secret in the Sandbox Effector of Workspace of workflow "w" → "ws" \(w\/report\)$/,
   );
 });
