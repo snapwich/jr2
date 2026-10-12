@@ -15,3 +15,13 @@ export function bodyIn(s: { children?: RunChild[] }, name: string): boolean {
     children.some((c) => JSON.stringify(c.value ?? null).includes(`"${name}"`) || any(c.children ?? []));
   return any(s.children ?? []);
 }
+
+/**
+ * noticed's void (ADR-0066): the memory kill landed inside the first Turn, so the next Turn, which
+ * the claim measures, never began. Told by the run at the trial's end: still live, and its body
+ * still in `starting`. A run that settled — a fault, a lost Workspace — is no void: "every trial
+ * finished" reads it.
+ */
+export function killedInTheFirstTurn(s: { status: string; children?: RunChild[] }): boolean {
+  return s.status !== "done" && s.status !== "error" && bodyIn(s, "starting");
+}

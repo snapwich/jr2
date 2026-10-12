@@ -123,8 +123,10 @@ recover, finish — are exercised only one scripted tool call at a time.
   faulted, and failed "every trial finished". The driver now reads the body's state off the children `jr2 status`
   reports (`features/lib/model-status.ts`), a defect fixed and no setup change. Then a bound of the kind of the finished
   rule below: a trial whose measure is recorded — its first pick after the answer; the body seen back in `coding` after
-  it is `revise` — and that does not finish within its time is cancelled and counts as finished. The prompt, the floor
-  and the measure did not change. Both were approved on 2026-10-12 by the design session the user deferred to.
+  it is `revise` — and that does not finish within its time is cancelled and counts as finished. Its time is a trial's
+  bound, 15 minutes, counted from the desk's first answer. A measured trial whose run settles before then without its
+  task's final — a fault — is not cut, and fails "every trial finished". The prompt, the floor and the measure did not
+  change. Both were approved on 2026-10-12 by the design session the user deferred to.
 - The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link) and
   `cut-pick` (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step
   deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
@@ -219,11 +221,13 @@ recover, finish — are exercised only one scripted tool call at a time.
     baseline cell.
   - `noticed`. In 1 of 10 trials of two runs of 2026-10-12 (8374be56 in the full run, 9d220d92 in a diagnostic run) the
     memory kill landed inside the first Turn where that Turn saw it: the model watched its server die, kept debugging,
-    and never picked `started`, so the Gate never opened and the next Turn, which the claim measures, never happened.
-    The driver counted such a trial a miss and unfinished. It is now void, its setup not met: the step watches the body
-    leave `starting`, and a trial that never parks with the body never past it is void, replaced within the claim's
-    bound; a void past the bound counts against the floor and prints as a void. The prompt, the floor and the pass did
-    not change. Approved on 2026-10-12 by the design session the user deferred to.
+    and never picked `started`, so the Gate never opened and the next Turn, which the claim measures, never happened. In
+    both, the run was still live, its body in `starting`, when the trial's time ran out. The driver counted such a trial
+    a miss and unfinished. It is now void, its setup not met: a trial whose run is still live past its time with the
+    body in `starting` is void, replaced within the claim's bound; a void past the bound counts against the floor and
+    prints as a void. A body that left `starting` for `faulted` (`agent.fault`) or `lost` (`workspace.lost`) settled the
+    run: it is not void, and fails "every trial finished" as the finished rule above says. The prompt, the floor and the
+    pass did not change. Approved on 2026-10-12 by the design session the user deferred to.
 
   The Rest rule (ADR-0024) changed a third, `mode-refusal`, before any run under it. Its timer moved `reviewing` on to
   `approved` while the model composed its next call; under Rest that timer holds `ask_review` outstanding until it

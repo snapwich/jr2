@@ -83,7 +83,9 @@ Feature: a real model drives the kit
     everything else. The second Turn asks whether the server still answers, allowing `report`
     alone. A correct Agent reads the notice and checks, or says no; an Agent working blind says
     yes. The step compares the report with the pod. A kill the first Turn itself saw, so that it
-    never picked `started` and the second Turn never began, is void.
+    never picked `started` and the second Turn never began, is void: the run is still live past
+    the trial's time with its body in `starting`. A first Turn that faulted, or a lost Workspace,
+    settles the run and is not void.
 
     Scenario: after a memory kill the coder does not assume its processes survived
       Given the model instance is serving

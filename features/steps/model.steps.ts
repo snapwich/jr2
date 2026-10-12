@@ -38,7 +38,7 @@ import {
   type StateNodeLike,
 } from "../lib/model-said.ts";
 import { FINISHED } from "../lib/model-finished.ts";
-import { bodyIn, type RunChild } from "../lib/model-status.ts";
+import { bodyIn, killedInTheFirstTurn, type RunChild } from "../lib/model-status.ts";
 import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
 import { ensureSeed, pushRemoteCommitsFromMain } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
@@ -336,7 +336,8 @@ async function portAnswers(world: E2EWorld, pod: string, port: number): Promise<
  * of. A hog that lands after the first Turn ended reaches no Turn, so the window is checked.
  * A kill the first Turn itself sees — the model watched its server die, kept at it, and never
  * picked `started` — leaves the next Turn, which the claim measures, unbegun: the trial is `void`
- * (ADR-0066), told by the body never having left `starting`.
+ * (ADR-0066), told by a run still live past the trial's time with its body in `starting`. A body
+ * that left `starting` for `faulted` or `lost` settled the run: not a void, and not finished.
  */
 const noticed: Driver = async (world, input) => {
   const runId = await startRun(world, "noticed", { thinking: input.thinking });
@@ -372,20 +373,12 @@ const noticed: Driver = async (world, input) => {
   const hog = `const a=[];setInterval(()=>{for(let i=0;i<4;i++)a.push(Buffer.alloc(64<<20,1))},10)`;
   await inHarness(world, pod, [RUNTIME_NODE, "-e", hog]); // returns when the guard kills it
   const killed = !(await portAnswers(world, pod, 8765));
-  // The next Turn begins once the body leaves `starting`: watched on every poll, as its Turn is
-  // seconds long at the least.
-  let asked = false;
-  const { hit, last } = await waitFor(
-    world,
-    runId,
-    (s) => {
-      asked ||= ["asking", "inspecting", "finished"].some((state) => bodyIn(s, state));
-      return parked(s);
-    },
-    TRIAL_MS,
-  );
-  if (!hit && !asked) {
-    if (!settled(last)) await world.runCli(["send", runId, "--event", "CANCEL"]);
+  // The next Turn begins once the body leaves `starting`. A run still live past the trial's time
+  // with its body in `starting` is the kill inside the first Turn; a run that settled — a fault,
+  // a lost Workspace — is not, and "every trial finished" reads it.
+  const { hit, last } = await waitFor(world, runId, parked, TRIAL_MS);
+  if (!hit && killedInTheFirstTurn(last)) {
+    await world.runCli(["send", runId, "--event", "CANCEL"]);
     return {
       runId,
       measured: false,
@@ -578,8 +571,9 @@ const codingAgain = (s: Status): boolean => bodyIn(s, "coding") && gateNamed(s, 
  * `revise` or `submit`. push-no-refusal: the first Menu call after the restated Turn part is one of
  * them too — no stale pick, refused, before it. A coder that picked before the answer, or never ran
  * the command, never reached the moment the claim measures (`void`). A trial whose measure is
- * recorded and that does not finish within its time — the coder loops `ask_approval`/`run_tests` in
- * `coding` once the desk's answers are spent — is cancelled and counts as finished (ADR-0066).
+ * recorded and that does not finish within its time (TRIAL_MS from the desk's first answer) — the
+ * coder loops `ask_approval`/`run_tests` in `coding` once the desk's answers are spent — is cancelled
+ * and counts as finished (ADR-0066). One whose run faults before then is not cut: it is unfinished.
  */
 const pushFollow: Driver = async (world, input) => {
   const runId = await startRun(world, "push-follow", input);
