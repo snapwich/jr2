@@ -249,6 +249,11 @@ state
 
 **outstanding**: A pick that is delivered and not yet answered. _Avoid_: held pick (collides with Held secret), pending
 
+**Chain**: Every reply since a pick, oldest first, each a **link**: a child's output, typed by its slot, or an event of
+the Machine's that a party below the Agent's state delivered — a Gate's answer, a nested Agent's pick. The events the
+Machine sends itself and a child's error are no link. The last link is a pick's default answer; an `answer` action reads
+the whole chain (ADR-0024, ADR-0067). _Avoid_: history (the view of Settlements), log
+
 **Vocabulary**: The workflow events a Machine accepts — each a `defineEvent` def: a name, a payload schema, an optional
 audience — taken as values by its `jr2Setup` and scoped to that Machine alone (ADR-0011). An unset audience means each
 transition belongs to the party its state, or the nearest state above it, invokes, and a root transition to both; an

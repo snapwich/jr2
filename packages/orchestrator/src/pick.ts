@@ -101,10 +101,13 @@ type Node = AnyStateMachine["root"];
 /**
  * Where an `answer` is written, as the Agents' states it is below: for each place the action is
  * written (a state's entry or exit, a transition on a state, a state's initial transition), the
- * nearest state at or above it that invokes an Agent — `null` where none does. An `answer` shapes
- * only a pick of an Agent seated at one of these (ADR-0067); one written below no Agent's state
- * (`null`) may shape any. Read once per Machine, by the action's identity: one `answer` object
- * written in two places carries both.
+ * nearest state at or above it that invokes an Agent — `null` for a transition where none does. An
+ * `answer` shapes only a pick of an Agent seated at one of these (ADR-0067). One on a transition
+ * below no Agent's state (`null`), and one object written below two Agents' states, shape the pick
+ * of the Agent whose event took the transition (the run host reads it off the event); one on an
+ * entry or an exit below no Agent's state seats nowhere and shapes nothing — the load walk warns.
+ * Read once per Machine, by the action's identity: one `answer` object written in two places
+ * carries both.
  */
 export type AnswerSeats = ReadonlySet<Node | null>;
 
@@ -127,20 +130,24 @@ export function seatsOfAnswer(machine: AnyStateMachine, action: unknown): Answer
       return null;
     };
     const visit = (n: Node): void => {
-      const written = [
-        ...n.entry,
-        ...n.exit,
+      const seat = seatAbove(n);
+      const onEntryOrExit = [...n.entry, ...n.exit];
+      const onTransition = [
         ...[...n.transitions.values()].flat().flatMap((t) => t.actions),
         ...(n.always ?? []).flatMap((t) => t.actions),
         ...(n.initial?.actions ?? []),
       ];
-      for (const a of written) {
+      const note = (a: unknown, seated: boolean): void => {
         const fn = resolve(a);
-        if (!isAnswer(fn)) continue;
+        if (!isAnswer(fn)) return;
         const seats = byAction!.get(fn) ?? new Set<Node | null>();
-        seats.add(seatAbove(n));
+        if (seated) seats.add(seat);
         byAction!.set(fn, seats);
-      }
+      };
+      // An entry or exit below no Agent's state is no transition an Agent's event takes: it seats
+      // nowhere (ADR-0067).
+      for (const a of onEntryOrExit) note(a, seat !== null);
+      for (const a of onTransition) note(a, true);
       for (const child of Object.values(n.states)) visit(child);
     };
     if (machine?.root) visit(machine.root);
@@ -170,11 +177,11 @@ export function answer<
     const seats = seatsOfAnswer((self.getSnapshot() as AnyMachineSnapshot).machine as AnyStateMachine, action);
     // No pick of this Machine's Agent is being answered (the state's first entry, a later Turn's):
     // there is nothing to shape, and nothing runs.
-    const chain = binding?.chainOf?.(self, seats);
+    const chain = binding?.chainOf?.(self, seats, event);
     if (chain === undefined) return;
     // Kit-internal: the host records links by slot name, which is what ChainLink states.
     const links = linksOf(chain) as unknown as readonly ChainLink<TActor, TEvent>[];
-    binding?.setAnswer?.(self, seats, fn({ context, event, chain: links }));
+    binding?.setAnswer?.(self, seats, fn({ context, event, chain: links }), event);
   };
   return Object.assign(action, { jr2Answer: true as const }) as unknown as ActionFunction<
     TContext,

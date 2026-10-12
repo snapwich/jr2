@@ -70,8 +70,16 @@ single-threaded.
   the Allowed picks read AFTER the route. The answer is the last reply since the pick from below the Agent's state — a
   Gate's event and payload, another Agent's pick, a child's output — and the Harness writes the words. With an `answer`
   action the author shapes it instead (ADR-0067): the action reads the CHAIN, every reply since the pick, oldest first,
-  and its value is the answer; the last call wins. One written below an Agent's state shapes only that Agent's pick; one
-  written below no Agent's state may shape any Agent's. An `answer` that runs while no pick of that Agent is being
+  and its value is the answer; the last call wins. One written below an Agent's state — on a state's entry or exit, or
+  on a transition, at or below that Agent's state — shapes only that Agent's pick. On a transition below no Agent's
+  state (the root, or a parent of two Agents' regions) it shapes the pick of the Agent whose event took the transition:
+  the sender of a pick, or the Agent whose pick started the child whose done event it is — the hold records which
+  children the pick's own send started, and keeps them through a restore. The other Agent's pick keeps its default
+  answer. When the event names no Agent (a timer, a Gate's answer, an outside send), it shapes the one such pick
+  outstanding, and with two outstanding it sets nothing. On an entry or an exit below no Agent's state it sets nothing,
+  whatever is outstanding, and the load walk warns, naming the Agent states it could be moved under: an entry or exit
+  there is no transition an Agent's event takes. One action object written below two Agents' states follows the rule of
+  a transition below none: the event names the Agent. An `answer` that runs while no pick of that Agent is being
   answered (a state's first entry, a later Turn's re-entry, another Agent's region of a parallel state) sets nothing. A
   reply comes from a child invoked on an active state below the Agent's state, or from a party whose Gate invoke id or
   Agent slot is invoked there (its sender, ADR-0015). The events the Machine sent itself (a `raise`, a `sendTo(self)`, a

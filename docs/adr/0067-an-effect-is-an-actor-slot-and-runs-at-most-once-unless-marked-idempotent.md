@@ -39,10 +39,13 @@ the credentialed `command` — runs there too, its child confined (below).
   (`{ kind: "output", src, output }`) or by the Machine's events (`{ kind: "event", event }`); its order and length are
   not typed. A link is a reply from outside the Machine; the events it sent itself are skipped. The value is JSON on the
   wire and in the hold; one with no JSON form sets nothing. An `answer` shapes only the pick of the Agent whose state it
-  is written below (on a state's entry or exit, or on a transition of a state, at or below that Agent's state); one
-  written below no Agent's state may shape any Agent's. A child's error is no link, and by default the Agent is not told
-  (ADR-0024); an author who wants it told writes `answer(...)` on the `onError` route. An Effect never takes that route
-  for an outcome: every outcome is output.
+  is written below (on a state's entry or exit, or on a transition of a state, at or below that Agent's state). On a
+  transition below no Agent's state, and as one action object written below two Agents' states, it shapes the pick of
+  the Agent whose event took the transition — the sender of a pick, or the Agent whose pick started the child whose done
+  event it is — and the other Agent's pick keeps its default answer; on an entry or an exit below no Agent's state it
+  sets nothing (ADR-0024). A child's error is no link, and by default the Agent is not told (ADR-0024); an author who
+  wants it told writes `answer(...)` on the `onError` route. An Effect never takes that route for an outcome: every
+  outcome is output.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.
@@ -303,10 +306,12 @@ the credentialed `command` — runs there too, its child confined (below).
   pick enters what an eventless `always` moves on to; across an `after`, only a guard or `assign` before the timer reads
   it; a Gate's event is no pick and is not checked) and a `fill` that overwrites a param are refused; code the probe
   cannot or does not run — a mapper that throws in it, an action other than an `assign` — and a pick that targets a
-  history state that may enter an Effect's state are a warning; and a state below an Agent's state that invokes
-  something and that nothing enters is refused. An Open argv's slots are unknown when the Machine is built, so every
-  param counts as read by it then; `customize()` runs the pick-param check again when it binds the argv, refuses there a
-  param the bound argv does not read, and gives the bound Machine the warnings the walk gives for that argv (ADR-0054).
+  history state that may enter an Effect's state are a warning; a state below an Agent's state that invokes something
+  and that nothing enters is refused; and an `answer` on an entry or an exit below no Agent's state, which shapes no
+  pick, is a warning that names the Agent states it could be moved under. An Open argv's slots are unknown when the
+  Machine is built, so every param counts as read by it then; `customize()` runs the pick-param check again when it
+  binds the argv, refuses there a param the bound argv does not read, and gives the bound Machine the warnings the walk
+  gives for that argv (ADR-0054).
 
 ## Considered options
 
@@ -337,9 +342,6 @@ the credentialed `command` — runs there too, its child confined (below).
 - A command a Harness restart cut settles `unknown`; the stream before the restart is on the feed.
 - An Orchestrator restart mid-command gives one run: the restored Effect reads the exec from its current end and settles
   with its output.
-- Not built: an `answer` that may shape two Agents' picks while both are outstanding at once — one written below no
-  Agent's state, or one action object written below two Agents' states. Which pick it shapes is not decided; today it
-  sets nothing, and each pick keeps its default answer.
 - An `http` call an Orchestrator restart caught in flight gives one send: the restored Effect finds it on the replica
   that holds it. One the Effector lost gives `unknown`, or a second send when it is `idempotent`.
 - A push the Orchestrator restart caught in flight gives one push of the pinned commit; one the Effector lost is pushed

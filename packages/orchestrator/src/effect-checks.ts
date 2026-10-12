@@ -362,6 +362,35 @@ export function effectChecks(
       }
     }
   }
+  // An `answer` on an entry or an exit below no Agent's state shapes no pick (ADR-0067): an entry
+  // or exit there is no transition an Agent's event takes. Warned, naming the Agent states it could
+  // be moved under — those below it, else every one the Machine has.
+  const named = (machine.implementations?.actions ?? {}) as Record<string, unknown>;
+  const resolve = (a: unknown): unknown => {
+    const type = typeof a === "string" ? a : typeof a === "object" && a !== null ? (a as { type?: unknown }).type : a;
+    return typeof type === "string" ? named[type] : a;
+  };
+  const agentStates = all.filter((n) => invokesAgent(n) !== undefined);
+  const seated = (n: Node): boolean => {
+    for (let p: Node | undefined = n; p; p = p.parent) if (invokesAgent(p) !== undefined) return true;
+    return false;
+  };
+  for (const n of all) {
+    if (seated(n) || agentStates.length === 0) continue;
+    for (const [where, list] of [
+      ["entry", n.entry],
+      ["exit", n.exit],
+    ] as const) {
+      if (!list.some((a) => isAnswer(resolve(a)))) continue;
+      const under = agentStates.filter((s) => isDescendant(s, n));
+      const names = (under.length > 0 ? under : agentStates).map((s) => `"${s.id}"`);
+      const choice = names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : names[0];
+      warnings.push(
+        `an answer on the ${where} of "${n.id}" is below no Agent's state, so it shapes no pick — an ${where} there ` +
+          `is no transition an Agent's event takes; move it under ${choice}, or onto a transition (ADR-0067)`,
+      );
+    }
+  }
   return { errors, warnings: [...new Set(warnings)] };
 }
 

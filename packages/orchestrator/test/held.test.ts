@@ -1157,3 +1157,92 @@ test('work stopped back at Rest before it replied, or a child that errs: answere
     assert.doesNotMatch(JSON.stringify(answer), /secret-ish internals/, `${name}: no error text in the answer`);
   }
 });
+
+// The hold records which children its pick started (ADR-0067): a done event of one of them names the
+// pick an `answer` on a transition below no Agent's state shapes. The record is saved with the run,
+// so after a park and a restore the same done event shapes the same pick — and only it.
+test("the hold records the children its pick started; after a restore, a done event below no Agent's state shapes that pick only", async () => {
+  const go = ev("go");
+  const pickA = ev("pick_a");
+  const pickB = ev("pick_b");
+  /** A child Machine that ends when its Gate is answered `go`. */
+  const waiter = (gate: string) =>
+    jr2Setup({ events: [go] }).createMachine({
+      initial: "w",
+      states: { w: { invoke: { src: "gate", id: gate, input: {} }, on: { go: "f" } }, f: { type: "final" } },
+      output: () => ({ waited: gate }),
+    });
+  const endpoint = "http://harness.invalid";
+  const clients = { a: [] as MockFlueClient[], b: [] as MockFlueClient[] };
+  const def = (): WorkflowDef => ({
+    name: "pair",
+    machine: jr2Setup({
+      events: [pickA, pickB],
+      actors: {
+        coderA: agentActorWith(() => new MockFlueClient(), coderDefinition),
+        coderB: agentActorWith(() => new MockFlueClient(), reviewerDefinition),
+        waiterA: waiter("doneA"),
+        waiterB: waiter("doneB"),
+      },
+    }).createMachine({
+      id: "pair",
+      type: "parallel",
+      // Below no Agent's state: the root, on A's child's done event.
+      on: { "xstate.done.actor.waitA": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+      states: {
+        ra: {
+          invoke: { src: "coderA", input: { prompt: "A", endpoint, continue: true } },
+          initial: "rest",
+          states: { rest: {}, waiting: { invoke: { src: "waiterA", id: "waitA" } } },
+          on: { pick_a: ".waiting" },
+        },
+        rb: {
+          invoke: { src: "coderB", input: { prompt: "B", endpoint, continue: true } },
+          initial: "rest",
+          states: { rest: {}, waiting: { invoke: { src: "waiterB", id: "waitB" } } },
+          on: { pick_b: ".waiting" },
+        },
+      },
+    }),
+    provide: () => {
+      const a = new MockFlueClient();
+      const b = new MockFlueClient();
+      clients.a.push(a);
+      clients.b.push(b);
+      return {
+        actors: {
+          coderA: agentActorWith(() => a, coderDefinition),
+          coderB: agentActorWith(() => b, reviewerDefinition),
+        },
+      };
+    },
+  });
+  const store = await mkStore();
+  const host = new RunHost({ store });
+  host.register(def());
+  const { runId } = await host.start("pair");
+  await waitFor(() => clients.a[0]!.admits.length > 0 && clients.b[0]!.admits.length > 0);
+  const ia = clients.a[0]!.admits[0]!.instanceId;
+  const ib = clients.b[0]!.admits[0]!.instanceId;
+  const pa = host.sendToAgent(ia, { type: "pick_a" });
+  const pb = host.sendToAgent(ib, { type: "pick_b" });
+  assert.equal(pa.outstanding, true);
+  assert.equal(pb.outstanding, true);
+  const saved = JSON.stringify((await store.load(runId))?.snapshot);
+  assert.match(saved, /"children":\["waitA"\]/, "A's hold records the child its pick started");
+  assert.match(saved, /"children":\["waitB"\]/, "and B's its own");
+  await host.stop(runId);
+
+  const second = new RunHost({ store });
+  second.register(def());
+  assert.deepEqual((await second.restore()).reattached, [runId]);
+  const polledA = second.awaitDelivery(ia, pa.deliveryId);
+  second.sendToGate(runId, "waitA.doneA", { type: "go" });
+  const answeredA = await polledA;
+  assert.deepEqual(answeredA?.answer, { kind: "answer", value: "the root saw xstate.done.actor.waitA" });
+  const polledB = second.awaitDelivery(ib, pb.deliveryId);
+  second.sendToGate(runId, "waitB.doneB", { type: "go" });
+  const answeredB = await polledB;
+  assert.deepEqual(answeredB?.answer, { kind: "output", actor: "waiterB", output: { waited: "doneB" } });
+  await second.close();
+});

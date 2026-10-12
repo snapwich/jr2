@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign } from "xstate";
+import { assign, raise, type AnyStateMachine } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -13,6 +13,7 @@ import { arg, commandWith, type CommandOutput } from "../src/effect.ts";
 import { answer, fromPick, isAnswer, isPickMapper, paramsOf, seatsOfAnswer } from "../src/pick.ts";
 import { RunHost } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
+import { loadWarningsOf } from "../src/vocabulary.ts";
 import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
@@ -354,4 +355,215 @@ test("an `answer` the walk did not find is seated at no Agent's state", () => {
     ],
     [null],
   );
+});
+
+// --- An `answer` below no Agent's state, with two Agents' picks outstanding (ADR-0067, ADR-0024) ----
+// Two Agents in parallel regions of the root, each with a pick outstanding. On a TRANSITION below no
+// Agent's state, `answer` shapes the pick of the Agent whose event took it: the sender of a pick, or
+// the Agent whose pick started the child whose done event it is — the hold records which children
+// a pick started. The other Agent's pick keeps its default answer. On an ENTRY or EXIT below no
+// Agent's state it sets nothing, and the load walk warns, naming the Agent states it could be moved
+// under.
+
+const buildA = defineEvent({ name: "build_a", input: z.object({}) });
+const buildB = defineEvent({ name: "build_b", input: z.object({}) });
+
+/** Two Agents, each in a region of the root: a pick (`build_a`, `build_b`) starts its region's own command, which
+ * has no `onDone` — settled, it is Rest. `extra` adds to the root's own config. */
+function twoAgents(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlueClient, extra: Record<string, unknown> = {}) {
+  const region = (coder: string, cmd: string, id: string, pick: string) => ({
+    invoke: { src: coder, input: { prompt: coder, endpoint: "http://harness.invalid" } },
+    initial: "rest",
+    states: { rest: {}, building: { invoke: { src: cmd, id } } },
+    on: { [pick]: ".building" },
+  });
+  return jr2Setup({
+    events: [buildA, buildB],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderA: commandWith(fake.factory, ["make", "a"]),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    ...extra,
+    states: {
+      ra: region("coderA", "builderA", "buildA", "build_a"),
+      rb: region("coderB", "builderB", "buildB", "build_b"),
+      ...((extra.states as Record<string, unknown> | undefined) ?? {}),
+    },
+  } as never) as unknown as AnyStateMachine;
+}
+
+/** Starts the run, and has both Agents pick `build`: two picks outstanding, two commands running. */
+async function bothOutstanding(machine: unknown, fake: FakeHarnessExec, a: MockFlueClient, b: MockFlueClient) {
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine: machine as never, provide: () => ({}) });
+  const { runId } = await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const ia = a.admits[0]!.instanceId;
+  const ib = b.admits[0]!.instanceId;
+  const pa = host.sendToAgent(ia, { type: "build_a" });
+  await waitFor(() => fake.starts.length === 1);
+  const pb = host.sendToAgent(ib, { type: "build_b" });
+  await waitFor(() => fake.starts.length === 2);
+  assert.equal(pa.outstanding, true);
+  assert.equal(pb.outstanding, true);
+  return { host, runId, ia, ib, pa, pb, execA: fake.starts[0]!.id, execB: fake.starts[1]!.id };
+}
+
+test("a transition below no Agent's state on a child's done event shapes the pick that started that child, and only it", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const fromRoot = answer(({ event }) => `the root saw ${event.type}`);
+  const machine = twoAgents(fake, a, b, { on: { "xstate.done.actor.buildA": { actions: fromRoot } } });
+  assert.deepEqual([...seatsOfAnswer(machine, fromRoot)], [null], "a transition on the root: below no Agent's state");
+  const { host, ia, ib, pa, pb, execA, execB } = await bothOutstanding(machine, fake, a, b);
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, execA);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.deepEqual(answeredA?.answer, { kind: "answer", value: "the root saw xstate.done.actor.buildA" });
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, execB);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", "B's pick keeps its default answer: its own command's output");
+});
+
+test("a transition below no Agent's state on a pick shapes the sender's pick, while the other Agent's is outstanding", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const ship = defineEvent({ name: "ship", input: z.object({}) });
+  const machine = jr2Setup({
+    events: [buildB, ship, defineEvent({ name: "start_a", input: z.object({}) })],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderA: commandWith(fake.factory, ["make", "a"]),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    // A's `ship`, written on the root: its transition is below no Agent's state; the event it raises
+    // enters A's work, in the same send, and leaves A's state as it is.
+    on: {
+      ship: {
+        actions: [
+          answer(({ event }) => `shipped by ${(event as { sender?: { id: string } }).sender?.id}`),
+          raise({ type: "start_a" }),
+        ],
+      },
+    },
+    states: {
+      ra: {
+        invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builderA", id: "buildA" } } },
+        on: { start_a: ".building" },
+      },
+      rb: {
+        invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builderB", id: "buildB" } } },
+        on: { build_b: ".building" },
+      },
+    },
+  });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine, provide: () => ({}) });
+  await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const ia = a.admits[0]!.instanceId;
+  const ib = b.admits[0]!.instanceId;
+  const pb = host.sendToAgent(ib, { type: "build_b" });
+  await waitFor(() => fake.starts.length === 1);
+  const pa = host.sendToAgent(ia, { type: "ship" });
+  await waitFor(() => fake.starts.length === 2);
+  assert.equal(pb.outstanding, true);
+  assert.equal(pa.outstanding, true);
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", "B's pick keeps its default answer");
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, fake.starts[1]!.id);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.deepEqual(answeredA?.answer, { kind: "answer", value: "shipped by coderA" });
+});
+
+test("an entry below no Agent's state sets nothing, even with one pick outstanding, and the load walk warns naming the Agent states", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const onEntry = answer(() => "from an entry below no Agent's state");
+  // A third region, with no Agent: its `ticked` state is entered by a timer while A's pick is
+  // outstanding, and answers on entry. The root itself answers on entry too.
+  const machine = twoAgents(fake, a, b, {
+    entry: onEntry,
+    states: { rc: { initial: "idle", states: { idle: { after: { 150: "ticked" } }, ticked: { entry: onEntry } } } },
+  });
+  assert.deepEqual([...seatsOfAnswer(machine, onEntry)], [], "an entry or exit below no Agent's state seats nowhere");
+  const warnings = loadWarningsOf(machine);
+  const forRoot = warnings.find((w) => w.includes('the entry of "two"'));
+  assert.ok(forRoot, `the root's entry is warned: ${warnings.join(" | ")}`);
+  assert.match(forRoot, /"two\.ra" or "two\.rb"/, "naming the Agent states it could be moved under");
+  assert.ok(
+    warnings.some((w) => w.includes('the entry of "two.rc.ticked"')),
+    `the region's entry is warned: ${warnings.join(" | ")}`,
+  );
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine, provide: () => ({}) });
+  await host.start("two");
+  await waitFor(() => a.admits.length === 1);
+  const ia = a.admits[0]!.instanceId;
+  const pa = host.sendToAgent(ia, { type: "build_a" });
+  assert.equal(pa.outstanding, true);
+  await waitFor(() => fake.starts.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, fake.starts[0]!.id);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.equal(answeredA?.answer?.kind, "output", "A reads its command's output: the entry set nothing");
+});
+
+test("one `answer` written below two Agents' states shapes the pick of the Agent whose child's done event took the transition", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const both = answer(({ event }) => `built: ${event.type}`);
+  const region = (coder: string, cmd: string, id: string, pick: string) => ({
+    invoke: { src: coder, input: { prompt: coder, endpoint: "http://harness.invalid" } },
+    initial: "rest",
+    states: { rest: {}, building: { invoke: { src: cmd, id } } },
+    on: { [pick]: ".building", [`xstate.done.actor.${id}`]: { actions: both } },
+  });
+  const machine = jr2Setup({
+    events: [buildA, buildB],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderA: commandWith(fake.factory, ["make", "a"]),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    states: {
+      ra: region("coderA", "builderA", "buildA", "build_a"),
+      rb: region("coderB", "builderB", "buildB", "build_b"),
+    },
+  } as never) as unknown as AnyStateMachine;
+  assert.equal(seatsOfAnswer(machine, both).size, 2, "one action object, below two Agents' states");
+  const { host, ia, ib, pa, pb, execA, execB } = await bothOutstanding(machine, fake, a, b);
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, execB);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.deepEqual(answeredB?.answer, { kind: "answer", value: "built: xstate.done.actor.buildB" });
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, execA);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.deepEqual(answeredA?.answer, { kind: "answer", value: "built: xstate.done.actor.buildA" });
 });

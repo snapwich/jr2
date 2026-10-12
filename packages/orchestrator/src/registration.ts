@@ -507,14 +507,17 @@ export type RunBinding = {
   /**
    * Every reply since the pick that `machine`'s Agent has outstanding, or is delivering now, oldest
    * first (ADR-0024) — what an `answer` action reads as its `chain` (ADR-0067). Only an Agent
-   * seated at one of `seats` — the Agents' states the action is written below, `null` for none —
-   * counts. Undefined when no such pick is being answered, or when more than one is: then the
-   * action cannot tell whose answer it shapes, and sets none.
+   * seated at one of `seats` — the Agents' states the action is written below, `null` for a
+   * transition below none — counts. Where `seats` does not name one Agent's state, `event` — the
+   * event whose transition runs the action — names the Agent: the sender of a pick, or the Agent
+   * whose pick started the child whose done event it is. Undefined when no such pick is being
+   * answered, or when more than one is and the event names none of them: then the action cannot
+   * tell whose answer it shapes, and sets none.
    */
-  chainOf?: (machine: AnyActorRef, seats: AnswerSeats) => PickAnswer[] | undefined;
+  chainOf?: (machine: AnyActorRef, seats: AnswerSeats, event?: AnyEventObject) => PickAnswer[] | undefined;
   /** Set what that pick's answer is (ADR-0067): it replaces the default, and the last call wins.
    * Kept with the hold, so a restore answers the same. */
-  setAnswer?: (machine: AnyActorRef, seats: AnswerSeats, value: unknown) => void;
+  setAnswer?: (machine: AnyActorRef, seats: AnswerSeats, value: unknown, event?: AnyEventObject) => void;
   /**
    * The Effect ledger's READ half (ADR-0067): one Effect's row, by its id — what a restored Effect
    * reads to deliver its output, re-attach, or settle `unknown`, and never to run twice.
