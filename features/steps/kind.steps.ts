@@ -2905,6 +2905,11 @@ async function scenarioGpgKey(): Promise<string> {
       "loopback",
       "--passphrase",
       "",
+      // Made a day ago: gpg refuses to sign with a key created after its clock reads, and a key made
+      // at the host's clock now is one once that clock steps back (a host's clock sync).
+      "--faked-system-time",
+      `${Math.floor(Date.now() / 1000) - 86_400}!`,
+      "--ignore-time-conflict",
       "--quick-gen-key",
       "jr2 e2e signer <signer@jr2.test>",
       "ed25519",

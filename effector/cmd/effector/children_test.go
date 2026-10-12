@@ -210,7 +210,9 @@ func gpgKey(t *testing.T) string {
 		gittest.RemoveSocketDir(home)
 		_ = os.RemoveAll(home)
 	})
+	// Made a day ago, so a step back of the host's clock never makes it a key "created in the future".
 	gen := exec.Command("gpg", "--batch", "--homedir", home, "--pinentry-mode", "loopback", "--passphrase", "",
+		"--faked-system-time", gittest.ADayAgo(), "--ignore-time-conflict",
 		"--quick-gen-key", "jr2 signer <signer@jr2.test>", "ed25519", "sign", "never")
 	if out, err := gen.CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)

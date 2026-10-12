@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // SweepSocketDirs removes, when the test ends, the GnuPG socket directories its agents left. When
@@ -42,6 +43,13 @@ func SweepSocketDirs(t *testing.T) {
 func RemoveSocketDir(home string) {
 	_ = exec.Command("gpgconf", "--homedir", home, "--kill", "all").Run()
 	_ = exec.Command("gpgconf", "--homedir", home, "--remove-socketdir").Run()
+}
+
+// ADayAgo is gpg's `--faked-system-time` for a day before now. A test's GPG key is made then: gpg
+// refuses to sign with a key created after its clock reads, and a key made at the host's clock now
+// is one once that clock steps back — a host's clock sync does that, a WSL2 host every half minute.
+func ADayAgo() string {
+	return strconv.FormatInt(time.Now().Add(-24*time.Hour).Unix(), 10) + "!"
 }
 
 // Pod is one test's pod-shaped tree.

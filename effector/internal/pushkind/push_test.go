@@ -78,8 +78,11 @@ func newFixture(t *testing.T, sign string) *fixture {
 		if sign == "gpg-passphrase" {
 			pass = "a passphrase"
 		}
+		// Made a day ago: a key made at the host's clock now is "created in the future" once the clock
+		// steps back (a WSL2 host steps it back every half minute), and gpg then refuses to sign.
 		run(t, "gpg", "--batch", "--homedir", home, "--pinentry-mode", "loopback", "--passphrase", pass,
-			"--ignore-time-conflict", "--quick-gen-key", signerName+" <"+signerEmail+">", "ed25519", "sign", "never")
+			"--faked-system-time", gittest.ADayAgo(), "--ignore-time-conflict",
+			"--quick-gen-key", signerName+" <"+signerEmail+">", "ed25519", "sign", "never")
 		out := run(t, "gpg", "--batch", "--homedir", home, "--pinentry-mode", "loopback", "--passphrase", pass,
 			"--armor", "--export-secret-keys", signerEmail)
 		if err := os.WriteFile(filepath.Join(dir, secrets.SignGPGFile), []byte(out), 0o400); err != nil {

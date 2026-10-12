@@ -107,6 +107,29 @@ func TestARequestSignedBeforeTheProcessStartedIsRefused(t *testing.T) {
 	}
 }
 
+// The wall clock can step back while the process runs — a host's clock sync; a WSL2 host steps it
+// back by more than a second every half minute. When it did, the process's start is read on the
+// wall clock as it reads now: a request signed now is accepted, and one signed before the start, in
+// that same reading, is still refused.
+func TestAWallClockThatStepsBackRefusesNoRequestSignedAfterTheStart(t *testing.T) {
+	started := time.UnixMilli(1_700_000_000_000)
+	// One second of run on the monotonic clock; the wall clock stepped back 2.5 s in it.
+	now := started.Add(-1500 * time.Millisecond)
+	v := NewVerifier(key, addr, started, func() time.Time { return now })
+	v.since = func() time.Duration { return time.Second }
+	body := []byte(`{"kind":"http"}`)
+	at := strconv.FormatInt(now.UnixMilli(), 10)
+	sig := RequestMAC(key, "POST", addr, "/effects/e1", at, "nonce-after-the-step-0", body)
+	if err := v.Verify("POST", "/effects/e1", at, "nonce-after-the-step-0", sig, body); err != nil {
+		t.Fatalf("a request signed after the wall clock stepped back is refused: %v", err)
+	}
+	before := strconv.FormatInt(now.Add(-time.Second-time.Millisecond).UnixMilli(), 10)
+	sig = RequestMAC(key, "POST", addr, "/effects/e1", before, "nonce-before-the-start", body)
+	if err := v.Verify("POST", "/effects/e1", before, "nonce-before-the-start", sig, body); err != ErrRefused {
+		t.Fatalf("a request signed before the process started is not refused: %v", err)
+	}
+}
+
 // The golden signatures (ADR-0068): the TypeScript client signs and verifies the same fixtures.
 func TestTheGoldenSignatures(t *testing.T) {
 	var req struct {

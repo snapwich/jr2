@@ -183,14 +183,16 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   address is signed and not sent: the Effector verifies with its own. An answer carries an HMAC over
   `jr2-effector-response`, its status, the request's method, path and nonce, and the sha-256 of its body. So an answer
   is bound to the one request it answers. The Effector refuses a request with no signature, a wrong one (one signed for
-  another replica's address is one), a time before its process started or more than 5 minutes from its clock, or a nonce
-  it saw inside that window: 401, an empty body, no signature, before any route is read. A replica keeps the nonces it
-  saw in its process memory; the address and the start time cover what that memory cannot. So a start sent again — to
-  another replica of the placement (a rollout runs two), or to the same replica after its process restarted — starts
-  nothing. A refused caller learns nothing, not even whether an Effect exists. Reason: a process that takes the
-  Effector's port while the Effector is down learns no secret from a request and can forge neither a request nor an
-  answer. It can read a request's input, which is not secret, and it can make the call fail, which is output. A start it
-  took, sent to the Effector once it is back, was signed before that process started.
+  another replica's address is one), a time before its process started — on its wall clock as it reads now: when that
+  clock stepped back since the start (a host's clock sync), the start is now less how long the process has run, read on
+  the monotonic clock — or more than 5 minutes from its clock, or a nonce it saw inside that window: 401, an empty body,
+  no signature, before any route is read. A replica keeps the nonces it saw in its process memory; the address and the
+  start time cover what that memory cannot. So a start sent again — to another replica of the placement (a rollout runs
+  two), or to the same replica after its process restarted — starts nothing. A refused caller learns nothing, not even
+  whether an Effect exists. Reason: a process that takes the Effector's port while the Effector is down learns no secret
+  from a request and can forge neither a request nor an answer. It can read a request's input, which is not secret, and
+  it can make the call fail, which is output. A start it took, sent to the Effector once it is back, was signed before
+  that process started.
 - **The Orchestrator's side.** `@jr2/orchestrator` speaks the wire through an injected transport (the unit tests' seam,
   [ADR-0010](0010-bdd-acceptance-tests.md)). The Instance Effector's address is derived from the namespace,
   `jr2-instance-effector.<namespace>.svc:8082`, and its key from the signing key (`effectorKey`): the Orchestrator
