@@ -2541,15 +2541,17 @@ Then("the echo received the run's call exactly once", async function (this: E2EW
 });
 
 /** An Open secret bound by the composer (ADR-0054): the echo answers each header it received, and the
- * Effector scrubs the bound secret's value out of the answer — so `Bearer [secret:echo-token]`, raw,
- * is the Authorization header carrying that very value. */
+ * Effector scrubs out of the answer the Authorization value it built from the bound secret, whole
+ * (ADR-0068) — so an Authorization line that is `[secret:echo-token]`, raw, is the header that
+ * carried that very secret: the `Bearer` it wrote is inside what was replaced. A header the Effector
+ * did not build from it would come back as it was. */
 Then(
   "the echo received the bound secret as the Bearer in its Authorization header",
   async function (this: E2EWorld): Promise<void> {
     const output = await httpOutput(this);
     assert.match(
       String(output.body),
-      /^header authorization raw Bearer \[secret:echo-token\]$/m,
+      /^header authorization raw \[secret:echo-token\]$/m,
       `the echo saw the bound secret as the Bearer: ${String(output.body)}`,
     );
     assert.equal(await echoCount(this), 1, "one send");
@@ -2959,12 +2961,15 @@ async function lingering(world: E2EWorld, pod: string): Promise<string[]> {
   return out.split("\n").filter((line) => line.trim() !== "");
 }
 
-/** Waits until the run's open Gate is the named one: the state before it has exited. */
-async function gateOpen(world: E2EWorld, gate: string): Promise<void> {
+/** Waits until the run's open Gate is the named one (the state before it has exited), and answers its
+ * id as the run lists it: a Gate invoked in a child Machine is listed under that child's id
+ * (`body.cut`), and `jr2 send` takes that id. */
+async function gateOpen(world: E2EWorld, gate: string): Promise<string> {
   let last: WsStatus | undefined;
   for (let i = 0; i < 240; i++) {
     last = await wsStatus(world);
-    if ((last.gates ?? []).some((g) => g.gate === gate)) return;
+    const open = (last.gates ?? []).find((g) => g.gate === gate || g.gate.endsWith(`.${gate}`));
+    if (open) return open.gate;
     await sleep(500);
   }
   throw new Error(`the run never opened Gate ${gate} (last: ${JSON.stringify(last)})`);
@@ -2981,7 +2986,8 @@ Then("the credentialed command is running in the Sandbox Effector", async functi
 });
 
 When("the state that runs the credentialed command exits", async function (this: E2EWorld): Promise<void> {
-  const r = await this.runCli(["send", this.runId!, "--gate", "cut", "--event", "go"]);
+  const cut = await gateOpen(this, "cut");
+  const r = await this.runCli(["send", this.runId!, "--gate", cut, "--event", "go"]);
   assert.equal(r.code, 0, `jr2 send failed: ${r.stderr}`);
   await gateOpen(this, "after");
 });
@@ -2998,7 +3004,8 @@ Then(
       await sleep(500);
     }
     assert.deepEqual(left, [], "the stopped command still runs in the Sandbox Effector");
-    const r = await this.runCli(["send", this.runId!, "--gate", "after", "--event", "go"]);
+    const after = await gateOpen(this, "after");
+    const r = await this.runCli(["send", this.runId!, "--gate", after, "--event", "go"]);
     assert.equal(r.code, 0, `jr2 send failed: ${r.stderr}`);
   },
 );
