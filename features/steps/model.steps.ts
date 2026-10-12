@@ -38,7 +38,8 @@ import {
   type StateNodeLike,
 } from "../lib/model-said.ts";
 import { FINISHED } from "../lib/model-finished.ts";
-import { ensureSeed } from "./seed.ts";
+import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
+import { ensureSeed, pushRemoteCommitsFromMain } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -727,28 +728,27 @@ const answered: Driver = async (world, input) => {
 };
 
 /**
- * continue-after-signed-push (ADR-0067): the coder publishes twice, signed. The setup is a first
- * push that published a signed copy (`pushed`, its published commit not its source) — the answer
- * that carries the paragraph after a signed push; without it the trial is void. The measurement is
- * the second push: `pushed`, because the Agent continued on its branch and left the pushed commits
- * as they were. A trial that never published a second time is a miss.
+ * continue-after-signed-push (ADR-0067, ADR-0066): the coder publishes twice, signed. The setup is
+ * a first push that published a signed copy (`pushed`, its published commit not its source) — the
+ * answer that carries the paragraph after a signed push; without it the trial is void. The
+ * measurement is the second push: `pushed`, because the Agent continued on its branch and left the
+ * pushed commits as they were. When the setup holds and there is one push, the commits from `main`
+ * to its published commit on push.git decide: two or more, and the model made both commits before
+ * it read any post-push text, so the trial is void (`features/lib/model-continue.ts`); one, and a
+ * trial that never published a second time is a miss.
  */
 const continueAfterSignedPush: Driver = async (world, input) => {
   const runId = await startRun(world, "continue-after-signed-push", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const pushes = (last.context.output?.pushes ?? []) as Array<{
-    outcome?: string;
-    published?: string;
-    source?: string;
-  }>;
-  const first = pushes[0];
-  const setup = first?.outcome === "pushed" && first.published !== undefined && first.published !== first.source;
+  const pushes = (last.context.output?.pushes ?? []) as PushRecord[];
+  const carried = needsCarried(pushes) ? await pushRemoteCommitsFromMain(pushes[0]!.published!) : undefined;
+  const reading = readContinue(pushes, carried);
+  const seen = `pushes ${pushes.map((p) => p.outcome).join(" ") || "none"}; ended ${last.status}/${String(last.context.output?.outcome)}`;
   return {
     runId,
-    measured: setup && pushes[1]?.outcome === "pushed",
+    measured: reading.measured,
     finished: FINISHED["continue-after-signed-push"]!(last),
-    ...(setup ? {} : { void: true }),
-    note: `pushes ${pushes.map((p) => p.outcome).join(" ") || "none"}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+    ...(reading.void === undefined ? { note: seen } : { void: true, note: `${reading.void}; ${seen}` }),
   };
 };
 
@@ -931,12 +931,14 @@ function claimOf(world: E2EWorld): Claim {
 
 /** Compare a count with the floor, naming every trial that fell short. Every trial's note is
  * printed first, whatever the count: a baseline is taken from a run that was read (ADR-0066), and a
- * miss at or above the floor is read too. */
+ * miss at or above the floor is read too. A void trial kept past the bound of replacements counts
+ * against the floor, and prints as a void, never as a miss. */
 function atLeast(claim: Claim, floor: number, what: string, of: (t: Trial) => boolean, cell = claim.cell): void {
   claim.floors[cell] = floor;
-  for (const t of claim.trials) console.log(`trial ${t.runId} ${cell} ${of(t) ? "pass" : "miss"}: ${t.note}`);
+  const verdict = (t: Trial) => (of(t) ? "pass" : t.void ? "void, past the bound of replacements" : "miss");
+  for (const t of claim.trials) console.log(`trial ${t.runId} ${cell} ${verdict(t)}: ${t.note}`);
   const passed = claim.trials.filter(of).length;
-  const failed = claim.trials.filter((t) => !of(t)).map((t) => `  ${t.runId}: ${t.note}`);
+  const failed = claim.trials.filter((t) => !of(t)).map((t) => `  ${t.runId} (${verdict(t)}): ${t.note}`);
   assert.ok(
     passed >= floor,
     `${what} in ${passed} of ${claim.trials.length} trials, below the floor of ${floor} (${cell}):\n${failed.join("\n")}`,

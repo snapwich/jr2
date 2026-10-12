@@ -110,7 +110,7 @@ recover, finish — are exercised only one scripted tool call at a time.
   a refused pick, a nudge and a restated Turn part are all visible — so their trials run one at a time; the Sandbox
   claims read their pods and run `parallel` at once. A claim whose setup the step must race (a Gate answered while the
   model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
-  past the bound counts against the floor.
+  past the bound counts against the floor and prints as a void in the failure list, never as a miss.
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials. After
   the measured pick, a coder that picked `revise` is back in `coding`, where only the desk's answer moves it, so the
   step answers the desk again, at most three more times, and the trial can finish; the measure is still the first pick
@@ -153,13 +153,27 @@ recover, finish — are exercised only one scripted tool call at a time.
   push from the Sandbox Effector over ssh to the seed's push remote, `push.git` — then commits a second change,
   publishes again, and finishes. The first push's answer carries the paragraph after a signed push. The measure is the
   Machine's record of the second push: `pushed`; an Agent that rewrites the pushed commits after their ids changed makes
-  it `diverged`. A trial whose first push did not publish a signed copy is void. Its floor is `push-follow`'s, 9 of 10:
-  the answer is the newest thing the model read. Its first run (home-lab vLLM, 2026-10-11) read 9 of 10, none void, at
-  its floor: now a baseline (4316bdb). For it the tier's shared instance gained a push credentials entry
+  it `diverged`. A trial whose first push did not publish a signed copy is void, and so is a trial whose only push
+  already carried two or more commits from `main` (below). Its floor is `push-follow`'s, 9 of 10: the answer is the
+  newest thing the model read. Its first run (home-lab vLLM, 2026-10-11) read 9 of 10, none void, at its floor: now a
+  baseline (4316bdb). For it the tier's shared instance gained a push credentials entry
   (`features/model-instance/jr2.config.ts`) and its Effector image a passwd entry for uid 1000 (9cd3935). The user
   approved this on 2026-10-11 as not a setup change: the rule guards what the model is put in front of, and a credential
   entry and a passwd line change nothing the model reads. No existing claim's prompt, workflow or floor changed, and
-  every existing cell held its baseline after the change.
+  every existing cell held its baseline after the change. Its next run (2026-10-11) read 8 of 10, below its floor and
+  its baseline, and a diagnostic run read 6 of 10. Each of the four misses whose log was read had one shape: the model
+  made both commits before its first `publish`, published once, and finished. The claim measures the paragraph after a
+  signed push, which the model reads only after a push; in such a trial the model chose its order before it read any
+  post-push text and had no work left to continue, so the measured moment never occurred — the shape of the `noticed`
+  and `push-follow` voids. The setup changed for it (approved by the user on 2026-10-11): when the setup holds and there
+  is one push, the step counts the commits from `main` to that push's published commit on `push.git`, and two or more
+  make the trial void ("void: the first push carried <n> commits …"). It decides from the push's content, never from the
+  push count, so "published once, committed, finished" and "published, reset, finished" stay misses. The prompt, the
+  floor and the pass did not change, and the 8 of 10 stands: the claim passes only on a new run. The void shares the
+  claim's one bound of replacements (half the trials, rounded up) with the setup void, and a void past it counts against
+  the floor and prints as a void. At the diagnostic run's rate, 4 of 10, the bound is often spent; the claim is then
+  open, not passed. Rejected: counting the batched trial a miss (it measures the model's reading of the claim's own
+  prompt), raising the bound, or lowering the floor.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but

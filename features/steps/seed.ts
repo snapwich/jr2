@@ -407,6 +407,15 @@ export async function pushRemoteTip(branch: string): Promise<string> {
   return out.trim();
 }
 
+/** How many commits the push remote holds from `main` to `commit`: what a push of it carried. */
+export async function pushRemoteCommitsFromMain(commit: string): Promise<number> {
+  assert.match(commit, /^[0-9a-f]{40}$/);
+  const out = await inSeed(`git -c safe.directory='*' -C /srv/push.git rev-list --count main..${commit}`);
+  const n = Number(out.trim());
+  assert.ok(Number.isInteger(n), `rev-list --count answered ${JSON.stringify(out)}`);
+  return n;
+}
+
 /** The GPG push remote's branch tip and that commit's raw object, or "" for both when it has none. */
 export async function gpgRemoteCommit(branch: string): Promise<{ tip: string; raw: string }> {
   assert.match(branch, /^[a-z0-9][a-z0-9-]{0,60}$/, "a branch is a plain lower-case label");

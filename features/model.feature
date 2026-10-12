@@ -258,7 +258,9 @@ Feature: a real model drives the kit
       The `continue-after-signed-push` coder fixes the seed's failing test, commits and publishes
       — a signed push over ssh to the seed's push remote — then commits a comment and publishes
       again, then finishes. The second push's outcome, from the Machine's own record, is the
-      measurement: `pushed`. A trial whose first push did not publish a signed copy is void.
+      measurement: `pushed`. A trial whose first push did not publish a signed copy is void, and so
+      is one whose only push already carried two or more commits from `main` (read on the push
+      remote): the model chose its order before it read any post-push text (ADR-0066).
       Given the seed's push remote trusts this scenario's keys
       And the model instance is serving
       When I run the "continue-after-signed-push" workflow 10 times with thinking off
