@@ -39,6 +39,11 @@ export class FakeEffector {
   loseNextAnswer = false;
   /** When set, every DELETE is refused a connection: a stop that does not reach the Effector. */
   stopsFail = false;
+  /** When set, every DELETE answers 404: no replica holds the Effect (its start had not arrived). */
+  stopsMissing = false;
+  /** What a DELETE settles a running command with: `exited` SIGTERM unless set (a stop that came
+   * before the program started settles `unknown`). */
+  stopOutcome: unknown = { outcome: "exited", signal: "SIGTERM", tail: "" };
   /** How many of the next polls (GET) get an unsigned answer — another process on a stale address. */
   forgePolls = 0;
   /** When set, every signed answer's body is not the wire's shape (a jr2 defect). */
@@ -132,9 +137,10 @@ export class FakeEffector {
       if (method === "DELETE") {
         // The stop route: a credentialed command's group is stopped; a push or an http has none.
         if (held.req.kind !== "command") return answer(405, { error: "POST or GET" });
+        if (this.stopsMissing) return answer(404, stateOf(undefined));
         this.stopped.push(id);
         if (!held.output) {
-          held.output = { outcome: "exited", signal: "SIGTERM", tail: "" };
+          held.output = this.stopOutcome;
           for (const wake of [...held.waiters]) wake();
         }
         return answer(200, stateOf(held));

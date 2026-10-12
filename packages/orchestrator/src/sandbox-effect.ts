@@ -603,8 +603,13 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
   const port = row.kind === "command" ? run?.port : undefined;
   port?.stop(effectId, AbortSignal.timeout(STOP_WAIT_MS)).then(
     (state) => {
-      const text = stoppedText(state);
-      if (text) binding?.marker?.({ kind: "effect", slot: row.slot, effect: effectId, stage: "aborted", text });
+      binding?.marker?.({
+        kind: "effect",
+        slot: row.slot,
+        effect: effectId,
+        stage: "aborted",
+        text: stoppedText(state),
+      });
     },
     (err: unknown) => {
       binding?.marker?.({
@@ -633,14 +638,21 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
 }
 
 /** The feed's line for a stop's answer (ADR-0067): the outcome a stopped command settled with —
- * `exited` with the signal the stop sent last, and its code when the program caught SIGTERM — or
- * none when the Effector holds no such Effect or it had not settled within the stop's answer. */
-function stoppedText(state: EffectState | undefined): string | undefined {
-  const out = state?.state === "settled" ? state.output : undefined;
-  if (!out) return undefined;
+ * `exited` with the signal the stop sent last, and its code when the program caught SIGTERM; for
+ * one stopped before its program started, `unknown` with the Effector's reason (it did not run);
+ * for one that had ended first, that outcome. When no replica holds it, the start may not have
+ * arrived yet, and the line says that it may run until its timeout; one not settled within the
+ * stop's answer is said as such. */
+function stoppedText(state: EffectState | undefined): string {
+  if (state === undefined) {
+    return "its Sandbox Effector held no such Effect when asked to stop it; if its start was still on the way, it may run until its timeout";
+  }
+  const out = state.state === "settled" ? state.output : undefined;
+  if (!out) return "its Sandbox Effector had not settled it when the stop answered; outcome unknown";
   if (out.outcome === "exited" && "signal" in out) {
     return `its Sandbox Effector stopped it: exited with ${out.signal}${out.code === undefined ? "" : `, code ${out.code}`}`;
   }
+  if (out.outcome === "unknown" && "reason" in out) return `its Sandbox Effector stopped it: ${out.reason}`;
   return `its Sandbox Effector stopped it: it had already ended (${out.outcome})`;
 }
 

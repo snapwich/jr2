@@ -57,3 +57,21 @@ func TestAStartPastItsTimeoutSettlesTimedOutAndNeverRuns(t *testing.T) {
 		t.Fatalf("got %+v %+v", out, out.Command)
 	}
 }
+
+// A credentialed command stopped while it waits for the other class (its state exited, ADR-0067)
+// never runs: `unknown`, and the reason says it did not run — no signal, since nothing was signalled.
+func TestACommandStoppedWhileItWaitsForTheLockNeverRuns(t *testing.T) {
+	r := &Runner{Lock: &Lock{}}
+	if !r.Lock.Acquire(context.Background(), ClassGPG, time.Now().Add(time.Second)) {
+		t.Fatal("the lock was held")
+	}
+	ctx, stop := context.WithCancelCause(context.Background())
+	time.AfterFunc(30*time.Millisecond, func() { stop(wire.ErrStopped) })
+	req := &wire.StartRequest{Kind: wire.KindCommand, TimeoutMs: 5_000,
+		Command: &wire.CommandSpec{Argv: []string{"true"}}}
+	out := r.Run(ctx, req)
+	if out.Outcome != wire.OutcomeUnknown || out.Command != nil ||
+		out.Reason != "its state exited before the command started; it did not run" {
+		t.Fatalf("got %+v %+v", out, out.Command)
+	}
+}

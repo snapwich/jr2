@@ -326,3 +326,21 @@ func TestAnUnconfinableNodeRefusesTheCommand(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// A command stopped before its program starts (its state exited while the clean repository was made
+// or the pin checked out, ADR-0067) settles `unknown`: it did not run, and the reason is the stop,
+// never the error of the step the stop cut short.
+func TestACommandStoppedBeforeItsProgramStartsDidNotRun(t *testing.T) {
+	p, r := setup(t)
+	p.Commit("one", nil)
+	ctx, stop := context.WithCancelCause(context.Background())
+	stop(wire.ErrStopped)
+	marker := filepath.Join(p.Root, "ran")
+	out := r.Run(ctx, request(t, p, "touch "+marker, ""))
+	if out.Outcome != wire.OutcomeUnknown || out.Reason != "its state exited before the command started; it did not run" {
+		t.Fatalf("got %+v %+v", out, out.Command)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the program ran")
+	}
+}

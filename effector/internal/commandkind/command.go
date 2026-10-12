@@ -106,7 +106,19 @@ func unknown(reason string) wire.Output {
 	return wire.Output{Outcome: wire.OutcomeUnknown, Reason: reason + "; it did not run"}
 }
 
+// notStarted is the outcome of a command that ended before its program started: `unknown`, it did
+// not run. A stop that came while the clean repository was made or the pinned commit was checked
+// out is the reason, whatever step it cut short (ADR-0067): that step's own error says only that it
+// was cut.
+func notStarted(ctx context.Context, reason string) wire.Output {
+	if errors.Is(context.Cause(ctx), wire.ErrStopped) {
+		return unknown("its state exited before the command started")
+	}
+	return unknown(reason)
+}
+
 func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.Duration) wire.Output {
+	unknown := func(reason string) wire.Output { return notStarted(ctx, reason) }
 	sha := spec.Pin
 	if sha == "" {
 		return unknown("the command has no pinned commit")

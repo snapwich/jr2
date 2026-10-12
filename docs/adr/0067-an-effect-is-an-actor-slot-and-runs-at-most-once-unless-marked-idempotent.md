@@ -283,19 +283,23 @@ the credentialed `command` — runs there too, its child confined (below).
   like every Effector request (ADR-0068), so nothing in the Harness container can send it. The Effector sends SIGTERM to
   the command's process group, waits 5 s, then sends SIGKILL, and runs its settle loop (ADR-0068's subreaper rule), so
   no process the command started outlives it; the Effect settles `exited` with the signal the stop sent last — SIGTERM,
-  or SIGKILL past the wait — and, when the program caught SIGTERM and exited, with its code too. What the DELETE answers
-  is said on the feed after the abort's line: "its Sandbox Effector stopped it: exited with SIGTERM", or that the stop
-  did not reach the Effector and the command may run until its timeout. A run that has ended (a cancel, a final state)
-  has no feed: the line goes to the Orchestrator's log, as does a kill that never reached a Harness. The abort goes to
-  the ledger (`aborted`, saved with the transition that exited the state — a cancel's final save carries it) and the
-  feed, "outcome unknown"; the Machine does not get it — the state that asked has left. An `http` Effect has no stop
-  route: its state's exit stops the polling, and the abort goes to the ledger and the feed the same way, "the Effector
-  may still send it; outcome unknown". The Effector finishes the call and drops an outcome nobody reads. A file-body
-  `http` and a `push` have none either: each is one request that ends on its own, and one a state exit cut runs on in
-  the Sandbox Effector to its end; the abort says "the Sandbox Effector may still run it; outcome unknown". Two stops
-  are not exits: the host parking the run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor).
-  Neither stops a command; the Effect then re-attaches on restore, or settles `unknown`. There is no "finally": cleanup
-  is a state.
+  or SIGKILL past the wait — and, when the program caught SIGTERM and exited, with its code too. A stop that comes
+  before the program starts — while the command waits for a GPG-signing push of its Sandbox Effector to end, or while
+  its pinned commit is checked out — signals nothing: the Effect settles `unknown`, "its state exited before the command
+  started; it did not run". What the DELETE answers is said on the feed after the abort's line: "its Sandbox Effector
+  stopped it: exited with SIGTERM"; "its Sandbox Effector stopped it:" and the Effector's reason, for one that did not
+  run; the outcome it had already ended with; that no replica held the Effect, so a start still on the way may run until
+  its timeout; or that the stop did not reach the Effector and the command may run until its timeout. A run that has
+  ended (a cancel, a final state) has no feed: the line goes to the Orchestrator's log, as does a kill that never
+  reached a Harness. The abort goes to the ledger (`aborted`, saved with the transition that exited the state — a
+  cancel's final save carries it) and the feed, "outcome unknown"; the Machine does not get it — the state that asked
+  has left. An `http` Effect has no stop route: its state's exit stops the polling, and the abort goes to the ledger and
+  the feed the same way, "the Effector may still send it; outcome unknown". The Effector finishes the call and drops an
+  outcome nobody reads. A file-body `http` and a `push` have none either: each is one request that ends on its own, and
+  one a state exit cut runs on in the Sandbox Effector to its end; the abort says "the Sandbox Effector may still run
+  it; outcome unknown". Two stops are not exits: the host parking the run (`hostStopping`, ADR-0024) and an Orchestrator
+  shutdown (it stops no actor). Neither stops a command; the Effect then re-attaches on restore, or settles `unknown`.
+  There is no "finally": cleanup is a state.
 - **Must-finish is a pattern.** An Effect that must not be cut goes in its own state, whose only exit is its `onDone`,
   and that state handles the ancestor's events itself.
 - **No fire-and-forget form.** Two patterns keep D1: an Effect in its own state; or a second invoke with no `onDone`

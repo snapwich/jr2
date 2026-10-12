@@ -152,17 +152,19 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   credentialed command whose state exited, or whose run was cancelled (ADR-0067): the Effector sends SIGTERM to the
   command's process group, waits 5 s, sends SIGKILL, and runs rule 1's settle loop below; the command's keeper catches
   SIGTERM and waits on, so the child's own end is still read. The outcome is `exited` with `signal`, the one the stop
-  sent last, and `code` when the program caught SIGTERM and exited with one; an `exited` with neither is malformed. It
-  answers as a poll does, the outcome once settled, and that outcome counts as read. The route is the command's alone: a
-  `push` and an `http` Effect are one request each and end on their own, so a DELETE on one answers 405 as an unknown
-  method does, and a DELETE of an Effect the replica does not hold answers 404 with `state: unknown`, as a poll does. A
-  DELETE is verified like every request: an unsigned one gets 401 and stops nothing, so no process in the Harness
-  container can stop a command. A malformed request starts nothing and gets 400 with the reason; a request that names a
-  secret the Effector does not hold is malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the
-  replica takes new Effects. A replica reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it
-  as unsigned. The Orchestrator never sends one: a start whose body is longer settles with nothing sent and no intent
-  row, as its kind's own outcome (ADR-0067) — an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed
-  `command` `exited` 127 — because a body built from context or a pick's param can reach the bound.
+  sent last, and `code` when the program caught SIGTERM and exited with one; an `exited` with neither is malformed. A
+  command stopped before its program started (it waited for the lock of rule 2, or its pin was being checked out) is
+  `unknown`, with the reason that it did not run: nothing was signalled. It answers as a poll does, the outcome once
+  settled, and that outcome counts as read. The route is the command's alone: a `push` and an `http` Effect are one
+  request each and end on their own, so a DELETE on one answers 405 as an unknown method does, and a DELETE of an Effect
+  the replica does not hold answers 404 with `state: unknown`, as a poll does. A DELETE is verified like every request:
+  an unsigned one gets 401 and stops nothing, so no process in the Harness container can stop a command. A malformed
+  request starts nothing and gets 400 with the reason; a request that names a secret the Effector does not hold is
+  malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the replica takes new Effects. A replica
+  reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it as unsigned. The Orchestrator never
+  sends one: a start whose body is longer settles with nothing sent and no intent row, as its kind's own outcome
+  (ADR-0067) — an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed `command` `exited` 127 —
+  because a body built from context or a pick's param can reach the bound.
 - **The Orchestrator holds no git credential and no Effect secret.** `jr2 up` declares and writes every Secret that
   holds a git credential or an Effect secret: the placements' (`jr2-instance-effector`, `jr2-effector-<pod>`) and, for
   each `git.credentials` entry, its clone Secret (`jr2-git-<hash>`, Flux's `username`/`password`, the token from `.env`)
