@@ -513,7 +513,7 @@ func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signe
 				}
 				parents = append(parents, p)
 			}
-			twin, err := tw.of(ctx, id, commit.tree, parents)
+			twin, err := tw.of(ctx, id, commit, parents)
 			if err != nil {
 				return nil, ptr(rejected("sign", err.Error(), ""))
 			}
@@ -856,30 +856,28 @@ func (c *call) twins(ctx context.Context, list []string, pub string) (*twinSet, 
 	return tw, nil
 }
 
-// of answers the published twin of commit id, or "": the ledger's pair or the first published
-// commit of id's key that is a faithful image of it — id's tree, and as parents id's own parents
-// as mapped. A key alone is not enough: a commit the Agent reverts and applies again has the key
-// of the first one, whose published copy has older parents; paired with it, the push would offer
-// that older copy as the new tip. Each published commit is taken once.
-func (tw *twinSet) of(ctx context.Context, id, tree string, parents []string) (string, error) {
+// of answers the published twin of commit id, or "". The ledger's pair is taken as it is: it names
+// the one exact commit the last push published for — a signed copy, or a squashed commit whose
+// parent is the published base. Any other twin is the first published commit of id's key that is
+// a faithful image of it: id's tree, and as parents id's own parents as mapped. The key is read
+// with the mapped parents too, so a merge of the Agent's own side branch keys on the published
+// copies of its non-first parents, as its published twin does. A key alone is not enough: a commit
+// the Agent reverts and applies again has the key of the first one, whose published copy has older
+// parents; paired with it, the push would offer that older copy as the new tip. Each published
+// commit is taken once.
+func (tw *twinSet) of(ctx context.Context, id string, commit *commit, parents []string) (string, error) {
 	if twin, ok := tw.ledger[id]; ok {
-		ok, err := tw.faithful(ctx, twin, tree, parents)
-		if err != nil {
-			return "", err
-		}
-		if ok {
-			return twin, nil
-		}
+		return twin, nil
 	}
 	if len(tw.byKey) == 0 {
 		return "", nil
 	}
-	k, err := tw.c.key(ctx, id)
+	k, err := tw.c.keyOf(ctx, id, commit, parents)
 	if err != nil {
 		return "", err
 	}
 	for i, twin := range tw.byKey[k] {
-		ok, err := tw.faithful(ctx, twin, tree, parents)
+		ok, err := tw.faithful(ctx, twin, commit.tree, parents)
 		if err != nil {
 			return "", err
 		}
@@ -964,10 +962,17 @@ func (c *call) key(ctx context.Context, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return c.keyOf(ctx, id, commit, commit.parents)
+}
+
+// keyOf is cherry's key of commit id, read with the given parents: a merge's names its tree, its
+// non-first parents, its author line and message; a non-merge's names its stable patch-id, author
+// line and message, and its parents do not enter it.
+func (c *call) keyOf(ctx context.Context, id string, commit *commit, parents []string) (string, error) {
 	sum := sha1.Sum([]byte(commit.author + "\n" + strings.TrimRight(commit.message, "\n")))
 	meta := hex.EncodeToString(sum[:])
-	if len(commit.parents) > 1 {
-		return "M " + commit.tree + " " + strings.Join(commit.parents[1:], " ") + " " + meta, nil
+	if len(parents) > 1 {
+		return "M " + commit.tree + " " + strings.Join(parents[1:], " ") + " " + meta, nil
 	}
 	diff, err := c.repo.Git(ctx, nil, "diff-tree", "-p", "--no-ext-diff", "--no-textconv", "--full-index",
 		"--root", id)
