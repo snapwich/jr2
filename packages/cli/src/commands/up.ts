@@ -57,6 +57,7 @@ import {
   custodianScript,
   CUSTODIAN_PROGRAM,
   customizeLine,
+  openPartsText,
   defaultImageContext,
   heldSecretsOf,
   HELD_CA_SECRET,
@@ -247,8 +248,14 @@ export async function up(args: string[], io: Io): Promise<number> {
         adr: "ADR-0051",
       })),
       ...walked.openAgents.map((o) => ({ ...o, part: "agent" as const, what: `Agent "${o.slot}"`, adr: "ADR-0054" })),
-      // An Effect's Open url or argv (ADR-0054): no host to fence and no program to run until bound.
-      ...walked.openEffects.map((o) => ({ ...o, what: `the ${o.part} of Effect "${o.slot}"`, adr: "ADR-0054" })),
+      // An Effect's Open url, argv or secret (ADR-0054): no host to fence, no program to run and no
+      // secret to place until bound — one binding object for an Effect with two.
+      ...walked.openEffects.map(({ parts, ...o }) => ({
+        ...o,
+        part: parts,
+        what: `the ${openPartsText(parts)} of Effect "${o.slot}"`,
+        adr: "ADR-0054",
+      })),
     ];
     for (const { slot, path, part, what, adr } of opened) {
       if (path === undefined) {

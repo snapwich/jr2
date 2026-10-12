@@ -39,10 +39,17 @@ import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import type { HttpMethod, HttpOutput, TextPart, WireAuth } from "./effector-wire.ts";
 import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
-import type { EffectorPortFactory } from "./http-effect.ts";
+import { bindOpenSecret, type EffectorPortFactory, type OpenSecretIn } from "./http-effect.ts";
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
 import { open } from "./open.ts";
-import { openEffectLogic, type OpenEffect } from "./open-effect.ts";
+import {
+  effectBindingShape,
+  openEffectLogic,
+  openPartsOf,
+  type EffectBinding,
+  type OpenEffect,
+  type OpenOf,
+} from "./open-effect.ts";
 
 // --- Parts: what `jr2 up` and the Machine doc read off a slot, without running anything ---------
 
@@ -59,6 +66,9 @@ export type CommandParts = {
   readonly env?: Readonly<Record<string, { readonly secret: string; readonly path?: true }>>;
   /** The secrets `env` names, once each, sorted — what places them (ADR-0068). */
   readonly secrets?: readonly string[];
+  /** `env` names `secret(open)`, which the composer binds (ADR-0054): it is a credentialed command
+   * before the name is known, and `env` holds `OPEN_SECRET` in its place until then. */
+  readonly openSecret?: true;
   /** A credentialed command's `pin`: its input names the commit (`{ sha }`, an approved one) in
    * place of the Agent's branch tip (ADR-0067). */
   readonly pin?: true;
@@ -84,6 +94,9 @@ export type HttpParts = {
   readonly auth?: WireAuth;
   /** Every secret the definition names, once each, in order — what places it (ADR-0068). */
   readonly secrets: readonly string[];
+  /** The auth or a header names `secret(open)`, which the composer binds (ADR-0054); they hold
+   * `OPEN_SECRET` in its place until then. */
+  readonly openSecret?: true;
   /** The keys of the input schema: what a pick param may fill (ADR-0067's load walk reads them). */
   readonly inputKeys: readonly string[];
   readonly timeoutMs: number;
@@ -146,7 +159,7 @@ export function placementOf(parts: EffectParts): Placement {
     case "push":
       return "sandbox";
     case "command":
-      return (parts.secrets?.length ?? 0) > 0 ? "sandbox" : "harness";
+      return (parts.secrets?.length ?? 0) > 0 || parts.openSecret ? "sandbox" : "harness";
   }
 }
 
@@ -438,6 +451,12 @@ export type CommandOptions = {
   pin?: boolean;
 };
 
+/** The Open part a command's options state (ADR-0054): its secret, when its env holds
+ * `secret(open)` or its `.path`. */
+export type EnvOpenParts<Opt> = Opt extends { readonly env: infer E }
+  ? OpenSecretIn<E extends Readonly<Record<string, infer V>> ? V : never>
+  : never;
+
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_TAIL = 4096;
 /** How long a re-asked request waits, at most, after a transport failure. */
@@ -458,7 +477,7 @@ export function commandWith<const Opt extends CommandOptions = CommandOptions>(
   argv: typeof open,
   options?: Opt,
   effectorPorts?: EffectorPortFactory,
-): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv">;
+): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv" | EnvOpenParts<Opt>>;
 export function commandWith<
   const A extends readonly (string | Arg)[],
   const Opt extends CommandOptions = CommandOptions,
@@ -467,7 +486,7 @@ export function commandWith<
   argv: A,
   options?: Opt,
   effectorPorts?: EffectorPortFactory,
-): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput>;
+): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
 export function commandWith(
   portFactory: ExecPortFactory,
   argv: readonly (string | Arg)[] | typeof open,
@@ -481,11 +500,9 @@ export function commandWith(
     // parts with the sentinel in the argv's place. Binding calls this constructor again, whole.
     const probe = commandWith(portFactory, ["<open>"], options, effectorPorts);
     const parts: OpenCommandParts = { ...(probe.effect as CommandParts), argv: open };
-    return openEffectLogic(parts, "argv", (binding) => {
-      if (!("argv" in binding)) {
-        throw new Error("a command's Open part is its argv — bind it with { argv: [...] }, not a url");
-      }
-      return commandWith(portFactory, binding.argv, options, effectorPorts) as EffectLogic<unknown, unknown>;
+    return openCommandOf(parts, (binding) => {
+      const bound = bindCommand(binding, options);
+      return commandWith(portFactory, (binding.argv ?? open) as readonly (string | Arg)[], bound, effectorPorts);
     });
   }
   if (!Array.isArray(argv) || argv.length === 0) {
@@ -505,7 +522,7 @@ export function commandWith(
     ...(options.env !== undefined && Object.keys(options.env).length > 0 ? commandEnvParts(options.env) : {}),
     ...(options.pin === true ? { pin: true as const } : {}),
   };
-  if (parts.pin && (parts.secrets?.length ?? 0) === 0) {
+  if (parts.pin && (parts.secrets?.length ?? 0) === 0 && !parts.openSecret) {
     // A command that names no secret runs in the Harness container, in the live Worktree: there
     // is no pinned checkout for `pin` to choose (ADR-0067).
     throw new Error(
@@ -513,6 +530,13 @@ export function commandWith(
         "runs against in the Sandbox Effector, and a command that names no secret runs in the live Worktree " +
         '(ADR-0067) — name its secret, command(argv, { env: { NAME: secret("x") }, pin: true }), or drop `pin`',
     );
+  }
+  if (parts.openSecret) {
+    // An Open secret in its env (ADR-0054): a credentialed command whose secret the composer names.
+    return openCommandOf(parts, (binding) => {
+      const bound = bindCommand(binding, options);
+      return commandWith(portFactory, argv, bound, effectorPorts);
+    });
   }
   if ((parts.secrets?.length ?? 0) > 0) {
     // Naming a secret is the placement (ADR-0067): the Sandbox Effector runs it.
@@ -781,6 +805,32 @@ async function killUntilKept(port: ExecPort, id: string, withinMs: number): Prom
       await new Promise((resolve) => setTimeout(resolve, wait / 2 + Math.random() * (wait / 2)).unref());
     }
   }
+}
+
+/**
+ * The unbound logic of a command with Open parts (ADR-0054) — its argv, an Open secret in its env,
+ * or both. `rebuild` calls this constructor again, whole, with the bound parts; a binding that
+ * names one of two Open parts gives a command still Open in the other.
+ */
+function openCommandOf(
+  parts: CommandParts | OpenCommandParts,
+  rebuild: (binding: EffectBinding) => unknown,
+): EffectLogic<any, CommandOutput> {
+  const opened = openPartsOf(parts);
+  return openEffectLogic(parts, opened, (binding) => {
+    if (binding.url !== undefined || (binding.argv !== undefined && !opened.includes("argv"))) {
+      throw new Error(
+        `a command's Open parts here are its ${opened.join(" and ")} — bind it with ${effectBindingShape(opened)}`,
+      );
+    }
+    return rebuild(binding) as EffectLogic<unknown, unknown>;
+  });
+}
+
+/** A command's options with the binding's secret named in its env, where `secret(open)` stood. */
+function bindCommand(binding: EffectBinding, options: CommandOptions): CommandOptions {
+  if (binding.secret === undefined || options.env === undefined) return options;
+  return { ...options, env: bindOpenSecret(options.env, binding.secret) };
 }
 
 /** argv with each slot filled from the input — one argument per entry. */

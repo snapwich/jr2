@@ -75,15 +75,18 @@ import {
 } from "./effector-wire.ts";
 import {
   httpParts,
-  openHttpParts,
+  openHttpOf,
+  OPEN_SECRET,
+  openSecretsIn,
   secret,
   startRequestOf,
   type EffectorPortFactory,
   type FromInput,
   type HttpDefinition,
+  type HttpOpenParts,
 } from "./http-effect.ts";
 import { open } from "./open.ts";
-import { openEffectLogic, type OpenEffect } from "./open-effect.ts";
+import type { OpenOf } from "./open-effect.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import { repoKey } from "./repo-identity.ts";
 import { harnessSyncPort, type SyncPortFactory } from "./sync-client.ts";
@@ -247,7 +250,7 @@ export function fileStartOf(
 /** A credentialed command's env as its definition names it. */
 export type CommandEnv = Readonly<Record<string, { readonly secret: string; readonly path: unknown }>>;
 
-export function commandEnvParts(env: CommandEnv): Pick<CommandParts, "env" | "secrets"> {
+export function commandEnvParts(env: CommandEnv): Pick<CommandParts, "env" | "secrets" | "openSecret"> {
   const out: Record<string, { secret: string; path?: true }> = {};
   for (const [name, ref] of Object.entries(env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name === "PATH" || name === "HOME" || name === "TMPDIR") {
@@ -256,11 +259,13 @@ export function commandEnvParts(env: CommandEnv): Pick<CommandParts, "env" | "se
           "Effector's (ADR-0067)",
       );
     }
-    const s = secret(ref.secret);
+    // `secret(open)` and its `.path` stand under OPEN_SECRET until the composer names it (ADR-0054).
+    const s = ref.secret === OPEN_SECRET ? ref : secret(ref.secret);
     out[name] = (ref as { path?: unknown }).path === true ? { secret: s.secret, path: true } : { secret: s.secret };
   }
-  const secrets = [...new Set(Object.values(out).map((r) => r.secret))].sort();
-  return { env: out, secrets };
+  const opened = openSecretsIn(Object.values(env));
+  const secrets = [...new Set(Object.values(out).map((r) => r.secret))].filter((n) => n !== OPEN_SECRET).sort();
+  return { env: out, secrets, ...(opened ? { openSecret: true as const } : {}) };
 }
 
 /** The credentialed command's start for one run. */
@@ -762,28 +767,23 @@ export { lastPushOf };
 
 /** An http whose body is a Worktree file (ADR-0067), over an injected port factory — the seam `http()`
  * and the unit tests share. It runs in the Sandbox Effector of the Workspace whose body invokes it. */
-export function httpFileWith<S extends z.ZodType | undefined = undefined>(
+export function httpFileWith<
+  S extends z.ZodType | undefined = undefined,
+  const U extends HttpDefinition<S>["url"] = string,
+  const A extends HttpDefinition<S>["auth"] = undefined,
+  const H extends HttpDefinition<S>["headers"] = undefined,
+>(
   portFactory: EffectorPortFactory,
-  def: HttpDefinition<S> & { url: typeof open },
-): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput> & OpenEffect<"url">;
-export function httpFileWith<S extends z.ZodType | undefined = undefined>(
-  portFactory: EffectorPortFactory,
-  def: HttpDefinition<S>,
-): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput>;
+  def: HttpDefinition<S> & { url: U; auth?: A; headers?: H },
+): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput> & OpenOf<HttpOpenParts<U, A, H>>;
 export function httpFileWith<S extends z.ZodType | undefined = undefined>(
   portFactory: EffectorPortFactory,
   def: HttpDefinition<S>,
 ): EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput> {
-  if (def.url === open) {
-    // An Open url (ADR-0054), as http's own: the unbound logic binds by building this Effect again,
-    // whole, with the composer's url — a file body changes where it runs, not how it binds.
-    return openEffectLogic(openHttpParts(def), "url", (binding) => {
-      if (!("url" in binding)) {
-        throw new Error("an http Effect's Open part is its url — bind it with { url }, not an argv");
-      }
-      return httpFileWith(portFactory, { ...def, url: binding.url }) as EffectLogic<unknown, unknown>;
-    });
-  }
+  // Open parts (ADR-0054), as http's own: the unbound logic binds by building this Effect again,
+  // whole, with the composer's url or secret — a file body changes where it runs, not how it binds.
+  const unbound = openHttpOf(def, (bound) => httpFileWith(portFactory, bound));
+  if (unbound) return unbound as EffectLogic<S extends z.ZodType ? z.infer<S> : void, HttpOutput>;
   const parts = httpParts(def);
   const body = def.body!.file;
   const fromInput = <T>(v: FromInput<S, T> | undefined, input: unknown): T | undefined =>

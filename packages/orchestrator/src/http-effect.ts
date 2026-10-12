@@ -78,7 +78,7 @@ import {
 } from "./effector-wire.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import { open } from "./open.ts";
-import { openEffectLogic, type OpenEffect } from "./open-effect.ts";
+import { effectBindingShape, openEffectLogic, openPartsOf, type OpenOf } from "./open-effect.ts";
 import { httpFileWith, sandboxEffectorPort } from "./sandbox-effect.ts";
 
 // --- Naming a secret -----------------------------------------------------------------------------
@@ -91,22 +91,48 @@ export type Secret = { readonly secret: string; readonly path: { readonly secret
 /** A string the Effector builds: literal text and secrets, in order — the `text` template's value. */
 export type Text = { readonly text: readonly TextPart[] };
 
+declare const openSecretMark: unique symbol;
+/** The TYPE half of an Open secret (ADR-0054): whatever carries `secret(open)` — the secret, its
+ * `.path`, a `text` or a `basic` pair holding it, a `bearer` of it — carries this mark, so the
+ * Effect's constructor states the Open part "secret" and `customize()` offers `{ secret }`. Phantom. */
+export type OpenSecretMark = { readonly [openSecretMark]: true };
+
+/** `secret(open)`: a secret a packaged Machine names in its auth, a header or a command's env, and
+ * leaves for its composer to name (ADR-0054). */
+export type OpenSecret = {
+  readonly secret: string;
+  readonly path: { readonly secret: string; readonly path: true } & OpenSecretMark;
+} & OpenSecretMark;
+
+/** The name an Open secret stands under in a definition's plain data until `customize()` binds it.
+ * `@` is no character of a secret's name, so it can never be one; an Effect that still holds it
+ * runs nothing (open-effect.ts). */
+export const OPEN_SECRET = "@open";
+
 const SECRET_NAME = /^[A-Za-z0-9._-]{1,253}$/;
 
-/** Name a secret: `secret("jira")`. */
-export function secret(name: string): Secret {
-  // A secret's NAME is not an Open part (ADR-0054): the Open parts are an http url and a
-  // command's argv. A url whose secret the composer names is left Open whole.
+/** Each `secret(open)` a definition names, by every object that stands for it — the secret, its
+ * `.path`, a `text` part built from it — so a definition that names one Open secret in two places
+ * (a value and its `.path`) is told from one that names two. */
+const openSecretOf = new WeakMap<object, object>();
+
+/** Name a secret: `secret("jira")`. `secret(open)` leaves the name to the composer (ADR-0054). */
+export function secret(name: typeof open): OpenSecret;
+export function secret(name: string): Secret;
+export function secret(name: string | typeof open): Secret | OpenSecret {
   if ((name as unknown) === open) {
-    throw new Error(
-      "secret(open): a secret's name is not an Open part — leave the whole url Open " +
-        "(`url: open`) and let the composer bind it with its secret in its path; the auth, the headers " +
-        "and a command's env name their secrets in the definition (ADR-0054)",
-    );
+    // An Open secret (ADR-0054): the composer binds its name once, with `customize()`'s
+    // `{ effects: { <slot>: { secret: "<name>" } } }`. Its plain data names `OPEN_SECRET` until then.
+    const s = { secret: OPEN_SECRET } as OpenSecret;
+    const path = Object.freeze({ secret: OPEN_SECRET, path: true as const });
+    Object.defineProperty(s, "path", { value: path, enumerable: false });
+    openSecretOf.set(s, s);
+    openSecretOf.set(path, s);
+    return s;
   }
   if (typeof name !== "string" || !SECRET_NAME.test(name) || name.startsWith(".")) {
     throw new Error(
-      `secret("${name}"): a secret's name is letters, digits, ".", "_" and "-", and does not start with "." — ` +
+      `secret("${String(name)}"): a secret's name is letters, digits, ".", "_" and "-", and does not start with "." — ` +
         "it is the file the Effector reads it from (ADR-0068)",
     );
   }
@@ -118,7 +144,32 @@ export function secret(name: string): Secret {
   return s;
 }
 
+/** What a value that may hold `secret(open)` gives: marked when it does. */
+type MarkedIf<V, T> = [Extract<V, OpenSecretMark>] extends [never] ? T : T & OpenSecretMark;
+
+/** The values of a record type, or never. */
+type ValuesOf<R> = R extends Readonly<Record<string, infer V>> ? V : never;
+
+/** "secret" when one of these values holds `secret(open)`, else never: the Open part it states. */
+export type OpenSecretIn<V> = [Extract<V, OpenSecretMark>] extends [never] ? never : "secret";
+
+/** The Open parts an http definition's types state (ADR-0054): its url, when it is `open`, and its
+ * secret, when its auth or a header holds `secret(open)`. */
+export type HttpOpenParts<U, A, H> = (U extends typeof open ? "url" : never) | OpenSecretIn<A | ValuesOf<H>>;
+
+/** A secret's wire part: `{ secret: name }` — for an Open secret, a part that stands for it. */
+function partOf(s: Secret): TextPart {
+  const part = { secret: s.secret };
+  const owner = openSecretOf.get(s);
+  if (owner) openSecretOf.set(part, owner);
+  return part;
+}
+
 /** A string with secrets in it: text`Token ${secret("x")}`. Each `${…}` is a secret or a string. */
+export function text<const V extends Array<Secret | OpenSecret | string>>(
+  strings: TemplateStringsArray,
+  ...values: V
+): MarkedIf<V[number], Text>;
 export function text(strings: TemplateStringsArray, ...values: Array<Secret | string>): Text {
   const parts: TextPart[] = [];
   const push = (s: string): void => {
@@ -132,19 +183,25 @@ export function text(strings: TemplateStringsArray, ...values: Array<Secret | st
     if (i >= values.length) return;
     const v = values[i];
     if (typeof v === "string") push(v);
-    else if (isSecret(v)) parts.push({ secret: v.secret });
+    else if (isSecret(v)) parts.push(partOf(v));
     else throw new Error(`text\`…\`: a value is a secret("name") or a string, got ${JSON.stringify(v)}`);
   });
   return { text: parts };
 }
 
-/** `Authorization: Bearer <value>`. */
+/** `Authorization: Bearer <value>`. The secret may be `secret(open)` (ADR-0054). */
+export function bearer<const S extends Secret>(s: S): MarkedIf<S, { readonly bearer: Secret }>;
 export function bearer(s: Secret): { readonly bearer: Secret } {
   if (!isSecret(s)) throw new Error('bearer(…) takes a secret("name")');
   return { bearer: s };
 }
 
-/** `Authorization: Basic base64(user:password)`. Each is a string, a secret, or a `text`. */
+/** `Authorization: Basic base64(user:password)`. Each is a string, a secret, or a `text`; either may
+ * hold `secret(open)` (ADR-0054). */
+export function basic<const U extends string | Secret | Text, const P extends string | Secret | Text>(
+  user: U,
+  password: P,
+): MarkedIf<U | P, { readonly basic: { user: Text; password: Text } }>;
 export function basic(
   user: string | Secret | Text,
   password: string | Secret | Text,
@@ -156,9 +213,52 @@ function isSecret(v: unknown): v is Secret {
   return typeof v === "object" && v !== null && typeof (v as Secret).secret === "string" && !("text" in v);
 }
 
+/**
+ * Whether these places of one definition — wire parts, secrets, `.path`s — name `secret(open)`
+ * (ADR-0054). They may name one Open secret, in as many places as the author likes (a value and its
+ * `.path`); a second `secret(open)` is refused: one binding names one secret.
+ */
+export function openSecretsIn(items: readonly unknown[]): boolean {
+  const owners = new Set<object>();
+  for (const item of items) {
+    if (typeof item !== "object" || item === null || (item as { secret?: unknown }).secret !== OPEN_SECRET) continue;
+    owners.add(openSecretOf.get(item) ?? item);
+  }
+  if (owners.size > 1) {
+    throw new Error(
+      "an Effect takes one Open secret — it names secret(open) in two places that are two secrets; name one " +
+        'secret(open) and use it in each place, or name the others with secret("<name>") (ADR-0054)',
+    );
+  }
+  return owners.size === 1;
+}
+
+/**
+ * A definition's secret-bearing value with its Open secret named (ADR-0054): `secret(open)` becomes
+ * `secret(name)`, its `.path` that secret's `.path`, a `text` part `{ secret: name }`, through a
+ * `text`, a `bearer` and a `basic` pair, and the values of a header or env record. `secret(name)`
+ * checks the name, as it checks one the author writes.
+ */
+export function bindOpenSecret<T>(value: T, name: string): T {
+  const bind = (v: unknown): unknown => {
+    if (typeof v !== "object" || v === null) return v;
+    const o = v as { secret?: unknown; path?: unknown; text?: unknown; bearer?: unknown; basic?: unknown };
+    if (o.secret === OPEN_SECRET) return o.path === true ? secret(name).path : secret(name);
+    if (typeof o.secret === "string") return v;
+    if (Array.isArray(o.text)) return { text: o.text.map(bind) };
+    if (o.bearer !== undefined) return { bearer: bind(o.bearer) };
+    if (o.basic !== undefined) {
+      const { user, password } = o.basic as { user: unknown; password: unknown };
+      return { basic: { user: bind(user), password: bind(password) } };
+    }
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, bind(x)]));
+  };
+  return bind(value) as T;
+}
+
 function asText(v: string | Secret | Text): Text {
   if (typeof v === "string") return { text: v === "" ? [] : [{ text: v }] };
-  if (isSecret(v)) return { text: [{ secret: v.secret }] };
+  if (isSecret(v)) return { text: [partOf(v)] };
   if (typeof v === "object" && v !== null && Array.isArray((v as Text).text)) return v;
   throw new Error(`expected a string, a secret("name") or a text\`…\`, got ${JSON.stringify(v)}`);
 }
@@ -266,6 +366,14 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
   }
   if (def.url === open) throw new Error("httpParts: an Open url has no target — read it with openHttpParts");
   const url = asText(def.url).text;
+  if (url.some((p) => "secret" in p && p.secret === OPEN_SECRET)) {
+    // A url that carries a secret is left Open whole (ADR-0054): the composer binds it with its
+    // secret in its path, so two copies of one Machine spend two teams' secrets.
+    throw new Error(
+      "secret(open) in a url: a url's secret is not an Open part — leave the whole url Open " +
+        "(`url: open`) and let the composer bind it with its secret in its path (ADR-0054)",
+    );
+  }
   const target = targetOf(url);
   const headers: Record<string, TextPart[]> = {};
   for (const [name, value] of Object.entries(def.headers ?? {})) {
@@ -301,6 +409,20 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
     note(auth.basic.password);
   }
   if (auth && "text" in auth) note(auth.text);
+  // An Open secret (ADR-0054) is the composer's to name: its places are the auth and the headers,
+  // one per Effect, and it names no secret until `customize()` binds it.
+  const opened = openSecretsIn([
+    ...Object.values(headers).flat(),
+    ...(def.auth === undefined
+      ? []
+      : "bearer" in def.auth
+        ? [def.auth.bearer]
+        : "basic" in def.auth
+          ? [...def.auth.basic.user.text, ...def.auth.basic.password.text]
+          : asText(def.auth).text),
+  ]);
+  const named = secrets.filter((name) => name !== OPEN_SECRET);
+  secrets.splice(0, secrets.length, ...named);
   for (const name of secrets) secret(name);
   const maxBody = def.maxBody ?? DEFAULT_MAX_BODY;
   if (!Number.isInteger(maxBody) || maxBody <= 0) throw new Error("http({ maxBody }): a positive number of bytes");
@@ -339,6 +461,7 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
     timeoutMs: def.timeout === undefined ? DEFAULT_TIMEOUT_MS : parseDuration(def.timeout),
     maxBody,
     idempotent: def.idempotent === true,
+    ...(opened ? { openSecret: true as const } : {}),
     ...(body
       ? {
           file: {
@@ -362,6 +485,36 @@ const OPEN_PROBE_URL = "https://open.invalid";
 export function openHttpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S>): OpenHttpParts {
   const { url: _url, target: _target, ...rest } = httpParts({ ...def, url: OPEN_PROBE_URL });
   return { ...rest, url: open, target: open };
+}
+
+/**
+ * The unbound logic of an http definition with Open parts (ADR-0054) — its url, an Open secret in
+ * its auth or a header, or both — or undefined when every part is fixed. Binding builds the Effect
+ * again, whole, with `rebuild` (its own constructor) over the definition with the bound parts, so the
+ * bound one is checked like any definition; a binding that names one of two Open parts gives an
+ * Effect still Open in the other.
+ */
+export function openHttpOf<S extends z.ZodType | undefined>(
+  def: HttpDefinition<S>,
+  rebuild: (def: HttpDefinition<S>) => unknown,
+): EffectLogic<unknown, unknown> | undefined {
+  const parts = def.url === open ? openHttpParts(def) : httpParts(def);
+  const opened = openPartsOf(parts);
+  if (opened.length === 0) return undefined;
+  return openEffectLogic(parts, opened, (binding) => {
+    if (binding.argv !== undefined) {
+      throw new Error(
+        `an http Effect's Open parts are its url and its secret — bind it with ${effectBindingShape(opened)}, not an argv`,
+      );
+    }
+    let bound: HttpDefinition<S> = def;
+    if (binding.url !== undefined) bound = { ...bound, url: binding.url };
+    if (binding.secret !== undefined) {
+      const { headers, auth } = bindOpenSecret({ headers: bound.headers, auth: bound.auth }, binding.secret);
+      bound = { ...bound, ...(headers !== undefined ? { headers } : {}), ...(auth !== undefined ? { auth } : {}) };
+    }
+    return rebuild(bound) as EffectLogic<unknown, unknown>;
+  });
 }
 
 /** The scheme, host and port, from the url's literal head: a secret may sit only after the host,
@@ -449,28 +602,21 @@ const running = new WeakMap<AnyActorRef, Running>();
  * An `http` Effect's slot logic over an injected port factory — the seam `http()` and the unit
  * tests share, as `commandWith` is for a command.
  */
-export function httpWith<S extends z.ZodType | undefined = undefined>(
+export function httpWith<
+  S extends z.ZodType | undefined = undefined,
+  const U extends HttpDefinition<S>["url"] = string,
+  const A extends HttpDefinition<S>["auth"] = undefined,
+  const H extends HttpDefinition<S>["headers"] = undefined,
+>(
   portFactory: EffectorPortFactory,
-  def: HttpDefinition<S> & { url: typeof open },
-): EffectLogic<HttpInput<S>, HttpOutput> & OpenEffect<"url">;
-export function httpWith<S extends z.ZodType | undefined = undefined>(
-  portFactory: EffectorPortFactory,
-  def: HttpDefinition<S>,
-): EffectLogic<HttpInput<S>, HttpOutput>;
+  def: HttpDefinition<S> & { url: U; auth?: A; headers?: H },
+): EffectLogic<HttpInput<S>, HttpOutput> & OpenOf<HttpOpenParts<U, A, H>>;
 export function httpWith<S extends z.ZodType | undefined = undefined>(
   portFactory: EffectorPortFactory,
   def: HttpDefinition<S>,
 ): EffectLogic<HttpInput<S>, HttpOutput> {
-  if (def.url === open) {
-    // An Open url (ADR-0054): unbound logic that carries the parts and binds by building this Effect
-    // again, whole, with the composer's url — so the bound one is checked like any definition.
-    return openEffectLogic(openHttpParts(def), "url", (binding) => {
-      if (!("url" in binding)) {
-        throw new Error("an http Effect's Open part is its url — bind it with { url }, not an argv");
-      }
-      return httpWith(portFactory, { ...def, url: binding.url }) as EffectLogic<unknown, unknown>;
-    });
-  }
+  const unbound = openHttpOf(def, (bound) => httpWith(portFactory, bound));
+  if (unbound) return unbound as EffectLogic<HttpInput<S>, HttpOutput>;
   const parts = httpParts(def);
   type I = HttpInput<S>;
   type O = HttpOutput;
@@ -801,12 +947,14 @@ function parseDuration(d: Duration): number {
  * Orchestrator signs the call and holds no secret. Every outcome is output:
  * `response | unreachable | refused | unknown`.
  */
-export function http<S extends z.ZodType | undefined = undefined>(
-  def: HttpDefinition<S> & { url: typeof open },
-): EffectLogic<HttpInput<S>, HttpOutput> & OpenEffect<"url">;
-export function http<S extends z.ZodType | undefined = undefined>(
-  def: HttpDefinition<S>,
-): EffectLogic<HttpInput<S>, HttpOutput>;
+export function http<
+  S extends z.ZodType | undefined = undefined,
+  const U extends HttpDefinition<S>["url"] = string,
+  const A extends HttpDefinition<S>["auth"] = undefined,
+  const H extends HttpDefinition<S>["headers"] = undefined,
+>(
+  def: HttpDefinition<S> & { url: U; auth?: A; headers?: H },
+): EffectLogic<HttpInput<S>, HttpOutput> & OpenOf<HttpOpenParts<U, A, H>>;
 export function http<S extends z.ZodType | undefined = undefined>(
   def: HttpDefinition<S>,
 ): EffectLogic<HttpInput<S>, HttpOutput> {

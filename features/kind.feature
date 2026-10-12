@@ -184,6 +184,19 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the http Effect's answer is a response from the echo
       And no form of the echo token reached the run, and the answer names it "[secret:echo-token]"
 
+    Scenario: a packaged Machine's Open secret, bound by the composer, reaches the echo and no Agent container
+      ADR-0054. The `opensecret` workflow is a composer's file: it binds the packaged `notifier`'s
+      `bearer(secret(open))` to `echo-token` with `customize()`. The Effect's Effector holds that
+      secret, the run's Sandbox holds no form of it, and the echo received it as the Bearer: the
+      answer names it where the Authorization header carried the value.
+      Given the kind instance is serving
+      When I start the "opensecret" workflow in mode "bearer" detached
+      Then the echo token is nowhere in the Sandbox's Harness container
+      When the held Effect is released
+      Then the http Effect's answer is a response from the echo
+      And the echo received the bound secret as the Bearer in its Authorization header
+      And no form of the echo token reached the run, and the answer names it "[secret:echo-token]"
+
     Scenario: the answer an Agent reads is scrubbed
       Given the kind instance is serving
       When I start the "asked" workflow detached

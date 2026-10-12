@@ -1319,6 +1319,51 @@ test("an Effect's OPEN url or argv is refused the same way, with the `effects` l
   assert.match(out, /deploy: command \["make","deploy"\]/);
 });
 
+test("an Effect's OPEN secret is refused the same way, with the `{ secret }` line — beside an Open url, one object (ADR-0054)", async () => {
+  // A composer brings their own secret to a packaged Machine: until it is named there is no file to
+  // place in the Effector, so the walk refuses it before anything is built, through workspace().
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  await writeFile(
+    join(root, "workflows", "packaged.ts"),
+    `import { bearer, http, jr2Setup, open, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [], actors: {\n` +
+      `  notify: http({ method: "POST", url: "https://hooks.example.com/x", auth: bearer(secret(open)) }),\n` +
+      `  page: http({ method: "POST", url: open, auth: bearer(secret(open)) }) } })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /refusing: workflow "packaged" leaves the secret of Effect "notify" open — bind it where the Machine is registered/,
+  );
+  assert.match(
+    err,
+    /export const machine = customize\(<import>, \{ effects: \{ notify: \{ secret: "<name>" \} \} \}\)/,
+  );
+  assert.deepEqual(w.kube.applied, [], "not even the namespace");
+
+  // The url and the secret of one Effect: one line, one object with both keys.
+  const both = await mkInstance(`export default { name: "myinst" };\n`);
+  await writeFile(
+    join(both, "workflows", "packaged.ts"),
+    `import { bearer, http, jr2Setup, open, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [], actors: { page: http({ method: "POST", url: open, auth: bearer(secret(open)) }) } })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  const w2 = mkWorld(both);
+  assert.equal(await up(["--yes"], w2.io), 1);
+  const err2 = w2.err.join("\n");
+  assert.match(err2, /leaves the url and secret of Effect "page" open/);
+  assert.match(
+    err2,
+    /customize\(<import>, \{ effects: \{ page: \{ url: "https:\/\/<host>\/<path>", secret: "<name>" \} \} \}\)/,
+  );
+});
+
 test("up prints who may send what, per state, and the load warnings — a warning converges on (ADR-0015)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   // A Gate on the parent takes `abandon` from the Agent below: legal, and warned.

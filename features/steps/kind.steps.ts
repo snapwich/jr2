@@ -2540,6 +2540,39 @@ Then("the echo received the run's call exactly once", async function (this: E2EW
   assert.equal(await echoCount(this), 1, "one send, across what restarted");
 });
 
+/** An Open secret bound by the composer (ADR-0054): the echo answers each header it received, and the
+ * Effector scrubs the bound secret's value out of the answer — so `Bearer [secret:echo-token]`, raw,
+ * is the Authorization header carrying that very value. */
+Then(
+  "the echo received the bound secret as the Bearer in its Authorization header",
+  async function (this: E2EWorld): Promise<void> {
+    const output = await httpOutput(this);
+    assert.match(
+      String(output.body),
+      /^header authorization raw Bearer \[secret:echo-token\]$/m,
+      `the echo saw the bound secret as the Bearer: ${String(output.body)}`,
+    );
+    assert.equal(await echoCount(this), 1, "one send");
+  },
+);
+
+/** The other half of "a secret reaches only the pods that name it" (ADR-0068): the bound secret is
+ * no file and no env of the Sandbox's Harness container — the Agent's — read while the run is live. */
+Then(
+  "the echo token is nowhere in the Sandbox's Harness container",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    assert.ok(this.echoToken, "setupKind made this scenario's echo token");
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const out = await kubectlInput(
+      this,
+      ["exec", "-i", `pod/${pod}`, "-c", "harness", "--", RUNTIME_NODE, "-e", KEY_SCAN],
+      this.echoToken,
+    );
+    assert.equal(out.trim(), "CLEAN", `the echo token is in the Harness container: ${out.trim()}`);
+  },
+);
+
 Given("the Instance Effector runs {int} replicas", async function (this: E2EWorld, n: number): Promise<void> {
   // No replica count in config yet: the tier scales the Deployment `jr2 up` converged.
   await kubectl(this, ["scale", `deployment/${INSTANCE_EFFECTOR}`, `--replicas=${n}`]);

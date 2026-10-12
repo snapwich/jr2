@@ -18,6 +18,7 @@ export * from "./http-effect.ts";
 export * from "./sandbox-effect.ts";
 // An Effect's Open parts (ADR-0054): the types `customize({ effects })` reads.
 export type { EffectBinding, OpenEffect, OpenEffectPart } from "./open-effect.ts";
+export { openPartsText } from "./open-effect.ts";
 export * from "./effector-wire.ts";
 export * from "./pick.ts";
 export * from "./parts.ts";

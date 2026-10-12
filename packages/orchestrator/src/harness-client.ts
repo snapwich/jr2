@@ -55,11 +55,12 @@ import {
   type CommandOptions,
   type CommandOutput,
   type OpenCommandInput,
+  type EnvOpenParts,
   type EffectLogic,
   type ExecPort,
 } from "./effect.ts";
 import { open } from "./open.ts";
-import type { OpenEffect } from "./open-effect.ts";
+import type { OpenEffect, OpenOf } from "./open-effect.ts";
 import {
   LIVE_LONG_POLL,
   STREAM_NEXT_OFFSET_HEADER,
@@ -609,11 +610,11 @@ export function createExecPort(options: {
 export function command<const Opt extends CommandOptions = CommandOptions>(
   argv: typeof open,
   options?: Opt,
-): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv">;
+): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv" | EnvOpenParts<Opt>>;
 export function command<const A extends readonly (string | Arg)[], const Opt extends CommandOptions = CommandOptions>(
   argv: A,
   options?: Opt,
-): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput>;
+): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
 export function command(
   argv: readonly (string | Arg)[] | typeof open,
   options: CommandOptions = {},

@@ -73,8 +73,8 @@ const repos = { app: "https://example.test/app.git" };
 test("an Open url or argv is carried with the sentinel, and the walk reports it — no target, no argv guessed", () => {
   const parts = partsOf([notifier()]);
   assert.deepEqual(parts.openEffects, [
-    { slot: "comment", path: [], part: "url" },
-    { slot: "deploy", path: [], part: "argv" },
+    { slot: "comment", path: [], parts: ["url"] },
+    { slot: "deploy", path: [], parts: ["argv"] },
   ]);
   const byName = Object.fromEntries(parts.effects.map((e) => [e.name, e]));
   // Placement is the kind's, so it is known before the part is bound; the secrets its auth names too.
@@ -85,23 +85,24 @@ test("an Open url or argv is carried with the sentinel, and the walk reports it 
     kind: "http",
     placement: "instance",
     method: "POST",
-    open: "url",
+    open: ["url"],
     secrets: ["tracker-token"],
     idempotent: false,
     timeoutMs: 30_000,
   });
   assert.equal(byName.deploy?.kind, "command");
   assert.deepEqual((byName.deploy as { argv: string[] }).argv, ["<open>"]);
-  assert.equal((byName.deploy as { open?: string }).open, "argv");
+  assert.deepEqual((byName.deploy as { open?: string[] }).open, ["argv"]);
   assert.equal(byName.lint && "open" in byName.lint, false, "a part the author fixed is not reported");
 });
 
-test("a secret's name is not an Open part: secret(open) is refused at build, and a per-team secret rides an Open url", () => {
-  // ADR-0054: the Open parts are an http url and a command's argv. `secret(open)` used to
-  // fail with the runtime's "Cannot convert a Symbol value to a string"; it now names the rule.
-  assert.throws(() => secret(open as never), /secret\(open\): a secret's name is not an Open part.*ADR-0054/);
-  assert.throws(() => bearer(secret(open as never)), /not an Open part/);
-  assert.throws(() => text`https://hooks.example.com/services/${secret(open as never)}`, /not an Open part/);
+test("a url's secret is no Open part: secret(open) in a url is refused at build, and a per-team secret rides an Open url", () => {
+  // ADR-0054: secret(open) is taken by the auth, a header and a command's env (open-secret.test.ts),
+  // never by a url: a url that carries a secret is left Open whole.
+  assert.throws(
+    () => httpWith(ports, { method: "POST", url: text`https://hooks.example.com/services/${secret(open)}` }),
+    /secret\(open\) in a url: a url's secret is not an Open part — leave the whole url Open \(`url: open`\).*ADR-0054/,
+  );
   // A url that carries its secret in its path is left Open whole: two bindings of one Machine, two
   // teams' secrets, each placed for its own copy.
   const forTeam = (name: string) =>
@@ -115,7 +116,7 @@ test("a secret's name is not an Open part: secret(open) is refused at build, and
     (partsOf([m as never]).effects.find((e) => e.name === "comment") as { secrets: string[] }).secrets;
   assert.deepEqual(secretsOf(forTeam("hook-team-a")), ["hook-team-a", "tracker-token"]);
   assert.deepEqual(secretsOf(forTeam("hook-team-b")), ["hook-team-b", "tracker-token"]);
-  // No `secret` key binds a name: the binding is a url or an argv.
+  // A `secret` key binds an Open secret, and this Effect names none: its Open part is its url.
   assert.throws(
     () => customize(notifier(), { effects: { comment: { secret: "hook-team-a" } as never } }),
     /leaves its url Open — bind it with/,
@@ -282,10 +283,10 @@ test("workspace() and pool() are transparent: an Effect in the body is bound wit
 
   for (const machine of [wrapped, pooled]) {
     assert.deepEqual(
-      partsOf([machine]).openEffects.map((o) => [o.slot, o.path, o.part]),
+      partsOf([machine]).openEffects.map((o) => [o.slot, o.path, o.parts]),
       [
-        ["deploy", [], "argv"],
-        ["comment", [], "url"],
+        ["deploy", [], ["argv"]],
+        ["comment", [], ["url"]],
       ],
       "the route omits the wrappers, as customize() omits them",
     );
@@ -309,8 +310,8 @@ test("a composed Machine's Open part is reported on its route, and the fix line 
   });
   const open1 = partsOf([top]).openEffects;
   assert.deepEqual(open1, [
-    { slot: "comment", path: ["tell"], part: "url" },
-    { slot: "deploy", path: ["tell"], part: "argv" },
+    { slot: "comment", path: ["tell"], parts: ["url"] },
+    { slot: "deploy", path: ["tell"], parts: ["argv"] },
   ]);
   assert.equal(
     customizeLine("<import>", ["tell"], "comment", "url"),
@@ -588,7 +589,7 @@ test("an http whose body is a Worktree file may leave its url Open too, and bind
     states: { idle: {} },
   });
   const wrapped = workspace(m, { repos, spec });
-  assert.deepEqual(partsOf([wrapped]).openEffects, [{ slot: "report", path: [], part: "url" }]);
+  assert.deepEqual(partsOf([wrapped]).openEffects, [{ slot: "report", path: [], parts: ["url"] }]);
   const bound = customize(wrapped, { effects: { report: { url: "https://files.example.com/upload" } } });
   const [effect] = partsOf([bound]).effects;
   assert.equal(effect?.kind, "http");

@@ -22,7 +22,10 @@
 //      no Sandbox; a `workspace()` that declared its map Open takes any keys, since naming them
 //      is the composer's half;
 //   7. `resources` is a Size — `limits.memory` and `limits.cpu`, nothing else (ADR-0060) — and
-//      `user` takes the image alone or `{ image, resources }`.
+//      `user` takes the image alone or `{ image, resources }`;
+//   8. `effects` offers exactly the Effects a package left Open, each with its part's binding;
+//   9. an Open secret binds with `{ secret }`, and beside an Open url or argv one object takes both,
+//      so a binding that leaves either unbound does not compile (ADR-0054).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -33,7 +36,7 @@ import { customize } from "../src/customize.ts";
 import { open } from "../src/parts.ts";
 import { agent, command } from "../src/harness-client.ts";
 import { arg } from "../src/effect.ts";
-import { http, secret, text } from "../src/http-effect.ts";
+import { basic, bearer, http, secret, text } from "../src/http-effect.ts";
 import { pool, source } from "../src/pool.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace, type WorkspaceMachine, type Workspaced } from "../src/workspace.ts";
@@ -293,6 +296,51 @@ function refusedEffects(): void {
   void customize(research, { effects: { fetchIt: { url: "https://x.example.com" } } });
 }
 
+// --- 9: an Open secret (ADR-0054) ----------------------------------------------------------------------
+// `secret(open)` in an auth, a header or a command's env states the Open part "secret": `effects` offers
+// `{ secret }`, and an Effect with an Open url or argv beside it takes ONE object with both keys — the
+// intersection of the two bindings — so a binding that leaves the secret unbound does not compile.
+
+const token = secret(open);
+const secretive = jr2Setup({
+  events: [],
+  actors: {
+    hook: http({ method: "POST", url: "https://hooks.example.com", auth: bearer(secret(open)) }),
+    keyed: http({ method: "GET", url: "https://api.example.com", headers: { "x-api-key": text`${secret(open)}` } }),
+    pager: http({ method: "POST", url: open, auth: basic("bot", secret(open)) }),
+    release: command(open, { env: { TOKEN: token, TOKEN_FILE: token.path } }),
+    deploy: command(["make", "deploy"], { env: { KEY: secret(open).path } }),
+    fixed: http({ method: "POST", url: "https://fixed.example.com", auth: bearer(secret("fixed")) }),
+  },
+}).createMachine({ id: "secretive", initial: "idle", states: { idle: {} } });
+
+void customize(secretive, {
+  effects: {
+    hook: { secret: "team-hook" },
+    keyed: { secret: "team-key" },
+    pager: { url: "https://pager.example.com", secret: "team-pager" },
+    release: { argv: ["./release.sh"], secret: "team-release" },
+    deploy: { secret: "team-deploy" },
+  },
+});
+
+function refusedSecrets(): void {
+  // @ts-expect-error an Open url beside an Open secret: one object binds both — the secret left unbound does not compile
+  void customize(secretive, { effects: { pager: { url: "https://pager.example.com" } } });
+  // @ts-expect-error nor the url left unbound
+  void customize(secretive, { effects: { pager: { secret: "team-pager" } } });
+  // @ts-expect-error an Open argv beside an Open secret: the secret left unbound does not compile
+  void customize(secretive, { effects: { release: { argv: ["./release.sh"] } } });
+  // @ts-expect-error an Open secret alone binds to { secret }, never a url
+  void customize(secretive, { effects: { hook: { url: "https://x.example.com" } } });
+  // @ts-expect-error nor to nothing: its secret left unbound does not compile
+  void customize(secretive, { effects: { deploy: {} } });
+  // @ts-expect-error a secret's name is a string, never a mapper over the run
+  void customize(secretive, { effects: { hook: { secret: () => "per-run" } } });
+  // @ts-expect-error a secret the author named is not offered
+  void customize(secretive, { effects: { fixed: { secret: "other" } } });
+}
+
 test("customize()'s type-level claims are the compiler's; this run pins the runtime half", () => {
   // A retune is definition-level and total: what comes back carries the override layered over the
   // stock definition, whatever the type says about the keys.
@@ -314,6 +362,7 @@ test("customize()'s type-level claims are the compiler's; this run pins the runt
       refusedUnderOpenMap,
       refusedSizes,
       refusedEffects,
+      refusedSecrets,
     ].every((f) => !!f),
   );
 });

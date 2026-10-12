@@ -76,7 +76,15 @@ import {
 import { isEffect, type Arg } from "./effect.ts";
 import { effectChecks } from "./effect-checks.ts";
 import type { Text } from "./http-effect.ts";
-import { binderOf, openPartOf, type EffectBinding, type OpenEffect, type OpenEffectPart } from "./open-effect.ts";
+import {
+  binderOf,
+  effectBindingShape,
+  openPartsOf,
+  openPartsText,
+  type EffectBinding,
+  type OpenEffect,
+  type OpenEffectPart,
+} from "./open-effect.ts";
 
 // --- What a Machine declares, read at the TYPE level ---------------------------------------------
 // Everything below reads xstate's own `TActor` parameter — the `{ src, logic, id }` union
@@ -116,13 +124,21 @@ type AgentSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AgentL
  * overload states for an `open` url or argv (open-effect.ts). */
 type OpenEffectSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: OpenEffect<OpenEffectPart> }>["src"];
 
-/** What one Open Effect binds to: its url, or its argv. */
-type BindingOf<L> =
-  L extends OpenEffect<"url">
-    ? { url: string | Text }
-    : L extends OpenEffect<"argv">
-      ? { argv: readonly (string | Arg)[] }
+/** What one Open part binds to: a url, an argv, a secret's name. */
+type PartBinding<P> = P extends "url"
+  ? { url: string | Text }
+  : P extends "argv"
+    ? { argv: readonly (string | Arg)[] }
+    : P extends "secret"
+      ? { secret: string }
       : never;
+
+/** A union of object types as their intersection: one binding object with every key. */
+type Intersected<U> = (U extends unknown ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
+
+/** What one Open Effect binds to: its url, its argv or its secret — for an Effect with two Open
+ * parts, one object with both keys, the intersection of their bindings (ADR-0054). */
+type BindingOf<L> = L extends OpenEffect<infer P> ? Intersected<PartBinding<P>> : never;
 
 /** The child-Machine slots: the slots composition reaches (ADR-0049 — a nested Machine is an
  * ordinary `invoke` of an ordinary slot). */
@@ -342,28 +358,38 @@ function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBindi
         `${listed(slotsWhere(machine, isEffect))} (ADR-0067). Only declared parts can be bound.`,
     );
   }
-  const part = openPartOf(logic.effect);
+  const parts = openPartsOf(logic.effect);
   const binder = binderOf(logic);
-  if (part === undefined || binder === undefined) {
+  if (parts.length === 0 || binder === undefined) {
     throw new Error(
       `customize(): the ${logic.effect.kind} Effect "${name}" of machine "${machine.id}" leaves nothing Open — its ` +
         "parts are fixed in its definition, and only a part a package left `open` is bound, once (ADR-0054).",
     );
   }
-  const value =
-    typeof binding === "object" && binding !== null ? (binding as Record<string, unknown>)[part] : undefined;
-  const keys = typeof binding === "object" && binding !== null ? Object.keys(binding) : [];
-  const shape = part === "url" ? '{ url: "https://<host>/<path>" }' : '{ argv: ["<program>", "<arg>"] }';
-  if (keys.length !== 1 || keys[0] !== part || value === undefined) {
+  // One object binds them, each key an Open part; a key it leaves out leaves that part Open, and
+  // the walk reports it again (ADR-0054).
+  const given = typeof binding === "object" && binding !== null ? (binding as Record<string, unknown>) : {};
+  const keys = Object.keys(given).filter((k) => given[k] !== undefined);
+  if (keys.length === 0 || keys.some((k) => !parts.includes(k as OpenEffectPart))) {
     throw new Error(
-      `customize(): the ${logic.effect.kind} Effect "${name}" leaves its ${part} Open — bind it with ${shape} (ADR-0054)`,
+      `customize(): the ${logic.effect.kind} Effect "${name}" leaves its ${openPartsText(parts)} Open — bind it ` +
+        `with ${effectBindingShape(parts)} (ADR-0054)`,
     );
   }
-  if (value === open || typeof value === "function") {
-    throw new Error(
-      `customize(): the ${logic.effect.kind} Effect "${name}"'s ${part} is bound once, to a value — not ` +
-        `${value === open ? "`open` again" : "a function of the run"}: no run chooses an Effect's ${part} (ADR-0054)`,
-    );
+  for (const part of keys) {
+    const value = given[part];
+    if (value === open || typeof value === "function") {
+      throw new Error(
+        `customize(): the ${logic.effect.kind} Effect "${name}"'s ${part} is bound once, to a value — not ` +
+          `${value === open ? "`open` again" : "a function of the run"}: no run chooses an Effect's ${part} (ADR-0054)`,
+      );
+    }
+    if (part === "secret" && typeof value !== "string") {
+      throw new Error(
+        `customize(): the ${logic.effect.kind} Effect "${name}"'s secret is bound to a secret's name, a string — ` +
+          `the file the Effector reads it from: { secret: "<name>" } (ADR-0054, ADR-0068)`,
+      );
+    }
   }
   return binder(binding);
 }

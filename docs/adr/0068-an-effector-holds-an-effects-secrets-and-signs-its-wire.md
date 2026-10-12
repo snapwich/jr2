@@ -239,10 +239,11 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   than 8 characters, and names it: a shorter one would match ordinary text. `jr2 up` refuses a short one earlier, a
   literal and a value in the user's own Secret alike (see the secrets list below); the Effector's refusal is for a
   Secret edited after the converge.
-- **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
-  trailing `\n` or `\r\n` is taken off, as the Custodian does. A push credential's secret files (`identity`, `password`,
-  `sign.identity`, `sign.private.asc`) are held and scrubbed like every Effect secret. A value changed after the start
-  reaches the Effector when its pod rolls; the template digest below makes the next `jr2 up` roll it.
+- **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>` (the name a composer binds to
+  an Open secret, too), read once at start. One trailing `\n` or `\r\n` is taken off, as the Custodian does. A push
+  credential's secret files (`identity`, `password`, `sign.identity`, `sign.private.asc`) are held and scrubbed like
+  every Effect secret. A value changed after the start reaches the Effector when its pod rolls; the template digest
+  below makes the next `jr2 up` roll it.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
   in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
@@ -284,10 +285,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   a Workspace's pod the Held secrets its `workspace()` lists under `secrets: [...]` and the model keys its Agents'
   providers read; the Instance Harness the model keys of its `"none"` Agents only; an Effector what its Effects name
   with `secret("name")` (an `http` Effect: the Instance Effector; an `http` whose body is a Worktree file: the Sandbox
-  Effector of the Workspace whose body invokes it). `hosts`, `headers` and `paths` are a Held secret's binding, never
-  its placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the held manifest, the
-  Custodian config and the held values' Secret of each Harness pod come from it. Both is both, and `jr2 up` reports it
-  per pod. An entry nothing names goes nowhere, and `jr2 up` warns:
+  Effector of the Workspace whose body invokes it; a credentialed command: that Sandbox Effector), and the name a
+  composer binds to an Effect's `secret(open)` with `customize()` (ADR-0054) is placed the same way, in that Effect's
+  Effector alone, once bound — `jr2 up` refuses an Open secret nothing bound. `hosts`, `headers` and `paths` are a Held
+  secret's binding, never its placement (ADR-0059). One derivation (`secretPlacementsOf`) places both kinds, and the
+  held manifest, the Custodian config and the held values' Secret of each Harness pod come from it. Both is both, and
+  `jr2 up` reports it per pod. An entry nothing names goes nowhere, and `jr2 up` warns:
   `secrets[i] (<name>) is named by nothing; goes nowhere`. There is no `placement:` key: naming is the placement.
   `jr2 up` prints one line per secret with its placements, and one per pod with what it holds
   (`Workspace of workflow "coding": Custodian holds ANTHROPIC_API_KEY (provider), JIRA_TOKEN`,

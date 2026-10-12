@@ -17,9 +17,11 @@ the credentialed `command` — runs there too, its child confined (below).
   env names; an `http` Effect's method, fixed host, the names of the secrets it names and whether its body is a Worktree
   file; a `push`'s `pin`, `sign`, `squash` and `force` — which `jr2 up` prints and the Machine doc carries, read without
   running anything. A packaged Machine may leave an `http` url (whatever its body) or a `command`'s argv Open (`open` in
-  its place), for the composer to bind once with `customize(machine, { effects: { <slot>: { url } | { argv } } })`
+  its place), and the name of one secret its auth, a header or a command's env names (`secret(open)`; never in a url),
+  for the composer to bind once with `customize(machine, { effects: { <slot>: { url } | { argv } | { secret } } })` —
+  one object with both keys for an Effect with two Open parts
   ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); the slot then carries the
-  Effect built again with the bound part, and an Effect still Open runs nothing: its state's `onError`. An Effect
+  Effect built again with the bound parts, and an Effect still Open runs nothing: its state's `onError`. An Effect
   written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the slot form in the message:
   xstate gives it a generated key that moves when a state is renamed, so the ledger, the report and the Machine doc
   would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not reach it. The same rule holds
@@ -72,45 +74,46 @@ the credentialed `command` — runs there too, its child confined (below).
   and one after a `?` or a `#` is refused when the Machine loads — so the host is fixed by the definition and never a
   param. A url left Open is fixed by the composer's `customize()` instead, once and before any run, under the same rules
   (ADR-0054); a file body does not change that rule. `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`.
-  `request(input)` returns the run's part alone: `path` segments and a JSON or text body. So an Agent's param reaches a
-  path segment or a body, never the host, a header or a secret. It runs in the Instance Effector, which builds the
-  request and holds the secrets (ADR-0068); the Orchestrator signs the call and holds none. Its body may instead be a
-  Worktree file, `body: file(path, { slot?, segments?, contentType? })`: the file's path relative to the Repo Slot's
-  Worktree (the one slot, or the one `slot` names), and the url's path segments — each a value or a function of the
-  input; no `request` is written beside it, since `file()` carries the run's part. Such an `http` is placed in the
-  Sandbox Effector of the Workspace whose body invokes it, and `jr2 up` refuses one that no `workspace()` invokes, where
-  no Worktree exists to read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox Effector opens the file with
-  `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`,
-  `RESOLVE_NO_XDEV`, non-blocking — then `fstat`: a symlink at any component (one that stays inside included), `..`, an
-  absolute path, a FIFO, a directory and a file with more than one link are refused, in words, as output. The content
-  type is `file()`'s `contentType` or a `content-type` header of the definition's, not both: a definition with both is
-  refused when the Machine loads ("write one of them", as for `auth` beside an `authorization` header). With neither it
-  is `application/octet-stream`. A later body form (a multipart file and fields) is one more body on `http`, never a
-  kind.
+  A secret the auth or a header names may be `secret(open)`, whose name the composer binds once in the same way; one in
+  the url is refused. `request(input)` returns the run's part alone: `path` segments and a JSON or text body. So an
+  Agent's param reaches a path segment or a body, never the host, a header or a secret. It runs in the Instance
+  Effector, which builds the request and holds the secrets (ADR-0068); the Orchestrator signs the call and holds none.
+  Its body may instead be a Worktree file, `body: file(path, { slot?, segments?, contentType? })`: the file's path
+  relative to the Repo Slot's Worktree (the one slot, or the one `slot` names), and the url's path segments — each a
+  value or a function of the input; no `request` is written beside it, since `file()` carries the run's part. Such an
+  `http` is placed in the Sandbox Effector of the Workspace whose body invokes it, and `jr2 up` refuses one that no
+  `workspace()` invokes, where no Worktree exists to read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox
+  Effector opens the file with `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
+  `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_XDEV`, non-blocking — then `fstat`: a symlink at any component (one that stays
+  inside included), `..`, an absolute path, a FIFO, a directory and a file with more than one link are refused, in
+  words, as output. The content type is `file()`'s `contentType` or a `content-type` header of the definition's, not
+  both: a definition with both is refused when the Machine loads ("write one of them", as for `auth` beside an
+  `authorization` header). With neither it is `application/octet-stream`. A later body form (a multipart file and
+  fields) is one more body on `http`, never a kind.
 - **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`.** Naming a
   secret is what places it: it runs in the Sandbox Effector of the Workspace whose body invokes it, with no `placement:`
-  key. Its child runs as the Effector's uid beside the Effector's key, the secrets it does not name and the push
-  credentials, and its argv may run a file the Agent wrote, so the Effector confines the child with Landlock before
-  `execve` (ADR-0068): it may read and run the image's system paths, read and write its own scratch (its `HOME` and its
-  `TMPDIR`; never `/tmp`, which every child would share), and read the secret files it names — nothing else. A node
-  whose kernel cannot confine it runs none: the Effector of a Workspace that holds one does not become ready there, and
-  the provision fails naming the node (ADR-0068). It runs against one commit: the Agent's branch tip when it starts, or
-  — with `pin` — the commit the Effect's input names (`{ sha }`, one a Gate approved). That commit is checked out into a
-  fresh scratch of the Effect's own by the push's import procedure (below), so the Agent's uncommitted edits are never
-  seen; the answer carries `dirty: true` beside the output when the Worktree held some (a status in jr2's clean
-  repository over a copy of the Worktree's index, against the Worktree's own HEAD — never the pin, so the commits the
-  Agent made after an approved one are not edits — read as data; when it cannot tell, it says dirty). The child's env is
-  what the author named — a secret's value, or its file's path — plus `PATH`, `HOME` and `TMPDIR`, and nothing else;
-  `PATH` is the Effector container's own, as its image set it (the tools are the author's), and `argv[0]` is looked up
-  there; `HOME` and `TMPDIR` are the scratch's, and the scratch is removed once the outcome is read. Its output is
-  scrubbed as it streams, before it is cut to its tail (ADR-0068). The Agent's files are the author's choice to run — a
-  tool's plugins, a `local-exec`, a `credential_process` — so "no program the Agent's files name runs" is not claimed
-  for it. Its claims are three: the Agent never reads or spends the secret (a container it cannot exec in, and a child
-  confined from the files of every other secret and of the Effector's key), the tool sees a pinned commit and not the
-  live Worktree, and the output is scrubbed. Landlock governs files, not `connect()`, and a GPG-signed push holds the
-  signing key on a `gpg-agent` socket while it signs; so the Sandbox Effector never runs the two at once: one lock over
-  two classes, `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068). A Workspace may
-  hold both.
+  key — and so does an env that names `secret(open)`, whose name the composer binds (ADR-0054). Its child runs as the
+  Effector's uid beside the Effector's key, the secrets it does not name and the push credentials, and its argv may run
+  a file the Agent wrote, so the Effector confines the child with Landlock before `execve` (ADR-0068): it may read and
+  run the image's system paths, read and write its own scratch (its `HOME` and its `TMPDIR`; never `/tmp`, which every
+  child would share), and read the secret files it names — nothing else. A node whose kernel cannot confine it runs
+  none: the Effector of a Workspace that holds one does not become ready there, and the provision fails naming the node
+  (ADR-0068). It runs against one commit: the Agent's branch tip when it starts, or — with `pin` — the commit the
+  Effect's input names (`{ sha }`, one a Gate approved). That commit is checked out into a fresh scratch of the Effect's
+  own by the push's import procedure (below), so the Agent's uncommitted edits are never seen; the answer carries
+  `dirty: true` beside the output when the Worktree held some (a status in jr2's clean repository over a copy of the
+  Worktree's index, against the Worktree's own HEAD — never the pin, so the commits the Agent made after an approved one
+  are not edits — read as data; when it cannot tell, it says dirty). The child's env is what the author named — a
+  secret's value, or its file's path — plus `PATH`, `HOME` and `TMPDIR`, and nothing else; `PATH` is the Effector
+  container's own, as its image set it (the tools are the author's), and `argv[0]` is looked up there; `HOME` and
+  `TMPDIR` are the scratch's, and the scratch is removed once the outcome is read. Its output is scrubbed as it streams,
+  before it is cut to its tail (ADR-0068). The Agent's files are the author's choice to run — a tool's plugins, a
+  `local-exec`, a `credential_process` — so "no program the Agent's files name runs" is not claimed for it. Its claims
+  are three: the Agent never reads or spends the secret (a container it cannot exec in, and a child confined from the
+  files of every other secret and of the Effector's key), the tool sees a pinned commit and not the live Worktree, and
+  the output is scrubbed. Landlock governs files, not `connect()`, and a GPG-signed push holds the signing key on a
+  `gpg-agent` socket while it signs; so the Sandbox Effector never runs the two at once: one lock over two classes,
+  `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068). A Workspace may hold both.
 - **A `push` pushes the Workspace's branch to its Repo Slot's Binding**, from the Sandbox Effector, with no input:
   `push({ pin?, sign?, squash?, force?, slot?, timeout? })`. Its credential is the push credential of the
   `git.credentials` entry the Repo Slot's url falls under (ADR-0051): the provision matches the url the run binds —
