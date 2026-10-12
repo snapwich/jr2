@@ -210,11 +210,20 @@ export const PushOutputShape = z.union([
 export type PushWireOutput = z.infer<typeof PushOutputShape>;
 
 /** A credentialed command's output, as the command kind's (ADR-0067), and `dirty` when the
- * Worktree held uncommitted edits it did not see. */
+ * Worktree held uncommitted edits it did not see. A stopped command's (`DELETE`, ADR-0067) is
+ * `exited` with the signal the stop sent last, and the code when the program caught SIGTERM and
+ * exited with one. */
 export const CommandOutputShape = z.union([
   z.strictObject({
     outcome: z.literal("exited"),
     code: z.number().int(),
+    tail: z.string(),
+    dirty: z.boolean().optional(),
+  }),
+  z.strictObject({
+    outcome: z.literal("exited"),
+    signal: z.string(),
+    code: z.number().int().optional(),
     tail: z.string(),
     dirty: z.boolean().optional(),
   }),

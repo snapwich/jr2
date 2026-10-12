@@ -20,6 +20,7 @@ import { mkStore, waitFor } from "./_fixtures.ts";
 
 const go = defineEvent({ name: "go", input: z.object({}) });
 const leave = defineEvent({ name: "leave", input: z.object({}) });
+const finish = defineEvent({ name: "finish", input: z.object({}) });
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyEffect = EffectLogic<any, unknown>;
 
@@ -28,9 +29,10 @@ const ws = () => ({
   bindings: { app: "https://github.com/ourorg/app.git" },
 });
 
-/** A Machine whose `running` state invokes the Effect beside a Gate `exit`; `leave` exits it. */
+/** A Machine whose `running` state invokes the Effect beside a Gate `exit`; `leave` exits it, and
+ * `finish` exits it into the run's final state. */
 function machineOf(effect: AnyEffect) {
-  return jr2Setup({ events: [go, leave], actors: { ws: fakeWorkspace(ws()), effect } }).createMachine({
+  return jr2Setup({ events: [go, leave, finish], actors: { ws: fakeWorkspace(ws()), effect } }).createMachine({
     id: "wf",
     invoke: { src: "ws" },
     initial: "waiting",
@@ -41,9 +43,10 @@ function machineOf(effect: AnyEffect) {
           { src: "effect", input: () => ({ path: "dist/report.pdf" }) as never, onDone: "done", onError: "faulted" },
           { src: "gate", id: "exit" },
         ],
-        on: { leave: "left" },
+        on: { leave: "left", finish: "finished" },
       },
       left: {},
+      finished: { type: "final" },
       done: {},
       faulted: {},
     },
@@ -65,11 +68,15 @@ async function running(effect: AnyEffect, fake: FakeEffector) {
   const host = new RunHost({ store: await mkStore(), ...target });
   host.register({ name: "fx", machine: machineOf(effect), provide: () => ({}) });
   const { runId } = await host.start("fx");
+  const feed: string[] = [];
+  host.subscribe(runId, (ev) => {
+    if (ev.kind === "effect" && ev.stage === "aborted") feed.push(ev.text ?? "");
+  });
   host.sendToGate(runId, "start", { type: "go" });
   await waitFor(() => fake.starts.length === 1);
   // The start was answered, so the Effect is followed: what a stop must reach.
   await waitFor(() => fake.calls.some((c) => c.method === "GET"));
-  return { host, runId };
+  return { host, runId, feed };
 }
 
 const deletes = (fake: FakeEffector) => fake.calls.filter((c) => c.method === "DELETE");
@@ -133,5 +140,50 @@ test("a push and a file-body http have no stop: their state's exit sends no DELE
     await waitFor(() => host.status(runId)?.value === "left");
     await settleTicks();
     assert.equal(deletes(fake).length, 0, `${name} sent a DELETE`);
+  }
+});
+
+test("the stop's answer is said on the feed: the command was stopped, `exited` with the signal", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const { host, runId, feed } = await running(credentialed(fake), fake);
+  host.sendToGate(runId, "exit", { type: "leave" });
+  await waitFor(() => feed.length === 2);
+  assert.match(feed[0]!, /was asked to stop it; outcome unknown/);
+  assert.equal(feed[1], "its Sandbox Effector stopped it: exited with SIGTERM");
+});
+
+test("a stop that does not reach its Sandbox Effector is said on the feed while the run goes on", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  fake.stopsFail = true;
+  const { host, runId, feed } = await running(credentialed(fake), fake);
+  host.sendToGate(runId, "exit", { type: "leave" });
+  await waitFor(() => feed.length === 2);
+  assert.match(
+    feed[1]!,
+    /^the stop did not reach its Sandbox Effector \(connect ECONNREFUSED .*\); it may run until its timeout$/,
+  );
+});
+
+test("a stop that does not reach its Sandbox Effector after its run ended is said in the Orchestrator's log", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(console, "error", (line: unknown) => logged.push(String(line)));
+  const ends: Record<string, (host: RunHost, runId: string) => Promise<unknown>> = {
+    cancel: (host, runId) => host.cancel(runId),
+    "final state": async (host, runId) => host.sendToGate(runId, "exit", { type: "finish" }),
+  };
+  for (const [name, end] of Object.entries(ends)) {
+    logged.length = 0;
+    const fake = new FakeEffector(["sandbox"]);
+    fake.stopsFail = true;
+    const { host, runId } = await running(credentialed(fake), fake);
+    await end(host, runId);
+    await waitFor(() => logged.some((l) => l.includes("did not reach")));
+    const line = logged.find((l) => l.includes("did not reach"))!;
+    assert.match(
+      line,
+      new RegExp(`^run ${runId}: effect effect \\(.+\\) aborted: the stop did not reach its Sandbox Effector`),
+      name,
+    );
+    assert.equal(deletes(fake).length, 1, name);
   }
 });

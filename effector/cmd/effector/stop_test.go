@@ -10,8 +10,8 @@ import (
 
 // A stopped state stops its credentialed command (ADR-0067, ADR-0068), with real processes: the
 // Orchestrator's signed DELETE on the Effect's own path sends SIGTERM to the command's process
-// group, then SIGKILL past a grace, and the Effect settles once its processes are gone, with the
-// signal that ended it.
+// group, then SIGKILL past a grace, and the Effect settles once its processes are gone: `exited`
+// with the signal the stop sent last.
 
 // startCommand starts a command and waits a moment for its script to reach its sleep: the pid it
 // prints (`escapee=<pid>`) is read from the outcome's tail.
@@ -39,7 +39,8 @@ func TestADeleteStopsACredentialedCommandsGroup(t *testing.T) {
 	if d := time.Since(began); d > 4*time.Second {
 		t.Fatalf("a command that ends on SIGTERM was stopped after %s", d)
 	}
-	if !strings.Contains(got, `"outcome":"killed"`) || !strings.Contains(got, `"signal":"SIGTERM"`) {
+	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, `"signal":"SIGTERM"`) ||
+		strings.Contains(got, `"code"`) {
 		t.Fatalf("got %s", got)
 	}
 	if pid := escapee(t, got); alive(pid) {
@@ -69,10 +70,34 @@ func TestADeleteKillsAChildThatIgnoresSigterm(t *testing.T) {
 	if d := time.Since(began); d < 4*time.Second || d > 15*time.Second {
 		t.Fatalf("a child that ignores SIGTERM was ended after %s, not after the grace", d)
 	}
-	if !strings.Contains(got, `"outcome":"killed"`) || !strings.Contains(got, `"signal":"SIGKILL"`) {
+	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, `"signal":"SIGKILL"`) ||
+		strings.Contains(got, `"code"`) {
 		t.Fatalf("got %s", got)
 	}
 	if pid := escapee(t, got); alive(pid) {
 		t.Fatalf("the child %d that ignored SIGTERM is still running", pid)
+	}
+}
+
+func TestADeleteOnAProgramThatCatchesSigtermGivesItsCodeWithTheSignal(t *testing.T) {
+	p := gittest.NewPod(t, "work")
+	p.Commit("a command that cleans up", map[string]string{
+		"tidy.sh": "trap 'echo tidied; exit 3' TERM\necho \"escapee=$$\"\nsleep 300 &\nwait\n",
+	})
+	e, out := startSandboxEffectorWith(t, p, true)
+	if e == nil {
+		t.Fatalf("the effector never served: %s", out)
+	}
+	e.startCommand(t, "tidy-1", commandStart("tidy.sh"))
+	status, got := e.call(t, "DELETE", "/effects/tidy-1", "")
+	if status != 200 || !strings.Contains(got, `"state":"settled"`) {
+		t.Fatalf("DELETE: got %d %s", status, got)
+	}
+	if !strings.Contains(got, `"outcome":"exited"`) || !strings.Contains(got, `"signal":"SIGTERM"`) ||
+		!strings.Contains(got, `"code":3`) || !strings.Contains(got, "tidied") {
+		t.Fatalf("got %s", got)
+	}
+	if pid := escapee(t, got); alive(pid) {
+		t.Fatalf("the stopped command %d is still running", pid)
 	}
 }

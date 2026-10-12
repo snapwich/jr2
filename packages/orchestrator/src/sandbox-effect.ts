@@ -598,16 +598,24 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
   // A credentialed command is stopped where it runs: one signed DELETE on its own path, and its
   // Sandbox Effector ends its process group (ADR-0067). A push and a file-body http are one request
   // each, and have no stop.
+  // What the stop's answer says goes to the feed after the abort's line: the outcome the Effector
+  // settled it with (`exited` with the signal), or that the stop did not reach it.
   const port = row.kind === "command" ? run?.port : undefined;
-  port?.stop(effectId, AbortSignal.timeout(STOP_WAIT_MS)).catch((err: unknown) => {
-    binding?.marker?.({
-      kind: "effect",
-      slot: row.slot,
-      effect: effectId,
-      stage: "aborted",
-      text: `the stop did not reach its Sandbox Effector (${err instanceof Error ? err.message : String(err)}); it may run until its timeout`,
-    });
-  });
+  port?.stop(effectId, AbortSignal.timeout(STOP_WAIT_MS)).then(
+    (state) => {
+      const text = stoppedText(state);
+      if (text) binding?.marker?.({ kind: "effect", slot: row.slot, effect: effectId, stage: "aborted", text });
+    },
+    (err: unknown) => {
+      binding?.marker?.({
+        kind: "effect",
+        slot: row.slot,
+        effect: effectId,
+        stage: "aborted",
+        text: `the stop did not reach its Sandbox Effector (${err instanceof Error ? err.message : String(err)}); it may run until its timeout`,
+      });
+    },
+  );
   binding?.recordEffect?.(
     effectId,
     { state: "aborted", kind: row.kind, slot: row.slot, at: new Date().toISOString() },
@@ -622,6 +630,18 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
       ? "its state exited while it ran: its Sandbox Effector was asked to stop it; outcome unknown"
       : "its state exited while it ran: no longer followed; the Sandbox Effector may still run it; outcome unknown",
   });
+}
+
+/** The feed's line for a stop's answer (ADR-0067): the outcome a stopped command settled with —
+ * `exited` with the signal the stop sent last, and its code when the program caught SIGTERM — or
+ * none when the Effector holds no such Effect or it had not settled within the stop's answer. */
+function stoppedText(state: EffectState | undefined): string | undefined {
+  const out = state?.state === "settled" ? state.output : undefined;
+  if (!out) return undefined;
+  if (out.outcome === "exited" && "signal" in out) {
+    return `its Sandbox Effector stopped it: exited with ${out.signal}${out.code === undefined ? "" : `, code ${out.code}`}`;
+  }
+  return `its Sandbox Effector stopped it: it had already ended (${out.outcome})`;
 }
 
 /** A start over the bytes an Effector reads is sent nowhere, and settles as its kind's own outcome

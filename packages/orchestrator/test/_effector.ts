@@ -37,6 +37,8 @@ export class FakeEffector {
   hold = 30;
   /** When set, the next start is taken by a replica and its answer lost (a reset). */
   loseNextAnswer = false;
+  /** When set, every DELETE is refused a connection: a stop that does not reach the Effector. */
+  stopsFail = false;
   /** How many of the next polls (GET) get an unsigned answer — another process on a stale address. */
   forgePolls = 0;
   /** When set, every signed answer's body is not the wire's shape (a jr2 defect). */
@@ -82,7 +84,7 @@ export class FakeEffector {
     send: async (address, method, path, headers, body, signal) => {
       this.calls.push({ method, path, address });
       const replica = this.replicas.find((r) => r.address === address);
-      if (!replica || replica.down) throw refused(address);
+      if (!replica || replica.down || (method === "DELETE" && this.stopsFail)) throw refused(address);
       const nonce = headers[HEADER_NONCE] ?? "";
       // Verified for THIS replica's address, as the Effector verifies: a request signed for another
       // replica is refused here.
@@ -132,7 +134,7 @@ export class FakeEffector {
         if (held.req.kind !== "command") return answer(405, { error: "POST or GET" });
         this.stopped.push(id);
         if (!held.output) {
-          held.output = { outcome: "killed", signal: "SIGTERM", tail: "" };
+          held.output = { outcome: "exited", signal: "SIGTERM", tail: "" };
           for (const wake of [...held.waiters]) wake();
         }
         return answer(200, stateOf(held));

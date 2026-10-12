@@ -295,9 +295,12 @@ type divergedJSON struct {
 	Source    string `json:"source"`
 }
 
+// exitedJSON is `exited`: a code, or — a stopped command's (ADR-0067) — the signal the stop sent
+// last, with the code when the program caught SIGTERM and exited with one.
 type exitedJSON struct {
 	Outcome string `json:"outcome"`
-	Code    int    `json:"code"`
+	Code    *int   `json:"code,omitempty"`
+	Signal  string `json:"signal,omitempty"`
 	Tail    string `json:"tail"`
 	Dirty   bool   `json:"dirty,omitempty"`
 }
@@ -339,11 +342,12 @@ func (o Output) MarshalJSON() ([]byte, error) {
 		return json.Marshal(divergedJSON{Outcome: o.Outcome, Reason: o.Reason, Published: p.Published,
 			Source: p.Source})
 	case OutcomeExited:
-		code := 0
-		if c.Code != nil {
-			code = *c.Code
+		code := c.Code
+		if code == nil && c.Signal == "" {
+			code = new(int)
 		}
-		return json.Marshal(exitedJSON{Outcome: o.Outcome, Code: code, Tail: c.Tail, Dirty: c.Dirty})
+		return json.Marshal(exitedJSON{Outcome: o.Outcome, Code: code, Signal: c.Signal, Tail: c.Tail,
+			Dirty: c.Dirty})
 	case OutcomeTimeout:
 		return json.Marshal(timeoutJSON{Outcome: o.Outcome, Tail: c.Tail, Dirty: c.Dirty})
 	case OutcomeKilled:
@@ -397,7 +401,11 @@ func (o *Output) UnmarshalJSON(raw []byte) error {
 		if err := strict(raw, &r); err != nil {
 			return err
 		}
-		*o = Output{Outcome: r.Outcome, Command: &CommandResult{Code: &r.Code, Tail: r.Tail, Dirty: r.Dirty}}
+		if r.Code == nil && r.Signal == "" {
+			return errors.New("wire: an exited outcome with neither a code nor a signal")
+		}
+		*o = Output{Outcome: r.Outcome, Command: &CommandResult{Code: r.Code, Signal: r.Signal, Tail: r.Tail,
+			Dirty: r.Dirty}}
 	case OutcomeTimeout:
 		var r timeoutJSON
 		if err := strict(raw, &r); err != nil {

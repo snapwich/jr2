@@ -151,17 +151,18 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   long-polls: it holds up to 25 s and answers `running`, or `settled` with the output. `DELETE /effects/<id>` stops a
   credentialed command whose state exited, or whose run was cancelled (ADR-0067): the Effector sends SIGTERM to the
   command's process group, waits 5 s, sends SIGKILL, and runs rule 1's settle loop below; the command's keeper catches
-  SIGTERM and waits on, so the child's own end is still reported. It answers as a poll does, the outcome once settled,
-  and that outcome counts as read. The route is the command's alone: a `push` and an `http` Effect are one request each
-  and end on their own, so a DELETE on one answers 405 as an unknown method does, and a DELETE of an Effect the replica
-  does not hold answers 404 with `state: unknown`, as a poll does. A DELETE is verified like every request: an unsigned
-  one gets 401 and stops nothing, so no process in the Harness container can stop a command. A malformed request starts
-  nothing and gets 400 with the reason; a request that names a secret the Effector does not hold is malformed.
-  `/healthz` is the kubelet's probe, unsigned, and says only whether the replica takes new Effects. A replica reads at
-  most 4 MiB of a request; it cannot verify a longer one, so it refuses it as unsigned. The Orchestrator never sends
-  one: a start whose body is longer settles with nothing sent and no intent row, as its kind's own outcome (ADR-0067) —
-  an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed `command` `exited` 127 — because a body
-  built from context or a pick's param can reach the bound.
+  SIGTERM and waits on, so the child's own end is still read. The outcome is `exited` with `signal`, the one the stop
+  sent last, and `code` when the program caught SIGTERM and exited with one; an `exited` with neither is malformed. It
+  answers as a poll does, the outcome once settled, and that outcome counts as read. The route is the command's alone: a
+  `push` and an `http` Effect are one request each and end on their own, so a DELETE on one answers 405 as an unknown
+  method does, and a DELETE of an Effect the replica does not hold answers 404 with `state: unknown`, as a poll does. A
+  DELETE is verified like every request: an unsigned one gets 401 and stops nothing, so no process in the Harness
+  container can stop a command. A malformed request starts nothing and gets 400 with the reason; a request that names a
+  secret the Effector does not hold is malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the
+  replica takes new Effects. A replica reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it
+  as unsigned. The Orchestrator never sends one: a start whose body is longer settles with nothing sent and no intent
+  row, as its kind's own outcome (ADR-0067) — an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed
+  `command` `exited` 127 — because a body built from context or a pick's param can reach the bound.
 - **The Orchestrator holds no git credential and no Effect secret.** `jr2 up` declares and writes every Secret that
   holds a git credential or an Effect secret: the placements' (`jr2-instance-effector`, `jr2-effector-<pod>`) and, for
   each `git.credentials` entry, its clone Secret (`jr2-git-<hash>`, Flux's `username`/`password`, the token from `.env`)
@@ -410,9 +411,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   command's child matched to its scratch, and the agent known from a witness in place of `gpg-agent` that tells the test
   before the launcher runs and, after it exits, which processes the agent left, so an agent that lives less than one
   sample is never missed; a waiter past its timeout settles timed out and never runs late; a child's `TMPDIR` write is
-  invisible to the next child, and `/tmp` refuses both; a signed DELETE ends a credentialed command's group, a child
-  that ignores SIGTERM is killed past the grace, an unsigned DELETE stops nothing, and a DELETE on a push or an `http`
-  path answers 405.
+  invisible to the next child, and `/tmp` refuses both; a signed DELETE ends a credentialed command's group, `exited`
+  with SIGTERM, a program that catches SIGTERM gives its code beside the signal, a child that ignores SIGTERM is killed
+  past the grace (`exited` with SIGKILL), an unsigned DELETE stops nothing, and a DELETE on a push or an `http` path
+  answers 405.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built

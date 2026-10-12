@@ -24,7 +24,7 @@ func (f *stoppableRunner) Run(ctx context.Context, _ *wire.StartRequest) wire.Ou
 	f.runs.Add(1)
 	<-ctx.Done()
 	f.causes <- context.Cause(ctx)
-	return wire.Output{Outcome: wire.OutcomeKilled, Command: &wire.CommandResult{Signal: "SIGTERM", Tail: "stopped\n"}}
+	return wire.Output{Outcome: wire.OutcomeExited, Command: &wire.CommandResult{Signal: "SIGTERM", Tail: "stopped\n"}}
 }
 
 func fixture(t *testing.T, name string) string {
@@ -47,7 +47,8 @@ func TestADeleteStopsACredentialedCommandAndAnswersItsOutcome(t *testing.T) {
 		t.Fatal("the command was not stopped by the DELETE")
 	}
 	s := state(t, a)
-	if a.status != http.StatusOK || s.State != wire.StateSettled || s.Output.Outcome != wire.OutcomeKilled {
+	if a.status != http.StatusOK || s.State != wire.StateSettled || s.Output.Outcome != wire.OutcomeExited ||
+		s.Output.Command.Signal != "SIGTERM" {
 		t.Fatalf("got %d %s", a.status, a.body)
 	}
 	// A DELETE on a settled command stops nothing more and answers its outcome again.

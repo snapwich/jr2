@@ -1916,9 +1916,14 @@ export class RunHost {
       // Turn markers (ADR-0023) ride the per-run feed alone — the prompt is Instance-token-class
       // data, so they never touch the workflow feed (ADR-0014's open band strips even Emit
       // payloads there).
+      // An Effect's line that comes after its run ended — a stop's answer on a cancel or a final
+      // state (ADR-0067) — has no feed left to ride, so it goes to the Orchestrator's log.
       marker: (event) => {
         const run = this.runs.get(record.runId);
         if (run && run.binding === binding) this.feed(run, event);
+        else if (!run && event.kind === "effect") {
+          console.error(`run ${record.runId}: effect ${event.slot} (${event.effect}) ${event.stage}: ${event.text}`);
+        }
       },
       // The run-narrative echo attach (ADR-0023), called from `workspace()`'s registrar.
       echo: (endpoint, placement) => this.attachEcho(record.runId, endpoint, placement),

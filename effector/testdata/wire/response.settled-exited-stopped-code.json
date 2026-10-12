@@ -1,0 +1,14 @@
+{
+  "effect": "e-cmd",
+  "replica": {
+    "name": "ws-ab12cd-run-1",
+    "address": "10.244.1.9:8082"
+  },
+  "state": "settled",
+  "output": {
+    "outcome": "exited",
+    "code": 143,
+    "signal": "SIGTERM",
+    "tail": "caught TERM\n"
+  }
+}
