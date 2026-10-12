@@ -161,7 +161,7 @@ test("a stop that came before the program started is said on the feed as the Eff
   assert.equal(feed[1], "its Sandbox Effector stopped it: its state exited before the command started; it did not run");
 });
 
-test("a stop that no replica holds the Effect for is said on the feed: the start may still run", async () => {
+test("a stop that no replica holds the Effect for is said on the feed: a start still on the way runs nothing", async () => {
   const fake = new FakeEffector(["sandbox"]);
   fake.stopsMissing = true;
   const { host, runId, feed } = await running(credentialed(fake), fake);
@@ -169,8 +169,35 @@ test("a stop that no replica holds the Effect for is said on the feed: the start
   await waitFor(() => feed.length === 2);
   assert.equal(
     feed[1],
-    "its Sandbox Effector held no such Effect when asked to stop it; if its start was still on the way, it may run until its timeout",
+    "its Sandbox Effector held no such Effect when asked to stop it; a start still on the way runs nothing",
   );
+});
+
+test("a state that exits while its credentialed command's start is on the wire sends one DELETE, and the start then runs nothing", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  let arrive!: () => void;
+  fake.startsHeld = new Promise<void>((resolve) => (arrive = resolve));
+  const host = new RunHost({ store: await mkStore(), ...target });
+  host.register({ name: "fx", machine: machineOf(credentialed(fake)), provide: () => ({}) });
+  const { runId } = await host.start("fx");
+  const feed: string[] = [];
+  host.subscribe(runId, (ev) => {
+    if (ev.kind === "effect" && ev.stage === "aborted") feed.push(ev.text ?? "");
+  });
+  host.sendToGate(runId, "start", { type: "go" });
+  await waitFor(() => fake.calls.some((c) => c.method === "POST"));
+  host.sendToGate(runId, "exit", { type: "leave" });
+  await waitFor(() => deletes(fake).length === 1 && feed.length === 2);
+  assert.equal(
+    feed[1],
+    "its Sandbox Effector held no such Effect when asked to stop it; a start still on the way runs nothing",
+  );
+  // The start arrives after its stop.
+  arrive();
+  await settleTicks();
+  assert.equal(fake.starts.length, 0, "the start that arrived after its stop ran nothing");
+  assert.equal(deletes(fake).length, 1, "sent once");
+  assert.equal(host.status(runId)?.value, "left");
 });
 
 test("a stop that does not reach its Sandbox Effector is said on the feed while the run goes on", async () => {

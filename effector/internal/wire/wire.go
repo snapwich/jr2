@@ -47,6 +47,10 @@ const (
 // (ADR-0067). The command's process group gets SIGTERM, then SIGKILL past a grace.
 var ErrStopped = errors.New("the Effect was stopped: the state that invoked it exited")
 
+// StoppedBeforeStart is the reason of a credentialed command stopped before its program started
+// (ADR-0067): it settles `unknown`, and it did not run.
+const StoppedBeforeStart = "its state exited before the command started; it did not run"
+
 // A pushed squash's `squashed`: the one commit it published is signed, or not.
 const (
 	SquashedSigned   = "signed"

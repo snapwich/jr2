@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/snapwich/jr2/effector/internal/sign"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
@@ -110,5 +112,73 @@ func TestADeleteOfAnEffectThisReplicaDoesNotHoldSaysSo(t *testing.T) {
 	a := call(t, srv.URL, "DELETE", "/effects/elsewhere", "", key)
 	if s := state(t, a); a.status != http.StatusNotFound || s.State != wire.StateUnknown {
 		t.Fatalf("got %d %s", a.status, a.body)
+	}
+}
+
+// A fast exit can send the stop while the command's start is still on the wire (ADR-0067): the
+// DELETE of an id this replica does not hold is kept, and the start that arrives after it runs
+// nothing. It settles `unknown`, as a stop before the program started does.
+func TestAStartThatArrivesAfterItsStopRunsNothing(t *testing.T) {
+	runner := &stoppableRunner{causes: make(chan error, 1)}
+	_, srv := newServer(t, runner)
+	del := call(t, srv.URL, "DELETE", "/effects/c1", "", key)
+	if s := state(t, del); del.status != http.StatusNotFound || s.State != wire.StateUnknown {
+		t.Fatalf("DELETE got %d %s", del.status, del.body)
+	}
+	start := call(t, srv.URL, "POST", "/effects/c1", fixture(t, "request.command-env.json"), key)
+	s := state(t, start)
+	if start.status != http.StatusOK || s.State != wire.StateSettled || s.Output.Outcome != wire.OutcomeUnknown ||
+		s.Output.Reason != wire.StoppedBeforeStart {
+		t.Fatalf("start got %d %s", start.status, start.body)
+	}
+	if poll := state(t, call(t, srv.URL, "GET", "/effects/c1", "", key)); poll.State != wire.StateSettled ||
+		poll.Output.Reason != wire.StoppedBeforeStart {
+		t.Fatalf("poll got %+v", poll)
+	}
+	if runner.runs.Load() != 0 {
+		t.Fatalf("the command ran %d times after its stop", runner.runs.Load())
+	}
+}
+
+// Only a credentialed command has the stop route: a push or an http start whose id a DELETE named
+// first runs as any start does.
+func TestAStopKeptForAnUnknownIdLeavesAPushOrAnHttpStartAsItIs(t *testing.T) {
+	for name, body := range map[string]string{
+		"http": startBody,
+		"push": fixture(t, "request.push-signed.json"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner := &fakeRunner{release: make(chan struct{}), output: wire.Output{Outcome: wire.OutcomeUnknown, Reason: "ran"}}
+			close(runner.release)
+			_, srv := newServer(t, runner)
+			call(t, srv.URL, "DELETE", "/effects/e1", "", key)
+			if a := call(t, srv.URL, "POST", "/effects/e1", body, key); a.status != http.StatusAccepted {
+				t.Fatalf("start: %d %s", a.status, a.body)
+			}
+			waitFor(t, func() bool { return runner.runs.Load() == 1 })
+		})
+	}
+}
+
+// The kept stop outlives every start signed before it: a request is refused once its time is a
+// signing window behind this replica's clock, so the stop is kept twice that, whatever Retain is.
+func TestAStopKeptForAnUnknownIdOutlivesTheSigningWindow(t *testing.T) {
+	runner := &stoppableRunner{causes: make(chan error, 1)}
+	s, srv := newServer(t, runner)
+	s.opts.Retain = time.Second
+	call(t, srv.URL, "DELETE", "/effects/c1", "", key)
+	s.Sweep(time.Now().Add(2*sign.Window - time.Second))
+	s.mu.Lock()
+	_, kept := s.effects["c1"]
+	s.mu.Unlock()
+	if !kept {
+		t.Fatal("the stop was dropped inside the signing window")
+	}
+	s.Sweep(time.Now().Add(2*sign.Window + time.Second))
+	s.mu.Lock()
+	_, kept = s.effects["c1"]
+	s.mu.Unlock()
+	if kept {
+		t.Fatal("the stop was kept past twice the signing window")
 	}
 }

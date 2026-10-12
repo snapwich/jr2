@@ -156,15 +156,18 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   command stopped before its program started (it waited for the lock of rule 2, or its pin was being checked out) is
   `unknown`, with the reason that it did not run: nothing was signalled. It answers as a poll does, the outcome once
   settled, and that outcome counts as read. The route is the command's alone: a `push` and an `http` Effect are one
-  request each and end on their own, so a DELETE on one answers 405 as an unknown method does, and a DELETE of an Effect
-  the replica does not hold answers 404 with `state: unknown`, as a poll does. A DELETE is verified like every request:
-  an unsigned one gets 401 and stops nothing, so no process in the Harness container can stop a command. A malformed
-  request starts nothing and gets 400 with the reason; a request that names a secret the Effector does not hold is
-  malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the replica takes new Effects. A replica
-  reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it as unsigned. The Orchestrator never
-  sends one: a start whose body is longer settles with nothing sent and no intent row, as its kind's own outcome
-  (ADR-0067) — an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed `command` `exited` 127 —
-  because a body built from context or a pick's param can reach the bound.
+  request each and end on their own, so a DELETE on one answers 405 as an unknown method does. A DELETE of an Effect the
+  replica does not hold answers 404 with `state: unknown`, as a poll does, and the replica keeps the stop: a fast exit
+  can send it while the command's start is still on the wire, and a command start with that id that arrives after it
+  runs nothing — it attaches to the kept stop, settled `unknown` with the reason that it did not run. The replica keeps
+  such a stop for twice the signing window at least, past which a start signed before it is refused by its time. A
+  DELETE is verified like every request: an unsigned one gets 401 and stops nothing, so no process in the Harness
+  container can stop a command. A malformed request starts nothing and gets 400 with the reason; a request that names a
+  secret the Effector does not hold is malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the
+  replica takes new Effects. A replica reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it
+  as unsigned. The Orchestrator never sends one: a start whose body is longer settles with nothing sent and no intent
+  row, as its kind's own outcome (ADR-0067) — an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed
+  `command` `exited` 127 — because a body built from context or a pick's param can reach the bound.
 - **The Orchestrator holds no git credential and no Effect secret.** `jr2 up` declares and writes every Secret that
   holds a git credential or an Effect secret: the placements' (`jr2-instance-effector`, `jr2-effector-<pod>`) and, for
   each `git.credentials` entry, its clone Secret (`jr2-git-<hash>`, Flux's `username`/`password`, the token from `.env`)
@@ -415,8 +418,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   sample is never missed; a waiter past its timeout settles timed out and never runs late; a child's `TMPDIR` write is
   invisible to the next child, and `/tmp` refuses both; a signed DELETE ends a credentialed command's group, `exited`
   with SIGTERM, a program that catches SIGTERM gives its code beside the signal, a child that ignores SIGTERM is killed
-  past the grace (`exited` with SIGKILL), an unsigned DELETE stops nothing, and a DELETE on a push or an `http` path
-  answers 405.
+  past the grace (`exited` with SIGKILL), an unsigned DELETE stops nothing, a DELETE on a push or an `http` path answers
+  405, and a command start that arrives after a DELETE of its id runs nothing, while a push or an `http` start does.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built

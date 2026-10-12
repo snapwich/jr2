@@ -69,6 +69,9 @@ type effect struct {
 	read               bool
 	// stop cancels the run with wire.ErrStopped: a credentialed command's stop route.
 	stop context.CancelCauseFunc
+	// early is a stop of an id this replica did not hold: a credentialed command's start still on
+	// the wire. A command start with its id runs nothing; it is kept past the signing window.
+	early bool
 }
 
 // Server is one replica's Effects.
@@ -138,12 +141,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // stop is the stop route: a credentialed command's run is cancelled with wire.ErrStopped, and the
 // answer is a poll's — its outcome once it settled, within the hold. Its outcome counts as read:
 // nobody polls a stopped Effect. A push or an http Effect has no stop: one request each, they end
-// on their own, and a DELETE on one answers as an unknown method does.
+// on their own, and a DELETE on one answers as an unknown method does. A DELETE of an id this
+// replica does not hold answers so, and is kept: a fast exit can send the stop while the command's
+// start is still on the wire, and that start, when it arrives, runs nothing (ADR-0067).
 func (s *Server) stop(ctx context.Context, reply func(int, any), id string) {
 	s.mu.Lock()
 	e, ok := s.effects[id]
+	if !ok {
+		done := make(chan struct{})
+		close(done)
+		s.effects[id] = &effect{kind: wire.KindCommand, host: "-", done: done, early: true, read: true,
+			output:    &wire.Output{Outcome: wire.OutcomeUnknown, Reason: wire.StoppedBeforeStart},
+			settledAt: time.Now(), stop: func(error) {}}
+		s.notify()
+	}
 	s.mu.Unlock()
 	if !ok {
+		s.opts.Log.Printf("jr2.effector action=stop-kept effect=%s", id)
 		reply(http.StatusNotFound, wire.EffectState{Effect: id, Replica: s.opts.Replica, State: wire.StateUnknown})
 		return
 	}
@@ -189,8 +203,13 @@ func (s *Server) start(_ context.Context, reply func(int, any), id string, body 
 	}
 
 	s.mu.Lock()
+	if e, ok := s.effects[id]; ok && e.early && req.Kind != wire.KindCommand {
+		// Only a credentialed command has the stop route: a kept stop leaves another kind's start as it is.
+		delete(s.effects, id)
+	}
 	if e, ok := s.effects[id]; ok {
-		// A second POST with the same id starts nothing: it attaches.
+		// A second POST with the same id starts nothing: it attaches. A command start after its kept
+		// stop attaches to the stop's outcome: it did not run.
 		state := s.stateOf(id, e)
 		s.mu.Unlock()
 		reply(http.StatusOK, state)
@@ -280,12 +299,18 @@ func (s *Server) isStopping() bool {
 	return s.stopping
 }
 
-// Sweep drops every outcome settled longer ago than Retain: nobody polled it.
+// Sweep drops every outcome settled longer ago than Retain: nobody polled it. A stop kept for an id
+// this replica did not hold stays at least twice the signing window: a start signed before it is
+// refused by its time past that, so none can run after the stop is dropped.
 func (s *Server) Sweep(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, e := range s.effects {
-		if e.output != nil && now.Sub(e.settledAt) > s.opts.Retain {
+		retain := s.opts.Retain
+		if e.early {
+			retain = max(retain, 2*sign.Window)
+		}
+		if e.output != nil && now.Sub(e.settledAt) > retain {
 			delete(s.effects, id)
 			if !e.read {
 				s.opts.Log.Printf("jr2.effector action=drop effect=%s reason=unread", id)

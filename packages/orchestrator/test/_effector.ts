@@ -41,6 +41,11 @@ export class FakeEffector {
   stopsFail = false;
   /** When set, every DELETE answers 404: no replica holds the Effect (its start had not arrived). */
   stopsMissing = false;
+  /** When set, every start waits for it before a replica takes it: a start still on the wire. */
+  startsHeld?: Promise<void>;
+  /** Every id a DELETE named that no replica held: as the Effector keeps such a stop, a command
+   * start with that id that arrives after it runs nothing (ADR-0067). */
+  readonly keptStops = new Set<string>();
   /** What a DELETE settles a running command with: `exited` SIGTERM unless set (a stop that came
    * before the program started settles `unknown`). */
   stopOutcome: unknown = { outcome: "exited", signal: "SIGTERM", tail: "" };
@@ -116,6 +121,14 @@ export class FakeEffector {
         ...(held?.output ? { output: held.output as HttpOutput } : {}),
       });
       if (method === "POST") {
+        if (this.startsHeld) await this.startsHeld;
+        if (this.keptStops.has(id) && (JSON.parse(body) as StartRequest).kind === "command") {
+          return answer(200, {
+            ...stateOf(undefined),
+            state: "settled",
+            output: { outcome: "unknown", reason: "its state exited before the command started; it did not run" },
+          });
+        }
         const existing = replica.effects.get(id);
         if (existing) return answer(200, stateOf(existing));
         if (replica.stopping) return answer(503, { error: "stopping", replica: { name: replica.name, address } });
@@ -133,7 +146,10 @@ export class FakeEffector {
         return answer(202, stateOf(held));
       }
       const held = replica.effects.get(id);
-      if (!held) return answer(404, stateOf(undefined));
+      if (!held) {
+        if (method === "DELETE") this.keptStops.add(id);
+        return answer(404, stateOf(undefined));
+      }
       if (method === "DELETE") {
         // The stop route: a credentialed command's group is stopped; a push or an http has none.
         if (held.req.kind !== "command") return answer(405, { error: "POST or GET" });

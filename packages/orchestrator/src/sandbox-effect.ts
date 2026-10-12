@@ -31,7 +31,8 @@
 //     before the next push. The push never trusts it.
 //   - D1. When its state exits, the Orchestrator stops polling and records the abort, "outcome
 //     unknown". A credentialed command is stopped: one signed DELETE on its own path, and the
-//     Effector ends its process group (SIGTERM, then SIGKILL past a grace). A push and a file-body
+//     Effector ends its process group (SIGTERM, then SIGKILL past a grace); a stop that reaches it
+//     before the command's start is kept there, and that start runs nothing. A push and a file-body
 //     http are one request each and have no stop: the Effector runs them to their end. A park is
 //     not an exit, and stops nothing.
 
@@ -599,7 +600,9 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
   // Sandbox Effector ends its process group (ADR-0067). A push and a file-body http are one request
   // each, and have no stop.
   // What the stop's answer says goes to the feed after the abort's line: the outcome the Effector
-  // settled it with (`exited` with the signal), or that the stop did not reach it.
+  // settled it with (`exited` with the signal), or that the stop did not reach it. It is sent at once,
+  // while a start may still be on the wire: the Effector keeps a stop of an id it does not hold, and
+  // the start that arrives after it runs nothing.
   const port = row.kind === "command" ? run?.port : undefined;
   port?.stop(effectId, AbortSignal.timeout(STOP_WAIT_MS)).then(
     (state) => {
@@ -641,11 +644,11 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
  * `exited` with the signal the stop sent last, and its code when the program caught SIGTERM; for
  * one stopped before its program started, `unknown` with the Effector's reason (it did not run);
  * for one that had ended first, that outcome. When no replica holds it, the start may not have
- * arrived yet, and the line says that it may run until its timeout; one not settled within the
- * stop's answer is said as such. */
+ * arrived yet: the Effector keeps the stop, and the line says that a start still on the way runs
+ * nothing; one not settled within the stop's answer is said as such. */
 function stoppedText(state: EffectState | undefined): string {
   if (state === undefined) {
-    return "its Sandbox Effector held no such Effect when asked to stop it; if its start was still on the way, it may run until its timeout";
+    return "its Sandbox Effector held no such Effect when asked to stop it; a start still on the way runs nothing";
   }
   const out = state.state === "settled" ? state.output : undefined;
   if (!out) return "its Sandbox Effector had not settled it when the stop answered; outcome unknown";
