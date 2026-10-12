@@ -2573,6 +2573,21 @@ Then(
   },
 );
 
+Then(
+  "the echo token is nowhere in the Instance Harness's Harness container",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    assert.ok(this.echoToken, "setupKind made this scenario's echo token");
+    const pod = await instanceHarnessPod(this);
+    const out = await kubectlInput(
+      this,
+      ["exec", "-i", `pod/${pod}`, "-c", "harness", "--", RUNTIME_NODE, "-e", KEY_SCAN],
+      this.echoToken,
+    );
+    assert.equal(out.trim(), "CLEAN", `the echo token is in the Instance Harness's container: ${out.trim()}`);
+  },
+);
+
 Given("the Instance Effector runs {int} replicas", async function (this: E2EWorld, n: number): Promise<void> {
   // No replica count in config yet: the tier scales the Deployment `jr2 up` converged.
   await kubectl(this, ["scale", `deployment/${INSTANCE_EFFECTOR}`, `--replicas=${n}`]);
