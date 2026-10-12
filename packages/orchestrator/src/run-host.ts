@@ -1404,7 +1404,8 @@ export class RunHost {
   /**
    * The Agent whose outstanding pick holds the child `childId` that `machine` just started, or
    * undefined: the child is invoked on a state strictly below that Agent's state, so by the Rest rule
-   * it is that pick's work (ADR-0024). `snapshot` is `machine`'s snapshot after the step.
+   * it is that pick's work (ADR-0024). Below two such states (one Agent's state inside another's),
+   * it is the work of the nearer one's pick. `snapshot` is `machine`'s snapshot after the step.
    */
   private outstandingAbove(
     machine: AnyActorRef,
@@ -1414,12 +1415,18 @@ export class RunHost {
   ): string | undefined {
     const node = seatOf(snapshot, childId);
     if (node === undefined) return undefined;
+    const byState = new Map<unknown, string>();
     for (const hold of holds.values()) {
       if (hold.answer !== undefined) continue;
       const reg = this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId));
       if (reg?.invoker !== machine || reg.invokeId === undefined) continue;
       const agentState = seatOf(snapshot, reg.invokeId);
-      for (let n = node.parent; n; n = n.parent) if (n === agentState) return hold.agent;
+      if (agentState !== undefined) byState.set(agentState, hold.agent);
+    }
+    // The nearest Agent's state above the child: with B's state inside A's, the child is B's work.
+    for (let n = node.parent; n; n = n.parent) {
+      const agent = byState.get(n);
+      if (agent !== undefined) return agent;
     }
     return undefined;
   }
