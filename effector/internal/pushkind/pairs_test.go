@@ -257,69 +257,72 @@ func TestASquashSentAgainOnRestoreIsThisPushsOwnCommit(t *testing.T) {
 			clock := int64(1800000000)
 			f.runner.Now = func() time.Time { clock += 60; return time.Unix(clock, 0) }
 			f.pod.Commit("A", map[string]string{"a.txt": "a\n"})
-			f.pod.Commit("B", map[string]string{"b.txt": "b\n"})
+			b := f.pod.Commit("B", map[string]string{"b.txt": "b\n"})
 			msg := "one squashed commit"
-			req := f.request(sign, nil)
-			req.Push.Squash = &msg
-			first := f.runner.Run(context.Background(), req)
-			if first.Outcome != wire.OutcomePushed || first.Push.Unchanged {
-				t.Fatalf("first: %+v %+v", first, first.Push)
+			squash := func(pairs []wire.Pair) *wire.StartRequest {
+				req := f.request(sign, pairs)
+				req.Push.Squash = &msg
+				return req
 			}
-			again := f.runner.Run(context.Background(), req)
-			if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged ||
-				again.Push.Published != first.Push.Published || again.Push.Source != first.Push.Source {
-				t.Fatalf("sent again: %+v %+v", again, again.Push)
-			}
-			if again.Push.Squashed != first.Push.Squashed || again.Push.Bundle == "" {
-				t.Fatalf("sent again: squashed %q (first %q), bundle %d bytes", again.Push.Squashed,
-					first.Push.Squashed, len(again.Push.Bundle))
-			}
-			if !unbundle(t, f, again.Push.Bundle, again.Push.Published) {
-				t.Fatal("the bundle does not carry the squashed commit")
-			}
+			req := squash(nil)
+			first := squashedOnce(t, f, req, b, "", "first")
+			again := sentAgain(t, f, req, first, "sent again")
 			// The next push of the slot: the sync did not run, the Agent commits C, and squashes again.
 			c := f.pod.Commit("C", map[string]string{"c.txt": "c\n"})
-			next := f.request(sign, []wire.Pair{pairOf(again)})
-			next.Push.Squash = &msg
-			out := f.runner.Run(context.Background(), next)
-			if out.Outcome != wire.OutcomePushed || out.Push.Source != c || out.Push.Unchanged {
-				t.Fatalf("next: %+v %+v", out, out.Push)
-			}
-			if got := remoteGit(t, f, "rev-parse", remoteRef(f)+"^"); got != first.Push.Published {
-				t.Fatalf("the next squash's parent is %s, not the first squash %s", got, first.Push.Published)
-			}
+			next := squash([]wire.Pair{pairOf(again)})
+			out := squashedOnce(t, f, next, c, first.Push.Published, "next")
 			// That push, not the slot's first, is sent again on restore: its start carries the
 			// first push's pair, so the exact image's parent is that pair's published commit — not
 			// the merge base with the base, which is main's tip.
-			again = f.runner.Run(context.Background(), next)
-			if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged ||
-				again.Push.Published != out.Push.Published || again.Push.Source != c ||
-				again.Push.Squashed != out.Push.Squashed || again.Push.Bundle == "" {
-				t.Fatalf("next sent again: %+v %+v", again, again.Push)
-			}
-			if remoteRef(f) != out.Push.Published {
-				t.Fatal("the remote's branch moved")
-			}
+			sentAgain(t, f, next, out, "next sent again")
 			// The slot's third squash: its start carries two pairs, oldest first, so the exact
 			// image's parent is the NEWEST pair's published commit (the second squash), never the
 			// oldest's. Sent again on restore, it is this push's own commit.
 			d := f.pod.Commit("D", map[string]string{"d.txt": "d\n"})
-			third := f.request(sign, []wire.Pair{pairOf(first), pairOf(out)})
-			third.Push.Squash = &msg
-			last := f.runner.Run(context.Background(), third)
-			if last.Outcome != wire.OutcomePushed || last.Push.Source != d || last.Push.Unchanged {
-				t.Fatalf("third: %+v %+v", last, last.Push)
-			}
-			if got := remoteGit(t, f, "rev-parse", remoteRef(f)+"^"); got != out.Push.Published {
-				t.Fatalf("the third squash's parent is %s, not the second squash %s", got, out.Push.Published)
-			}
-			again = f.runner.Run(context.Background(), third)
-			if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged ||
-				again.Push.Published != last.Push.Published || again.Push.Source != d || again.Push.Bundle == "" {
-				t.Fatalf("third sent again: %+v %+v", again, again.Push)
-			}
+			third := squash([]wire.Pair{pairOf(first), pairOf(out)})
+			last := squashedOnce(t, f, third, d, out.Push.Published, "third")
+			sentAgain(t, f, third, last, "third sent again")
 		})
 	}
+}
+
+// squashedOnce runs a squash push the remote has not seen: it settles pushed, not unchanged, from
+// the Agent's source, and the squashed commit's one parent is parent (when parent is not "").
+func squashedOnce(t *testing.T, f *fixture, req *wire.StartRequest, source, parent, what string) wire.Output {
+	t.Helper()
+	out := f.runner.Run(context.Background(), req)
+	if out.Outcome != wire.OutcomePushed || out.Push.Source != source || out.Push.Unchanged {
+		t.Fatalf("%s: %+v %+v", what, out, out.Push)
+	}
+	if parent != "" {
+		if got := remoteGit(t, f, "rev-parse", remoteRef(f)+"^"); got != parent {
+			t.Fatalf("%s: the squash's parent is %s, not %s", what, got, parent)
+		}
+	}
+	return out
+}
+
+// sentAgain sends req again, as a restore does after the Effector lost the Effect: the remote's tip
+// is the push's own commit, so it settles pushed, unchanged, as first did, with the sync bundle,
+// and the remote's branch does not move.
+func sentAgain(t *testing.T, f *fixture, req *wire.StartRequest, first wire.Output, what string) wire.Output {
+	t.Helper()
+	again := f.runner.Run(context.Background(), req)
+	if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged ||
+		again.Push.Published != first.Push.Published || again.Push.Source != first.Push.Source {
+		t.Fatalf("%s: %+v %+v", what, again, again.Push)
+	}
+	if again.Push.Squashed != first.Push.Squashed || again.Push.Bundle == "" {
+		t.Fatalf("%s: squashed %q (first %q), bundle %d bytes", what, again.Push.Squashed,
+			first.Push.Squashed, len(again.Push.Bundle))
+	}
+	if !unbundle(t, f, again.Push.Bundle, again.Push.Published) {
+		t.Fatalf("%s: the bundle does not carry the squashed commit", what)
+	}
+	if remoteRef(f) != first.Push.Published {
+		t.Fatalf("%s: the remote's branch moved", what)
+	}
+	return again
 }
 
 // ADR-0067: the restore's acceptance is a full comparison, not a pairing. A remote tip that is a
