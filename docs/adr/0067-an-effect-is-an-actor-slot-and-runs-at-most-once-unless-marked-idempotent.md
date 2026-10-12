@@ -159,13 +159,17 @@ the credentialed `command` — runs there too, its child confined (below).
   message and duplicates empty commits and merges. A published commit is never signed twice, for every signer and key
   type: a side branch the Agent made before the push and merges later carries the unsigned original of a commit the
   remote holds signed, which ancestry calls new, and the map replaces it by its twin — a merge the Agent made before the
-  first push included, and, through the ledger's pair, a side branch made before a squash, whose commits the squashed
-  commit stands for. The committer date stays the Effector's clock; a deterministic re-sign (the Agent's committer date)
-  was rejected, since it rests on one key type's property, not GPG's or ECDSA's. A key alone does not pair: a commit the
-  Agent reverts and applies again with cherry-pick has the key of the first one, and the first one's published copy has
-  older parents, so paired with it the push would offer that older copy as the new tip — `rejected` as non-fast-forward
-  without `force`, a rewind of the remote with it. The faithful image is the rule; the cherry fallback keeps its own,
-  that the last paired commit holds the published tip's tree. The map's cost is bounded by the push's size.
+  first push included, and, through the ledger's pair, a side branch made before a squash and merged by the push right
+  after it, whose commits the squashed commit stands for. The ledger's pair is the last push's alone, so the map does
+  not see through a squash that an earlier push made: a side branch made before a squash and merged by a later push
+  publishes the squashed commits as signed copies beside the squashed commit, and a commit of that side branch that an
+  earlier merge already published is signed again. That case is open. The committer date stays the Effector's clock; a
+  deterministic re-sign (the Agent's committer date) was rejected, since it rests on one key type's property, not GPG's
+  or ECDSA's. A key alone does not pair: a commit the Agent reverts and applies again with cherry-pick has the key of
+  the first one, and the first one's published copy has older parents, so paired with it the push would offer that older
+  copy as the new tip — `rejected` as non-fast-forward without `force`, a rewind of the remote with it. The faithful
+  image is the rule; the cherry fallback keeps its own, that the last paired commit holds the published tip's tree. The
+  map's cost is bounded by the push's size.
 - **The sync: after every push whose published commit is not the Agent's own, the Agent's branch moves to it** — signed
   copies, or one squashed commit, signed or not; the decision keys on `published` ≠ `source`, never on `sign` — in the
   Harness container (`POST /sync`, behind the Harness bearer, ADR-0058), from the bundle the Effector wrote, which the
