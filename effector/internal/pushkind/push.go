@@ -215,12 +215,7 @@ func (c *call) run(ctx context.Context) wire.Output {
 		// push after a sync that did not finish) leaves the Agent's branch on its own commits, and
 		// the sync moves it from this bundle.
 		if res.Published != sha {
-			if spec.Squash != nil {
-				res.Squashed = wire.SquashedUnsigned
-				if spec.Sign {
-					res.Squashed = wire.SquashedSigned
-				}
-			}
+			res.Squashed = c.squashedOf(s)
 			if res.Bundle, out = c.bundleOf(ctx, res.Published, sha); out != nil {
 				return *out
 			}
@@ -444,7 +439,30 @@ func tail(s string) string {
 
 // --- signing -------------------------------------------------------------------------------------
 
-type signed struct{ target, via string }
+// signed is what sign answers: the commit to publish, how the new commits were found, and whether
+// this call made that commit (made is false when the published tip, or a commit the remote holds,
+// stands for the Agent's tip).
+type signed struct {
+	target, via string
+	made        bool
+}
+
+// squashedOf is the output's `squashed`: what the published commit is (ADR-0067). A commit this
+// call made is named by this call's options; a commit an earlier push made — the published tip,
+// mapped by the pair or by cherry — by that push's own `squashed`, which the ledger's last push
+// carries beside its pair. Any other commit the remote holds that cherry maps is a copy of the
+// Agent's commits: "".
+func (c *call) squashedOf(s *signed) string {
+	switch {
+	case s.made && c.spec.Squash != nil && c.spec.Sign:
+		return wire.SquashedSigned
+	case s.made && c.spec.Squash != nil:
+		return wire.SquashedUnsigned
+	case !s.made && c.spec.Last != nil && c.spec.Last.Published == s.target:
+		return c.spec.Last.Squashed
+	}
+	return ""
+}
 
 // not is rev-list's word for "and none of these".
 const not, revList = "--not", "rev-list"
@@ -545,7 +563,7 @@ func (c *call) sign(ctx context.Context, sha, pub string, base []string) (*signe
 			return diverged(sha, pub, fmt.Sprintf("commit %s would be published unsigned", short(n)))
 		}
 	}
-	return &signed{target: target, via: via}, nil
+	return &signed{target: target, via: via, made: mine[target]}, nil
 }
 
 // bundleOf is the sync's bundle: the signed commits only. Its prerequisite is the Agent's own tip,

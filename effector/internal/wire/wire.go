@@ -121,10 +121,12 @@ type RepoRef struct {
 }
 
 // Pair is one push's published commit and the Agent's commit it was made from: what the
-// ledger's last push row holds, and the `pair` fallback reads.
+// ledger's last push row holds, and the `pair` fallback reads. Squashed is that push's own
+// `squashed`: what its published commit is, which a later push that maps the same commit names.
 type Pair struct {
 	Published string `json:"published"`
 	Source    string `json:"source"`
+	Squashed  string `json:"squashed,omitempty"`
 }
 
 // PushSpec is a push's part of a start: the Workspace's branch to the Repo Slot's Binding.
@@ -528,6 +530,10 @@ func (p *PushSpec) validate() error {
 	}
 	if p.Last != nil && (!fullSha.MatchString(p.Last.Published) || !fullSha.MatchString(p.Last.Source)) {
 		return errors.New("push.last is not two full commit ids")
+	}
+	if p.Last != nil && p.Last.Squashed != "" && p.Last.Squashed != SquashedSigned &&
+		p.Last.Squashed != SquashedUnsigned {
+		return fmt.Errorf("push.last.squashed %q is not %q or %q", p.Last.Squashed, SquashedSigned, SquashedUnsigned)
 	}
 	return nil
 }

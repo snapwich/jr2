@@ -678,7 +678,9 @@ export function pushWith<const O extends PushOptions>(
         ctx.mark({ stage: "output", text: `the last push's sync, run again before this push: ${answer.sync}` });
         ctx.binding?.recordEffect?.(rowId, { ...row, output: { ...output, ...syncFields(answer) } });
       }
-      return { last: { published: output.published, source: output.source } };
+      // Its `squashed` rides beside the pair: a push that maps the same commit names what it is.
+      const squashed = output.squashed === "signed" || output.squashed === "unsigned" ? output.squashed : undefined;
+      return { last: { published: output.published, source: output.source, ...(squashed ? { squashed } : {}) } };
     },
     // After every pushed outcome whose published commit is not the Agent's own — signed copies, or
     // one squashed commit, signed or not (ADR-0067): the sync, in the Workspace's Harness, from the

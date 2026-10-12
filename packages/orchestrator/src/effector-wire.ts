@@ -90,8 +90,14 @@ export type HttpStartRequest = z.infer<typeof HttpStartShape>;
 export const RepoRefShape = z.strictObject({ gitDir: z.string(), worktree: z.string(), cache: z.string() });
 export type RepoRef = z.infer<typeof RepoRefShape>;
 
-/** One push's published commit and the Agent's commit it was made from: the ledger's pair. */
-export const PairShape = z.strictObject({ published: z.string(), source: z.string() });
+/** One push's published commit and the Agent's commit it was made from: the ledger's pair, with
+ * that push's own `squashed` — what its published commit is, which a later push that maps the same
+ * commit names (ADR-0067). */
+export const PairShape = z.strictObject({
+  published: z.string(),
+  source: z.string(),
+  squashed: z.enum(["signed", "unsigned"]).optional(),
+});
 export type Pair = z.infer<typeof PairShape>;
 
 /** A `push` start: the Workspace's branch to the Repo Slot's Binding, with the push credential of
@@ -174,7 +180,8 @@ export type HttpOutput = z.infer<typeof HttpOutputShape>;
  * commit), what the remote held before, how the new commits were found after a signed push
  * (`ancestry | pair | cherry | force`), `unchanged` when the remote held it already, `squashed`
  * when the published commit is one squashed commit (`signed | unsigned`; absent for signed
- * copies), and — when the published commit is not the Agent's own — the published commits as a
+ * copies; what the published commit is, an earlier push's included, never only this push's
+ * options), and — when the published commit is not the Agent's own — the published commits as a
  * bundle for the sync. `rejected`: a stage and git's words. `diverged`: the
  * published commit is not in the Agent's history and nothing paired it; nothing was pushed.
  */

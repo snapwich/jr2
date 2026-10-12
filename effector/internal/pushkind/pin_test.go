@@ -241,3 +241,71 @@ func TestAnUnsignedSquashIsCommittedByTheEntrysCommitter(t *testing.T) {
 		t.Fatalf("got %q", m)
 	}
 }
+
+// ADR-0067: `squashed` says what the published commit is, not what this push's options ask for.
+// A push that publishes nothing new maps the published tip, which an earlier push of the Repo Slot
+// made, maybe with other options: the ledger's last push carries its own `squashed` beside its
+// pair, and the output names that. Two such cases: an unsigned squash whose sync did not finish,
+// then a signed push of the same tip — the published commit is an unsigned squash, never "signed
+// copies"; and signed copies whose sync did not finish, then a squash of the same tip — the
+// published commits are signed copies, never "one squashed commit". A squash this push makes is
+// named by its own options.
+func TestAPushThatMapsAnEarlierPushsCommitNamesWhatThatPushPublished(t *testing.T) {
+	msg := "one squashed commit"
+	t.Run("an unsigned squash, then a signed push", func(t *testing.T) {
+		f := newFixture(t, "ssh")
+		f.runner.Config.Git[0].Committer = &secrets.GitIdentity{Name: "jr2 bot", Email: "bot@jr2.test"}
+		f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+		f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+		req := f.request(false, nil)
+		req.Push.Squash = &msg
+		first := f.runner.Run(context.Background(), req)
+		if first.Outcome != wire.OutcomePushed || first.Push.Squashed != wire.SquashedUnsigned {
+			t.Fatalf("first: %+v %+v", first, first.Push)
+		}
+		again := f.push(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source,
+			Squashed: first.Push.Squashed})
+		if again.Outcome != wire.OutcomePushed || again.Push.Published != first.Push.Published || !again.Push.Unchanged {
+			t.Fatalf("again: %+v %+v", again, again.Push)
+		}
+		if again.Push.Squashed != wire.SquashedUnsigned {
+			t.Fatalf("the published commit is an unsigned squash, and the output says squashed %q", again.Push.Squashed)
+		}
+		if again.Push.Bundle == "" {
+			t.Fatal("no sync bundle")
+		}
+	})
+	t.Run("signed copies, then a squash", func(t *testing.T) {
+		f := newFixture(t, "ssh")
+		f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+		f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+		first := f.push(true, nil)
+		if first.Outcome != wire.OutcomePushed || first.Push.Squashed != "" {
+			t.Fatalf("first: %+v %+v", first, first.Push)
+		}
+		req := f.request(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+		req.Push.Squash = &msg
+		again := f.runner.Run(context.Background(), req)
+		if again.Outcome != wire.OutcomePushed || again.Push.Published != first.Push.Published || !again.Push.Unchanged {
+			t.Fatalf("again: %+v %+v", again, again.Push)
+		}
+		if again.Push.Squashed != "" {
+			t.Fatalf("the published commits are signed copies, and the output says squashed %q", again.Push.Squashed)
+		}
+	})
+	t.Run("a squash this push makes", func(t *testing.T) {
+		f := newFixture(t, "ssh")
+		f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+		first := f.push(true, nil)
+		if first.Outcome != wire.OutcomePushed {
+			t.Fatalf("first: %+v %+v", first, first.Push)
+		}
+		f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+		req := f.request(true, &wire.Pair{Published: first.Push.Published, Source: first.Push.Source})
+		req.Push.Squash = &msg
+		out := f.runner.Run(context.Background(), req)
+		if out.Outcome != wire.OutcomePushed || out.Push.Unchanged || out.Push.Squashed != wire.SquashedSigned {
+			t.Fatalf("got %+v %+v", out, out.Push)
+		}
+	})
+}

@@ -145,25 +145,27 @@ the credentialed `command` — runs there too, its child confined (below).
   lacks must be one the call signed, or the push is `diverged`. `pushed` carries the published commit, its source, what
   the remote held before, how the new commits were found (`ancestry | pair | cherry`), `unchanged` when the remote
   already held it, `squashed: signed | unsigned` when the published commit is one squashed commit (absent for signed
-  copies), and — whenever the published commit is not the Agent's own — the published commits as a bundle for the sync
-  step (`git bundle create` of the published tip, with the Agent's tip as its prerequisite: the new commits, and the
-  trees and blobs git adds beside them, which the Agent's store may already hold). A push that publishes nothing new
-  carries one too: when `pair` or `cherry` maps the published tip itself (a restore that sends a pinned push again, a
-  push after a sync that did not finish), the Agent's branch still holds its own commits. The bundle never reaches the
-  Machine. A push sends the ledger's last push of its Workspace and Repo Slot — one branch on one remote; its published
-  commit and its source — as the pair's input (`last`). The pair stands for the published tip only while the remote
-  still holds that push: a remote that moved past it (another writer) is paired by `cherry` or is `diverged`, never
-  grafted onto. The Agent is never told to rebase: a rebase repair loses a reworded message and duplicates empty commits
-  and merges. A published commit is never signed twice, for every signer and key type: a side branch the Agent made
-  before the push and merges later carries the unsigned original of a commit the remote holds signed, which ancestry
-  calls new, and the map replaces it by its twin — a merge the Agent made before the first push included, and, through
-  the ledger's pair, a side branch made before a squash, whose commits the squashed commit stands for. The committer
-  date stays the Effector's clock; a deterministic re-sign (the Agent's committer date) was rejected, since it rests on
-  one key type's property, not GPG's or ECDSA's. A key alone does not pair: a commit the Agent reverts and applies again
-  with cherry-pick has the key of the first one, and the first one's published copy has older parents, so paired with it
-  the push would offer that older copy as the new tip — `rejected` as non-fast-forward without `force`, a rewind of the
-  remote with it. The faithful image is the rule; the cherry fallback keeps its own, that the last paired commit holds
-  the published tip's tree. The map's cost is bounded by the push's size.
+  copies; it names what the published commit is, not what the push's options ask for: a commit the call made is named by
+  its options, and the published tip that an earlier push made, which `pair` or `cherry` maps, by that push's own
+  `squashed`, which `last` carries), and — whenever the published commit is not the Agent's own — the published commits
+  as a bundle for the sync step (`git bundle create` of the published tip, with the Agent's tip as its prerequisite: the
+  new commits, and the trees and blobs git adds beside them, which the Agent's store may already hold). A push that
+  publishes nothing new carries one too: when `pair` or `cherry` maps the published tip itself (a restore that sends a
+  pinned push again, a push after a sync that did not finish), the Agent's branch still holds its own commits. The
+  bundle never reaches the Machine. A push sends the ledger's last push of its Workspace and Repo Slot — one branch on
+  one remote; its published commit, its source and its `squashed` — as the pair's input (`last`). The pair stands for
+  the published tip only while the remote still holds that push: a remote that moved past it (another writer) is paired
+  by `cherry` or is `diverged`, never grafted onto. The Agent is never told to rebase: a rebase repair loses a reworded
+  message and duplicates empty commits and merges. A published commit is never signed twice, for every signer and key
+  type: a side branch the Agent made before the push and merges later carries the unsigned original of a commit the
+  remote holds signed, which ancestry calls new, and the map replaces it by its twin — a merge the Agent made before the
+  first push included, and, through the ledger's pair, a side branch made before a squash, whose commits the squashed
+  commit stands for. The committer date stays the Effector's clock; a deterministic re-sign (the Agent's committer date)
+  was rejected, since it rests on one key type's property, not GPG's or ECDSA's. A key alone does not pair: a commit the
+  Agent reverts and applies again with cherry-pick has the key of the first one, and the first one's published copy has
+  older parents, so paired with it the push would offer that older copy as the new tip — `rejected` as non-fast-forward
+  without `force`, a rewind of the remote with it. The faithful image is the rule; the cherry fallback keeps its own,
+  that the last paired commit holds the published tip's tree. The map's cost is bounded by the push's size.
 - **The sync: after every push whose published commit is not the Agent's own, the Agent's branch moves to it** — signed
   copies, or one squashed commit, signed or not; the decision keys on `published` ≠ `source`, never on `sign` — in the
   Harness container (`POST /sync`, behind the Harness bearer, ADR-0058), from the bundle the Effector wrote, which the

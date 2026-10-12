@@ -104,6 +104,14 @@ test("every request fixture is what a definition encodes", () => {
         source: "1".repeat(40),
       },
     ),
+    // The last push was an unsigned squash: its `squashed` rides beside its pair.
+    "request.push-last-squashed.json": pushStartOf(
+      pushParts({ sign: true }),
+      repo("git@github.com:ourorg/app.git"),
+      "jr2/run-1",
+      {},
+      { published: "2".repeat(40), source: "1".repeat(40), squashed: "unsigned" },
+    ),
     "request.push-pinned-squash.json": pushStartOf(
       pushParts({ pin: true, sign: true, squash: true, force: true }),
       repo("https://github.com/ourorg/app.git"),

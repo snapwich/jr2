@@ -260,6 +260,27 @@ test("the next push sends the ledger's last push of its Workspace as its pair, a
   assert.equal(syncs.calls.length, 3, "a sync that answered `already` is not run again");
 });
 
+test("the pair carries the last push's `squashed`, so a push that maps its commit names what that commit is", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const syncs = new FakeSync();
+  syncs.answer = { sync: "not-synced", reason: "the Harness could not be reached" };
+  const host = new RunHost({ store: await mkStore(), ...target });
+  host.register({
+    name: "fx",
+    machine: twoPushes(pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("fx");
+  host.sendToGate(runId, "start", { type: "go" });
+  await waitFor(() => fake.starts.length === 1);
+  fake.settle({ ...pushed("b".repeat(40)), squashed: "unsigned" });
+  await waitFor(() => fake.starts.length === 2);
+  const second = fake.starts[1]!.req as PushStartRequest;
+  assert.deepEqual(second.push.last, { published: "b".repeat(40), source: "a".repeat(40), squashed: "unsigned" });
+  fake.settle(pushed("c".repeat(40)));
+  await waitFor(() => host.status(runId)?.value === "done");
+});
+
 test("a push restored when its Effector no longer holds it is sent again with only the pinned commit", async () => {
   const fake = new FakeEffector(["sandbox"]);
   const effect = () => pushWith(port(fake), {}, new FakeSync().factory) as AnyEffect;
