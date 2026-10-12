@@ -284,7 +284,11 @@ test("an Effector's outcome reads as its output, decoded off the wire as the Orc
       'Its answer: the output of `comment`: {"outcome":"exited","code":0,"tail":"Apply complete! [secret:aws]\\n",' +
       '"dirty":true}.',
   };
-  const settled = readdirSync(fixtures).filter((f) => f.startsWith("response.settled-"));
+  // A stopped command's outcome (`exited` with the signal) answers the Orchestrator's stop, after the
+  // state that asked has exited: no Machine takes it, so no Agent reads it (ADR-0067).
+  const settled = readdirSync(fixtures).filter(
+    (f) => f.startsWith("response.settled-") && !f.startsWith("response.settled-exited-stopped"),
+  );
   assert.deepEqual(settled.sort(), Object.keys(want).sort(), "every settled fixture has its text here");
   for (const [name, text] of Object.entries(want)) assert.equal(read(name), text, name);
 });
