@@ -567,3 +567,89 @@ test("one `answer` written below two Agents' states shapes the pick of the Agent
   const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
   assert.deepEqual(answeredA?.answer, { kind: "answer", value: "built: xstate.done.actor.buildA" });
 });
+
+test("one `answer` written on an entry below no Agent's state and on a transition below none sets nothing as the entry", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const shared = answer(({ event }) => `shared ran on ${event.type}`);
+  // A third region, with no Agent: A's child's done event enters its `ticked`, whose entry is
+  // `shared`; the same object is also on a root transition that B's child's done event takes.
+  const machine = twoAgents(fake, a, b, {
+    on: { "xstate.done.actor.buildB": { actions: shared } },
+    states: {
+      rc: {
+        initial: "idle",
+        states: { idle: {}, ticked: { entry: shared } },
+        on: { "xstate.done.actor.buildA": ".ticked" },
+      },
+    },
+  });
+  assert.deepEqual([...seatsOfAnswer(machine, shared)], [null], "its transition is below no Agent's state");
+  assert.ok(
+    loadWarningsOf(machine).some((w) => w.includes('the entry of "two.rc.ticked"')),
+    "the entry is warned, as one written there alone",
+  );
+  const { host, ia, ib, pa, pb, execA, execB } = await bothOutstanding(machine, fake, a, b);
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, execA);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.equal(answeredA?.answer?.kind, "output", "A reads its command's output: the entry set nothing");
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, execB);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.deepEqual(
+    answeredB?.answer,
+    { kind: "answer", value: "shared ran on xstate.done.actor.buildB" },
+    "as the transition, the same object shapes the pick whose child's done event took it",
+  );
+});
+
+test("a child that a pick's later work started is that pick's: its done event below no Agent's state shapes that pick only", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const fromRoot = answer(({ event }) => `the root saw ${event.type}`);
+  const machine = jr2Setup({
+    events: [buildA, buildB],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderA: commandWith(fake.factory, ["make", "a"]),
+      testerA: commandWith(fake.factory, ["make", "test"]),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    // Below no Agent's state, on the done event of the child that A's build started.
+    on: { "xstate.done.actor.testA": { actions: fromRoot } },
+    states: {
+      ra: {
+        invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: {
+          rest: {},
+          building: { invoke: { src: "builderA", id: "buildA", onDone: "testing" } },
+          testing: { invoke: { src: "testerA", id: "testA" } },
+        },
+        on: { build_a: ".building" },
+      },
+      rb: {
+        invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builderB", id: "buildB" } } },
+        on: { build_b: ".building" },
+      },
+    },
+  } as never) as unknown as AnyStateMachine;
+  const { host, ia, ib, pa, pb, execA, execB } = await bothOutstanding(machine, fake, a, b);
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, execA);
+  await waitFor(() => fake.starts.length === 3);
+  fake.settle({ outcome: "exited", code: 0, tail: "a tested" }, fake.starts[2]!.id);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.deepEqual(answeredA?.answer, { kind: "answer", value: "the root saw xstate.done.actor.testA" });
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, execB);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", "B's pick keeps its default answer");
+});

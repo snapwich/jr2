@@ -74,12 +74,15 @@ single-threaded.
   on a transition, at or below that Agent's state — shapes only that Agent's pick. On a transition below no Agent's
   state (the root, or a parent of two Agents' regions) it shapes the pick of the Agent whose event took the transition:
   the sender of a pick, or the Agent whose pick started the child whose done event it is — the hold records which
-  children the pick's own send started, and keeps them through a restore. The other Agent's pick keeps its default
-  answer. When the event names no Agent (a timer, a Gate's answer, an outside send), it shapes the one such pick
-  outstanding, and with two outstanding it sets nothing. On an entry or an exit below no Agent's state it sets nothing,
-  whatever is outstanding, and the load walk warns, naming the Agent states it could be moved under: an entry or exit
-  there is no transition an Agent's event takes. One action object written below two Agents' states follows the rule of
-  a transition below none: the event names the Agent. An `answer` that runs while no pick of that Agent is being
+  children the pick started — those its own send started, and those started while the Machine took an event that is
+  already the pick's (a done event of one of its children), so the work the pick began stays its own — and keeps them
+  through a restore. The other Agent's pick keeps its default answer. When the event names no Agent (a timer, a Gate's
+  answer, an outside send), it shapes the one such pick outstanding, and with two outstanding it sets nothing. On an
+  entry or an exit below no Agent's state it sets nothing, whatever is outstanding, and so does one action object there
+  that is also written on a transition or below an Agent's state: as that entry or exit it sets nothing, and from its
+  other places it follows their rule; and the load walk warns, naming the Agent states it could be moved under: an entry
+  or exit there is no transition an Agent's event takes. One action object written below two Agents' states follows the
+  rule of a transition below none: the event names the Agent. An `answer` that runs while no pick of that Agent is being
   answered (a state's first entry, a later Turn's re-entry, another Agent's region of a parallel state) sets nothing. A
   reply comes from a child invoked on an active state below the Agent's state, or from a party whose Gate invoke id or
   Agent slot is invoked there (its sender, ADR-0015). The events the Machine sent itself (a `raise`, a `sendTo(self)`, a

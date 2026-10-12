@@ -32,7 +32,7 @@ import {
 } from "xstate";
 import { SENDER_KEY, type EventDef, type EventSemantics, type Sender } from "@jr2/agent-protocol";
 import { seatOf, senderText } from "./party.ts";
-import type { AnswerSeats } from "./pick.ts";
+import { unseatAnswers, type AnswerSeats } from "./pick.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
 import { answerOf, childErrorOf, replyOf, type Hold } from "./holds.ts";
@@ -1984,6 +1984,11 @@ export class RunHost {
     };
     let bound = false;
     let firedTimer: ((source: unknown, event: unknown) => boolean) | undefined;
+    // The children each Machine of the tree had after its last microstep: what the next one started
+    // is the difference (ADR-0067's attribution of a child to the pick whose work started it).
+    const childrenAfter = new WeakMap<AnyActorRef, Set<AnyActorRef>>();
+    const childRefsOf = (snapshot: unknown): Set<AnyActorRef> =>
+      new Set(Object.values((snapshot as { children?: Record<string, AnyActorRef> } | undefined)?.children ?? {}));
     const actor = createActor(machine, {
       ...options,
       inspect: (ev) => {
@@ -2015,12 +2020,36 @@ export class RunHost {
         // one). A root-only subscription silently dropped exactly the Emits ADR-0022/0023 exist
         // to surface. The subscription dies with its actor; restore re-creates both.
         // The children a pick's own send starts are that pick's (ADR-0067): their done events name
-        // the Agent an `answer` below no Agent's state shapes.
+        // the Agent an `answer` below no Agent's state shapes. An `answer` on an entry or an exit
+        // below no Agent's state runs nothing: each Machine of the tree is told so as its actor is
+        // created, before its first state is entered.
         if (ev.type === "@xstate.actor") {
           const sending = this.sending;
           const child = ev.actorRef as AnyActorRef;
+          const logic = (child as { logic?: unknown }).logic as AnyStateMachine | undefined;
+          if (logic && typeof logic === "object" && "root" in logic) unseatAnswers(logic);
           if (sending && child._parent !== undefined && child._parent === sending.reg.invoker) {
             sending.children.push(child.id);
+          }
+        }
+        // …and so are the children its later work starts: a child started while the Machine takes an
+        // event that is already that pick's — a done event of one of its children, or its Agent's
+        // event — is that pick's too, so the work the pick began stays its own (ADR-0067).
+        if (ev.type === "@xstate.microstep") {
+          const taker = ev.actorRef as AnyActorRef;
+          const before = childrenAfter.get(taker) ?? childRefsOf(taker.getSnapshot());
+          const after = childRefsOf((ev as { snapshot?: unknown }).snapshot);
+          childrenAfter.set(taker, after);
+          const started = [...after].filter((c) => !before.has(c)).map((c) => c.id);
+          if (started.length > 0 && !this.sending) {
+            const open = [...holds.values()].filter(
+              (h) =>
+                h.answer === undefined &&
+                (this.holdRegs.get(h) ?? this.table.lookup(agentAddress(h.instanceId)))?.invoker === taker,
+            );
+            const named = this.pickOfEvent(ev.event as AnyEventObject, undefined, record.runId, open);
+            const pick = named?.pick;
+            if (pick && !("reg" in pick)) pick.children = [...(pick.children ?? []), ...started];
           }
         }
         if (ev.type === "@xstate.actor") {

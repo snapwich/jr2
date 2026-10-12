@@ -105,7 +105,8 @@ type Node = AnyStateMachine["root"];
  * `answer` shapes only a pick of an Agent seated at one of these (ADR-0067). One on a transition
  * below no Agent's state (`null`), and one object written below two Agents' states, shape the pick
  * of the Agent whose event took the transition (the run host reads it off the event); one on an
- * entry or an exit below no Agent's state seats nowhere and shapes nothing — the load walk warns.
+ * entry or an exit below no Agent's state seats nowhere and shapes nothing, whatever other places
+ * the same object is written in (`unseatAnswers`) — the load walk warns.
  * Read once per Machine, by the action's identity: one `answer` object written in two places
  * carries both.
  */
@@ -113,22 +114,65 @@ export type AnswerSeats = ReadonlySet<Node | null>;
 
 const seatsCache = new WeakMap<AnyStateMachine, Map<unknown, Set<Node | null>>>();
 
+/** An action of `machine` as it is written — inline, or by name — resolved to its implementation. */
+function resolverOf(machine: AnyStateMachine): (a: unknown) => unknown {
+  const named = (machine.implementations?.actions ?? {}) as Record<string, unknown>;
+  return (a) => {
+    const type = typeof a === "string" ? a : typeof a === "object" && a !== null ? (a as { type?: unknown }).type : a;
+    return typeof type === "string" ? named[type] : a;
+  };
+}
+
+/** The nearest state at or above `n` that invokes one of `machine`'s Agents, or `null`. */
+function seatFinderOf(machine: AnyStateMachine): (n: Node) => Node | null {
+  const actors = (machine.implementations?.actors ?? {}) as Record<string, unknown>;
+  return (n) => {
+    for (let p: Node | undefined = n; p; p = p.parent)
+      if (p.invoke.some((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))) return p;
+    return null;
+  };
+}
+
+/** What stands where an `answer` was written on an entry or an exit below no Agent's state: an
+ * `answer` that runs nothing. Still an `answer` to the load walk, which warns on it. */
+const unseatedAnswer: AnswerAction & (() => void) = Object.assign(function unseatedAnswer(): void {}, {
+  jr2Answer: true as const,
+});
+
+const unseatedMachines = new WeakSet<AnyStateMachine>();
+
+/**
+ * Make every `answer` written on an entry or an exit below no Agent's state run nothing (ADR-0067):
+ * each such place is given an `answer` of its own that sets nothing, so one action object written
+ * there AND on a transition, or below an Agent's state, shapes a pick from those other places alone
+ * — at run time an action cannot tell where it was written, so the place is decided here. Called
+ * for each Machine of a run's tree as its actor is created, before its first state is entered.
+ */
+export function unseatAnswers(machine: AnyStateMachine): void {
+  if (unseatedMachines.has(machine) || !machine?.root) return;
+  unseatedMachines.add(machine);
+  const resolve = resolverOf(machine);
+  const seatAbove = seatFinderOf(machine);
+  const visit = (n: Node): void => {
+    if (seatAbove(n) === null) {
+      for (const list of [n.entry, n.exit]) {
+        list.forEach((a, i) => {
+          if (isAnswer(resolve(a))) list[i] = unseatedAnswer as unknown as (typeof list)[number];
+        });
+      }
+    }
+    for (const child of Object.values(n.states)) visit(child);
+  };
+  visit(machine.root);
+}
+
 export function seatsOfAnswer(machine: AnyStateMachine, action: unknown): AnswerSeats {
   let byAction = seatsCache.get(machine);
   if (byAction === undefined) {
     byAction = new Map();
     seatsCache.set(machine, byAction);
-    const actors = (machine.implementations?.actors ?? {}) as Record<string, unknown>;
-    const named = (machine.implementations?.actions ?? {}) as Record<string, unknown>;
-    const resolve = (a: unknown): unknown => {
-      const type = typeof a === "string" ? a : typeof a === "object" && a !== null ? (a as { type?: unknown }).type : a;
-      return typeof type === "string" ? named[type] : a;
-    };
-    const seatAbove = (n: Node): Node | null => {
-      for (let p: Node | undefined = n; p; p = p.parent)
-        if (p.invoke.some((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))) return p;
-      return null;
-    };
+    const resolve = resolverOf(machine);
+    const seatAbove = seatFinderOf(machine);
     const visit = (n: Node): void => {
       const seat = seatAbove(n);
       const onEntryOrExit = [...n.entry, ...n.exit];
@@ -145,7 +189,7 @@ export function seatsOfAnswer(machine: AnyStateMachine, action: unknown): Answer
         byAction!.set(fn, seats);
       };
       // An entry or exit below no Agent's state is no transition an Agent's event takes: it seats
-      // nowhere (ADR-0067).
+      // nowhere, and runs nothing (`unseatAnswers`, ADR-0067).
       for (const a of onEntryOrExit) note(a, seat !== null);
       for (const a of onTransition) note(a, true);
       for (const child of Object.values(n.states)) visit(child);

@@ -53,9 +53,10 @@ export type Hold = {
   /** What the Machine's `answer` action set since the pick (ADR-0067): it replaces the default.
    * Wrapped, so an answer of `null` is still one. */
   shaped?: { value: unknown };
-  /** The invoke ids of the children the pick's own send started (ADR-0067): a done event of one of
-   * them is this pick's, so an `answer` on a transition below no Agent's state, or written below two
-   * Agents' states, that the done event takes shapes this pick and no other. */
+  /** The invoke ids of the children the pick started (ADR-0067) — in its own send, or while the
+   * Machine took an event that was already the pick's: a done event of one of them is this pick's,
+   * so an `answer` on a transition below no Agent's state, or written below two Agents' states, that
+   * the done event takes shapes this pick and no other. */
   children?: string[];
   /** The last event the Machine took while the Agent's state was the hold's, with work still running
    * below it, was no reply from below and no event a Machine sent itself at once: a timer the Machine

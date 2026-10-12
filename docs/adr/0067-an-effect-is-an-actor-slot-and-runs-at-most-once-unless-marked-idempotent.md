@@ -43,9 +43,9 @@ the credentialed `command` — runs there too, its child confined (below).
   transition below no Agent's state, and as one action object written below two Agents' states, it shapes the pick of
   the Agent whose event took the transition — the sender of a pick, or the Agent whose pick started the child whose done
   event it is — and the other Agent's pick keeps its default answer; on an entry or an exit below no Agent's state it
-  sets nothing (ADR-0024). A child's error is no link, and by default the Agent is not told (ADR-0024); an author who
-  wants it told writes `answer(...)` on the `onError` route. An Effect never takes that route for an outcome: every
-  outcome is output.
+  sets nothing, even as one object also written elsewhere (ADR-0024). A child's error is no link, and by default the
+  Agent is not told (ADR-0024); an author who wants it told writes `answer(...)` on the `onError` route. An Effect never
+  takes that route for an outcome: every outcome is output.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.
