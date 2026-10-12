@@ -41,11 +41,12 @@ the credentialed `command` — runs there too, its child confined (below).
   wire and in the hold; one with no JSON form sets nothing. An `answer` shapes only the pick of the Agent whose state it
   is written below (on a state's entry or exit, or on a transition of a state, at or below that Agent's state). On a
   transition below no Agent's state it shapes the pick of the Agent whose event took the transition — the sender of a
-  pick, or the Agent whose pick started the child whose done event it is — and the other Agent's pick keeps its default
-  answer; on an entry or an exit below no Agent's state it sets nothing. One action object written in several places
-  runs from each by that place's rule alone, never by their sum (ADR-0024). A child's error is no link, and by default
-  the Agent is not told (ADR-0024); an author who wants it told writes `answer(...)` on the `onError` route. An Effect
-  never takes that route for an outcome: every outcome is output.
+  pick, or the Agent whose pick started the child whose done or error event it is — and the other Agent's pick keeps its
+  default answer; an event that names no Agent shapes no pick while two Agents' states are active; on an entry or an
+  exit below no Agent's state it sets nothing. One action object written in several places runs from each by that
+  place's rule alone, never by their sum (ADR-0024). A child's error is no link, and by default the Agent is not told
+  (ADR-0024); an author who wants it told writes `answer(...)` on the `onError` route. An Effect never takes that route
+  for an outcome: every outcome is output.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.

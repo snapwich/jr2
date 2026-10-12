@@ -31,7 +31,7 @@ import {
   type AnyStateMachine,
 } from "xstate";
 import { SENDER_KEY, type EventDef, type EventSemantics, type Sender } from "@jr2/agent-protocol";
-import { seatOf, senderText } from "./party.ts";
+import { partiesAt, seatOf, senderText } from "./party.ts";
 import { placeAnswers, type AnswerSeat } from "./pick.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
@@ -231,15 +231,23 @@ type Sending = {
 };
 
 /**
- * The Agent whose event `event` is (ADR-0067): a pick's sender, or the Agent that started the child
- * whose done event it is (`startedBy`). Undefined when the event names no Agent: a timer, a Gate's
- * answer, an outside send, a child no Agent started.
+ * The Agent whose event `event` is (ADR-0024, ADR-0067): a pick's sender, or the Agent whose pick
+ * started the child whose done or error event it is (`startedBy`). Undefined when the event names
+ * no Agent: a timer, a Gate's answer, an outside send, a child no Agent's pick started.
  */
 function agentOfEvent(event: AnyEventObject, startedBy: Record<string, string>): string | undefined {
   const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
   if (sender?.party === "agent") return sender.id;
-  const child = /^xstate\.done\.actor\.(.+)$/.exec(event.type)?.[1];
+  const child = /^xstate\.(?:done|error)\.actor\.(.+)$/.exec(event.type)?.[1];
   return child !== undefined && Object.hasOwn(startedBy, child) ? startedBy[child] : undefined;
+}
+
+/** How many of `snapshot`'s active states invoke an Agent. With two or more, an event that names no
+ * Agent cannot say whose pick an `answer` below no Agent's state shapes (ADR-0024). */
+function activeAgentStates(snapshot: AnyMachineSnapshot): number {
+  const machine = snapshot.machine as AnyStateMachine;
+  const active = (snapshot as { _nodes?: AnyStateMachine["root"][] })._nodes ?? [];
+  return active.filter((node) => partiesAt(node, machine).some((party) => party.party === "agent")).length;
 }
 
 /** The invoke ids of every child in `actor`'s tree, at any depth. */
@@ -1356,10 +1364,12 @@ export class RunHost {
    * from (`placeAnswers`). At an Agent's state: only a pick of the Agent seated there — the one in
    * its own send, else the one outstanding. On a transition below no Agent's state (`null`): the
    * event that took the transition names the Agent — the sender of a pick, or the Agent whose pick
-   * started the child whose done event it is — and that Agent's pick is the one shaped, and no
-   * other; none when that Agent has no pick being answered. An event that names no Agent (a timer, a
-   * Gate's answer, an outside send) shapes the pick in its own send, else the one outstanding; two
-   * outstanding is no answer at all: the action cannot say whose it shapes.
+   * started the child whose done or error event it is — and that Agent's pick is the one shaped, and
+   * no other; none when that Agent has no pick being answered. An event that names no Agent (a timer,
+   * a Gate's answer, an outside send) shapes the pick in its own send. Outside one, it shapes the one
+   * outstanding pick only while one Agent's state is active; while two Agents' states are active it
+   * shapes none, whatever is outstanding: the event cannot say whose pick it is, and the other
+   * Agent's pick keeps its default answer.
    */
   private answeringIn(
     machine: AnyActorRef,
@@ -1387,7 +1397,31 @@ export class RunHost {
       }
     }
     if (sending && seatedFor(sending.reg)) return sending;
+    if (seat === null && activeAgentStates(machine.getSnapshot() as AnyMachineSnapshot) > 1) return undefined;
     return open.length === 1 ? open[0] : undefined;
+  }
+
+  /**
+   * The Agent whose outstanding pick holds the child `childId` that `machine` just started, or
+   * undefined: the child is invoked on a state strictly below that Agent's state, so by the Rest rule
+   * it is that pick's work (ADR-0024). `snapshot` is `machine`'s snapshot after the step.
+   */
+  private outstandingAbove(
+    machine: AnyActorRef,
+    snapshot: AnyMachineSnapshot,
+    childId: string,
+    holds: Map<string, Hold>,
+  ): string | undefined {
+    const node = seatOf(snapshot, childId);
+    if (node === undefined) return undefined;
+    for (const hold of holds.values()) {
+      if (hold.answer !== undefined) continue;
+      const reg = this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId));
+      if (reg?.invoker !== machine || reg.invokeId === undefined) continue;
+      const agentState = seatOf(snapshot, reg.invokeId);
+      for (let n = node.parent; n; n = n.parent) if (n === agentState) return hold.agent;
+    }
+    return undefined;
   }
 
   /** Wake every long poll on a hold: it was answered, replaced, or the host is going away. */
@@ -2052,17 +2086,21 @@ export class RunHost {
         // …and so are the children its later work starts: a child started while the Machine takes an
         // event that is already that Agent's — a done event of a child it started, or its own event —
         // is that Agent's too, so the work its pick began stays its own (ADR-0067). A child started
-        // on an event that names no Agent is no Agent's.
+        // on an event that names no Agent (a timer) below the state of an Agent whose pick is
+        // outstanding is that pick's work by the Rest rule, so it is that Agent's (ADR-0024); any
+        // other child started on such an event is no Agent's.
         if (ev.type === "@xstate.microstep") {
           const taker = ev.actorRef as AnyActorRef;
           const before = childrenAfter.get(taker) ?? childRefsOf(taker.getSnapshot());
-          const after = childRefsOf((ev as { snapshot?: unknown }).snapshot);
+          const snapshot = (ev as { snapshot?: unknown }).snapshot;
+          const after = childRefsOf(snapshot);
           childrenAfter.set(taker, after);
           const started = [...after].filter((c) => !before.has(c)).map((c) => c.id);
           if (started.length > 0 && !this.sending) {
             const agent = agentOfEvent(ev.event as AnyEventObject, startedBy);
             for (const id of started) {
-              if (agent !== undefined) startedBy[id] = agent;
+              const owner = agent ?? this.outstandingAbove(taker, snapshot as AnyMachineSnapshot, id, holds);
+              if (owner !== undefined) startedBy[id] = owner;
               else delete startedBy[id];
             }
           }

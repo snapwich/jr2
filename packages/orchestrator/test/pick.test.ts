@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, raise, type AnyStateMachine } from "xstate";
+import { assign, fromPromise, raise, type AnyStateMachine } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -294,9 +294,9 @@ test("an `answer` below one Agent's state never shapes another Agent's outstandi
   assert.equal(answered?.answer?.kind, "output", "A reads its own command's output, not B's answer");
 });
 
-// An `answer` written below no Agent's state may shape any Agent's pick (ADR-0067, ADR-0024): its
-// seat is `null`. A root `after` runs one while the pick is outstanding; the Agent reads it, not the
-// command's output.
+// An `answer` written below no Agent's state, on an event that names no Agent, shapes the one
+// outstanding pick while one Agent's state is active (ADR-0067, ADR-0024): its seat is `null`. A root
+// `after` runs one while the pick is outstanding; the Agent reads it, not the command's output.
 test("an `answer` written below no Agent's state shapes the outstanding pick", async () => {
   const fake = new FakeHarnessExec();
   const a = new MockFlueClient();
@@ -856,6 +856,250 @@ test("a child an outstanding pick started that outlives the pick's answer is sti
   assert.equal(answeredA?.answer?.kind, "output", "A's pick is answered by its own command, before C's work ends");
   fake.settle({ outcome: "exited", code: 0, tail: "c worked" }, execC);
   await new Promise((resolve) => setTimeout(resolve, 20));
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
+});
+
+// --- An event that names no Agent, below no Agent's state, with two Agents' states active (ADR-0024) --
+// While two Agents' states are active, an `answer` on a transition below no Agent's state shapes only
+// the pick of the Agent the event names. An event that names none (a timer, a Gate's answer, an
+// outside send, the done event of a child no Agent's pick started) shapes no pick: the other Agent's
+// pick keeps its default answer. The work a pick began is its Agent's across a timer in its own
+// state, and so is its child's error.
+
+test("a root timer that names no Agent leaves the one outstanding pick of two active Agents as it is", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const machine = twoAgents(fake, a, b, { after: { 100: { actions: answer(() => "from the root's timer") } } });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine, provide: () => ({}) });
+  await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const ib = b.admits[0]!.instanceId;
+  const pb = host.sendToAgent(ib, { type: "build_b" });
+  assert.equal(pb.outstanding, true);
+  await waitFor(() => fake.starts.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
+});
+
+test("a child a timer below no Agent's state started is no Agent's: its done event's answer leaves B's pick as it is", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const machine = jr2Setup({
+    events: [buildA, buildB, defineEvent({ name: "start_c", input: z.object({}) })],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+      workerC: commandWith(fake.factory, ["make", "c"]),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    on: {
+      build_a: { actions: raise({ type: "start_c" }) },
+      "xstate.done.actor.cmdC": { actions: answer(() => "root answer for A's work in rc") },
+    },
+    states: {
+      ra: {
+        invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {} },
+      },
+      rb: {
+        invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builderB", id: "buildB" } } },
+        on: { build_b: ".building" },
+      },
+      rc: {
+        initial: "idle",
+        states: { idle: {}, waiting: { after: { 50: "work" } }, work: { invoke: { src: "workerC", id: "cmdC" } } },
+        on: { start_c: ".waiting" },
+      },
+    },
+  } as never) as unknown as AnyStateMachine;
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine, provide: () => ({}) });
+  await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const ia = a.admits[0]!.instanceId;
+  const ib = b.admits[0]!.instanceId;
+  const pb = host.sendToAgent(ib, { type: "build_b" });
+  await waitFor(() => fake.starts.length === 1);
+  const pa = host.sendToAgent(ia, { type: "build_a" });
+  assert.equal(pa.outstanding, undefined, "A's pick is answered on its own POST: A's state is at Rest");
+  await waitFor(() => fake.starts.length === 2);
+  fake.settle({ outcome: "exited", code: 0, tail: "c worked" }, fake.starts[1]!.id);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
+});
+
+/** Two Agents in regions of the root. A's `build_a` enters `start`, whose timer moves to `building`,
+ * which invokes `builderA` (id `buildA`) or, with `fails`, a child that rejects (id `failA`). B's
+ * `build_b` starts B's own command. `root` is the root's `on`. */
+function aWorksAfterATimer(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlueClient, fails: boolean, root: object) {
+  return jr2Setup({
+    events: [buildA, buildB],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderA: commandWith(fake.factory, ["make", "a"]),
+      failing: fromPromise(async () => {
+        throw new Error("a broke");
+      }),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    on: root,
+    states: {
+      ra: {
+        invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: {
+          rest: {},
+          start: { after: { 50: "building" } },
+          building: fails ? { invoke: { src: "failing", id: "failA" } } : { invoke: { src: "builderA", id: "buildA" } },
+        },
+        on: { build_a: ".start" },
+      },
+      rb: {
+        invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builderB", id: "buildB" } } },
+        on: { build_b: ".building" },
+      },
+    },
+  } as never) as unknown as AnyStateMachine;
+}
+
+for (const bToo of [false, true]) {
+  test(`a child a timer in A's state started is A's pick's work: its done event's root answer shapes A's pick (B outstanding: ${bToo})`, async () => {
+    const fake = new FakeHarnessExec();
+    const a = new MockFlueClient();
+    const b = new MockFlueClient();
+    const root = { "xstate.done.actor.buildA": { actions: answer(() => "root answer for A's work") } };
+    const host = new RunHost({ store: await mkStore() });
+    host.register({ name: "two", machine: aWorksAfterATimer(fake, a, b, false, root), provide: () => ({}) });
+    await host.start("two");
+    await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+    const ia = a.admits[0]!.instanceId;
+    const ib = b.admits[0]!.instanceId;
+    const pb = bToo ? host.sendToAgent(ib, { type: "build_b" }) : undefined;
+    if (bToo) await waitFor(() => fake.starts.length === 1);
+    const pa = host.sendToAgent(ia, { type: "build_a" });
+    assert.equal(pa.outstanding, true);
+    await waitFor(() => fake.starts.some((s) => s.req.argv[1] === "a"));
+    fake.settle({ outcome: "exited", code: 0, tail: "a built" }, fake.starts.find((s) => s.req.argv[1] === "a")!.id);
+    const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+    assert.deepEqual(answeredA?.answer, { kind: "answer", value: "root answer for A's work" });
+    if (pb) {
+      fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts.find((s) => s.req.argv[1] === "b")!.id);
+      const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+      assert.equal(answeredB?.answer?.kind, "output", "B's pick keeps its default answer");
+    }
+  });
+
+  test(`the error of a child A's pick's work started is A's: its root answer shapes A's pick (B outstanding: ${bToo})`, async () => {
+    const fake = new FakeHarnessExec();
+    const a = new MockFlueClient();
+    const b = new MockFlueClient();
+    const root = { "xstate.error.actor.failA": { actions: answer(() => "root answer for A's error") } };
+    const host = new RunHost({ store: await mkStore() });
+    host.register({ name: "two", machine: aWorksAfterATimer(fake, a, b, true, root), provide: () => ({}) });
+    await host.start("two");
+    await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+    const ia = a.admits[0]!.instanceId;
+    const ib = b.admits[0]!.instanceId;
+    const pb = bToo ? host.sendToAgent(ib, { type: "build_b" }) : undefined;
+    if (bToo) await waitFor(() => fake.starts.length === 1);
+    const pa = host.sendToAgent(ia, { type: "build_a" });
+    assert.equal(pa.outstanding, true);
+    const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+    assert.deepEqual(answeredA?.answer, { kind: "answer", value: "root answer for A's error" });
+    if (pb) {
+      fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
+      const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+      assert.equal(answeredB?.answer?.kind, "output", "B's pick keeps its default answer");
+    }
+  });
+}
+
+test("an `onError` answer below no Agent's state, on the error of a child A's answered pick started, leaves B's pick as it is", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const kick = defineEvent({ name: "kick", input: z.object({}) });
+  const machine = jr2Setup({
+    events: [kick, buildB, defineEvent({ name: "go_side", input: z.object({}) })],
+    actors: {
+      ws: fakeWorkspace(),
+      coderA: agentActorWith(() => a, coderDefinition),
+      coderB: agentActorWith(() => b, coderDefinition),
+      builderB: commandWith(fake.factory, ["make", "b"]),
+      flaky: fromPromise(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        throw new Error("flaky broke");
+      }),
+    },
+  }).createMachine({
+    id: "two",
+    invoke: { src: "ws" },
+    type: "parallel",
+    on: { kick: { actions: raise({ type: "go_side" }) } },
+    states: {
+      ra: {
+        invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {} },
+      },
+      rb: {
+        invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builderB", id: "buildB" } } },
+        on: { build_b: ".building" },
+      },
+      rc: {
+        initial: "idle",
+        states: {
+          idle: {},
+          running: {
+            invoke: {
+              src: "flaky",
+              id: "flakyRun",
+              onError: { target: "idle", actions: answer(({ event }) => `error route saw ${event.type}`) },
+            },
+          },
+        },
+        on: { go_side: ".running" },
+      },
+    },
+  } as never) as unknown as AnyStateMachine;
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "two", machine, provide: () => ({}) });
+  await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const ia = a.admits[0]!.instanceId;
+  const ib = b.admits[0]!.instanceId;
+  const pb = host.sendToAgent(ib, { type: "build_b" });
+  await waitFor(() => fake.starts.length === 1);
+  const pa = host.sendToAgent(ia, { type: "kick" });
+  assert.equal(pa.outstanding, undefined, "A's pick is answered on its own POST");
+  await new Promise((resolve) => setTimeout(resolve, 100));
   fake.settle({ outcome: "exited", code: 0, tail: "b built" }, fake.starts[0]!.id);
   const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
   assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);

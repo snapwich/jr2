@@ -510,9 +510,10 @@ export type RunBinding = {
    * the action runs from: an Agent's state, and then only that Agent's pick counts; or `null`, a
    * transition below no Agent's state, and then `event` — the event whose transition runs the action
    * — names the Agent: the sender of a pick, or the Agent whose pick started the child whose done
-   * event it is. Undefined when no such pick is being answered, when the event names an Agent with
-   * none, or when the event names no Agent and more than one is outstanding: then the action cannot
-   * tell whose answer it shapes, and sets none.
+   * or error event it is. Undefined when no such pick is being answered, when the event names an
+   * Agent with none, or when the event names no Agent outside a pick's own send while two Agents'
+   * states are active or more than one pick is outstanding: then the action cannot tell whose
+   * answer it shapes, and sets none.
    */
   chainOf?: (machine: AnyActorRef, seat: AnswerSeat, event?: AnyEventObject) => PickAnswer[] | undefined;
   /** Set what that pick's answer is (ADR-0067): it replaces the default, and the last call wins.
