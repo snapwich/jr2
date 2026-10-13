@@ -60,15 +60,17 @@ test("a trial's note prints a faulted, lost or errored run's final output, and n
 
 // The rule the failure list depends on (ADR-0066): a trial that did not finish says how its run
 // ended. Read off the drivers' source, so a new note that leaves it out fails here, not in a tier
-// run whose namespace is gone. A void says why its setup did not happen; a trial counted finished
-// is in no such list; a driver that threw names no run.
+// run whose namespace is gone. A void is no exception: one kept past the bound of replacements is
+// in the list. A trial counted finished is in no such list; a driver that threw names no run.
 test("every note of a trial that did not finish says how its run ended", () => {
   const lines = readFileSync(new URL("../steps/model.steps.ts", import.meta.url), "utf8").split("\n");
   const missing: string[] = [];
   lines.forEach((line, i) => {
     if (!/\bnote: [`"]/.test(line)) return;
     const around = lines.slice(Math.max(0, i - 6), i + 1).join("\n");
-    if (/void: true/.test(around) || /finished: true/.test(around) || /threw: /.test(line)) return;
+    // A void is listed too, once it is kept past the bound of replacements, so it says how its run
+    // ended as every other trial does. A finished trial's note is never in the list.
+    if (/finished: true/.test(around) || /threw: /.test(line)) return;
     if (/\bended\(/.test(line) || /note: seen\b/.test(line)) return;
     missing.push(`${i + 1}: ${line.trim()}`);
   });

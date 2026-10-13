@@ -388,7 +388,13 @@ const noticed: Driver = async (world, input) => {
     // model's job, not the claim's — so this trial measures nothing (`void`).
     const s = await status(world, runId);
     if (!settled(s)) await world.runCli(["send", runId, "--event", "CANCEL"]);
-    return { runId, measured: false, finished: false, void: true, note: `no server answered: ${why}` };
+    return {
+      runId,
+      measured: false,
+      finished: false,
+      void: true,
+      note: `no server answered: ${why}; ended ${ended(s)}`,
+    };
   }
   const hog = `const a=[];setInterval(()=>{for(let i=0;i<4;i++)a.push(Buffer.alloc(64<<20,1))},10)`;
   await inHarness(world, pod, [RUNTIME_NODE, "-e", hog]); // returns when the guard kills it
@@ -564,8 +570,15 @@ const wake: Driver = async (world, input) => {
   }
   if (!stopped) {
     const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
+    const s = await status(world, runId);
     await world.runCli(["send", runId, "--event", "CANCEL"]);
-    return { runId, measured: false, finished: false, void: true, note: `never stopped: ${told(said)}` };
+    return {
+      runId,
+      measured: false,
+      finished: false,
+      void: true,
+      note: `never stopped: ${told(said)}; ended ${ended(s)}`,
+    };
   }
   await sendToGate(world, runId, board.gate, "cleared");
   const { last } = await waitFor(world, runId, settled, 300_000);
@@ -637,7 +650,7 @@ async function pushFollowIn(
       measured: false,
       finished: false,
       void: true,
-      note: `no command in flight: ${told(sleeping.said)}`,
+      note: `no command in flight: ${told(sleeping.said)}; ended ${ended(status0)}`,
     };
   }
   await sendToGate(world, runId, desk.gate, "approve");
@@ -689,7 +702,7 @@ async function pushFollowIn(
       measured: false,
       finished: false,
       void: true,
-      note: `took ${ledger.join(" ")} — not after the answer`,
+      note: `took ${ledger.join(" ")} — not after the answer; ended ${ended(last, last.context.output?.outcome)}`,
     };
   }
   const followed = PUSH_NEW.has(ledger[approved + 1] ?? "");
