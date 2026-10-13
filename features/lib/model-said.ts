@@ -70,9 +70,11 @@ export type Answered = { call: string; input: string; answer?: string; error?: t
  * that has none yet, and never across a prompt: a message's answers print in the order of its calls,
  * and every prompt after the answers of the calls before it (ADR-0023; the Harness's conformance
  * suite pins both), so a call still open at a prompt is one whose answer the kept log lost. A call
- * a Harness restart cut is answered by the next container, before its first prompt. A body's later lines (they carry no label) belong to it. The same lines as
- * `calledIn`: the Agents whose prompt printed, from the trial's own prompt to another trial's
- * Frame. `undefined` when no prompt printed.
+ * a Harness restart cut is answered by the next container, before its first prompt, and a call an
+ * abort cut while the model was still writing it before the conversation's next prompt. A body's
+ * later lines (they carry no label) belong to it. The same lines as `calledIn`: the Agents whose
+ * prompt printed, from the trial's own prompt to another trial's Frame. `undefined` when no prompt
+ * printed.
  */
 export function answersIn(kept: string, marker: string): Answered[] | undefined {
   const trial = trialOf(kept, marker);

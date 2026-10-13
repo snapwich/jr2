@@ -85,14 +85,20 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   notice ahead of the answer, and the notices pending for the Turn ride along. In the rebuilt session the cut Menu call
   has no result; the Harness answers it in the history with jr2's text — the pick reached the workflow, which does not
   run it twice, and its result comes in the next message — before pi would answer "No result provided", which reads as a
-  failed pick. That text prints once in the rebuilt Harness's log, before its first prompt (ADR-0023). A poll takes the
-  answer only while its connection lives: the killed Harness's last poll, still waiting at the Orchestrator, ends
-  unanswered when its connection closes, so an answer that lands after the kill, and before the rebuilt stream reports
-  the restart, is still unread. The same holds for a Sandbox's Harness, whose restart the watch sees (ADR-0021). A
-  restart at Rest with nothing unread is the fault it always was. Only the Turn's OWN pick counts as unread: a pick of
-  an earlier Turn on the same continued address, whose route left the Agent's state, was answered as a notice to this
-  Turn, and a restart at Rest in this Turn is still the fault. A route that leaves the Agent's state ends the Turn while
-  it waits, as any route does.
+  failed pick. That text prints once in the rebuilt Harness's log, before its first prompt (ADR-0023). A Menu call that
+  an abort cut while the model was still writing it (the abort lands mid-stream) did not reach the workflow: pi runs no
+  call of a message the model did not finish. The Harness tells the two cuts apart by whether the call was delivered,
+  read before it re-tags an aborted message so that pi replays it: a call in a finished message keeps the text above,
+  and a call in an aborted message gets jr2's text in the same form — the Turn was cut while the model was still writing
+  this call, it did not reach the workflow, nothing ran, and the model may call it again if the newest "Allowed now"
+  still lists it. That text prints once too, before the conversation's next prompt, in the same process or the next. A
+  poll takes the answer only while its connection lives: the killed Harness's last poll, still waiting at the
+  Orchestrator, ends unanswered when its connection closes, so an answer that lands after the kill, and before the
+  rebuilt stream reports the restart, is still unread. The same holds for a Sandbox's Harness, whose restart the watch
+  sees (ADR-0021). A restart at Rest with nothing unread is the fault it always was. Only the Turn's OWN pick counts as
+  unread: a pick of an earlier Turn on the same continued address, whose route left the Agent's state, was answered as a
+  notice to this Turn, and a restart at Rest in this Turn is still the fault. A route that leaves the Agent's state ends
+  the Turn while it waits, as any route does.
 - **Both placements persist, to different volumes.** The Instance Harness to a PersistentVolumeClaim of its own; a
   Sandbox's Harness to an emptyDir mounted into the Harness container alone (the User Container must not read it), so a
   Harness container that restarts inside a living pod keeps its conversations. A pod that is gone takes the emptyDir

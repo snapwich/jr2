@@ -19,6 +19,7 @@ import {
   receiptProse,
   type DeliveryReceipt,
   type Surface,
+  unsentPickResult,
 } from "../src/menu.ts";
 import { menuToolName } from "../src/menu-tools.ts";
 import { cutPickAnswers, settleCutPicks } from "../src/turn.ts";
@@ -467,6 +468,40 @@ test("a Menu call a restart cut gets jr2's result in the history; a Working-tool
   );
   assert.deepEqual((results[0]!.content as Array<{ text: string }>)[0]!.text, cutPickResult("mcp__jr2__run_tests"));
   assert.deepEqual(settleCutPicks(settled as unknown as AgentMessage[]), settled, "an answered call is left alone");
+});
+
+test("a Menu call in a message an abort cut while the model wrote it gets the text that it never reached the workflow; a finished message's call keeps the restart's (ADR-0031)", () => {
+  const cut = (stopReason: string) =>
+    [
+      { role: "user", content: "go", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Running it." },
+          { type: "toolCall", id: "m1", name: "mcp__jr2__run_tests", arguments: {} },
+        ],
+        stopReason,
+        timestamp: 2,
+      },
+    ] as unknown as AgentMessage[];
+  const textOf = (messages: AgentMessage[]) =>
+    (settleCutPicks(messages) as Array<{ role: string; toolCallId?: string; content?: Array<{ text: string }> }>)
+      .filter((m) => m.role === "toolResult")
+      .map((m) => [m.toolCallId, m.content![0]!.text]);
+  assert.deepEqual(textOf(cut("aborted")), [["m1", unsentPickResult("mcp__jr2__run_tests")]]);
+  assert.deepEqual(textOf(cut("toolUse")), [["m1", cutPickResult("mcp__jr2__run_tests")]]);
+  const settled = settleCutPicks(cut("aborted")) as Array<{ role: string; stopReason?: string }>;
+  assert.equal(settled[1]!.stopReason, "toolUse", "the aborted message is re-tagged, so pi replays it");
+  assert.deepEqual(
+    cutPickAnswers(cut("aborted")).map((m) => (m.content[0] as { text: string }).text),
+    [unsentPickResult("mcp__jr2__run_tests")],
+    "it prints once, before the next prompt, like the restart's",
+  );
+  const text = unsentPickResult("mcp__jr2__run_tests");
+  assert.match(text, /did not reach the workflow/);
+  assert.match(text, /cut while you were still writing your call to `mcp__jr2__run_tests`/);
+  assert.match(text, /Nothing ran\./);
+  assert.match(text, /You may call `mcp__jr2__run_tests` again if the newest "Allowed now" still lists it\./);
 });
 
 test("the cut answers a rebuilt session prints are those of the Menu calls it ends in; a cut call further back printed already (ADR-0023)", () => {

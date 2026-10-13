@@ -131,7 +131,9 @@ recover, finish — are exercised only one scripted tool call at a time.
     (`… [<n> characters cut] …`), so the receipt at its head and the end with "Allowed now" both stay; the model read
     the whole answer, and the cut is the log's copy only (ADR-0023). The Harness prints it (ADR-0023), so the tier keeps
     it with the conversation, and nothing the model reads changed to keep it. `answersIn` reads each call with its
-    answer; a call a Harness restart cut has jr2's text, which the next container prints before its first prompt.
+    answer; a call a Harness restart cut has jr2's text, which the next container prints before its first prompt, and a
+    call an abort cut while the model was still writing it has jr2's text that it did not reach the workflow, printed
+    before the conversation's next prompt.
   - `effector.txt`: the Sandbox Effector container's log, followed the same way, for a Sandbox claim; it says so when
     the pod has none.
   - `harness-history.txt`: the Harness history view

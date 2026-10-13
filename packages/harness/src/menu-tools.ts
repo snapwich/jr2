@@ -21,7 +21,7 @@ export function menuToolName(name: string): string {
 }
 
 /** The prefix every Menu tool's name carries — what tells a Menu call from a Working-tool call in a
- * rebuilt session (`settleCutPicks`, turn.ts). */
+ * conversation the history settles (`settleCutPicks`, turn.ts). */
 export const MENU_TOOL_PREFIX = "mcp__jr2__";
 
 /**

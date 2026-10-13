@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
-import { cutPickResult, type Surface } from "../src/menu.ts";
+import { cutPickResult, unsentPickResult, type Surface } from "../src/menu.ts";
 import { harnessServer, type HarnessServer } from "../src/app.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
@@ -1217,6 +1217,66 @@ test("INVERTED PINNED DEFECT: an abort mid-STREAM does not erase the assistant m
     resumed.some((m) => m.role === "assistant" && JSON.stringify(m).includes("my verdict is approved")),
     `the interrupted assistant message survived into the next turn (got: ${JSON.stringify(resumed.map((m) => m.role))})`,
   );
+});
+
+test("a Menu call an abort cut while the model was still writing it is answered as one that never reached the workflow, and the answer prints once before the next prompt (ADR-0031, ADR-0023)", async () => {
+  // The abort lands mid-STREAM: pi runs no call of a message the model did not finish, so the pick
+  // was never delivered. The history answers the call on every later request with jr2's text — not
+  // the restart's "reached the workflow" — and the log shows that answer once, in the process that
+  // continues the conversation, before its prompt; a process after it prints it no more.
+  const iid = "conf/mid-stream-unsent";
+  const dir = await mkdtemp(join(tmpdir(), "jr2-conversations-"));
+  const unsent = unsentPickResult("mcp__jr2__review_verdict");
+  provider.reset([
+    {
+      text: "I have reviewed it and my verdict is approved.",
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", partial: true },
+      stall: true,
+    },
+    { text: "Acknowledged." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const first = appOver(dir);
+  const admission = await admit(iid, "Review the diff.", undefined, AGENT, first);
+  await until(() => provider.stalled(), "the model to start streaming its pick");
+  // Room for pi to fold the streamed frames into its partial message (see the mid-STREAM test).
+  await sleep(300);
+  sandbox.killSurface();
+  const res = await first.request(`${conversationPath(iid)}/abort`, { method: "POST" });
+  assert.deepEqual(await res.json(), { aborted: true });
+  assert.equal((await settled(iid, admission, AGENT, first)).outcome, "aborted");
+  assert.deepEqual(sandbox.delivered, [], "the call never reached the workflow");
+
+  // The same process continues the conversation.
+  sandbox.reviveSurface();
+  const next = await admit(iid, "Now summarize.", undefined, AGENT, first);
+  assert.equal((await settled(iid, next, AGENT, first)).outcome, "completed");
+  const sent = provider.calls.at(-1)?.messages ?? [];
+  const answered = sent.find((m) => m.role === "tool" && m.tool_call_id === "call_1");
+  assert.equal(JSON.stringify(answered?.content ?? ""), JSON.stringify(unsent), JSON.stringify(answered));
+  assert.doesNotMatch(JSON.stringify(sent), /This pick reached the workflow/);
+
+  const answerLine = `[${AGENT}] [review_verdict answer] ${unsent}`;
+  const lines = () => (printed.get(iid) ?? "").split("\n");
+  const call = lines().findIndex((l) => l.startsWith(`[${AGENT}] [review_verdict] `));
+  const answer = lines().indexOf(answerLine);
+  const prompt = lines().findIndex((l) => l.startsWith(`[${AGENT}] [prompt] Now summarize.`));
+  assert.ok(
+    call !== -1 && call < answer && answer < prompt,
+    `call, its answer, then the prompt:\n${lines().join("\n")}`,
+  );
+  const answers = () => lines().filter((l) => l.startsWith(`[${AGENT}] [review_verdict answer]`));
+  assert.deepEqual(answers(), [answerLine], "printed once");
+
+  // A process after it: the history still answers the call with the same text, and nothing prints.
+  provider.reset([{ text: "Again." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const second = appOver(dir);
+  const later = await admit(iid, "And now?", undefined, AGENT, second);
+  assert.equal((await settled(iid, later, AGENT, second)).outcome, "completed");
+  const resent = (provider.calls[0]?.messages ?? []).find((m) => m.role === "tool" && m.tool_call_id === "call_1");
+  assert.equal(JSON.stringify(resent?.content ?? ""), JSON.stringify(unsent), JSON.stringify(resent));
+  assert.deepEqual(answers(), [answerLine], "still printed once");
 });
 
 test("an abort mid-TOOL-CALL keeps the turn in history: the loop writes its own result", async () => {

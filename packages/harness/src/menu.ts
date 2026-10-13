@@ -298,13 +298,28 @@ export function outstandingRefusal(
 /**
  * What a Menu call cut by a Harness restart answers in the history, forever after (ADR-0031): the
  * pick reached the workflow, which does not run it twice, and its answer is the next message's — the
- * re-admission's notice. `tool` is the name the model called.
+ * re-admission's notice. `tool` is the name the model called. For a call that never reached the
+ * workflow, `unsentPickResult`.
  */
 export function cutPickResult(tool: string): string {
   return (
     `This pick reached the workflow, but its answer did not reach you: your turn was cut while the ` +
     `workflow ran \`${tool}\`. The workflow did not stop, and it does not run a pick twice. Its result ` +
     `comes in the next message. Do not call \`${tool}\` again to get it.`
+  );
+}
+
+/**
+ * What a Menu call answers in the history, forever after, when the Turn was cut while the model was
+ * still writing it (ADR-0031): pi runs no call of a message the model did not finish, so the pick
+ * did not reach the workflow and nothing ran, and the model may make it again. Said in the form of
+ * `cutPickResult`, which answers a call that did reach the workflow. `tool` is the name the model
+ * called.
+ */
+export function unsentPickResult(tool: string): string {
+  return (
+    `This pick did not reach the workflow: your turn was cut while you were still writing your call to ` +
+    `\`${tool}\`. Nothing ran. You may call \`${tool}\` again if the newest "Allowed now" still lists it.`
   );
 }
 
