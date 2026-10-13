@@ -26,6 +26,7 @@ import type {
   ParameterizedObject,
   ProvidedActor,
 } from "xstate";
+import { enqueueActions } from "xstate";
 import type { z } from "zod";
 import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import { isAgent } from "./agent.ts";
@@ -156,6 +157,22 @@ function unseatedAnswer(original: unknown): AnswerAction & (() => void) {
 
 const placedMachines = new WeakSet<AnyStateMachine>();
 
+/** xstate's `enqueueActions` as it is written: its `collect` runs at the place the action stands,
+ * and the actions it enqueues run there too. */
+type Enqueuing = { type: "xstate.enqueueActions"; collect: (args: EnqueueArgs, params: unknown) => void };
+type EnqueueArgs = { context: unknown; event: unknown; enqueue: ((action: unknown) => void) & object };
+const isEnqueuing = (action: unknown): action is Enqueuing =>
+  typeof action === "function" &&
+  (action as Partial<Enqueuing>).type === "xstate.enqueueActions" &&
+  typeof (action as Partial<Enqueuing>).collect === "function";
+
+/** The params an action written as `{ type, params }` is run with, as xstate reads them. */
+function paramsAt(written: unknown, args: EnqueueArgs): unknown {
+  if (typeof written !== "object" || written === null || !("params" in written)) return undefined;
+  const params = (written as { params?: unknown }).params;
+  return typeof params === "function" ? params({ context: args.context, event: args.event }) : params;
+}
+
 /**
  * Give every place an `answer` is written in `machine` a copy of its own, bound to that place's
  * seat (ADR-0067): one action object written in two places then shapes, from each, by that place's
@@ -171,14 +188,25 @@ export function placeAnswers(machine: AnyStateMachine): void {
   placedMachines.add(machine);
   const resolve = resolverOf(machine);
   const seatAbove = seatFinderOf(machine);
+  const placeOne = (a: unknown, seat: AnswerSeat | "nowhere"): unknown => {
+    const fn = resolve(a);
+    // An `enqueueActions` runs what it enqueues at its own place: each `answer` it enqueues, at any
+    // depth, runs from the seat the enqueuing action is written at (ADR-0067). The load walk cannot
+    // see inside one, so the copy places what it enqueues as it is enqueued.
+    if (isEnqueuing(fn)) {
+      const collect = fn.collect;
+      return enqueueActions(((args: EnqueueArgs) => {
+        const enqueue = Object.assign((action: unknown) => args.enqueue(placeOne(action, seat)), args.enqueue);
+        collect({ ...args, enqueue }, paramsAt(a, args));
+      }) as never);
+    }
+    if (!isAnswer(fn)) return a;
+    if (seat === "nowhere") return unseatedAnswer(originalOf(fn));
+    const original = originalOf(fn) as Partial<Placeable>;
+    return typeof original[PLACE] === "function" ? original[PLACE](seat) : fn;
+  };
   const placed = (list: readonly unknown[], seat: AnswerSeat | "nowhere"): unknown[] =>
-    list.map((a) => {
-      const fn = resolve(a);
-      if (!isAnswer(fn)) return a;
-      if (seat === "nowhere") return unseatedAnswer(originalOf(fn));
-      const original = originalOf(fn) as Partial<Placeable>;
-      return typeof original[PLACE] === "function" ? original[PLACE](seat) : fn;
-    });
+    list.map((a) => placeOne(a, seat));
   const visit = (n: Node): void => {
     const seat = seatAbove(n);
     const writable = n as unknown as { entry: unknown[]; exit: unknown[] };
@@ -246,8 +274,8 @@ export function answer<
   fn: (args: { context: TContext; event: TExpressionEvent; chain: readonly ChainLink<TActor, TEvent>[] }) => unknown,
 ): ActionFunction<TContext, TExpressionEvent, TEvent, TParams, TActor, never, never, never, never> & AnswerAction {
   // The action as it runs from one seat (`placeAnswers`): the Agent's state it is written below, or
-  // `null` on a transition below none. The object the author holds runs as `null`: the walk found it
-  // in no place it could seat (an action another action enqueues).
+  // `null` on a transition below none. The object the author holds runs as `null`: it runs only from
+  // a Machine `placeAnswers` never placed.
   const at =
     (seat: AnswerSeat) =>
     ({ context, event, self }: { context: TContext; event: TExpressionEvent; self: AnyActorRef }) => {

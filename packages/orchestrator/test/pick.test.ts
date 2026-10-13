@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, fromPromise, raise, type AnyStateMachine } from "xstate";
+import { assign, enqueueActions, fromPromise, raise, type AnyStateMachine } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -601,6 +601,102 @@ test("one `answer` written on an entry below no Agent's state and on a transitio
     "as the transition, the same object shapes the pick whose child's done event took it",
   );
 });
+
+// An `answer` another action enqueues (`enqueueActions`) runs by the rule of the place the
+// enqueuing action is written (ADR-0067, ADR-0024): xstate's own form of a conditional action.
+test("an `answer` an entry below no Agent's state enqueues sets nothing, as one written there", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const shared = answer(({ event }) => `enqueued entry ran on ${event.type}`);
+  const machine = twoAgents(fake, a, b, {
+    states: {
+      rc: {
+        initial: "idle",
+        states: { idle: {}, ticked: { entry: enqueueActions(({ enqueue }) => enqueue(shared)) } },
+        on: { "xstate.done.actor.buildA": ".ticked" },
+      },
+    },
+  });
+  const { host, ia, ib, pa, pb, execA, execB } = await bothOutstanding(machine, fake, a, b);
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, execA);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.equal(answeredA?.answer?.kind, "output", `A reads its command's output: ${JSON.stringify(answeredA?.answer)}`);
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, execB);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", "B's pick keeps its default answer");
+});
+
+test("an `answer` a transition below no Agent's state enqueues shapes the pick of the Agent the event names", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const fromRoot = answer(({ event }) => `the root enqueued on ${event.type}`);
+  const machine = twoAgents(fake, a, b, {
+    on: {
+      "xstate.done.actor.buildA": {
+        actions: enqueueActions(({ enqueue, check }) => {
+          if (check(() => true)) enqueue(fromRoot);
+        }),
+      },
+    },
+  });
+  const { host, ia, ib, pa, pb, execA, execB } = await bothOutstanding(machine, fake, a, b);
+  fake.settle({ outcome: "exited", code: 0, tail: "a built" }, execA);
+  const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+  assert.deepEqual(answeredA?.answer, { kind: "answer", value: "the root enqueued on xstate.done.actor.buildA" });
+  fake.settle({ outcome: "exited", code: 0, tail: "b built" }, execB);
+  const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+  assert.equal(answeredB?.answer?.kind, "output", "B's pick keeps its default answer");
+});
+
+for (const form of ["inline", "inside a nested enqueue", "by name"] as const) {
+  test(`an \`answer\` enqueued ${form} on a transition in A's state shapes only A's pick, whatever event ran it`, async () => {
+    const fake = new FakeHarnessExec();
+    const a = new MockFlueClient();
+    const b = new MockFlueClient();
+    const x = answer(({ event }) => `A's state enqueued on ${event.type}`);
+    const enqueuing =
+      form === "inline"
+        ? enqueueActions(({ enqueue }) => enqueue(x))
+        : form === "by name"
+          ? enqueueActions(({ enqueue }) => enqueue("shapeIt"))
+          : enqueueActions(({ enqueue }) => enqueue(enqueueActions(({ enqueue: inner }) => inner(x))));
+    const region = (coder: string, cmd: string, id: string, pick: string, on: Record<string, unknown> = {}) => ({
+      invoke: { src: coder, input: { prompt: coder, endpoint: "http://harness.invalid" } },
+      initial: "rest",
+      states: { rest: {}, building: { invoke: { src: cmd, id } } },
+      on: { [pick]: ".building", ...on },
+    });
+    // A's region takes B's child's done event: the answer it enqueues is written below A's state.
+    const machine = jr2Setup({
+      events: [buildA, buildB],
+      actors: {
+        ws: fakeWorkspace(),
+        coderA: agentActorWith(() => a, coderDefinition),
+        coderB: agentActorWith(() => b, coderDefinition),
+        builderA: commandWith(fake.factory, ["make", "a"]),
+        builderB: commandWith(fake.factory, ["make", "b"]),
+      },
+      actions: { shapeIt: x } as never,
+    }).createMachine({
+      id: "two",
+      invoke: { src: "ws" },
+      type: "parallel",
+      states: {
+        ra: region("coderA", "builderA", "buildA", "build_a", { "xstate.done.actor.buildB": { actions: enqueuing } }),
+        rb: region("coderB", "builderB", "buildB", "build_b"),
+      },
+    } as never) as unknown as AnyStateMachine;
+    const { host, ia, ib, pa, pb, execA, execB } = await bothOutstanding(machine, fake, a, b);
+    fake.settle({ outcome: "exited", code: 0, tail: "b built" }, execB);
+    const answeredB = await host.awaitDelivery(ib, pb.deliveryId);
+    assert.equal(answeredB?.answer?.kind, "output", `B's pick keeps its default: ${JSON.stringify(answeredB?.answer)}`);
+    fake.settle({ outcome: "exited", code: 0, tail: "a built" }, execA);
+    const answeredA = await host.awaitDelivery(ia, pa.deliveryId);
+    assert.deepEqual(answeredA?.answer, { kind: "answer", value: "A's state enqueued on xstate.done.actor.buildB" });
+  });
+}
 
 test("a child that a pick's later work started is that pick's: its done event below no Agent's state shapes that pick only", async () => {
   const fake = new FakeHarnessExec();

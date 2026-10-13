@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createActor, createMachine, type AnyStateMachine } from "xstate";
+import { createActor, createMachine, enqueueActions, type AnyStateMachine } from "xstate";
 import { answer, placeAnswers } from "../src/pick.ts";
 
 type Node = AnyStateMachine["root"];
@@ -123,4 +123,45 @@ test("placeAnswers replaces each list that holds an `answer` with a list of its 
     assert.notEqual(after[place][0], shaping, `${place}: the placed copy, not the author's action`);
   }
   assert.deepEqual(authorEntry, [shaping], "the author's list is unchanged");
+});
+
+// An `answer` an `enqueueActions` enqueues is placed as it is enqueued (`placeAnswers`): xstate keeps
+// the author's `collect` on the action, calls it with an `enqueue` whose helpers are its own
+// properties, and runs what that `enqueue` is handed, at the enqueuing action's place.
+test("xstate's `enqueueActions` keeps its `collect` on the action, and runs what a wrapped `enqueue` is handed", () => {
+  const ran: string[] = [];
+  const collect = ({ enqueue }: { enqueue: (a: unknown) => void }) => enqueue(() => void ran.push("enqueued"));
+  const written = enqueueActions(collect as never) as unknown as {
+    type: string;
+    collect: (args: unknown, params: unknown) => void;
+  };
+  assert.equal(written.type, "xstate.enqueueActions", "the type placeAnswers knows it by");
+  assert.equal(written.collect, collect, "the author's collect");
+  let helpers: unknown;
+  const wrapping = enqueueActions((({ enqueue, ...rest }: { enqueue: ((a: unknown) => void) & object }) => {
+    helpers = (enqueue as unknown as { assign?: unknown }).assign;
+    const own = Object.assign((a: unknown) => enqueue(() => (ran.push("placed"), (a as () => void)())), enqueue);
+    written.collect({ ...rest, enqueue: own }, undefined);
+  }) as never);
+  createActor(createMachine({ entry: wrapping })).start();
+  assert.equal(typeof helpers, "function", "enqueue's helpers are its own properties, which the copy carries");
+  assert.deepEqual(ran, ["placed", "enqueued"]);
+});
+
+test("placeAnswers' copy of an `enqueueActions` written by name with params runs it with those params", () => {
+  const ran: unknown[] = [];
+  const machine = createMachine(
+    {
+      id: "m",
+      entry: [
+        { type: "fixed", params: { n: 1 } },
+        { type: "fixed", params: () => ({ n: 2 }) },
+      ],
+    },
+    { actions: { fixed: enqueueActions((_args, params: { n: number }) => void ran.push(params.n)) as never } },
+  );
+  placeAnswers(machine);
+  assert.equal(typeof machine.root.entry[0], "function", "the copy stands where it was written");
+  createActor(machine).start();
+  assert.deepEqual(ran, [1, 2]);
 });
