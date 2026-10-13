@@ -1,8 +1,9 @@
 // The Harness prints the conversation, and `kubectl logs` reads it (ADR-0023) — over pi's
 // in-process event stream (ADR-0027; the retired shim needed a loopback SSE client). Reasoning,
 // and jr2's own answers: prompts, assistant text, thinking, tool calls with TRUNCATED inputs, and
-// each Menu pick's answer under the same bound. A Working tool's RESULT is never read: that is a
-// boundary (ADR-0023, and the ADR-0014 exception it takes), not an unfinished implementation.
+// each Menu pick's answer under the same bound, cut in its middle. A Working tool's RESULT is never
+// read: that is a boundary (ADR-0023, and the ADR-0014 exception it takes), not an unfinished
+// implementation.
 // Truncation is load-bearing too — kubelet rotates at 10Mi and drops the remainder, so an
 // untruncated turn loses its own beginning.
 
@@ -27,14 +28,25 @@ function bareToolName(toolName: string): string {
 /**
  * One bound for every input and every pick's answer, set high enough that an ordinary call prints
  * whole: a command, a review summary, a patch hunk, a receipt with the paragraph after a push. Only
- * the outliers cut (a command Effect's long output), and the 10Mi budget still holds — an Agent
- * makes hundreds of calls per run, not thousands of them at 2 KiB each.
+ * the outliers cut (a command Effect's long output, cut in its middle), and the 10Mi budget still
+ * holds — an Agent makes hundreds of calls per run, not thousands of them at 2 KiB each.
  */
 const MAX_INPUT = 2000;
 
 /** Cut is visible: a bare prefix reads as a bug, `…` reads as the bound doing its job. */
 function bound(text: string): string {
   return text.length > MAX_INPUT ? `${text.slice(0, MAX_INPUT)}…` : text;
+}
+
+/**
+ * A pick's answer under the same bound, cut in its MIDDLE (ADR-0023): its head is the receipt, and
+ * its end is what follows the reply — the paragraph after a push, "Allowed now" — so both stay, and
+ * the cut says how many characters it dropped. The log's copy only: the model reads the whole answer.
+ */
+export function boundAnswer(text: string): string {
+  if (text.length <= MAX_INPUT) return text;
+  const half = MAX_INPUT / 2;
+  return `${text.slice(0, half)}… [${text.length - 2 * half} characters cut] …${text.slice(-half)}`;
 }
 
 /** A path for Write/Edit/Read (whole — a path is already short), the command for Bash, else JSON. */
@@ -71,13 +83,13 @@ export function renderMessage(message: AgentMessage): string[] {
     if (!result.toolName.startsWith(MENU_TOOL_PREFIX)) return [];
     // A Menu pick's answer is jr2's own text, the one the model read back from the call: its
     // receipt, its outstanding answer with the post-push paragraph, a refusal. Printed as the model
-    // received it, under the inputs' bound, and scrubbed no more than the rest of this print: no
-    // Effect secret reaches it (an Effector scrubs every string before it signs its answer,
-    // ADR-0068), but a `command` Effect's output does, with any Held value an upstream echoed into
-    // it (ADR-0023 states that residual; ADR-0059). What the model reads does not change; only the
-    // log keeps it too.
+    // received it, under the inputs' bound cut in the middle, and scrubbed no more than the rest of
+    // this print: what an Effector returns is scrubbed of the secrets it holds in the forms it sent
+    // and in common encodings (ADR-0068), and not of what that scrub does not catch; a `command`
+    // Effect's output prints with any Held value an upstream echoed into it (ADR-0023 states the
+    // residual; ADR-0059). What the model reads does not change; only the log keeps it too.
     const text = result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-    return [`[${bareToolName(result.toolName)} ${result.isError ? "error" : "answer"}] ${bound(text)}`];
+    return [`[${bareToolName(result.toolName)} ${result.isError ? "error" : "answer"}] ${boundAnswer(text)}`];
   }
   return []; // anything custom: never printed.
 }

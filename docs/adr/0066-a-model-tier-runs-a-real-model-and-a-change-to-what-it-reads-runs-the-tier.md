@@ -126,9 +126,12 @@ recover, finish — are exercised only one scripted tool call at a time.
     again after the container restarts. A Menu-only claim's is the Instance Harness's from the trial's start, followed
     again after the step deletes that pod and the StatefulSet makes it again. It holds each pick's answer after its
     call, the text the model read (`[<pick> answer] <text>`, or `[<pick> error] <text>`): the receipt, a command's
-    outcome, a refusal, the paragraph after a signed push. The Harness prints it (ADR-0023), so the tier keeps it with
-    the conversation, and nothing the model reads changed to keep it. `answersIn` reads each call with its answer; a
-    call a Harness restart cut has jr2's text, which the next container prints before its first prompt.
+    outcome, a refusal, the paragraph after a signed push. An answer longer than the print's bound (2000 characters, a
+    call input's) is cut in its middle, with the number of characters dropped marked at the cut
+    (`… [<n> characters cut] …`), so the receipt at its head and the end with "Allowed now" both stay; the model read
+    the whole answer, and the cut is the log's copy only (ADR-0023). The Harness prints it (ADR-0023), so the tier keeps
+    it with the conversation, and nothing the model reads changed to keep it. `answersIn` reads each call with its
+    answer; a call a Harness restart cut has jr2's text, which the next container prints before its first prompt.
   - `effector.txt`: the Sandbox Effector container's log, followed the same way, for a Sandbox claim; it says so when
     the pod has none.
   - `harness-history.txt`: the Harness history view

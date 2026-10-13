@@ -41,20 +41,27 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   [ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)). It prints as
   `[<agent>] [<pick> answer] <text>`, or `[<pick> error] <text>` for an answer the model reads as an error (a refusal
   while a pick is outstanding, a pick the tool's schema refused, a pick that never reached the Orchestrator), under the
-  same bound as a call's input. It is the text the model already read, so printing it changes nothing the model reads;
-  it is what lets a reader of the log, and the `@model` tier's kept evidence
-  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)), see what came back
-  where the call alone said `[publish] {}`. The print scrubs nothing of its own, as the rest of the conversation print
-  scrubs nothing. An Effect secret does not reach it: an Effector scrubs every string before it signs its answer
-  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), and a `command` Effect in the Harness
-  container runs with no credential of its own. But the answer carries what the model read: an Effect's output, an
+  same bound as a call's input, cut in its middle: the print keeps the answer's head (the receipt) and its end (what
+  follows the reply: the paragraph after a push, "Allowed now"), and marks the cut with the number of characters it
+  dropped, `… [<n> characters cut] …`. The bound is the log's copy only; the model reads the whole answer, which the
+  Orchestrator (a command's output tail) and the Effector (an `http` body) already bound. It is the text the model
+  already read, so printing it changes nothing the model reads; it is what lets a reader of the log, and the `@model`
+  tier's kept evidence ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)),
+  see what came back where the call alone said `[publish] {}`. The print scrubs nothing of its own, as the rest of the
+  conversation print scrubs nothing. What an Effector returns is scrubbed as
+  [ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md) claims, before it signs its answer: it
+  does not return a secret it holds in the forms it sent or in common encodings. The scrub does not try to catch a
+  transformed secret (a hash, a truncation, an encoding it does not list), a partial echo, or a side channel, and a
+  credentialed command's child reads the secret its command names (the argv can run a file the Agent wrote), so it can
+  print that secret in such a form; then it reaches the log as it reaches the model. A `command` Effect in the Harness
+  container runs with no credential of its own. And the answer carries what the model read: an Effect's output, an
   `http` body, a Gate's payload. A `command` Effect's output is command output from the Agent's own container and
   environment, with the Stand-ins the Agent's `bash` holds, so a Held value that an upstream echoed into that output
   (the Custodian does not scrub responses,
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)) reaches the log as it reaches the
-  model, up to the bound. That is the residual of printing a pick's answer, stated here and in ADR-0014. A Menu call
-  that a Harness restart cut gets its answer from the next process: the rebuilt history answers it with jr2's text (the
-  pick reached the workflow, and its result comes in the next message,
+  model, up to the bound. Those two are the residual of printing a pick's answer, stated here and in ADR-0014. A Menu
+  call that a Harness restart cut gets its answer from the next process: the rebuilt history answers it with jr2's text
+  (the pick reached the workflow, and its result comes in the next message,
   [ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), which the model reads on every later request. That
   answer is no message pi emits, so the Harness prints it itself, once: as `[<pick> answer] <text>`, before the first
   prompt of the process whose rebuilt session ends in the call. A message's answers print in the order of its calls,
@@ -127,7 +134,8 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   `instanceOnly`; this puts an Agent's reasoning, and the answers jr2 gave its picks, in front of whoever can read pod
   logs. Excluding a Working tool's results bounds it to what an Agent reasons aloud and what jr2 told it, rather than
   what it happened to read; what jr2 told it includes an Effect's output, so a `command` Effect's output and a Held
-  value echoed into it reach the log as they reach the model. Fine on kind; a real decision on a shared cluster.
+  value echoed into it reach the log as they reach the model, and so does an Effect secret in a form an Effector's scrub
+  does not catch (a transformed secret, a partial echo; ADR-0068). Fine on kind; a real decision on a shared cluster.
 - **It depends on an invariant that is documented but not enforced.** One Agent at a time per Workspace (ADR-0004:95,
   "structural since ADR-0012") is what makes two conversations never interleave on one container's stdout. Nothing
   refuses a body that invokes concurrent `agentRun`s; such a body corrupts a shared `default/.git` before it garbles a

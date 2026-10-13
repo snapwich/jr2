@@ -80,12 +80,15 @@ instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + c
   `kubectl logs`, holding cluster log access instead of a jr2 credential. And **a Working tool's results are excluded**
   — the file contents, command output, API responses it returns never print, so the mechanical leak (an Agent `cat`s a
   config while debugging and its secrets ride a log shipper into 30-day retention) is off the table, leaving what an
-  Agent reasons aloud and what jr2 answered its picks. That answer holds no Effect secret (an Effector scrubs its answer
-  before it signs it, ADR-0068), but it does carry an Effect's output as the model read it: a `command` Effect's output
-  prints there up to the bound, and a Held value an upstream echoed into that output prints with it (ADR-0023,
-  ADR-0059). What remains, deliberately, is that on a shared cluster the population who can read an Agent's reasoning,
-  and what its picks answered, is whoever can read pod logs. If that becomes unacceptable, the fix is the read-through
-  ADR-0023 declined to build — `instanceOnly`, on this surface, where the band already works.
+  Agent reasons aloud and what jr2 answered its picks. What an Effector returns in that answer is scrubbed before it
+  signs it as ADR-0068 claims: no secret the Effector holds, in the forms it sent or in common encodings. The scrub does
+  not try to catch a transformed secret (a hash, a truncation, an encoding it does not list), a partial echo, or a side
+  channel, and a credentialed command's child reads the secret its command names, so it can print that secret in such a
+  form; then it prints there as the model read it. The answer also carries an Effect's output as the model read it: a
+  `command` Effect's output prints there up to the bound, and a Held value an upstream echoed into that output prints
+  with it (ADR-0023, ADR-0059). What remains, deliberately, is that on a shared cluster the population who can read an
+  Agent's reasoning, and what its picks answered, is whoever can read pod logs. If that becomes unacceptable, the fix is
+  the read-through ADR-0023 declined to build — `instanceOnly`, on this surface, where the band already works.
 
 Evidence: `packages/orchestrator/src/http.ts` (the three middlewares), `run-host.ts` (`observe` / `RunObservation` /
 `RunChild`), `test/auth.test.ts` (the boundary), `test/http-viz.test.ts` (a planted secret never reaches the feed, at

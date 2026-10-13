@@ -1,6 +1,6 @@
 // The conversation printer (ADR-0023): prompts, assistant text, thinking, tool calls with TRUNCATED
 // inputs, and each Menu pick's answer — the text the model read back from the call, under the same
-// bound. A Working tool's RESULT never prints; a line is atomic, so only completed messages
+// bound, cut in its middle. A Working tool's RESULT never prints; a line is atomic, so only completed messages
 // (`message_end`) print.
 
 import { test } from "node:test";
@@ -126,16 +126,44 @@ test("renderMessage: a Menu pick the model reads as an error prints as `[<pick> 
   assert.deepEqual(renderMessage(toolResult(menuToolName("publish"), schema, true)), [`[publish error] ${schema}`]);
 });
 
-test("renderMessage: an answer is cut at the inputs' 2000 chars, and says that it cut", () => {
-  const long = "a".repeat(1999) + "YZ";
+test("renderMessage: an answer over the inputs' 2000 chars is cut in its MIDDLE, and the cut says how much it dropped", () => {
+  const long = "H" + "a".repeat(999) + "MIDDLE" + "z".repeat(999) + "E";
   assert.deepEqual(renderMessage(toolResult(menuToolName("run_tests"), long)), [
-    `[run_tests answer] ${"a".repeat(1999)}Y…`,
+    `[run_tests answer] H${"a".repeat(999)}… [6 characters cut] …${"z".repeat(999)}E`,
   ]);
+  const at = "b".repeat(2000);
+  assert.deepEqual(renderMessage(toolResult(menuToolName("run_tests"), at)), [`[run_tests answer] ${at}`]);
+});
+
+test('renderMessage: a command\'s long output keeps its receipt head and its end with "Allowed now" in the print', () => {
+  // A command Effect's default tail is 4096 characters (ADR-0067); its answer is longer than the
+  // bound, and the reply's JSON comes before what follows it. The log's copy is cut in the middle,
+  // so the receipt, the end of the output and the Allowed picks all print; the model read it whole.
+  const tail = `${"ok line\n".repeat(500)}not ok 7 - charges the card\n`;
+  const answer = receiptProse(
+    {
+      delivered: true,
+      event: "run_tests",
+      deliveryId: "0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9",
+      turnComplete: false,
+      answered: true,
+      allowed: ["run_tests", "finish"],
+      answer: { kind: "output", actor: "tests", output: { outcome: "exited", code: 1, tail } },
+    },
+    menuToolName,
+  );
+  assert.ok(answer.length > 4000, `the answer the model read is long: ${answer.length}`);
+  const [line] = renderMessage(toolResult(menuToolName("run_tests"), answer));
+  assert.ok(line!.startsWith(`[run_tests answer] ${answer.slice(0, 1000)}… [`), line!.slice(0, 200));
+  assert.ok(line!.endsWith(answer.slice(-1000)), line!.slice(-200));
+  assert.match(line!, new RegExp(`… \\[${answer.length - 2000} characters cut\\] …`));
+  assert.match(line!, /not ok 7 - charges the card/);
+  assert.match(line!, /Allowed now: `mcp__jr2__run_tests`, `mcp__jr2__finish`\.$/);
 });
 
 test("renderMessage: an answer prints as the model received it — the Effector's scrub marks stay, nothing is added", () => {
-  // No Effect secret reaches the Harness: an Effector scrubs every string before it signs its
-  // answer (ADR-0068). The print scrubs nothing of its own.
+  // An Effector scrubs every string before it signs its answer, of the secrets it holds in the forms
+  // it sent and in common encodings (ADR-0068). The print scrubs nothing of its own.
   const text = 'Its answer: the output of `comment`: {"outcome":"response","body":"token [secret:jira] echoed"}.';
   assert.deepEqual(renderMessage(toolResult(menuToolName("comment"), text)), [`[comment answer] ${text}`]);
 });
