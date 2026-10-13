@@ -504,6 +504,27 @@ test("a Menu call in a message an abort cut while the model wrote it gets the te
   assert.match(text, /You may call `mcp__jr2__run_tests` again if the newest "Allowed now" still lists it\./);
 });
 
+test("a Menu call in a message a provider error ended gets no answer and is not re-tagged: pi drops the message, so an answer would be a result with no call (ADR-0031)", () => {
+  const messages = [
+    { role: "user", content: "go", timestamp: 1 },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Running it." },
+        { type: "toolCall", id: "m1", name: "mcp__jr2__run_tests", arguments: {} },
+      ],
+      stopReason: "error",
+      errorMessage: "Stream ended without finish_reason",
+      timestamp: 2,
+    },
+  ] as unknown as AgentMessage[];
+  assert.deepEqual(settleCutPicks(messages), messages, "nothing is added and nothing is re-tagged");
+  assert.deepEqual(cutPickAnswers(messages), [], "nothing prints");
+  // The same message followed by the next prompt: still no answer.
+  const later = [...messages, { role: "user", content: "Try again.", timestamp: 3 }] as AgentMessage[];
+  assert.deepEqual(settleCutPicks(later), later);
+});
+
 test("the cut answers a rebuilt session prints are those of the Menu calls it ends in; a cut call further back printed already (ADR-0023)", () => {
   const cutTurn = [
     { role: "user", content: "go", timestamp: 1 },

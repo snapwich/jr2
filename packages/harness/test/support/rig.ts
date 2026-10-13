@@ -31,6 +31,9 @@ export type Turn = {
   /** Several tool calls in ONE assistant message — pi runs them as one parallel batch. */
   toolCalls?: Array<{ id: string; name: string; args?: string }>;
   stall?: boolean;
+  /** End the stream after what came before, with no finish and no `[DONE]` — a provider that
+   * fails mid-stream. pi ends the message with stopReason `error` and keeps its partial content. */
+  broken?: boolean;
   /** Answer this HTTP status with an error body instead of a stream — the provider-failure lever
    * (with `maxRetries: 0` the turn settles `failed` on the first attempt). */
   status?: number;
@@ -150,6 +153,10 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
           clearInterval(keepalive);
           stalling -= 1;
         });
+        return;
+      }
+      if (turn.broken) {
+        res.end();
         return;
       }
       res.write(

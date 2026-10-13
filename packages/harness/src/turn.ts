@@ -479,6 +479,12 @@ function settleAbandonedMessage(message: AgentMessage): AgentMessage {
  *     no call of such a message. The pick did not reach the workflow, nothing ran, and the model may
  *     make it again — `unsentPickResult`.
  *
+ * A message a provider error ended (stopReason `error`) is neither: pi runs none of its calls
+ * (agent-loop.js, the `error`/`aborted` return after the stream) and drops the message from every
+ * request (transform-messages.js, "Skip errored/aborted assistant messages"). It is not re-tagged,
+ * and its calls get no answer: a result with no call before it is one the providers refuse. The
+ * pick never reached the workflow, so the model is free to make it again.
+ *
  * Placed before pi's transform, so pi finds a result and adds none. A Working-tool call is pi's to
  * answer.
  */
@@ -534,9 +540,15 @@ function settled(messages: AgentMessage[]): { messages: AgentMessage[]; added: S
     const sent = settleAbandonedMessage(message);
     out.push(sent);
     if (role === "assistant") {
-      // Read before the re-tag: pi ran the calls of a finished message, and none of an aborted one.
-      delivered = (message as AssistantMessage).stopReason !== "aborted";
-      open = (sent as AssistantMessage).content.filter((block): block is ToolCall => block.type === "toolCall");
+      // Read before the re-tag: pi ran the calls of a finished message, and none of a message that
+      // ended `aborted` or `error`. An errored one is not re-tagged, and pi drops it from every
+      // request, so an answer to its call would be a result with no call before it: it gets none.
+      const stop = (message as AssistantMessage).stopReason;
+      delivered = stop !== "aborted" && stop !== "error";
+      open =
+        stop === "error"
+          ? []
+          : (sent as AssistantMessage).content.filter((block): block is ToolCall => block.type === "toolCall");
     }
   }
   close();

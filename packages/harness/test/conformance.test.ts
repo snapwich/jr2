@@ -1279,6 +1279,49 @@ test("a Menu call an abort cut while the model was still writing it is answered 
   assert.deepEqual(answers(), [answerLine], "still printed once");
 });
 
+test("a provider error after a partial Menu call: the next request carries no result for that call, and the model calls again (ADR-0031)", async () => {
+  // The stream breaks while the model is still writing its pick: pi ends the message with
+  // stopReason `error`, runs none of its calls and drops it from every later request. So jr2 adds
+  // no answer for the call — one would be a tool result with no call before it — and the pick,
+  // never delivered, is free to be made again.
+  provider.reset([
+    {
+      text: "I have reviewed it and my verdict is approved.",
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", partial: true },
+      broken: true,
+    },
+    {
+      text: "Here is my verdict.",
+      toolCall: { id: "call_2", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' },
+    },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/provider-error-mid-call";
+
+  const first = await settled(iid, await admit(iid, "Review the diff."));
+  assert.equal(first.outcome, "failed", JSON.stringify(first));
+  assert.deepEqual(sandbox.delivered, [], "the call never reached the workflow");
+
+  const next = await admit(iid, "Try again.");
+  assert.equal((await settled(iid, next)).outcome, "completed");
+  const sent = provider.calls[1]?.messages ?? [];
+  assert.ok(
+    !sent.some((m) => m.role === "tool" && m.tool_call_id === "call_1"),
+    `no result for the cut call: ${JSON.stringify(sent)}`,
+  );
+  assert.ok(!JSON.stringify(sent).includes("call_1"), `the errored message is not replayed: ${JSON.stringify(sent)}`);
+  assert.doesNotMatch(JSON.stringify(sent), /This pick reached the workflow|did not reach the workflow/);
+  for (const m of sent.filter((m) => m.role === "tool")) {
+    const id = String(m.tool_call_id);
+    assert.ok(
+      sent.some((a) => a.role === "assistant" && JSON.stringify(a.tool_calls ?? []).includes(id)),
+      `every tool result follows its call: ${JSON.stringify(sent)}`,
+    );
+  }
+  assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }], "the call made again ran");
+});
+
 test("an abort mid-TOOL-CALL keeps the turn in history: the loop writes its own result", async () => {
   // The benign timing, and the common one: the pick was delivered, so the state exited while the
   // MCP call was still open. The loop settles the tool call itself, so the assistant message
