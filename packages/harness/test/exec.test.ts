@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -147,14 +147,24 @@ test("one id runs once: a second start of the same id runs nothing", async () =>
 
 test("a read with no offset starts at the end: a re-attach reads only what comes next", async () => {
   const execs = new Execs();
-  execs.start("e7", {
-    argv: [node, "-e", "console.log('before'); setTimeout(() => console.log('after'), 200)"],
-    timeoutMs: 5_000,
-    tail: 4096,
-  });
-  await sleep(100);
+  const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
+  // The second line waits for the test's word, so the re-attach lands between the two lines
+  // whatever the host's speed.
+  const go = join(dir, "go");
+  const waitForGo = `const t = setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(go)})) { clearInterval(t); console.log('after'); } }, 10)`;
+  execs.start("e7", { argv: [node, "-e", `console.log('before'); ${waitForGo}`], timeoutMs: 5_000, tail: 4096 });
+  // Wait for the first line itself, never for a guess at how long node takes to print it.
+  let seen = "";
+  let at = 0;
+  while (!seen.includes("before\n")) {
+    const read = (await execs.read("e7", { offset: at, waitMs: 1_000 }))!;
+    assert.equal(read.state, "running", `settled before its first line: ${JSON.stringify(read)}`);
+    seen += read.stream;
+    at = read.next;
+  }
   const first = await execs.read("e7", { waitMs: 0 });
   assert.equal(first?.stream, "");
+  writeFileSync(go, "");
   let offset = first!.next;
   let stream = "";
   for (;;) {
