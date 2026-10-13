@@ -361,6 +361,44 @@ test("an answer pairs with the oldest unanswered call of its pick; a call still 
   assert.equal(answersIn("no conversation printed", "t9-none"), undefined);
 });
 
+test("a call a Harness restart cut has no answer: a prompt line closes every call before it", () => {
+  // ADR-0023: a cut Menu call prints no answer; its answer is the re-admission's prompt. The model
+  // calling the same pick again after that prompt is the cut-pick claim's miss, and its answer is
+  // the second call's alone. Inside one process a tool's result prints before the next prompt
+  // (pi drains a steer, a nudge or a restatement after the turn's results), so no answer crosses one.
+  const kept = [
+    "[decisioner] [prompt] [t0-cutcut] Audit the expenses.",
+    "[decisioner] [run_audit] {}",
+    "[decisioner] [prompt] Your previous turn was cut: the workflow ran `run_audit`.",
+    '[decisioner] [run_audit] {"again":true}',
+    '[decisioner] [run_audit answer] Delivered "run_audit" to the workflow (delivery d-2).',
+  ].join("\n");
+  assert.deepEqual(answersIn(kept, "t0-cutcut"), [
+    { call: "run_audit", input: "{}" },
+    { call: "run_audit", input: '{"again":true}', answer: 'Delivered "run_audit" to the workflow (delivery d-2).' },
+  ]);
+});
+
+test("two calls of one pick in one message: the first call gets the first answer, the second the refusal", () => {
+  // pi prints a message's tool results in the order of its calls, parallel or sequential.
+  const kept = [
+    "[coder] [prompt] [t3-dddddd] Ship it.",
+    '[coder] [ship] {"n":1}',
+    '[coder] [ship] {"n":2}',
+    '[coder] [ship answer] Delivered "ship" to the workflow (delivery d-1).',
+    "[coder] [ship error] `mcp__jr2__ship` was NOT delivered: your pick `mcp__jr2__ship` is still running.",
+  ].join("\n");
+  assert.deepEqual(answersIn(kept, "t3-dddddd"), [
+    { call: "ship", input: '{"n":1}', answer: 'Delivered "ship" to the workflow (delivery d-1).' },
+    {
+      call: "ship",
+      input: '{"n":2}',
+      answer: "`mcp__jr2__ship` was NOT delivered: your pick `mcp__jr2__ship` is still running.",
+      error: true,
+    },
+  ]);
+});
+
 test("a followed process keeps what it printed to stderr apart: the reason a log could not be read", async () => {
   const f = follow(process.execPath, ["-e", "console.error('container \"harness\" is waiting to start')"]);
   await f.closed;
