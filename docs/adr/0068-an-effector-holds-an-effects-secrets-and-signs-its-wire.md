@@ -362,11 +362,14 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   (ADR-0005): its image is the `workspace()`'s `effector: { image }`, resolved like the User Container's, or the Sandbox
   Image; its per-pod key is `effectorKey(signing key, <Sandbox name>)`, derived like the Sandbox token and written into
   `<sandbox>-effector`, a Secret the CR owns, which only that container mounts, beside `effector.json`. Each pod's key
-  is its own: a request signed for one Sandbox is refused by every other. Beside the key the provision writes a headless
-  Service the CR owns, selecting the pod by the operator's label, port 8082, publishing its address while the pod is not
-  ready: its name resolves to the pod's own `POD_IP`, which each request is signed for. Ingress to it is
-  `jr2-sandbox-ingress`'s: the Orchestrator's alone. The Orchestrator's Role may create and patch Services for it, and
-  may not read, list or delete one.
+  is its own: a request signed for one Sandbox is refused by every other. The container's readiness probe is a GET of
+  its `/healthz` every second, which it answers only once it holds its key and listens, so the pod, and with it the
+  Sandbox (ADR-0063), is Ready only when the Effector serves. A pod Ready on the Harness's probe alone would let a
+  body's first Effect request be signed before the Effector's process started, which the Effector refuses, unsigned, and
+  the Effect would settle `unknown`. Beside the key the provision writes a headless Service the CR owns, selecting the
+  pod by the operator's label, port 8082, publishing its address while the pod is not ready: its name resolves to the
+  pod's own `POD_IP`, which each request is signed for. Ingress to it is `jr2-sandbox-ingress`'s: the Orchestrator's
+  alone. The Orchestrator's Role may create and patch Services for it, and may not read, list or delete one.
 
 - **The log is a contract.** `jr2.effector` lines: `ready placement=… replica=… secrets=<names> targets=N`,
   `action=start effect=… kind=… method=… host=…` (a push logs `host=-`), `action=settle effect=… outcome=…` (and

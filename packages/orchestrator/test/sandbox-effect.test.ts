@@ -602,6 +602,22 @@ test("the Sandbox Effector container: jr2's binary, the Worktree, caches and run
   assert.equal(sandboxEffectorSecret("task-review"), "jr2-effector-task-review");
 });
 
+// ADR-0068: the Effector refuses a request signed before its process started. With no probe of its
+// own the pod went Ready on the Harness's while the Effector still read its mounts, the body's
+// first Effect request was signed then, and its answer was that refusal: unsigned, so `unknown`.
+// The probe holds pod Ready (and so the Sandbox's, ADR-0063) until the Effector serves.
+test("the Sandbox Effector container is probed on its own /healthz: the pod is Ready only once the Effector serves", () => {
+  const c = sandboxEffectorContainer({
+    image: "registry.example/sandbox:1",
+    keys: [],
+    securityContext: { runAsNonRoot: true },
+    secretVolume: "effector-secrets",
+    keyVolume: "effector-key",
+    scratchVolume: "effector-scratch",
+  });
+  assert.deepEqual(c.readinessProbe, { httpGet: { path: "/healthz", port: 8082 }, periodSeconds: 1 });
+});
+
 // ADR-0068: a credentialed command's child reads the image's top-level trees, bar the denied names
 // (`/run`, `/tmp`'s own rules, …) and the Effector's deny list (`/work`, `/repos`, the scratch). So
 // each mount the provision gives the Effector is in one of those, or one of the two public mounts

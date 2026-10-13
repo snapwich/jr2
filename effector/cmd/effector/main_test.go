@@ -356,6 +356,30 @@ func TestAShortSecretStopsTheStart(t *testing.T) {
 	}
 }
 
+// An Effector answers nothing, its probe included, until it holds its key: the key is read before
+// it listens, and one it cannot read ends it. So the kubelet's probe of /healthz, which holds the
+// pod's Ready (ADR-0068), never passes for an Effector that could not verify a request.
+func TestAnEffectorWithoutItsKeyEndsBeforeItListens(t *testing.T) {
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "effector.json"), []byte(`{"version":1,"placement":"instance","targets":[]}`), 0o400))
+	port := freePort(t)
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "JR2_EFFECTOR_TEST_MAIN=1", "JR2_EFFECTOR_PORT="+port,
+		"JR2_EFFECTOR_KEY="+filepath.Join(dir, "absent"), "JR2_EFFECTOR_CONFIG="+filepath.Join(dir, "effector.json"),
+		"JR2_EFFECTOR_SECRETS="+filepath.Join(dir, "none"))
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "no placement key") {
+		t.Fatalf("got %v: %s", err, out)
+	}
+	if strings.Contains(string(out), "jr2.effector ready") {
+		t.Fatalf("an Effector without its key said it was ready: %s", out)
+	}
+	if c, err := net.DialTimeout("tcp", "127.0.0.1:"+port, time.Second); err == nil {
+		_ = c.Close()
+		t.Fatal("something answers on the Effector's port")
+	}
+}
+
 func freePort(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")

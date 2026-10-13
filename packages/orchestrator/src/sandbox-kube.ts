@@ -238,6 +238,10 @@ export function sandboxEffectorContainer(opts: {
       { name: "NODE_NAME", valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } } },
     ],
     ports: [{ name: "effector", containerPort: SANDBOX_EFFECTOR_PORT }],
+    // Pod Ready waits on it, and the Sandbox's Ready on pod Ready (ADR-0063): no Effect request is
+    // signed before the Effector process that verifies it started, which it would refuse, unsigned
+    // (ADR-0068). It answers only once it holds its key and listens. Every second, as the Harness's.
+    readinessProbe: { httpGet: { path: "/healthz", port: SANDBOX_EFFECTOR_PORT }, periodSeconds: 1 },
     terminationMessagePolicy: "FallbackToLogsOnError",
     volumeMounts: [
       { name: "work", mountPath: WORK_ROOT, readOnly: true },
