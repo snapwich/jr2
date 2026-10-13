@@ -68,6 +68,8 @@ type Status = {
   gates?: OpenGate[];
   /** The run's outstanding picks (ADR-0024): the Agent, the pick, and since when it is held. */
   held?: Array<{ agent: string; pick: string; since: string }>;
+  /** The error message of a run in status `error`: its reason. */
+  fault?: string;
 };
 
 type SandboxCR = { metadata: { name: string }; status?: { phase?: string } };
@@ -136,6 +138,18 @@ async function readySandbox(world: E2EWorld, runId: string, ms = 600_000): Promi
     await sleep(2000);
   }
   return undefined;
+}
+
+/** A trial whose Sandbox never came Ready: unfinished, and its note says how the run ended — a
+ * placement that faulted carries its reason (ADR-0066). */
+async function noReadySandbox(world: E2EWorld, runId: string): Promise<Trial> {
+  const last = await status(world, runId);
+  return {
+    runId,
+    measured: false,
+    finished: false,
+    note: `no Ready Sandbox; ended ${ended(last, last.context.output?.outcome)}`,
+  };
 }
 
 async function sendToGate(world: E2EWorld, runId: string, gate: string, event: string): Promise<void> {
@@ -304,7 +318,7 @@ const workdir: Driver = async (world, input) => {
       runId,
       measured: false,
       finished: false,
-      note: `never parked: ${last.status} ${JSON.stringify(last.context.output ?? last.value)}`,
+      note: `never parked; ended ${ended(last, last.context.output?.outcome)}`,
     };
   const gate = last.gates![0]!;
   const worktree = String(gate.meta?.worktree ?? "");
@@ -324,7 +338,7 @@ const workdir: Driver = async (world, input) => {
     runId,
     measured: inside,
     finished: FINISHED.workdir!(end),
-    note: `wrote ${JSON.stringify(found)} (worktree ${worktree}; said ${String(gate.meta?.path)})`,
+    note: `wrote ${JSON.stringify(found)} (worktree ${worktree}; said ${String(gate.meta?.path)}); ended ${ended(end, end.context.output?.outcome)}`,
   };
 };
 
@@ -348,7 +362,7 @@ async function portAnswers(world: E2EWorld, pod: string, port: number): Promise<
 const noticed: Driver = async (world, input) => {
   const runId = await startRun(world, "noticed", { thinking: input.thinking });
   const pod = await readySandbox(world, runId);
-  if (!pod) return { runId, measured: false, finished: false, note: "no Ready Sandbox" };
+  if (!pod) return noReadySandbox(world, runId);
   const iid = `${runId}/body/coder`;
   // Wait for the server, while the first Turn still runs.
   // Three minutes is generous for one command and a curl; a Turn that has not brought the server
@@ -398,7 +412,7 @@ const noticed: Driver = async (world, input) => {
       runId,
       measured: false,
       finished: false,
-      note: `never parked: ${last.status} ${JSON.stringify(last.context.output ?? last.value)}`,
+      note: `never parked; ended ${ended(last, last.context.output?.outcome)}`,
     };
   const gate = last.gates![0]!;
   const reported = gate.meta?.running;
@@ -411,7 +425,7 @@ const noticed: Driver = async (world, input) => {
     runId,
     measured: killed && (reported === false || actual),
     finished: FINISHED.noticed!(end),
-    note: `killed ${killed}; reported running=${String(reported)}, actually ${actual} (${String(gate.meta?.how)})`,
+    note: `killed ${killed}; reported running=${String(reported)}, actually ${actual} (${String(gate.meta?.how)}); ended ${ended(end, end.context.output?.outcome)}`,
   };
 };
 
@@ -590,7 +604,7 @@ const codingAgain = (s: Status): boolean => bodyIn(s, "coding") && gateNamed(s, 
 const pushFollow: Driver = async (world, input) => {
   const runId = await startRun(world, "push-follow", input);
   const pod = await readySandbox(world, runId);
-  if (!pod) return { runId, measured: false, finished: false, note: "no Ready Sandbox" };
+  if (!pod) return noReadySandbox(world, runId);
   const source = { follow: followLog(world, pod) };
   try {
     return await pushFollowIn(world, input, runId, source);
@@ -822,7 +836,7 @@ const ALLOWED_IN_RED = new Set(["open_issue", "run_tests"]);
 const allowedAfterRoute: Driver = async (world, input) => {
   const runId = await startRun(world, "allowed-after-route", input);
   const pod = await readySandbox(world, runId);
-  if (!pod) return { runId, measured: false, finished: false, note: "no Ready Sandbox" };
+  if (!pod) return noReadySandbox(world, runId);
   const source = { follow: followLog(world, pod) };
   try {
     const { last } = await waitFor(world, runId, settled, TRIAL_MS);
@@ -859,7 +873,7 @@ const DEPLOY_MENU = new Set(["deploy", "announce", "check_deploy"]);
 const unknownOutcome: Driver = async (world, input) => {
   const runId = await startRun(world, "unknown-outcome", input);
   const pod = await readySandbox(world, runId);
-  if (!pod) return { runId, measured: false, finished: false, note: "no Ready Sandbox" };
+  if (!pod) return noReadySandbox(world, runId);
   const out = await waitFor(world, runId, (s) => (s.held ?? []).some((h) => h.pick === "deploy"), 300_000);
   if (!out.hit) {
     if (!settled(out.last)) await world.runCli(["send", runId, "--event", "CANCEL"]);
@@ -1214,7 +1228,7 @@ When(
 Then("the run parks at the {string} Gate", { timeout: 3_600_000 }, async function (this: E2EWorld, state: string) {
   assert.ok(this.runId, "a runId was carried from a prior step");
   const { hit, last } = await waitFor(this, this.runId, parked, 3_000_000);
-  assert.ok(hit, `the run never parked (ended ${last.status}, ${JSON.stringify(last.context.output ?? last.value)})`);
+  assert.ok(hit, `the run never parked (ended ${ended(last, last.context.output?.outcome)})`);
   const gate = last.gates![0]!;
   assert.match(gate.gate, new RegExp(`${state}$`), `the Gate id derives from the state key (got ${gate.gate})`);
 });

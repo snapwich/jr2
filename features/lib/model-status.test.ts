@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { bodyIn, ended, killedInTheFirstTurn } from "./model-status.ts";
 
 test("a workspace() body's state is read off the children `jr2 status` reports, never the run's own value", () => {
@@ -43,10 +44,33 @@ test("a trial's note prints a faulted, lost or errored run's final output, and n
   assert.equal(ended(lost, lost.context.output.outcome), 'done/lost {"outcome":"lost","reason":"gone"}', "a body");
   const error = { status: "error", value: "drafting", context: {} };
   assert.equal(ended(error), 'error/drafting "drafting"', "an errored run with no output prints its value");
+  const errored = { ...error, fault: 'invoked gate "x" is not in the manifest' };
+  assert.equal(
+    ended(errored),
+    'error/drafting "drafting" fault: invoked gate "x" is not in the manifest',
+    "an errored run prints its fault: the reason",
+  );
   const submitted = { status: "done", value: "submitted", context: { output: { outcome: "submitted" } } };
   assert.equal(ended(submitted), "done/submitted", "a finished run prints as before");
   const other = { status: "done", value: "shipped", context: { output: { outcome: "shipped" } } };
   assert.equal(ended(other, other.context.output.outcome), "done/shipped", "the other task final prints as before");
   const live = { status: "active", value: { notes: "reviewing" }, context: {} };
   assert.equal(ended(live), 'active/{"notes":"reviewing"}', "a run still live at its deadline prints its state");
+});
+
+// The rule the failure list depends on (ADR-0066): a trial that did not finish says how its run
+// ended. Read off the drivers' source, so a new note that leaves it out fails here, not in a tier
+// run whose namespace is gone. A void says why its setup did not happen; a trial counted finished
+// is in no such list; a driver that threw names no run.
+test("every note of a trial that did not finish says how its run ended", () => {
+  const lines = readFileSync(new URL("../steps/model.steps.ts", import.meta.url), "utf8").split("\n");
+  const missing: string[] = [];
+  lines.forEach((line, i) => {
+    if (!/\bnote: [`"]/.test(line)) return;
+    const around = lines.slice(Math.max(0, i - 6), i + 1).join("\n");
+    if (/void: true/.test(around) || /finished: true/.test(around) || /threw: /.test(line)) return;
+    if (/\bended\(/.test(line) || /note: seen\b/.test(line)) return;
+    missing.push(`${i + 1}: ${line.trim()}`);
+  });
+  assert.deepEqual(missing, [], "these notes do not say how the run ended");
 });

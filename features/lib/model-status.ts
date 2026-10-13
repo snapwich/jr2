@@ -27,7 +27,13 @@ export function killedInTheFirstTurn(s: { status: string; children?: RunChild[] 
 }
 
 /** The parts of `jr2 status` that say how a run ended. */
-export type RunEnded = { status: string; value: unknown; context: { output?: Record<string, unknown> } };
+export type RunEnded = {
+  status: string;
+  value: unknown;
+  context: { output?: Record<string, unknown> };
+  /** The error message of a run in status `error` (RunStatus.fault): its reason. */
+  fault?: string;
+};
 
 /** The ends a trial's note explains with the run's final output: it carries the reason. */
 const UNEXPLAINED = new Set(["faulted", "lost"]);
@@ -35,8 +41,8 @@ const UNEXPLAINED = new Set(["faulted", "lost"]);
 /**
  * How a trial's run ended, for its note (ADR-0066): `<status>/<shown>`, where `shown` is the run's
  * `value` for a root Machine and its output's `outcome` for a `workspace()` body. A run that ended
- * faulted, lost or in error also prints its final output: a fault's reason is there, and the
- * namespace that held the pod log is gone when the note is read.
+ * faulted, lost or in error also prints its final output, and a run in error its `fault`: the reason
+ * is there, and the namespace that held the pod log is gone when the note is read.
  */
 export function ended(last: RunEnded, shown: unknown = last.value): string {
   const head = `${last.status}/${typeof shown === "object" && shown !== null ? JSON.stringify(shown) : String(shown)}`;
@@ -45,5 +51,7 @@ export function ended(last: RunEnded, shown: unknown = last.value): string {
     last.status === "error" ||
     UNEXPLAINED.has(String(last.value)) ||
     (typeof outcome === "string" && UNEXPLAINED.has(outcome));
-  return bad ? `${head} ${JSON.stringify(last.context.output ?? last.value)}` : head;
+  if (!bad) return head;
+  const fault = last.fault !== undefined ? ` fault: ${last.fault}` : "";
+  return `${head} ${JSON.stringify(last.context.output ?? last.value)}${fault}`;
 }

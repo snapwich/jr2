@@ -112,9 +112,10 @@ recover, finish — are exercised only one scripted tool call at a time.
   claims read their pods and run `parallel` at once. A claim whose setup the step must race (a Gate answered while the
   model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
   past the bound counts against the floor and prints as a void in the failure list, never as a miss.
-- Each trial's line in the failure list says how its run ended. A run that ended faulted, lost or in error also prints
-  its final output, which carries the reason (`features/lib/model-status.ts`): the namespace that held the pod log is
-  gone when the list is read.
+- Each trial's line in the failure list says how its run ended, whatever stopped the trial (a driver that threw names no
+  run, and prints what it threw). A run that ended faulted or lost also prints its final output, and a run in error its
+  fault, which carry the reason (`features/lib/model-status.ts`): the namespace that held the pod log is gone when the
+  list is read.
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials. After
   the measured pick, a coder that picked `revise` is back in `coding`, where only the desk's answer moves it, so the
   step answers the desk again, at most three more times, and the trial can finish; the measure is still the first pick
