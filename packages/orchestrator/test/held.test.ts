@@ -1248,6 +1248,72 @@ test("the run records the Agent each pick's child is of; after a restore, a done
   await second.close();
 });
 
+// One Agent slot invoked in two regions has two picks outstanding at once. The done event of a child
+// one of them started names the Agent, not which of its picks: an `answer` below no Agent's state
+// shapes neither, and each pick keeps its default answer (ADR-0024, ADR-0067).
+test("one Agent in two regions, each with a pick outstanding: a done event below no Agent's state shapes neither pick", async () => {
+  const go = ev("go");
+  const pickA = ev("pick_a");
+  const pickB = ev("pick_b");
+  const waiter = (gate: string) =>
+    jr2Setup({ events: [go] }).createMachine({
+      initial: "w",
+      states: { w: { invoke: { src: "gate", id: gate, input: {} }, on: { go: "f" } }, f: { type: "final" } },
+      output: () => ({ waited: gate }),
+    });
+  const endpoint = "http://harness.invalid";
+  const clients: MockFlueClient[] = [];
+  const coder = agentActorWith(() => {
+    const c = new MockFlueClient();
+    clients.push(c);
+    return c;
+  }, coderDefinition);
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "twice",
+    machine: jr2Setup({
+      events: [pickA, pickB],
+      actors: { coder, waiterA: waiter("doneA"), waiterB: waiter("doneB") },
+    }).createMachine({
+      id: "twice",
+      type: "parallel",
+      on: { "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+      states: {
+        ra: {
+          invoke: { src: "coder", input: { prompt: "A", endpoint } },
+          initial: "rest",
+          states: { rest: {}, waiting: { invoke: { src: "waiterA", id: "waitA" } } },
+          on: { pick_a: ".waiting" },
+        },
+        rb: {
+          invoke: { src: "coder", input: { prompt: "B", endpoint } },
+          initial: "rest",
+          states: { rest: {}, waiting: { invoke: { src: "waiterB", id: "waitB" } } },
+          on: { pick_b: ".waiting" },
+        },
+      },
+    }),
+    provide: () => ({ actors: { coder } }),
+  });
+  const { runId } = await host.start("twice");
+  await waitFor(() => clients.length === 2 && clients.every((c) => c.admits.length > 0));
+  const byPrompt = (prompt: string) =>
+    clients.find((c) => JSON.stringify(c.admits[0]).includes(`"${prompt}"`))!.admits[0]!.instanceId;
+  const ia = byPrompt("A");
+  const ib = byPrompt("B");
+  const pa = host.sendToAgent(ia, { type: "pick_a" });
+  const pb = host.sendToAgent(ib, { type: "pick_b" });
+  assert.equal(pa.outstanding, true);
+  assert.equal(pb.outstanding, true);
+  const polledB = host.awaitDelivery(ib, pb.deliveryId);
+  host.sendToGate(runId, "waitB.doneB", { type: "go" });
+  assert.deepEqual((await polledB)?.answer, { kind: "output", actor: "waiterB", output: { waited: "doneB" } });
+  const polledA = host.awaitDelivery(ia, pa.deliveryId);
+  host.sendToGate(runId, "waitA.doneA", { type: "go" });
+  assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
+  await host.close();
+});
+
 // A child that the pick's later work started is its Agent's too (ADR-0067): one started while the
 // Machine took a done event of the pick's own child. Saved with the run, so a restore attributes its
 // done event to the same Agent; a child that ended is dropped from the record at the save.

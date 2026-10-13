@@ -1387,7 +1387,8 @@ export class RunHost {
    * its own send, else the one outstanding. On a transition below no Agent's state (`null`): the
    * event that took the transition names the Agent — the sender of a pick, or the Agent whose pick
    * started the child whose done or error event it is — and that Agent's pick is the one shaped, and
-   * no other; none when that Agent has no pick being answered. An event that names no Agent (a timer,
+   * no other; none when that Agent has no pick being answered, or two (its slot invoked in two
+   * regions: the event names the Agent, not which pick). An event that names no Agent (a timer,
    * a Gate's answer, an outside send) shapes the pick in its own send. Outside one, it shapes the one
    * outstanding pick only while one Agent's state is active; while two Agents' states are active it
    * shapes none, whatever is outstanding: the event cannot say whose pick it is, and the other
@@ -1414,8 +1415,18 @@ export class RunHost {
     if (seat === null && event !== undefined) {
       const agent = agentOfEvent(event, startedBy, machine);
       if (agent !== undefined) {
-        if (sending && sending.reg.sender?.id === agent) return seatedFor(sending.reg) ? sending : undefined;
-        return open.find((hold) => hold.agent === agent);
+        const own = sending && sending.reg.sender?.id === agent ? sending : undefined;
+        // The pick itself, in its own send: that pick.
+        const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
+        if (own && sender?.party === "agent") return seatedFor(own.reg) ? own : undefined;
+        // That Agent's picks being answered: the one in its own send, and the ones outstanding at
+        // its other invokes. With two (one slot invoked in two regions), the event names the Agent
+        // and not which of its picks: it shapes none, and each keeps its default answer.
+        const held = open.filter((hold) => hold.agent === agent && hold.instanceId !== own?.reg.id);
+        const picks = [...(own ? [own] : []), ...held];
+        if (picks.length !== 1) return undefined;
+        if (own !== undefined && picks[0] === own) return seatedFor(own.reg) ? own : undefined;
+        return picks[0];
       }
     }
     if (sending && seatedFor(sending.reg)) return sending;
