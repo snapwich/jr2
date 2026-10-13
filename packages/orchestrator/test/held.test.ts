@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, createMachine, fromCallback, fromPromise, raise, sendTo } from "xstate";
+import { assign, createMachine, fromCallback, fromPromise, raise, sendTo, type AnyStateMachine } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -1230,8 +1230,12 @@ test("the run records the Agent each pick's child is of; after a restore, a done
   assert.equal(pa.outstanding, true);
   assert.equal(pb.outstanding, true);
   const saved = JSON.stringify((await store.load(runId))?.snapshot);
-  assert.match(saved, /"startedBy":\{[^}]*"waitA":"coderA"/, "the run records the Agent whose pick started A's child");
-  assert.match(saved, /"startedBy":\{[^}]*"waitB":"coderB"/, "and B's");
+  assert.match(
+    saved,
+    /"startedBy":\{[^]*"waitA":\{"agent":"coderA","invoke":"0\.pair\.ra"\}/,
+    "the run records the Agent whose pick started A's child",
+  );
+  assert.match(saved, /"startedBy":\{[^]*"waitB":\{"agent":"coderB","invoke":"0\.pair\.rb"\}/, "and B's");
   await host.stop(runId);
 
   const second = new RunHost({ store });
@@ -1249,8 +1253,8 @@ test("the run records the Agent each pick's child is of; after a restore, a done
 });
 
 // One Agent slot invoked in two regions has two picks outstanding at once. The done event of a child
-// one of them started names the Agent, not which of its picks: an `answer` below no Agent's state
-// shapes neither, and each pick keeps its default answer (ADR-0024, ADR-0067).
+// one of them started: which pick of one slot invoked in two regions an `answer` below no Agent's state
+// shapes is not decided, so it shapes neither, and each pick keeps its default answer (ADR-0024, ADR-0067).
 test("one Agent in two regions, each with a pick outstanding: a done event below no Agent's state shapes neither pick", async () => {
   const go = ev("go");
   const pickA = ev("pick_a");
@@ -1308,6 +1312,98 @@ test("one Agent in two regions, each with a pick outstanding: a done event below
   const polledB = host.awaitDelivery(ib, pb.deliveryId);
   host.sendToGate(runId, "waitB.doneB", { type: "go" });
   assert.deepEqual((await polledB)?.answer, { kind: "output", actor: "waiterB", output: { waited: "doneB" } });
+  const polledA = host.awaitDelivery(ia, pa.deliveryId);
+  host.sendToGate(runId, "waitA.doneA", { type: "go" });
+  assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
+  await host.close();
+});
+
+/** One Agent slot, `coder`, invoked in two regions of the root (`ra`, `rb`): `pick_a` takes `ra` to
+ * its own work (`waitA`). `rb` and the root's own `on` are the test's. */
+async function oneAgentTwice(rb: Record<string, unknown>, rootOn: Record<string, unknown>) {
+  const go = ev("go");
+  const waiter = (gate: string) =>
+    jr2Setup({ events: [go] }).createMachine({
+      initial: "w",
+      states: { w: { invoke: { src: "gate", id: gate, input: {} }, on: { go: "f" } }, f: { type: "final" } },
+      output: () => ({ waited: gate }),
+    });
+  const clients: MockFlueClient[] = [];
+  const coder = agentActorWith(() => {
+    const c = new MockFlueClient();
+    clients.push(c);
+    return c;
+  }, coderDefinition);
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "twice",
+    machine: jr2Setup({
+      events: [ev("pick_a"), ev("pick_b")],
+      actors: { coder, waiterA: waiter("doneA"), waiterB: waiter("doneB") },
+    }).createMachine({
+      id: "twice",
+      type: "parallel",
+      on: rootOn,
+      states: {
+        ra: {
+          invoke: { src: "coder", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+          initial: "rest",
+          states: { rest: {}, waiting: { invoke: { src: "waiterA", id: "waitA" } } },
+          on: { pick_a: ".waiting" },
+        },
+        rb,
+      },
+    } as never) as unknown as AnyStateMachine,
+    provide: () => ({ actors: { coder } }),
+  });
+  const { runId } = await host.start("twice");
+  await waitFor(() => clients.length === 2 && clients.every((c) => c.admits.length > 0));
+  const byPrompt = (prompt: string) =>
+    clients.find((c) => JSON.stringify(c.admits[0]).includes(`"${prompt}"`))!.admits[0]!.instanceId;
+  return { host, runId, ia: byPrompt("A"), ib: byPrompt("B") };
+}
+
+// The same slot's pick in the other region started the child, and has ended its Turn: the done event
+// names that region's pick, not the one outstanding. Which pick of one slot invoked in two regions
+// an `answer` below no Agent's state shapes is not decided, so it shapes none (ADR-0024, ADR-0067).
+test("one Agent in two regions: the done event of a child the other region's ended pick started leaves the outstanding pick as it is", async () => {
+  const { host, runId, ia, ib } = await oneAgentTwice(
+    {
+      initial: "b",
+      states: {
+        b: {
+          invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+          on: { pick_b: "away" },
+        },
+        away: { invoke: { src: "waiterB", id: "waitB" } },
+      },
+    },
+    { "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+  );
+  const pa = host.sendToAgent(ia, { type: "pick_a" });
+  assert.equal(pa.outstanding, true);
+  const pb = host.sendToAgent(ib, { type: "pick_b" });
+  assert.equal(pb.turnComplete, true, "B's pick left B's state: its Turn ended, and its child runs on");
+  host.sendToGate(runId, "waitB.doneB", { type: "go" });
+  const polledA = host.awaitDelivery(ia, pa.deliveryId);
+  host.sendToGate(runId, "waitA.doneA", { type: "go" });
+  assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
+  await host.close();
+});
+
+// A pick sent while the same slot's pick in the other region is outstanding: two of that slot's
+// picks are being answered, so an `answer` on a transition below no Agent's state shapes neither,
+// the sending pick included (ADR-0024, ADR-0067).
+test("one Agent in two regions: a pick sent while the other region's pick is outstanding is not shaped by a root answer on it", async () => {
+  const { host, runId, ia, ib } = await oneAgentTwice(
+    { invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } } },
+    { pick_b: { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+  );
+  const pa = host.sendToAgent(ia, { type: "pick_a" });
+  assert.equal(pa.outstanding, true);
+  const pb = host.sendToAgent(ib, { type: "pick_b" });
+  assert.equal(pb.outstanding, undefined, `the root's transition leaves B's state at Rest: ${JSON.stringify(pb)}`);
+  assert.equal(pb.answer, undefined, `B's pick keeps its default answer: ${JSON.stringify(pb)}`);
   const polledA = host.awaitDelivery(ia, pa.deliveryId);
   host.sendToGate(runId, "waitA.doneA", { type: "go" });
   assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
@@ -1392,8 +1488,8 @@ test("a child the pick's later work started is recorded as its Agent's; after a 
   host.sendToGate(runId, "waitA1.doneA1", { type: "go" });
   await new Promise((r) => setTimeout(r, 50));
   const saved = JSON.stringify((await store.load(runId))?.snapshot);
-  assert.match(saved, /"startedBy":\{[^}]*"waitA2":"coderA"/, "the child A's first step's end started is A's");
-  assert.match(saved, /"startedBy":\{[^}]*"waitB":"coderB"/, "B's child is B's");
+  assert.match(saved, /"startedBy":\{[^]*"waitA2":\{"agent":"coderA"/, "the child A's first step's end started is A's");
+  assert.match(saved, /"startedBy":\{[^]*"waitB":\{"agent":"coderB"/, "B's child is B's");
   assert.doesNotMatch(saved, /"waitA1":"coderA"/, "the child that ended is dropped at the save");
   await host.stop(runId);
 
@@ -1487,8 +1583,8 @@ test("a child a timer in the Agent's state started is recorded as its Agent's; a
   assert.equal(pb.outstanding, true);
   await new Promise((r) => setTimeout(r, 100));
   const saved = JSON.stringify((await store.load(runId))?.snapshot);
-  assert.match(saved, /"startedBy":\{[^}]*"waitA2":"coderA"/, "the child A's timer started is A's");
-  assert.match(saved, /"startedBy":\{[^}]*"waitB":"coderB"/, "B's child is B's");
+  assert.match(saved, /"startedBy":\{[^]*"waitA2":\{"agent":"coderA"/, "the child A's timer started is A's");
+  assert.match(saved, /"startedBy":\{[^]*"waitB":\{"agent":"coderB"/, "B's child is B's");
   await host.stop(runId);
 
   const second = new RunHost({ store });

@@ -231,6 +231,13 @@ type Sending = {
 };
 
 /**
+ * Whose pick started a child (ADR-0067): the Agent's slot, and the invoke id of the Agent's state the
+ * pick was made at, which tells one slot's two regions apart. `invoke` is absent when the event that
+ * started the child named the Agent and not where (a pick taken outside its own send).
+ */
+type StartedBy = { agent: string; invoke?: string };
+
+/**
  * The key of the child `childId` of `parent` in the run's record of which Agent started each child
  * (`startedBy`, ADR-0067): the invoke ids from below the root down to `parent`, then `childId`, each
  * encoded and joined by `/`. An invoke id is local to its Machine — two Machines of one tree, and
@@ -247,15 +254,19 @@ function childKey(parent: AnyActorRef, childId: string): string {
  * The Agent whose event `event` is, as `taker` takes it (ADR-0024, ADR-0067): a pick's sender, or
  * the Agent whose pick started the child of `taker` whose done or error event it is (`startedBy`).
  * Undefined when the event names no Agent: a timer, a Gate's answer, an outside send, a child no
- * Agent's pick started.
+ * Agent's pick started. `sending`'s invoke is where a pick in its own send was made.
  */
 function agentOfEvent(
   event: AnyEventObject,
-  startedBy: Record<string, string>,
+  startedBy: Record<string, StartedBy>,
   taker: AnyActorRef,
-): string | undefined {
+  sending?: Sending,
+): StartedBy | undefined {
   const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
-  if (sender?.party === "agent") return sender.id;
+  if (sender?.party === "agent") {
+    const invoke = sending?.reg.sender?.id === sender.id ? sending.reg.invokeId : undefined;
+    return invoke !== undefined ? { agent: sender.id, invoke } : { agent: sender.id };
+  }
   const child = /^xstate\.(?:done|error)\.actor\.(.+)$/.exec(event.type)?.[1];
   if (child === undefined) return undefined;
   const key = childKey(taker, child);
@@ -283,7 +294,7 @@ function liveChildKeys(actor: AnyActorRef, into = new Set<string>()): Set<string
 
 /** `startedBy` as the save keeps it: only children still in the run's tree (ADR-0067). Read at the
  * save, a microtask after the snapshot, so a done event the Machine took has run its route. */
-function liveStartedBy(startedBy: Record<string, string>, actor: AnyActorRef): Record<string, string> {
+function liveStartedBy(startedBy: Record<string, StartedBy>, actor: AnyActorRef): Record<string, StartedBy> {
   const live = liveChildKeys(actor);
   for (const id of Object.keys(startedBy)) if (!live.has(id)) delete startedBy[id];
   return startedBy;
@@ -726,7 +737,7 @@ type RunBlob = {
    * outstanding or not. Same blob, so a restore names the same Agent. A child no longer in the tree
    * is dropped at the save.
    */
-  startedBy?: Record<string, string>;
+  startedBy?: Record<string, StartedBy>;
   fault?: string;
 };
 
@@ -748,7 +759,7 @@ type LiveRun = {
   /** The Effect ledger (ADR-0067): persisted as `RunBlob.effects`, seeded on restore. */
   effects: Record<string, EffectRow>;
   /** Which Agent started each live child (ADR-0067): persisted as `RunBlob.startedBy`, seeded on restore. */
-  startedBy: Record<string, string>;
+  startedBy: Record<string, StartedBy>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
@@ -1387,8 +1398,10 @@ export class RunHost {
    * its own send, else the one outstanding. On a transition below no Agent's state (`null`): the
    * event that took the transition names the Agent — the sender of a pick, or the Agent whose pick
    * started the child whose done or error event it is — and that Agent's pick is the one shaped, and
-   * no other; none when that Agent has no pick being answered, or two (its slot invoked in two
-   * regions: the event names the Agent, not which pick). An event that names no Agent (a timer,
+   * no other; none when that Agent has no pick being answered. One slot invoked in two regions is
+   * not decided: none while that slot has two picks being answered, the sending pick included, and
+   * none when its one pick being answered is at another region's invoke than the pick the event
+   * names (a child the other region's pick started). An event that names no Agent (a timer,
    * a Gate's answer, an outside send) shapes the pick in its own send. Outside one, it shapes the one
    * outstanding pick only while one Agent's state is active; while two Agents' states are active it
    * shapes none, whatever is outstanding: the event cannot say whose pick it is, and the other
@@ -1399,7 +1412,7 @@ export class RunHost {
     seat: AnswerSeat,
     runId: string,
     holds: Map<string, Hold>,
-    startedBy: Record<string, string>,
+    startedBy: Record<string, StartedBy>,
     event?: AnyEventObject,
   ): Sending | Hold | undefined {
     const seatedFor = (reg: Registration | undefined): boolean => {
@@ -1413,20 +1426,23 @@ export class RunHost {
     const sending = this.sending && this.sending.reg.runId === runId ? this.sending : undefined;
     const open = [...holds.values()].filter((hold) => hold.answer === undefined && seatedFor(regOf(hold)));
     if (seat === null && event !== undefined) {
-      const agent = agentOfEvent(event, startedBy, machine);
-      if (agent !== undefined) {
+      const named = agentOfEvent(event, startedBy, machine, sending);
+      if (named !== undefined) {
+        const { agent } = named;
         const own = sending && sending.reg.sender?.id === agent ? sending : undefined;
-        // The pick itself, in its own send: that pick.
-        const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
-        if (own && sender?.party === "agent") return seatedFor(own.reg) ? own : undefined;
         // That Agent's picks being answered: the one in its own send, and the ones outstanding at
-        // its other invokes. With two (one slot invoked in two regions), the event names the Agent
-        // and not which of its picks: it shapes none, and each keeps its default answer.
+        // its other invokes. With two (one slot invoked in two regions), which one the `answer`
+        // shapes is not decided: it shapes none, and each keeps its default answer.
         const held = open.filter((hold) => hold.agent === agent && hold.instanceId !== own?.reg.id);
         const picks = [...(own ? [own] : []), ...held];
         if (picks.length !== 1) return undefined;
-        if (own !== undefined && picks[0] === own) return seatedFor(own.reg) ? own : undefined;
-        return picks[0];
+        const pick = picks[0]!;
+        // Its one pick being answered is at another region's invoke than the pick the event names:
+        // not decided either, and it shapes none.
+        const at = pick === own ? own.reg.invokeId : (pick as Hold).invokeId;
+        if (named.invoke !== undefined && at !== named.invoke) return undefined;
+        if (pick === own) return seatedFor(own.reg) ? own : undefined;
+        return pick;
       }
     }
     if (sending && seatedFor(sending.reg)) return sending;
@@ -1445,21 +1461,21 @@ export class RunHost {
     snapshot: AnyMachineSnapshot,
     childId: string,
     holds: Map<string, Hold>,
-  ): string | undefined {
+  ): StartedBy | undefined {
     const node = seatOf(snapshot, childId);
     if (node === undefined) return undefined;
-    const byState = new Map<unknown, string>();
+    const byState = new Map<unknown, StartedBy>();
     for (const hold of holds.values()) {
       if (hold.answer !== undefined) continue;
       const reg = this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId));
       if (reg?.invoker !== machine || reg.invokeId === undefined) continue;
       const agentState = seatOf(snapshot, reg.invokeId);
-      if (agentState !== undefined) byState.set(agentState, hold.agent);
+      if (agentState !== undefined) byState.set(agentState, { agent: hold.agent, invoke: reg.invokeId });
     }
     // The nearest Agent's state above the child: with B's state inside A's, the child is B's work.
     for (let n = node.parent; n; n = n.parent) {
-      const agent = byState.get(n);
-      if (agent !== undefined) return agent;
+      const starter = byState.get(n);
+      if (starter !== undefined) return starter;
     }
     return undefined;
   }
@@ -1939,7 +1955,7 @@ export class RunHost {
     noticeState?: NoticeLedgerState,
     holdState: Hold[] = [],
     effects: Record<string, EffectRow> = {},
-    startedBy: Record<string, string> = {},
+    startedBy: Record<string, StartedBy> = {},
   ): AnyActor {
     const notices = new NoticeLedger(noticeState, this.newId);
     const holds = new Map(holdState.map((hold) => [hold.instanceId, hold]));
@@ -2119,8 +2135,9 @@ export class RunHost {
           if (logic && typeof logic === "object" && "root" in logic) placeAnswers(logic);
           if (sending && child._parent !== undefined && child._parent === sending.reg.invoker) {
             const agent = sending.reg.sender?.id;
+            const invoke = sending.reg.invokeId;
             const key = childKey(child._parent, child.id);
-            if (agent !== undefined) startedBy[key] = agent;
+            if (agent !== undefined) startedBy[key] = invoke !== undefined ? { agent, invoke } : { agent };
             else delete startedBy[key];
           }
         }
@@ -2224,7 +2241,7 @@ export class RunHost {
     binding: RunBinding,
     holds: Map<string, Hold>,
     effects: Record<string, EffectRow>,
-    startedBy: Record<string, string>,
+    startedBy: Record<string, StartedBy>,
   ): LiveRun {
     const run: LiveRun = {
       record,

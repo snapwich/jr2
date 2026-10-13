@@ -42,8 +42,9 @@ the credentialed `command` — runs there too, its child confined (below).
   is written below (on a state's entry or exit, or on a transition of a state, at or below that Agent's state). On a
   transition below no Agent's state it shapes the pick of the Agent whose event took the transition — the sender of a
   pick, or the Agent whose pick started the child whose done or error event it is — and the other Agent's pick keeps its
-  default answer; while the Agent it names has two picks being answered (its slot invoked in two regions) it shapes
-  neither; an event that names no Agent shapes the pick in its own send, and outside one shapes no pick while two
+  default answer; which pick it shapes when one Agent slot is invoked in two regions is not decided, so while that slot
+  has two picks being answered, or its one is at the other region's invoke than the pick that started the child, it
+  shapes none; an event that names no Agent shapes the pick in its own send, and outside one shapes no pick while two
   Agents' states are active; on an entry or an exit below no Agent's state it sets nothing. One action object written in
   several places runs from each by that place's rule alone, never by their sum (ADR-0024): as each Machine's actor is
   created, before its first state is entered, the run host gives each place a copy of its own (`placeAnswers`,
