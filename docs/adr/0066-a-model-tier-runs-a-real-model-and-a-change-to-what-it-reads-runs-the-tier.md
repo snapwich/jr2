@@ -139,10 +139,11 @@ recover, finish — are exercised only one scripted tool call at a time.
   Each file is written when it changes, so a trial that hangs until its timeout leaves what it had. Every probe only
   reads: a probe that fails writes `<unavailable: why>` into its file, never fails the trial, and never changes what the
   next trial does. Each trial's note opens with what the model called, read off the kept conversation in the Menu-only
-  notes' form (`said bash (restated) ask_approval submit`), or `said <unread: why>` when it cannot be read, and the
-  driver's note follows. A floor failure, a void past the bound and a cell below its baseline are read from these
-  folders before a prompt, a floor or a step is touched. A failed `@model` scenario also writes the `@kind` failure
-  dump, to the same place as a `@kind` one: `features/.tmp/kind-failures/<namespace>-<scenario>/`.
+  notes' form (`said bash (restated) ask_approval submit`) from the lines of the Agents whose prompt printed there (the
+  run narrative echo, `[run] [status]` and `[run] [emit]`, is not a call), or `said <unread: why>` when it cannot be
+  read, and the driver's note follows. A floor failure, a void past the bound and a cell below its baseline are read
+  from these folders before a prompt, a floor or a step is touched. A failed `@model` scenario also writes the `@kind`
+  failure dump, to the same place as a `@kind` one: `features/.tmp/kind-failures/<namespace>-<scenario>/`.
 
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials. After
   the measured pick, a coder that picked `revise` is back in `coding`, where only the desk's answer moves it, so the

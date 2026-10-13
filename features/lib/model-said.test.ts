@@ -260,6 +260,38 @@ test("a kept conversation is read from the trial's own prompt when it carries th
   assert.equal(calledIn("no conversation printed", "t9-none"), undefined);
 });
 
+test("a kept conversation that opens with an earlier trial's late lines is read from this trial's own prompt", () => {
+  // The Instance Harness's kept log starts at the trial's start, so it can open with the end of the
+  // trial before: its Frame, and a call made after it.
+  const kept = [
+    "[advisor] [prompt] [t0-aaaaaa] The earlier trial.",
+    "[advisor] [hold] {}",
+    "[advisor] [prompt] [t1-bbbbbb] This trial.",
+    "[advisor] [release] {}",
+  ].join("\n");
+  assert.deepEqual(calledIn(kept, "t1-bbbbbb"), [{ call: "release" }]);
+  assert.deepEqual(calledIn(kept, "t9-none"), [{ call: "hold" }], "no own prompt: read from the first");
+});
+
+test("a kept conversation's calls are its Agents' own: the run narrative echo and another Harness's markers are not calls", () => {
+  // A Workspace Harness's log: the conversation, and the echo the Orchestrator pushes beside it — a
+  // status at every transition, an Emit, and an Agent's admission and pick on another Harness — in
+  // the shapes the Harness's printer writes them (packages/harness/test/echo.test.ts pins them).
+  const kept = [
+    "2026-10-13T10:00:00Z [coder] [prompt] [t0-abcdef] Fix the failing test.",
+    "2026-10-13T10:00:01Z [coder] [bash] node --test",
+    "2026-10-13T10:00:02Z [run] [status] running · body: working.publishing",
+    "2026-10-13T10:00:03Z [coder] [publish] {}",
+    '2026-10-13T10:00:04Z [run] [emit] published {"sha":"abc"}',
+    "2026-10-13T10:00:05Z [reviewer] [admitted] Review it.",
+    "2026-10-13T10:00:06Z [reviewer] [pick] approve",
+    "2026-10-13T10:00:07Z [run] [status] running · body: finishing",
+    "2026-10-13T10:00:08Z [coder] [finish] {}",
+    "2026-10-13T10:00:09Z [run] [status] done",
+  ].join("\n");
+  assert.equal(told(calledIn(kept, "t0-abcdef")!), "bash publish finish");
+});
+
 test("a followed process keeps what it printed to stderr apart: the reason a log could not be read", async () => {
   const f = follow(process.execPath, ["-e", "console.error('container \"harness\" is waiting to start')"]);
   await f.closed;

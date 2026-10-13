@@ -129,6 +129,15 @@ test("the note says what the model called, in the Menu-only notes' form, or why 
   assert.equal(saidNote(kept, "t0-a", "no reason"), "said bash (restated) submit");
   assert.equal(saidNote("[advisor] [prompt] [t0-a] Go.", "t0-a", "no reason"), "said nothing");
   assert.equal(
+    saidNote(
+      "[coder] [prompt] [t0-a] Go.\n[coder] [bash] ls\n[run] [status] running\n[run] [emit] done\n[run] [status] done",
+      "t0-a",
+      "x",
+    ),
+    "said bash",
+    "the run narrative echo is not what the model called",
+  );
+  assert.equal(
     saidNote("", "t0-a", "container harness is waiting to start"),
     "said <unread: container harness is waiting to start>",
   );

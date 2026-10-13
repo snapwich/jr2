@@ -44,24 +44,42 @@ export function saidAfterPrompt(log: string, agent: string, opening: string): Sa
 
 /**
  * What the model called and read in a trial's KEPT conversation (ADR-0066): the log the tier
- * followed for the trial, timestamped, any Agent's lines, across every container the follow
- * attached to. It is read after the trial's own prompt (the one that carries `marker`) when that
- * printed, else after the first prompt, and stops where `saidIn` does: at another trial's Frame.
- * `undefined` when no prompt printed.
+ * followed for the trial, timestamped, across every container the follow attached to. Only the
+ * lines of an Agent whose prompt printed there are read: a Harness also prints the run narrative
+ * echo (ADR-0023), `[run] [status] ...` and `[run] [emit] ...`, and the admission and pick of an
+ * Agent whose Turn ran on another Harness, and the model called none of them. It is read after the
+ * trial's own prompt (the one that carries `marker`) when that printed, else after the first
+ * prompt, and stops where `saidIn` does: at another trial's Frame. `undefined` when no prompt
+ * printed.
  */
 export function calledIn(kept: string, marker: string): Said[] | undefined {
   const lines = kept.split("\n").map(untimed);
-  const prompt = (l: string) => /^\[[^\]]+\] \[prompt\] /.test(l);
-  const own = lines.findIndex((l) => prompt(l) && l.includes(`[${marker}]`));
-  const at = own !== -1 ? own : lines.findIndex(prompt);
-  return at === -1 ? undefined : saidFrom(lines, at, "[^\\]]+");
+  const agents = promptedAgents(lines);
+  if (agents.length === 0) return undefined;
+  const any = `(?:${agents.map(escaped).join("|")})`;
+  const prompt = new RegExp(`^\\[${any}\\] \\[prompt\\] `);
+  const own = lines.findIndex((l) => prompt.test(l) && l.includes(`[${marker}]`));
+  const at = own !== -1 ? own : lines.findIndex((l) => prompt.test(l));
+  return saidFrom(lines, at, any);
 }
+
+/** The Agents whose prompt printed in a conversation's (untimed) lines, in order, each once. */
+export function promptedAgents(lines: readonly string[]): string[] {
+  const names = new Set<string>();
+  for (const line of lines) {
+    const m = /^\[([^\]]+)\] \[prompt\] /.exec(line);
+    if (m) names.add(m[1]!);
+  }
+  return [...names];
+}
+
+const escaped = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** A line of `kubectl logs --timestamps` without its RFC 3339 stamp. */
 export const untimed = (line: string): string => line.replace(/^\d{4}-\d\d-\d\dT[\d:.]+(Z|[+-]\d\d:\d\d) /, "");
 
-/** `agent` is a regular expression source: a claim's Agent name, which is a plain word, or any
- * Agent's (`calledIn`). */
+/** `agent` is a regular expression source: a claim's Agent name, which is a plain word, or the
+ * Agents whose prompt printed (`calledIn`). */
 function saidFrom(lines: string[], at: number, agent: string): Said[] {
   const line = new RegExp(`^\\[${agent}\\] \\[([^\\]]+)\\] ?(.*)$`);
   const out: Said[] = [];

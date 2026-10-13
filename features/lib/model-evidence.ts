@@ -9,7 +9,7 @@
 
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { calledIn, told, untimed, type Follow } from "./model-said.ts";
+import { calledIn, promptedAgents, told, untimed, type Follow } from "./model-said.ts";
 
 /** The characters a folder name keeps as they are; every other byte is spelled `%XX`. */
 const PLAIN = /^[A-Za-z0-9._-]$/;
@@ -59,14 +59,7 @@ export function saidNote(kept: string, marker: string, why: string): string {
 }
 
 /** The Agents whose prompt printed in a kept conversation, in order, each once. */
-export function agentsIn(kept: string): string[] {
-  const names = new Set<string>();
-  for (const line of kept.split("\n")) {
-    const m = /^\[([^\]]+)\] \[prompt\] /.exec(untimed(line));
-    if (m) names.add(m[1]!);
-  }
-  return [...names];
-}
+export const agentsIn = (kept: string): string[] => promptedAgents(kept.split("\n").map(untimed));
 
 /**
  * The continued conversation (ADR-0057) a claim Agent's Harness history is asked for: every claim
