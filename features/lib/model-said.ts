@@ -42,6 +42,26 @@ export function saidAfterPrompt(log: string, agent: string, opening: string): Sa
   return at === -1 ? undefined : saidFrom(lines, at, agent);
 }
 
+/**
+ * What the model called and read in a trial's KEPT conversation (ADR-0066): the log the tier
+ * followed for the trial, timestamped, any Agent's lines, across every container the follow
+ * attached to. It is read after the trial's own prompt (the one that carries `marker`) when that
+ * printed, else after the first prompt, and stops where `saidIn` does: at another trial's Frame.
+ * `undefined` when no prompt printed.
+ */
+export function calledIn(kept: string, marker: string): Said[] | undefined {
+  const lines = kept.split("\n").map(untimed);
+  const prompt = (l: string) => /^\[[^\]]+\] \[prompt\] /.test(l);
+  const own = lines.findIndex((l) => prompt(l) && l.includes(`[${marker}]`));
+  const at = own !== -1 ? own : lines.findIndex(prompt);
+  return at === -1 ? undefined : saidFrom(lines, at, "[^\\]]+");
+}
+
+/** A line of `kubectl logs --timestamps` without its RFC 3339 stamp. */
+export const untimed = (line: string): string => line.replace(/^\d{4}-\d\d-\d\dT[\d:.]+(Z|[+-]\d\d:\d\d) /, "");
+
+/** `agent` is a regular expression source: a claim's Agent name, which is a plain word, or any
+ * Agent's (`calledIn`). */
 function saidFrom(lines: string[], at: number, agent: string): Said[] {
   const line = new RegExp(`^\\[${agent}\\] \\[([^\\]]+)\\] ?(.*)$`);
   const out: Said[] = [];
@@ -85,17 +105,27 @@ export const told = (said: readonly Said[]): string =>
 /** A process's output, streamed from its start: `text` grows as it prints, `closed` settles when it
  * ends. A Sandbox pod's log, followed from Ready, outlives the reap that deletes the pod: the
  * stream holds everything the container printed up to then. */
-export type Follow = { text: string; closed: Promise<void>; stop: () => void };
+export type Follow = {
+  text: string;
+  /** What the process printed to stderr: why `kubectl logs` could not read a container. */
+  err: string;
+  closed: Promise<void>;
+  stop: () => void;
+};
 
 export function follow(command: string, args: readonly string[]): Follow {
   const child = spawn(command, args);
   const out: Follow = {
     text: "",
+    err: "",
     closed: new Promise((resolve) => child.on("close", () => resolve())),
     stop: () => child.kill(),
   };
   child.stdout.on("data", (d: Buffer) => {
     out.text += d.toString();
+  });
+  child.stderr.on("data", (d: Buffer) => {
+    out.err += d.toString();
   });
   return out;
 }

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { assign, createMachine } from "xstate";
 import {
   askAfter,
+  calledIn,
   follow,
   harnessRestarts,
   isNudge,
@@ -225,4 +226,43 @@ test("restartedHarnessRunning holds once the Harness container restarted past `b
   assert.equal(restartedHarnessRunning(sandboxPod(1, { running: {} }), 0), true);
   assert.equal(restartedHarnessRunning(sandboxPod(3, { running: {} }), 2), true);
   assert.equal(restartedHarnessRunning({}, 0), false, "no Harness container");
+});
+
+// What a trial note says the model called (ADR-0066), read off the conversation the tier kept: the
+// followed log is timestamped, and it spans every container the trial's follow attached to.
+test("the calls of a kept conversation: timestamped lines, read after the trial's prompt, across a restart", () => {
+  const kept = [
+    "2026-10-13T10:00:00.000000001Z [coder] [prompt] [t0-aaaaaa] Fix the failing test.",
+    "2026-10-13T10:00:01.000000001Z [coder] [bash] node --test",
+    "2026-10-13T10:00:02.000000001Z [coder] multi-line body, not a call",
+    "2026-10-13T10:00:03.000000001Z [coder] [prompt] <jr2-turn>",
+    '2026-10-13T10:00:04.000000001Z [coder] [ask_approval] {"why":"x"}',
+    "--- followed again: the container restarted ---",
+    "2026-10-13T10:01:00.000000001Z [coder] [prompt] Your previous turn was cut",
+    "2026-10-13T10:01:01.000000001Z [coder] [submit] {}",
+  ].join("\n");
+  assert.deepEqual(calledIn(kept, "t0-aaaaaa"), [
+    { call: "bash" },
+    { prompt: "<jr2-turn>" },
+    { call: "ask_approval" },
+    { prompt: "Your previous turn was cut" },
+    { call: "submit" },
+  ]);
+  assert.equal(told(calledIn(kept, "t0-aaaaaa")!), "bash (restated) ask_approval (prompt) submit");
+});
+
+test("a kept conversation is read from the trial's own prompt when it carries the marker, else from its first", () => {
+  const kept = ["[advisor] [hold] {}", "[advisor] [prompt] [t1-bbbbbb] The next trial.", "[advisor] [release] {}"].join(
+    "\n",
+  );
+  assert.deepEqual(calledIn(kept, "t1-bbbbbb"), [{ call: "release" }]);
+  assert.deepEqual(calledIn("[coder] [prompt] go\n[coder] [bash] ls", "t9-none"), [{ call: "bash" }]);
+  assert.equal(calledIn("no conversation printed", "t9-none"), undefined);
+});
+
+test("a followed process keeps what it printed to stderr apart: the reason a log could not be read", async () => {
+  const f = follow(process.execPath, ["-e", "console.error('container \"harness\" is waiting to start')"]);
+  await f.closed;
+  assert.equal(f.text, "");
+  assert.match(f.err, /waiting to start/);
 });
