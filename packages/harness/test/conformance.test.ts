@@ -903,6 +903,97 @@ test("ask-again rule: a model that stopped while the list became EMPTY is not as
   assert.deepEqual(provider.calls.map(pushesIn), [0, 0]);
 });
 
+/** The Orchestrator's nudge (ADR-0016), word for word: the wake asks with the same text. */
+const NUDGE =
+  "Your previous turn ended, and the workflow is still waiting for your pick. " +
+  "You MUST end your turn by calling exactly one of the workflow tools allowed below. " +
+  "Pick the one that matches the true state of your work and call it now.";
+
+test("ask-again rule: stop, wake, a pick back out of the mode and into it again, stop, a second wake, then the pick that ends the Turn — every Submission completes, nothing refused (ADR-0016, ADR-0029)", async () => {
+  // The `@model` mode-stop sequence: drafting allows `ask_review`; `reviewing` allows nothing until
+  // a targetless timer marks the review read, then `revise` and `submit`. The Orchestrator's half
+  // (the wake, its budget) is scripted here as it answers: two wakes, each a fresh Submission of the
+  // nudge's text on the SAME conversation. What this asserts is the Harness's half.
+  const menu = ["ask_review", "revise", "submit"];
+  let mode: "drafting" | "reviewing" = "drafting";
+  let read = false;
+  const allowed = () => (mode === "drafting" ? ["ask_review"] : read ? ["revise", "submit"] : []);
+  provider.reset([
+    { toolCall: { id: "s1", name: "mcp__jr2__ask_review", args: '{"verdict":"x"}' } },
+    { text: "Waiting for the reviewer's answer." },
+    { toolCall: { id: "s2", name: "mcp__jr2__revise", args: '{"verdict":"x"}' } },
+    { toolCall: { id: "s3", name: "mcp__jr2__ask_review", args: '{"verdict":"x"}' } },
+    { text: "Waiting for the reviewer again." },
+    { toolCall: { id: "s4", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Submitted." },
+  ]);
+  sandbox.reset(surfaceAllowing(menu, allowed()));
+  sandbox.surfaceByRead(() => surfaceAllowing(menu, allowed()));
+  sandbox.answerWith((event) => {
+    if (mode === "drafting" && event.type === "ask_review") {
+      mode = "reviewing";
+      read = false; // `reviewing`'s entry
+      return { moved: true, turnComplete: false, allowed: allowed() };
+    }
+    if (mode === "reviewing" && read && event.type === "revise") {
+      mode = "drafting";
+      return { moved: true, turnComplete: false, allowed: allowed() };
+    }
+    if (mode === "reviewing" && read && event.type === "submit") return endsTurn();
+    return { moved: false, turnComplete: false, allowed: allowed() };
+  });
+  const iid = "conf/mode-stop";
+
+  const first = await admit(iid, "Ask for a review, then wait for the reviewer's answer.");
+  assert.equal((await settled(iid, first)).outcome, "completed", "stopped in reviewing: nothing allowed");
+  read = true; // the timer: the picks open where they are
+  const wake1 = await admit(iid, NUDGE);
+  assert.equal((await settled(iid, wake1)).outcome, "completed", "stopped in reviewing again");
+  assert.deepEqual(allowed(), [], "the second stop is a correct one: nothing allowed");
+  read = true;
+  const wake2 = await admit(iid, NUDGE);
+  assert.equal((await settled(iid, wake2)).outcome, "completed");
+
+  assert.deepEqual(
+    sandbox.delivered.map((e) => e.type),
+    ["ask_review", "revise", "ask_review", "submit"],
+    "every pick delivered once",
+  );
+  const results = (provider.calls.at(-1)!.messages as Array<{ role: string; content?: unknown }>)
+    .filter((m) => m.role === "tool")
+    .map((m) => JSON.stringify(m.content));
+  assert.equal(results.length, 4);
+  assert.ok(
+    results.every((r) => !/did NOT act on it/.test(r)),
+    `no pick refused:\n${results.join("\n")}`,
+  );
+  assert.match(results[1]!, /Allowed now: `mcp__jr2__ask_review`\./, "revise took the Turn back to drafting");
+  assert.match(results[3]!, /your turn is over/);
+  // Each wake's request states the Allowed picks last, in a fresh Turn part.
+  assert.match(lastUserText(provider.calls[2]), /Allowed now: `mcp__jr2__revise`, `mcp__jr2__submit`\.\n<\/jr2-turn>$/);
+  assert.match(lastUserText(provider.calls[5]), /Allowed now: `mcp__jr2__revise`, `mcp__jr2__submit`\.\n<\/jr2-turn>$/);
+  assert.deepEqual(
+    provider.calls.map(pushesIn),
+    [0, 0, 0, 0, 0, 0, 0],
+    "nothing restated: each list change was a pick's",
+  );
+  assert.deepEqual(
+    (await history(iid)).settlements.map((s) => s.outcome),
+    ["completed", "completed", "completed"],
+  );
+  // What the tier's note reads off the printed conversation, here with its end.
+  const said = (printed.get(iid) ?? "")
+    .split("\n")
+    .flatMap((line) => {
+      const m = /^\[reviewer\] \[([^\]]+)\] ?(.*)$/.exec(line);
+      if (!m) return [];
+      if (m[1] === "prompt") return m[2]!.startsWith("Your previous turn ended") ? ["(nudge)"] : [];
+      return /^[a-z][a-z0-9_]*$/.test(m[1]!) && menu.includes(m[1]!) ? [m[1]!] : [];
+    })
+    .join(" ");
+  assert.equal(said, "ask_review (nudge) revise ask_review (nudge) submit");
+});
+
 test("step boundary: nothing is said once the Turn is over — the surface is gone (ADR-0024/0026)", async () => {
   provider.reset([
     { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },

@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createActor, fromPromise, sendTo, type AnyActorRef } from "xstate";
+import { assign, createActor, fromPromise, sendTo, type AnyActorRef } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -607,6 +607,114 @@ test("the wake spends the nudge's budget: a Machine that opens and closes picks 
   assert.equal(values.at(-1), "faulted", "the spent budget is the nudge's fault");
   const retries = seen.flatMap((event) => (event.kind === "retry" ? [event.attempt] : []));
   assert.deepEqual(retries, [1], "one ask, counted against the nudge's budget");
+});
+
+/** The `@model` mode-stop shape: `drafting` allows `ask_review`; `reviewing` allows nothing until a
+ * TARGETLESS timer marks the review read (so Rest is not held), then `revise` and `submit`. A fault
+ * routes to `faulted` with its reason, as the claim workflow's does. */
+function modeStopDef(clients: Map<string, MockFlueClient>): WorkflowDef {
+  const machineWith = (coder: ReturnType<typeof agentActorWith>) =>
+    jr2Setup({
+      types: {} as { context: { read: boolean; fault?: string } },
+      events: [ask_review, revise, submit],
+      actors: { coder },
+    }).createMachine({
+      id: "wf",
+      context: { read: false },
+      initial: "notes",
+      states: {
+        notes: {
+          invoke: { src: "coder", input: { prompt: "go", endpoint: "http://harness.invalid" } },
+          on: {
+            "agent.fault": {
+              target: "#wf.faulted",
+              actions: assign({ fault: ({ event }) => (event as { reason?: string }).reason }),
+            },
+          },
+          initial: "drafting",
+          states: {
+            drafting: { on: { ask_review: "reviewing" } },
+            reviewing: {
+              entry: assign({ read: false }),
+              after: { 20: { actions: assign({ read: true }) } },
+              on: {
+                revise: { guard: ({ context }) => context.read, target: "drafting" },
+                submit: { guard: ({ context }) => context.read, target: "#wf.done" },
+              },
+            },
+          },
+        },
+        done: { type: "final" },
+        faulted: { type: "final" },
+      },
+    });
+  return {
+    name: "mode-stop",
+    machine: machineWith(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      clients.set(instanceId, client);
+      return { actors: { coder: agentActorWith(() => client, coderDefinition) } };
+    },
+  };
+}
+
+/** Drive the mode-stop sequence to its second wake: ask_review, stop, wake, revise, ask_review,
+ * stop, wake. Each stop is a correct one (nothing allowed); each wake spends the one budget. */
+async function toTheSecondWake() {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(modeStopDef(clients));
+  const { runId, instanceId } = await host.start("mode-stop");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  const seen: RunFeedEvent[] = [];
+  host.subscribe(runId, (event) => seen.push(event));
+
+  host.sendToAgent(iid, { type: "ask_review" });
+  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "the reviewer reads: nothing to pick");
+  client.complete();
+  await waitFor(() => client.admits.length === 2);
+  assert.deepEqual(host.agentSurface(iid)?.allowed, ["revise", "submit"]);
+  assert.equal(host.sendToAgent(iid, { type: "revise" }).moved, true);
+  assert.equal(host.sendToAgent(iid, { type: "ask_review" }).moved, true, "the mode re-entered");
+  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "its entry closed the picks again");
+  client.complete();
+  await waitFor(() => client.admits.length === 3);
+  for (const admit of client.admits.slice(1)) {
+    assert.equal(admit.instanceId, iid, "the same conversation");
+    assert.match(admit.prompt ?? "", /^Your previous turn ended, and the workflow is still waiting for your pick\./);
+  }
+  return { host, runId, iid, client, seen };
+}
+
+test("mode-stop's sequence: two wakes, one per correct stop, then the pick that ends the Turn — no fault (ADR-0016, ADR-0024)", async () => {
+  const { host, runId, iid, client, seen } = await toTheSecondWake();
+  assert.equal(host.status(runId)?.status, "active", "no fault after the second wake");
+  assert.equal(host.sendToAgent(iid, { type: "submit", summary: "v2.3" }).turnComplete, true);
+  client.complete();
+  await waitFor(() => host.status(runId) === undefined);
+  const values = seen.flatMap((event) => (event.kind === "status" ? [event.status.value] : []));
+  assert.equal(values.at(-1), "done");
+  const retries = seen.flatMap((event) => (event.kind === "retry" ? [`${event.attempt} ${event.reason}`] : []));
+  assert.deepEqual(retries, ["1 picks allowed again", "2 picks allowed again"]);
+  assert.equal(client.admits.length, 3, "asked twice after the Frame, never more");
+});
+
+test("mode-stop's sequence, then a third stop with picks left: the spent budget is the one fault, and it names the picks (ADR-0016)", async () => {
+  // What the tier's note `said ask_review (nudge) revise ask_review (nudge); ended done/faulted`
+  // reads as, when the model answers the second wake without a pick: the nudge and the wake share
+  // one budget (default 2), so the third ask is a fault, not an ask.
+  const { host, runId, client, seen } = await toTheSecondWake();
+  client.complete(); // text only: no pick
+  await waitFor(() => host.status(runId) === undefined);
+  const statuses = seen.flatMap((event) => (event.kind === "status" ? [event.status] : []));
+  assert.equal(statuses.at(-1)?.value, "faulted");
+  assert.equal(
+    (statuses.at(-1)?.context as { fault?: string }).fault,
+    "agent completed its turn without a pick that ends it; still allowed: revise, submit",
+  );
+  assert.equal(client.admits.length, 3, "no third ask");
 });
 
 test("no wake after the Turn ended: a Gate's answer that leaves the Agent's state asks nobody (ADR-0016)", async () => {
