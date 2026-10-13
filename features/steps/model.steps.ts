@@ -38,7 +38,7 @@ import {
   type StateNodeLike,
 } from "../lib/model-said.ts";
 import { FINISHED } from "../lib/model-finished.ts";
-import { bodyIn, killedInTheFirstTurn, type RunChild } from "../lib/model-status.ts";
+import { bodyIn, ended, killedInTheFirstTurn, type RunChild } from "../lib/model-status.ts";
 import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
 import { ensureSeed, pushRemoteCommitsFromMain } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
@@ -277,7 +277,7 @@ const obedience: Driver = async (world, input) => {
     runId,
     measured: first === "hold",
     finished: FINISHED.obedience!(last),
-    note: `first call ${first ?? "none"}, ended ${last.status}/${String(last.value)}`,
+    note: `first call ${first ?? "none"}, ended ${ended(last)}`,
   };
 };
 
@@ -291,7 +291,7 @@ const advised: Driver = async (world, input) => {
     runId,
     measured: first === "answer" && sandboxes === 0,
     finished: FINISHED.advised!(last),
-    note: `first call ${first ?? "none"}, ${sandboxes} Sandbox(es), ended ${last.status}/${String(last.value)}`,
+    note: `first call ${first ?? "none"}, ${sandboxes} Sandbox(es), ended ${ended(last)}`,
   };
 };
 
@@ -390,7 +390,7 @@ const noticed: Driver = async (world, input) => {
       measured: false,
       finished: false,
       void: true,
-      note: `the kill landed inside the first Turn, and the next Turn never began; ended ${last.status}`,
+      note: `the kill landed inside the first Turn, and the next Turn never began; ended ${ended(last)}`,
     };
   }
   if (!hit)
@@ -432,7 +432,7 @@ const modeFollow: Driver = async (world, input) => {
     measured: next === "revise" || next === "submit",
     finished: FINISHED["mode-follow"]!(last),
     ...(asked === -1 ? { void: true } : {}),
-    note: `said ${told(said)}; ended ${last.status}/${String(last.value)}`,
+    note: `said ${told(said)}; ended ${ended(last)}`,
   };
 };
 
@@ -457,7 +457,7 @@ const modeRefusal: Driver = async (world, input) => {
     measured: after === "publish",
     finished: FINISHED["mode-refusal"]!(last),
     ...(refused ? {} : { void: true }),
-    note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${last.status}/${String(last.value)}`,
+    note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${ended(last)}`,
   };
 };
 
@@ -495,7 +495,7 @@ const modeStop: Driver = async (world, input) => {
     measured: next !== undefined && next in (modes[mode]?.picks ?? {}),
     finished: FINISHED["mode-stop"]!(last),
     ...(asked === -1 ? { void: true } : {}),
-    note: `said ${told(said)}; asked in ${asked === -1 ? "none" : mode}; ended ${last.status}/${String(last.value)}`,
+    note: `said ${told(said)}; asked in ${asked === -1 ? "none" : mode}; ended ${ended(last)}`,
   };
 };
 
@@ -539,7 +539,7 @@ const wake: Driver = async (world, input) => {
   const runId = await startRun(world, "wake", input);
   const opened = await waitFor(world, runId, (s) => gateNamed(s, "board") !== undefined, 120_000);
   const board = gateNamed(opened.last, "board");
-  if (!board) return { runId, measured: false, finished: false, note: `no board Gate: ${opened.last.status}` };
+  if (!board) return { runId, measured: false, finished: false, note: `no board Gate: ${ended(opened.last)}` };
   // The Agent's state is the root's child: its continued conversation is `<runId>/root/advisor`.
   const iid = `${runId}/root/advisor`;
   const deadline = Date.now() + 300_000;
@@ -563,7 +563,7 @@ const wake: Driver = async (world, input) => {
     runId,
     measured: first !== undefined,
     finished: FINISHED.wake!(last),
-    note: `said ${told(said)}; ${seen}; ended ${last.status}/${String(last.value)}`,
+    note: `said ${told(said)}; ${seen}; ended ${ended(last)}`,
   };
 };
 
@@ -684,7 +684,7 @@ async function pushFollowIn(
     measured: followed,
     finished: FINISHED["push-follow"]!(last),
     also,
-    note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+    note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${ended(last, last.context.output?.outcome)}`,
   };
 }
 
@@ -708,7 +708,7 @@ const chainAnswer: Driver = async (world, input) => {
     measured: next === "hold",
     finished: FINISHED["chain-answer"]!(last),
     ...(ran === -1 ? { void: true } : {}),
-    note: `said ${told(said)}; ended ${last.status}/${String(last.value)}`,
+    note: `said ${told(said)}; ended ${ended(last)}`,
   };
 };
 
@@ -729,7 +729,7 @@ const cutPick: Driver = async (world, input) => {
   const gate = gateNamed(out.last, "auditor");
   if (!out.hit || !gate) {
     if (!settled(out.last)) await world.runCli(["send", runId, "--event", "CANCEL"]);
-    return { runId, measured: false, finished: false, void: true, note: `never held: ${out.last.status}` };
+    return { runId, measured: false, finished: false, void: true, note: `never held: ${ended(out.last)}` };
   }
   await kubectl(world, ["delete", "pod", `${INSTANCE_HARNESS}-0`, "--wait=true"]);
   await kubectl(world, ["rollout", "status", `statefulset/${INSTANCE_HARNESS}`, "--timeout=300s"]);
@@ -752,7 +752,7 @@ const cutPick: Driver = async (world, input) => {
       runId,
       measured: false,
       finished: FINISHED["cut-pick"]!(last),
-      note: `no re-admission; ended ${last.status}`,
+      note: `no re-admission; ended ${ended(last)}`,
     };
   }
   const next = menuCalls(said, AUDIT_MENU)[0]?.call;
@@ -760,7 +760,7 @@ const cutPick: Driver = async (world, input) => {
     runId,
     measured: next === "file_report",
     finished: FINISHED["cut-pick"]!(last),
-    note: `after the re-admission said ${told(said)}; ended ${last.status}/${String(last.value)}`,
+    note: `after the re-admission said ${told(said)}; ended ${ended(last)}`,
   };
 };
 
@@ -779,7 +779,7 @@ const answered: Driver = async (world, input) => {
     measured: ran !== -1 && ledger[ran + 1] === "report_failure",
     finished: FINISHED.answered!(last),
     ...(ran === -1 ? { void: true } : {}),
-    note: `took ${ledger.join(" ")}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+    note: `took ${ledger.join(" ")}; ended ${ended(last, last.context.output?.outcome)}`,
   };
 };
 
@@ -799,7 +799,7 @@ const continueAfterSignedPush: Driver = async (world, input) => {
   const pushes = (last.context.output?.pushes ?? []) as PushRecord[];
   const carried = needsCarried(pushes) ? await pushRemoteCommitsFromMain(pushes[0]!.published!) : undefined;
   const reading = readContinue(pushes, carried);
-  const seen = `pushes ${pushes.map((p) => p.outcome).join(" ") || "none"}; ended ${last.status}/${String(last.context.output?.outcome)}`;
+  const seen = `pushes ${pushes.map((p) => p.outcome).join(" ") || "none"}; ended ${ended(last, last.context.output?.outcome)}`;
   return {
     runId,
     measured: reading.measured,
@@ -836,7 +836,7 @@ const allowedAfterRoute: Driver = async (world, input) => {
       measured: next !== undefined && ALLOWED_IN_RED.has(next),
       finished: FINISHED["allowed-after-route"]!(last),
       ...(ran === -1 ? { void: true } : {}),
-      note: `said ${told(said)}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+      note: `said ${told(said)}; ended ${ended(last, last.context.output?.outcome)}`,
     };
   } finally {
     source.follow.stop();
@@ -863,7 +863,7 @@ const unknownOutcome: Driver = async (world, input) => {
   const out = await waitFor(world, runId, (s) => (s.held ?? []).some((h) => h.pick === "deploy"), 300_000);
   if (!out.hit) {
     if (!settled(out.last)) await world.runCli(["send", runId, "--event", "CANCEL"]);
-    return { runId, measured: false, finished: false, void: true, note: `never held: ${out.last.status}` };
+    return { runId, measured: false, finished: false, void: true, note: `never held: ${ended(out.last)}` };
   }
   const before = harnessRestarts(await podJson(world, pod)) ?? 0;
   await inHarness(world, pod, [
@@ -873,7 +873,7 @@ const unknownOutcome: Driver = async (world, input) => {
   ]).catch(() => ({ code: -1, out: "" }));
   if (!(await harnessRestarted(world, pod, before))) {
     const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-    return { runId, measured: false, finished: false, void: true, note: `no Harness restart; ended ${last.status}` };
+    return { runId, measured: false, finished: false, void: true, note: `no Harness restart; ended ${ended(last)}` };
   }
   const source = { follow: followLog(world, pod) };
   try {
@@ -885,7 +885,7 @@ const unknownOutcome: Driver = async (world, input) => {
         runId,
         measured: false,
         finished: FINISHED["unknown-outcome"]!(last),
-        note: `no re-admission; ended ${last.status}/${String(last.context.output?.outcome)}`,
+        note: `no re-admission; ended ${ended(last, last.context.output?.outcome)}`,
       };
     }
     const next = menuCalls(said, DEPLOY_MENU)[0]?.call;
@@ -893,7 +893,7 @@ const unknownOutcome: Driver = async (world, input) => {
       runId,
       measured: next === "check_deploy",
       finished: FINISHED["unknown-outcome"]!(last),
-      note: `after the re-admission said ${told(said)}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+      note: `after the re-admission said ${told(said)}; ended ${ended(last, last.context.output?.outcome)}`,
     };
   } finally {
     source.follow.stop();

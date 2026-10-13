@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bodyIn, killedInTheFirstTurn } from "./model-status.ts";
+import { bodyIn, ended, killedInTheFirstTurn } from "./model-status.ts";
 
 test("a workspace() body's state is read off the children `jr2 status` reports, never the run's own value", () => {
   // push-follow's body, back in `coding` after a `revise`: the run's own value is the wrapper's.
@@ -34,4 +34,19 @@ test("noticed's void is a live run whose body never left `starting`; a settled r
   assert.equal(killedInTheFirstTurn({ status: "done", children: [] }), false, "a settled run holds no body");
   assert.equal(killedInTheFirstTurn(at("error", "starting")), false, "an errored run is settled");
   assert.equal(killedInTheFirstTurn(at("active", "asking")), false, "the next Turn began");
+});
+
+test("a trial's note prints a faulted, lost or errored run's final output, and nothing more for the others", () => {
+  const faulted = { status: "done", value: "faulted", context: { output: { outcome: "faulted", reason: "r" } } };
+  assert.equal(ended(faulted), 'done/faulted {"outcome":"faulted","reason":"r"}', "a root Machine's fault");
+  const lost = { status: "done", value: "done", context: { output: { outcome: "lost", reason: "gone" } } };
+  assert.equal(ended(lost, lost.context.output.outcome), 'done/lost {"outcome":"lost","reason":"gone"}', "a body");
+  const error = { status: "error", value: "drafting", context: {} };
+  assert.equal(ended(error), 'error/drafting "drafting"', "an errored run with no output prints its value");
+  const submitted = { status: "done", value: "submitted", context: { output: { outcome: "submitted" } } };
+  assert.equal(ended(submitted), "done/submitted", "a finished run prints as before");
+  const other = { status: "done", value: "shipped", context: { output: { outcome: "shipped" } } };
+  assert.equal(ended(other, other.context.output.outcome), "done/shipped", "the other task final prints as before");
+  const live = { status: "active", value: { notes: "reviewing" }, context: {} };
+  assert.equal(ended(live), 'active/{"notes":"reviewing"}', "a run still live at its deadline prints its state");
 });
