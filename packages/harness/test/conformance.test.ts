@@ -1331,8 +1331,10 @@ test('a provider that refuses the load is named: the failed settlement reads "pr
   assert.match(quota.error?.message ?? "", /insufficient_quota/);
 });
 
-test("the printer wrote the conversation: prompts, text, tool calls — results never (ADR-0023)", async () => {
+test("the printer wrote the conversation: prompts, text, tool calls, each pick's answer — a Working tool's result never (ADR-0023)", async () => {
   provider.reset([
+    // The command prints; what it printed does not (the call's input does not hold it).
+    { toolCall: { id: "call_0", name: "bash", args: '{"command":"echo V09SS0lORy1SRVNVTFQ= | base64 -d"}' } },
     {
       text: "Here is my verdict.",
       toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' },
@@ -1354,7 +1356,19 @@ test("the printer wrote the conversation: prompts, text, tool calls — results 
     `no bare-named tool-call line in:\n${log}`,
   );
   assert.ok(lines.includes(`[${AGENT}] [text] All done.`), `no second-turn text line in:\n${log}`);
-  assert.ok(!log.includes("Delivered"), "a tool RESULT is a boundary, never printed (ADR-0023)");
+  // The pick's answer prints after its call, the text the model read back (the provider saw it).
+  const answer = lines.find((line) => line.startsWith(`[${AGENT}] [review_verdict answer] `));
+  assert.ok(answer, `no answer line in:\n${log}`);
+  const text = answer.slice(`[${AGENT}] [review_verdict answer] `.length);
+  assert.match(text, /^Delivered "review_verdict" to the workflow/);
+  assert.ok(JSON.stringify(provider.calls).includes(JSON.stringify(text).slice(1, -1)), "the text the model read");
+  assert.ok(
+    lines.indexOf(answer) > lines.indexOf(`[${AGENT}] [review_verdict] {"verdict":"approved"}`),
+    "after its call",
+  );
+  assert.ok(lines.includes(`[${AGENT}] [bash] echo V09SS0lORy1SRVNVTFQ= | base64 -d`), `no bash line in:\n${log}`);
+  assert.ok(JSON.stringify(provider.calls).includes("WORKING-RESULT"), "the command ran, and the model read it");
+  assert.ok(!log.includes("WORKING-RESULT"), "a Working tool's RESULT is a boundary, never printed (ADR-0023)");
 });
 
 test('K byte-identical tool calls are a Runaway: the Harness ends the turn, typed "runaway" (ADR-0035)', async () => {

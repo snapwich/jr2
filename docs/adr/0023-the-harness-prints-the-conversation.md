@@ -26,13 +26,29 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   iid arrives per Submission. So a line is `[<agent>] [<iid>] …` with no lookup, no correlation table, and no
   orchestrator round trip. Nothing else in the pod knows both: the Custodian sees routes and names, never a
   conversation, and working-tool execution happens inside the Harness, invisible to every other jr2 process there.
-- **Reasoning prints; results do not.** Prompts, assistant text, thinking, and tool calls with truncated inputs. File
-  contents, command output, and API responses never print. This is one cut serving two purposes, which is why it is a
-  boundary and not an unfinished implementation: tool results are where the secrets are, and they are also most of the
-  bytes. Every user message the model reads prints as a prompt — the Frame's prompt with its Turn part, a nudge, and a
-  Turn part the Harness restated at a step boundary
+- **Reasoning prints, and so does each pick's answer; a Working tool's result does not.** Prompts, assistant text,
+  thinking, tool calls with truncated inputs, and the answer to each Menu pick. The file contents, command output, and
+  API responses a Working tool returns never print. This is one cut serving two purposes, which is why it is a boundary
+  and not an unfinished implementation: a Working tool's results are where the secrets are, and they are also most of
+  the bytes. Every user message the model reads prints as a prompt — the Frame's prompt with its Turn part, a nudge, and
+  a Turn part the Harness restated at a step boundary
   ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)), which prints once as
   `[<agent>] [prompt] <jr2-turn>` where the model read it.
+- **A pick's answer prints after its call, as the model received it.** A Menu call's result is jr2's own text: the
+  receipt, an outstanding pick's answer with the reply it carries (an Effect's output, a Gate's event and payload) and
+  the paragraph after a push, a refusal ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md),
+  [ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)). It prints as
+  `[<agent>] [<pick> answer] <text>`, or `[<pick> error] <text>` for an answer the model reads as an error (a refusal
+  while a pick is outstanding, a pick the tool's schema refused, a pick that never reached the Orchestrator), under the
+  same bound as a call's input. It is the text the model already read, so printing it changes nothing the model reads;
+  it is what lets a reader of the log, and the `@model` tier's kept evidence
+  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)), see what came back
+  where the call alone said `[publish] {}`. The print scrubs nothing of its own, and needs to scrub nothing: the Harness
+  holds no Effect secret — an Effector scrubs every string before it signs its answer
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)) — and holds a Held secret only as its
+  Stand-in ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); a `command` Effect in the
+  Harness container has no credential of its own. A Menu call that a Harness restart cut has no answer on its call: its
+  answer is the re-admission's prompt, which prints ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)).
 - **The writer structures, the reader colorizes.** Lines carry a parseable prefix and no ANSI. jr's colors were correct
   for an fzf preview, which is a terminal; `kubectl logs` output is piped, grepped, and ingested, where escape codes are
   corruption. A future reader may colorize on `isatty`.
@@ -83,9 +99,9 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   offset for the life of the pod (ADR-0027), and jr2 holds the coordinates in the admission ledger (`run-host.ts:651`);
   copying the contents buys retention in exchange for owning growth, retention policy, and a redaction surface, in a
   store defaulting to sqlite.
-- **Print tool results, truncated.** Rejected: the first 200 bytes of a leaked config is where the good stuff is, and
-  the volume it re-admits is what kubelet's 10Mi rotation would then silently discard — losing the _start_ of a long
-  turn, which is the part worth reading.
+- **Print a Working tool's results, truncated.** Rejected: the first 200 bytes of a leaked config is where the good
+  stuff is, and the volume it re-admits is what kubelet's 10Mi rotation would then silently discard — losing the _start_
+  of a long turn, which is the part worth reading.
 
 ## Consequences
 
@@ -94,9 +110,9 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   widen is the pod-log surface: a run's narrative becomes readable by whoever can read the Workspace pod's logs, the
   same audience the conversation bullet below already grants.
 - **A scoped exception to ADR-0014**, recorded there. Observation is open and everything sensitive sits behind
-  `instanceOnly`; this puts an Agent's reasoning in front of whoever can read pod logs. Excluding tool results bounds it
-  to what an Agent reasons aloud rather than what it happened to read. Fine on kind; a real decision on a shared
-  cluster.
+  `instanceOnly`; this puts an Agent's reasoning, and the answers jr2 gave its picks, in front of whoever can read pod
+  logs. Excluding a Working tool's results bounds it to what an Agent reasons aloud and what jr2 told it, rather than
+  what it happened to read. Fine on kind; a real decision on a shared cluster.
 - **It depends on an invariant that is documented but not enforced.** One Agent at a time per Workspace (ADR-0004:95,
   "structural since ADR-0012") is what makes two conversations never interleave on one container's stdout. Nothing
   refuses a body that invokes concurrent `agentRun`s; such a body corrupts a shared `default/.git` before it garbles a

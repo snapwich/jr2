@@ -1,12 +1,14 @@
 // The Harness prints the conversation, and `kubectl logs` reads it (ADR-0023) — over pi's
-// in-process event stream (ADR-0027; the retired shim needed a loopback SSE client). Reasoning
-// only: prompts, assistant text, thinking, and tool calls with TRUNCATED inputs. A tool's RESULT
-// is never read: that is a boundary (ADR-0023, and the ADR-0014 exception it takes), not an
-// unfinished implementation. Truncation is load-bearing too — kubelet rotates at 10Mi and drops
-// the remainder, so an untruncated turn loses its own beginning.
+// in-process event stream (ADR-0027; the retired shim needed a loopback SSE client). Reasoning,
+// and jr2's own answers: prompts, assistant text, thinking, tool calls with TRUNCATED inputs, and
+// each Menu pick's answer under the same bound. A Working tool's RESULT is never read: that is a
+// boundary (ADR-0023, and the ADR-0014 exception it takes), not an unfinished implementation.
+// Truncation is load-bearing too — kubelet rotates at 10Mi and drops the remainder, so an
+// untruncated turn loses its own beginning.
 
 import type { AgentHarnessEvent, AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import { MENU_TOOL_PREFIX } from "./menu-tools.ts";
 import type { EchoEvent } from "./wire.ts";
 
 /** What the printer needs from an AgentHarness: the in-process event stream. */
@@ -23,8 +25,9 @@ function bareToolName(toolName: string): string {
 }
 
 /**
- * One bound for every input, set high enough that an ordinary call prints whole: a command, a
- * review summary, a patch hunk. Only the outliers cut, and the 10Mi budget still holds — an Agent
+ * One bound for every input and every pick's answer, set high enough that an ordinary call prints
+ * whole: a command, a review summary, a patch hunk, a receipt with the paragraph after a push. Only
+ * the outliers cut (a command Effect's long output), and the 10Mi budget still holds — an Agent
  * makes hundreds of calls per run, not thousands of them at 2 KiB each.
  */
 const MAX_INPUT = 2000;
@@ -62,7 +65,19 @@ export function renderMessage(message: AgentMessage): string[] {
       return `[${bareToolName(block.name)}] ${renderToolInput(block.name, block.arguments)}`;
     });
   }
-  return []; // `toolResult` (and anything custom): output, never printed.
+  if (role === "toolResult") {
+    const result = message as ToolResultMessage;
+    // A Working tool's result is output, never printed (ADR-0023's boundary).
+    if (!result.toolName.startsWith(MENU_TOOL_PREFIX)) return [];
+    // A Menu pick's answer is jr2's own text, the one the model read back from the call: its
+    // receipt, its outstanding answer with the post-push paragraph, a refusal. Printed as the model
+    // received it, under the inputs' bound: the Harness holds no Effect secret to scrub — an Effector
+    // scrubs every string before it signs its answer (ADR-0068), and a Held secret is a Stand-in
+    // here (ADR-0059). What the model reads does not change; only the log keeps it too.
+    const text = result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+    return [`[${bareToolName(result.toolName)} ${result.isError ? "error" : "answer"}] ${bound(text)}`];
+  }
+  return []; // anything custom: never printed.
 }
 
 /**

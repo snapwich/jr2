@@ -1,12 +1,27 @@
-// The conversation printer (ADR-0023): the retired shim's rendering rules, exactly — prompts,
-// assistant text, thinking, and tool calls with TRUNCATED inputs print; a tool's RESULT never
-// does; a line is atomic, so only completed messages (`message_end`) print.
+// The conversation printer (ADR-0023): prompts, assistant text, thinking, tool calls with TRUNCATED
+// inputs, and each Menu pick's answer — the text the model read back from the call, under the same
+// bound. A Working tool's RESULT never prints; a line is atomic, so only completed messages
+// (`message_end`) print.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentHarnessEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { receiptProse } from "../src/menu.ts";
+import { menuToolName } from "../src/menu-tools.ts";
 import { attachPrinter, renderMessage, renderToolInput } from "../src/printer.ts";
+
+/** A tool's result as pi records it: the text the model reads, and whether it reads as an error. */
+function toolResult(toolName: string, text: string, isError = false): AgentMessage {
+  return {
+    role: "toolResult",
+    toolCallId: "tc-1",
+    toolName,
+    content: [{ type: "text", text }],
+    isError,
+    timestamp: 0,
+  } as AgentMessage;
+}
 
 function user(content: unknown): AgentMessage {
   return { role: "user", content, timestamp: 0 } as AgentMessage;
@@ -92,16 +107,61 @@ test("renderMessage: assistant blocks render in order — text, thinking, tool c
   assert.deepEqual(renderMessage(message), ["[thinking] hm", "[text] done", '[approve] {"verdict":"ship"}']);
 });
 
-test("renderMessage: a toolResult message never prints — output is a boundary", () => {
-  const result = {
-    role: "toolResult",
-    toolCallId: "tc-1",
-    toolName: "bash",
-    content: [{ type: "text", text: "SECRET-RESULT" }],
-    isError: false,
-    timestamp: 0,
-  } as AgentMessage;
-  assert.deepEqual(renderMessage(result), []);
+test("renderMessage: a Working tool's result never prints — output is a boundary", () => {
+  assert.deepEqual(renderMessage(toolResult("bash", "SECRET-RESULT")), []);
+  assert.deepEqual(renderMessage(toolResult("read", "SECRET-RESULT", true)), []);
+});
+
+test("renderMessage: a Menu pick's answer prints as `[<pick> answer]`, the text the model read", () => {
+  const text = 'Delivered "publish" to the workflow (delivery d-1). The workflow took it and moved on.';
+  assert.deepEqual(renderMessage(toolResult(menuToolName("publish"), text)), [`[publish answer] ${text}`]);
+});
+
+test("renderMessage: a Menu pick the model reads as an error prints as `[<pick> error]`: a refusal, a schema miss", () => {
+  const refusal =
+    "`mcp__jr2__finish` was NOT delivered: your pick `mcp__jr2__publish` is still running in the workflow.";
+  assert.deepEqual(renderMessage(toolResult(menuToolName("finish"), refusal, true)), [`[finish error] ${refusal}`]);
+  // A body may span lines, as every printed body may: the label is on its first line only.
+  const schema = 'Validation failed for tool "mcp__jr2__publish":\n  - root: must NOT have additional properties';
+  assert.deepEqual(renderMessage(toolResult(menuToolName("publish"), schema, true)), [`[publish error] ${schema}`]);
+});
+
+test("renderMessage: an answer is cut at the inputs' 2000 chars, and says that it cut", () => {
+  const long = "a".repeat(1999) + "YZ";
+  assert.deepEqual(renderMessage(toolResult(menuToolName("run_tests"), long)), [
+    `[run_tests answer] ${"a".repeat(1999)}Y…`,
+  ]);
+});
+
+test("renderMessage: an answer prints as the model received it — the Effector's scrub marks stay, nothing is added", () => {
+  // The Harness holds no Effect secret: an Effector scrubs every string before it signs its answer
+  // (ADR-0068), and a Held secret is a Stand-in here (ADR-0059). The print scrubs nothing of its own.
+  const text = 'Its answer: the output of `comment`: {"outcome":"response","body":"token [secret:jira] echoed"}.';
+  assert.deepEqual(renderMessage(toolResult(menuToolName("comment"), text)), [`[comment answer] ${text}`]);
+});
+
+test("renderMessage: the paragraph after a signed push prints whole in its pick's answer", () => {
+  const sha = (c: string): string => c.repeat(40);
+  const answer = receiptProse(
+    {
+      delivered: true,
+      event: "publish",
+      deliveryId: "0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9",
+      turnComplete: false,
+      answered: true,
+      allowed: ["publish", "finish"],
+      answer: {
+        kind: "output",
+        actor: "push",
+        output: { outcome: "pushed", published: sha("a"), source: sha("b"), ref: "refs/heads/feature", sync: "synced" },
+      },
+    },
+    menuToolName,
+  );
+  const [line] = renderMessage(toolResult(menuToolName("publish"), answer));
+  assert.equal(line, `[publish answer] ${answer}`, "under the bound: not cut");
+  assert.match(line!, /jr2 signed your commits and pushed the signed copies\..*Continue your work on your branch\./);
+  assert.match(line!, /Allowed now: `mcp__jr2__publish`, `mcp__jr2__finish`\.$/);
 });
 
 test("attachPrinter: completed messages print [agent]-prefixed atomic lines; nothing else does", () => {
@@ -147,6 +207,31 @@ test("attachPrinter: completed messages print [agent]-prefixed atomic lines; not
   );
   assert.ok(!text().includes("SECRET-RESULT"));
   assert.ok(!text().includes("half a thou"));
+});
+
+test("attachPrinter: a Menu call prints, then its answer under the pick's name, as the model read it", () => {
+  const harness = fakeHarness();
+  const { out, text } = collector();
+  attachPrinter(harness, "coder", out);
+
+  harness.emit({ type: "message_end", message: assistant([toolCall(menuToolName("publish"), {})]) });
+  // pi emits a call's result twice: as the execution's end, and as the message the model reads.
+  // The message prints, once.
+  harness.emit({
+    type: "tool_execution_end",
+    toolCallId: "tc-1",
+    toolName: menuToolName("publish"),
+    result: "ignored",
+    isError: false,
+  });
+  harness.emit({ type: "message_end", message: toolResult(menuToolName("publish"), "Delivered.\nAllowed now: none.") });
+
+  assert.equal(
+    text(),
+    ["[coder] [publish] {}", "[coder] [publish answer] Delivered.", "[coder] Allowed now: none."]
+      .map((line) => line + "\n")
+      .join(""),
+  );
 });
 
 test("attachPrinter: the returned unsubscribe detaches the printer", () => {
