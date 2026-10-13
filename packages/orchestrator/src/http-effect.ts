@@ -234,26 +234,40 @@ export function openSecretsIn(items: readonly unknown[]): boolean {
 }
 
 /**
- * A definition's secret-bearing value with its Open secret named (ADR-0054): `secret(open)` becomes
- * `secret(name)`, its `.path` that secret's `.path`, a `text` part `{ secret: name }`, through a
- * `text`, a `bearer` and a `basic` pair, and the values of a header or env record. `secret(name)`
+ * One value of a definition with its Open secret named (ADR-0054): `secret(open)` becomes
+ * `secret(name)`, its `.path` that secret's `.path`, and a `text` part `{ secret: name }` inside a
+ * `text`. A string, a named secret and a `text` with no Open part are as written. `secret(name)`
  * checks the name, as it checks one the author writes.
  */
-export function bindOpenSecret<T>(value: T, name: string): T {
-  const bind = (v: unknown): unknown => {
-    if (typeof v !== "object" || v === null) return v;
-    const o = v as { secret?: unknown; path?: unknown; text?: unknown; bearer?: unknown; basic?: unknown };
-    if (o.secret === OPEN_SECRET) return o.path === true ? secret(name).path : secret(name);
-    if (typeof o.secret === "string") return v;
-    if (Array.isArray(o.text)) return { text: o.text.map(bind) };
-    if (o.bearer !== undefined) return { bearer: bind(o.bearer) };
-    if (o.basic !== undefined) {
-      const { user, password } = o.basic as { user: unknown; password: unknown };
-      return { basic: { user: bind(user), password: bind(password) } };
-    }
-    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, bind(x)]));
-  };
-  return bind(value) as T;
+function bindOpenValue(v: unknown, name: string): unknown {
+  if (typeof v !== "object" || v === null) return v;
+  const o = v as { secret?: unknown; path?: unknown; text?: unknown };
+  if (o.secret === OPEN_SECRET) return o.path === true ? secret(name).path : secret(name);
+  if (Array.isArray(o.text)) return { text: o.text.map((part) => bindOpenValue(part, name)) };
+  return v;
+}
+
+/**
+ * A header or env record with its Open secret named (ADR-0054): each VALUE is bound, by its place —
+ * a key is the author's header or variable name, whatever it is (`bearer`, `secret`, `basic`), and
+ * never read as a shape.
+ */
+export function bindOpenSecretIn<R extends Readonly<Record<string, unknown>> | undefined>(record: R, name: string): R {
+  if (record === undefined) return record;
+  return Object.fromEntries(Object.entries(record).map(([k, v]) => [k, bindOpenValue(v, name)])) as R;
+}
+
+/** An http definition's auth with its Open secret named (ADR-0054): a `bearer` of it, a `basic`
+ * pair holding it, or a `text` of it. */
+export function bindOpenAuth<A extends HttpDefinition<z.ZodType | undefined>["auth"]>(auth: A, name: string): A {
+  if (auth === undefined) return auth;
+  if ("bearer" in auth) return { bearer: bindOpenValue(auth.bearer, name) } as A;
+  if ("basic" in auth) {
+    return {
+      basic: { user: bindOpenValue(auth.basic.user, name), password: bindOpenValue(auth.basic.password, name) },
+    } as A;
+  }
+  return bindOpenValue(auth, name) as A;
 }
 
 function asText(v: string | Secret | Text): Text {
@@ -510,7 +524,8 @@ export function openHttpOf<S extends z.ZodType | undefined>(
     let bound: HttpDefinition<S> = def;
     if (binding.url !== undefined) bound = { ...bound, url: binding.url };
     if (binding.secret !== undefined) {
-      const { headers, auth } = bindOpenSecret({ headers: bound.headers, auth: bound.auth }, binding.secret);
+      const headers = bindOpenSecretIn(bound.headers, binding.secret);
+      const auth = bindOpenAuth(bound.auth, binding.secret);
       bound = { ...bound, ...(headers !== undefined ? { headers } : {}), ...(auth !== undefined ? { auth } : {}) };
     }
     return rebuild(bound) as EffectLogic<unknown, unknown>;

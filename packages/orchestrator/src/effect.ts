@@ -39,7 +39,7 @@ import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
 import type { HttpMethod, HttpOutput, TextPart, WireAuth } from "./effector-wire.ts";
 import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
-import { bindOpenSecret, type EffectorPortFactory, type OpenSecretIn } from "./http-effect.ts";
+import { bindOpenSecretIn, type EffectorPortFactory, type OpenSecretIn } from "./http-effect.ts";
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
 import { open } from "./open.ts";
 import {
@@ -831,7 +831,7 @@ function openCommandOf(
 /** A command's options with the binding's secret named in its env, where `secret(open)` stood. */
 function bindCommand(binding: EffectBinding, options: CommandOptions): CommandOptions {
   if (binding.secret === undefined || options.env === undefined) return options;
-  return { ...options, env: bindOpenSecret(options.env, binding.secret) };
+  return { ...options, env: bindOpenSecretIn(options.env, binding.secret) };
 }
 
 /** argv with each slot filled from the input — one argument per entry. */

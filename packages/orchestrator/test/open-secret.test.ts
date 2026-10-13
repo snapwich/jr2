@@ -229,6 +229,65 @@ test("the bound Effect is the one a definition written with that name gives: its
   assert.deepEqual(effectOf(slotAt(boundCommand, "release")), effectOf(writtenCommand));
 });
 
+test("a header or env key named bearer, basic or secret is the author's name, never a shape the binding reads", () => {
+  const url = "https://hooks.example.com/api";
+  // Each Effect names its Open secret in a record that also has a key a shape is named by.
+  const machine = jr2Setup({
+    events: [],
+    actors: {
+      hBearer: httpWith(ports, {
+        method: "POST",
+        url,
+        headers: { bearer: "literal", "x-key": text`${secret(open)}` },
+      }),
+      hSecret: httpWith(ports, { method: "POST", url, headers: { secret: "literal", "x-key": text`${secret(open)}` } }),
+      hBasic: httpWith(ports, { method: "POST", url, headers: { basic: text`k ${secret(open)}` } }),
+      eBearer: commandWith(execs.factory, ["deploy"], { env: { bearer: secret("fixed-one"), TOKEN: secret(open) } }),
+      eBasic: commandWith(execs.factory, ["deploy"], { env: { basic: secret(open).path } }),
+      eSecret: commandWith(execs.factory, ["deploy"], { env: { secret: secret(open) } }),
+    },
+  }).createMachine({ id: "keys", initial: "idle", states: { idle: {} } });
+  const bound = customize(machine, {
+    effects: {
+      hBearer: { secret: "team-key" },
+      hSecret: { secret: "team-key" },
+      hBasic: { secret: "team-key" },
+      eBearer: { secret: "team-key" },
+      eBasic: { secret: "team-key" },
+      eSecret: { secret: "team-key" },
+    },
+  });
+  assert.deepEqual(partsOf([bound]).openEffects, [], "every binding binds: none is still Open");
+  const headersOf = (slot: string) => {
+    const parts = effectOf(slotAt(bound, slot));
+    assert.equal(parts.kind, "http");
+    return parts.kind === "http" ? { headers: parts.headers, secrets: parts.secrets } : undefined;
+  };
+  assert.deepEqual(headersOf("hBearer"), {
+    headers: { bearer: [{ text: "literal" }], "x-key": [{ secret: "team-key" }] },
+    secrets: ["team-key"],
+  });
+  assert.deepEqual(headersOf("hSecret"), {
+    headers: { secret: [{ text: "literal" }], "x-key": [{ secret: "team-key" }] },
+    secrets: ["team-key"],
+  });
+  assert.deepEqual(headersOf("hBasic"), {
+    headers: { basic: [{ text: "k " }, { secret: "team-key" }] },
+    secrets: ["team-key"],
+  });
+  const envOf = (slot: string) => {
+    const parts = effectOf(slotAt(bound, slot));
+    assert.equal(parts.kind, "command");
+    return parts.kind === "command" ? { env: parts.env, secrets: [...(parts.secrets ?? [])].sort() } : undefined;
+  };
+  assert.deepEqual(envOf("eBearer"), {
+    env: { bearer: { secret: "fixed-one" }, TOKEN: { secret: "team-key" } },
+    secrets: ["fixed-one", "team-key"],
+  });
+  assert.deepEqual(envOf("eBasic"), { env: { basic: { secret: "team-key", path: true } }, secrets: ["team-key"] });
+  assert.deepEqual(envOf("eSecret"), { env: { secret: { secret: "team-key" } }, secrets: ["team-key"] });
+});
+
 // --- the walk ----------------------------------------------------------------------------------
 
 test("the walk reports an Open secret nothing bound, with the { secret } line, through workspace() and pool()", () => {
