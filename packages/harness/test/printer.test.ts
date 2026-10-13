@@ -134,10 +134,19 @@ test("renderMessage: an answer is cut at the inputs' 2000 chars, and says that i
 });
 
 test("renderMessage: an answer prints as the model received it — the Effector's scrub marks stay, nothing is added", () => {
-  // The Harness holds no Effect secret: an Effector scrubs every string before it signs its answer
-  // (ADR-0068), and a Held secret is a Stand-in here (ADR-0059). The print scrubs nothing of its own.
+  // No Effect secret reaches the Harness: an Effector scrubs every string before it signs its
+  // answer (ADR-0068). The print scrubs nothing of its own.
   const text = 'Its answer: the output of `comment`: {"outcome":"response","body":"token [secret:jira] echoed"}.';
   assert.deepEqual(renderMessage(toolResult(menuToolName("comment"), text)), [`[comment answer] ${text}`]);
+});
+
+test("renderMessage: a `command` Effect's output prints in its answer as the model read it, an echoed value too", () => {
+  // The residual ADR-0023 and ADR-0014 state: the command runs in the Agent's container with the
+  // Stand-ins its `bash` holds, and the Custodian does not scrub responses (ADR-0059), so a Held
+  // value an upstream echoed into the output reaches the log as it reached the model.
+  const text =
+    'Its answer: the output of `checker`: {"outcome":"exited","code":0,"tail":"upstream said: Bearer ECHOED-VALUE\\n"}.';
+  assert.deepEqual(renderMessage(toolResult(menuToolName("check"), text)), [`[check answer] ${text}`]);
 });
 
 test("renderMessage: the paragraph after a signed push prints whole in its pick's answer", () => {

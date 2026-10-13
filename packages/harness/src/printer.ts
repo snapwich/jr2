@@ -71,9 +71,11 @@ export function renderMessage(message: AgentMessage): string[] {
     if (!result.toolName.startsWith(MENU_TOOL_PREFIX)) return [];
     // A Menu pick's answer is jr2's own text, the one the model read back from the call: its
     // receipt, its outstanding answer with the post-push paragraph, a refusal. Printed as the model
-    // received it, under the inputs' bound: the Harness holds no Effect secret to scrub — an Effector
-    // scrubs every string before it signs its answer (ADR-0068), and a Held secret is a Stand-in
-    // here (ADR-0059). What the model reads does not change; only the log keeps it too.
+    // received it, under the inputs' bound, and scrubbed no more than the rest of this print: no
+    // Effect secret reaches it (an Effector scrubs every string before it signs its answer,
+    // ADR-0068), but a `command` Effect's output does, with any Held value an upstream echoed into
+    // it (ADR-0023 states that residual; ADR-0059). What the model reads does not change; only the
+    // log keeps it too.
     const text = result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
     return [`[${bareToolName(result.toolName)} ${result.isError ? "error" : "answer"}] ${bound(text)}`];
   }
