@@ -13,7 +13,12 @@ import {
   publishedCommits,
   pushRemoteLogScript,
   saidNote,
+  segment,
+  settledIn,
+  streamPath,
   trialDir,
+  cellDir,
+  historyFile,
   unavailable,
 } from "./model-evidence.ts";
 import { follow } from "./model-said.ts";
@@ -25,16 +30,93 @@ test("a trial's evidence lands under model-trials/<model>/<cell>/<runId>, the ce
   );
 });
 
-test("a path segment that could leave the folder is refused, never written", () => {
+test("a model id with a ':' or an '@' keeps its trials' evidence: the byte is spelled, never refused", () => {
+  // Keeping evidence never fails a trial (ADR-0066), and the tier runs any endpoint profile.
+  assert.equal(
+    trialDir("/r", "ollama--qwen3:30b", "obedience/off", "1a2b"),
+    "/r/ollama--qwen3%3A30b/obedience/off/1a2b",
+  );
+  assert.equal(
+    trialDir("/r", "bedrock--us.anthropic.claude-sonnet-4-5-20250929-v1:0", "obedience/off", "r1"),
+    "/r/bedrock--us.anthropic.claude-sonnet-4-5-20250929-v1%3A0/obedience/off/r1",
+  );
+  assert.equal(trialDir("/r", "x--Llama-3.1-8B@q4", "a/b", "r1"), "/r/x--Llama-3.1-8B%40q4/a/b/r1");
+  assert.equal(cellDir("/r", "ollama--qwen3:30b", "obedience/off"), "/r/ollama--qwen3%3A30b/obedience/off");
+});
+
+test("a path segment that could leave the folder is spelled so it stays in it", () => {
   for (const [model, cell, runId] of [
     ["..", "obedience/off", "r1"],
     ["m", "../off", "r1"],
     ["m", "obedience/off", "../../etc"],
     ["m", "obedience/off", "a/b"],
     ["m", "obedience/off", ""],
+    ["m", "obedience/.", "r1"],
   ] as const) {
-    assert.throws(() => trialDir("/r", model, cell, runId), /not a plain path segment/, `${model} ${cell} ${runId}`);
+    const dir = trialDir("/r", model, cell, runId);
+    assert.ok(dir.startsWith("/r/"), dir);
+    assert.equal(dir.split("/").length, 6, `${model} ${cell} ${runId}: ${dir}`);
+    assert.ok(
+      !dir
+        .split("/")
+        .slice(1)
+        .some((s) => s === "." || s === ".." || s === ""),
+      dir,
+    );
   }
+  assert.equal(segment(".."), "%2E.");
+  assert.equal(segment("a/b"), "a%2Fb");
+  assert.equal(segment(""), "%");
+  assert.equal(segment("é"), "%C3%A9");
+});
+
+test("a conversation's stream page gives its settlements, with the failure text of one that failed", () => {
+  const events = [
+    { type: "text-delta", conversationId: "r/body/coder", delta: "hi" },
+    { type: "submission-settled", conversationId: "r/body/coder", submissionId: "s1", outcome: "completed" },
+    {
+      type: "submission-settled",
+      submissionId: "s2",
+      outcome: "failed",
+      error: { message: "provider returned 500: upstream timeout" },
+      position: { batch: 9, index: 0 },
+    },
+  ];
+  assert.deepEqual(settledIn(events), [
+    { submissionId: "s1", outcome: "completed" },
+    { submissionId: "s2", outcome: "failed", error: { message: "provider returned 500: upstream timeout" } },
+  ]);
+  assert.deepEqual(settledIn({ error: "no conversation" }), []);
+});
+
+test("the stream is read as the Orchestrator reads it: long-polled from an offset, the iid encoded", () => {
+  assert.equal(
+    streamPath("coder", "r1/body/coder", "12"),
+    "/agents/coder/r1%2Fbody%2Fcoder?offset=12&view=updates&live=long-poll",
+  );
+});
+
+test("harness-history keeps a settlement the stream carried after the last view read: the one just before the reap", () => {
+  const views = new Map([
+    ["r/body/coder", 'read at T1\nHTTP 200\n{"v":1,"settlements":[{"submissionId":"s1","outcome":"completed"}]}\n'],
+  ]);
+  const s2 = { submissionId: "s2", outcome: "failed", error: { message: "runaway: the FINAL failure text" } };
+  const settled = new Map([["r/body/coder", [{ submissionId: "s1", outcome: "completed" }, s2]]]);
+  const file = historyFile(views, settled, "never read");
+  assert.match(file, /^--- r\/body\/coder ---\nread at T1\nHTTP 200\n/);
+  assert.match(file, /settled on the stream, not in the view above:\n.*"s2".*the FINAL failure text/);
+  assert.doesNotMatch(file.slice(file.indexOf("settled on the stream")), /"s1"/);
+});
+
+test("harness-history with no view read keeps what the stream carried, and says why when it holds nothing", () => {
+  const settled = new Map([["r/body/coder", [{ submissionId: "s1", outcome: "failed", error: "boom" }]]]);
+  const file = historyFile(new Map(), settled, "never read");
+  assert.match(file, /^--- r\/body\/coder ---\n<unavailable: no history view was read>\nsettled on the stream/);
+  assert.match(file, /"boom"/);
+  assert.equal(historyFile(new Map(), new Map(), "never read"), unavailable("never read"));
+  // A view that is not a 200 holds no settlement: each one the stream carried is kept after it.
+  const notOk = new Map([["i", "read at T\nHTTP 404\n{}\n"]]);
+  assert.match(historyFile(notOk, new Map([["i", [{ submissionId: "s1", outcome: "completed" }]]]), "x"), /"s1"/);
 });
 
 test("a probe that could not be taken writes why, in the dump's form", () => {

@@ -16,7 +16,6 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { harnessToken } from "@jr2/orchestrator";
@@ -42,7 +41,7 @@ import { FINISHED } from "../lib/model-finished.ts";
 import { bodyIn, ended, killedInTheFirstTurn, type RunChild } from "../lib/model-status.ts";
 import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
 import { beginEvidence, recordStatus, trialContext, type TrialContext } from "./model-evidence.ts";
-import { trialDir } from "../lib/model-evidence.ts";
+import { cellDir, trialDir } from "../lib/model-evidence.ts";
 import { ensureSeed, pushRemoteCommitsFromMain, pushRemoteLogFromMain } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
@@ -1021,7 +1020,7 @@ async function runTrials(
   // A void trial is replaced, at most this many times over the whole claim: the claim measures a
   // later Turn, and a setup that never happened says nothing about it.
   let replacements = Math.ceil(n / 2);
-  console.log(`trial evidence: ${join(TRIALS, modelKey(world), workflow, thinking)}`);
+  console.log(`trial evidence: ${cellDir(TRIALS, modelKey(world), `${workflow}/${thinking}`)}`);
   const worker = async () => {
     while (next < n) {
       const i = next++;

@@ -5,12 +5,13 @@
 // A trial's witnesses do not outlive it. A Sandbox pod is reaped when its run settles (ADR-0012),
 // and its logs go with it; the namespace is deleted at teardown. So the tier begins to keep a trial
 // the moment its run starts — follows the Sandbox pod's containers from the moment the pod exists,
-// polls the Harness's history view while the pod lives — and writes each file as it changes, so a
+// reads the Harness's history view while the pod lives, and follows each Agent's stream for its
+// settlements, so the one that lands just before the reap is kept too — and writes each file as it changes, so a
 // trial that hangs until its timeout still leaves what it had. Every probe only reads: a probe that
 // fails writes why into its file, never fails the trial, and never changes what the next trial does.
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -18,12 +19,17 @@ import {
   agentsIn,
   containerRun,
   followAcross,
+  historyFile,
   historyIid,
   publishedCommits,
   saidNote,
+  settledIn,
+  STREAM_NEXT_OFFSET,
+  streamPath,
   unavailable,
   type Kept,
   type PodSeen,
+  type SettlementSeen,
 } from "../lib/model-evidence.ts";
 import { follow } from "../lib/model-said.ts";
 
@@ -59,12 +65,17 @@ export const trialContext = new AsyncLocalStorage<TrialContext>();
 /** The evidence of each run in flight, by run id: what a status read records into. */
 const byRun = new Map<string, TrialEvidence>();
 
-/** Begin keeping the trial's evidence now that its run exists; nothing outside a trial. */
+/** Begin keeping the trial's evidence now that its run exists; nothing outside a trial. Never
+ * throws: the step that started the run goes on whatever the keeping does. */
 export function beginEvidence(runId: string): void {
   const ctx = trialContext.getStore();
   if (!ctx || ctx.evidence) return;
-  ctx.evidence = new TrialEvidence(runId, ctx);
-  byRun.set(runId, ctx.evidence);
+  try {
+    ctx.evidence = new TrialEvidence(runId, ctx);
+    byRun.set(runId, ctx.evidence);
+  } catch {
+    // Evidence never fails a trial.
+  }
 }
 
 /** Record a status a driver read: the Machine's final record is the last one. */
@@ -76,16 +87,26 @@ export function recordStatus(runId: string, status: unknown): void {
 const INSTANCE_POD = "jr2-instance-harness-0";
 const INSTANCE_PLACEMENT = "jr2-instance-harness";
 
-/** How often the history view is read while the trial runs, and the follows' files written. */
+/** How often the history view is read while the trial runs (and each time a stream settles), how
+ * often the Agents seen are looked for to follow their streams, and the follows' files written. */
 const HISTORY_EVERY_MS = 15_000;
+const AGENTS_EVERY_MS = 2_000;
 const WRITE_EVERY_MS = 5_000;
+/** A long-poll the Harness holds 25 s (ADR-0027); past this the read is given up and made again. */
+const STREAM_READ_MS = 40_000;
 /** How long a Sandbox trial's follows may take to end on their own after the driver returned:
  * the reap at settle ends them. */
 const REAP_GRACE_MS = 30_000;
 
 export class TrialEvidence {
-  readonly dir: string;
+  /** The trial's folder; `undefined` when it could not be named, and then nothing is written. */
+  readonly dir: string | undefined;
   private stopped = false;
+  private readonly abort = new AbortController();
+  private forward: PortForward | undefined;
+  private headers: Promise<Record<string, string>> | undefined;
+  private readonly settled = new Map<string, SettlementSeen[]>();
+  private readonly streams = new Map<string, Promise<void>>();
   private readonly written = new Map<string, string>();
   private writing: Promise<void> = Promise.resolve();
   private pod: string | undefined;
@@ -104,7 +125,11 @@ export class TrialEvidence {
   constructor(runId: string, ctx: TrialContext) {
     this.runId = runId;
     this.ctx = ctx;
-    this.dir = ctx.dirFor(runId);
+    try {
+      this.dir = ctx.dirFor(runId);
+    } catch {
+      this.dir = undefined; // Evidence never fails a trial: the note is still read.
+    }
     this.loops = [
       (ctx.sandbox ? this.watchSandbox() : this.watchInstance()).catch(() => {}),
       this.pollHistory().catch(() => {}),
@@ -128,10 +153,13 @@ export class TrialEvidence {
       const follows = [this.harness?.closed, this.effector?.closed].filter((p) => p !== undefined);
       if (this.ctx.sandbox && follows.length > 0) await Promise.race([Promise.all(follows), sleep(REAP_GRACE_MS)]);
       else await sleep(2_000); // the Instance Harness's last lines of the trial
+      // The Instance Harness outlives the trial: its view is read once more, then the streams end.
+      if (!this.ctx.sandbox) await this.readHistory().catch(() => {});
       this.stopped = true;
+      this.abort.abort();
       await Promise.all(this.loops);
+      await Promise.all(this.streams.values());
       await Promise.all([this.harness?.stop(), this.effector?.stop()]);
-      await this.readHistory().catch(() => {});
       if (this.ctx.push) await this.keepPushLog();
       this.flush();
       await this.writing;
@@ -139,6 +167,8 @@ export class TrialEvidence {
       // Evidence never fails a trial.
     } finally {
       this.stopped = true;
+      this.abort.abort();
+      this.forward?.close();
       byRun.delete(this.runId);
     }
     return saidNote(this.conversation(), this.ctx.marker, this.harness?.why ?? this.notSeen);
@@ -225,26 +255,49 @@ export class TrialEvidence {
     );
   }
 
-  /** Read the Harness history view of each Agent seen in the conversation while the trial runs. */
+  /**
+   * While the trial runs: follow the stream of each Agent seen in the conversation, and read the
+   * Harness history view of each now and then.
+   */
   private async pollHistory(): Promise<void> {
+    let lastRead = 0;
     while (!this.stopped) {
-      await this.readHistory().catch(() => {});
-      await this.pause(HISTORY_EVERY_MS);
+      if (this.pod !== undefined) {
+        for (const agent of agentsIn(this.harness?.text ?? "")) {
+          const iid = historyIid(this.runId, this.ctx.sandbox, agent);
+          if (!this.streams.has(iid))
+            this.streams.set(
+              iid,
+              this.followStream(iid).catch(() => {}),
+            );
+        }
+        if (Date.now() - lastRead >= HISTORY_EVERY_MS) {
+          lastRead = Date.now();
+          await this.readHistory().catch(() => {});
+        }
+      }
+      await this.pause(AGENTS_EVERY_MS);
     }
   }
 
-  /** One read of each Agent's history; a 200 replaces the last view kept, anything else is kept
-   * only while there is none. */
-  private async readHistory(): Promise<void> {
-    const pod = this.pod;
-    if (pod === undefined) return;
-    const placement = this.ctx.sandbox ? pod : INSTANCE_PLACEMENT;
+  /** One read of each Agent's history (or of one, `only`); a 200 replaces the last view kept,
+   * anything else is kept only while there is none. */
+  private async readHistory(only?: string): Promise<void> {
+    if (this.pod === undefined) return;
     const agents = agentsIn(this.harness?.text ?? "");
-    for (const agent of agents.length > 0 ? agents : [this.ctx.sandbox ? "coder" : "advisor"]) {
-      const iid = historyIid(this.runId, this.ctx.sandbox, agent);
+    const iids =
+      only !== undefined
+        ? [only]
+        : (agents.length > 0 ? agents : [this.ctx.sandbox ? "coder" : "advisor"]).map((a) =>
+            historyIid(this.runId, this.ctx.sandbox, a),
+          );
+    for (const iid of iids) {
       try {
-        const view = await this.historyOf(pod, placement, iid);
-        if (view.startsWith("HTTP 200") || !this.history.has(iid))
+        const res = await this.get(
+          `/agents/${encodeURIComponent(agentOf(iid))}/${encodeURIComponent(iid)}?view=history`,
+        );
+        const view = `HTTP ${res.status}\n${await res.text()}\n`;
+        if (res.status === 200 || !this.history.has(iid))
           this.history.set(iid, `read at ${new Date().toISOString()}\n${view}`);
       } catch (err) {
         this.historyWhy = `the history view of ${iid} could not be read: ${message(err)}`;
@@ -252,37 +305,65 @@ export class TrialEvidence {
     }
   }
 
-  /** `GET /agents/<agent>/<iid>?view=history` over a port-forward: `HTTP <status>` and the body
-   * (the @kind dump's shape) — each settlement, with the failure text of one that failed. */
-  private async historyOf(pod: string, placement: string, iid: string): Promise<string> {
-    const headers = await this.ctx.probes.auth(placement);
-    const agent = iid.slice(iid.lastIndexOf("/") + 1);
-    const child = spawn("kubectl", ["--namespace", this.ctx.probes.namespace, "port-forward", `pod/${pod}`, ":8080"]);
-    try {
-      const local = await new Promise<string>((resolve, reject) => {
-        let out = "";
-        const timer = setTimeout(() => reject(new Error(`port-forward pod/${pod} did not start`)), 10_000);
-        child.stdout.on("data", (d: Buffer) => {
-          out += d.toString();
-          const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out);
-          if (m) {
-            clearTimeout(timer);
-            resolve(m[1]!);
+  /**
+   * Follow one Agent's stream from its start, long-polled as the Orchestrator reads it (ADR-0027),
+   * and keep each `submission-settled` it carries the moment it lands: the settlement of a Turn
+   * just before the reap, whose view can be too late to read, is kept off its stream. Each one
+   * also has the view read again at once. Ends at the stop, or when a Sandbox pod is reaped.
+   */
+  private async followStream(iid: string): Promise<void> {
+    let offset = "0";
+    const kept = this.settled.get(iid) ?? [];
+    this.settled.set(iid, kept);
+    while (!this.stopped) {
+      try {
+        const res = await this.get(streamPath(agentOf(iid), iid, offset), STREAM_READ_MS);
+        if (res.status === 200 || res.status === 204) {
+          offset = res.headers.get(STREAM_NEXT_OFFSET) ?? offset;
+          const fresh =
+            res.status === 200
+              ? settledIn(await res.json()).filter((s) => !kept.some((k) => k.submissionId === s.submissionId))
+              : [];
+          if (fresh.length > 0) {
+            kept.push(...fresh);
+            this.flush();
+            void this.readHistory(iid).catch(() => {});
           }
-        });
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          reject(new Error(`port-forward pod/${pod} exited (${code})`));
-        });
-      });
-      const res = await fetch(`http://127.0.0.1:${local}/agents/${agent}/${encodeURIComponent(iid)}?view=history`, {
-        headers,
-        signal: AbortSignal.timeout(10_000),
-      });
-      return `HTTP ${res.status}\n${await res.text()}\n`;
-    } finally {
-      child.kill();
+          continue;
+        }
+        await res.body?.cancel(); // 404: the conversation is not seated yet
+      } catch {
+        // A port-forward or a read that failed: made again below while the pod lives.
+      }
+      if (this.stopped) return;
+      if (
+        this.ctx.sandbox &&
+        this.pod !== undefined &&
+        containerRun(await this.podJson(this.pod), "harness") === undefined
+      )
+        return; // reaped
+      await this.pause(1_000);
     }
+  }
+
+  /** One read of the trial's Harness over its port-forward, with the placement's bearer. */
+  private async get(path: string, ms = 10_000): Promise<Response> {
+    const pod = this.pod;
+    if (pod === undefined) throw new Error("no pod to read");
+    this.forward ??= new PortForward(this.ctx.probes.namespace, pod);
+    if (this.headers === undefined) {
+      const asked = this.ctx.probes.auth(this.ctx.sandbox ? pod : INSTANCE_PLACEMENT);
+      asked.catch(() => {
+        if (this.headers === asked) this.headers = undefined; // asked again on the next read
+      });
+      this.headers = asked;
+    }
+    const headers = await this.headers;
+    const port = await this.forward.port();
+    return fetch(`http://127.0.0.1:${port}${path}`, {
+      headers,
+      signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(ms)]),
+    });
   }
 
   /** The push remote's log from `main` to each published commit of the final record. */
@@ -325,23 +406,19 @@ export class TrialEvidence {
             : unavailable(this.effector.why ?? "the log printed nothing"),
       );
     }
-    this.keep(
-      "harness-history.txt",
-      this.history.size === 0
-        ? unavailable(this.historyWhy)
-        : [...this.history].map(([iid, view]) => `--- ${iid} ---\n${view}`).join(""),
-    );
+    this.keep("harness-history.txt", historyFile(this.history, this.settled, this.historyWhy));
     if (this.last === undefined) this.keep("record.json", unavailable("no status of the run was read"));
   }
 
   /** Write `name` when its content changed; writes are serial, and a failed write is dropped. */
   private keep(name: string, content: string): void {
-    if (this.written.get(name) === content) return;
+    const dir = this.dir;
+    if (dir === undefined || this.written.get(name) === content) return;
     this.written.set(name, content);
     this.writing = this.writing.then(async () => {
       try {
-        await mkdir(this.dir, { recursive: true });
-        await writeFile(join(this.dir, name), content);
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, name), content);
       } catch {
         // Evidence never fails a trial.
       }
@@ -363,3 +440,68 @@ export class TrialEvidence {
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err)).trim();
+
+/** The Agent an iid's conversation is of: its last part (`<run>/<machine>/<agent>`). */
+const agentOf = (iid: string): string => iid.slice(iid.lastIndexOf("/") + 1);
+
+/**
+ * One `kubectl port-forward` to a pod's Harness port, held open for the trial so a long-poll and
+ * the view reads share it; made again when it ended (a pod made again, a dropped forward).
+ */
+class PortForward {
+  private child: ChildProcess | undefined;
+  private local: Promise<string> | undefined;
+  private closed = false;
+  private readonly namespace: string;
+  private readonly pod: string;
+
+  constructor(namespace: string, pod: string) {
+    this.namespace = namespace;
+    this.pod = pod;
+  }
+
+  port(): Promise<string> {
+    if (this.closed) return Promise.reject(new Error("the port-forward is closed"));
+    if (this.local) return this.local;
+    const pod = this.pod;
+    const child = spawn("kubectl", ["--namespace", this.namespace, "port-forward", `pod/${pod}`, ":8080"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    this.child = child;
+    const local = new Promise<string>((resolve, reject) => {
+      let out = "";
+      const timer = setTimeout(() => {
+        reject(new Error(`port-forward pod/${pod} did not start`));
+        child.kill();
+      }, 10_000);
+      child.stdout?.on("data", (d: Buffer) => {
+        out += d.toString();
+        const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out);
+        if (m) {
+          clearTimeout(timer);
+          resolve(m[1]!);
+        }
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`port-forward pod/${pod} exited (${code})`));
+        if (this.child === child) {
+          this.child = undefined;
+          this.local = undefined;
+        }
+      });
+    });
+    local.catch(() => {});
+    this.local = local;
+    return local;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.child?.kill();
+  }
+}

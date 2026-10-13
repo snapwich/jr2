@@ -11,17 +11,32 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { calledIn, told, untimed, type Follow } from "./model-said.ts";
 
-/** A segment the tier names a folder with: a model key, a cell's halves, a run id. */
-const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** The characters a folder name keeps as they are; every other byte is spelled `%XX`. */
+const PLAIN = /^[A-Za-z0-9._-]$/;
 
-function segment(s: string): string {
-  if (!SEGMENT.test(s) || s.includes("..")) throw new Error(`${JSON.stringify(s)} is not a plain path segment`);
-  return s;
+/**
+ * A model key, a cell's half or a run id as one folder name. Never refused, since keeping evidence
+ * never fails a trial: a byte outside `[A-Za-z0-9._-]` (a model id's `:` or `@`, a `/`) is spelled
+ * `%XX`, and so is a leading `.`, so no name leaves the folder or hides in it. An empty one is `%`.
+ */
+export function segment(s: string): string {
+  if (s === "") return "%";
+  let out = "";
+  for (const ch of s) {
+    if (PLAIN.test(ch) && !(out === "" && ch === ".")) out += ch;
+    else for (const b of Buffer.from(ch, "utf8")) out += `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return out;
 }
 
-/** Where one trial's evidence lands: `<root>/<model>/<cell>/<runId>`, a cell's `/` a folder. */
+/** Where one cell's trials land: `<root>/<model>/<cell>`, a cell's `/` a folder. */
+export function cellDir(root: string, model: string, cell: string): string {
+  return join(root, segment(model), ...cell.split("/").map(segment));
+}
+
+/** Where one trial's evidence lands: `<root>/<model>/<cell>/<runId>`. */
 export function trialDir(root: string, model: string, cell: string, runId: string): string {
-  return join(root, segment(model), ...cell.split("/").map(segment), segment(runId));
+  return join(cellDir(root, model, cell), segment(runId));
 }
 
 /** What a probe that could not be taken writes in its file: why (the @kind dump's form). */
@@ -157,4 +172,76 @@ export function followAcross(
       await closed;
     },
   };
+}
+
+/** A settlement as the Harness's history view and its stream's `submission-settled` carry it
+ * (ADR-0027): its outcome, and the failure text of one that failed. */
+export type SettlementSeen = { submissionId: string; outcome: string; error?: unknown };
+
+/** The settlements in one page of a conversation's stream, in order. */
+export function settledIn(events: unknown): SettlementSeen[] {
+  if (!Array.isArray(events)) return [];
+  const out: SettlementSeen[] = [];
+  for (const e of events as Array<Record<string, unknown> | null>) {
+    if (e?.type !== "submission-settled" || typeof e.submissionId !== "string" || typeof e.outcome !== "string")
+      continue;
+    out.push({
+      submissionId: e.submissionId,
+      outcome: e.outcome,
+      ...(e.error !== undefined ? { error: e.error } : {}),
+    });
+  }
+  return out;
+}
+
+/** The response header that names the offset a stream's next page is read from (the Harness wire). */
+export const STREAM_NEXT_OFFSET = "stream-next-offset";
+
+/**
+ * One page of a conversation's stream, long-polled from `offset`: the read the Orchestrator waits on
+ * a Submission with (ADR-0027). Reading it moves nothing; each reader holds its own offset.
+ */
+export function streamPath(agent: string, iid: string, offset: string): string {
+  const q = new URLSearchParams({ offset, view: "updates", live: "long-poll" });
+  return `/agents/${encodeURIComponent(agent)}/${encodeURIComponent(iid)}?${q}`;
+}
+
+/** The submission ids a kept history view (`read at ...\nHTTP <status>\n<body>`) holds, when it is a 200. */
+function viewSettled(view: string): Set<string> | undefined {
+  const m = /^read at [^\n]*\nHTTP 200\n([\s\S]*)$/.exec(view);
+  if (!m) return undefined;
+  try {
+    const body = JSON.parse(m[1]!) as { settlements?: Array<{ submissionId?: unknown }> };
+    return new Set((body.settlements ?? []).map((s) => String(s.submissionId)));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `harness-history.txt`: each Agent's last history view read, and after it every settlement its
+ * stream carried that the view does not hold. A Sandbox Harness exits at the reap, so the view
+ * after a Turn that settled just before it can be too late to read; that Turn's
+ * `submission-settled` was read off the stream while it landed. `why` is said when nothing was kept.
+ */
+export function historyFile(
+  views: ReadonlyMap<string, string>,
+  settled: ReadonlyMap<string, readonly SettlementSeen[]>,
+  why: string,
+): string {
+  const parts: string[] = [];
+  for (const iid of new Set([...views.keys(), ...settled.keys()])) {
+    const view = views.get(iid);
+    const held = view === undefined ? undefined : viewSettled(view);
+    const past = (settled.get(iid) ?? []).filter((s) => !held?.has(s.submissionId));
+    if (view === undefined && past.length === 0) continue;
+    let part = `--- ${iid} ---\n${view ?? unavailable("no history view was read")}`;
+    if (past.length > 0) {
+      if (!part.endsWith("\n")) part += "\n";
+      part += "settled on the stream, not in the view above:\n";
+      part += past.map((s) => `${JSON.stringify(s)}\n`).join("");
+    }
+    parts.push(part);
+  }
+  return parts.length === 0 ? unavailable(why) : parts.join("");
 }

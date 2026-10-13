@@ -112,12 +112,14 @@ recover, finish — are exercised only one scripted tool call at a time.
   claims read their pods and run `parallel` at once. A claim whose setup the step must race (a Gate answered while the
   model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
   past the bound counts against the floor and prints as a void in the failure list, never as a miss.
-- Each trial's line in the failure list says how its run ended, whatever stopped the trial (a driver that threw names no
-  run, and prints what it threw). A run that ended faulted or lost also prints its final output, and a run in error its
-  fault, which carry the reason (`features/lib/model-status.ts`): the namespace that held the pod log is gone when the
-  list is read.
+- Each trial's line in the failure list says how its run ended, whatever stopped the trial (a driver that threw prints
+  what it threw, and names the run it had started, if any: `threw: <message> (run <id>)`). A run that ended faulted or
+  lost also prints its final output, and a run in error its fault, which carry the reason
+  (`features/lib/model-status.ts`): the namespace that held the pod log is gone when the list is read.
 - **Every trial keeps its evidence.** Every trial, passed, missed or void, keeps one folder,
-  `features/.tmp/model-trials/<model>/<cell>/<runId>/` (gitignored with `.tmp`; a cell's `/` is a folder):
+  `features/.tmp/model-trials/<model>/<cell>/<runId>/` (gitignored with `.tmp`; a cell's `/` is a folder; a byte of a
+  name outside `[A-Za-z0-9._-]`, such as a model id's `:`, and a leading `.` are spelled `%XX`, so any model id keeps
+  its trials):
   - `conversation.txt`: the Harness container's printed conversation (ADR-0023), timestamped. A Sandbox claim's is
     followed from the moment the trial's Sandbox pod exists until the reap at settle takes the pod
     ([ADR-0012](0012-workspace-wrapper-machine.md)), so a read after the settle is never needed, and it is followed
@@ -127,8 +129,10 @@ recover, finish — are exercised only one scripted tool call at a time.
     the pod has none.
   - `harness-history.txt`: the Harness history view
     ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)) of each Agent whose prompt printed:
-    each settlement, with the failure text of one that failed. It is read while the trial runs, and the last view read
-    while the pod lived is kept.
+    each settlement, with the failure text of one that failed. The view is read while the trial runs and again each time
+    a settlement lands, and the last one read is kept. A Sandbox Harness exits at the reap, so the view after a Turn
+    that settled just before it can be too late to read: each Agent's stream is also followed, read as the Orchestrator
+    reads it, and each `submission-settled` it carries that the kept view does not hold is kept after the view.
   - `record.json`: the Machine's final record, the last status the driver read of the run.
   - `push-log.txt`, for a push claim: the push remote's log from `main` to each commit the record says was published.
 
