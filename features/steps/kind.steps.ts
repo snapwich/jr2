@@ -2262,13 +2262,18 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
   // The provider's side, first: how many requests EVER reached this scenario's scripted model, and
   // whether any of them streamed. Zero streaming is the flake's signature — the pod's turn loop
   // never got as far as asking the model anything.
+  // A @model scenario has none: a real endpoint answers it (ADR-0066).
   const calls = world.provider?.calls ?? [];
   const files: Array<[string, Promise<string> | string]> = [
     [
       "provider-calls.txt",
-      `${calls.length} request(s), ${calls.filter((c) => c.stream).length} streaming\n` +
-        calls.map((c) => `#${c.seq} stream=${c.stream} model=${c.model ?? "?"} tools=${c.tools.join(",")}`).join("\n") +
-        "\n",
+      world.provider === undefined
+        ? "<unavailable: no scripted provider in this scenario>\n"
+        : `${calls.length} request(s), ${calls.filter((c) => c.stream).length} streaming\n` +
+          calls
+            .map((c) => `#${c.seq} stream=${c.stream} model=${c.model ?? "?"} tools=${c.tools.join(",")}`)
+            .join("\n") +
+          "\n",
     ],
     ["jr2-status.json", status],
     [
@@ -2304,7 +2309,7 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
 // Namespace deletion (World.cleanup) is the real teardown; this only unsticks a Sandbox whose
 // finalizer might slow that deletion down after a failed scenario. Registered in this file, which
 // Cucumber imports after `hooks.ts`, so (After hooks run in reverse) this runs BEFORE the namespace
-// is deleted — which is what makes the diagnostics dump above possible at all.
+// is deleted — and the failure dump's hook, registered after it, runs before this one.
 After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHookParameter): Promise<void> {
   // Every scenario, not only the failures: the point of the budget is to see the window being
   // spent while everything still passes. Read-only, and it swallows its own errors — a diagnostic
@@ -2318,11 +2323,6 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
     const logs = await allPodLogs(this).catch(() => "");
     assert.ok(!logs.includes(key), "the provider key reached a pod log in this namespace");
   }
-  if (scenario.result?.status === "FAILED") {
-    await dumpKindDiagnostics(this, scenario.pickle.name).catch((err: unknown) => {
-      console.error(`[kind] diagnostics dump failed:`, err);
-    });
-  }
   // A scenario that failed before (or during) the sweep leaves its planted image behind; the next
   // `jr2 gc` collects it either way — a labeled image no root names is exactly what the sweep is
   // for — but the tier must not depend on that to stay clean. Every ref the load added goes, since
@@ -2334,6 +2334,17 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
   }
   if (!this.runId) return;
   await kubectl(this, ["delete", "sandbox", "-l", `jr2.dev/run=${this.runId}`, "--ignore-not-found"]).catch(() => {});
+});
+
+// The failure dump, for @model scenarios too (ADR-0066): their namespace goes at teardown the same
+// way. Registered after the hook above, so (After hooks run in reverse) it reads the cluster before
+// that hook deletes the run's Sandboxes, and before `hooks.ts` deletes the namespace. A failed
+// @model scenario's dump lands where a @kind one does.
+After({ tags: "@kind or @model" }, async function (this: E2EWorld, scenario: ITestCaseHookParameter): Promise<void> {
+  if (scenario.result?.status !== "FAILED") return;
+  await dumpKindDiagnostics(this, scenario.pickle.name).catch((err: unknown) => {
+    console.error(`[kind] diagnostics dump failed:`, err);
+  });
 });
 
 /**
