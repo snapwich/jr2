@@ -186,7 +186,20 @@ recover, finish — are exercised only one scripted tool call at a time.
   restart killed the command, the Agent checks before it announces; the step restarts the Sandbox's Harness container) —
   carry the borrowed floor of ADR-0029/0062's measurement of a list read last. Their first runs (home-lab vLLM,
   2026-10-07 and 08, four runs of the tier) read:
-  - `answered`: 10, 9, 10 and 10 of 10, now a baseline.
+  - `answered`: 10, 9, 10 and 10 of 10 with its first setup, now a baseline; 9 of 10 in the full run of 2026-10-12, and
+    8 of 10 in the full run of 2026-10-13 (on 50fe7e0), below its floor of 9. The two misses (53cc7436, 253e840b) had
+    one shape: the coder read the right answer, the outcome `exited` with code 1, the output's line
+    `auth.test.ts: expected 200, got 500` and "Allowed now: report_failure, run_tests, ship", said that the output named
+    `auth.test.ts`, a file the Worktree did not hold, ran the Repo's own tests, fixed the `greet` tests the output did
+    not name, and picked `ship`. jr2 acted correctly in all ten trials. The setup was the one `allowed-after-route` had
+    until 2026-10-08: the test command was fixed data that printed a failure of a file the Repo did not hold, while the
+    Worktree (the seed's `app.git`) held real failing tests the model could fix, so a miss could not tell "ignores what
+    the output says" from "fixed what it was shown". The setup now is the same real case (2026-10-13): the claim binds
+    `billing.git`, and `run_tests` runs its suite in the Worktree (`node --test`), whose one failing test the output
+    names with its file and the values it compared, and the Worktree holds nothing else to fix. The prompt's subject
+    follows the seed ("The billing change is in." in place of "The auth fix is in."); the rest of the prompt, the floor,
+    the measure (the first pick after `run_tests` is `report_failure`) and the baseline are unchanged. The user approved
+    this setup change on 2026-10-13, before it was made. The claim is open until a run with this setup is read.
   - `unknown-outcome`: 10 of 10 in both runs that read it whole, now a baseline. The Harness container restarts in
     place, and the reap when the run settles deletes the pod with every log it held, so the step follows the restarted
     container's log from the moment it runs. Read after the settle, the log was gone in 5 of 10 trials of the first run,

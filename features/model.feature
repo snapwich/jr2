@@ -213,13 +213,14 @@ Feature: a real model drives the kit
     measurement of a list read last — 10/10 obeyed — rounded down as ADR-0066 rounds it, because the
     answer and its Allowed picks are the newest thing the model read. `answered` and
     `unknown-outcome` cleared it on their first runs; `allowed-after-route` cleared it once its
-    setup became the real case (ADR-0066 says why).
+    setup became the real case, and `answered` runs the same real case since (ADR-0066 says why).
 
     Scenario: the answer is the command's output, and the next pick follows it
-      The `answered` workflow's `run_tests` runs a failing test command. Its answer is the output,
-      which names the failing test; `ship` and `report_failure` are both allowed after it. The first
-      pick the Machine took after `run_tests` is the measurement: `report_failure`. A Turn that
-      never ran the tests is void.
+      The `answered` workflow's `run_tests` runs the billing Repo's real suite, where one test
+      fails. Its answer is the output, which names the failing test, its file and the values it
+      compared; `ship` and `report_failure` are both allowed after it. The first pick the Machine
+      took after `run_tests` is the measurement: `report_failure`. A Turn that never ran the tests
+      is void.
       Given the model instance is serving
       When I run the "answered" workflow 10 times with thinking off
       Then the first pick after the command answered was the one its output called for in at least 9 trials

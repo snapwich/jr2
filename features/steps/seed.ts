@@ -117,9 +117,10 @@ export function makeRepoScript(srv = "/srv", work = "/tmp/w"): string {
     // The eviction scenario needs a Repo nothing binds, and a per-run url spelling `app.git`
     // differently would normalize to the same identity — so it names this one instead.
     serve("other.git"),
-    // A THIRD repository, its own project (ADR-0066): the allowed-after-route claim's billing
-    // module. `total()` truncates where it must round, so one of its two tests fails with a message
-    // that names the defect; the coder can find it, fix it, and run the suite again until it passes.
+    // A THIRD repository, its own project (ADR-0066): the billing module the command-Effect claims
+    // bind (`allowed-after-route`, `answered`; `model-instance/workflows/_seed.ts`). `total()`
+    // truncates where it must round, so one of its two tests fails with a message that names the
+    // defect, and the Worktree holds nothing else to fix.
     `rm -rf ${work}`,
     `git init -q -b main ${work}`,
     `printf '%s\\n' '{ "name": "billing", "private": true, "type": "module", "scripts": { "test": "node --test" } }' > ${work}/package.json`,

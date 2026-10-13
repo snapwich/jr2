@@ -28,6 +28,7 @@ import {
 } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
+import { billing, suite } from "./_seed.ts";
 
 const runTests = defineEvent({
   name: "run_tests",
@@ -53,7 +54,7 @@ const body = jr2Setup({
   events: [runTests, ship, openIssue],
   actors: {
     coder: agent(coder),
-    tests: command(["node", "--test"]),
+    tests: command(suite),
   },
 }).createMachine({
   id: "body",
@@ -116,6 +117,6 @@ const body = jr2Setup({
 
 export const machine = workspace(body, {
   input: door,
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/billing.git", ref: "main" } },
+  repos: { app: billing },
   spec: () => ({ branch: "model-allowed-after-route" }),
 });

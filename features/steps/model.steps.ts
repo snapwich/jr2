@@ -799,7 +799,8 @@ const cutPick: Driver = async (world, input) => {
 };
 
 /**
- * answered (ADR-0067): `run_tests` runs a command that fails, and the pick's answer is its output.
+ * answered (ADR-0067): `run_tests` runs the billing Repo's real suite, where one test fails, and
+ * the pick's answer is its output.
  * The first pick the Machine took after `run_tests` is the measurement: `report_failure`. A Turn
  * that never ran the tests is void.
  */

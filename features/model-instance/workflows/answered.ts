@@ -1,11 +1,14 @@
 // The answered claim (ADR-0067, ADR-0024): a pick that runs a `command` Effect is answered with the
 // command's output, and a correct Agent acts on that output.
 //
-// `run_tests` enters a state that runs the tests as a command in the coder's own Sandbox — they fail,
-// and the output says which test and why. The pick is outstanding while they run; its answer is the
+// `run_tests` enters a state that runs the billing Repo's real suite in the coder's own Sandbox,
+// where one test fails (`total()` truncates where it must round) and the output names that test,
+// its file and the values it compared. The pick is outstanding while it runs; its answer is the
 // command's output, with `ship` and `report_failure` both allowed after it. The prompt says to ship
 // if the tests pass and to report the failure if they do not. The first pick the Machine takes after
-// `run_tests` is the measurement: `report_failure`. An Agent that reads only that the tests ran ships.
+// `run_tests` is the measurement: `report_failure`. An Agent that reads only that the tests ran
+// ships. The setup was a fixed failing command, which named a file the Worktree did not hold, until
+// 2026-10-13; see ADR-0066.
 //
 // Filename `answered.ts` → workflow "answered".
 
@@ -22,6 +25,7 @@ import {
 } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
+import { billing, suite } from "./_seed.ts";
 
 const runTests = defineEvent({
   name: "run_tests",
@@ -45,7 +49,7 @@ const body = jr2Setup({
   events: [runTests, ship, reportFailure],
   actors: {
     coder: agent(coder),
-    tests: command(["node", "-e", "console.log('auth.test.ts: expected 200, got 500'); process.exit(1)"]),
+    tests: command(suite),
   },
 }).createMachine({
   id: "body",
@@ -58,7 +62,7 @@ const body = jr2Setup({
         src: "coder",
         input: ({ context }) => ({
           prompt:
-            `[${context.marker}] The auth fix is in. Run the tests. If they pass, ship the change; if they ` +
+            `[${context.marker}] The billing change is in. Run the tests. If they pass, ship the change; if they ` +
             `fail, report the failure.`,
           continue: true,
           ...dialFor(context.thinking as ThinkingCell),
@@ -96,6 +100,6 @@ const body = jr2Setup({
 
 export const machine = workspace(body, {
   input: door,
-  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: billing },
   spec: () => ({ branch: "model-answered" }),
 });
