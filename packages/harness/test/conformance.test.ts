@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
-import type { Surface } from "../src/menu.ts";
+import { cutPickResult, type Surface } from "../src/menu.ts";
 import { harnessServer, type HarnessServer } from "../src/app.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
@@ -1839,6 +1839,78 @@ test("two picks in ONE message: the Harness claims the first in message order an
   }
 });
 
+/** The printed lines of one conversation (ADR-0023) whose label is in `labels`, without the Agent
+ * prefix: the order a reader of the log, and the `@model` tier's `answersIn`, rely on. */
+function printedOrder(iid: string, agent: string, labels: RegExp): string[] {
+  return (printed.get(iid) ?? "")
+    .split("\n")
+    .filter((line) => line.startsWith(`[${agent}] [`))
+    .map((line) => line.slice(`[${agent}] `.length))
+    .filter((line) => labels.test(line));
+}
+
+test("the print order (ADR-0023): a message's pick answers print in the order of its calls, and each before the prompt that follows them", async () => {
+  // (a) Two calls of one pick in ONE message: the first is outstanding and answers after a poll,
+  // the second is refused at once. Each answer prints in the order of its call, never in the order
+  // it came back, so a reader pairs the first answer with the first call (`answersIn`'s rule).
+  provider.reset([
+    {
+      toolCalls: [
+        { id: "call_a", name: "mcp__jr2__run_tests", args: '{"verdict":"one"}' },
+        { id: "call_b", name: "mcp__jr2__run_tests", args: '{"verdict":"two"}' },
+      ],
+    },
+    { text: "Waiting on the answer." },
+  ]);
+  sandbox.reset(surfaceWith("run_tests", "finish"));
+  sandbox.answerWith(outstandingReceipt);
+  sandbox.pollWith(async (_poll, deliveryId) => {
+    await sleep(50);
+    return answeredReceipt(deliveryId, { allowed: ["finish"] });
+  });
+  const twice = "conf/print-order-one-message";
+  assert.equal((await settled(twice, await admit(twice, "Run them."))).outcome, "completed");
+  const lines = printedOrder(twice, AGENT, /^\[(prompt|run_tests|run_tests answer|run_tests error)\] /);
+  assert.deepEqual(
+    lines.map((l) => l.replace(/\] .*$/s, "]")),
+    ["[prompt]", "[run_tests]", "[run_tests]", "[run_tests answer]", "[run_tests error]", "[prompt]"],
+    lines.join("\n"),
+  );
+  assert.equal(lines[1], '[run_tests] {"verdict":"one"}');
+  assert.equal(lines[2], '[run_tests] {"verdict":"two"}');
+  // The first call's answer came back after the second's refusal (a poll later), and still prints
+  // first: the text the model read for it, the poll's answer included.
+  assert.match(lines[3]!, /^\[run_tests answer\] Delivered "run_tests"/);
+  assert.match(printed.get(twice) ?? "", /The workflow took it and is back in the state that asked for this turn/);
+  assert.match(lines[4]!, /^\[run_tests error\] `mcp__jr2__run_tests` was NOT delivered/);
+  assert.equal(lines[5], "[prompt] <jr2-turn>", "the restated Turn part prints after both answers");
+
+  // (b) A pick whose answer leaves the Turn open, and a Gate's answer before the next step: the
+  // pick's answer prints before the restated Turn part, as the model read them.
+  provider.reset([
+    { toolCall: { id: "p1", name: "mcp__jr2__run_tests", args: '{"verdict":"x"}' } },
+    { toolCall: { id: "p2", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 1 ? CODING : REVIEWING));
+  sandbox.answerWith((event) =>
+    event.type === "run_tests" ? { moved: true, turnComplete: false, allowed: CODING } : endsTurn(),
+  );
+  const steered = "conf/print-order-restated";
+  assert.equal((await settled(steered, await admit(steered, "Fix the ticket."))).outcome, "completed");
+  assert.deepEqual(
+    printedOrder(steered, AGENT, /^\[(prompt|run_tests|run_tests answer|submit|submit answer)\] /).map((l) =>
+      l.replace(/ .*$/s, ""),
+    ),
+    ["[prompt]", "[run_tests]", "[run_tests", "[prompt]", "[submit]", "[submit"],
+  );
+  assert.ok(
+    printedOrder(steered, AGENT, /^\[prompt\] /).at(-1) === "[prompt] <jr2-turn>",
+    "the second prompt is the restated Turn part",
+  );
+});
+
 test("an outstanding pick's answer resets the identical-call streak: the same pick, answered each time, is no Runaway (ADR-0035)", async () => {
   const call = { name: "mcp__jr2__run_tests", args: '{"verdict":"go"}' };
   provider.reset([
@@ -1952,6 +2024,39 @@ test("a stopping Harness cuts at once a Turn that waits only on its pick's answe
   assert.match(lastUserText(provider.calls[0]), /Your previous turn was cut/);
   assert.match(lastUserText(provider.calls[0]), /`mcp__jr2__run_audit` that was cut from your last turn/);
   assert.match(lastUserText(provider.calls[0]), /`audited` from Gate `auditor`/);
+
+  // The printed conversation (ADR-0023): the cut call's answer is jr2's text in the rebuilt
+  // history, and it prints once, after the call and before the re-admission's prompt — the text
+  // the model read on that call.
+  const cutAnswer = `[${DECISIONER}] [run_audit answer] ${cutPickResult("mcp__jr2__run_audit")}`;
+  const answerLines = () =>
+    (printed.get(iid) ?? "").split("\n").filter((l) => l.startsWith(`[${DECISIONER}] [run_audit `));
+  const lines = (printed.get(iid) ?? "").split("\n");
+  const call = lines.indexOf(`[${DECISIONER}] [run_audit] {"verdict":"go"}`);
+  const answer = lines.indexOf(cutAnswer);
+  const prompt = lines.findIndex((l) => l.startsWith(`[${DECISIONER}] [prompt] Your previous turn was cut`));
+  assert.ok(call !== -1 && call < answer && answer < prompt, `call, its answer, then the prompt:\n${lines.join("\n")}`);
+  assert.ok(JSON.stringify(cut).includes(JSON.stringify(cutPickResult("mcp__jr2__run_audit")).slice(1, -1)));
+  assert.deepEqual(answerLines(), [cutAnswer], "printed once");
+
+  // The rebuilt history answers the call on every later request too, and it does not print again:
+  // not on the next Submission of the same process, nor in a process after it.
+  provider.reset([{ text: "Nothing more." }]);
+  sandbox.reset(surfaceWith("run_audit", "file_report"));
+  const again = await admit(iid, "Anything else?", undefined, DECISIONER, after);
+  assert.equal((await settled(iid, again, DECISIONER, after)).outcome, "completed");
+  provider.reset([{ text: "Still nothing." }]);
+  sandbox.reset(surfaceWith("run_audit", "file_report"));
+  const third = appOver(dir);
+  const later = await admit(iid, "And now?", undefined, DECISIONER, third);
+  assert.equal((await settled(iid, later, DECISIONER, third)).outcome, "completed");
+  const resent = (provider.calls[0]?.messages ?? []).find((m) => m.role === "tool" && m.tool_call_id === "call_audit");
+  assert.match(
+    JSON.stringify(resent),
+    /This pick reached the workflow/,
+    "the third process's request still answers it",
+  );
+  assert.deepEqual(answerLines(), [cutAnswer], "still printed once");
 });
 
 test("a stopping Harness keeps the graceful wait for a Turn that is running a tool — beside a polled pick too (ADR-0031)", async () => {

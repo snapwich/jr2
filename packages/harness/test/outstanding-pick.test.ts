@@ -21,7 +21,7 @@ import {
   type Surface,
 } from "../src/menu.ts";
 import { menuToolName } from "../src/menu-tools.ts";
-import { settleCutPicks } from "../src/turn.ts";
+import { cutPickAnswers, settleCutPicks } from "../src/turn.ts";
 
 const SURFACE: Surface = {
   instanceId: "run-1/coder",
@@ -467,4 +467,34 @@ test("a Menu call a restart cut gets jr2's result in the history; a Working-tool
   );
   assert.deepEqual((results[0]!.content as Array<{ text: string }>)[0]!.text, cutPickResult("mcp__jr2__run_tests"));
   assert.deepEqual(settleCutPicks(settled as unknown as AgentMessage[]), settled, "an answered call is left alone");
+});
+
+test("the cut answers a rebuilt session prints are those of the Menu calls it ends in; a cut call further back printed already (ADR-0023)", () => {
+  const cutTurn = [
+    { role: "user", content: "go", timestamp: 1 },
+    {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "b1", name: "bash", arguments: { command: "ls" } },
+        { type: "toolCall", id: "m1", name: "mcp__jr2__run_tests", arguments: {} },
+      ],
+      stopReason: "toolUse",
+      timestamp: 2,
+    },
+    { role: "toolResult", toolCallId: "b1", toolName: "bash", content: [], isError: false, timestamp: 3 },
+  ] as unknown as AgentMessage[];
+  assert.deepEqual(
+    cutPickAnswers(cutTurn).map((m) => [m.toolCallId, (m.content[0] as { text: string }).text]),
+    [["m1", cutPickResult("mcp__jr2__run_tests")]],
+  );
+  // The same call once the next process prompted after it: the history still answers it, and it
+  // printed in that process, so nothing prints now.
+  const later = [...cutTurn, { role: "user", content: "Your previous turn was cut", timestamp: 4 }] as AgentMessage[];
+  assert.equal(
+    settleCutPicks(later).filter((m) => (m as { role: string }).role === "toolResult").length,
+    2,
+    "the history answers it",
+  );
+  assert.deepEqual(cutPickAnswers(later), []);
+  assert.deepEqual(cutPickAnswers(settleCutPicks(cutTurn)), [], "an answered call prints nothing");
 });

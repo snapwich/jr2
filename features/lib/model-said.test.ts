@@ -361,11 +361,30 @@ test("an answer pairs with the oldest unanswered call of its pick; a call still 
   assert.equal(answersIn("no conversation printed", "t9-none"), undefined);
 });
 
-test("a call a Harness restart cut has no answer: a prompt line closes every call before it", () => {
-  // ADR-0023: a cut Menu call prints no answer; its answer is the re-admission's prompt. The model
-  // calling the same pick again after that prompt is the cut-pick claim's miss, and its answer is
-  // the second call's alone. Inside one process a tool's result prints before the next prompt
-  // (pi drains a steer, a nudge or a restatement after the turn's results), so no answer crosses one.
+test("a call a Harness restart cut gets jr2's text, printed by the next container before its prompt", () => {
+  // ADR-0023: the rebuilt history answers a cut Menu call with jr2's text, and the Harness prints
+  // it once, before the re-admission's prompt — the next container's first lines in the kept log.
+  // The model calling the same pick again after that prompt is the cut-pick claim's miss, and the
+  // answer after it is the second call's alone.
+  const cutText = "This pick reached the workflow, but its answer did not reach you. Do not call it again.";
+  const kept = [
+    "2026-10-13T10:00:00.000000001Z [decisioner] [prompt] [t0-cutcut] Audit the expenses.",
+    "2026-10-13T10:00:01.000000001Z [decisioner] [run_audit] {}",
+    `2026-10-13T10:01:00.000000001Z [decisioner] [run_audit answer] ${cutText}`,
+    "2026-10-13T10:01:00.000000002Z [decisioner] [prompt] Your previous turn was cut: the workflow ran `run_audit`.",
+    '2026-10-13T10:01:01.000000001Z [decisioner] [run_audit] {"again":true}',
+    '2026-10-13T10:01:01.000000002Z [decisioner] [run_audit answer] Delivered "run_audit" to the workflow (delivery d-2).',
+  ].join("\n");
+  assert.deepEqual(answersIn(kept, "t0-cutcut"), [
+    { call: "run_audit", input: "{}", answer: cutText },
+    { call: "run_audit", input: '{"again":true}', answer: 'Delivered "run_audit" to the workflow (delivery d-2).' },
+  ]);
+});
+
+test("a call whose answer never printed keeps none: a prompt line closes every call before it", () => {
+  // Every prompt prints after the answers of the calls before it (ADR-0023, pinned by the Harness's
+  // conformance test), so a call still open at a prompt lost its answer from the log (a container
+  // the follow never read), and the answer after the prompt is a later call's.
   const kept = [
     "[decisioner] [prompt] [t0-cutcut] Audit the expenses.",
     "[decisioner] [run_audit] {}",
@@ -380,7 +399,8 @@ test("a call a Harness restart cut has no answer: a prompt line closes every cal
 });
 
 test("two calls of one pick in one message: the first call gets the first answer, the second the refusal", () => {
-  // pi prints a message's tool results in the order of its calls, parallel or sequential.
+  // A message's answers print in the order of its calls, parallel or sequential (ADR-0023; the
+  // Harness's conformance suite pins it).
   const kept = [
     "[coder] [prompt] [t3-dddddd] Ship it.",
     '[coder] [ship] {"n":1}',

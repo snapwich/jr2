@@ -36,7 +36,7 @@ import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./comp
 import { RunawayError, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
 import { cutPickResult, readMenu, type MenuItem, type MenuOptions } from "./menu.ts";
 import { MENU_TOOL_PREFIX, menuToolName, menuTools } from "./menu-tools.ts";
-import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
+import { attachPrinter, printLines, renderCompaction, renderMessage, type PrinterOut } from "./printer.ts";
 import { piSession } from "./pi-engine.ts";
 import { mapThinkingLevel, providerLimit, resolveModel } from "./provider.ts";
 import type { EngineSeat } from "./record.ts";
@@ -167,6 +167,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   /** The runaway watch (ADR-0035), per Submission — reset when each turn starts. The
    * once-per-conversation `tool_call` hook reads it through this seat, like `current.definition`. */
   const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
+  /** The answers the history gives the Menu calls a rebuilt session ends in (`cutPickAnswers`),
+   * until the first prompt prints them. */
+  let cutAnswers: ToolResultMessage[] = [];
 
   return async (submission, signal, seat) => {
     const { message } = submission;
@@ -208,6 +211,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // `AgentHarness` exposes no accessor for the one it was given. Opened, not created, when the
       // conversation was rebuilt: the engine part a previous process wrote (ADR-0031).
       const session = await piSession(deps.engine, { cwd: definition.cwd, model });
+      // A rebuilt session that ends in a Menu call a restart cut: the history answers it with jr2's
+      // text from here on, and the log shows that answer once, before the first prompt (ADR-0023).
+      cutAnswers = cutPickAnswers((await session.buildContext()).messages.map(settleAbandonedMessage));
       const harness = new AgentHarness<ExecutionToolContext>({
         session,
         models: deps.models,
@@ -382,6 +388,8 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     signal.addEventListener("abort", onAbort, { once: true });
     try {
       if (signal.aborted) throw new Error("swept before its turn started");
+      printLines(out, deps.agentName, cutAnswers.flatMap(renderMessage));
+      cutAnswers = [];
       // The Briefing's Turn part FOLLOWS the Frame's prompt (ADR-0062): the author's task reads
       // first, and the Allowed picks last, where a model obeys them (ADR-0029, measured).
       const answer = await harness.prompt(
@@ -463,6 +471,27 @@ function settleAbandonedMessage(message: AgentMessage): AgentMessage {
  * transform, so pi finds a result and adds none. A Working-tool call is pi's to answer.
  */
 export function settleCutPicks(messages: AgentMessage[]): AgentMessage[] {
+  return settled(messages).messages;
+}
+
+/**
+ * The answers `settleCutPicks` gives the Menu calls a rebuilt session ENDS in: the Turn a restart
+ * cut, whose calls this process is the first to answer. They print once, before this process's
+ * first prompt (ADR-0023): pi adds them to no event, so the printer never sees them, and the
+ * model reads them on every later request. A cut call further back was answered, and printed, by
+ * the process after its cut.
+ */
+export function cutPickAnswers(messages: AgentMessage[]): ToolResultMessage[] {
+  const { messages: out, added } = settled(messages);
+  const tail: ToolResultMessage[] = [];
+  for (let i = out.length - 1; i >= 0 && (out[i] as { role?: string }).role === "toolResult"; i--) {
+    if (added.has(out[i]!)) tail.unshift(out[i] as ToolResultMessage);
+  }
+  return tail;
+}
+
+function settled(messages: AgentMessage[]): { messages: AgentMessage[]; added: Set<AgentMessage> } {
+  const added = new Set<AgentMessage>();
   const answered = new Set(
     messages.flatMap((m) =>
       (m as { role?: string }).role === "toolResult" ? [(m as ToolResultMessage).toolCallId] : [],
@@ -473,14 +502,16 @@ export function settleCutPicks(messages: AgentMessage[]): AgentMessage[] {
   const close = (): void => {
     for (const call of open) {
       if (answered.has(call.id) || !call.name.startsWith(MENU_TOOL_PREFIX)) continue;
-      out.push({
+      const answer: ToolResultMessage = {
         role: "toolResult",
         toolCallId: call.id,
         toolName: call.name,
         content: [{ type: "text", text: cutPickResult(call.name) }],
         isError: false,
         timestamp: Date.now(),
-      } satisfies ToolResultMessage);
+      };
+      added.add(answer);
+      out.push(answer);
     }
     open = [];
   };
@@ -493,7 +524,7 @@ export function settleCutPicks(messages: AgentMessage[]): AgentMessage[] {
     }
   }
   close();
-  return out;
+  return { messages: out, added };
 }
 
 /** One completed pi message → its history entry, or none. Best-effort by contract (the history

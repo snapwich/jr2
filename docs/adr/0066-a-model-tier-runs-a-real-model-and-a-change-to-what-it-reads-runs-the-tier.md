@@ -128,7 +128,7 @@ recover, finish — are exercised only one scripted tool call at a time.
     call, the text the model read (`[<pick> answer] <text>`, or `[<pick> error] <text>`): the receipt, a command's
     outcome, a refusal, the paragraph after a signed push. The Harness prints it (ADR-0023), so the tier keeps it with
     the conversation, and nothing the model reads changed to keep it. `answersIn` reads each call with its answer; a
-    call a Harness restart cut has none.
+    call a Harness restart cut has jr2's text, which the next container prints before its first prompt.
   - `effector.txt`: the Sandbox Effector container's log, followed the same way, for a Sandbox claim; it says so when
     the pod has none.
   - `harness-history.txt`: the Harness history view

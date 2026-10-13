@@ -53,9 +53,13 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   (the Custodian does not scrub responses,
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)) reaches the log as it reaches the
   model, up to the bound. That is the residual of printing a pick's answer, stated here and in ADR-0014. A Menu call
-  that a Harness restart cut has no answer on its call: its answer is the re-admission's prompt, which prints
-  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)). Every prompt prints after the results of the calls
-  before it, so no call's answer prints after a prompt that follows it.
+  that a Harness restart cut gets its answer from the next process: the rebuilt history answers it with jr2's text (the
+  pick reached the workflow, and its result comes in the next message,
+  [ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), which the model reads on every later request. That
+  answer is no message pi emits, so the Harness prints it itself, once: as `[<pick> answer] <text>`, before the first
+  prompt of the process whose rebuilt session ends in the call. A message's answers print in the order of its calls,
+  whichever came back first, and every prompt prints after the answers of the calls before it (a nudge, a restated Turn
+  part and a re-admission alike), so no call's answer prints after a prompt that follows it.
 - **The writer structures, the reader colorizes.** Lines carry a parseable prefix and no ANSI. jr's colors were correct
   for an fzf preview, which is a terminal; `kubectl logs` output is piped, grepped, and ingested, where escape codes are
   corruption. A future reader may colorize on `isatty`.

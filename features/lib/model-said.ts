@@ -67,9 +67,10 @@ export type Answered = { call: string; input: string; answer?: string; error?: t
  * Each call of a trial's KEPT conversation with the answer the model read (ADR-0023, ADR-0066):
  * the Harness prints a Menu call's result after its call, `[<agent>] [<pick> answer] <text>` or
  * `[<pick> error] <text>`. An answer pairs with the oldest call of its pick, by the same Agent,
- * that has none yet, and never across a prompt: pi prints a message's results in the order of its
- * calls, and before the next prompt, so a call still open at a prompt is one a Harness restart cut
- * and has no answer. A body's later lines (they carry no label) belong to it. The same lines as
+ * that has none yet, and never across a prompt: a message's answers print in the order of its calls,
+ * and every prompt after the answers of the calls before it (ADR-0023; the Harness's conformance
+ * suite pins both), so a call still open at a prompt is one whose answer the kept log lost. A call
+ * a Harness restart cut is answered by the next container, before its first prompt. A body's later lines (they carry no label) belong to it. The same lines as
  * `calledIn`: the Agents whose prompt printed, from the trial's own prompt to another trial's
  * Frame. `undefined` when no prompt printed.
  */
@@ -87,9 +88,9 @@ export function answersIn(kept: string, marker: string): Answered[] | undefined 
     const [, agent, label, body] = m as unknown as [string, string, string | undefined, string];
     if (label === "prompt") {
       if (/^\[[^\]]+\]/.test(body)) break; // another trial's Frame
-      // A prompt closes every call before it: inside one process a tool's result prints before
-      // the next prompt the model reads, so a call still unanswered here is one a Harness restart
-      // cut, and its answer is this prompt (ADR-0023). A later call of its pick gets its own.
+      // A prompt closes every call before it: every answer prints before the next prompt the model
+      // reads, a cut call's too (ADR-0023), so a call still unanswered here lost its answer from
+      // the kept log. A later call of its pick gets its own.
       unanswered.clear();
       open = undefined;
       continue;
