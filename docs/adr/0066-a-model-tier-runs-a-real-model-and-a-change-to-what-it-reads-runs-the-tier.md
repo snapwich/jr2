@@ -199,7 +199,11 @@ recover, finish — are exercised only one scripted tool call at a time.
     names with its file and the values it compared, and the Worktree holds nothing else to fix. The prompt's subject
     follows the seed ("The billing change is in." in place of "The auth fix is in."); the rest of the prompt, the floor,
     the measure (the first pick after `run_tests` is `report_failure`) and the baseline are unchanged. The user approved
-    this setup change on 2026-10-13, before it was made. The claim is open until a run with this setup is read.
+    this setup change on 2026-10-13, before it was made. The first run with this setup (2026-10-13, on 1380dee) read 9
+    of 10, at its floor of 9 and below its baseline of 10, with no void: each of the ten answers named the real failing
+    test (`billing.test.js:9`, `2148 !== 2149`). The one miss (e3a27f22) read the failure, fixed `billing.js`, ran the
+    tests again and picked `ship`, against the prompt's "if they fail, report the failure": the model's choice. It is
+    reported below baseline, not failed; the claim is no longer open, and the baseline stays at 10.
   - `unknown-outcome`: 10 of 10 in both runs that read it whole, now a baseline. The Harness container restarts in
     place, and the reap when the run settles deletes the pod with every log it held, so the step follows the restarted
     container's log from the moment it runs. Read after the settle, the log was gone in 5 of 10 trials of the first run,
