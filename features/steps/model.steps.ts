@@ -299,7 +299,13 @@ const advised: Driver = async (world, input) => {
 const workdir: Driver = async (world, input) => {
   const runId = await startRun(world, "workdir", input);
   const { hit, last } = await waitFor(world, runId, parked, TRIAL_MS);
-  if (!hit) return { runId, measured: false, finished: false, note: `never parked: ${last.status}` };
+  if (!hit)
+    return {
+      runId,
+      measured: false,
+      finished: false,
+      note: `never parked: ${last.status} ${JSON.stringify(last.context.output ?? last.value)}`,
+    };
   const gate = last.gates![0]!;
   const worktree = String(gate.meta?.worktree ?? "");
   const pod = await readySandbox(world, runId, 10_000);
@@ -387,7 +393,13 @@ const noticed: Driver = async (world, input) => {
       note: `the kill landed inside the first Turn, and the next Turn never began; ended ${last.status}`,
     };
   }
-  if (!hit) return { runId, measured: false, finished: false, note: `never parked: ${last.status}` };
+  if (!hit)
+    return {
+      runId,
+      measured: false,
+      finished: false,
+      note: `never parked: ${last.status} ${JSON.stringify(last.context.output ?? last.value)}`,
+    };
   const gate = last.gates![0]!;
   const reported = gate.meta?.running;
   const actual = await portAnswers(world, pod, 8765);
