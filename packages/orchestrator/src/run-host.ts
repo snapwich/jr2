@@ -1398,10 +1398,10 @@ export class RunHost {
    * its own send, else the one outstanding. On a transition below no Agent's state (`null`): the
    * event that took the transition names the Agent — the sender of a pick, or the Agent whose pick
    * started the child whose done or error event it is — and that Agent's pick is the one shaped, and
-   * no other; none when that Agent has no pick being answered. One slot invoked in two regions is
-   * not decided: none while that slot has two picks being answered, the sending pick included, and
-   * none when its one pick being answered is at another region's invoke than the pick the event
-   * names (a child the other region's pick started). An event that names no Agent (a timer,
+   * no other; none when that Agent has no pick being answered. When one slot is invoked in two
+   * regions, the event names an invoke too, and only the pick at that invoke is shaped: the sending
+   * pick, or the pick at the invoke whose pick started the child; none when that pick is not being
+   * answered (its Turn ended, and its child runs on). An event that names no Agent (a timer,
    * a Gate's answer, an outside send) shapes the pick in its own send. Outside one, it shapes the one
    * outstanding pick only while one Agent's state is active; while two Agents' states are active it
    * shapes none, whatever is outstanding: the event cannot say whose pick it is, and the other
@@ -1431,16 +1431,16 @@ export class RunHost {
         const { agent } = named;
         const own = sending && sending.reg.sender?.id === agent ? sending : undefined;
         // That Agent's picks being answered: the one in its own send, and the ones outstanding at
-        // its other invokes. With two (one slot invoked in two regions), which one the `answer`
-        // shapes is not decided: it shapes none, and each keeps its default answer.
+        // its other invokes (one slot invoked in two regions). The event names the invoke of the
+        // pick that sent it or started its child, and only the pick at that invoke is shaped; none
+        // when that pick is not being answered, and each other pick keeps its default answer.
         const held = open.filter((hold) => hold.agent === agent && hold.instanceId !== own?.reg.id);
         const picks = [...(own ? [own] : []), ...held];
-        if (picks.length !== 1) return undefined;
-        const pick = picks[0]!;
-        // Its one pick being answered is at another region's invoke than the pick the event names:
-        // not decided either, and it shapes none.
-        const at = pick === own ? own.reg.invokeId : (pick as Hold).invokeId;
-        if (named.invoke !== undefined && at !== named.invoke) return undefined;
+        const at = (pick: Sending | Hold): string | undefined =>
+          pick === own ? own.reg.invokeId : (pick as Hold).invokeId;
+        const same = named.invoke === undefined ? picks : picks.filter((pick) => at(pick) === named.invoke);
+        if (same.length !== 1) return undefined;
+        const pick = same[0]!;
         if (pick === own) return seatedFor(own.reg) ? own : undefined;
         return pick;
       }

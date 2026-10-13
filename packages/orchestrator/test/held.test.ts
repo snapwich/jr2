@@ -1252,74 +1252,9 @@ test("the run records the Agent each pick's child is of; after a restore, a done
   await second.close();
 });
 
-// One Agent slot invoked in two regions has two picks outstanding at once. The done event of a child
-// one of them started: which pick of one slot invoked in two regions an `answer` below no Agent's state
-// shapes is not decided, so it shapes neither, and each pick keeps its default answer (ADR-0024, ADR-0067).
-test("one Agent in two regions, each with a pick outstanding: a done event below no Agent's state shapes neither pick", async () => {
-  const go = ev("go");
-  const pickA = ev("pick_a");
-  const pickB = ev("pick_b");
-  const waiter = (gate: string) =>
-    jr2Setup({ events: [go] }).createMachine({
-      initial: "w",
-      states: { w: { invoke: { src: "gate", id: gate, input: {} }, on: { go: "f" } }, f: { type: "final" } },
-      output: () => ({ waited: gate }),
-    });
-  const endpoint = "http://harness.invalid";
-  const clients: MockFlueClient[] = [];
-  const coder = agentActorWith(() => {
-    const c = new MockFlueClient();
-    clients.push(c);
-    return c;
-  }, coderDefinition);
-  const host = new RunHost({ store: await mkStore() });
-  host.register({
-    name: "twice",
-    machine: jr2Setup({
-      events: [pickA, pickB],
-      actors: { coder, waiterA: waiter("doneA"), waiterB: waiter("doneB") },
-    }).createMachine({
-      id: "twice",
-      type: "parallel",
-      on: { "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
-      states: {
-        ra: {
-          invoke: { src: "coder", input: { prompt: "A", endpoint } },
-          initial: "rest",
-          states: { rest: {}, waiting: { invoke: { src: "waiterA", id: "waitA" } } },
-          on: { pick_a: ".waiting" },
-        },
-        rb: {
-          invoke: { src: "coder", input: { prompt: "B", endpoint } },
-          initial: "rest",
-          states: { rest: {}, waiting: { invoke: { src: "waiterB", id: "waitB" } } },
-          on: { pick_b: ".waiting" },
-        },
-      },
-    }),
-    provide: () => ({ actors: { coder } }),
-  });
-  const { runId } = await host.start("twice");
-  await waitFor(() => clients.length === 2 && clients.every((c) => c.admits.length > 0));
-  const byPrompt = (prompt: string) =>
-    clients.find((c) => JSON.stringify(c.admits[0]).includes(`"${prompt}"`))!.admits[0]!.instanceId;
-  const ia = byPrompt("A");
-  const ib = byPrompt("B");
-  const pa = host.sendToAgent(ia, { type: "pick_a" });
-  const pb = host.sendToAgent(ib, { type: "pick_b" });
-  assert.equal(pa.outstanding, true);
-  assert.equal(pb.outstanding, true);
-  const polledB = host.awaitDelivery(ib, pb.deliveryId);
-  host.sendToGate(runId, "waitB.doneB", { type: "go" });
-  assert.deepEqual((await polledB)?.answer, { kind: "output", actor: "waiterB", output: { waited: "doneB" } });
-  const polledA = host.awaitDelivery(ia, pa.deliveryId);
-  host.sendToGate(runId, "waitA.doneA", { type: "go" });
-  assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
-  await host.close();
-});
-
 /** One Agent slot, `coder`, invoked in two regions of the root (`ra`, `rb`): `pick_a` takes `ra` to
- * its own work (`waitA`). `rb` and the root's own `on` are the test's. */
+ * its own work (`waitA`). `rb` and the root's own `on` are the test's. `again()` stops the host and
+ * restores the run into a second one, after the saves of the picks before it land. */
 async function oneAgentTwice(rb: Record<string, unknown>, rootOn: Record<string, unknown>) {
   const go = ev("go");
   const waiter = (gate: string) =>
@@ -1334,8 +1269,7 @@ async function oneAgentTwice(rb: Record<string, unknown>, rootOn: Record<string,
     clients.push(c);
     return c;
   }, coderDefinition);
-  const host = new RunHost({ store: await mkStore() });
-  host.register({
+  const def = (): WorkflowDef => ({
     name: "twice",
     machine: jr2Setup({
       events: [ev("pick_a"), ev("pick_b")],
@@ -1356,59 +1290,113 @@ async function oneAgentTwice(rb: Record<string, unknown>, rootOn: Record<string,
     } as never) as unknown as AnyStateMachine,
     provide: () => ({ actors: { coder } }),
   });
-  const { runId } = await host.start("twice");
+  const store = await mkStore();
+  const first = new RunHost({ store });
+  first.register(def());
+  const { runId } = await first.start("twice");
   await waitFor(() => clients.length === 2 && clients.every((c) => c.admits.length > 0));
   const byPrompt = (prompt: string) =>
     clients.find((c) => JSON.stringify(c.admits[0]).includes(`"${prompt}"`))!.admits[0]!.instanceId;
-  return { host, runId, ia: byPrompt("A"), ib: byPrompt("B") };
+  const rig = { host: first, runId, ia: byPrompt("A"), ib: byPrompt("B") };
+  const again = async (): Promise<void> => {
+    // `stop` is the simulated restart: a transition whose save has not landed is lost with it.
+    await new Promise((r) => setTimeout(r, 50));
+    await rig.host.stop(runId);
+    const second = new RunHost({ store });
+    second.register(def());
+    assert.deepEqual((await second.restore()).reattached, [runId]);
+    rig.host = second;
+  };
+  return { ...rig, rig, again };
+}
+
+/** Each sub-case runs twice: in one host, and with the run restored into a second host. */
+const through = ["live", "restored"] as const;
+
+// One Agent slot invoked in two regions, each with a pick outstanding. The done event of a child one of
+// them started shapes the pick at the invoke whose pick started that child, and the other region's pick
+// keeps its default answer (ADR-0024, ADR-0067).
+for (const mode of through) {
+  test(`one Agent in two regions, each with a pick outstanding: a done event below no Agent's state shapes the pick whose invoke started the child (${mode})`, async () => {
+    const t = await oneAgentTwice(
+      {
+        invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, waiting: { invoke: { src: "waiterB", id: "waitB" } } },
+        on: { pick_b: ".waiting" },
+      },
+      { "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+    );
+    const pa = t.rig.host.sendToAgent(t.ia, { type: "pick_a" });
+    const pb = t.rig.host.sendToAgent(t.ib, { type: "pick_b" });
+    assert.equal(pa.outstanding, true);
+    assert.equal(pb.outstanding, true);
+    if (mode === "restored") await t.again();
+    const host = t.rig.host;
+    const polledB = host.awaitDelivery(t.ib, pb.deliveryId);
+    host.sendToGate(t.runId, "waitB.doneB", { type: "go" });
+    assert.deepEqual((await polledB)?.answer, { kind: "answer", value: "the root saw xstate.done.actor.waitB" });
+    const polledA = host.awaitDelivery(t.ia, pa.deliveryId);
+    host.sendToGate(t.runId, "waitA.doneA", { type: "go" });
+    assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
+    await host.close();
+  });
+}
+
+// A pick sent while the same slot's pick in the other region is outstanding: an `answer` on a
+// transition below no Agent's state shapes the sending pick, the one at the invoke that sent the event,
+// and the outstanding pick keeps its default answer (ADR-0024, ADR-0067).
+for (const mode of through) {
+  test(`one Agent in two regions: a pick sent while the other region's pick is outstanding is shaped by a root answer on it (${mode})`, async () => {
+    const t = await oneAgentTwice(
+      { invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } } },
+      { pick_b: { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+    );
+    const pa = t.rig.host.sendToAgent(t.ia, { type: "pick_a" });
+    assert.equal(pa.outstanding, true);
+    if (mode === "restored") await t.again();
+    const host = t.rig.host;
+    const pb = host.sendToAgent(t.ib, { type: "pick_b" });
+    assert.equal(pb.outstanding, undefined, `the root's transition leaves B's state at Rest: ${JSON.stringify(pb)}`);
+    assert.deepEqual(pb.answer, { kind: "answer", value: "the root saw pick_b" }, JSON.stringify(pb));
+    const polledA = host.awaitDelivery(t.ia, pa.deliveryId);
+    host.sendToGate(t.runId, "waitA.doneA", { type: "go" });
+    assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
+    await host.close();
+  });
 }
 
 // The same slot's pick in the other region started the child, and has ended its Turn: the done event
-// names that region's pick, not the one outstanding. Which pick of one slot invoked in two regions
-// an `answer` below no Agent's state shapes is not decided, so it shapes none (ADR-0024, ADR-0067).
-test("one Agent in two regions: the done event of a child the other region's ended pick started leaves the outstanding pick as it is", async () => {
-  const { host, runId, ia, ib } = await oneAgentTwice(
-    {
-      initial: "b",
-      states: {
-        b: {
-          invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } },
-          on: { pick_b: "away" },
+// names that region's invoke, whose pick is not being answered, so the `answer` shapes no pick, and the
+// outstanding pick keeps its default answer (ADR-0024, ADR-0067).
+for (const mode of through) {
+  test(`one Agent in two regions: the done event of a child the other region's ended pick started shapes no pick (${mode})`, async () => {
+    const t = await oneAgentTwice(
+      {
+        initial: "b",
+        states: {
+          b: {
+            invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+            on: { pick_b: "away" },
+          },
+          away: { invoke: { src: "waiterB", id: "waitB" } },
         },
-        away: { invoke: { src: "waiterB", id: "waitB" } },
       },
-    },
-    { "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
-  );
-  const pa = host.sendToAgent(ia, { type: "pick_a" });
-  assert.equal(pa.outstanding, true);
-  const pb = host.sendToAgent(ib, { type: "pick_b" });
-  assert.equal(pb.turnComplete, true, "B's pick left B's state: its Turn ended, and its child runs on");
-  host.sendToGate(runId, "waitB.doneB", { type: "go" });
-  const polledA = host.awaitDelivery(ia, pa.deliveryId);
-  host.sendToGate(runId, "waitA.doneA", { type: "go" });
-  assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
-  await host.close();
-});
-
-// A pick sent while the same slot's pick in the other region is outstanding: two of that slot's
-// picks are being answered, so an `answer` on a transition below no Agent's state shapes neither,
-// the sending pick included (ADR-0024, ADR-0067).
-test("one Agent in two regions: a pick sent while the other region's pick is outstanding is not shaped by a root answer on it", async () => {
-  const { host, runId, ia, ib } = await oneAgentTwice(
-    { invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } } },
-    { pick_b: { actions: answer(({ event }) => `the root saw ${event.type}`) } },
-  );
-  const pa = host.sendToAgent(ia, { type: "pick_a" });
-  assert.equal(pa.outstanding, true);
-  const pb = host.sendToAgent(ib, { type: "pick_b" });
-  assert.equal(pb.outstanding, undefined, `the root's transition leaves B's state at Rest: ${JSON.stringify(pb)}`);
-  assert.equal(pb.answer, undefined, `B's pick keeps its default answer: ${JSON.stringify(pb)}`);
-  const polledA = host.awaitDelivery(ia, pa.deliveryId);
-  host.sendToGate(runId, "waitA.doneA", { type: "go" });
-  assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
-  await host.close();
-});
+      { "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+    );
+    const pa = t.rig.host.sendToAgent(t.ia, { type: "pick_a" });
+    assert.equal(pa.outstanding, true);
+    const pb = t.rig.host.sendToAgent(t.ib, { type: "pick_b" });
+    assert.equal(pb.turnComplete, true, "B's pick left B's state: its Turn ended, and its child runs on");
+    if (mode === "restored") await t.again();
+    const host = t.rig.host;
+    host.sendToGate(t.runId, "waitB.doneB", { type: "go" });
+    const polledA = host.awaitDelivery(t.ia, pa.deliveryId);
+    host.sendToGate(t.runId, "waitA.doneA", { type: "go" });
+    assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
+    await host.close();
+  });
+}
 
 // A child that the pick's later work started is its Agent's too (ADR-0067): one started while the
 // Machine took a done event of the pick's own child. Saved with the run, so a restore attributes its

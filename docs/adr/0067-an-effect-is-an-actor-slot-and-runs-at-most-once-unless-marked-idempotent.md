@@ -42,20 +42,20 @@ the credentialed `command` — runs there too, its child confined (below).
   is written below (on a state's entry or exit, or on a transition of a state, at or below that Agent's state). On a
   transition below no Agent's state it shapes the pick of the Agent whose event took the transition — the sender of a
   pick, or the Agent whose pick started the child whose done or error event it is — and the other Agent's pick keeps its
-  default answer; which pick it shapes when one Agent slot is invoked in two regions is not decided, so while that slot
-  has two picks being answered, or its one is at the other region's invoke than the pick that started the child, it
-  shapes none; an event that names no Agent shapes the pick in its own send, and outside one shapes no pick while two
-  Agents' states are active; on an entry or an exit below no Agent's state it sets nothing. One action object written in
-  several places runs from each by that place's rule alone, never by their sum (ADR-0024): as each Machine's actor is
-  created, before its first state is entered, the run host gives each place a copy of its own (`placeAnswers`,
-  `packages/orchestrator/src/pick.ts`). An `answer` an `enqueueActions` enqueues runs from the place the enqueuing
-  action is written: the copy given to that place hands each action its `collect` enqueues, at any depth, the same seat.
-  The load walk cannot see inside an `enqueueActions`, so one enqueued on an entry or exit below no Agent's state sets
-  nothing and is not warned. That writes xstate internals — a state node's `entry` and `exit` lists, the `actions` of
-  the transition objects xstate selects from `transitions`, `always` and `initial`, and an `enqueueActions`'s `collect`
-  — as ADR-0007's re-arm reads the timer table; raw-xstate tests that pin those shapes are the canary for an xstate
-  bump. A child's error is no link, and by default the Agent is not told (ADR-0024); an author who wants it told writes
-  `answer(...)` on the `onError` route. An Effect never takes that route for an outcome: every outcome is output.
+  default answer; when one Agent slot is invoked in two regions, it shapes the pick at the same invoke as the pick that
+  sent the event or started the child, and none when that pick is not being answered; an event that names no Agent
+  shapes the pick in its own send, and outside one shapes no pick while two Agents' states are active; on an entry or an
+  exit below no Agent's state it sets nothing. One action object written in several places runs from each by that
+  place's rule alone, never by their sum (ADR-0024): as each Machine's actor is created, before its first state is
+  entered, the run host gives each place a copy of its own (`placeAnswers`, `packages/orchestrator/src/pick.ts`). An
+  `answer` an `enqueueActions` enqueues runs from the place the enqueuing action is written: the copy given to that
+  place hands each action its `collect` enqueues, at any depth, the same seat. The load walk cannot see inside an
+  `enqueueActions`, so one enqueued on an entry or exit below no Agent's state sets nothing and is not warned. That
+  writes xstate internals — a state node's `entry` and `exit` lists, the `actions` of the transition objects xstate
+  selects from `transitions`, `always` and `initial`, and an `enqueueActions`'s `collect` — as ADR-0007's re-arm reads
+  the timer table; raw-xstate tests that pin those shapes are the canary for an xstate bump. A child's error is no link,
+  and by default the Agent is not told (ADR-0024); an author who wants it told writes `answer(...)` on the `onError`
+  route. An Effect never takes that route for an outcome: every outcome is output.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.
