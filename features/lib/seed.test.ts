@@ -4,17 +4,27 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { promisify } from "node:util";
 import { makeRepoScript } from "../steps/seed.ts";
 
 const exec = promisify(execFile);
 
-test("the make-repo script runs again on the same volume, and keeps a branch a scenario pushed", async () => {
+/** Every temp dir a test made, removed once the file's tests are done. */
+const roots: string[] = [];
+after(() => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))));
+
+async function tempRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "seed-"));
+  roots.push(root);
+  return root;
+}
+
+test("the make-repo script runs again on the same volume, and keeps a branch a scenario pushed", async () => {
+  const root = await tempRoot();
   const srv = join(root, "srv");
   await mkdir(srv);
   const script = makeRepoScript(srv, join(root, "w"));
@@ -35,7 +45,7 @@ test("the make-repo script runs again on the same volume, and keeps a branch a s
 });
 
 test("a run cut halfway leaves nothing a second run mistakes for done", async () => {
-  const root = await mkdtemp(join(tmpdir(), "seed-"));
+  const root = await tempRoot();
   const srv = join(root, "srv");
   await mkdir(join(srv, "app.git.new"), { recursive: true }); // the half-made clone of a cut run
   await exec("sh", ["-ec", makeRepoScript(srv, join(root, "w"))]);

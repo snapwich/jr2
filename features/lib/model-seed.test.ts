@@ -6,10 +6,10 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { billing, suite } from "../model-instance/workflows/_seed.ts";
@@ -18,9 +18,14 @@ import { makeRepoScript } from "../steps/seed.ts";
 const exec = promisify(execFile);
 const workflows = fileURLToPath(new URL("../model-instance/workflows/", import.meta.url));
 
+/** Every temp dir a test made, removed once the file's tests are done. */
+const roots: string[] = [];
+after(() => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))));
+
 /** The bound Repo as the Worktree holds it: a clone of the seed's repository at the Binding's ref. */
 async function worktree(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "model-seed-"));
+  roots.push(root);
   const srv = join(root, "srv");
   await mkdir(srv);
   await exec("sh", ["-ec", makeRepoScript(srv, join(root, "w"))]);
