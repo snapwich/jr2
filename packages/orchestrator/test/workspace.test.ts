@@ -4,7 +4,7 @@
 // path are exercised the way a run experiences them. The kind-backed port has its own suite; the
 // cluster itself is e2e-tier.
 
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { assign, fromPromise, setup, spawnChild } from "xstate";
@@ -1145,6 +1145,60 @@ test("placing: a restart re-enters placing — same CR, same `since`, no second 
     "the wait was opened before the restart; only its end is new",
   );
   assert.equal(lines[0]!.since, since);
+});
+
+test("placing: a wall clock that steps back during the wait gives no negative `after` — the wait it opened is timed on a monotonic clock (ADR-0064)", async () => {
+  // A host clock step (NTP, a WSL2 resume) between the opening line and the end. Only `Date` is
+  // mocked: the monotonic clock is not the wall clock, which is the point.
+  mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-13T12:00:00Z") });
+  try {
+    const sandbox = new FakeSandbox();
+    sandbox.holdPlacing = true;
+    const host = new RunHost({ store: await mkStore(), sandbox });
+    host.register(wsDef());
+    const { runId } = await host.start("ws");
+    const lines = placingLines(host, runId);
+    await waitFor(() => sandbox.waiting === 1);
+    sandbox.waitFor(NODE);
+    await waitFor(() => lines.length === 1);
+    mock.timers.setTime(Date.parse("2026-10-13T11:59:58Z"));
+    sandbox.schedule();
+    await waitFor(() => lines.length === 2);
+    assert.equal(lines[1]!.kind, "placed");
+    assert.ok((lines[1]!.after as number) >= 0, `after: ${String(lines[1]!.after)}`);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("placing: a wait opened before a restart is timed from its stored start, clamped at zero when the wall clock stepped back (ADR-0064)", async () => {
+  mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-13T12:00:00Z") });
+  try {
+    const store = await mkStore();
+    const sandbox = new FakeSandbox();
+    sandbox.holdPlacing = true;
+    const first = new RunHost({ store, sandbox });
+    first.register(wsDef());
+    const { runId } = await first.start("ws");
+    await waitFor(() => sandbox.waiting === 1);
+    sandbox.waitFor(NODE);
+    await waitFor(() => first.status(runId)!.waiting.length === 1);
+    await first.stop(runId);
+
+    mock.timers.setTime(Date.parse("2026-10-13T11:59:58Z"));
+    const second = new RunHost({ store, sandbox });
+    second.register(wsDef());
+    await second.restore();
+    const lines = placingLines(second, runId);
+    await waitFor(() => sandbox.waiting === 1);
+    sandbox.waitFor(NODE);
+    sandbox.schedule();
+    await waitFor(() => lines.length === 1);
+    assert.equal(lines[0]!.kind, "placed");
+    assert.equal(lines[0]!.after, 0, "a stored start later than now is no negative duration");
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("placing: a Workspace nested under a parent reports its path; the parent's `after` deletes what never ran", async () => {

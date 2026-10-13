@@ -834,6 +834,9 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
       ((wrapper?.getSnapshot() as { context?: WsContext } | undefined)?.context?.wait as WorkspaceWait | undefined)
         ?.since;
     let since: string | undefined;
+    /** When THIS actor opened the wait, on the monotonic clock: `after` is a duration, and two
+     * wall-clock reads go negative when the host's clock steps back between them. */
+    let openedAt: number | undefined;
     let heard: PlacingWait | undefined;
     const onWait = (wait: PlacingWait) => {
       if (signal.aborted || (heard?.on === wait.on && heard.message === wait.message)) return;
@@ -841,6 +844,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
       since ??= opened();
       if (since === undefined) {
         since = new Date().toISOString();
+        openedAt = performance.now();
         binding.marker?.({ kind: "placing", child, on: wait.on, message: wait.message, since });
       }
       wrapper?.send({ type: "workspace.waiting", wait: { ...wait, since } });
@@ -885,7 +889,12 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     }
     since ??= opened();
     if (since !== undefined) {
-      binding.marker?.({ kind: "placed", child, since, after: Date.now() - Date.parse(since) });
+      // A wait opened before a restart has only its stored wall-clock start, so its duration is two
+      // wall-clock reads; it is clamped at zero, as a clock that stepped back since the start would
+      // make it negative.
+      const after =
+        openedAt !== undefined ? Math.round(performance.now() - openedAt) : Math.max(0, Date.now() - Date.parse(since));
+      binding.marker?.({ kind: "placed", child, since, after });
     }
     return { bindings };
   });
