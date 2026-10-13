@@ -124,7 +124,10 @@ recover, finish — are exercised only one scripted tool call at a time.
     followed from the moment the trial's Sandbox pod exists until the reap at settle takes the pod
     ([ADR-0012](0012-workspace-wrapper-machine.md)), so a read after the settle is never needed, and it is followed
     again after the container restarts. A Menu-only claim's is the Instance Harness's from the trial's start, followed
-    again after the step deletes that pod and the StatefulSet makes it again.
+    again after the step deletes that pod and the StatefulSet makes it again. It holds each pick's answer after its
+    call, the text the model read (`[<pick> answer] <text>`, or `[<pick> error] <text>`): the receipt, a command's
+    outcome, a refusal, the paragraph after a signed push. The Harness prints it (ADR-0023), so the tier keeps it with
+    the conversation, and nothing the model reads changed to keep it. `answersIn` reads each call with its answer.
   - `effector.txt`: the Sandbox Effector container's log, followed the same way, for a Sandbox claim; it says so when
     the pod has none.
   - `harness-history.txt`: the Harness history view

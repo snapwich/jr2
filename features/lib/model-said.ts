@@ -53,14 +53,74 @@ export function saidAfterPrompt(log: string, agent: string, opening: string): Sa
  * printed.
  */
 export function calledIn(kept: string, marker: string): Said[] | undefined {
+  const trial = trialOf(kept, marker);
+  return trial && saidFrom(trial.lines, trial.at, trial.agent);
+}
+
+/** One call in a kept conversation, and the answer its pick got: `input` as the call printed it;
+ * `answer` the text the model read back, and `error` when it read that as an error (a refusal, a
+ * schema miss). A Working tool's call has no answer: its result never prints (ADR-0023). Nor has a
+ * pick whose answer had not printed when the log was kept. */
+export type Answered = { call: string; input: string; answer?: string; error?: true };
+
+/**
+ * Each call of a trial's KEPT conversation with the answer the model read (ADR-0023, ADR-0066):
+ * the Harness prints a Menu call's result after its call, `[<agent>] [<pick> answer] <text>` or
+ * `[<pick> error] <text>`. An answer pairs with the oldest call of its pick, by the same Agent,
+ * that has none yet; a body's later lines (they carry no label) belong to it. The same lines as
+ * `calledIn`: the Agents whose prompt printed, from the trial's own prompt to another trial's
+ * Frame. `undefined` when no prompt printed.
+ */
+export function answersIn(kept: string, marker: string): Answered[] | undefined {
+  const trial = trialOf(kept, marker);
+  if (trial === undefined) return undefined;
+  const line = new RegExp(`^\\[(${trial.agent})\\] (?:\\[([^\\]]+)\\] ?)?(.*)$`);
+  const out: Answered[] = [];
+  const unanswered = new Map<string, Answered[]>();
+  /** Where a body's unlabelled lines go: the last call's input or answer, or nowhere. */
+  let open: ((more: string) => void) | undefined;
+  for (const text of trial.lines.slice(trial.at + 1)) {
+    const m = line.exec(text);
+    if (!m) continue;
+    const [, agent, label, body] = m as unknown as [string, string, string | undefined, string];
+    if (label === "prompt" && /^\[[^\]]+\]/.test(body)) break; // another trial's Frame
+    const answer = label === undefined ? undefined : /^([a-z][a-z0-9_]*) (answer|error)$/.exec(label);
+    if (answer) {
+      const key = `${agent}\0${answer[1]}`;
+      const call = unanswered.get(key)?.shift();
+      if (call === undefined) {
+        open = undefined; // an answer to a call before the trial's prompt
+        continue;
+      }
+      call.answer = body;
+      if (answer[2] === "error") call.error = true;
+      open = (more) => (call.answer += `\n${more}`);
+    } else if (label !== undefined && !NOT_A_CALL.has(label) && /^[a-z][a-z0-9_]*$/.test(label)) {
+      const call: Answered = { call: label, input: body };
+      out.push(call);
+      const key = `${agent}\0${label}`;
+      unanswered.set(key, [...(unanswered.get(key) ?? []), call]);
+      open = (more) => (call.input += `\n${more}`);
+    } else if (label === undefined || !NOT_A_CALL.has(label)) {
+      // A body's later line: no label, or one that is no label the printer writes.
+      open?.(label === undefined ? body : `[${label}] ${body}`);
+    } else {
+      open = undefined;
+    }
+  }
+  return out;
+}
+
+/** A kept conversation's (untimed) lines, where its trial starts, and its Agents as a regular
+ * expression source — the reading `calledIn` and `answersIn` share. */
+function trialOf(kept: string, marker: string): { lines: string[]; at: number; agent: string } | undefined {
   const lines = kept.split("\n").map(untimed);
   const agents = promptedAgents(lines);
   if (agents.length === 0) return undefined;
-  const any = `(?:${agents.map(escaped).join("|")})`;
-  const prompt = new RegExp(`^\\[${any}\\] \\[prompt\\] `);
+  const agent = `(?:${agents.map(escaped).join("|")})`;
+  const prompt = new RegExp(`^\\[${agent}\\] \\[prompt\\] `);
   const own = lines.findIndex((l) => prompt.test(l) && l.includes(`[${marker}]`));
-  const at = own !== -1 ? own : lines.findIndex((l) => prompt.test(l));
-  return saidFrom(lines, at, any);
+  return { lines, at: own !== -1 ? own : lines.findIndex((l) => prompt.test(l)), agent };
 }
 
 /** The Agents whose prompt printed in a conversation's (untimed) lines, in order, each once. */

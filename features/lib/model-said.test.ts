@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { assign, createMachine } from "xstate";
 import {
+  answersIn,
   askAfter,
   calledIn,
   follow,
@@ -290,6 +291,74 @@ test("a kept conversation's calls are its Agents' own: the run narrative echo an
     "2026-10-13T10:00:09Z [run] [status] done",
   ].join("\n");
   assert.equal(told(calledIn(kept, "t0-abcdef")!), "bash publish finish");
+});
+
+// Each pick's answer in a kept conversation (ADR-0023, ADR-0066): the Harness prints a Menu call's
+// result after its call, as the model read it, in the shapes its printer writes
+// (packages/harness/test/printer.test.ts pins them).
+test("a kept conversation pairs each pick with the answer the model read, and a Working tool's call has none", () => {
+  const kept = [
+    "2026-10-13T10:00:00Z [coder] [prompt] [t0-abcdef] Commit, then publish.",
+    "2026-10-13T10:00:01Z [coder] [bash] git commit -am one",
+    '2026-10-13T10:00:02Z [coder] [publish] {"summary":"x"}',
+    '2026-10-13T10:00:02Z [coder] [publish error] Validation failed for tool "mcp__jr2__publish":',
+    "2026-10-13T10:00:02Z [coder]   - root: must NOT have additional properties",
+    "2026-10-13T10:00:03Z [coder] [publish] {}",
+    "2026-10-13T10:00:04Z [run] [status] running · body: working.publishing",
+    '2026-10-13T10:00:09Z [coder] [publish answer] Delivered "publish" to the workflow (delivery d-1). jr2 signed your commits and pushed the signed copies. Continue your work on your branch.',
+    "2026-10-13T10:00:10Z [coder] [text] I continue.",
+    "2026-10-13T10:00:10Z [coder] a second line of text, not an answer's",
+    "2026-10-13T10:00:11Z [coder] [finish] {}",
+    '2026-10-13T10:00:12Z [coder] [finish answer] Delivered "finish" to the workflow (delivery d-2).',
+    "2026-10-13T10:00:12Z [coder] The workflow consumed it and moved on: your turn is over.",
+  ].join("\n");
+  assert.deepEqual(answersIn(kept, "t0-abcdef"), [
+    { call: "bash", input: "git commit -am one" },
+    {
+      call: "publish",
+      input: '{"summary":"x"}',
+      answer: 'Validation failed for tool "mcp__jr2__publish":\n  - root: must NOT have additional properties',
+      error: true,
+    },
+    {
+      call: "publish",
+      input: "{}",
+      answer:
+        'Delivered "publish" to the workflow (delivery d-1). jr2 signed your commits and pushed the signed copies. Continue your work on your branch.',
+    },
+    {
+      call: "finish",
+      input: "{}",
+      answer:
+        'Delivered "finish" to the workflow (delivery d-2).\nThe workflow consumed it and moved on: your turn is over.',
+    },
+  ]);
+  // The answer lines are not calls: the note's reading is what it was.
+  assert.equal(told(calledIn(kept, "t0-abcdef")!), "bash publish publish finish");
+});
+
+test("an answer pairs with the oldest unanswered call of its pick; a call still out has none; the next trial's are not read", () => {
+  const kept = [
+    "[coder] [prompt] [t1-bbbbbb] Go.",
+    "[coder] [run_tests] {}",
+    "[coder] [finish] {}",
+    "[coder] [run_tests answer] Delivered. Its answer: the output of `tests`.",
+    "[coder] [finish error] `mcp__jr2__finish` was NOT delivered: your pick `mcp__jr2__run_tests` is still running.",
+    "[coder] [run_tests] {}",
+    "[coder] [prompt] [t2-cccccc] The next trial.",
+    "[coder] [finish answer] Not this trial's.",
+  ].join("\n");
+  assert.deepEqual(answersIn(kept, "t1-bbbbbb"), [
+    { call: "run_tests", input: "{}", answer: "Delivered. Its answer: the output of `tests`." },
+    {
+      call: "finish",
+      input: "{}",
+      answer: "`mcp__jr2__finish` was NOT delivered: your pick `mcp__jr2__run_tests` is still running.",
+      error: true,
+    },
+    { call: "run_tests", input: "{}" },
+  ]);
+  assert.equal(answersIn("no conversation printed", "t9-none"), undefined);
 });
 
 test("a followed process keeps what it printed to stderr apart: the reason a log could not be read", async () => {
