@@ -30,6 +30,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { pushRemoteLogScript } from "../lib/model-evidence.ts";
 
 const exec = promisify(execFile);
 
@@ -414,6 +415,11 @@ export async function pushRemoteCommitsFromMain(commit: string): Promise<number>
   const n = Number(out.trim());
   assert.ok(Number.isInteger(n), `rev-list --count answered ${JSON.stringify(out)}`);
   return n;
+}
+
+/** The push remote's log from `main` to `commit`, one line per commit (ADR-0066's kept evidence). */
+export async function pushRemoteLogFromMain(commit: string): Promise<string> {
+  return inSeed(pushRemoteLogScript(commit));
 }
 
 /** The GPG push remote's branch tip and that commit's raw object, or "" for both when it has none. */

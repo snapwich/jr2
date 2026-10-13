@@ -116,6 +116,29 @@ recover, finish — are exercised only one scripted tool call at a time.
   run, and prints what it threw). A run that ended faulted or lost also prints its final output, and a run in error its
   fault, which carry the reason (`features/lib/model-status.ts`): the namespace that held the pod log is gone when the
   list is read.
+- **Every trial keeps its evidence.** Every trial, passed, missed or void, keeps one folder,
+  `features/.tmp/model-trials/<model>/<cell>/<runId>/` (gitignored with `.tmp`; a cell's `/` is a folder):
+  - `conversation.txt`: the Harness container's printed conversation (ADR-0023), timestamped. A Sandbox claim's is
+    followed from the moment the trial's Sandbox pod exists until the reap at settle takes the pod
+    ([ADR-0012](0012-workspace-wrapper-machine.md)), so a read after the settle is never needed, and it is followed
+    again after the container restarts. A Menu-only claim's is the Instance Harness's from the trial's start, followed
+    again after the step deletes that pod and the StatefulSet makes it again.
+  - `effector.txt`: the Sandbox Effector container's log, followed the same way, for a Sandbox claim; it says so when
+    the pod has none.
+  - `harness-history.txt`: the Harness history view
+    ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)) of each Agent whose prompt printed:
+    each settlement, with the failure text of one that failed. It is read while the trial runs, and the last view read
+    while the pod lived is kept.
+  - `record.json`: the Machine's final record, the last status the driver read of the run.
+  - `push-log.txt`, for a push claim: the push remote's log from `main` to each commit the record says was published.
+
+  Each file is written when it changes, so a trial that hangs until its timeout leaves what it had. Every probe only
+  reads: a probe that fails writes `<unavailable: why>` into its file, never fails the trial, and never changes what the
+  next trial does. Each trial's note opens with what the model called, read off the kept conversation in the Menu-only
+  notes' form (`said bash (restated) ask_approval submit`), or `said <unread: why>` when it cannot be read, and the
+  driver's note follows. A floor failure, a void past the bound and a cell below its baseline are read from these
+  folders before a prompt, a floor or a step is touched.
+
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials. After
   the measured pick, a coder that picked `revise` is back in `coding`, where only the desk's answer moves it, so the
   step answers the desk again, at most three more times, and the trial can finish; the measure is still the first pick
@@ -243,7 +266,8 @@ recover, finish — are exercised only one scripted tool call at a time.
   prompt, the floor and the pass criterion unchanged, and 10 of 10 on 6f91bcc and on 9cd3935.
 
 - The drivers' readings of the printed conversation, of a workflow's modes and of a restarted Harness container are
-  plain functions in `features/lib/model-said.ts`, and what each claim workflow means by "finished" is a table in
+  plain functions in `features/lib/model-said.ts`, the readings of a trial's kept evidence are in
+  `features/lib/model-evidence.ts`, and what each claim workflow means by "finished" is a table in
   `features/lib/model-finished.ts`, with unit tests beside them that need no cluster and no model.
 - The run has a second form, `ticket-modes`: one coder Turn walks three modes of its state to a verified commit.
 - A claim whose notice no step can yet raise (Compaction's summary, a kernel group kill) is added when the step exists;

@@ -16,6 +16,7 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { harnessToken } from "@jr2/orchestrator";
@@ -40,7 +41,9 @@ import {
 import { FINISHED } from "../lib/model-finished.ts";
 import { bodyIn, ended, killedInTheFirstTurn, type RunChild } from "../lib/model-status.ts";
 import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
-import { ensureSeed, pushRemoteCommitsFromMain } from "./seed.ts";
+import { beginEvidence, recordStatus, trialContext, type TrialContext } from "./model-evidence.ts";
+import { trialDir } from "../lib/model-evidence.ts";
+import { ensureSeed, pushRemoteCommitsFromMain, pushRemoteLogFromMain } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -53,6 +56,8 @@ const INSTANCE_HARNESS = "jr2-instance-harness";
 /** Where the run's scorecard goes, and where committed baselines live (ADR-0066). */
 const SCORECARD = fileURLToPath(new URL("../.tmp/model-scorecard.json", import.meta.url));
 const BASELINES = fileURLToPath(new URL("../model-baselines/", import.meta.url));
+/** Where every trial's evidence is kept, pass or not (ADR-0066): `<model>/<cell>/<runId>/`. */
+const TRIALS = fileURLToPath(new URL("../.tmp/model-trials/", import.meta.url));
 
 // --- one run, observed ----------------------------------------------------------------------------
 
@@ -95,13 +100,17 @@ async function inHarness(world: E2EWorld, pod: string, cmd: string[]): Promise<{
 async function status(world: E2EWorld, runId: string): Promise<Status> {
   const r = await world.runCli(["status", runId]);
   assert.equal(r.code, 0, `jr2 status ${runId} failed: ${r.stderr}`);
-  return world.resultJson<Status>();
+  const s = world.resultJson<Status>();
+  recordStatus(runId, s); // the Machine's final record is the last status a driver read
+  return s;
 }
 
 async function startRun(world: E2EWorld, workflow: string, input: Record<string, unknown>): Promise<string> {
   const r = await world.runCli(["run", workflow, "--detach", "--input", JSON.stringify(input)]);
   assert.equal(r.code, 0, `jr2 run ${workflow} failed: ${r.stderr}`);
-  return world.resultJson<{ runId: string }>().runId;
+  const runId = world.resultJson<{ runId: string }>().runId;
+  beginEvidence(runId); // a trial's run: its evidence is kept from now on
+  return runId;
 }
 
 /** Poll until the run settles (`done`/`error`), or `until` a predicate holds. Returns the last
@@ -452,7 +461,7 @@ const modeFollow: Driver = async (world, input) => {
     measured: next === "revise" || next === "submit",
     finished: FINISHED["mode-follow"]!(last),
     ...(asked === -1 ? { void: true } : {}),
-    note: `said ${told(said)}; ended ${ended(last)}`,
+    note: `ended ${ended(last)}`,
   };
 };
 
@@ -477,7 +486,7 @@ const modeRefusal: Driver = async (world, input) => {
     measured: after === "publish",
     finished: FINISHED["mode-refusal"]!(last),
     ...(refused ? {} : { void: true }),
-    note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${ended(last)}`,
+    note: `took ${ledger.join(" ")}; ended ${ended(last)}`,
   };
 };
 
@@ -515,7 +524,7 @@ const modeStop: Driver = async (world, input) => {
     measured: next !== undefined && next in (modes[mode]?.picks ?? {}),
     finished: FINISHED["mode-stop"]!(last),
     ...(asked === -1 ? { void: true } : {}),
-    note: `said ${told(said)}; asked in ${asked === -1 ? "none" : mode}; ended ${ended(last)}`,
+    note: `asked in ${asked === -1 ? "none" : mode}; ended ${ended(last)}`,
   };
 };
 
@@ -569,7 +578,6 @@ const wake: Driver = async (world, input) => {
     if (!stopped) await sleep(2000);
   }
   if (!stopped) {
-    const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
     const s = await status(world, runId);
     await world.runCli(["send", runId, "--event", "CANCEL"]);
     return {
@@ -577,7 +585,7 @@ const wake: Driver = async (world, input) => {
       measured: false,
       finished: false,
       void: true,
-      note: `never stopped: ${told(said)}; ended ${ended(s)}`,
+      note: `never stopped; ended ${ended(s)}`,
     };
   }
   await sendToGate(world, runId, board.gate, "cleared");
@@ -590,7 +598,7 @@ const wake: Driver = async (world, input) => {
     runId,
     measured: first !== undefined,
     finished: FINISHED.wake!(last),
-    note: `said ${told(said)}; ${seen}; ended ${ended(last)}`,
+    note: `${seen}; ended ${ended(last)}`,
   };
 };
 
@@ -650,7 +658,7 @@ async function pushFollowIn(
       measured: false,
       finished: false,
       void: true,
-      note: `no command in flight: ${told(sleeping.said)}; ended ${ended(status0)}`,
+      note: `no command in flight; ended ${ended(status0)}`,
     };
   }
   await sendToGate(world, runId, desk.gate, "approve");
@@ -691,7 +699,7 @@ async function pushFollowIn(
       measured: true,
       finished: true,
       also,
-      note: `said ${told(said)}; revised after the answer, then not finished within its time: cancelled`,
+      note: "revised after the answer, then not finished within its time: cancelled",
     };
   }
   const ledger = (last.context.output?.picks ?? []) as string[];
@@ -711,7 +719,7 @@ async function pushFollowIn(
     measured: followed,
     finished: FINISHED["push-follow"]!(last),
     also,
-    note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${ended(last, last.context.output?.outcome)}`,
+    note: `took ${ledger.join(" ")}; ended ${ended(last, last.context.output?.outcome)}`,
   };
 }
 
@@ -735,7 +743,7 @@ const chainAnswer: Driver = async (world, input) => {
     measured: next === "hold",
     finished: FINISHED["chain-answer"]!(last),
     ...(ran === -1 ? { void: true } : {}),
-    note: `said ${told(said)}; ended ${ended(last)}`,
+    note: `ended ${ended(last)}`,
   };
 };
 
@@ -863,7 +871,7 @@ const allowedAfterRoute: Driver = async (world, input) => {
       measured: next !== undefined && ALLOWED_IN_RED.has(next),
       finished: FINISHED["allowed-after-route"]!(last),
       ...(ran === -1 ? { void: true } : {}),
-      note: `said ${told(said)}; ended ${ended(last, last.context.output?.outcome)}`,
+      note: `ended ${ended(last, last.context.output?.outcome)}`,
     };
   } finally {
     source.follow.stop();
@@ -973,23 +981,61 @@ const SERIAL = new Set([
   "cut-pick",
 ]);
 
-/** Run `n` trials with at most `parallel` in flight. Every trial gets its own marker. */
-async function runTrials(world: E2EWorld, driver: Driver, n: number, parallel: number, thinking: string) {
+/** The claims whose trials push to the seed's push remote: their evidence logs what it holds. */
+const PUSHES = new Set(["continue-after-signed-push"]);
+
+/** What a trial's evidence is read with, bound to the scenario's namespace. */
+function evidenceContext(world: E2EWorld, workflow: string, thinking: string, marker: string): TrialContext {
+  assert.ok(world.namespace, "a @model scenario has its namespace set in setupModel");
+  const model = modelKey(world);
+  return {
+    marker,
+    sandbox: !SERIAL.has(workflow),
+    push: PUSHES.has(workflow),
+    since: new Date().toISOString(),
+    dirFor: (runId) => trialDir(TRIALS, model, `${workflow}/${thinking}`, runId),
+    probes: {
+      namespace: world.namespace,
+      kubectl: (args) => kubectl(world, args),
+      auth: (placement) => harnessAuth(world, placement),
+      pushLog: pushRemoteLogFromMain,
+    },
+  };
+}
+
+/**
+ * Run `n` trials with at most `parallel` in flight. Every trial gets its own marker, and every
+ * trial, pass or not, keeps its evidence (ADR-0066): its note opens with what the model called,
+ * read off the conversation kept for it.
+ */
+async function runTrials(
+  world: E2EWorld,
+  workflow: string,
+  driver: Driver,
+  n: number,
+  parallel: number,
+  thinking: string,
+) {
   const results: Trial[] = [];
   let next = 0;
   // A void trial is replaced, at most this many times over the whole claim: the claim measures a
   // later Turn, and a setup that never happened says nothing about it.
   let replacements = Math.ceil(n / 2);
+  console.log(`trial evidence: ${join(TRIALS, modelKey(world), workflow, thinking)}`);
   const worker = async () => {
     while (next < n) {
       const i = next++;
       const marker = `t${i}-${randomBytes(3).toString("hex")}`;
+      const ctx = evidenceContext(world, workflow, thinking, marker);
       let trial: Trial;
       try {
-        trial = await driver(world, { thinking, marker });
+        trial = await trialContext.run(ctx, () => driver(world, { thinking, marker }));
       } catch (err) {
-        trial = { runId: "?", measured: false, finished: false, note: `threw: ${(err as Error).message}` };
+        const run = ctx.evidence ? ` (run ${ctx.evidence.runId})` : "";
+        trial = { runId: "?", measured: false, finished: false, note: `threw: ${(err as Error).message}${run}` };
       }
+      // The note opens with what the model called; the driver's note, which says how the run ended, follows.
+      if (ctx.evidence) trial = { ...trial, note: [await ctx.evidence.finish(), trial.note].join("; ") };
       if (trial.void && replacements > 0) {
         replacements--;
         next--; // run another in its place
@@ -1090,7 +1136,7 @@ When(
     const driver = DRIVERS[workflow];
     assert.ok(driver, `no trial driver for workflow "${workflow}" (have: ${Object.keys(DRIVERS).join(", ")})`);
     const parallel = SERIAL.has(workflow) ? 1 : (this.modelProfile?.parallel ?? 2);
-    const trials = await runTrials(this, driver, n, parallel, thinking);
+    const trials = await runTrials(this, workflow, driver, n, parallel, thinking);
     claims.set(this, { workflow, cell: `${workflow}/${thinking}`, thinking, trials, floors: {} });
   },
 );

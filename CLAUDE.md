@@ -86,7 +86,9 @@ modes. The whole tier is about 70 minutes on the home lab (four runs, 65 to 75);
 `mode-stop` and `wake` about ten.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
-`scorecard: <model> <cell>: k/N`. Two thresholds, two meanings:
+`scorecard: <model> <cell>: k/N`. Every trial, pass or not, keeps its evidence in
+`features/.tmp/model-trials/<model>/<cell>/<runId>/` — the printed conversation, the Effector's log, the Harness history
+view, the Machine's final record and, for a push claim, the push remote's log (ADR-0066). Two thresholds, two meanings:
 
 - **A floor** is in the scenario (`at least 9 trials`). Below it the scenario FAILS: a defect in what jr2 shows the
   model, or in the step. Read the failure list — each trial prints its run id and what it observed — and the pod log
