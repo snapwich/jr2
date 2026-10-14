@@ -60,15 +60,16 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   (the Custodian does not scrub responses,
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)) reaches the log as it reaches the
   model, up to the bound. Those two are the residual of printing a pick's answer, stated here and in ADR-0014. A Menu
-  call left with no result gets jr2's text in the history
+  call that one of two cuts left with no result gets jr2's text in the history
   ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), which the model reads on every later request: a
   call a Harness restart cut while it was out reached the workflow, and its result comes in the next message; a call an
-  abort cut while the model was still writing it did not reach the workflow, and nothing ran. That answer is no message
-  pi emits, so the Harness prints it itself, once: as `[<pick> answer] <text>`, before the next prompt of the
-  conversation that ends in the call — the first prompt of the process after a restart, or the next Submission's in the
-  same process. A message's answers print in the order of its calls, whichever came back first, and every prompt prints
-  after the answers of the calls before it (a nudge, a restated Turn part and a re-admission alike), so no call's answer
-  prints after a prompt that follows it.
+  abort cut while the model was still writing it did not reach the workflow, and nothing ran. A call in a message a
+  provider error ended is no cut: pi runs no call of that message and drops it from every request, so jr2 gives the call
+  no text and nothing prints for it (ADR-0031). jr2's answer is no message pi emits, so the Harness prints it itself,
+  once: as `[<pick> answer] <text>`, before the next prompt of the conversation that ends in the call — the first prompt
+  of the process after a restart, or the next Submission's in the same process. A message's answers print in the order
+  of its calls, whichever came back first, and every prompt prints after the answers of the calls before it (a nudge, a
+  restated Turn part and a re-admission alike), so no call's answer prints after a prompt that follows it.
 - **The writer structures, the reader colorizes.** Lines carry a parseable prefix and no ANSI. jr's colors were correct
   for an fzf preview, which is a terminal; `kubectl logs` output is piped, grepped, and ingested, where escape codes are
   corruption. A future reader may colorize on `isatty`.

@@ -467,7 +467,8 @@ function settleAbandonedMessage(message: AgentMessage): AgentMessage {
 
 /**
  * Settle the messages pi will send (ADR-0031): each aborted message re-tagged
- * (`settleAbandonedMessage`), and every Menu call left with no result answered with jr2's text. pi
+ * (`settleAbandonedMessage`), and each Menu call a cut left with no result answered with jr2's text
+ * (a call in a message a provider error ended gets none; see below). pi
  * would answer such a call itself when it sends the history — "No result provided", an error, which
  * reads as a failed pick and invites a second one. Two cuts leave one, and the text tells them apart
  * by whether the call was delivered, read BEFORE the re-tag:
