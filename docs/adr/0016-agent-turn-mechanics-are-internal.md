@@ -1,9 +1,11 @@
 # Agent-turn mechanics are jr2-internal: ambient coordinates, host-side offsets, absorbed retries, fresh sessions
 
 Second of the workflow-API redesign trio ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md) has the context;
-full record in [docs/design/workflow-api/](../design/workflow-api/proposal.md)). `agentRun`'s consumer input shrinks to
-workflow vocabulary — `{ agent, prompt }` plus opt-ins below — because everything else it used to take was jr2 handing
-the consumer values jr2 already had. Each absorption follows, with what it deletes from a jr-shaped workflow.
+full record in
+[docs/design/workflow-api/](https://github.com/snapwich/jr2/blob/71ebe36/docs/design/workflow-api/proposal.md)).
+`agentRun`'s consumer input shrinks to workflow vocabulary — `{ agent, prompt }` plus opt-ins below — because everything
+else it used to take was jr2 handing the consumer values jr2 already had. Each absorption follows, with what it deletes
+from a jr-shaped workflow.
 
 The opt-ins include two optional dials, `model` and `thinkingLevel`
 ([ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md) draws the identity-vs-dial line and

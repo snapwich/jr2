@@ -2,10 +2,10 @@
 
 The jr-parity exercise produced a working model but a bad consumer API: mechanism plumbing (manifests, tool lists,
 event-union bookkeeping) dominated the workflow. The redesign grill (2026-07-13/14, full record in
-[docs/design/workflow-api/](../design/workflow-api/proposal.md)) settled the split: **the consumer writes pure workflow
-— states, transitions, prompts, policy — and jr2 absorbs everything else through convention.** This ADR covers the
-authoring surface; [ADR-0016](0016-agent-turn-mechanics-are-internal.md) covers the agent turn;
-[ADR-0017](0017-pool-over-a-source-port.md) covers the run loop.
+[docs/design/workflow-api/](https://github.com/snapwich/jr2/blob/71ebe36/docs/design/workflow-api/proposal.md)) settled
+the split: **the consumer writes pure workflow — states, transitions, prompts, policy — and jr2 absorbs everything else
+through convention.** This ADR covers the authoring surface; [ADR-0016](0016-agent-turn-mechanics-are-internal.md)
+covers the agent turn; [ADR-0017](0017-pool-over-a-source-port.md) covers the run loop.
 
 ## `jr2Setup`: an xstate `setup()` analog, not a DSL
 
