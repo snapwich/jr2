@@ -15,24 +15,15 @@
 // resolves no instance folder: "disk is full now" has to work from anywhere, and a kube context is
 // the only address this command needs.
 
-import { parseArgs } from "node:util";
 import { pnpmDockerBuild } from "../build.ts";
 import { kubectlAdmin } from "../kube.ts";
 import { activity, type Io } from "../output.ts";
 import { DEFAULT_REPO_TTL, parseRepoTtl, sweepRepos } from "../repo-sweep.ts";
 import { sweepImages } from "../sweep.ts";
+import { parseCommand } from "../command-table.ts";
 
 export async function gc(args: string[], io: Io): Promise<number> {
-  const { values } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: {
-      "dry-run": { type: "boolean" },
-      "repo-ttl": { type: "string" },
-      context: { type: "string" },
-    },
-  });
+  const { values } = parseCommand("gc", args);
   const ttl = (values["repo-ttl"] as string | undefined) ?? DEFAULT_REPO_TTL;
   // Refused before anything is read: a TTL that does not parse must not become "sweep now".
   parseRepoTtl(ttl);

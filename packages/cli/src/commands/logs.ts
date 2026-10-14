@@ -3,23 +3,18 @@
 // author emits → stderr). `-f`/`--follow` keeps streaming status deltas until the run settles; without
 // it, we print the replayed status and stop. A run that already settled streams its final status once.
 
-import { parseArgs } from "node:util";
 import { JR2Client } from "../client.ts";
-import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
+import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
 import { childErrorActivity, placingActivity } from "./run.ts";
+import { parseCommand, usageLine } from "../command-table.ts";
 
 export async function logs(args: string[], io: Io): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: { follow: { type: "boolean", short: "f" }, ...TARGET_ARGS },
-  });
+  const { values, positionals } = parseCommand("logs", args);
   const given = positionals[0];
   if (!given) {
-    activity(io, "usage: jr2 logs <runId|abbrev> [-f]");
+    activity(io, usageLine("logs"));
     return 2;
   }
   const target = await resolveTarget(io, targetOptions(values));

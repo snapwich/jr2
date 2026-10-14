@@ -13,32 +13,14 @@
 // with its reason. `--workflows` prints that listing as the result instead. No verb puts or deletes
 // a runtime Chart in this step: `PUT`/`DELETE /workflows/<wrapper>/charts/<name>` is for an MCP or curl.
 
-import { parseArgs } from "node:util";
 import type { RunChild } from "@jr2/orchestrator/internal";
 import { JR2Client, type RunStatus, type WorkflowListing, type WorkflowOrigin } from "../client.ts";
-import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
+import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
-
-export const RUNS_USAGE = `usage: jr2 runs [--workflows]
-
-  the live runs as JSON on stdout; the Workflows a run can start on stderr, each with its origin
-  (machine, chart file, chart) and a Chart wrapper's Charts indented under it (ADR-0070)
-  --workflows   print the Workflow listing as the JSON result instead
-
-  a runtime Chart has no verb here: PUT or DELETE /workflows/<wrapper>/charts/<name> with the
-  Instance token (an MCP or curl), then \`jr2 run <wrapper>/<name>\` starts it`;
+import { parseCommand } from "../command-table.ts";
 
 export async function runs(args: string[], io: Io): Promise<number> {
-  const { values } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: { ...TARGET_ARGS, workflows: { type: "boolean" }, help: { type: "boolean", short: "h" } },
-  });
-  if (values.help) {
-    activity(io, RUNS_USAGE);
-    return 0;
-  }
+  const { values } = parseCommand("runs", args);
   const target = await resolveTarget(io, targetOptions(values));
   try {
     const client = new JR2Client(target.url, io.fetch, target.token);

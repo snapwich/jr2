@@ -20,20 +20,15 @@
 // started: `dispatched: <run> (<slot>)`. The result itself carries `dispatchedBy`, `dispatched`
 // and, once the run is no longer live, its `output`, as the Orchestrator sends them.
 
-import { parseArgs } from "node:util";
 import type { AssemblyView, RepoStatus } from "@jr2/orchestrator/internal";
 import { JR2Client, type FetchLike, type RunStatus, workflowPath } from "../client.ts";
-import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
+import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
+import { parseCommand } from "../command-table.ts";
 
 export async function status(args: string[], io: Io): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: { ...TARGET_ARGS, json: { type: "boolean" } },
-  });
+  const { values, positionals } = parseCommand("status", args);
   // NO run named, not an EMPTY one: `jr2 status "$RUNID"` with the variable unset asked about a run
   // and got an empty string, and answering that with the instance's repos would report exit 0 on a
   // question nobody asked. An empty positional falls through to the resolver, which says so.

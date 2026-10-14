@@ -124,7 +124,7 @@ events POST is ambiguous. `CANCEL` is the one reserved run-level event; everythi
 # lifecycle (instance)
 jr2 init [dir] [--name <n>]        # scaffold the minimum runnable instance
 jr2 up [--yes]                     # converge the current context to this instance (ADR-0019)
-jr2 down [--all]                   # remove the instance from the cluster (--all: operator too)
+jr2 down [--all] [--yes]           # remove the instance from the cluster (--all: operator too)
 jr2 gc [--dry-run]                 # sweep unreachable labeled images — the same sweep up/down run (ADR-0039)
 
 # kit (instance-less)
@@ -167,14 +167,21 @@ Secret (kube RBAC is the gate). `--url` / `JR2_URL` (+ token env) overrides both
 case — and skips the folder walk entirely. Every run-verb prints the context it targets on stderr, so ambient-context
 drift is visible (ADR-0019).
 
+**The command table.** Each verb is an entry in `packages/cli/src/command-table.ts`: its arguments, its flags, the env
+vars it reads, what it prints, and its ADRs, as data. The verb's `parseArgs` options come from its entry, and so does
+the help, so a flag cannot be accepted and not documented, or documented and not read. `jr2 --help` prints the whole
+table. `jr2 <verb> --help` or `-h` prints that verb's entry, runs nothing, and exits 0. A usage error prints the verb's
+usage line. The CLI Reference of the docs is generated from the same table
+([ADR-0072](0072-the-docs-ship-inside-the-kit-and-an-instances-agents-md-indexes-them.md)).
+
 **Two output classes (amended 2026-09-20).** The stream rule below — JSON result on stdout, activity on stderr — was
 written for `jr2 run`, whose reason is the pipe: `jr2 run … | jq` must yield the result alone. It generalises to every
-**result verb** — `run`, `runs`, `status <runId>`, `send`, `logs` — because their result is small and the stderr lines
-beside it are advisory. It does not generalise to a **report verb** — `version`, and `status` with no run id — whose
-output is a diagnosis a human reads whole: dual-printing there shows a JSON blob and a partial table, and the readable
-form exists nowhere. So a report verb prints its human table on **stdout**, and `--json` swaps the table for the one
-object. No `isatty` sniffing: output that changes with how it is invoked is a debugging trap of its own. `up`, `down`,
-`gc` are neither class — activity only, no result.
+**result verb** — `run`, `runs`, `status <runId>`, `logs`, `kit push` — because their result is small and the stderr
+lines beside it are advisory. It does not generalise to a **report verb** — `version`, and `status` with no run id —
+whose output is a diagnosis a human reads whole: dual-printing there shows a JSON blob and a partial table, and the
+readable form exists nowhere. So a report verb prints its human table on **stdout**, and `--json` swaps the table for
+the one object. No `isatty` sniffing: output that changes with how it is invoked is a debugging trap of its own. `init`,
+`up`, `down`, `gc` and `send` are neither class — activity only, no result.
 
 **`jr2 version` (amended 2026-09-20).** The report you paste into a bug: what is _here_ and what is _deployed_, side by
 side, so the gap between the halves is the answer ("you edited the pin and never ran `jr2 up`"). The local half: `cli`
@@ -189,9 +196,10 @@ ConfigMap pods actually read, and one `skew` verdict comparing the two kit numbe
 with the `jr2 up` consequence spelled out and, in checkout mode, a reminder that `same` is weak and the hash is the
 address. Nothing is computed that `jr2 up` computes: no bundle staging, no local hash. It is the one Instance verb that
 reads the Instance without asserting it — a Kit mismatch is a line, never the ADR-0056 refusal, because this is the verb
-you reach for when that refusal fires. It hands off like every verb. `TARGET_ARGS` as every run verb; `--url` leaves
-only the orchestrator line; `--local` skips the cluster. Exit 0 whatever it finds: a report. No registry lookup: "out of
-date" here means behind the Instance, and `npm view` answers the other question.
+you reach for when that refusal fires. It hands off like every verb. The shared addressing flags (`--url`, `-n`,
+`--context`) as every run verb; `--url` leaves only the orchestrator line; `--local` skips the cluster. Exit 0 whatever
+it finds: a report. No registry lookup: "out of date" here means behind the Instance, and `npm view` answers the other
+question.
 
 **`jr2 run` — blocking, attach-by-default.** Start the run, stream activity to **stderr**, print the terminal
 `RunStatus` as JSON to **stdout**, exit — so `jr2 run … | jq` yields just the result. It **attaches to the running

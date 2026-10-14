@@ -14,3 +14,29 @@ export type { KubePort } from "./kube.ts";
 // test can issue its own fixtures the same way (the @kind tier's HTTPS model provider).
 export { issueCa, issueLeaf } from "./held-pki.ts";
 export type { Pem } from "./held-pki.ts";
+// The command table (ADR-0072): every verb as data, and the renderers `--help` prints with — what the
+// docs' CLI Reference is generated from, so the help and the site cannot disagree.
+export {
+  COMMANDS,
+  GLOBAL,
+  GLOBAL_OPTIONS,
+  HELP_FLAG,
+  SECTIONS,
+  EXIT_CODES,
+  nameOf,
+  synopsis,
+  renderHelp,
+  renderCommand,
+} from "./command-table.ts";
+export type {
+  Command,
+  CommandName,
+  Flag,
+  Arg,
+  EnvVar,
+  Form,
+  Output,
+  OutputKind,
+  GlobalOption,
+  Section,
+} from "./command-table.ts";

@@ -59,7 +59,6 @@ import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
 import {
   custodianBootstrap,
   custodianRef,
@@ -186,19 +185,10 @@ import { anyNodeHolds, buildNodes, sandboxNodes, type NodeObject } from "../node
 import { activity, chooseOrBail, confirmOrBail, promptLine, readSecretInput, type Io } from "../output.ts";
 import { kindCluster, sweepImages } from "../sweep.ts";
 import { tscTypecheck } from "../typecheck.ts";
+import { parseCommand } from "../command-table.ts";
 
 export async function up(args: string[], io: Io): Promise<number> {
-  const { values } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: {
-      yes: { type: "boolean" },
-      force: { type: "boolean" },
-      namespace: { type: "string", short: "n" },
-      context: { type: "string" },
-    },
-  });
+  const { values } = parseCommand("up", args);
 
   const root = resolveRoot(io.cwd);
   const config = (await loadConfig(root)) ?? {};

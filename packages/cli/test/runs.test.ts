@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { main } from "../src/cli.ts";
 import { JR2Client, type WorkflowListing } from "../src/client.ts";
-import { markListed, renderWorkflows, RUNS_USAGE } from "../src/commands/runs.ts";
+import { markListed, renderWorkflows } from "../src/commands/runs.ts";
 import type { Io } from "../src/output.ts";
 
 const LISTING: WorkflowListing[] = [
@@ -121,17 +121,17 @@ test("an Orchestrator older than ADR-0070 answers bare names; each reads as a Ma
 });
 
 test("the usage says no verb puts or deletes a runtime Chart", async () => {
-  assert.match(RUNS_USAGE, /PUT or DELETE \/workflows\/<wrapper>\/charts\/<name>/);
   const { io, err } = mkIo(fakeFetch(LISTING));
   assert.equal(await main(["runs", "--help"], io), 0);
+  assert.match(err(), /PUT or DELETE \/workflows\/<wrapper>\/charts\/<name>/);
   assert.match(err(), /an MCP or curl/);
 });
 
 test("`jr2 --help` names the Workflow listing and `--workflows` under `runs`", async () => {
   const { io, err } = mkIo(fakeFetch(LISTING));
   await main(["--help"], io);
-  assert.match(err(), /named Charts on stderr \(ADR-0070\)/);
-  assert.match(err(), /\[--workflows\] +\.\.\.or print that listing as the result \(see "runs --help"\)/);
+  assert.match(err(), /^ {2}runs \[--workflows\] /m);
+  assert.match(err(), /--workflows\s+prints\s+that\s+listing\s+as\s+the\s+result/);
 });
 
 // A dispatched run (ADR-0071) carries `dispatchedBy` after its id in `jr2 runs`, as it is sent.

@@ -20,33 +20,19 @@
 // idle timeout (ADR-0025). It is a fact of this cancel, so it is a flag here and never a config key,
 // and it means nothing on any other event — refused there rather than ignored.
 
-import { parseArgs } from "node:util";
 import { JR2Client } from "../client.ts";
-import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
+import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
-
-const USAGE =
-  "usage: jr2 send <runId|abbrev> --event CANCEL [--keep] | jr2 send <runId|abbrev> --gate <gate> --event <name> [--input '<json>']";
+import { commandNamed, parseCommand, renderCommand } from "../command-table.ts";
 
 export async function send(args: string[], io: Io): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: {
-      event: { type: "string" },
-      gate: { type: "string" },
-      input: { type: "string" },
-      keep: { type: "boolean" },
-      ...TARGET_ARGS,
-    },
-  });
+  const { values, positionals } = parseCommand("send", args);
   const given = positionals[0];
   const gate = values.gate as string | undefined;
   const event = values.event as string | undefined;
   if (!given || !event) {
-    activity(io, USAGE);
+    activity(io, renderCommand(commandNamed("send")));
     return 2;
   }
   const keep = values.keep === true;

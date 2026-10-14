@@ -27,17 +27,12 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { parseArgs } from "node:util";
+import { parseCommand } from "../command-table.ts";
 import { CLI_VERSION } from "../kit-version.ts";
 import { activity, type Io } from "../output.ts";
 
 export async function init(args: string[], io: Io): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: { name: { type: "string" } },
-  });
+  const { values, positionals } = parseCommand("init", args);
 
   const dir = positionals[0] ? resolve(io.cwd, String(positionals[0])) : io.cwd;
   const name = (values.name as string | undefined) ?? basename(dir);

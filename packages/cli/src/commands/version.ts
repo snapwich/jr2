@@ -13,17 +13,17 @@
 // A REPORT verb, not a result verb: the human table goes to stdout, `--json` swaps in the one object.
 
 import { basename } from "node:path";
-import { parseArgs } from "node:util";
 import { IMAGES_CONFIGMAP, IMAGES_KEY, INSTANCE_SECRET, loadConfig, type ImageRefs } from "@jr2/orchestrator/internal";
 import { detectKitCheckout, KIT_IMAGE_HOME } from "../build.ts";
 import type { InstanceIdentity } from "../client.ts";
 import { compareVersions, LABEL_VERSION, OPERATOR_DEPLOYMENT, OPERATOR_NAMESPACE } from "../deploy.ts";
 import { handedOffFrom } from "../handoff.ts";
-import { TARGET_ARGS, targetOptions, type TargetOptions } from "../instance.ts";
+import { targetOptions, type TargetOptions } from "../instance.ts";
 import { checkKitVersion, CLI_ROOT, CLI_VERSION } from "../kit-version.ts";
 import { kubectlAdmin, kubectlKube, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE, type KubeObject } from "../kube.ts";
 import { activity, result, type Io } from "../output.ts";
 import { findRoot } from "../root.ts";
+import { parseCommand } from "../command-table.ts";
 
 /** A package as the report names it: the number and the real path, so the path says WHICH copy. */
 export type Copy = { version: string; path: string };
@@ -79,12 +79,7 @@ export type VersionReport = {
 type Orchestrator = { version?: string; hash?: string; image?: string } | { error: string };
 
 export async function version(args: string[], io: Io): Promise<number> {
-  const { values } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: { ...TARGET_ARGS, local: { type: "boolean" }, json: { type: "boolean" } },
-  });
+  const { values } = parseCommand("version", args);
   const opts = targetOptions(values);
   const report = await versionReport(io, opts, { local: values.local === true });
   if (values.json === true) result(io, report);

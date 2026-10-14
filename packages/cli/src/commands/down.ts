@@ -1,7 +1,7 @@
-// `jr2 down [--all] [-n <ns>] [--context <ctx>]` (ADR-0019): remove the instance from the cluster —
-// its namespace and everything `jr2 up` converged into it. ALWAYS confirms (deleting a namespace
-// takes the runs, the store PVC, the Instance Harness's conversations PVC (ADR-0031), and every
-// live Sandbox with it). `--all` also uninstalls the
+// `jr2 down [--all] [--yes] [-n <ns>] [--context <ctx>]` (ADR-0019): remove the instance from the
+// cluster — its namespace and everything `jr2 up` converged into it. Confirms unless `--yes`
+// (deleting a namespace takes the runs, the store PVC, the Instance Harness's conversations PVC
+// (ADR-0031), and every live Sandbox with it). `--all` also uninstalls the
 // per-cluster operator — only sane when this was the cluster's last instance, which is the
 // caller's judgment, not derivable here.
 //
@@ -22,7 +22,6 @@
 // bounded by the node's disk; on kind they live inside the node container and go with the cluster.
 
 import { basename } from "node:path";
-import { parseArgs } from "node:util";
 import { loadConfig } from "@jr2/orchestrator/internal";
 import { pnpmDockerBuild } from "../build.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
@@ -30,19 +29,10 @@ import { resolveRoot } from "../instance.ts";
 import { kubectlAdmin } from "../kube.ts";
 import { activity, confirmOrBail, type Io } from "../output.ts";
 import { sweepImages } from "../sweep.ts";
+import { parseCommand } from "../command-table.ts";
 
 export async function down(args: string[], io: Io): Promise<number> {
-  const { values } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: {
-      all: { type: "boolean" },
-      yes: { type: "boolean" },
-      namespace: { type: "string", short: "n" },
-      context: { type: "string" },
-    },
-  });
+  const { values } = parseCommand("down", args);
 
   const root = resolveRoot(io.cwd);
   const config = (await loadConfig(root)) ?? {};

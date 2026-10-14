@@ -24,18 +24,13 @@
 // swap — it is the decision.
 
 import { execFile } from "node:child_process";
-import { parseArgs, promisify } from "node:util";
+import { promisify } from "node:util";
 import { custodianRef, KIT_VERSION } from "@jr2/orchestrator/internal";
 import { KIT_IMAGES, publishedKitRefs, type KitImageName } from "../build.ts";
 import { activity, result, type Io } from "../output.ts";
+import { commandNamed, parseCommand, renderCommand } from "../command-table.ts";
 
 const exec = promisify(execFile);
-
-const USAGE = `usage: jr2 kit push <registry>
-
-  mirror the v${KIT_VERSION} kit images (harness, operator, orchestrator) from their canonical
-  home, and the Custodian's pinned Envoy from its own, into <registry>, for a cluster whose
-  \`kitRegistry\` names it (ADR-0044, ADR-0059, ADR-0069)`;
 
 /** Run one `docker` invocation, rejecting on a non-zero exit. The seam this command is tested
  * through: the claims are which argv each ref produces and what a failure means, and both are
@@ -51,17 +46,17 @@ const dockerCli: RunDocker = async (args) => {
 type Mirrored = { image: KitImageName | "custodian"; source: string; target: string; copied: boolean };
 
 export async function kit(args: string[], io: Io, docker: RunDocker = dockerCli): Promise<number> {
-  const { positionals } = parseArgs({ args, allowPositionals: true, strict: false, options: {} });
+  const { positionals } = parseCommand("kit push", args);
   const [sub, registry] = positionals;
 
   if (sub !== "push") {
     activity(io, sub === undefined ? "jr2 kit: no subcommand" : `unknown kit subcommand: ${sub}`);
-    activity(io, USAGE);
+    activity(io, renderCommand(commandNamed("kit push")));
     return 2;
   }
   if (!registry) {
     activity(io, "jr2 kit push: no target registry");
-    activity(io, USAGE);
+    activity(io, renderCommand(commandNamed("kit push")));
     return 2;
   }
 

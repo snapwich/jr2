@@ -12,27 +12,18 @@
 // name riding the path as one encoded segment. A Chart the door refuses (one-shot, in `--input`)
 // is a 422 whose report lines this prints, one per rule the Chart fails.
 
-import { parseArgs } from "node:util";
 import type { ChildErrorMarker, PlacingMarker } from "@jr2/orchestrator/internal";
 import { JR2Client, JR2HttpError } from "../client.ts";
-import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
+import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
+import { parseCommand, usageLine } from "../command-table.ts";
 
 export async function run(args: string[], io: Io): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args,
-    allowPositionals: true,
-    strict: false,
-    options: {
-      input: { type: "string" },
-      detach: { type: "boolean" },
-      ...TARGET_ARGS,
-    },
-  });
+  const { values, positionals } = parseCommand("run", args);
 
   const workflow = positionals[0];
   if (!workflow) {
-    activity(io, "usage: jr2 run <workflow | wrapper/chart> [--input <json>] [--detach]");
+    activity(io, usageLine("run"));
     return 2;
   }
   const input = values.input ? (JSON.parse(String(values.input)) as Record<string, unknown>) : {};

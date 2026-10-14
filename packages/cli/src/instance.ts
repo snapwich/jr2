@@ -43,14 +43,8 @@ export type TargetOptions = {
   context?: string;
 };
 
-/** The parseArgs options every run-verb shares — how a target is addressed (ADR-0019). */
-export const TARGET_ARGS = {
-  url: { type: "string" },
-  namespace: { type: "string", short: "n" },
-  context: { type: "string" },
-} as const;
-
-/** Pull the target-addressing flags out of a strict:false parseArgs `values` bag. */
+/** Pull the target-addressing flags (the command table's shared `-n`, `--context`, `--url`) out of
+ * a strict:false parseArgs `values` bag. */
 export function targetOptions(values: Record<string, unknown>): TargetOptions {
   return {
     url: values.url as string | undefined,

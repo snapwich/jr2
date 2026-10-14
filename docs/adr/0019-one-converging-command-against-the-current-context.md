@@ -62,7 +62,8 @@ loudly narrated, safe to re-run:
   vLLM missing `--enable-auto-tool-choice` fails at converge time, not as `agent.fault` mid-run. Reachability itself is
   the user's concern (`localhost` never works from a pod; a LAN address does on kind).
 
-**`jr2 down`** removes the instance from the cluster (always confirms; `--all` takes the operator too).
+**`jr2 down`** removes the instance from the cluster. It asks for confirmation unless `--yes` is given (for CI). `--all`
+takes the operator too.
 
 ## Addressing: cluster is address, namespace is identity, the cluster is the record
 

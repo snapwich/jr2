@@ -1,6 +1,9 @@
 // Top-level dispatch (ADR-0009). `argv[0]` is the verb; the rest is handed to that command, which does
-// its own `parseArgs`. `main` returns an exit code (the bin sets `process.exitCode`) and never throws:
-// a command error becomes an `error: …` line on stderr + code 1. Codes: 0 ok, 1 runtime error, 2 usage.
+// its own `parseArgs` against its entry in the command table (`command-table.ts`). Every help prints
+// from that table too: `jr2 --help` the whole of it, `jr2 <verb> --help` (or `-h`) one entry — and
+// then the verb does NOT run, so `jr2 up --help` never converges a cluster. `main` returns an exit
+// code (the bin sets `process.exitCode`) and never throws: a command error becomes an `error: …` line
+// on stderr + code 1. Codes: 0 ok, 1 runtime error, 2 usage.
 
 import { activity, defaultIo, type Io } from "./output.ts";
 import { JR2HttpError } from "./client.ts";
@@ -16,42 +19,7 @@ import { down } from "./commands/down.ts";
 import { gc } from "./commands/gc.ts";
 import { kit } from "./commands/kit.ts";
 import { version } from "./commands/version.ts";
-
-const USAGE = `jr2 — orchestrate agentic workflows (ADR-0009)
-
-usage: jr2 <command> [args]
-
-  version [--local] [--json]        what runs here (this jr2, the global that handed off, the
-                                    Instance's Kit) and what the cluster runs; --local skips the cluster
-  init [dir] [--name <n>]            scaffold a new instance folder
-  up [--yes] [--force]              converge the current kube context to this instance (ADR-0019)
-  down [--all]                      remove the instance from the cluster (--all: operator too)
-  gc [--dry-run] [--repo-ttl 7d]    remove jr2's images that no live instance names (ADR-0039), and
-                                    Repo resources no Machine binds and no run attached lately (ADR-0051)
-  kit push <registry>               mirror the published kit images into a registry (ADR-0044)
-  run <workflow> [--input <json>]   start a run; stream activity, print terminal result
-       [--detach]                   ...or just print the runId and return
-  runs                              list live runs; "placing" names the Workspaces that wait for
-                                    capacity (ADR-0064), and "status <runId>" says why; the
-                                    Workflows and their named Charts on stderr (ADR-0070)
-       [--workflows]                ...or print that listing as the result (see "runs --help")
-  status [runId]                    print a run's current status (read-through),
-         [--json]                   or the instance's Repos, per node, when given none (ADR-0048/0051)
-  logs <runId> [-f]                 replay a run's status; -f to follow until it settles
-  send <runId> --event CANCEL       abandon a live run and destroy its Workspaces
-       [--keep]                     ...or keep them for inspection until the idle timeout
-  send <runId> --gate <gate> --event <name> [--input <json>]
-                                    deliver a workflow event to an open gate
-
-run ids: any <runId> above may be abbreviated to a unique prefix (4+ chars, git-style);
-         an ambiguous prefix lists the candidates and fails rather than guessing
-
-global (run verbs): -n/--namespace <ns>, --context <ctx> address the deployment (ADR-0019);
-                    --url <u> / JR2_URL attaches to a specific orchestrator (skips kube entirely)
-
-output: result verbs (run, runs, status <runId>, send, logs) print one JSON result on stdout and
-        activity on stderr, so \`jr2 run … | jq\` yields the result; report verbs (version, bare
-        status) print a table on stdout, or the one object with --json`;
+import { asksForHelp, commandsFor, GLOBAL, renderCommand, renderHelp } from "./command-table.ts";
 
 /**
  * The catch-all half of skew reporting: a route-shaped failure gets ONE extra line naming what the
@@ -78,6 +46,15 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
     // Before any verb, so the instance's `.env` is in `process.env` by the time a command imports
     // `jr2.config.ts` (whose deployment-varying values are read from there — ADR-0019).
     loadDotenv(io);
+    const entries = cmd === undefined ? [] : commandsFor(cmd);
+    if (entries.length && asksForHelp(entries, rest)) {
+      activity(io, entries.map(renderCommand).join("\n\n"));
+      return 0;
+    }
+    if (cmd !== undefined && (GLOBAL.help as readonly string[]).includes(cmd)) {
+      activity(io, renderHelp());
+      return 0;
+    }
     switch (cmd) {
       case "init":
         return await init(rest, io);
@@ -102,17 +79,12 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
       case "version":
       case "--version":
         return await version(rest, io);
-      case "help":
-      case "--help":
-      case "-h":
-        activity(io, USAGE);
-        return 0;
       case undefined:
-        activity(io, USAGE);
+        activity(io, renderHelp());
         return 2;
       default:
         activity(io, `unknown command: ${cmd}`);
-        activity(io, USAGE);
+        activity(io, renderHelp());
         return 2;
     }
   } catch (err) {

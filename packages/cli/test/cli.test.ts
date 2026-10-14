@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { main } from "../src/cli.ts";
+import { renderHelp } from "../src/command-table.ts";
 import type { Io } from "../src/output.ts";
 import { z } from "zod";
 import { defineEvent, jr2Setup } from "@jr2/orchestrator";
@@ -25,9 +26,13 @@ test("unknown command → exit 2 with a notice on stderr", async () => {
   assert.match(err(), /unknown command/);
 });
 
-test("help → exit 0", async () => {
-  const { io } = mkIo({});
-  assert.equal(await main(["--help"], io), 0);
+test("help → exit 0, the whole command table on stderr", async () => {
+  for (const argv of [["--help"], ["help"], ["-h"]]) {
+    const { io, out, err } = mkIo({});
+    assert.equal(await main(argv, io), 0);
+    assert.equal(err().trimEnd(), renderHelp(), argv.join(" "));
+    assert.equal(out(), "");
+  }
 });
 
 test("a run-control verb with no orchestrator → exit 1 error on stderr", async () => {
