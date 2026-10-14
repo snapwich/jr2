@@ -631,8 +631,8 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
   /**
    * The Held secrets that this Sandbox can use: names from the `secrets` list in `jr2.config.ts`.
    * The Sandbox's Custodian holds each value and puts it into requests to the hosts of that Held
-   * secret. The Agent sees only a Stand-in. You need not list the model key of an Agent that runs here: its
-   * provider claims it. Each name once.
+   * secret. The Agent sees only a Stand-in. You need not list the model key of an Agent that runs
+   * here: its provider claims it. Each name once.
    */
   secrets?: readonly string[];
   // The container exists only when an Effect below this `workspace()` is placed there (ADR-0068,

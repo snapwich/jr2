@@ -169,7 +169,7 @@ const TABLE = [
   {
     verb: "init",
     args: [{ name: "dir", optional: true, description: "the folder to scaffold (default: the current directory)" }],
-    flags: [{ name: "name", value: "n", description: "the Instance's name (default: the folder's name)" }],
+    flags: [{ name: "name", value: "n", description: "the package name in package.json (default: the folder's name)" }],
     env: [],
     summary: "scaffold a new instance folder",
     lines: [

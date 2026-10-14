@@ -188,8 +188,8 @@ type BodyContext = BodyInput & {
  * The Machine inside `task`: the coder's loop and the `review` Gate, with no `workspace()` around
  * it. Use `task` to run it. Use `body` only to put the same loop in a `workspace()` of your own.
  * For example, your `workspace()` can have Repo Slots or a run input that differ from those of
- * `task`. Its input is the run
- * input plus the `workspace` handles, and it works in the first Repo Slot of those handles.
+ * `task`. Its input is the run input plus the `workspace` handles, and it works in the first Repo
+ * Slot of those handles.
  *
  * @example
  * ```ts
@@ -342,8 +342,8 @@ export const body = jr2Setup({
 /**
  * A Machine in which a coder Agent works on one prompt in a Workspace until a human approves the
  * work. The coder works in a Sandbox and commits on a branch. Then the run waits at the `review`
- * Gate. The human answers `request_changes` with `notes`, and the coder continues the same conversation, or
- * `approve`, and the run ends. A run has no limit on the number of rounds.
+ * Gate. The human answers `request_changes` with `notes`, and the coder continues the same
+ * conversation, or `approve`, and the run ends. A run has no limit on the number of rounds.
  *
  * `task` does not push. While the run waits at the Gate, the Sandbox stays. You can exec into it
  * and read the branch. To keep the work, push it yourself. `approve` removes the Sandbox, and

@@ -34,24 +34,30 @@ export type Quantity = string | number;
  *
  * Write it as `{ limits: { memory, cpu } }`. You can write it in three places: the `resources`
  * option of `workspace()`, `customize(machine, { resources })`, and `sandbox.resources` in
- * `jr2.config.ts`.
- * The Size is a fact of the Machine. The Instance's `sandbox.resources` applies only to a
- * Workspace that states no Size. A field that neither states comes from the kit default: memory
- * `2Gi`, cpu `1`.
+ * `jr2.config.ts`. The Size is a fact of the Machine. The Instance's `sandbox.resources` applies
+ * only to a Workspace that states no Size. A field that neither states comes from the kit default:
+ * memory `2Gi`, cpu `1`.
  *
  * The same shape is the User Container's part of the Size, in `user: { image, resources }`. There,
  * a field you leave out gives the User Container no limit of its own: it shares the pod's budget.
  *
  * It refuses any key but `limits.memory` and `limits.cpu`, where you write it. The message names
- * the field, for example:
+ * the field: `<where>` is where you wrote the Size, for example `workspace(): resources`.
  *
- * - `workspace(): resources.requests is not accepted — jr2 reserves the whole Size, so every request equals its limit`
- * - `<where>.limits.<key> is not accepted — a Size is { limits: { memory?, cpu? } } and nothing else`
- * - `<where>.limits.memory: <value> is not a positive quantity (e.g. "2Gi", "512Mi")`
+ * - `<where>.requests is not accepted — jr2 reserves the whole Size, so every request equals its
+ *   limit — a Size is { limits: { memory?, cpu? } } and nothing else — Agent Substrate's template
+ *   size (ADR-0060)`
+ * - `<where>.<key> is not accepted — a Size is { limits: { memory?, cpu? } } and nothing else —
+ *   Agent Substrate's template size (ADR-0060)`
+ * - `<where>.limits.<key> is not accepted — a Size is { limits: { memory?, cpu? } } and nothing
+ *   else — Agent Substrate's template size (ADR-0060)`
+ * - `<where>.limits.memory: <value> is not a positive quantity (e.g. "2Gi", "512Mi")`, and for
+ *   cpu, `<where>.limits.cpu: <value> is not a positive quantity (e.g. "2", "1500m")`
  *
- * `jr2 up` also refuses a Size that leaves the Harness container less than its floor:
- * `the Size leaves the Harness container <memory> memory, below its 256Mi floor`, or
- * `the Size leaves the Harness container no cpu`.
+ * `jr2 up` also refuses a Size that leaves the Harness container less than its floor. The message
+ * starts with `the Size leaves the Harness container <memory> memory, below its 256Mi floor:` or
+ * with `the Size leaves the Harness container no cpu:`. The text that follows names each number
+ * and where it came from.
  *
  * @example
  * ```ts
@@ -368,16 +374,19 @@ export function splitSize(size: ResolvedSize, user?: Size): SizeSplit {
  * `customize()` that names `user` replaces the whole User Container, its part of the Size
  * included.
  *
- * It refuses, where you write it:
+ * It refuses, where you write it. `<where>` is `workspace()` or `customize()`:
  *
- * - `` `user` must be a non-empty string (an image), or { image, resources? } ``
- * - `user.<key> is not accepted — the User Container is { image, resources? }`
+ * - an image that is not a non-empty string. The message starts with
+ *   `` <where>: `user` must be a non-empty string (an image), or { image, resources? } ``.
+ * - `<where>: user.<key> is not accepted — the User Container is { image, resources? } (ADR-0005,
+ *   ADR-0060)`
  *
  * `resources` is checked as a {@link Size}, with the same refusals.
  *
- * `jr2 up` refuses a part that leaves the Harness container less than its floor:
- * `the Size leaves the Harness container <memory> memory, below its 256Mi floor`, or
- * `the Size leaves the Harness container no cpu`.
+ * `jr2 up` refuses a part that leaves the Harness container less than its floor. The message starts
+ * with `the Size leaves the Harness container <memory> memory, below its 256Mi floor:` or with
+ * `the Size leaves the Harness container no cpu:`. The text that follows names each number and
+ * where it came from.
  *
  * @example
  * ```ts

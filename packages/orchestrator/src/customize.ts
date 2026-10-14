@@ -253,7 +253,8 @@ export type Customize<M extends AnyStateMachine> = {
    * override goes over the definition that the author wrote, field by field, so `{ model }` alone
    * keeps the author's instructions. When the author left the model Open, this is where you bind
    * it. Allowed fields: the fields of an `agent()` definition. At run time, `customize()` refuses a
-   * slot that holds no Agent: `customize(): machine "<id>" carries no Agent slot "<slot>" — its Agents are: <slots>`. */
+   * slot that holds no Agent: `customize(): machine "<id>" carries no Agent slot "<slot>" — its
+   * Agents are: <slots>`. */
   agents?: [AgentSlots<Reached<M>>] extends [never]
     ? never
     : { [K in AgentSlots<Reached<M>>]?: Partial<AgentDefinition> };
@@ -343,13 +344,13 @@ type LooseParts = {
  * - `customize(): machine "<id>" carries no Effect slot "<slot>" — its Effects are: <slots>`
  * - `customize(): machine "<id>" declares no Repo Slot "<slot>" — its slots are: <slots>`
  * - `customize(): machine "<id>" declares its Repo Slots open as a map — name at least one`
- * - `` customize(): `repos` say what a SANDBOX is made of, how big it is and which Repos it attaches, and machine "<id>" composes none ``
- *   (for `resources`, the text starts `` customize(): `resources` ``; for `image` or `user`, it
- *   starts `` customize(): `image`/`user` ``)
+ * - `` customize(): `repos` say what a SANDBOX is made of, how big it is and which Repos it
+ *   attaches, and machine "<id>" composes none `` (for `resources`, the text starts
+ *   `` customize(): `resources` ``; for `image` or `user`, it starts `` customize(): `image`/`user` ``)
  * - `customize(): machine "<id>": <errors>`, when an Effect argv that you bind fails the checks
  *   that the Machine passed when it was built
- * - the refusals of {@link EffectBinding}, {@link RepoSlot}, {@link Size} and {@link UserContainer}, which start
- *   with `customize()`
+ * - the refusals of {@link EffectBinding}, {@link RepoSlot}, {@link Size} and
+ *   {@link UserContainer}, which start with `customize()`
  *
  * @param machine - The Machine to retune: one you import from a package, or one you wrote. When
  * its root is a `workspace()` or a `pool()`, `customize()` reaches through to the Machine inside,

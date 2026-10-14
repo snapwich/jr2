@@ -60,13 +60,22 @@ import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } 
  * name has a dot, and a workflow event's name cannot, so the two never collide. */
 export type MechanismEvent = FaultTelemetry | WorkspaceLost;
 
+// A Workspace's Continuity broke (ADR-0021): its Sandbox is gone, or Lost. `reason` and `message`
+// are for a body whose policy tells the causes apart, or only reports them; no policy needs them.
 /**
- * A Workspace's Continuity broke (ADR-0021): its Sandbox is gone, or Lost. `reason` and `message`
- * say why — the pod's own reason (`Evicted`, `NodeShutdown`, ...) or the operator's (`PodDeleted`,
- * `NodeLost`), or `Deleted` for a Sandbox that is gone — for a body whose policy tells them apart,
- * or only reports them. Optional: the body's policy never needs them to act.
+ * jr2 sends `workspace.lost` to the body of a `workspace()` when its Sandbox is gone: its pod was
+ * evicted or deleted, or its node went. jr2 does not make the Sandbox again, and the commits that
+ * were not pushed go with it. The body decides what to do next: route the event with
+ * `on: { "workspace.lost": … }`.
  */
-export type WorkspaceLost = { type: "workspace.lost"; reason?: string; message?: string };
+export type WorkspaceLost = {
+  type: "workspace.lost";
+  /** Why the Sandbox is gone, for a person or a log: the pod's reason (`Evicted`, `NodeShutdown`),
+   * the operator's (`PodDeleted`, `NodeLost`), or `Deleted`. A body can act without it. */
+  reason?: string;
+  /** More text about the loss, when jr2 has it. */
+  message?: string;
+};
 
 // The defs' derived types plus the mechanism's (ADR-0015).
 /** The type of `event` in a Machine that `jr2Setup` makes: each workflow event in its `events`,
@@ -145,8 +154,9 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  *   it invokes (<src>) never runs — target it from a pick or a route, or delete it``
  *
  * It also refuses a `sentBy` that names no party (see `sentBy`). It refuses a pick param that
- * nothing reads, where the pick enters a state that invokes an Effect (see `fromPick`). Shapes that are legal but probably not what you mean, such as a mode that
- * nothing enters, are warnings that `jr2 up` prints.
+ * nothing reads, where the pick enters a state that invokes an Effect (see `fromPick`). Shapes that
+ * are legal but probably not what you mean, such as a mode that nothing enters, are warnings that
+ * `jr2 up` prints.
  *
  * @param def - What `setup()` takes, with `events` in place of `types.events`.
  * @returns What `setup()` returns. Call `.createMachine(config)` on it.

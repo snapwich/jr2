@@ -41,8 +41,9 @@ import { assertSize, type Size } from "./size.ts";
  * through the fence, and they clone with no credential. */
 export type GitCredential = {
   /** The Repos this entry is for: a prefix of a Repo's identity, such as `github.com/ourorg/`, or
-   * `*` for every Repo. The identity of a Repo is its host and path with no scheme, user or `.git`. When more than
-   * one entry matches, the longest `match` wins; on a tie, the first entry in the list wins. */
+   * `*` for every Repo. The identity of a Repo is its host and path with no scheme, user or `.git`.
+   * When more than one entry matches, the longest `match` wins; on a tie, the first entry in the
+   * list wins. */
   match: string;
   // The cache agent spends the clone Secret; the Orchestrator never holds it (ADR-0068).
   /** For an `https://` url: the name of the env var that holds a token, read from the shell or
@@ -57,8 +58,9 @@ export type GitCredential = {
   /** The credential that a `push()` Effect uses, when it is not the clone credential. Write
    * `{ sshKey }` or `{ token }`. Default: the clone credential pushes. An entry with no credential
    * admits a clone and never a push. When the push finds no usable credential, it is refused, for
-   * example: `no git.credentials entry matches "<identity>" — a push spends the entry its url matches`,
-   * or `git.credentials entry "<match>" holds no credential a push over <scheme> can spend`. */
+   * example: `no git.credentials entry matches "<identity>" — a push spends the entry its url
+   * matches`, or `git.credentials entry "<match>" holds no credential a push over <scheme> can
+   * spend`. */
   push?:
     | {
         /** For an ssh url: the name of a Secret that you create, with the same keys as the
@@ -73,9 +75,10 @@ export type GitCredential = {
   // Explicit (ADR-0067): an auth key is never reused as a signing key.
   /** The key that a `push({ sign: true })` signs with, and the committer it signs as:
    * `{ sshKey, name, email }` or `{ gpgKey, name, email }`. `sshKey` names a Secret with
-   * `identity`. `gpgKey` names a Secret with `private.asc` and no passphrase. jr2 never signs with the clone or push key, so name the signing key here. The email must belong
-   * to the forge account that holds the key, or the forge shows the signature as unverified. A
-   * signed push without it is refused: `signed, and git.credentials entry "<match>" holds no sign field`. */
+   * `identity`. `gpgKey` names a Secret with `private.asc` and no passphrase. jr2 never signs with
+   * the clone or push key, so name the signing key here. The email must belong to the forge account
+   * that holds the key, or the forge shows the signature as unverified. A signed push without it is
+   * refused: `signed, and git.credentials entry "<match>" holds no sign field`. */
   sign?:
     | {
         /** The name of a Secret that you create, which holds the ssh signing key under `identity`. */
@@ -96,9 +99,10 @@ export type GitCredential = {
       };
   // The squashed commit is new, and without `sign` no signer names its committer (ADR-0067).
   /** Who commits an unsigned `push({ squash: true })`: `{ name, email }`. The squashed commit is
-   * new, so it needs a committer. Its date comes from the Effector's clock, and its author stays the
-   * Agent. A signed push is committed by the signer, so it does not read this field. A squashed push
-   * with neither field is refused: `squashed without sign, and git.credentials entry "<match>" holds neither sign nor committer`. */
+   * new, so it needs a committer. Its date comes from the Effector's clock, and its author stays
+   * the Agent. A signed push is committed by the signer, so it does not read this field. A squashed
+   * push with neither field is refused: `squashed without sign, and git.credentials entry "<match>"
+   * holds neither sign nor committer`. */
   committer?: {
     /** The committer's name on the squashed commit. */
     name: string;
@@ -385,9 +389,10 @@ export type HarnessConfig = {
   // Only `jr2 up` reads it (host-side): it materializes the `jr2-ca` ConfigMap and runs the
   // provider preflight with the same trust (ADR-0020, ADR-0059).
   /** A path to a PEM CA bundle, relative to the Instance folder. An example is the CA of an
-   * internal endpoint in front of a LAN vLLM. Commit the file: CA certificates are public. `jr2 up` puts it
-   * in the `jr2-ca` ConfigMap and uses it when it checks the provider. The Harness container trusts
-   * it, and so does the Custodian when it verifies a host that a Held secret is bound to. */
+   * internal endpoint in front of a LAN vLLM. Commit the file: CA certificates are public. `jr2 up`
+   * puts it in the `jr2-ca` ConfigMap and uses it when it checks the provider. The Harness
+   * container trusts it, and so does the Custodian when it verifies a host that a Held secret is
+   * bound to. */
   caBundle?: string;
 };
 

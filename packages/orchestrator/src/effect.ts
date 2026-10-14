@@ -55,7 +55,9 @@ import {
 
 // --- Parts: what `jr2 up` and the Machine doc read off a slot, without running anything ---------
 
-/** One argv entry an Effect's input fills: ONE argument, whatever its bytes (never shell text). */
+// ONE argument, whatever its bytes: never shell text.
+/** One entry of a command's argv that the input of the Effect fills, as `arg("name")` makes it. It
+ * is one argument, whatever its text. No shell reads it. */
 export type Arg<N extends string = string> = { readonly arg: N };
 
 /**
@@ -646,6 +648,8 @@ export type OpenCommandInput<P = false> = Readonly<Record<string, string>> &
  * or `"1h"`. */
 export type Duration = `${number}s` | `${number}m` | `${number}h`;
 
+/** The options of `command()`: the Repo Slot it runs in, how long it can run, how much of its
+ * output it keeps, its Effect secrets, and the commit it runs against. */
 export type CommandOptions = {
   /**
    * The Repo Slot whose Worktree is the working directory of the command. Write it only when the
