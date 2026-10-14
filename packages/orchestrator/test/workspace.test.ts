@@ -1171,6 +1171,30 @@ test("placing: a wall clock that steps back during the wait gives no negative `a
   }
 });
 
+test("placing: a wall clock that steps forward during the wait is not the wait's duration — `after` is read from the monotonic clock, not two wall-clock reads (ADR-0064)", async () => {
+  // A clamp alone would pass the step-back test; a step forward tells the two clocks apart.
+  mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-13T12:00:00Z") });
+  try {
+    const sandbox = new FakeSandbox();
+    sandbox.holdPlacing = true;
+    const host = new RunHost({ store: await mkStore(), sandbox });
+    host.register(wsDef());
+    const { runId } = await host.start("ws");
+    const lines = placingLines(host, runId);
+    await waitFor(() => sandbox.waiting === 1);
+    sandbox.waitFor(NODE);
+    await waitFor(() => lines.length === 1);
+    mock.timers.setTime(Date.parse("2026-10-13T13:00:00Z"));
+    sandbox.schedule();
+    await waitFor(() => lines.length === 2);
+    assert.equal(lines[1]!.kind, "placed");
+    const after = lines[1]!.after as number;
+    assert.ok(after >= 0 && after < 60_000, `after: ${String(after)} (the wall clock stepped one hour)`);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
 test("placing: a wait opened before a restart is timed from its stored start, clamped at zero when the wall clock stepped back (ADR-0064)", async () => {
   mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-13T12:00:00Z") });
   try {
