@@ -6,7 +6,7 @@
 import ts from "typescript";
 import { anchor, code, maskCode } from "../markdown.ts";
 import { docOf, renderInline, sourceFile, typeText, isKitSource, type Doc } from "../tsdoc.ts";
-import { anchorOf, checkVoice, linker, renderProse, seeAlso, type RefContext } from "./context.ts";
+import { anchorOf, checkVoice, linkAdrMentions, linker, renderProse, seeAlso, type RefContext } from "./context.ts";
 
 export const CONFIG_PAGE = "reference/config.md";
 const CONFIG_FILE = "packages/orchestrator/src/config.ts";
@@ -128,15 +128,34 @@ export function readConfig(ctx: RefContext): Field[] {
   return out;
 }
 
-/** The default a field's TSDoc states: the sentence that starts `Default:`. */
-export function defaultOf(summary: string): string | undefined {
-  const flat = summary.replace(/\s*\n\s*/g, " ");
-  const masked = maskCode(flat);
+/** The default a field's TSDoc states, the sentence that starts `Default:`, and the summary
+ * without that sentence. The page shows the default once, in the field's facts. */
+export function splitDefault(summary: string): { def?: string; rest: string } {
+  const masked = maskCode(summary);
   const at = masked.indexOf("Default:");
-  if (at < 0) return undefined;
-  const rest = masked.slice(at + "Default:".length);
-  const stop = /\.(?=\s|$)/.exec(rest);
-  return flat.slice(at + "Default:".length, at + "Default:".length + (stop ? stop.index : rest.length)).trim();
+  if (at < 0) return { rest: summary };
+  const from = at + "Default:".length;
+  const stop = /\.(?=\s|$)/.exec(masked.slice(from));
+  const end = stop ? from + stop.index : summary.length;
+  const def = summary
+    .slice(from, end)
+    .replace(/\s*\n\s*/g, " ")
+    .trim();
+  const after = summary.slice(stop ? end + 1 : end).replace(/^[ \t]*\n?[ \t]*/, "");
+  const before = summary.slice(0, at).replace(/[ \t]+$/, "");
+  const rest = before && after && !before.endsWith("\n") ? `${before} ${after}` : before + after;
+  return { def, rest: rest.trim() };
+}
+
+/** A TSDoc text as the field's prose, where a `{@link}` to the field's own section is plain code:
+ * a link to the section the reader is in leads nowhere. */
+function fieldProse(ctx: RefContext, text: string, self: string): string {
+  const link = linker(ctx, CONFIG_PAGE);
+  const to = (name: string) => {
+    const at = ctx.names.get(name);
+    return at && at.page === CONFIG_PAGE && at.anchor === self ? undefined : link(name);
+  };
+  return linkAdrMentions(ctx, renderInline(text, to), CONFIG_PAGE);
 }
 
 function renderForms(ctx: RefContext, forms: Field[][]): string {
@@ -145,7 +164,7 @@ function renderForms(ctx: RefContext, forms: Field[][]): string {
       const keys = form.map((f) => code(f.path)).join(", ");
       const items = form.map((f) => {
         checkVoice(ctx, f.doc);
-        const doc = f.doc?.summary ? `: ${renderProse(ctx, f.doc.summary.replace(/\s*\n\s*/g, " "), CONFIG_PAGE)}` : "";
+        const doc = f.doc?.summary ? `: ${fieldProse(ctx, f.doc.summary.replace(/\s*\n\s*/g, " "), f.anchor)}` : "";
         return `  - ${code(f.path)}${f.optional ? " (optional)" : ""}, ${code(f.type)}${doc}`;
       });
       return `- Form ${i + 1}: ${keys}\n${items.join("\n")}`;
@@ -155,8 +174,7 @@ function renderForms(ctx: RefContext, forms: Field[][]): string {
 
 function renderField(ctx: RefContext, f: Field): string {
   const link = linker(ctx, CONFIG_PAGE);
-  const summary = f.doc?.summary ?? "";
-  const def = defaultOf(summary);
+  const { def, rest: summary } = splitDefault(f.doc?.summary ?? "");
   const named = ctx.names.get(f.type);
   const type = named && named.page !== CONFIG_PAGE ? `[${code(f.type)}](${link(f.type)})` : code(f.type);
   const facts = [
@@ -166,7 +184,7 @@ function renderField(ctx: RefContext, f: Field): string {
   ];
   const parts = [`${anchor(f.anchor)}\n\n${f.depth === 0 ? "##" : "###"} ${code(f.path)}`, facts.join("\n")];
   checkVoice(ctx, f.doc);
-  if (summary) parts.push(renderProse(ctx, summary, CONFIG_PAGE));
+  if (summary) parts.push(fieldProse(ctx, summary, f.anchor));
   if (f.forms) parts.push(`It is one of these objects:\n\n${renderForms(ctx, f.forms)}`);
   return parts.join("\n\n");
 }
