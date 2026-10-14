@@ -119,6 +119,25 @@ test("init leaves a user's own AGENTS.md and CLAUDE.md alone, and says what keep
   assert.doesNotMatch(lines.join(""), /markers:|does not import/);
 });
 
+test("init leaves an AGENTS.md with a broken marker pair alone, and says that jr2 up does not update it", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-init-broken-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const own = `# My rules\n${END_MARKER}\n`;
+  await writeFile(join(dir, "AGENTS.md"), own);
+  const lines: string[] = [];
+  const io: Io = { stdout: () => {}, stderr: (l) => lines.push(l), env: {}, cwd: dir };
+  assert.equal(await init([], io), 0);
+  assert.equal(await readFile(join(dir, "AGENTS.md"), "utf8"), own);
+  const text = lines.join("");
+  const skip = text.indexOf("skip   AGENTS.md (exists)\n");
+  assert.ok(skip >= 0, text);
+  const next = text.slice(skip).split("\n")[1];
+  assert.equal(
+    next?.trim(),
+    "AGENTS.md: <!-- END:jr2-docs --> has no <!-- BEGIN:jr2-docs --> before it, so jr2 up does not update the jr2 block",
+  );
+});
+
 test("init's package.json matches the default template's but for name and description", async (t) => {
   const dir = await scaffold();
   t.after(() => rm(dir, { recursive: true, force: true }));
