@@ -1,0 +1,17 @@
+{
+  "name": "@jr2/docs-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The hand-written docs pages and the site's navigation (ADR-0072). docs:build reads them; nothing here ships as a package.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "greet",
+  "version": "1.4.0",
+  "description": "Says hello.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "greet": "bin/greet.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

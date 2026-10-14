@@ -20,5 +20,9 @@ packages:
   - features/kind-instance
   # The @model tier's instance (ADR-0066): the same shape, a real model endpoint behind it.
   - features/model-instance
+  # The docs site's hand-written pages and its navigation (ADR-0072): a member so its tests run in
+  # `pnpm -r test`. Its tutorial fixture (`tutorial/greet/`) is NOT a member — its one failing test
+  # is the tutorial's task, and the guard test in this package runs it.
+  - docs/site
   # TEMP (chaos tests) — revert
   - tmp/chaos-instance

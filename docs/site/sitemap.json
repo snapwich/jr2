@@ -1,0 +1,319 @@
+{
+  "sections": [
+    {
+      "title": "Home",
+      "pages": [
+        {
+          "slug": "index",
+          "title": "Home",
+          "source": "page"
+        }
+      ]
+    },
+    {
+      "title": "Why jr2",
+      "pages": [
+        {
+          "slug": "why",
+          "title": "Why jr2",
+          "source": "page"
+        }
+      ]
+    },
+    {
+      "title": "Get started",
+      "pages": [
+        {
+          "slug": "get-started/install",
+          "title": "Install",
+          "source": "page"
+        },
+        {
+          "slug": "get-started/create-an-instance",
+          "title": "Create an Instance",
+          "source": "page"
+        },
+        {
+          "slug": "get-started/connect-a-model",
+          "title": "Connect a model",
+          "source": "page"
+        },
+        {
+          "slug": "get-started/a-model-decides",
+          "title": "A model decides",
+          "source": "page"
+        },
+        {
+          "slug": "get-started/an-agent-in-a-sandbox",
+          "title": "An Agent in a Sandbox",
+          "source": "page"
+        },
+        {
+          "slug": "get-started/have-your-assistant-write-a-machine",
+          "title": "Have your Assistant write a Machine",
+          "source": "page"
+        }
+      ]
+    },
+    {
+      "title": "Concepts",
+      "groups": [
+        {
+          "title": "What you write",
+          "pages": [
+            {
+              "slug": "concepts/machines-and-workflows",
+              "title": "Machines and Workflows",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/agents-and-turns",
+              "title": "Agents and Turns",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/the-menu",
+              "title": "The Menu",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/gates",
+              "title": "Gates",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/effects",
+              "title": "Effects",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/workspaces",
+              "title": "Workspaces",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/composition",
+              "title": "Composition",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/pools-and-sources",
+              "title": "Pools and Sources",
+              "source": "page"
+            }
+          ]
+        },
+        {
+          "title": "What runs",
+          "pages": [
+            {
+              "slug": "concepts/architecture",
+              "title": "Architecture",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/secrets-and-trust",
+              "title": "Secrets and trust",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/converge",
+              "title": "Converge",
+              "source": "page"
+            },
+            {
+              "slug": "concepts/durable-runs",
+              "title": "Durable runs",
+              "source": "page"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Guides",
+      "groups": [
+        {
+          "title": "Run Workflows",
+          "pages": [
+            {
+              "slug": "guides/start-a-run",
+              "title": "Start a run",
+              "source": "page"
+            },
+            {
+              "slug": "guides/answer-a-gate",
+              "title": "Answer a Gate",
+              "source": "page"
+            },
+            {
+              "slug": "guides/watch-a-run",
+              "title": "Watch a run",
+              "source": "page"
+            },
+            {
+              "slug": "guides/look-inside-a-sandbox",
+              "title": "Look inside a Sandbox",
+              "source": "page"
+            },
+            {
+              "slug": "guides/cancel-a-run",
+              "title": "Cancel a run",
+              "source": "page"
+            },
+            {
+              "slug": "guides/open-the-console",
+              "title": "Open the Console",
+              "source": "page"
+            }
+          ]
+        },
+        {
+          "title": "Converge an Instance",
+          "pages": [
+            {
+              "slug": "guides/use-a-local-model",
+              "title": "Use a local model",
+              "source": "page"
+            },
+            {
+              "slug": "guides/use-a-hosted-provider",
+              "title": "Use a hosted provider or a gateway",
+              "source": "page"
+            },
+            {
+              "slug": "guides/give-the-cluster-git-credentials",
+              "title": "Give the cluster git credentials",
+              "source": "page"
+            },
+            {
+              "slug": "guides/move-from-kind-to-a-shared-cluster",
+              "title": "Move from kind to a shared cluster",
+              "source": "page"
+            },
+            {
+              "slug": "guides/mirror-the-kit-images",
+              "title": "Mirror the Kit images",
+              "source": "page"
+            },
+            {
+              "slug": "guides/upgrade-the-kit-version",
+              "title": "Upgrade the Kit version",
+              "source": "page"
+            },
+            {
+              "slug": "guides/clean-up",
+              "title": "Clean up",
+              "source": "page"
+            },
+            {
+              "slug": "guides/fix-a-failed-converge",
+              "title": "Fix a failed converge",
+              "source": "page"
+            }
+          ]
+        },
+        {
+          "title": "Write Machines",
+          "pages": [
+            {
+              "slug": "guides/iterate-on-a-machine-on-kind",
+              "title": "Iterate on a Machine on kind",
+              "source": "page"
+            },
+            {
+              "slug": "guides/write-a-workflow",
+              "title": "Write a Workflow",
+              "source": "page"
+            },
+            {
+              "slug": "guides/bind-open-parts",
+              "title": "Bind a shipped Machine's Open parts",
+              "source": "page"
+            },
+            {
+              "slug": "guides/set-an-agents-access-and-dials",
+              "title": "Set an Agent's access and Dials",
+              "source": "page"
+            },
+            {
+              "slug": "guides/run-a-command-or-call-a-url",
+              "title": "Run a command or call a URL with an Effect",
+              "source": "page"
+            },
+            {
+              "slug": "guides/push-and-sign-a-branch",
+              "title": "Push and sign a branch",
+              "source": "page"
+            },
+            {
+              "slug": "guides/add-tools-to-the-sandbox",
+              "title": "Add tools to the Sandbox",
+              "source": "page"
+            },
+            {
+              "slug": "guides/size-a-workspace",
+              "title": "Size a Workspace",
+              "source": "page"
+            },
+            {
+              "slug": "guides/run-one-worker-per-item",
+              "title": "Run one worker per item",
+              "source": "page"
+            },
+            {
+              "slug": "guides/publish-a-machine-as-an-npm-package",
+              "title": "Publish a Machine as an npm package",
+              "source": "page"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Reference",
+      "pages": [
+        {
+          "slug": "reference/authoring-surface",
+          "title": "Authoring surface",
+          "source": "generated"
+        },
+        {
+          "slug": "reference/machines",
+          "title": "@jr2/machines",
+          "source": "generated"
+        },
+        {
+          "slug": "reference/config",
+          "title": "jr2.config.ts",
+          "source": "generated"
+        },
+        {
+          "slug": "reference/cli",
+          "title": "CLI",
+          "source": "generated"
+        },
+        {
+          "slug": "reference/http-api",
+          "title": "HTTP API",
+          "source": "generated"
+        },
+        {
+          "slug": "reference/mechanism-events",
+          "title": "Mechanism events",
+          "source": "generated"
+        },
+        {
+          "slug": "reference/glossary",
+          "title": "Glossary",
+          "source": "generated"
+        },
+        {
+          "slug": "reference/decisions",
+          "title": "Decisions",
+          "source": "generated"
+        }
+      ]
+    }
+  ]
+}
