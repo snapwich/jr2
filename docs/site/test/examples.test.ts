@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,34 @@ import { generateReference, referenceContext, REPO } from "../build/build.ts";
 import { allPages, readSitemap } from "../build/sitemap.ts";
 
 const SITE_MODULES = fileURLToPath(new URL("../node_modules", import.meta.url));
+
+// The package a bare specifier names: `@scope/name` or `name`, without a subpath.
+const packageOf = (specifier: string): string =>
+  specifier
+    .split("/")
+    .slice(0, specifier.startsWith("@") ? 2 : 1)
+    .join("/");
+
+// The compile below resolves against this package's node_modules, which holds more than an
+// Instance does. Under pnpm an Instance imports only what its package.json lists, so an example
+// that imports anything else typechecks here and is refused by `jr2 up` there. So each bare import
+// is a dependency `jr2 init` scaffolds (templates/default, which init.test holds equal to it), or
+// @jr2/machines, which the machines page tells the reader to add.
+test("every @example imports only what a scaffolded Instance can import", async () => {
+  const { examples } = generateReference(referenceContext(REPO, allPages(await readSitemap())));
+  const scaffold = JSON.parse(await readFile(join(REPO, "templates/default/package.json"), "utf8")) as {
+    dependencies: Record<string, string>;
+  };
+  const allowed = new Set([...Object.keys(scaffold.dependencies), "@jr2/machines"]);
+  const strays = examples.flatMap((e) =>
+    ts
+      .preProcessFile(e.code, true, true)
+      .importedFiles.map((f) => f.fileName)
+      .filter((s) => !s.startsWith(".") && !s.startsWith("node:") && !allowed.has(packageOf(s)))
+      .map((s) => `${e.page} ${e.name}: ${s}`),
+  );
+  assert.deepEqual(strays, []);
+});
 
 test("every @example on the Authoring surface and on @jr2/machines typechecks", async (t) => {
   const { examples } = generateReference(referenceContext(REPO, allPages(await readSitemap())));

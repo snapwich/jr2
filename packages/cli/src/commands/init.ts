@@ -126,6 +126,12 @@ async function exists(path: string): Promise<boolean> {
 // rule for `@jr2/*`, applied to the checker): the instance's PROGRAM includes the kit's `.ts`
 // sources — zero-build, `exports` point at source — so the compiler is part of the contract, not
 // the user's choice, and it moves when the kit moves.
+//
+// `zod` is the other import the scaffold's own files do not make but every Machine an author writes
+// does: each defineEvent and each input schema is a zod object, and the Reference's examples start
+// with `import { z } from "zod"`. A strict node_modules (pnpm) does not let the Instance import a
+// package it does not list, so without it a Machine copied from the bundled Reference is refused by
+// `jr2 up`'s typecheck (ADR-0050). npm hoisted it, by accident. The range is the kit's own.
 function packageJson(name: string): string {
   return `${JSON.stringify(
     {
@@ -134,7 +140,7 @@ function packageJson(name: string): string {
       private: true,
       type: "module",
       scripts: { typecheck: "tsc --noEmit" },
-      dependencies: { "@jr2/orchestrator": CLI_VERSION, xstate: "^5.18.0" },
+      dependencies: { "@jr2/orchestrator": CLI_VERSION, xstate: "^5.18.0", zod: "^4.4.3" },
       devDependencies: { "@jr2/cli": CLI_VERSION, "@types/node": "^26.0.1", typescript: "^5.6.0" },
     },
     null,

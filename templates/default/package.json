@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "@jr2/orchestrator": "0.4.1",
-    "xstate": "^5.18.0"
+    "xstate": "^5.18.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@jr2/cli": "0.4.1",
