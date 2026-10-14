@@ -1839,6 +1839,8 @@ async function resolveGitPush(
     const data: Record<string, string> = {};
     let sshMissing: string | undefined;
     let signMissing: string | undefined;
+    // One warning per entry and cause: an absent Secret is missing every key it was to give.
+    const warned = new Set<string>();
     for (const source of plan.sources) {
       if ("literal" in source) {
         data[source.key] = Buffer.from(source.literal).toString("base64");
@@ -1857,6 +1859,8 @@ async function resolveGitPush(
           : `the Secret "${source.from.secret}" holds no key ${source.from.key}`;
       if (source.key.startsWith("sign.")) signMissing ??= why;
       else sshMissing ??= why;
+      if (warned.has(why)) continue;
+      warned.add(why);
       // Not a refusal: the Secret may be written later (a scenario writes it, a human creates it).
       // A push under the entry that needs it is refused at provision until `jr2 up` runs again.
       activity(

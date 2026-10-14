@@ -120,7 +120,6 @@ seats: workflow "fix" — who may send what, per state (ADR-0015)
 Workspace of workflow "fix": Sandbox Effector (image the Sandbox Image) holds no Effect secret; pushes Repo Slot "target" with git.credentials "*"
 …
 warning: git.credentials "*": the Secret "jr2-git-ssh" does not exist in namespace my-instance — a push that needs it is refused at provision until it exists and jr2 up runs again (ADR-0051)
-warning: git.credentials "*": the Secret "jr2-git-ssh" does not exist in namespace my-instance — a push that needs it is refused at provision until it exists and jr2 up runs again (ADR-0051)
 git.credentials "*": push Secret jr2-git-push-684888c0 — pushes over https
 …
 ```
@@ -131,8 +130,8 @@ Read these lines as a first check:
   [Gate](../reference/glossary.md#gate) before the push shows the same lines. The graph shows where the push is.
 - `seats` shows that the coder can send only `finish`. Only the Gate in `review` can send `approve` and
   `request_changes`.
-- The two `warning` lines are about git over ssh. The `jr2-git-ssh` Secret is for an ssh key, and it does not exist.
-  Your fork uses `https://`, so the push does not need it. The last line says that the push uses the token over https.
+- The `warning` line is about git over ssh. The `jr2-git-ssh` Secret is for an ssh key, and it does not exist. Your fork
+  uses `https://`, so the push does not need it. The last line says that the push uses the token over https.
 
 If `JR2_GIT_TOKEN` is not set, `jr2 up` stops before it applies the
 [Orchestrator](../reference/glossary.md#orchestrator), with this error:

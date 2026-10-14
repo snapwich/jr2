@@ -4310,6 +4310,11 @@ test("a key's Secret absent at jr2 up is a warning, and the entry's Secret is wr
     w.err.join("\n"),
     /warning: git\.credentials "\*": the Secret "signer" does not exist in namespace myinst/,
   );
+  assert.equal(
+    w.err.filter((l) => l.includes('the Secret "signer" does not exist')).length,
+    1,
+    "one warning for the absent Secret, not one for each key it was to give",
+  );
   const held = appliedObjects(w).get("ConfigMap/jr2-held")!;
   assert.deepEqual(JSON.parse(held.data["git-push.json"]).entries, [
     { match: "*", order: 0, secret: gitPushSecretName("*"), push: ["ssh"] },
