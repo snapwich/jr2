@@ -24,8 +24,10 @@ Workspaces for the Instance (R4), and concurrent Turns per model provider (R5)?
   - The state is structure, so the Console lights `placing` and `observe()` carries it with no new field.
   - The authenticated `RunStatus` gains `waiting: [{ child, on: "node" | "quota", message, since }]`. `message` is the
     scheduler's or the quota's own words, which can name nodes and taints. `jr2 status <run>` prints it.
-  - The feed has two lines per wait: when it starts, with the reason, and when it ends ("placed after 3m12s"). A changed
-    reason updates `waiting`; it adds no feed line.
+  - The feed has two lines per wait: when it starts, with the reason, and when it ends ("placed after 3m12s"). The
+    duration of a wait this Orchestrator process opened is read on the monotonic clock, so it is never negative. A wait
+    opened before an Orchestrator restart has only its stored wall-clock start, so its duration is two wall-clock reads,
+    clamped at 0. A changed reason updates `waiting`; it adds no feed line.
   - `jr2 runs` marks a run that has a Workspace in `placing`.
   - The Machine receives no event: scheduling detail is not the body's concern, and `after` covers a bound.
 - **The Lease covers the Sandbox from its write to its teardown**, in every state, so the idle GC reaps only what the

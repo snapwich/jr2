@@ -384,7 +384,8 @@ test("a call a Harness restart cut gets jr2's text, printed by the next containe
 test("a call whose answer never printed keeps none: a prompt line closes every call before it", () => {
   // Every prompt prints after the answers of the calls before it (ADR-0023, pinned by the Harness's
   // conformance test), so a call still open at a prompt lost its answer from the log (a container
-  // the follow never read), and the answer after the prompt is a later call's.
+  // the follow never read) or never had one (a message a provider error ended), and the answer
+  // after the prompt is a later call's.
   const kept = [
     "[decisioner] [prompt] [t0-cutcut] Audit the expenses.",
     "[decisioner] [run_audit] {}",

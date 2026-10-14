@@ -60,7 +60,8 @@ export function calledIn(kept: string, marker: string): Said[] | undefined {
 /** One call in a kept conversation, and the answer its pick got: `input` as the call printed it;
  * `answer` the text the model read back, and `error` when it read that as an error (a refusal, a
  * schema miss). A Working tool's call has no answer: its result never prints (ADR-0023). Nor has a
- * pick whose answer had not printed when the log was kept. */
+ * Menu call in a message a provider error ended: its line prints and no answer ever does (ADR-0023,
+ * ADR-0031). Nor has a pick whose answer had not printed when the log was kept. */
 export type Answered = { call: string; input: string; answer?: string; error?: true };
 
 /**
@@ -69,12 +70,12 @@ export type Answered = { call: string; input: string; answer?: string; error?: t
  * `[<pick> error] <text>`. An answer pairs with the oldest call of its pick, by the same Agent,
  * that has none yet, and never across a prompt: a message's answers print in the order of its calls,
  * and every prompt after the answers of the calls before it (ADR-0023; the Harness's conformance
- * suite pins both), so a call still open at a prompt is one whose answer the kept log lost. A call
- * a Harness restart cut is answered by the next container, before its first prompt, and a call an
- * abort cut while the model was still writing it before the conversation's next prompt. A body's
- * later lines (they carry no label) belong to it. The same lines as `calledIn`: the Agents whose
- * prompt printed, from the trial's own prompt to another trial's Frame. `undefined` when no prompt
- * printed.
+ * suite pins both), so a call still open at a prompt is one whose answer the kept log lost, or a
+ * call in a message a provider error ended, which has none. A call a Harness restart cut is
+ * answered by the next container, before its first prompt, and a call an abort cut while the model
+ * was still writing it before the conversation's next prompt. A body's later lines (they carry no
+ * label) belong to it. The same lines as `calledIn`: the Agents whose prompt printed, from the
+ * trial's own prompt to another trial's Frame. `undefined` when no prompt printed.
  */
 export function answersIn(kept: string, marker: string): Answered[] | undefined {
   const trial = trialOf(kept, marker);
@@ -92,7 +93,8 @@ export function answersIn(kept: string, marker: string): Answered[] | undefined 
       if (/^\[[^\]]+\]/.test(body)) break; // another trial's Frame
       // A prompt closes every call before it: every answer prints before the next prompt the model
       // reads, a cut call's too (ADR-0023), so a call still unanswered here lost its answer from
-      // the kept log. A later call of its pick gets its own.
+      // the kept log, or is in a message a provider error ended, which has none. A later call of
+      // its pick gets its own.
       unanswered.clear();
       open = undefined;
       continue;
