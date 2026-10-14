@@ -42,7 +42,8 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   bearer. A 401 comes before a 404, so a refused caller does not learn which conversations exist. A refused admission
   creates no conversation. The Harness requires `JR2_HARNESS_TOKEN_SHA256` at boot and fails loudly without it.
 - **The echo uses the same bearer.** `JR2_ECHO_TOKEN_SHA256` is removed. The Instance token no longer enters any pod,
-  which is what [ADR-0032](0032-the-console-unlocks-with-the-instance-token.md) and `docs/architecture.md` already said.
+  which is what [ADR-0032](0032-the-console-unlocks-with-the-instance-token.md) and
+  [Secrets and trust](../site/concepts/secrets-and-trust.md) say.
 - **A refused stream is a fault, not a reconnect.** The bearer is derived, so a Harness that refuses it once refuses it
   on every retry. `wait` settles a 401 or 403 as a `SettlementFault` and does not park the Turn forever.
 - **Ingress to every Harness pod comes from the Orchestrator alone.** `jr2 up` converges two NetworkPolicies in the

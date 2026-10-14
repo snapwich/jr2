@@ -6,8 +6,10 @@ host-isolated Kubernetes pod (Sandbox), hosted by jr2's own Harness (ADR-0027, b
 [pi-agent-core](https://github.com/earendil-works/pi)). Local development runs on [kind](https://kind.sigs.k8s.io/)
 (Kubernetes in Docker).
 
-See [GLOSSARY.md](./GLOSSARY.md) for the glossary (the terms below are defined there) and [docs/adr/](./docs/adr/) for
-architecture decisions.
+See [CONTEXT.md](./CONTEXT.md) for the glossary (the terms below are defined there), the
+[docs site](https://snapwich.github.io/jr2/) for the concepts, the guides and the reference (its source is
+[docs/site/](./docs/site/), and [Architecture](./docs/site/concepts/architecture.md) tells what runs where), and
+[docs/adr/](./docs/adr/) for architecture decisions.
 
 ## Packages
 

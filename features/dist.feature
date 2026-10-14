@@ -38,10 +38,14 @@ Feature: the kit, as a user installs it
       Given a standalone instance scaffolded by the installed jr2
       When I install its dependencies with "npm"
       # ADR-0072: the packed @jr2/orchestrator holds the docs bundle, and init's AGENTS.md indexes it.
-      Then the AGENTS.md from jr2 init indexes the installed Kit's docs bundle
+      # The tarball is one per run, so only this scenario asks the registry for it.
+      Then the published @jr2/orchestrator tarball holds the docs bundle
+      And the Instance's AGENTS.md indexes the installed Kit's docs bundle
       # `npm ci --omit=dev` in the staged copy, from the lockfile npm just wrote; the stripped tree
       # is the Assembly `jr2 up` publishes.
       When I converge it onto the cluster
+      # `jr2 up` keeps the block between the markers, and leaves it as it is at the same version.
+      Then the Instance's AGENTS.md indexes the installed Kit's docs bundle
       # ADR-0056 as amended, from the only tier with a real global and a real local: the global on
       # PATH handed off to the Instance's own @jr2/cli, and the report names both — plus the
       # orchestrator the converge just deployed, at the same number.
@@ -62,12 +66,13 @@ Feature: the kit, as a user installs it
     Scenario: a pnpm instance in a temp dir converges and runs
       Given a standalone instance scaffolded by the installed jr2
       When I install its dependencies with "pnpm"
-      Then the AGENTS.md from jr2 init indexes the installed Kit's docs bundle
+      Then the Instance's AGENTS.md indexes the installed Kit's docs bundle
       # The instance stands alone, so this is NOT the `pnpm deploy` path a workspace member takes:
       # it is `pnpm install --prod --frozen-lockfile` in the staged copy — the branch that only
       # exists off a checkout, and the reason the temp dir has no workspace above it.
       When I converge it onto the cluster
-      And I run "ping" with message "dist"
+      Then the Instance's AGENTS.md indexes the installed Kit's docs bundle
+      When I run "ping" with message "dist"
       Then stdout is the terminal status with reply "pong: dist"
       And the command exits 0
       And the cluster pulled its Kit images from the local registry

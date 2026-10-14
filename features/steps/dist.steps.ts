@@ -12,7 +12,8 @@
 import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -410,16 +411,53 @@ async function pulledFromRegistry(
 }
 
 /**
- * ADR-0072's claim, from the one tier that packs the kit: the published `@jr2/orchestrator` holds
- * the docs bundle, and the `AGENTS.md` the installed `jr2 init` wrote holds exactly its block
- * between the markers — so an Assistant in a fresh folder reads the index before the first `jr2
- * up`. Every file the index names is in the bundle, so the index leads nowhere that is not packed.
+ * ADR-0072's first half, asked of the registry rather than of an install: the `@jr2/orchestrator`
+ * tarball the fixture PUBLISHED holds the docs bundle `prepack` assembled. `npm pack <spec>` fetches
+ * the published tarball, the way anyone can; the version is the one the Instance installed, so the
+ * tarball is the one under test and not a `latest` that a stale registry could answer. The `\\/` in
+ * the expression is a `/`: a bare one is an alternation.
+ */
+Then("the published @jr2\\/orchestrator tarball holds the docs bundle", async function (this: E2EWorld): Promise<void> {
+  const registry = this.dist?.registry;
+  const cacheDir = this.dist?.cacheDir;
+  assert.ok(registry && cacheDir, "a @dist scenario has its installed kit");
+  const installed = join(this.dir, "node_modules", "@jr2", "orchestrator", "package.json");
+  const { version } = JSON.parse(await readFile(installed, "utf8")) as { version: string };
+  // Outside the Instance folder: `jr2 up` bundles that folder, and a tarball in it would ride along.
+  const out = await mkdtemp(join(tmpdir(), "jr2-dist-pack-"));
+  try {
+    const env = { ...shellEnv(), npm_config_cache: cacheDir };
+    const { stdout } = await exec(
+      "npm",
+      ["pack", `@jr2/orchestrator@${version}`, "--registry", registry, "--pack-destination", out, "--json"],
+      { cwd: out, env, maxBuffer: BIG },
+    );
+    const [packed] = JSON.parse(stdout) as { filename: string }[];
+    assert.ok(packed, `npm pack fetched no tarball of @jr2/orchestrator@${version}`);
+    const { stdout: list } = await exec("tar", ["-tzf", join(out, packed.filename)], { maxBuffer: BIG });
+    const entries = new Set(list.split("\n"));
+    for (const file of ["index.md", "reference/authoring-surface.md", "agents-block.md", "llms.txt"])
+      assert.ok(
+        entries.has(`package/docs/${file}`),
+        `the published @jr2/orchestrator@${version} packs no docs/${file} (ADR-0072)`,
+      );
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+/**
+ * ADR-0072's second half, from the one tier that packs the kit: the `AGENTS.md` in the Instance
+ * holds exactly the installed bundle's block between the markers. Asked after the install, it is
+ * the block the installed `jr2 init` wrote, so an Assistant in a fresh folder reads the index
+ * before the first `jr2 up`; asked after the converge, it is the block `jr2 up` keeps. Every file
+ * the index names is in the bundle, so the index leads nowhere that is not packed.
  *
  * The block init wrote came from the GLOBAL CLI's own peer; the one compared is the Instance's
  * install. They are equal because both are this run's one published version.
  */
 Then(
-  "the AGENTS.md from jr2 init indexes the installed Kit's docs bundle",
+  "the Instance's AGENTS.md indexes the installed Kit's docs bundle",
   async function (this: E2EWorld): Promise<void> {
     const bundle = join(this.dir, "node_modules", "@jr2", "orchestrator", "docs");
     const block = await readFile(join(bundle, "agents-block.md"), "utf8").catch(() =>

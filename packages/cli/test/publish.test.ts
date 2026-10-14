@@ -120,4 +120,7 @@ test("every published package ships an allowlist that holds its entrypoints and 
     /\bdocs:build\b/,
     "@jr2/orchestrator assembles the bundle in prepack",
   );
+  // Strict: a page that is missing or a link that resolves nowhere fails the pack, and so the
+  // release. `--partial` would pack a bundle with holes.
+  assert.doesNotMatch(orchestrator.scripts?.prepack ?? "", /--partial/, "the prepack docs:build is strict");
 });

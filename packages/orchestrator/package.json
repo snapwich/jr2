@@ -37,7 +37,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit && tsc -p console --noEmit",
     "test": "node --test --test-global-setup=../../scripts/test-tmpdir.ts",
-    "prepack": "pnpm --dir ../.. docs:build --partial"
+    "prepack": "pnpm --dir ../.. docs:build"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.6",

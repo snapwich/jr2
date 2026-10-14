@@ -57,6 +57,11 @@ else
   npm whoami >/dev/null 2>&1 || die "no npm login on this box — \`npm login\`; the credential is the guard (ADR-0055)"
 fi
 
+# The docs bundle before anything moves (ADR-0072). `pnpm pack` below runs @jr2/orchestrator's
+# `prepack`, which builds it again, strict — but the images go first, so a broken page found only
+# there would fail the release after the push. The build is a second or two; a push is not undone.
+pnpm docs:build
+
 # Images FIRST (ADR-0044): a package whose images are not at the home fails at pull on the user's
 # first `jr2 up`; images with no package are inert. The canonical home is BAKED into the binary
 # (`KIT_IMAGE_HOME`, packages/cli/src/build.ts), so it is spelled here to match, not derived from

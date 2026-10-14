@@ -174,8 +174,9 @@ jobs:
         run: npm install -g npm@^11.15.0 && npm --version
 
       # One script, two executors (ADR-0055): the same walk a maintainer runs by hand as
-      # `just publish`, here with `--stage` — the Kit images to their home, then each public
-      # package packed and STAGED on npm, dependencies first, versions already live skipped.
+      # `just publish`, here with `--stage` — the strict docs build (ADR-0072), the Kit images to
+      # their home, then each public package packed and STAGED on npm, dependencies first, versions
+      # already live skipped.
       - name: Push the Kit images, then stage on npm
         run: |
           scripts/publish.sh --stage

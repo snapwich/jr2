@@ -100,7 +100,8 @@ the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
   a repo-root folder (ADR-0043). `templates/` is plural because a later `jr2 init --template <name>` is the obvious next
   step. The scaffold stays `ping`-only — the `@dist` tier's contract is a fresh instance that runs before any provider
   or repo exists — and `ping.ts`'s prose shows the `@jr2/machines` move as the next step instead of an inline `agent()`
-  sketch. `examples/coding` is deleted whole, `jr.ts` included; `docs/architecture.md` draws `task` in its place.
+  sketch. `examples/coding` is deleted whole, `jr.ts` included;
+  [An Agent in a Sandbox](../site/get-started/an-agent-in-a-sandbox.md) shows `task` in its place.
 
 ## Consequences
 

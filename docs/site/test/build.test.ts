@@ -1,5 +1,5 @@
 // docs:build as a whole (ADR-0072): --partial against strict, the checks on a page's source, and a
-// full partial build of this repo written to a temp dir.
+// full strict build of this repo written to a temp dir.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -84,9 +84,12 @@ test("a page's source is checked: its frontmatter, its title, no H1, and its lin
   ]);
 });
 
-test("a full partial build of this repo succeeds, and writes the bundle", async () => {
-  const r = await buildDocs({ partial: true });
+// Strict, as the prepack of @jr2/orchestrator builds it: a page that is missing or a link that
+// resolves nowhere fails this test on every PR, not the release.
+test("a full strict build of this repo succeeds, and writes the bundle", async () => {
+  const r = await buildDocs();
   assert.deepEqual(r.errors.map(formatError), []);
+  assert.deepEqual(r.skipped, []);
   const out = join(tmp, "bundle");
   await writeBundle(r.files, out);
   for (const p of allPages(await readSitemap()).filter((p) => p.source === "generated"))
