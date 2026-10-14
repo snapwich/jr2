@@ -4,7 +4,8 @@
 // does `jr2 up`, which refuses to converge a folder the compiler rejects — ADR-0050), a
 // `.gitignore` for the runtime `.jr2/`, ONE starter workflow (`ping`) that runs end-to-end with no
 // Workspace/Agent — a small "respond directly" Machine to trim down and build on — and
-// `images/default/Dockerfile`, the Sandbox Image every Workspace falls back to (ADR-0037).
+// `images/default/Dockerfile`, the Sandbox Image every Workspace falls back to (ADR-0037), and
+// the `AGENTS.md` an Assistant reads first, with a `CLAUDE.md` that imports it (ADR-0072).
 //
 // What it does NOT scaffold is as deliberate: there is no `agents/` folder and no `images/` scan,
 // because a Machine carries its own Agents and Sandbox Images (ADR-0049) and only what the CLI
@@ -24,11 +25,20 @@
 // not the orchestrator's `KIT_VERSION`: a global `jr2` with no Instance around it must scaffold
 // without a peer resolved, and the two numbers are equal by construction (one release train,
 // lockstep — ADR-0055).
+//
+// The `AGENTS.md` block is the one scaffolded text that comes from the Kit, not from this file: the
+// bundle of the CLI's own peer `@jr2/orchestrator`, when that peer is the version the scaffold pins.
+// A global `jr2` has that peer (npm installs a global's peers with it, and a checkout links it), so
+// a fresh folder indexes its docs before the first install — an Assistant can write the first
+// Machine before the first `jr2 up`. Without the bundle (a checkout before `docs:build`), the
+// markers stay empty and `jr2 up` fills them. The template mirrors the file with the block taken
+// out, since the block is generated and nothing generated is committed (ADR-0072).
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseCommand } from "../command-table.ts";
-import { CLI_VERSION } from "../kit-version.ts";
+import { AGENTS_MD, CLAUDE_MD, readAgentsBlock, scaffoldAgentsMd } from "../agents-md.ts";
+import { CLI_ROOT, CLI_VERSION, resolvePackage, type ResolvedPackage } from "../kit-version.ts";
 import { activity, type Io } from "../output.ts";
 
 export async function init(args: string[], io: Io): Promise<number> {
@@ -44,6 +54,8 @@ export async function init(args: string[], io: Io): Promise<number> {
     { path: ".gitignore", content: GITIGNORE },
     { path: join("workflows", "ping.ts"), content: PING_TS },
     { path: join("images", "default", "Dockerfile"), content: IMAGE_DOCKERFILE },
+    { path: AGENTS_MD, content: scaffoldAgentsMd(scaffoldBlock(resolvePackage("@jr2/orchestrator", CLI_ROOT))) },
+    { path: "CLAUDE.md", content: CLAUDE_MD },
   ];
 
   activity(io, `jr2 init — scaffolding ${name} in ${dir}`);
@@ -59,6 +71,12 @@ export async function init(args: string[], io: Io): Promise<number> {
   }
   activity(io, "done — install dependencies (npm, pnpm, or bun), then `jr2 up` and `jr2 run ping`");
   return 0;
+}
+
+/** The block `init` writes between the markers: the bundle of `peer` when it is the exact version
+ * the scaffold pins, else nothing (`jr2 up` fills it once the Instance resolves its Kit). */
+export function scaffoldBlock(peer: ResolvedPackage | undefined, pinned: string = CLI_VERSION): string | undefined {
+  return peer && peer.version === pinned ? readAgentsBlock(peer.root) : undefined;
 }
 
 async function exists(path: string): Promise<boolean> {

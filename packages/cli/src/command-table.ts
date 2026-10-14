@@ -172,9 +172,11 @@ const TABLE = [
     flags: [{ name: "name", value: "n", description: "the Instance's name (default: the folder's name)" }],
     env: [],
     summary: "scaffold a new instance folder",
-    lines: [],
+    lines: [
+      "writes AGENTS.md, with the jr2 docs index between its two jr2-docs markers (empty when this jr2 has no docs bundle), and a CLAUDE.md that imports it",
+    ],
     output: ACTIVITY,
-    adrs: ["0009"],
+    adrs: ["0009", "0072"],
   },
   {
     verb: "up",
@@ -191,9 +193,12 @@ const TABLE = [
     ],
     env: [{ name: "NO_COLOR", description: "draws the git ssh key menu without highlight" }],
     summary: "converge the current kube context to this instance",
-    lines: ["reads each `git.credentials` token from the env var it names, after the Instance's .env"],
+    lines: [
+      "reads each `git.credentials` token from the env var it names, after the Instance's .env",
+      "before the cluster work, sets the text between the jr2-docs markers in AGENTS.md to the docs index of the Kit version, and changes nothing outside them; a folder with no markers is left alone",
+    ],
     output: ACTIVITY,
-    adrs: ["0019", "0051"],
+    adrs: ["0019", "0051", "0069", "0072"],
   },
   {
     verb: "down",

@@ -23,8 +23,10 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
   to pin.
 - **`jr2 init` writes the block, and `jr2 up` keeps it current.** `init` writes `AGENTS.md` with the block between two
   markers, and a `CLAUDE.md` that holds `@AGENTS.md`, because Claude Code reads `AGENTS.md` only when no `CLAUDE.md`
-  exists. `up` rewrites the text between the markers when it differs from its Kit version's block, changes nothing
-  outside them, and prints one line: `AGENTS.md: jr2 block updated for <version>`. `up` is the verb because every
+  exists. `init` takes the block from the bundle of the CLI's own `@jr2/orchestrator` when that is the version it pins;
+  without that bundle it leaves the markers empty. `up` rewrites the text between the markers when it differs from its
+  Kit version's block, changes nothing outside them, and prints one line: `AGENTS.md: jr2 block updated for <version>`.
+  It does this before the cluster work, so a converge that fails still updates the block. `up` is the verb because every
   upgrade ends in `up`. A folder without the markers has opted out: `up` never creates the file or the markers, and no
   config key exists for it.
 - **The Reference is generated from the code wherever the code holds the facts.**

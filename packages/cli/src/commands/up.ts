@@ -1,10 +1,11 @@
 // `jr2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
-// namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
-// typecheck → the Machine walk → staging the Assembly (ADR-0069) → the Kubernetes floor (ADR-0037)
-// → ownership → image resolution → operator → Kit images (the Harness, the Orchestrator) → Sandbox
-// Images → Secret (+ preflight of referenced Secrets) → apply + rollout → the cache agent
-// (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted when none
-// does) → Instance Harness (ADR-0031: converged by convention when a carried definition declares
+// namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order: the
+// AGENTS.md block (ADR-0072: a file in the Instance folder, not the cluster) → typecheck → the
+// Machine walk → staging the Assembly (ADR-0069) → the Kubernetes floor (ADR-0037) → ownership →
+// image resolution → operator → Kit images (the Harness, the Orchestrator) → Sandbox Images →
+// Secret (+ preflight of referenced Secrets) → apply + rollout → the cache agent (ADR-0051: a
+// DaemonSet converged when a registered Machine composes a Sandbox, deleted when none does) →
+// Instance Harness (ADR-0031: converged by convention when a carried definition declares
 // `workspace: "none"`, deleted when none does) → Instance Effector → publishing the Assembly to the
 // running Orchestrator (ADR-0069) → a report of live workspaces still on an older image.
 //
@@ -167,7 +168,9 @@ import {
   type CustodianFiles,
   type HeldPodObjects,
 } from "../deploy.ts";
+import { syncAgentsMd } from "../agents-md.ts";
 import { resolveRoot } from "../instance.ts";
+import { resolvePackage } from "../kit-version.ts";
 import { effectorImagePaths, effectorImageRefusal, STOCK_HARNESS_IMAGE, type PushForm } from "../effector-image.ts";
 import {
   kubeFloorRefusal,
@@ -191,6 +194,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   const { values } = parseCommand("up", args);
 
   const root = resolveRoot(io.cwd);
+  // --- the AGENTS.md block (ADR-0072): before anything can refuse, because it describes the Kit the
+  // Instance resolves, not the cluster, so a converge that fails still leaves the index current.
+  const kit = resolvePackage("@jr2/orchestrator", root);
+  if (kit) await syncAgentsMd(io, root, kit.root, kit.version);
+
   const config = (await loadConfig(root)) ?? {};
   const name = config.name ?? basename(root);
   const namespace = (values.namespace as string | undefined) ?? name;

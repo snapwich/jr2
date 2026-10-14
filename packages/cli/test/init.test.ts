@@ -9,18 +9,23 @@
 // only coverage of the scaffold's FILE LIST too — that `tsconfig.json` is written at all, and that a
 // fresh instance is typecheckable by construction.
 //
+// `AGENTS.md` is mirrored with the text between its markers taken out: init fills the block from the
+// docs bundle when it can read one (ADR-0072), the bundle is generated, and nothing generated is
+// committed, so the template holds the markers empty.
+//
 // Since the manifest pins @jr2/* at KIT_VERSION (ADR-0043), the package.json comparison is also the
 // version-bump tripwire: bumping the kit renders a new literal and fails here until the default
 // template is re-rendered to match.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { KIT_VERSION } from "@jr2/orchestrator/internal";
-import { init } from "../src/commands/init.ts";
+import { init, scaffoldBlock } from "../src/commands/init.ts";
+import { BEGIN_MARKER, END_MARKER, rewriteAgentsBlock, scaffoldAgentsMd } from "../src/agents-md.ts";
 import type { Io } from "../src/output.ts";
 
 const TEMPLATE = fileURLToPath(new URL("../../../templates/default", import.meta.url));
@@ -34,6 +39,8 @@ const MIRRORED = [
   // The scaffolded Sandbox Image (ADR-0037): `images/default` is what makes the resolution chain's
   // middle leg a visible convention rather than magic, so it has to be scaffolded to exist at all.
   "images/default/Dockerfile",
+  // Claude Code reads AGENTS.md only when no CLAUDE.md exists, so this one imports it (ADR-0072).
+  "CLAUDE.md",
 ];
 
 async function scaffold(): Promise<string> {
@@ -52,6 +59,36 @@ test("init scaffolds every file templates/default has, byte-for-byte", async (t)
     const model = await readFile(join(TEMPLATE, path), "utf8");
     assert.equal(scaffolded, model, `${path} has drifted from templates/default/${path}`);
   }
+});
+
+test("init's AGENTS.md is the default template's with the block between the markers taken out", async (t) => {
+  const dir = await scaffold();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const scaffolded = await readFile(join(dir, "AGENTS.md"), "utf8");
+  const model = await readFile(join(TEMPLATE, "AGENTS.md"), "utf8");
+  // The template's own markers are empty: generated text is never committed in templates/.
+  assert.deepEqual(rewriteAgentsBlock(model, ""), { kind: "current" }, "templates/default/AGENTS.md holds a block");
+  const emptied = rewriteAgentsBlock(scaffolded, "");
+  const outside = emptied.kind === "updated" ? emptied.text : scaffolded;
+  assert.equal(outside, model, "AGENTS.md has drifted from templates/default/AGENTS.md outside the markers");
+  // Room for the user's own text: the END marker is the last line.
+  assert.ok(model.endsWith(`${END_MARKER}\n`));
+  assert.ok(model.indexOf(BEGIN_MARKER) > 0, "a line outside the markers says who writes them");
+});
+
+test("init fills the block only from a peer at the exact version it pins", async (t) => {
+  const kit = await mkdtemp(join(tmpdir(), "jr2-init-kit-"));
+  t.after(() => rm(kit, { recursive: true, force: true }));
+  // No bundle (a checkout before docs:build): nothing between the markers.
+  assert.equal(scaffoldBlock({ root: kit, version: "0.9.0" }, "0.9.0"), undefined);
+  await mkdir(join(kit, "docs"));
+  await writeFile(join(kit, "docs", "agents-block.md"), "the index\n");
+  assert.equal(scaffoldBlock({ root: kit, version: "0.9.0" }, "0.9.0"), "the index\n");
+  // A peer at another version would index docs the pinned Kit does not ship.
+  assert.equal(scaffoldBlock({ root: kit, version: "0.8.0" }, "0.9.0"), undefined);
+  assert.equal(scaffoldBlock(undefined, "0.9.0"), undefined);
+  assert.equal(scaffoldAgentsMd("the index\n").includes(`${BEGIN_MARKER}\nthe index\n${END_MARKER}\n`), true);
 });
 
 test("init's package.json matches the default template's but for name and description", async (t) => {
