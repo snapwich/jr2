@@ -1,0 +1,256 @@
+---
+title: Effects
+description: How a Machine runs a command, calls a URL or pushes a branch, and why each Effect runs at most once.
+---
+
+An [Effect](../reference/glossary.md#effect) is work that a [Machine](../reference/glossary.md#machine) does outside
+itself. jr2 has three kinds: `command` runs a program in the [Workspace](../reference/glossary.md#workspace), `http`
+calls a URL, and `push` pushes the Workspace's branch. You write an Effect as an actor slot, beside the
+[Agents](../reference/glossary.md#agent) of the Machine.
+
+## Why Effects exist
+
+A Machine often needs a fact from the world: do the tests pass, did the call succeed, is the branch on the remote.
+Without an Effect, the Machine can only ask an Agent to do the work. Then the Machine must trust what the Agent says. An
+Effect gives the Machine its own result, and the Machine routes on it.
+
+An Effect also keeps a credential away from the Agent. A `push` uses a push credential, and an `http` call uses an
+[Effect secret](../reference/glossary.md#effect-secret). The Agent never reads either one. jr2 also records each Effect
+before it starts, so that a restart of the [Orchestrator](../reference/glossary.md#orchestrator) does not do the work
+two times. A plain xstate promise has no such record.
+
+## An Effect is an actor slot
+
+Put an Effect under `actors` in [`jr2Setup`](../reference/authoring-surface.md#jr2setup). Invoke it by its key from a
+state. The state's `onDone` gets the output of the Effect. This example is a
+[Workflow](../reference/glossary.md#workflow) with a Workspace. An Agent fixes the code, and it can ask for a test run
+with the pick `run_tests`. When the Agent picks `finished`, the Machine pushes the branch:
+
+::::tabs
+
+:::tab{label="Anthropic"}
+
+::include{file="../examples/concepts/effects/anthropic/test-and-push.ts"}
+
+:::
+
+:::tab{label="Local"}
+
+::include{file="../examples/concepts/effects/local/test-and-push.ts"}
+
+:::
+
+::::
+
+[Agents and Turns](agents-and-turns.md) tells how to define an Agent.
+
+The Effect has the life of the state that invokes it. It starts when the run enters the state, and it stops when the run
+leaves the state. Its input goes into the run's snapshot. A typo in `src` is a compile error.
+[`customize()`](../reference/authoring-surface.md#customize) binds an [Open](../reference/glossary.md#open) part of the
+Effect by its slot key (see [Composition](composition.md)).
+
+[`jr2 up`](../reference/cli.md#up) reads each Effect slot without running it, and prints what it found. For each
+Workflow, it lists each Effect with its kind, its argv or its method and host, its timeout, and where it runs. The list
+starts with this line:
+
+<!-- output: not run -->
+
+```text
+effects: workflow "<name>" — what it runs outside itself (ADR-0067)
+…
+```
+
+`<name>` is the name of the Workflow.
+
+## The three kinds
+
+### `command`
+
+[`command`](../reference/authoring-surface.md#command) runs one program. Its argv is a list, and each entry is one
+argument. jr2 starts `argv[0]` with no shell. An [`arg("name")`](../reference/authoring-surface.md#arg) entry is one
+argument that the input of the Effect fills. Thus an Agent's text cannot become shell syntax. To use a shell, write it
+in the argv: `["sh", "-c", "…"]`. Then the result is the result of your script. The Agent can change the files that the
+script runs, so do not trust its result more than the Agent.
+
+A `command` uses the [Worktree](../reference/glossary.md#worktree) of one
+[Repo Slot](../reference/glossary.md#repo-slot): the only slot, or the slot that its `slot` option names. Its default
+timeout is 10 minutes. Its output keeps the end of what the program wrote: 4096 characters by default (the `tail`
+option). The full output goes to the run's feed.
+
+### `http`
+
+[`http`](../reference/authoring-surface.md#http) calls a URL. The definition fixes the method, the URL, the headers and
+the auth. The scheme and the host of the URL are literal text. An Effect secret can be in the path of the URL, in a
+header or in the auth, but never in the host. A `request` function makes the part that changes for each run: path
+segments, and a JSON or text body. Thus a value from the run can change a path segment or the body, but not where the
+call goes.
+
+In the second example, an Agent with `workspace: "none"` writes one comment, and the Machine posts it on a ticket. This
+Agent has no [Sandbox](../reference/glossary.md#sandbox). The `jira` Effect secret must be in the
+[`secrets`](../reference/config.md#secrets) list of `jr2.config.ts`:
+
+::::tabs
+
+:::tab{label="Anthropic"}
+
+::include{file="../examples/concepts/effects/anthropic/comment.ts"}
+
+:::
+
+:::tab{label="Local"}
+
+::include{file="../examples/concepts/effects/local/comment.ts"}
+
+:::
+
+::::
+
+The body can also be a file of the Worktree: `body: file(path)` (see [`file`](../reference/authoring-surface.md#file)).
+The default timeout of an `http` Effect is 30 seconds.
+
+### `push`
+
+[`push`](../reference/authoring-surface.md#push) pushes the Workspace's branch to the
+[Binding](../reference/glossary.md#binding) of its Repo Slot. It uses the push credential of the `git.credentials` entry
+that the URL matches (see [`git.credentials`](../reference/config.md#git-credentials)). The Agent never reads that
+credential. These options change what a push publishes:
+
+- `pin`: push the commit that the input names, such as a commit that a [Gate](../reference/glossary.md#gate) approved.
+  Without `pin`, jr2 pushes the tip of the Agent's branch when the Effect starts.
+- `sign`: push signed copies of the commits.
+- `squash`: push one commit that holds all the changes, with the message that the input gives.
+- `force`: replace what the remote branch holds.
+
+With `pin`, the input gives `{ sha }`. With `squash`, it gives `{ message }`.
+
+After a signed or a squashed push, the commits on the remote are not the Agent's own commits. Then jr2 moves the Agent's
+branch to the published commits. The Agent's files, index and stash do not change. The default timeout is 5 minutes.
+
+## Where an Effect runs
+
+You do not choose where an Effect runs. The kind, and what the Effect names, decide it. Each
+[Effector](../reference/glossary.md#effector) is a container that runs jr2's own process, and the Agent cannot run
+commands in it:
+
+| The Effect                              | Where it runs                                                                       |
+| --------------------------------------- | ----------------------------------------------------------------------------------- |
+| A `command` that names no Effect secret | The [Harness](../reference/glossary.md#harness) container of the Sandbox            |
+| A `command` that names an Effect secret | The [Sandbox Effector](../reference/glossary.md#sandbox-effector), against a commit |
+| An `http` Effect                        | The [Instance Effector](../reference/glossary.md#instance-effector)                 |
+| An `http` Effect with a Worktree file   | The Sandbox Effector                                                                |
+| A `push`                                | The Sandbox Effector                                                                |
+
+A `command` that names no Effect secret runs beside the Agent's [Working tools](../reference/glossary.md#working-tools).
+It runs as the Agent's user, with the tools of the [Sandbox Image](../reference/glossary.md#sandbox-image). It has the
+same [Stand-ins](../reference/glossary.md#stand-in) as the Agent's shell, and no credential of its own.
+
+A `command` that names an Effect secret in its `env` runs in the Sandbox Effector, a container in which the Agent runs
+nothing. It does not run in the live Worktree. It runs against one commit: the tip of the branch when it starts, or with
+`pin`, the commit that its input names. When the Worktree held changes that the command did not see, its output has
+`dirty: true`.
+
+A `command`, a `push` and an `http` Effect with a file body need a Workspace. Invoke them from the body of a
+[`workspace()`](../reference/authoring-surface.md#workspace). [Architecture](architecture.md) tells what each Effector
+is, and [Secrets and trust](secrets-and-trust.md) tells how an Effector holds the Effect secrets.
+
+## Every outcome is output
+
+An Effect gives each outcome to `onDone`, a failure too. Route on the `outcome` field:
+
+| Kind      | The outcomes                                    | The output type                                                         |
+| --------- | ----------------------------------------------- | ----------------------------------------------------------------------- |
+| `command` | `exited`, `timeout`, `killed`, `unknown`        | [`CommandOutput`](../reference/authoring-surface.md#type-commandoutput) |
+| `http`    | `response`, `unreachable`, `refused`, `unknown` | [`HttpOutput`](../reference/authoring-surface.md#type-httpoutput)       |
+| `push`    | `pushed`, `rejected`, `diverged`, `unknown`     | [`PushOutput`](../reference/authoring-surface.md#type-pushoutput)       |
+
+A test that fails is `exited` with a code that is not 0. A program that the container does not have is `exited` with
+code 127. An HTTP 4xx or 5xx status is a `response`. `unknown` means that jr2 cannot tell what the Effect did.
+
+The `onError` route is only for a defect in the Machine or in the config. For example, the Effect is not in a Workspace,
+or an `arg()` has no value, or an Open part has no binding.
+
+## At most once
+
+jr2 writes a record of each Effect before the Effect starts, and saves it with the run's snapshot. When the Effect ends,
+jr2 records its output. After an Orchestrator restart, jr2 reads the record:
+
+- An Effect that ended gives its output. jr2 does not run it again.
+- An Effect that did not start, starts.
+- An Effect that started follows the rule of its kind.
+
+| Kind                                    | After a restart, when the Effect started                                                                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A `command` that names no Effect secret | jr2 attaches to it again. When the Harness does not know it, the outcome is `unknown`. It never runs again.                                                  |
+| A `command` that names an Effect secret | jr2 follows it. When the Sandbox Effector lost it, jr2 runs it again against the same commit. With no commit recorded, the outcome is `unknown`.             |
+| A `push`                                | jr2 follows it. When the Sandbox Effector lost it, jr2 pushes the same commit again, and no other commit. With no commit recorded, the outcome is `unknown`. |
+| An `http` Effect                        | jr2 follows it. When no Effector holds it, jr2 sends it again only if it is `idempotent`. Else the outcome is `unknown`.                                     |
+
+A `command` that names no Effect secret runs the code of the Worktree, and that code can spend a Stand-in. Thus jr2 does
+not run it two times. A `push`, and a `command` that names an Effect secret, run against a commit that jr2 records. Thus
+jr2 can send them again with that commit.
+
+To try again, write it in the Machine: a route from the outcome back into the state. Mark an `http` Effect `idempotent`
+only when a second call is safe: the call has its own idempotency key, or it only reads.
+
+## When the state exits
+
+When the run leaves the state, the Effect stops:
+
+- jr2 kills the process group of a `command` that names no Effect secret.
+- The Sandbox Effector stops a `command` that names an Effect secret. It sends `SIGTERM`, waits 5 seconds, then sends
+  `SIGKILL`.
+- An `http` Effect and a `push` have no stop. jr2 stops waiting for the output, but the Effector can still finish the
+  work.
+
+jr2 records the stop, and the Machine gets no output. There is no "finally" in a Machine: cleanup is a state. Put an
+Effect that must not stop in a state of its own. The only exit of that state is its `onDone`. That state handles the
+events of the states above it.
+
+## From a pick to an Effect
+
+An Agent can start an Effect with a pick. The pick moves the run into a state that invokes the Effect. Three names help
+you write that state. Each one is optional.
+
+- [`fromPick(def, fill)`](../reference/authoring-surface.md#frompick) is the `input` of the state. The params of the
+  pick go into the Effect's input, by name. `fill` gives only the keys that the Machine adds. In `comment.ts`, the Agent
+  gives `body`, and the Machine gives `ticket`. Thus the Agent cannot post on a different ticket. TypeScript checks the
+  sum against the input type of the Effect.
+- [`paramsOf(event, def)`](../reference/authoring-surface.md#paramsof) reads the same params in a plain `input` mapper.
+  Use it when the Machine changes a param before the Effect gets it.
+- [`answer(fn)`](../reference/authoring-surface.md#answer) sets what the Agent reads when jr2 answers its pick. In
+  `test-and-push.ts`, the Agent reads one line, or the end of the test output. Without `answer`, it reads the
+  `CommandOutput` of the command, as JSON. [The Menu](the-menu.md) tells more about `answer`.
+
+While the Effect runs below the Agent's state, the Agent's pick is [outstanding](../reference/glossary.md#outstanding).
+The state is not at [Rest](../reference/glossary.md#rest) until the Effect ends. [The Menu](the-menu.md) tells how a
+pick waits for its answer.
+
+## Rules
+
+- An Effect is a key of `actors`. `createMachine` refuses an Effect that you write directly in an `invoke`.
+- A `command`, a `push` and an `http` Effect with a file body run only inside a `workspace()`.
+- Under a Workspace with more than one Repo Slot, a `command`, a `push` and a file body name their slot.
+- The host of an `http` URL is literal. An Effect secret never goes in the host, the query or the fragment of a URL.
+- Each Effect secret that an Effect names is in the `secrets` list of `jr2.config.ts`, with a value of 8 characters or
+  more. `jr2 up` refuses a name that is not in the list, and a value that is shorter.
+- A `push` with `sign` needs a `sign` field on its `git.credentials` entry. A `squash` without `sign` needs a `sign` or
+  a `committer` field there.
+- Each param of a pick that enters an Effect's state has a reader: the Effect's input, `fill`, a guard or an `assign`.
+  `createMachine` refuses a param that nothing reads, and a `fill` key that is also a param.
+- A packaged Machine can leave an `http` URL, a `command` argv or one Effect secret name Open. The composer binds it one
+  time with `customize()`. `jr2 up` refuses an Open part that nobody bound.
+
+The guides give the refusal text of each rule.
+
+## Read next
+
+- [Run a command or call a URL with an Effect](../guides/run-a-command-or-call-a-url.md)
+- [Push and sign a branch](../guides/push-and-sign-a-branch.md)
+- [Workspaces](workspaces.md), [The Menu](the-menu.md), [Secrets and trust](secrets-and-trust.md)
+- Reference: [`command`](../reference/authoring-surface.md#command), [`http`](../reference/authoring-surface.md#http),
+  [`push`](../reference/authoring-surface.md#push), [`fromPick`](../reference/authoring-surface.md#frompick),
+  [`answer`](../reference/authoring-surface.md#answer)
+- [ADR-0067](../reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md):
+  an Effect is an actor slot, and runs at most once unless marked idempotent
+- [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md): an Effector holds
+  an Effect's secrets and signs its wire
