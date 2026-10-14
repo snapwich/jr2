@@ -31,15 +31,18 @@ version, images, gate, trigger.
   checkout `KIT_VERSION` must read the number the checkout will ship.
 - **The tag push is the release, and one job does the whole train in order.** `release.yml` runs on `v*`; it refuses
   first if the tag disagrees with any manifest. Then the full gate — unit, harness conformance, the default e2e profile,
-  the Custodian suite, and `@kind` and `@dist` on a kind cluster the job creates on the runner (the operator's own e2e
-  job already works this way) — so the installed path is proven on the tree that publishes, not on a maintainer's box
-  the day before. Then `scripts/kit-push.sh ghcr.io/snapwich` (multi-arch, `GITHUB_TOKEN` with `packages: write`), and
-  **only then** npm: each public package is packed with pnpm, which rewrites `workspace:*` to the exact version, and
-  **staged** with `npm stage publish`, the client that speaks trusted publishing — in pnpm's topological order,
-  dependencies first, skipping a version npm already holds live so a re-run converges. The order is the contract: a
-  package whose images are not at the home fails at pull on the user's first `jr2 up`
+  the docs site build, the Custodian suite, and `@kind` and `@dist` on a kind cluster the job creates on the runner (the
+  operator's own e2e job already works this way) — so the installed path is proven on the tree that publishes, not on a
+  maintainer's box the day before. Then `scripts/kit-push.sh ghcr.io/snapwich` (multi-arch, `GITHUB_TOKEN` with
+  `packages: write`), and **only then** npm: each public package is packed with pnpm, which rewrites `workspace:*` to
+  the exact version, and **staged** with `npm stage publish`, the client that speaks trusted publishing — in pnpm's
+  topological order, dependencies first, skipping a version npm already holds live so a re-run converges. The order is
+  the contract: a package whose images are not at the home fails at pull on the user's first `jr2 up`
   ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)); images with no package are inert,
-  and stay so while the packages sit staged.
+  and stay so while the packages sit staged. A second job, `pages`, follows the release job and deploys the docs site of
+  the same tree to GitHub Pages
+  ([ADR-0072](0072-the-docs-ship-inside-the-kit-and-an-instances-agents-md-indexes-them.md)). It does not wait for the
+  npm approval, so the site can be ahead of the live packages until the maintainer approves them.
 - **The job stages; the maintainer approves.** Each trusted publisher is configured for `npm stage publish` only, so the
   tag produces four staged tarballs and one 2FA approval per package (`npm stage approve`, dependencies first) makes
   them live. This is the one human act a release keeps, and it is kept on purpose: the job's identity is bound to the
