@@ -68,13 +68,17 @@ const door = z.object({
   /** What to do, in prose. Required. The coder's first Turn is this prompt, with the Worktree it
    * works in. */
   prompt: z.string().describe("What to do, in prose. The coder's first turn is this, framed with the worktree."),
-  /** The branch to cut and commit on. Default: `jr2/task-<run id>`, so two runs never use the same
-   * branch. Required when `task` runs inside another Machine, such as a `pool()`: there is no run
-   * id to name the branch after. */
+  /** The branch to cut and commit on. Default: `jr2/task-<instance id>`, where `<instance id>` is
+   * the seed Instance ID of the run (`instanceId` in `jr2 status`). It is not the run id. Two runs
+   * never use the same branch. Required when `task` runs inside another Machine, such as a
+   * `pool()`: there is no Instance ID to name the branch after. */
   branch: z
     .string()
     .optional()
-    .describe("The branch to cut and commit on. Default: jr2/task-<run id>, so concurrent runs never collide."),
+    .describe(
+      "The branch to cut and commit on. Default: jr2/task-<instance id>, where <instance id> is the seed " +
+        "Instance ID of the run (instanceId in jr2 status). It is not the run id.",
+    ),
   // The two Dials (ADR-0018) as a PER-RUN escape hatch, not a default (ADR-0054): the bound
   // definition is what `jr2 up` preflights, and a door value overrides it for this one run's Turns.
   // Identity — instructions, workspace access — is deliberately absent: an invocation that rewrote
@@ -362,7 +366,7 @@ export const body = jr2Setup({
  * image, it uses the Instance's `images/default`, or jr2's Harness image when there is none.
  * Without a Size, it uses the Instance's `sandbox.resources`, or the kit's Size when it has none.
  * Inside another Machine, `task` needs `branch` in its input, or it refuses:
- * ``task: no `branch` on the door and no run id to derive one from``.
+ * ``task: no `branch` on the door and no Instance ID to derive one from``.
  *
  * @example
  * ```ts
@@ -395,7 +399,7 @@ export const task = workspace(body, {
 });
 
 /**
- * The branch this run works on: the door's, or `jr2/task-<run id>` (ADR-0054).
+ * The branch this run works on: the door's, or `jr2/task-<instance id>` (ADR-0054).
  *
  * The id is the run's seed Instance ID, which `RunHost.start` injects beside the door on the ROOT
  * machine's input ({@link HostInjectedInput}) and `jr2 status` reports. It is not door material —
@@ -412,8 +416,8 @@ function branchOf(input: TaskInput): string {
   const { instanceId } = input as TaskInput & Partial<HostInjectedInput>;
   if (!instanceId) {
     throw new Error(
-      "task: no `branch` on the door and no run id to derive one from — `jr2/task-<run id>` needs the " +
-        "id the host injects beside the door of the ROOT machine (ADR-0033), and this run of `task` " +
+      "task: no `branch` on the door and no Instance ID to derive one from — `jr2/task-<instance id>` needs " +
+        "the id the host injects beside the door of the ROOT machine (ADR-0033), and this run of `task` " +
         "was started by a parent Machine instead. Pass `branch` in the run input.",
     );
   }

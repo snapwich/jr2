@@ -178,7 +178,7 @@ gives the values, and [Run a command or call a URL with an Effect](run-a-command
   ``agent "<slot>" has an Open model — nobody bound it; bind it where the Machine is registered (`customize(<machine>, { agents: { <slot>: { model: "<provider>/<model>" } } })`), because a packaged Machine cannot pick a model on your behalf (ADR-0054)``.
   `jr2 up` refuses this case first.
 - `task` inside a different Machine refuses to start without `branch` in its input:
-  ``task: no `branch` on the door and no run id to derive one from — `jr2/task-<run id>` needs the id the host injects beside the door of the ROOT machine (ADR-0033), and this run of `task` was started by a parent Machine instead. Pass `branch` in the run input.``
+  ``task: no `branch` on the door and no Instance ID to derive one from — `jr2/task-<instance id>` needs the id the host injects beside the door of the ROOT machine (ADR-0033), and this run of `task` was started by a parent Machine instead. Pass `branch` in the run input.``
 
 ## Read next
 

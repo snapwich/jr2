@@ -209,7 +209,7 @@ tells what each status means.
 - The Orchestrator refuses a run input that does not match the `input` schema of the Pool. `jr2 run` prints
   `error: invalid input for workflow "<workflow>": <reason>`.
 - A `task` inside a Pool needs `branch` in its input. Without it, the run stops with the status `error`, and its `fault`
-  starts with ``task: no `branch` on the door and no run id to derive one from``.
+  starts with ``task: no `branch` on the door and no Instance ID to derive one from``.
 - Without `cap`, one worker runs at a time. Each `task` worker has its own
   [Workspace](../reference/glossary.md#workspace). Thus the run has `cap` Sandboxes or fewer at one time.
 - The Pool takes the `wake` event only while it waits: workers run, and no item is ready. At other times,

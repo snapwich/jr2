@@ -78,7 +78,8 @@ the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
   preflights, the door value overrides it for one run's Turns. Nothing in jr2 changes for this — it is the Machine's own
   four lines.
 - **The first Machine is `task`: one prompt, one Workspace, one human says done.** Door
-  `{ prompt, branch?, model?, thinkingLevel? }`, branch defaulting to `jr2/task-<run id>`; the Repo Slots Open as a map
+  `{ prompt, branch?, model?, thinkingLevel? }`, branch defaulting to `jr2/task-<instance id>`, where `<instance id>` is
+  the seed Instance ID of the run (`instanceId` in `jr2 status`), not the run id; the Repo Slots Open as a map
   (`repos: open`, ADR-0051) — the consumer names them, and the order is `task`'s own convention, since jr2 gives no slot
   a meaning: the first is where the coder works, any others are checkouts the first Turn frames for the coder to read;
   one Agent `coder` with an Open model. `working` invokes `coder`; its `finish { summary }` parks at the `review` Gate
