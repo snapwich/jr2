@@ -3,15 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The hand-written docs pages and the site's navigation (ADR-0072). docs:build reads them; nothing here ships as a package.",
+  "description": "The hand-written docs pages, the site's navigation, and docs:build, which assembles the docs bundle that @jr2/orchestrator ships (ADR-0072). Nothing here ships as a package.",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
+    "docs:build": "node build/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts"
   },
   "devDependencies": {
-    "@types/node": "^26.0.1"
+    "@jr2/machines": "workspace:*",
+    "@jr2/orchestrator": "workspace:*",
+    "@types/node": "^26.0.1",
+    "typescript": "^5.6.0",
+    "xstate": "^5.18.0",
+    "zod": "^4.4.3"
   }
 }

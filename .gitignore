@@ -15,6 +15,10 @@ repos/
 .env.*
 !.env.example
 
+# the docs bundle (ADR-0072): `pnpm docs:build` assembles it from docs/site, the code, CONTEXT.md
+# and docs/adr. Generated, so never checked in — the one source is the page or the code.
+packages/orchestrator/docs/
+
 # go
 operator/bin/
 operator/testbin/

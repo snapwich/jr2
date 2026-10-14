@@ -1,0 +1,243 @@
+// The generated Reference covers the code it comes from (ADR-0072): each root export on the
+// Authoring surface page, each command-table row on the CLI page, each route on the HTTP page, and
+// each `JR2Config` field on the config page. Each list here is read from the code by another road
+// than the generator's, so a generator that drops a name fails.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import ts from "typescript";
+import * as surface from "@jr2/orchestrator";
+import { HTTP_ROUTES } from "@jr2/orchestrator/internal";
+import { COMMANDS, nameOf } from "../../../packages/cli/src/command-table.ts";
+import { generateReference, referenceContext, REPO } from "../build/build.ts";
+import { commandAnchor } from "../build/reference/cli.ts";
+import { checkVoice, seeLink, typeDocTail } from "../build/reference/context.ts";
+import { routeAnchor } from "../build/reference/http-api.ts";
+import { allPages, readSitemap } from "../build/sitemap.ts";
+import { sourceFile } from "../build/tsdoc.ts";
+
+const ctx = referenceContext(REPO, allPages(await readSitemap()));
+const { pages } = generateReference(ctx);
+const page = (slug: string) => pages.get(slug) ?? assert.fail(`no page ${slug}`);
+
+test("the generators report no error on the real code", () => {
+  assert.deepEqual(ctx.errors, []);
+});
+
+test("each root export is on the Authoring surface page, under its own heading", async () => {
+  const index = await readFile(join(REPO, "packages/orchestrator/src/index.ts"), "utf8");
+  const types = [...index.matchAll(/^export type \{([^}]*)\}/gm)].flatMap((m) => m[1]!.split(",").map((s) => s.trim()));
+  const names = [...Object.keys(surface), ...types];
+  assert.ok(names.length > 30);
+  const text = page("reference/authoring-surface");
+  for (const name of names) assert.ok(text.includes(`\n### \`${name}\`\n`), `${name} is not on the page`);
+});
+
+test("each @jr2/machines export is on its page", async () => {
+  const machines = await import("@jr2/machines");
+  const text = page("reference/machines");
+  for (const name of Object.keys(machines)) assert.ok(text.includes(`\n### \`${name}\`\n`), name);
+});
+
+test("each field of TaskInput is on the @jr2/machines page, with its TSDoc", async () => {
+  // Read from the zod schema the type is inferred from, by its syntax alone.
+  const file = join(REPO, "packages/machines/src/task.ts");
+  const sf = ts.createSourceFile(file, await readFile(file, "utf8"), ts.ScriptTarget.Latest, true);
+  let door: ts.ObjectLiteralExpression | undefined;
+  sf.forEachChild(function find(n) {
+    if (
+      ts.isVariableDeclaration(n) &&
+      n.name.getText() === "door" &&
+      n.initializer &&
+      ts.isCallExpression(n.initializer)
+    )
+      door = n.initializer.arguments[0] as ts.ObjectLiteralExpression;
+    n.forEachChild(find);
+  });
+  const props = door!.properties.filter(ts.isPropertyAssignment);
+  assert.ok(props.length >= 4);
+  const text = page("reference/machines");
+  const entry = text.slice(text.indexOf("\n### `TaskInput`\n"), text.indexOf("\n### `TaskOutput`\n"));
+  assert.doesNotMatch(entry, /typeof door/);
+  for (const p of props) {
+    const optional = p.initializer.getText().includes(".optional()");
+    const doc = ts.getJSDocCommentsAndTags(p).filter(ts.isJSDoc).at(-1);
+    const first = String(doc?.comment ?? "")
+      .split("\n")[0]!
+      .trim();
+    assert.ok(first, `${p.name.getText()} has no TSDoc`);
+    assert.ok(entry.includes(`- \`${p.name.getText()}\`${optional ? " (optional)" : ""}: `), p.name.getText());
+    assert.ok(entry.includes(first), `the TSDoc of ${p.name.getText()} is not on the page`);
+  }
+});
+
+test("a union type lists one field list per form, and a kit type a signature names is defined", () => {
+  const text = page("reference/machines");
+  const entry = text.slice(
+    text.indexOf("\n### `TaskOutput`\n"),
+    text.indexOf("\n<a id=", text.indexOf("\n### `TaskOutput`\n")),
+  );
+  assert.match(entry, /\*\*Forms\*\*[\s\S]*- Form 1: `outcome`, `branch`[\s\S]*- Form 2: `outcome`/);
+  const surfaceText = page("reference/authoring-surface");
+  assert.ok(surfaceText.includes('<a id="type-eventaudience"></a>\n\n### `EventAudience`'));
+});
+
+test("a @see target is a sitemap page or an ADR, and anything else is an error", () => {
+  const adr = ctx.adrs[0]!;
+  assert.equal(typeof seeLink(ctx, "docs/reference/cli.md", "reference/machines.md"), "string");
+  assert.equal(typeof seeLink(ctx, `docs/reference/decisions/${adr.file}`, "reference/machines.md"), "string");
+  for (const bad of ["docs/guides/nope.md", "docs/reference/decisions/9999-nope.md", "../x.md", "https://x.dev"])
+    assert.ok(typeof seeLink(ctx, bad, "reference/machines.md") === "object", bad);
+});
+
+test("a type in a Types section shows its @see links", () => {
+  const text = page("reference/authoring-surface");
+  const at = text.indexOf("\n### `EventAudience`\n");
+  const entry = text.slice(at, text.indexOf("\n<a id=", at));
+  assert.ok(entry.includes("](../concepts/the-menu.md)"), "EventAudience does not link to the Menu page");
+});
+
+test("on a named type, a bad @see target and a tag the Reference drops are errors at their lines", () => {
+  const errors: typeof ctx.errors = [];
+  const doc = {
+    summary: "A type.",
+    file: "packages/x/src/x.ts",
+    line: 3,
+    tags: [
+      { name: "see", text: "docs/concepts/no-such-page.md", line: 5 },
+      { name: "deprecated", text: "gone", line: 6 },
+      { name: "see", text: "docs/reference/cli.md", line: 7 },
+    ],
+  };
+  const tail = typeDocTail({ ...ctx, errors }, doc, "reference/http-api.md");
+  assert.deepEqual(
+    errors.map((e) => `${e.file}:${e.line}`),
+    ["packages/x/src/x.ts:6", "packages/x/src/x.ts:5"],
+  );
+  assert.ok(tail.join("\n").includes("](cli.md)"));
+});
+
+test("each command-table row is on the CLI page, with its anchor and each of its flags", () => {
+  const text = page("reference/cli");
+  for (const c of COMMANDS) {
+    assert.ok(text.includes(`<a id="${commandAnchor(c)}"></a>\n\n### \`jr2 ${nameOf(c)}\``), nameOf(c));
+    for (const f of c.flags) assert.ok(text.includes(`--${f.name}`), `${nameOf(c)} --${f.name}`);
+  }
+});
+
+test("each HTTP_ROUTES row is on the HTTP page, and each type it names is defined there", () => {
+  const text = page("reference/http-api");
+  for (const r of HTTP_ROUTES)
+    assert.ok(
+      text.includes(`<a id="${routeAnchor(r)}"></a>\n\n### \`${r.method} ${r.path}\``),
+      `${r.method} ${r.path}`,
+    );
+  for (const m of text.matchAll(/\]\(#(type-[a-z0-9-]+)\)/g))
+    assert.ok(text.includes(`<a id="${m[1]}">`), `#${m[1]} is not on the page`);
+  for (const name of ["RunStatus", "GateView", "MachineDoc", "AgentSurfaceView"])
+    assert.ok(text.includes(`\n### \`${name}\`\n`), name);
+});
+
+test("each JR2Config field, nested, is on the config page", () => {
+  const { checker } = ctx.program;
+  const config = sourceFile(ctx.program, "packages/orchestrator/src/config.ts");
+  const decl = config.statements.find(
+    (s): s is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(s) && s.name.text === "JR2Config",
+  )!;
+  const text = page("reference/config");
+  const visit = (type: ts.Type, path: string, depth: number) => {
+    if (depth > 6) return;
+    type = checker.getNonNullableType(type);
+    if (checker.isArrayType(type))
+      return visit(checker.getTypeArguments(type as ts.TypeReference)[0]!, `${path}[]`, depth);
+    const index = type.getStringIndexType();
+    if (index && type.getProperties().length === 0) return visit(index, `${path}.<name>`, depth);
+    if (type.isUnion() && type.types.every((t) => t.flags & ts.TypeFlags.Object)) {
+      // One of several objects: its fields are listed inside the field, by name.
+      for (const t of type.types)
+        for (const p of t.getProperties()) assert.ok(text.includes(`\`${p.name}\``), `${path}: ${p.name}`);
+      return;
+    }
+    if (!(type.flags & ts.TypeFlags.Object) || type.getCallSignatures().length) return;
+    const props = type.getProperties();
+    // A type the Authoring surface documents (Size) is linked, not opened.
+    if (
+      depth > 0 &&
+      type.aliasSymbol &&
+      ctx.names.get(type.aliasSymbol.name)?.page === "reference/authoring-surface.md"
+    )
+      return;
+    for (const p of props) {
+      const child = path ? `${path}.${p.name}` : p.name;
+      assert.ok(text.includes(`\`${child}\`\n`), `${child} is not on the page`);
+      visit(checker.getTypeOfSymbol(p), child, depth + 1);
+    }
+  };
+  visit(checker.getTypeAtLocation(decl.name), "", 0);
+});
+
+test("each kit type that a signature or a field on a surface page shows has an anchor on a Reference page", () => {
+  // The names the kit's own sources declare as types, read from every file of the program.
+  const kit = new Set<string>();
+  for (const sf of ctx.program.program.getSourceFiles()) {
+    const file = sf.fileName.slice(REPO.length);
+    if (!file.startsWith("packages/") || file.includes("node_modules")) continue;
+    for (const s of sf.statements)
+      if (ts.isTypeAliasDeclaration(s) || ts.isInterfaceDeclaration(s)) kit.add(s.name.text);
+  }
+  const anchors = new Set(
+    [...pages.values()].flatMap((t) => [...t.matchAll(/<a id="([^"]+)"><\/a>/g)].map((m) => m[1]!)),
+  );
+  for (const slug of ["reference/authoring-surface", "reference/machines"]) {
+    // The type plumbing is shown as its declarations alone; what those name is the kit's machinery.
+    // An example is the author's own code, with its own type names.
+    const text = page(slug)
+      .split("**Type plumbing.**")[0]!
+      .replace(/\*\*Example\*\*\n\n```ts\n[\s\S]*?^```$/gm, "");
+    const shown = [
+      ...[...text.matchAll(/^```ts\n([\s\S]*?)^```$/gm)].map((m) => m[1]!),
+      ...[...text.matchAll(/^\s*- `[^`]+`(?: \(optional\))?: (?:\[`([^`]+)`\]\([^)]*\)|`([^`]+)`)$/gm)].map(
+        (m) => m[1] ?? m[2]!,
+      ),
+    ];
+    const names = new Set(shown.flatMap((s) => [...s.matchAll(/\b[A-Z][A-Za-z0-9]*\b/g)].map((m) => m[0])));
+    for (const name of names) {
+      if (!kit.has(name)) continue;
+      assert.ok(
+        ctx.names.has(name) || anchors.has(`type-${name.toLowerCase()}`),
+        `${slug} shows the kit type ${name}, and no Reference page defines it`,
+      );
+    }
+  }
+});
+
+test("the TSDoc a Reference page shows names no repo path and no commit", () => {
+  const errors: typeof ctx.errors = [];
+  checkVoice(
+    { ...ctx, errors },
+    {
+      summary: "Reads `ambient.ts` (the baba71f incident), see test/door-types.test.ts.",
+      tags: [
+        { name: "remarks", text: "Set it in jr2.config.ts, and read AGENTS.md.", line: 4 },
+        { name: "example", text: "```ts\nimport x from './x.ts';\n```", line: 5 },
+        { name: "see", text: "docs/concepts/effects.md", line: 8 },
+      ],
+      file: "packages/x/src/x.ts",
+      line: 2,
+    },
+  );
+  assert.deepEqual(
+    errors.map((e) => `${e.line}: ${/names (\S+),/.exec(e.message)?.[1]}`),
+    ["2: ambient.ts", "2: test/door-types.test.ts", "2: baba71f"],
+  );
+});
+
+test("a type marked @internal is listed with its declaration alone", () => {
+  const text = page("reference/authoring-surface");
+  const plumbing = text.slice(text.indexOf("**Type plumbing.**"));
+  assert.ok(plumbing.includes('<a id="type-bodyacceptsdoor"></a>`BodyAcceptsDoor`'), "BodyAcceptsDoor is not listed");
+  assert.doesNotMatch(text, /door-types\.test\.ts|claim 1/);
+  assert.ok(!text.includes("\n### `BodyAcceptsDoor`\n"), "BodyAcceptsDoor has an entry of its own");
+});

@@ -9,6 +9,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
+    "docs:build": "pnpm --filter @jr2/docs-site docs:build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "husky"

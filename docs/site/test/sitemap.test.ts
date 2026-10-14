@@ -1,21 +1,13 @@
 // sitemap.json is the site's navigation as data (ADR-0072): docs:build reads it to know which
-// pages to assemble, and each site generator renders its nav from it. So its shape is a contract
-// with code that is not written yet — pinned here, before the first reader exists.
+// pages to assemble, and each site generator renders its nav from it. So its shape is a contract,
+// pinned here; the types both read are build/sitemap.ts.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { allPages as pagesIn, pagesOf, readSitemap } from "../build/sitemap.ts";
 
-type Page = { slug: string; title: string; source: "page" | "generated" };
-type Group = { title: string; pages: Page[] };
-type Section = { title: string; pages?: Page[]; groups?: Group[] };
-
-const sitemap = JSON.parse(await readFile(new URL("../sitemap.json", import.meta.url), "utf8")) as {
-  sections: Section[];
-};
-
-const pagesOf = (s: Section): Page[] => s.pages ?? (s.groups ?? []).flatMap((g) => g.pages);
-const allPages = sitemap.sections.flatMap(pagesOf);
+const sitemap = await readSitemap();
+const allPages = pagesIn(sitemap);
 
 // A slug is a path relative to docs/site without `.md`: lower-case kebab segments joined by `/`.
 // That shuts out `..`, a leading `/`, a backslash, and an extension, so a slug cannot name a file
