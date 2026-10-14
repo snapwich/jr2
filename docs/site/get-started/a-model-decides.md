@@ -273,14 +273,14 @@ run <run id> (triage) — attached
 
 ## Answer from the Console
 
-Open `http://localhost:4000` in your browser. If the badge next to the `instance token` box shows `live`, go to the next
+Open `http://localhost:4000` in your browser. If the badge after the `instance token` box shows `live`, go to the next
 step. If the box is empty, get the token. In the send terminal, run:
 
 ```sh
 kubectl -n my-instance get secret jr2-instance -o jsonpath='{.data.JR2_INSTANCE_TOKEN}' | base64 -d
 ```
 
-Type the token in the `instance token` box. Push Enter. The badge next to the box shows `live`.
+Type the token in the `instance token` box. Push Enter. The badge after the box shows `live`.
 
 Click `triage` in the Fleet rail on the left. The center shows the Machine of `triage`, with its states and transitions.
 Click the run in the rail. The Console lights the state of the run, `clarify`.

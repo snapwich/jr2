@@ -159,7 +159,7 @@ kubectl -n my-instance get secret jr2-instance -o jsonpath='{.data.JR2_INSTANCE_
 ```
 
 The command prints the token, 48 hexadecimal characters, with no newline after it. Paste the token in the
-`instance token` box in the Console nav. Push Enter. The Console checks the token. Then the badge next to the box shows
+`instance token` box in the Console nav. Push Enter. The Console checks the token. Then the badge after the box shows
 `live`, and a `start` button shows next to `ping`. The browser tab keeps the token until you close the tab. `jr2 up`
 keeps the same token each time that it runs.
 

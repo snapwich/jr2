@@ -151,8 +151,8 @@ error: Workspace of workflow "fix": the push of Repo Slot "target" (https://gith
 kubectl -n my-instance port-forward svc/jr2-orchestrator 4000:4000
 ```
 
-This step is the most important step of the page. A Machine is a graph that you can read before it runs. Read how the
-work happens before you read the code that comes out of it.
+This step is the most important step of the page. The Console draws a Machine as a graph, and you can read it before it
+runs. Read how the work happens before you read the code that comes out of it.
 
 Open the graph of `fix` in the Console:
 

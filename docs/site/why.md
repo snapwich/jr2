@@ -60,11 +60,11 @@ Read [Architecture](concepts/architecture.md).
 An Agent does one thing well. When you give it many things at the same time, it loses its focus. The infrastructure of a
 workflow, such as a Sandbox or a set of work items, also must not get into the task of the Agent.
 
-In jr2, each of these parts is xstate. A [Workspace](reference/glossary.md#workspace) wraps a body Machine that does not
-know about the Sandbox. A [Pool](reference/glossary.md#pool) runs one worker Machine for each item that a
-[Source](reference/glossary.md#source) gives. A [Gate](reference/glossary.md#gate) is an actor that a state invokes to
-wait for an outside input. Each state sets the [Frame](reference/glossary.md#frame) of one
-[Turn](reference/glossary.md#turn), so an Agent does one thing at a time.
+In jr2, each of these parts is xstate. A Workspace wraps a body Machine that does not know about the Sandbox. A
+[Pool](reference/glossary.md#pool) runs one worker Machine for each item that a [Source](reference/glossary.md#source)
+gives. A [Gate](reference/glossary.md#gate) is an actor that a state invokes to wait for an outside input. Each state
+sets the [Frame](reference/glossary.md#frame) of one [Turn](reference/glossary.md#turn), so an Agent does one thing at a
+time.
 
 A Machine can invoke a different Machine. A Machine can also leave a part [Open](reference/glossary.md#open), such as
 the URL of a Repo or the model of an Agent. You bind that part with

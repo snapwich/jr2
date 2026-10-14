@@ -197,8 +197,8 @@ would remove, and removes nothing.
   [`kitRegistry`](../reference/config.md#kitregistry) and [`platforms`](../reference/config.md#platforms)
 - [ADR-0019](../reference/decisions/0019-one-converging-command-against-the-current-context.md): one converging command
   against the current context
-- [ADR-0038](../reference/decisions/0038-jr2-up-builds-every-image-it-deploys.md): `jr2 up` builds each image that it
-  deploys
+- [ADR-0038](../reference/decisions/0038-jr2-up-builds-every-image-it-deploys.md): `jr2 up` builds each image that the
+  Instance runs
 - [ADR-0039](../reference/decisions/0039-image-garbage-collects-by-reachability.md): `jr2 gc` removes the images that
   nothing reaches
 - [ADR-0041](../reference/decisions/0041-a-build-the-host-already-holds-is-not-spent-again.md): a build that the
