@@ -20,7 +20,7 @@ check fails, and `jr2 up` stops.
 [`jr2 kit push`](../reference/cli.md#kit-push) copies the images. [`kitRegistry`](../reference/config.md#kitregistry)
 tells `jr2 up` where the nodes pull them from:
 
-::include{file="../examples/guides/mirror-the-kit-images/jr2.config.ts"}
+<<< @/examples/guides/mirror-the-kit-images/jr2.config.ts
 
 ## Before you start
 

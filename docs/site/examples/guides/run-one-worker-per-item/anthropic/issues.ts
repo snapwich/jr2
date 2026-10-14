@@ -1,10 +1,15 @@
+// #region imports
 import { fromPromise } from "xstate";
 import { z } from "zod";
 import { customize, defineEvent, pool, source } from "@jr2/orchestrator";
 import { task } from "@jr2/machines";
+// #endregion imports
 
+// #region model
 const model = "anthropic/claude-sonnet-5-5";
+// #endregion model
 
+// #region pool
 // One work item: an open issue of the Repo.
 type Issue = { number: number; title: string; body: string };
 
@@ -74,3 +79,4 @@ export const machine = pool(fixer, {
     branch: `jr2/issue-${issue.number}`,
   }),
 });
+// #endregion pool

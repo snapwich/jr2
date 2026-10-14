@@ -26,21 +26,17 @@ This example is a [Workflow](../reference/glossary.md#workflow). A coder changes
 `handbook` Repo beside it. Then a person approves the change at a [Gate](../reference/glossary.md#gate), and the Machine
 pushes the branch:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/concepts/workspaces/anthropic/docs-fix.ts"}
+<<< @/examples/concepts/workspaces/anthropic/docs-fix.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/concepts/workspaces/local/docs-fix.ts"}
+<<< @/examples/concepts/workspaces/local/docs-fix.ts
 
 :::
-
-::::
 
 [Agents and Turns](agents-and-turns.md) tells how to define an Agent.
 

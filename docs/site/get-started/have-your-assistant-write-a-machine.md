@@ -37,7 +37,7 @@ echo 'JR2_GIT_TOKEN=<token>' >> .env
 
 The command prints nothing. `.env` is in `.gitignore`, so git does not keep the token.
 
-:::note
+::: info
 
 The [Agent](../reference/glossary.md#agent) never gets this token. The push Effect uses it, after you approve the work.
 The [Repo](../reference/glossary.md#repo) cache also uses it to clone your fork. See
@@ -287,21 +287,17 @@ You can also open the branch on GitHub. The commit holds the coder's fix of `doc
 
 This is one `fix.ts` that does what the prompt asks, with the model of the tab:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/local/fix.ts"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/local/fix.ts
 
 :::
-
-::::
 
 Read it in the order of the graph. Each part below links to its entry in the Reference.
 
@@ -311,7 +307,7 @@ Read it in the order of the graph. Each part below links to its entry in the Ref
 `audience` on its events, so the place of each event says who sends it. The `defineEvent` field `audience` can change
 that. The seats show the result.
 
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts" lines="22-38"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#events
 
 **The Effects.** `tests` and `publish` are actor slots, as the coder is. A state runs one when it invokes it.
 [`command()`](../reference/authoring-surface.md#command) takes a list of arguments, not a line of shell text. It runs in
@@ -319,39 +315,39 @@ the [Worktree](../reference/glossary.md#worktree) of the one [Repo Slot](../refe
 runs in the root of the Worktree, so `tests` names the test files by their path from that root.
 [`push()`](../reference/authoring-surface.md#push) pushes the tip of the coder's branch.
 
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts" lines="79-82"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#effects
 
 **The coder's state.** `working` invokes the coder. Each [Turn](../reference/glossary.md#turn) gets a prompt and the
 folder to work in. `continue: true` keeps one conversation, so the coder remembers its last Turn. `finish` is the
 coder's pick: the run goes to `testing`. [`agent.fault`](../reference/mechanism-events.md#agent-fault) is an event from
 jr2, when it cannot get a pick from the coder.
 
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts" lines="91-117"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#working
 
 **The tests.** Every outcome of a command is output. A failed test is output too. The `onDone` list routes on that
 output. The first transition whose guard passes is the one that the run takes. The second transition has no guard, so it
 catches every other outcome. See [`CommandOutput`](../reference/authoring-surface.md#type-commandoutput).
 
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts" lines="118-129"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#testing
 
 **The Gate.** `review` invokes `gate`. jr2 makes the id of the Gate from the invoke ids. `workspace()` runs your Machine
 as `body`, and the state is `review`, so the id is `body.review`. You give `--gate body.review` to `jr2 send`. See
 [the id of a Gate](../concepts/gates.md#the-id). `meta` is what `jr2 status` and the Console show you at the Gate.
 
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts" lines="130-153"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#review
 
 **The push.** `pushing` invokes `publish`. A push that fails is output too: `rejected`, `diverged` or `unknown`. Here it
 goes back to `review`, and the Sandbox stays. If the run went to a final state, jr2 would remove the Sandbox and the
 commits in it. See [`PushOutput`](../reference/authoring-surface.md#type-pushoutput).
 
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts" lines="154-167"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#pushing
 
 **The Workspace.** [`workspace()`](../reference/authoring-surface.md#workspace) runs the body in a Sandbox. `input` is
 the schema of the run input that `jr2 run --input` sends. `repos` binds the Repo Slot `target` to your fork, at the
 release tag. `spec` gives the branch. At a root `workspace()`, the input of `spec` also holds `instanceId`, but its type
 does not show it, so the example reads it with a cast.
 
-::include{file="../examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts" lines="213-218"}
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#workspace
 
 ## What happened
 

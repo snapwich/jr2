@@ -19,7 +19,7 @@ The module contract has three parts:
 This module is the Workflow `rollout`. A run waits at a [Gate](../reference/glossary.md#gate) until a person sends
 `promote` or `roll_back`. It has no Agent, so you can try it with no model. Save it as `workflows/rollout.ts`:
 
-::include{file="../examples/guides/write-a-workflow/rollout.ts"}
+<<< @/examples/guides/write-a-workflow/rollout.ts
 
 The parts of the module:
 

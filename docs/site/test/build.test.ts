@@ -70,11 +70,12 @@ test("strict fails on each sitemap page with no file; --partial skips them and u
 test("a page's source is checked: its frontmatter, its title, no H1, and its links", async () => {
   const adr = "../adr/0015-authoring-surface-absorbs-the-mechanism.md";
   const dir = await site("checks", {
-    index: `---\ntitle: Start\ndescription: x\nsidebar: 2\n---\n\n# Home\n\n[gone](nope.md)\n\n[ok](${adr}#jr2setup-an-xstate-setup-analog-not-a-dsl) [bad](${adr}#nope)\n`,
+    index: `---\ntitle: Start\ndescription: x: y\nsidebar: 2\n---\n\n# Home\n\n[gone](nope.md)\n\n[ok](${adr}#jr2setup-an-xstate-setup-analog-not-a-dsl) [bad](${adr}#nope)\n`,
     why: "No frontmatter.\n",
   });
   const r = await buildDocs({ site: dir, partial: true });
   assert.deepEqual(r.errors.map(formatError), [
+    "docs/site/index.md:1: the frontmatter value of description is not a plain YAML string: put it in double quotes",
     "docs/site/index.md:1: the frontmatter holds title and description and nothing else, not: description, sidebar, title",
     'docs/site/index.md:2: the title "Start" is not the sitemap\'s "Home"',
     "docs/site/index.md:7: a source page has no H1: its title is the frontmatter's `title`",

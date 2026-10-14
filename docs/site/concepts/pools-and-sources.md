@@ -26,7 +26,7 @@ Each worker waits at a [Gate](../reference/glossary.md#gate) until a person appr
 example runs with no model. A worker is usually a Machine with an [Agent](../reference/glossary.md#agent), such as
 `task`.
 
-::include{file="../examples/concepts/pools-and-sources/tickets.ts"}
+<<< @/examples/concepts/pools-and-sources/tickets.ts
 
 The Pool asks for work, starts workers, and waits:
 

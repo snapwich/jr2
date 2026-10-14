@@ -27,7 +27,7 @@ Use this table to choose:
 [`workspace()`](../reference/authoring-surface.md#workspace) uses it. This example adds pnpm to the file that `jr2 init`
 wrote:
 
-::include{file="../examples/guides/add-tools-to-the-sandbox/images/default/Dockerfile"}
+<<< @/examples/guides/add-tools-to-the-sandbox/images/default/Dockerfile{dockerfile}
 
 The example does not show the comments at the start of the file. Keep them in your file.
 
@@ -105,9 +105,9 @@ Put a docker context in a folder beside the workflow module. Name the folder in 
 this example, `workflows/pytest.ts` runs the tests of a Python [Repo](../reference/glossary.md#repo), with the image in
 `workflows/python/`:
 
-::include{file="../examples/guides/add-tools-to-the-sandbox/workflows/python/Dockerfile"}
+<<< @/examples/guides/add-tools-to-the-sandbox/workflows/python/Dockerfile{dockerfile}
 
-::include{file="../examples/guides/add-tools-to-the-sandbox/workflows/pytest.ts"}
+<<< @/examples/guides/add-tools-to-the-sandbox/workflows/pytest.ts
 
 - `import.meta.resolve("./python")` gives a `file:` URL to the folder. The folder is the build context. A `COPY` in the
   Dockerfile reads from it.
@@ -144,7 +144,7 @@ When you build and push the image yourself, write its ref in place of the `file:
 The User Container is a third container in the Sandbox pod. Use it for a process that must run without an Agent, such as
 an sshd for a person. This image gives a person a shell beside the Agent:
 
-::include{file="../examples/guides/add-tools-to-the-sandbox/workflows/shell/Dockerfile"}
+<<< @/examples/guides/add-tools-to-the-sandbox/workflows/shell/Dockerfile{dockerfile}
 
 Save it as `workflows/shell/Dockerfile`. Name it in the `workspace()` options with
 `user: import.meta.resolve("./shell")`. `user` takes the same two forms as `image`, and `jr2 up` builds a `file:`

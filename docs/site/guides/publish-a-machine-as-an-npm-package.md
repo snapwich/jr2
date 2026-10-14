@@ -28,7 +28,7 @@ labeler/
 
 `package.json`:
 
-::include{file="../examples/guides/publish-a-machine-as-an-npm-package/labeler/package.json"}
+<<< @/examples/guides/publish-a-machine-as-an-npm-package/labeler/package.json
 
 - `peerDependencies` names `@jr2/orchestrator`, `xstate` and `zod`. The package has no `dependencies`. Replace
   `<version>` with the [Kit version](../reference/glossary.md#kit-version) that the package is for, such as `0.3.0`.
@@ -41,11 +41,11 @@ labeler/
 `tsconfig.json` uses the options of an Instance. The typecheck of an Instance also checks the `.ts` files of each
 package that it imports, so the package must pass the same options:
 
-::include{file="../examples/guides/publish-a-machine-as-an-npm-package/labeler/tsconfig.json"}
+<<< @/examples/guides/publish-a-machine-as-an-npm-package/labeler/tsconfig.json
 
 `src/index.ts` exports the Machine, and the type of its output:
 
-::include{file="../examples/guides/publish-a-machine-as-an-npm-package/labeler/src/index.ts"}
+<<< @/examples/guides/publish-a-machine-as-an-npm-package/labeler/src/index.ts
 
 The Machine carries all of its parts: its run input, its [Vocabulary](../reference/glossary.md#vocabulary) and its
 Agent. The model is [`open`](../reference/authoring-surface.md#open), so the Instance binds it with
@@ -128,21 +128,17 @@ Each `deduped` line tells you that the package uses the copy of the Instance.
 
 Save this file as `workflows/label.ts`. It binds the Open model of the Agent `labeler` to the model of the tab:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/guides/publish-a-machine-as-an-npm-package/anthropic/label.ts" lines="1-6"}
+<<< @/examples/guides/publish-a-machine-as-an-npm-package/anthropic/label.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/guides/publish-a-machine-as-an-npm-package/local/label.ts" lines="1-6"}
+<<< @/examples/guides/publish-a-machine-as-an-npm-package/local/label.ts
 
 :::
-
-::::
 
 Run [`jr2 up`](../reference/cli.md#up):
 

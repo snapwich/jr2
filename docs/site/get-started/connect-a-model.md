@@ -14,15 +14,13 @@ Do [Create an Instance](create-an-instance.md) first. The Instance `my-instance`
 Choose a tab. Choose Anthropic for a model of the Anthropic API. Choose Local for a model that you serve on a computer
 on your network. Each page after this one uses the model of the tab that you choose.
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 You need an Anthropic API key. Make one on the [Anthropic website](https://console.anthropic.com/).
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 You need a computer that can serve Qwen3.6-35B-A3B with a context window of 65536 tokens. It can be the computer that
 runs kind, or a different one on your network. Install one of these two servers on it:
@@ -32,30 +30,26 @@ runs kind, or a different one on your network. Install one of these two servers 
 
 :::
 
-::::
-
 ## Add the model to jr2.config.ts
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 Open `jr2.config.ts`. Find the line that starts with `// secrets:`. Remove the `//`. Keep the other lines and their
 comments. This is the result. Its comments are shorter than the comments in your file:
 
-::include{file="../examples/shared/anthropic/jr2.config.ts"}
+<<< @/examples/shared/anthropic/jr2.config.ts
 
 The `secrets` line gives jr2 the value of `ANTHROPIC_API_KEY` from `.env`. An [Agent](../reference/glossary.md#agent)
 that names an `anthropic/` model uses this key.
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 Open `jr2.config.ts`. Add the `harness` entry after the `git` entry. Keep the other lines and their comments. This is
 the result. Its comments are shorter than the comments in your file:
 
-::include{file="../examples/shared/local/jr2.config.ts"}
+<<< @/examples/shared/local/jr2.config.ts
 
 The entry adds a custom provider with the id `local`. An [Agent](../reference/glossary.md#agent) names a model of this
 provider as `local/<model>`, such as `local/qwen3.6-35b-a3b`. `<model>` is the name that the endpoint gives for
@@ -63,16 +57,14 @@ provider as `local/<model>`, such as `local/qwen3.6-35b-a3b`. `<model>` is the n
 
 :::
 
-::::
-
 The [config reference](../reference/config.md#secrets) gives each field of `secrets` and of
 [`harness.provider`](../reference/config.md#harness-provider).
 
 ## Put the value in .env
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 Make the file `.env` in `my-instance`. Put this line in it, with your key in place of `<your key>`:
 
@@ -80,9 +72,7 @@ Make the file `.env` in `my-instance`. Put this line in it, with your key in pla
 ANTHROPIC_API_KEY=<your key>
 ```
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 Make the file `.env` in `my-instance`. Put this line in it:
 
@@ -95,36 +85,32 @@ In a pod, `localhost` is the pod itself.
 
 :::
 
-::::
-
 The jr2 CLI reads `.env` before each command, and names each key that it takes from `.env`. A variable that you set in
 your shell has priority over `.env`. Do not put `.env` in git: the `.gitignore` that `jr2 init` wrote keeps it out.
 
 ## Start the model server
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 There is no server to start. Go to the next step.
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 On the server computer, start one of the two servers. Each command serves the model as `qwen3.6-35b-a3b`, on port 8000,
 on all addresses (`0.0.0.0`). The pods cannot reach a server that listens only on its loopback address.
 
 To start llama.cpp, run:
 
-::include{file="../examples/shared/local/llama-server.sh"}
+<<< @/examples/shared/local/llama-server.sh
 
 `--jinja` lets the model call tools. `--temp 0.6` and `--presence-penalty 1.0` are the sampling settings for Qwen.
 `-ctk q8_0 -ctv q8_0 -fa on` make the KV cache smaller, so that 65536 tokens fit in memory.
 
 To start vLLM, run:
 
-::include{file="../examples/shared/local/vllm.sh"}
+<<< @/examples/shared/local/vllm.sh
 
 `--enable-auto-tool-choice` and `--tool-call-parser` let the model call tools.
 
@@ -133,19 +119,15 @@ converges, and stops when the model does not make one.
 
 :::
 
-::::
-
 ## Check the model server
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 There is no server to check. Go to the next step.
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 From the computer that runs kind, run:
 
@@ -166,8 +148,6 @@ the server listens on `0.0.0.0`. Also make sure that no firewall stops port 8000
 
 :::
 
-::::
-
 ## Converge the Instance again
 
 Run:
@@ -178,9 +158,9 @@ jr2 up
 
 `jr2 up` reads the new config and converges the cluster again. The namespace is there, so it does not ask this time.
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 <!-- output: not run -->
 
@@ -200,9 +180,7 @@ The next page adds a Workflow with an Agent that names the model. On the next pa
 [Custodian](../reference/glossary.md#custodian) of the pod where the Agent works. The first
 [Turn](../reference/glossary.md#turn) of the run is the first call to the model.
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 <!-- output: not run -->
 
@@ -223,8 +201,6 @@ it converges. It is the first `jr2 up` that reaches the model.
 
 :::
 
-::::
-
 `jr2 up` replaced the [Orchestrator](../reference/glossary.md#orchestrator) pod, because `jr2.config.ts` is in the image
 of the Instance. Thus the port forward of [Create an Instance](create-an-instance.md) stopped. Start it again in its
 terminal:
@@ -235,9 +211,9 @@ kubectl -n my-instance port-forward svc/jr2-orchestrator 4000:4000
 
 ## What happened
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 The API key is a [Held secret](../reference/glossary.md#held-secret). In this Instance, `jr2 up` gives its value only to
 the Custodian of each pod whose Agents use an `anthropic/` model. The Custodian is a container next to the
@@ -249,9 +225,7 @@ real key into each request to the Anthropic API. Thus the Agent never holds the 
 To use a gateway or a different hosted provider, read
 [Use a hosted provider or a gateway](../guides/use-a-hosted-provider.md).
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 `harness.provider` adds a custom provider to the [Harness](../reference/glossary.md#harness). The Harness speaks to it
 over the OpenAI chat completions API
@@ -263,8 +237,6 @@ This endpoint has no key, so jr2 permits plain `http://`. To add TLS and a key, 
 [Use a local model](../guides/use-a-local-model.md).
 
 :::
-
-::::
 
 [Secrets and trust](../concepts/secrets-and-trust.md) explains where each secret goes, and who can use it.
 

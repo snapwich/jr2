@@ -83,21 +83,17 @@ In this [Workflow](../reference/glossary.md#workflow), a coder fixes the tests o
 [Repo](../reference/glossary.md#repo), and a Menu-only checker reads the coder's summary. When the checker asks for
 changes, the coder continues its conversation and thinks harder on that Turn:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/concepts/agents-and-turns/anthropic/fix.ts"}
+<<< @/examples/concepts/agents-and-turns/anthropic/fix.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/concepts/agents-and-turns/local/fix.ts"}
+<<< @/examples/concepts/agents-and-turns/local/fix.ts
 
 :::
-
-::::
 
 The two Agents use the model of the tab. The `coding` and `fixing` states invoke the same Agent with different prompts,
 and only `fixing` sets a Dial. The checker's Turn has no `cwd`, because it has no Working tools.

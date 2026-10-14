@@ -1,6 +1,6 @@
 ---
 title: Watch a run
-description: See where a run is and what its Agents do: in the CLI, in the Console, and in the pod log.
+description: "See where a run is and what its Agents do: in the CLI, in the Console, and in the pod log."
 ---
 
 See where a run is and what its [Agents](../reference/glossary.md#agent) do, in the CLI, the
@@ -270,7 +270,7 @@ The log of a Sandbox goes away with its pod. The Workspace deletes its Sandbox w
 kubectl -n <namespace> logs <sandbox> -c harness > <file>
 ```
 
-:::caution
+::: warning
 
 A person who can read the pod logs of the namespace can read each conversation, and the answers that jr2 gives to the
 picks. An answer can hold the output of a [`command`](../reference/authoring-surface.md#command)

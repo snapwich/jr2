@@ -13,21 +13,17 @@ with a [`command`](../reference/authoring-surface.md#command) Effect. When it pi
 [`http`](../reference/authoring-surface.md#http) Effect posts its summary to a URL. Save the file as
 `workflows/fix-and-report.ts` in your [Instance](../reference/glossary.md#instance):
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/guides/run-a-command-or-call-a-url/anthropic/fix-and-report.ts"}
+<<< @/examples/guides/run-a-command-or-call-a-url/anthropic/fix-and-report.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/guides/run-a-command-or-call-a-url/local/fix-and-report.ts"}
+<<< @/examples/guides/run-a-command-or-call-a-url/local/fix-and-report.ts
 
 :::
-
-::::
 
 Write your GitHub user name in place of `<you>`. The Agent uses the model of the tab. `https://hooks.example.com/jr2` is
 an example. Write the URL of your own service.
@@ -35,7 +31,7 @@ an example. Write the URL of your own service.
 The `http` Effect names the [Effect secret](../reference/glossary.md#effect-secret) `hook-token`. Add it to the
 [`secrets`](../reference/config.md#secrets) list of `jr2.config.ts`, beside the entries that are there:
 
-::include{file="../examples/guides/run-a-command-or-call-a-url/jr2.config.ts"}
+<<< @/examples/guides/run-a-command-or-call-a-url/jr2.config.ts
 
 The file shows only the `secrets` field. Keep the other fields and entries of your `jr2.config.ts`.
 

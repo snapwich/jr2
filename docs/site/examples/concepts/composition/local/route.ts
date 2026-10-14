@@ -2,7 +2,9 @@ import { z } from "zod";
 import { agent, customize, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { task } from "@jr2/machines";
 
+// #region model
 const model = "local/qwen3.6-35b-a3b";
+// #endregion model
 
 // Bind the two Open parts of `task`: the Repo that the coder works in, and the coder's model.
 const coding = customize(task, {

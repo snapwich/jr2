@@ -22,7 +22,7 @@ one Gate by its id, and not to the run.
 In this [Workflow](../reference/glossary.md#workflow), `ci-release`, a CI job answers the first Gate, and a person
 answers the second one:
 
-::include{file="../examples/concepts/gates/ci-release.ts"}
+<<< @/examples/concepts/gates/ci-release.ts
 
 You do not import the `gate` actor. `jr2Setup` adds it, and a state invokes it as `invoke: { src: "gate" }`. Its input
 is optional. It can hold `meta`, and an authored `gate` id.

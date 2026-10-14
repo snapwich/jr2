@@ -14,7 +14,7 @@ config needs no provider entry for it. It needs only the key.
 
 Add the key to the `secrets` list of `jr2.config.ts`:
 
-::include{file="../examples/shared/anthropic/jr2.config.ts"}
+<<< @/examples/shared/anthropic/jr2.config.ts
 
 Put the value in `.env`:
 
@@ -83,7 +83,7 @@ models. Only the address of the calls changes.
 Change the `secrets` entry: read its value from `GATEWAY_API_KEY`, and add `paths`. Then add the gateway to
 [`harness.catalog`](../reference/config.md#harness-catalog), under the id of the provider:
 
-::include{file="../examples/guides/use-a-hosted-provider/gateway/jr2.config.ts"}
+<<< @/examples/guides/use-a-hosted-provider/gateway/jr2.config.ts
 
 Put the address and the key of the gateway in `.env`:
 

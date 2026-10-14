@@ -28,7 +28,7 @@ npm install --save-exact @jr2/machines@<version>
 
 Register the Machine as it is. Save this file as `workflows/fix-app.ts`:
 
-::include{file="../examples/guides/bind-open-parts/unbound/fix-app.ts"}
+<<< @/examples/guides/bind-open-parts/unbound/fix-app.ts
 
 Then run `jr2 up`. It stops before it changes the cluster, and it prints the `customize()` line that binds the part:
 
@@ -60,21 +60,17 @@ refusing: workflow "fix-app" leaves Agent "coder" open — bind it where the Mac
 Replace the file with one `customize()` call that binds the two parts. The coder works in the Repo `app`. It can read
 the Repo `handbook`.
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/guides/bind-open-parts/anthropic/fix-app.ts"}
+<<< @/examples/guides/bind-open-parts/anthropic/fix-app.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/guides/bind-open-parts/local/fix-app.ts"}
+<<< @/examples/guides/bind-open-parts/local/fix-app.ts
 
 :::
-
-::::
 
 Write the owner of your Repos in place of `<you>`. A private Repo needs a git credential in the cluster.
 [Give the cluster git credentials](give-the-cluster-git-credentials.md) tells how.

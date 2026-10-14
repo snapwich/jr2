@@ -54,11 +54,22 @@ export function bundlePathOf(repoPath: string, set: DocsSet): string | undefined
   return undefined;
 }
 
+/** The folders that the site build writes into docs/site (build/site.ts and VitePress). They are
+ * not in git, so no file in them is at the tag, even when an earlier build left one on disk. */
+const GENERATED = [
+  "reference/",
+  ".vitepress/bundle/",
+  ".vitepress/dist/",
+  ".vitepress/cache/",
+  ".vitepress/.temp/",
+].map((f) => `docs/site/${f}`);
+
 function resolve(path: string, from: string, set: DocsSet): Target {
   const repoPath = posix.normalize(posix.join(posix.dirname(from), path));
   if (repoPath.startsWith("../") || repoPath === "..") return { missing: repoPath };
   const bundle = bundlePathOf(repoPath, set);
   if (bundle) return { bundle };
+  if (GENERATED.some((g) => repoPath.startsWith(g))) return { missing: repoPath };
   const disk = join(set.repo, repoPath);
   if (existsSync(disk)) return { repo: repoPath, dir: statSync(disk).isDirectory() };
   return { missing: repoPath };

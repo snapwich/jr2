@@ -4,6 +4,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rewriteLinks, type DocsSet, type LinkSource } from "../build/links.ts";
 import { formatError } from "../build/markdown.ts";
@@ -95,6 +98,29 @@ test("a link to nothing fails with file:line and its target", () => {
   ]);
   assert.match(rewrite("[x](/abs.md)").errors[0]!.message, /root-absolute/);
   assert.match(rewrite("[x](../../../../outside.md)").errors[0]!.message, /does not exist/);
+});
+
+test("a link into a folder that the site build writes fails, even when an earlier build left the file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "jr2-links-"));
+  try {
+    for (const f of ["docs/site/reference/old.md", "docs/site/.vitepress/dist/index.html", "docs/site/x.md"]) {
+      await mkdir(join(root, f, ".."), { recursive: true });
+      await writeFile(join(root, f), "");
+    }
+    const r = rewriteLinks("[old](../reference/old.md) [dist](../.vitepress/dist/index.html) [x](../x.md)", page, {
+      ...set,
+      repo: root,
+    });
+    assert.deepEqual(
+      r.errors.map((e) => e.message),
+      [
+        "the link ../reference/old.md resolves to docs/site/reference/old.md, which does not exist",
+        "the link ../.vitepress/dist/index.html resolves to docs/site/.vitepress/dist/index.html, which does not exist",
+      ],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("an absolute URL passes unchecked, and code is not a link", () => {

@@ -68,7 +68,7 @@ the same version:
 npm install --save-exact @jr2/orchestrator@<version> @jr2/cli@<version> @jr2/machines@<version>
 ```
 
-:::caution
+::: warning
 
 Do not upgrade one of the packages alone. If you upgrade only `@jr2/orchestrator`, npm shows
 `npm warn ERESOLVE overriding peer dependency` and installs it. The CLI and the Kit then have different versions.

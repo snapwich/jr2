@@ -16,7 +16,7 @@ The examples on this page use the [Workflow](../reference/glossary.md#workflow) 
 you can try the steps with no model. Save the file as `workflows/release.ts` in your
 [Instance](../reference/glossary.md#instance). Then run `jr2 up`:
 
-::include{file="../examples/guides/answer-a-gate/release.ts"}
+<<< @/examples/guides/answer-a-gate/release.ts
 
 In the commands, replace these values:
 
@@ -182,7 +182,7 @@ Gate. [`GET /runs`](../reference/http-api.md#get-runs) gives the live runs, and
 [`GET /runs/:runId`](../reference/http-api.md#get-runs-runid) gives the open Gates of one run. This script approves the
 `release` run that waits for one version. It needs `curl` and `jq`. Save it as `approve-release.sh`:
 
-::include{file="../examples/guides/answer-a-gate/approve-release.sh"}
+<<< @/examples/guides/answer-a-gate/approve-release.sh
 
 ```sh
 JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN VERSION=1.4.0 sh approve-release.sh

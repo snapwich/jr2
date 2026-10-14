@@ -1,9 +1,9 @@
 # docs/site
 
 This folder holds the source of the jr2 docs: the hand-written pages and the navigation. `docs:build` reads it and makes
-the docs bundle that `@jr2/orchestrator` ships, and the site builds from that bundle
-([ADR-0072](../adr/0072-the-docs-ship-inside-the-kit-and-an-instances-agents-md-indexes-them.md)). This README is for
-contributors. It is not a page of the docs.
+the docs bundle that `@jr2/orchestrator` ships. VitePress renders the same pages, with the Reference of the bundle, as
+the site ([ADR-0072](../adr/0072-the-docs-ship-inside-the-kit-and-an-instances-agents-md-indexes-them.md)). This README
+is for contributors. It is not a page of the docs.
 
 ## Layout
 
@@ -16,17 +16,18 @@ contributors. It is not a page of the docs.
 | `concepts/`       | The Concepts pages.                                                                |
 | `guides/`         | The Guides pages.                                                                  |
 | `tutorial/greet/` | The tutorial fixture: a small Node CLI with one failing test. Get started uses it. |
-| `examples/`       | The code that a page includes. `pnpm typecheck` checks it against the Kit.         |
+| `examples/`       | The code that a page imports. `pnpm typecheck` checks it against the Kit.          |
 | `build/`          | `docs:build`: it makes the bundle and generates the Reference.                     |
-| `test/`           | The tests for `sitemap.json`, the tutorial fixture, and `docs:build`.              |
+| `.vitepress/`     | The site: the VitePress config, the theme, and the nav from `sitemap.json`.        |
+| `test/`           | The tests for `sitemap.json`, the tutorial fixture, `docs:build`, and the nav.     |
 
-There is no `reference/` folder. `docs:build` makes the Reference pages from the code, from `GLOSSARY.md`, and from
-`docs/adr/`. A Reference page has no source file here.
+A Reference page has no source file here. `docs:build` makes the Reference pages from the code, from `GLOSSARY.md`, and
+from `docs/adr/`. `pnpm docs:site` writes them to `reference/` for VitePress. That folder is not in git.
 
 ## The navigation
 
-`sitemap.json` is the navigation. `docs:build` and the site generator read it. A page that is not in `sitemap.json` is
-not in the docs.
+`sitemap.json` is the navigation. `docs:build` reads it, and `.vitepress/nav.ts` makes the nav and the sidebar of the
+site from it. A page that is not in `sitemap.json` is not in the docs.
 
 - A section has `pages`, or `groups` that each have `pages`. It does not have both.
 - A page has a `slug`, a `title`, and a `source`.
@@ -35,7 +36,7 @@ not in the docs.
 - The `source` is `page` for a file in this folder, or `generated` for a page that `docs:build` makes.
 
 To add a page, write the file and add it to `sitemap.json`. `pnpm --filter @jr2/docs-site test` checks the shape of
-`sitemap.json`.
+`sitemap.json`, and that the site shows each page one time.
 
 ## Writing pages
 
@@ -253,32 +254,31 @@ end (`anchorOf` in `build/reference/context.ts`). The table gives the name for e
 
 ### Provider tabs
 
-A page that names a model, or that shows the config of a model, has two provider tabs. Use these labels, in this order:
+A page that names a model, or that shows the config of a model, has two provider tabs. Use these labels, in this order,
+and the key `provider`:
 
 ```md
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 Text and code for Anthropic.
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 Text and code for a local model.
 
 :::
-
-::::
 ```
+
+The key `provider` makes each tab set on the site show the tab that the reader chose last, on each page.
 
 - **Anthropic.** The model is `anthropic/claude-sonnet-5-5`. `jr2.config.ts` adds one `secrets` line, and `.env` holds
   `ANTHROPIC_API_KEY`. The id is an open item: see [Open items](#open-items).
 - **Local.** The model is Qwen3.6-35B-A3B, on an OpenAI-compatible endpoint (vLLM or llama.cpp) over plain `http://`,
   with no key. Its specifier is `local/qwen3.6-35b-a3b`. `jr2.config.ts` sets `harness.provider`, and `.env` holds
   `LOCAL_MODEL_URL`. The guide "Use a local model" gives TLS and a key.
-- Include `jr2.config.ts` from `examples/shared/anthropic/` or `examples/shared/local/`.
+- Import `jr2.config.ts` from `examples/shared/anthropic/` or `examples/shared/local/`.
   [Tutorial facts](#tutorial-facts) gives the `.env` lines.
 - Put in a tab only the text and the code that change with the provider. Put the rest outside the tabs.
 - For [Glossary links](#glossary-links), each tab counts as a page. Link the first use of a term in each tab, because
@@ -299,15 +299,18 @@ Text and code for a local model.
 
 ### Examples
 
-- Put each file that a page includes in `examples/<page-slug>/`. For example,
+- Put each file that a page imports in `examples/<page-slug>/`. For example,
   `examples/get-started/a-model-decides/anthropic/triage.ts`.
-- Put a file that two or more pages include in `examples/shared/`. Do not make a second copy of it.
+- Put a file that two or more pages import in `examples/shared/`. Do not make a second copy of it.
 - Give the file the name that the reader saves it as. When each provider tab needs its own form of a file, use one
   folder for each tab: `anthropic/` and `local/`.
 - A Machine example is a complete workflow module: its imports, its Vocabulary, its Agents and `export const machine`.
 - Import only what a scaffolded Instance can import: `@jr2/orchestrator` (its root, never `/internal`), `xstate`, `zod`,
   `@jr2/machines` and `node:` modules. A page that imports `@jr2/machines` tells the reader to install it.
 - A comment in an example speaks to the reader. Put the ADR links in the page, not in the comments.
+- To show a part of a file, mark the part as a region: `// #region <name>` on the line before it, and
+  `// #endregion <name>` on the line after it. Give the region the name of what it holds, such as `imports` or `review`.
+  The site and the bundle do not show the marker lines.
 - `pnpm typecheck` checks each `.ts` file in `examples/`. Run `pnpm --filter @jr2/docs-site typecheck` after you change
   one. `pnpm format` formats them.
 
@@ -331,14 +334,18 @@ Only these four diagrams exist. Each one is on one page:
 
 ## The source format
 
-Every page follows this format. The bundle is plain Markdown, and each site generator converts the directives below to
-its own syntax. Thus a page does not use the syntax of one generator.
+Every page is VitePress Markdown, and uses only the forms in this section. `docs:build` changes each form to plain
+Markdown for the bundle, and refuses the other VitePress forms in [What not to use](#what-not-to-use). The site turns
+off the emoji shortcodes (`:tada:`), which `docs:build` does not refuse. Thus the bundle and the `.md` URLs of the site
+have no syntax of the generator.
 
 ### Markdown
 
 Use CommonMark with the GitHub Flavored Markdown extensions (tables, task lists, strikethrough, autolinks).
 
-The frontmatter holds only `title` and `description`. The `title` is the same as the page's `title` in `sitemap.json`:
+The frontmatter holds only `title` and `description`. The `title` is the same as the page's `title` in `sitemap.json`.
+VitePress reads the frontmatter as YAML. Put a value in double quotes when it holds `: ` or ` #`, or when it starts with
+a character such as `-`, `[`, `{` or `` ` ``:
 
 ```md
 ---
@@ -347,8 +354,8 @@ description: How a Workflow gets a git Worktree in a Sandbox, and how long it ke
 ---
 ```
 
-A page has no H1 (`# Title`). The title is in the frontmatter, and `docs:build` adds the H1 in the bundle. Start the
-body with text or with an H2.
+A page has no H1 (`# Title`). The title is in the frontmatter. `docs:build` adds the H1 in the bundle, and the site adds
+it on the page. Start the body with text or with an H2.
 
 ### Links
 
@@ -365,18 +372,26 @@ slug is the term in lower case, with a hyphen for each space. For example, from 
 `Authoring surface` is `../reference/glossary.md#authoring-surface`. From `index.md`, it is
 `reference/glossary.md#authoring-surface`.
 
-### Directives
+The site makes the anchor of a heading with the rule of GitHub, as the bundle does. Thus an anchor that works on GitHub
+also works on the site.
 
-The asides, the tabs, and `::include` are directives. Each directive line is a paragraph of its own: put an empty line
+### Containers and lines of their own
+
+The asides, the tabs and `<<<` are the VitePress forms. Each line of a form is a paragraph of its own: put an empty line
 before it and after it. Prettier formats these pages with `proseWrap: always`, and it joins lines that are not separated
-by an empty line into one paragraph. A joined directive is text, not a directive.
+by an empty line into one paragraph. A joined line is text, not a form.
+
+A container starts with three colons and closes with the same number of colons. VitePress closes a container at the
+first line of colons that is long enough, and it does not count the containers inside it. Thus a container inside
+another container has fewer colons than its parent: write the parent as `:::: tabs key:provider` and its close as
+`::::`.
 
 ### Asides
 
-Use one of `:::note`, `:::tip`, `:::caution`, and `:::danger`. Close it with `:::`.
+Use one of `::: info`, `::: tip`, `::: warning`, and `::: danger`, with no title. Close it with `:::`.
 
 ```md
-:::caution
+::: warning
 
 Read this before you continue.
 
@@ -385,61 +400,93 @@ Read this before you continue.
 
 ### Tabs
 
-Start with `::::tabs`. Start each tab with `:::tab{label="..."}` and close it with `:::`. Close the tabs with `::::`.
+Start the tabs with `::: tabs key:provider`. Start each tab with `== <label>`. Close the tabs with `:::`. A tab holds
+text, code, lists, and `<<<`. See [Provider tabs](#provider-tabs) for the labels.
 
 ```md
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 Text for Anthropic.
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 Text for a local model.
 
 :::
-
-::::
 ```
+
+The tabs come from the plugin `vitepress-plugin-tabs`. VitePress's own `::: code-group` holds code only, and it does not
+keep the reader's choice, so the provider tabs do not use it. For alternatives that are only code, and that are not
+providers, use `::: code-group`. Give each fence or `<<<` in it a title, which is the label of its tab:
+
+````md
+::: code-group
+
+```sh [npm]
+npm install --save-exact @jr2/machines@<version>
+```
+
+<<< @/examples/guides/x/pnpm.sh [pnpm]
+
+:::
+````
 
 ### Code from a file
 
-Put an example in a real file, so that it typechecks. Then include it on a line of its own. This example is from a page
-in a section folder, such as `concepts/workspaces.md`:
+Put an example in a real file, so that it typechecks. Then import it with `<<<` on a line of its own. The path starts
+with `@/`, which is this folder:
 
 ```md
-::include{file="../examples/concepts/workspaces/fix.ts"}
+<<< @/examples/concepts/workspaces/anthropic/docs-fix.ts
 
-::include{file="../examples/concepts/workspaces/fix.ts" lines="3-20"}
+<<< @/examples/concepts/composition/anthropic/route.ts#imports
+
+<<< @/examples/guides/add-tools-to-the-sandbox/images/default/Dockerfile{dockerfile}
 ```
 
-`file` is relative to the page. From `index.md` or `why.md`, the path starts with `./examples/`. `lines` is optional:
-`"3-20"`, or `"3"` for one line. `docs:build` puts the file, or the lines, in a fenced code block. The language of the
-block comes from the file extension. Put the file in `examples/<page-slug>/`, or in `examples/shared/` when two or more
-pages include it. `pnpm typecheck` checks every `.ts` file in `examples/` against `@jr2/orchestrator` and
-`@jr2/machines`. See [Examples](#examples).
+- `#<name>` imports only the region `<name>` of the file. See [Examples](#examples) for the markers.
+- The language of the block comes from the file extension. A file with no extension, such as a `Dockerfile`, gives its
+  language as `{<language>}` after the path.
+- A title, `[<label>]`, is only for a `<<<` inside `::: code-group`.
+- Do not give line numbers to highlight (`{1,3}`). The bundle has no highlight.
+
+VitePress shows the whole file when the region does not exist, and does not fail. When the file does not exist, the site
+build fails. `docs:build` fails in both cases, so `pnpm --filter @jr2/docs-site test` finds the problem.
+
+Put the file in `examples/<page-slug>/`, or in `examples/shared/` when two or more pages import it. `pnpm typecheck`
+checks every `.ts` file in `examples/` against `@jr2/orchestrator` and `@jr2/machines`. See [Examples](#examples).
 
 ### Diagrams
 
-Use a `mermaid` fenced code block. Only four diagrams exist. See [Diagrams](#the-four-diagrams) for the rule and the
-list.
+Use a `mermaid` fenced code block. The plugin `vitepress-plugin-mermaid` draws it on the site, in the light theme and in
+the dark theme. Only four diagrams exist. See [Diagrams](#the-four-diagrams) for the rule and the list.
 
 ### What not to use
 
-Do not use syntax that only one generator knows:
+Do not use a form that the bundle cannot show. `docs:build` refuses each of these in the text of a page:
 
-- No Vue components.
-- No JSX and no MDX.
-- No VitePress `<<<` code imports. Use `::include` instead.
+- A Vue interpolation (`{{ }}`) in the text. In a code span or a code block, `{{ }}` is text: the site gives each one
+  `v-pre`, so Vue does not compile it.
+- A raw HTML tag in the text, such as `<Badge>`, `<script>`, `<br>` or `<n>`. Vue compiles each one, and a tag that is
+  not closed fails the site build. Put it in a code span, or write `&lt;`. Only the anchor `<a id="<id>"></a>` is
+  permitted.
+- A GitHub alert (`> [!NOTE]`). Use an aside.
+- `[[toc]]`, and the Markdown include `<!--@include: …-->`. Use `<<<` for code.
+- A fence with more than a language in its info, such as ` ```ts{1,3} `, ` ```ts [title] ` or ` ```ts:line-numbers `,
+  outside `::: code-group`.
+- A line of text that starts with a tag, such as `<run id>` at the start of a wrapped line in a code span. VitePress
+  reads that line as a Vue component and ends the paragraph. Change the words so that the line starts with a different
+  word.
+
+The site also turns off the `{.class}` attributes of `markdown-it-attrs`, the GitHub alerts and the emoji shortcodes
+(`:tada:`). The bundle cannot show them, so the site shows them as text, as the bundle does.
 
 ## The bundle
 
 `docs:build` makes the docs bundle that `@jr2/orchestrator` ships. Its inputs are the pages in this folder, the code,
-`GLOSSARY.md`, and `docs/adr/`. Its output is plain Markdown (CommonMark and GFM), with no directive and no syntax of a
-site generator:
+`GLOSSARY.md`, and `docs/adr/`. Its output is plain Markdown (CommonMark and GFM), with no syntax of a site generator:
 
 | Bundle path                    | Contents                                                                          |
 | ------------------------------ | --------------------------------------------------------------------------------- |
@@ -451,12 +498,14 @@ site generator:
 | `llms.txt`                     | An index of the pages in the llmstxt.org format.                                  |
 | `agents-block.md`              | The text that `jr2 up` writes between the markers in an Instance's `AGENTS.md`.   |
 
-A page in the bundle keeps its frontmatter, then gets its title as its H1. `docs:build` changes the directives:
+A page in the bundle keeps its frontmatter, then gets its title as its H1. `docs:build` changes the VitePress forms
+(`build/vitepress.ts`):
 
-- An aside becomes a blockquote. Its first line is the kind in bold: `> **Note**`, `> **Tip**`, `> **Caution**` or
-  `> **Danger**`.
-- In tabs, each tab becomes a line with its label in bold, then the content of the tab.
-- `::include` becomes a fenced code block.
+- An aside becomes a blockquote. Its first line is the label in bold: `> **Note**` (for `::: info`), `> **Tip**`,
+  `> **Caution**` (for `::: warning`) or `> **Danger**`. The site shows the same labels.
+- In tabs, each tab becomes a line with its label in bold, then the content of the tab. In a code group, each fence
+  becomes a line with its title in bold, then the fence with only its language.
+- `<<<` becomes a fenced code block of the file or of its region, without the region markers.
 - A `mermaid` code block does not change.
 
 It also changes each relative link:
@@ -475,10 +524,11 @@ It also changes each relative link:
 - frontmatter that holds a key other than `title` and `description`, or a `title` that is not the title in
   `sitemap.json`
 - an H1 in a page
-- a directive that is not correct or not closed, or that has no empty line before it and after it
-- an `::include` of a file that does not exist, or of lines that are not in the file
-- syntax of one site generator in the text: a Vue `{{ }}`, a JSX or MDX tag, `<<<`, or an `import` or `export` line at
-  the start of a paragraph. A wrapped line of a paragraph can start with the word "import" or "export".
+- a container, a tab line or a `<<<` that is not a form of [The source format](#the-source-format), that is not closed,
+  that has as many colons as its parent, or that has no empty line before it and after it
+- a `<<<` of a file that does not exist, or of a region that is not in the file
+- frontmatter that YAML does not read as the text that it shows
+- a form in [What not to use](#what-not-to-use)
 - a TSDoc `@see` that is not a sitemap page (`docs/<slug>.md`) or an ADR (`docs/reference/decisions/<file>`). A `@see`
   path is relative to the root of `@jr2/orchestrator`, which holds the bundle. In the TSDoc of another package, such as
   `@jr2/machines`, write the path with the package name, `@jr2/orchestrator/docs/<slug>.md`, so that an Assistant who
@@ -508,6 +558,30 @@ The output folder is not in git. `docs:build` deletes the folder before it write
 holds other files and no `agents-block.md`.
 
 `pnpm --filter @jr2/docs-site test` runs the tests of `docs:build`. They do not write to the output folder.
+
+### Build the site
+
+```sh
+pnpm docs:dev                                # serve the site at http://localhost:5173/jr2/, and reload it on a change
+pnpm docs:site                               # build the site into docs/site/.vitepress/dist/
+pnpm --filter @jr2/docs-site docs:preview    # serve the built site
+```
+
+`docs:dev` and `docs:site` first run `build/site.ts`. It builds the bundle, strict, into `.vitepress/bundle/`, and
+writes the Reference of the bundle into `reference/`. A Reference page is not VitePress Markdown, so `build/site.ts`
+changes two things that Vue cannot compile: it joins a line that starts with a tag to the line before it, and it escapes
+a tag in the text. The bundle does not change.
+
+VitePress then builds the site with the base `/jr2/`. The build fails on a link to a page that does not exist. After the
+build, it copies each file of the bundle, but `agents-block.md`, next to its HTML. Thus each page is also at its `.md`
+URL, with the text that the Kit ships, and `llms.txt` is at the root of the site. Each page names its `.md` URL in a
+`<link rel="alternate" type="text/markdown">`. The 404 page has no `.md` URL.
+
+`docs:site` is a step of the CI gate (`.github/workflows/ci.yml`) and of the release gate, before the release changes
+anything. Thus a page that VitePress cannot compile, or a dead link in the site, stops a change before a tag.
+
+The `pages` job of `.github/workflows/release.yml` runs `pnpm docs:site` and deploys the result to GitHub Pages, at
+`https://snapwich.github.io/jr2/`.
 
 ### The TSDoc that the Reference shows
 
@@ -612,7 +686,7 @@ pages do not use `--detach`.
 - The server serves the model as `qwen3.6-35b-a3b`, on port 8000, with a context window of 65536 tokens. It must
   complete a tool call: `jr2 up` sends one tool call to the endpoint before it converges, and stops when it fails.
 - Page 3 gives one start command for each server, in the Local tab. The guide "Use a local model" gives the same
-  commands. Both pages include the same files, so that they agree:
+  commands. Both pages import the same files, so that they agree:
   - `examples/shared/local/llama-server.sh` starts llama.cpp. `--jinja` lets the model call tools. `--temp 0.6` and
     `--presence-penalty 1.0` are the sampling settings for Qwen. `-ctk q8_0 -ctv q8_0 -fa on` make the KV cache smaller,
     so that 65536 tokens fit in memory. These are the settings of the intro Instance

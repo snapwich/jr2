@@ -10,7 +10,7 @@ The same list also sets which Repos a run can name. The credentials are the entr
 [Machine](../reference/glossary.md#machine) names its Repos in the [Repo Slots](../reference/glossary.md#repo-slot) of
 its [`workspace()`](../reference/authoring-surface.md#workspace). This example has three entries:
 
-::include{file="../examples/guides/give-the-cluster-git-credentials/jr2.config.ts"}
+<<< @/examples/guides/give-the-cluster-git-credentials/jr2.config.ts
 
 Write your GitHub user name in place of `<you>`.
 

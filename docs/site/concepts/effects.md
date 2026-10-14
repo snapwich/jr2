@@ -26,21 +26,17 @@ state. The state's `onDone` gets the output of the Effect. This example is a
 [Workflow](../reference/glossary.md#workflow) with a Workspace. An Agent fixes the code, and it can ask for a test run
 with the pick `run_tests`. When the Agent picks `finished`, the Machine pushes the branch:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/concepts/effects/anthropic/test-and-push.ts"}
+<<< @/examples/concepts/effects/anthropic/test-and-push.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/concepts/effects/local/test-and-push.ts"}
+<<< @/examples/concepts/effects/local/test-and-push.ts
 
 :::
-
-::::
 
 [Agents and Turns](agents-and-turns.md) tells how to define an Agent.
 
@@ -89,21 +85,17 @@ In the second example, an Agent with `workspace: "none"` writes one comment, and
 Agent has no [Sandbox](../reference/glossary.md#sandbox). The `jira` Effect secret must be in the
 [`secrets`](../reference/config.md#secrets) list of `jr2.config.ts`:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/concepts/effects/anthropic/comment.ts"}
+<<< @/examples/concepts/effects/anthropic/comment.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/concepts/effects/local/comment.ts"}
+<<< @/examples/concepts/effects/local/comment.ts
 
 :::
-
-::::
 
 The body can also be a file of the Worktree: `body: file(path)` (see [`file`](../reference/authoring-surface.md#file)).
 The default timeout of an `http` Effect is 30 seconds.

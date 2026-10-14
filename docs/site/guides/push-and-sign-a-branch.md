@@ -14,21 +14,17 @@ coder fixes the tests and commits. A person reads the branch at the [Gate](../re
 `review`, then sends `approve`. Then the [Machine](../reference/glossary.md#machine) pushes the branch, signed. Save the
 file as `workflows/publish.ts` in your [Instance](../reference/glossary.md#instance):
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/guides/push-and-sign-a-branch/anthropic/publish.ts"}
+<<< @/examples/guides/push-and-sign-a-branch/anthropic/publish.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/guides/push-and-sign-a-branch/local/publish.ts"}
+<<< @/examples/guides/push-and-sign-a-branch/local/publish.ts
 
 :::
-
-::::
 
 Write your GitHub user name in place of `<you>`. The Agent uses the model of the tab.
 
@@ -86,7 +82,7 @@ the Sandbox Effector reads it from there.
 Give the entry that matches your Repos a [`sign`](../reference/config.md#git-credentials-sign) field. `sshKey` is the
 name of the Secret. `name` and `email` are the committer of each signed commit:
 
-::include{file="../examples/guides/push-and-sign-a-branch/jr2.config.ts"}
+<<< @/examples/guides/push-and-sign-a-branch/jr2.config.ts
 
 The file shows only the `git` field. Keep the other fields of your `jr2.config.ts`. Write your name and the email of
 your forge account in place of `<your name>` and `<your email>`. The forge checks the `email` of `sign`: it must be an
@@ -116,7 +112,7 @@ A `push` runs in the Sandbox Effector of the Workspace. By default, the Sandbox 
 The `images/default/Dockerfile` that `jr2 init` writes installs `git` and no ssh. Add `openssh-client` to its
 `apt-get install` line. The example shows the file without the comments that `jr2 init` writes:
 
-::include{file="../examples/guides/push-and-sign-a-branch/images/default/Dockerfile"}
+<<< @/examples/guides/push-and-sign-a-branch/images/default/Dockerfile{dockerfile}
 
 To keep these programs out of the Sandbox Image, give the `workspace()` an image for the Sandbox Effector only:
 `effector: { image }` (see [`SandboxOptions`](../reference/authoring-surface.md#type-sandboxoptions)).

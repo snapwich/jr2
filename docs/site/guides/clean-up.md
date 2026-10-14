@@ -125,7 +125,7 @@ swept <count> image(s) (<size>)
 removed
 ```
 
-:::danger
+::: danger
 
 Use `--all` only when no other Instance is on the cluster. `--all` deletes the Sandbox and Repo resource types. Thus the
 Sandboxes and the Repo resources of each Instance on the cluster go with them.

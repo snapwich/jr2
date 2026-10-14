@@ -56,7 +56,7 @@ kubectl -n <namespace> get secret jr2-instance -o jsonpath='{.data.JR2_INSTANCE_
 
 The command prints the token, with no line break after it.
 
-:::caution
+::: warning
 
 The Instance token starts runs, answers Gates and cancels runs. Keep it as you keep a password.
 

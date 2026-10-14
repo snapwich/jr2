@@ -139,7 +139,7 @@ Give a token that can push to the Repo as the password.
 A [Machine](../reference/glossary.md#machine) can also push the branch with an
 [Effect](../reference/glossary.md#effect). See [Push and sign a branch](push-and-sign-a-branch.md).
 
-:::caution
+::: warning
 
 The Agent works in the same files as your shell, so it sees each change that you make there. When the Sandbox goes, a
 commit that you did not push goes with it.

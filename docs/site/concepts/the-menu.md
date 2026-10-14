@@ -44,21 +44,17 @@ or to keep an event at the root from one party.
 In this [Workflow](../reference/glossary.md#workflow), a writer drafts release notes. It can ask an editor a question,
 and it finishes with `done`:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/concepts/the-menu/anthropic/notes.ts"}
+<<< @/examples/concepts/the-menu/anthropic/notes.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/concepts/the-menu/local/notes.ts"}
+<<< @/examples/concepts/the-menu/local/notes.ts
 
 :::
-
-::::
 
 The writer's Menu is `ask` and `done`. The `reply` event belongs to the Gate in `asking`, so it is not on the Menu.
 `jr2 up` prints who can send what at each state. The Console shows the same seats in the "who may send what" panel of

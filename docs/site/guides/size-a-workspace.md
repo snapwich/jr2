@@ -10,7 +10,7 @@ The [Size](../reference/glossary.md#size) is the most memory and cpu that the wh
 it on a node, so the Sandbox always has it. Write it in the `resources` option of `workspace()`. In this example, the
 [Workflow](../reference/glossary.md#workflow) `workflows/e2e.ts` runs Playwright with 4 GiB of memory and 2 cpus:
 
-::include{file="../examples/guides/size-a-workspace/workflows/e2e.ts"}
+<<< @/examples/guides/size-a-workspace/workflows/e2e.ts
 
 The [Sandbox Image](../reference/glossary.md#sandbox-image) must have Playwright and its browsers.
 [Add tools to the Sandbox](add-tools-to-the-sandbox.md) tells how.

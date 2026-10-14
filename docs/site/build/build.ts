@@ -12,7 +12,6 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { convertDirectives, generatorSyntax, headingOnes } from "./directives.ts";
 import { agentsBlock, llmsTxt, type Described } from "./indexes.ts";
 import { rewriteLinks, type DocsSet } from "./links.ts";
 import { anchorsIn, pageHead, parseFrontmatter, type BuildError } from "./markdown.ts";
@@ -25,6 +24,7 @@ import { EVENTS_PAGE, readMechanismEvents, renderMechanismEvents } from "./refer
 import { examplesOf, readSurface, renderSurface } from "./reference/surface.ts";
 import { allPages, readSitemap, type Page } from "./sitemap.ts";
 import { createProgram, type Program } from "./tsdoc.ts";
+import { generatorSyntax, headingOnes, toPlainMarkdown } from "./vitepress.ts";
 
 export const REPO = fileURLToPath(new URL("../../../", import.meta.url));
 export const DEFAULT_OUT = join(REPO, "packages/orchestrator/docs");
@@ -220,8 +220,7 @@ export async function buildDocs(opts: BuildOptions = {}): Promise<BuildResult> {
     const bundlePath = `${s.page.slug}.md`;
     const linked = rewriteLinks(s.body, { from: s.file, bundle: bundlePath, file: s.file, firstLine: s.bodyLine }, set);
     errors.push(...linked.errors);
-    const dir = dirname(join(site, s.page.slug));
-    const converted = convertDirectives(linked.text, { file: s.file, dir, repo, firstLine: s.bodyLine });
+    const converted = toPlainMarkdown(linked.text, { file: s.file, site, repo, firstLine: s.bodyLine });
     errors.push(...converted.errors);
     files.set(bundlePath, `${pageHead(s.title, s.description)}${converted.text.replace(/^\n*/, "\n")}`);
     described.set(s.page.slug, { ...s.page, description: s.description });

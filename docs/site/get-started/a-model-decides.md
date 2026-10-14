@@ -22,21 +22,17 @@ terminal, in `my-instance`.
 Make the file `workflows/triage.ts` in `my-instance`. The name of the file is the name of the Workflow, so the Workflow
 is `triage`. Copy this code into the file:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/get-started/a-model-decides/anthropic/triage.ts"}
+<<< @/examples/get-started/a-model-decides/anthropic/triage.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/get-started/a-model-decides/local/triage.ts"}
+<<< @/examples/get-started/a-model-decides/local/triage.ts
 
 :::
-
-::::
 
 The two tabs are different only in the `model` line and its comment. The file has five parts:
 
@@ -77,9 +73,9 @@ jr2 up
 
 `jr2 up` prints who can send each event, in each state of `triage`. Then it converges the cluster.
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
 The output shows where the model key goes:
 
@@ -106,9 +102,7 @@ The warning of Connect a model, `secrets[0] (ANTHROPIC_API_KEY) is named by noth
 names an Anthropic model, so `jr2 up` gives the key to the [Custodian](../reference/glossary.md#custodian) of the pod
 that runs its Turns.
 
-:::
-
-:::tab{label="Local"}
+== Local
 
 `jr2 up` asks your model for one tool call, from inside the cluster:
 
@@ -139,8 +133,6 @@ gone. `triager` names a `local/…` model, so `jr2 up` checks that the endpoint 
 `jr2 up` stops and prints what to examine.
 
 :::
-
-::::
 
 `jr2 up` replaces the [Orchestrator](../reference/glossary.md#orchestrator) pod. If the port forward stops, start it
 again in its terminal:
@@ -174,7 +166,7 @@ Your run id is different. The line `→ active "triaging"` can show more than on
 status that the run sends. Two lines can show the same state. `jr2 run` does not return while the run waits. Keep it
 open.
 
-:::note
+::: info
 
 The model decides, so your run can be different. If the Agent picks `accept` or `reject`, the run ends with no Gate. For
 example, a run that the Agent accepts immediately prints:

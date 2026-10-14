@@ -35,29 +35,25 @@ copies of `task`. The copies differ only in the thinking level of their coder.
 
 The imports:
 
-::include{file="../examples/concepts/composition/anthropic/route.ts" lines="1-3"}
+<<< @/examples/concepts/composition/anthropic/route.ts#imports
 
 The model of the tab:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/concepts/composition/anthropic/route.ts" lines="5"}
+<<< @/examples/concepts/composition/anthropic/route.ts#model
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/concepts/composition/local/route.ts" lines="5"}
+<<< @/examples/concepts/composition/local/route.ts#model
 
 :::
-
-::::
 
 The Machines and the Workflow:
 
-::include{file="../examples/concepts/composition/anthropic/route.ts" lines="7-73"}
+<<< @/examples/concepts/composition/anthropic/route.ts#machines
 
 To use `@jr2/machines`, add it to the Instance at the [Kit version](../reference/glossary.md#kit-version):
 `npm install --save-exact @jr2/machines@<version>`. `<version>` is the version of `@jr2/orchestrator` in your

@@ -99,6 +99,10 @@ export function parseFrontmatter(text: string): Frontmatter | undefined {
     if (value.startsWith('"') && value.endsWith('"') && value.length > 1) value = JSON.parse(value) as string;
     else if (value.startsWith("'") && value.endsWith("'") && value.length > 1)
       value = value.slice(1, -1).replace(/''/g, "'");
+    // The site generator reads the frontmatter as YAML, which ends a plain value at `: ` or ` #`,
+    // and reads a leading indicator as syntax.
+    else if (/: |\s#|:$/.test(value) || /^[-?:,[\]{}#&*!|>%@`]/.test(value))
+      errors.push(`the frontmatter value of ${m[1]} is not a plain YAML string: put it in double quotes`);
     data[m[1]!] = value;
   }
   return { data, body: lines.slice(end + 1).join("\n"), bodyLine: end + 2, errors };

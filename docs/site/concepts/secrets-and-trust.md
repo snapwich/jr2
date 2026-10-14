@@ -29,7 +29,7 @@ container in which the Agent executes nothing. [Architecture](architecture.md) t
 [`jr2.config.ts`](../reference/config.md) has one [`secrets`](../reference/config.md#secrets) list. An entry goes to
 each place that names it, and to no other place:
 
-::include{file="../examples/concepts/secrets-and-trust/jr2.config.ts"}
+<<< @/examples/concepts/secrets-and-trust/jr2.config.ts
 
 - A pod claims a Held secret when its [`workspace()`](../reference/authoring-surface.md#workspace) lists the name under
   `secrets`. A pod also claims the key of each provider that an Agent in that pod uses.

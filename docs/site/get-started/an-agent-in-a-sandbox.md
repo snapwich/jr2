@@ -82,21 +82,17 @@ You bind the two with [`customize()`](../reference/authoring-surface.md#customiz
 
 Make the file `workflows/task.ts`. Replace `<you>` and `<version>` in it:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/get-started/an-agent-in-a-sandbox/anthropic/task.ts"}
+<<< @/examples/get-started/an-agent-in-a-sandbox/anthropic/task.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/get-started/an-agent-in-a-sandbox/local/task.ts"}
+<<< @/examples/get-started/an-agent-in-a-sandbox/local/task.ts
 
 :::
-
-::::
 
 - `target` is the name of the Repo Slot. The coder works in the first Repo Slot.
 - `ref` is the release tag. The branch of the Agent starts from it, so each reader of a release starts from the same
@@ -303,7 +299,7 @@ exit
 
 ## Approve the work
 
-:::caution
+::: warning
 
 `approve` ends the run and removes the Sandbox. A commit that you did not push is lost.
 

@@ -24,14 +24,14 @@ To install the server, see the install page of [llama.cpp](https://github.com/gg
 
 ### llama.cpp
 
-::include{file="../examples/shared/local/llama-server.sh"}
+<<< @/examples/shared/local/llama-server.sh
 
 `--jinja` lets the model call tools. `--temp 0.6` and `--presence-penalty 1.0` are the sampling settings for Qwen.
 `-ctk q8_0 -ctv q8_0 -fa on` make the KV cache smaller, so that 65536 tokens fit in memory.
 
 ### vLLM
 
-::include{file="../examples/shared/local/vllm.sh"}
+<<< @/examples/shared/local/vllm.sh
 
 `--enable-auto-tool-choice` and `--tool-call-parser` let the model call tools.
 
@@ -39,7 +39,7 @@ To install the server, see the install page of [llama.cpp](https://github.com/gg
 
 Add a `harness` entry to `jr2.config.ts`. It declares a custom provider with the id `local`:
 
-::include{file="../examples/shared/local/jr2.config.ts"}
+<<< @/examples/shared/local/jr2.config.ts
 
 Add the address of the endpoint to `.env`. Write the LAN address of the computer that runs the server in place of
 `<address>`:
@@ -122,7 +122,7 @@ LOCAL_MODEL_API_KEY=<key>
 
 Run these commands in the Instance folder. Write the IP address of `LOCAL_MODEL_URL` in place of each `<address>`:
 
-::include{file="../examples/guides/use-a-local-model/certs.sh"}
+<<< @/examples/guides/use-a-local-model/certs.sh
 
 The commands make a CA (`ca.crt`) and a certificate for the server (`server.crt`), which the CA signs. For a DNS name in
 `LOCAL_MODEL_URL`, write `DNS:<name>` in place of `IP:<address>`.
@@ -144,17 +144,17 @@ set -a && . ./.env && set +a
 Then start the server with its certificate. The server reads the key from an environment variable, not from its command
 line, so the process list does not show the key. For llama.cpp:
 
-::include{file="../examples/guides/use-a-local-model/llama-server.sh"}
+<<< @/examples/guides/use-a-local-model/llama-server.sh
 
 For vLLM:
 
-::include{file="../examples/guides/use-a-local-model/vllm.sh"}
+<<< @/examples/guides/use-a-local-model/vllm.sh
 
 ### Change the provider
 
 Add `apiKey` to `harness.provider`. Add `caBundle` to `harness`:
 
-::include{file="../examples/guides/use-a-local-model/jr2.config.ts"}
+<<< @/examples/guides/use-a-local-model/jr2.config.ts
 
 [`harness.provider.apiKey`](../reference/config.md#harness-provider-apikey) becomes the Held secret
 `JR2_PROVIDER_API_KEY`. `jr2 up` binds it to the host and port of `baseUrl`, and the Custodian sends it to no other

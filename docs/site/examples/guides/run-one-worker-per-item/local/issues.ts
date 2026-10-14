@@ -3,7 +3,9 @@ import { z } from "zod";
 import { customize, defineEvent, pool, source } from "@jr2/orchestrator";
 import { task } from "@jr2/machines";
 
+// #region model
 const model = "local/qwen3.6-35b-a3b";
+// #endregion model
 
 // One work item: an open issue of the Repo.
 type Issue = { number: number; title: string; body: string };

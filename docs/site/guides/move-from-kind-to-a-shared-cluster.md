@@ -10,7 +10,7 @@ converges into the cluster of the kubectl context, so you give it a different co
 facts that kind does not need. These facts are a registry for the images, the platforms of the nodes, the nodes for the
 [Sandboxes](../reference/glossary.md#sandbox), and the priority classes. This `jr2.config.ts` gives all of them:
 
-::include{file="../examples/guides/move-from-kind-to-a-shared-cluster/jr2.config.ts"}
+<<< @/examples/guides/move-from-kind-to-a-shared-cluster/jr2.config.ts
 
 Add the fields to your own `jr2.config.ts`. Keep the fields that it has, such as `secrets` or `harness`. Each section
 below explains one field. Set only the fields that your cluster needs.
@@ -163,7 +163,7 @@ priority: the Instance's own — control "platform-critical", sandbox "batch-low
 `jr2 up` does not create a class that you name, so it must exist in the cluster. Write `priorityClasses` in
 `jr2.config.ts` itself. Do not read it from `process.env`, for the same reason as `sandbox`.
 
-:::caution
+::: warning
 
 `sandbox` and `priorityClasses` apply in each cluster that the folder converges into. Thus a folder that sets them works
 only in a cluster that has those classes and those labels. On kind, `jr2 up` fails, because Kubernetes creates no pod

@@ -19,6 +19,7 @@ const door = z.object({
 });
 type Door = z.infer<typeof door>;
 
+// #region events
 // The coder's one pick. It is a tool on the coder's Menu.
 const finish = defineEvent({
   name: "finish",
@@ -36,6 +37,7 @@ const requestChanges = defineEvent({
   description: "Send the work back to the coder with notes. The coder continues the same conversation.",
   input: z.object({ notes: z.string().describe("What to change, in prose.") }),
 });
+// #endregion events
 
 // The body gets the run input, the seed Instance ID of the run, and the Workspace handles of its one Repo Slot.
 type BodyInput = Workspaced<Door & HostInjectedInput, "target">;
@@ -76,10 +78,12 @@ const body = jr2Setup({
 - Make the smallest change that fixes the bug.
 - End your turn with exactly one call to \`finish\`.`,
     }),
+    // #region effects
     // A program in the Harness container of the Sandbox, in the Worktree of `target`. Node expands the glob itself.
     tests: command(["node", "--test", "docs/site/tutorial/greet/test/*.test.js"], { timeout: "5m" }),
     // Push the tip of the coder's branch to the Repo of `target`, with the token of `git.credentials`.
     publish: push(),
+    // #endregion effects
   },
 }).createMachine({
   id: "fix",
@@ -88,6 +92,7 @@ const body = jr2Setup({
   // The Sandbox is gone, and every commit that was not pushed went with it.
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    // #region working
     working: {
       invoke: {
         src: "coder",
@@ -115,6 +120,8 @@ const body = jr2Setup({
         },
       },
     },
+    // #endregion working
+    // #region testing
     testing: {
       invoke: {
         src: "tests",
@@ -127,6 +134,8 @@ const body = jr2Setup({
         ],
       },
     },
+    // #endregion testing
+    // #region review
     // The run waits here for you. Its Gate id is body.review: the Workspace runs this Machine as body.
     review: {
       invoke: {
@@ -151,6 +160,8 @@ const body = jr2Setup({
         },
       },
     },
+    // #endregion review
+    // #region pushing
     pushing: {
       invoke: {
         src: "publish",
@@ -165,6 +176,7 @@ const body = jr2Setup({
         ],
       },
     },
+    // #endregion pushing
     done: {
       type: "final",
       output: ({ context }): Output => ({
@@ -210,9 +222,11 @@ function pushFailure(output: PushOutput): string {
   return output.outcome === "pushed" ? "" : `The push did not happen (${output.outcome}): ${output.reason}`;
 }
 
+// #region workspace
 export const machine = workspace(body, {
   input: door,
   repos: { target: { url: "https://github.com/<you>/jr2.git", ref: "v<version>" } },
   // One branch for each run, from its seed Instance ID. Its type is not on the input of `spec`.
   spec: ({ input }) => ({ branch: `jr2/fix-${(input as Door & HostInjectedInput).instanceId}` }),
 });
+// #endregion workspace

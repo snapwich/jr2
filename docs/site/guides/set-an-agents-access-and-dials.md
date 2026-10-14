@@ -12,21 +12,17 @@ the `input` of the invoke. In this [Workflow](../reference/glossary.md#workflow)
 for changes. A coder makes the changes on the branch. Then a Menu-only checker decides if the changes are complete. Save
 the file as `workflows/review.ts` in your [Instance](../reference/glossary.md#instance):
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/guides/set-an-agents-access-and-dials/anthropic/review.ts"}
+<<< @/examples/guides/set-an-agents-access-and-dials/anthropic/review.ts
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/guides/set-an-agents-access-and-dials/local/review.ts"}
+<<< @/examples/guides/set-an-agents-access-and-dials/local/review.ts
 
 :::
-
-::::
 
 Write your GitHub user name in place of `<you>`. Each Agent uses the model of the tab.
 

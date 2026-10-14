@@ -26,29 +26,25 @@ Save this file as `workflows/issues.ts`. Replace `you/app` with your Repo, in th
 
 The imports:
 
-::include{file="../examples/guides/run-one-worker-per-item/anthropic/issues.ts" lines="1-4"}
+<<< @/examples/guides/run-one-worker-per-item/anthropic/issues.ts#imports
 
 The model of the tab:
 
-::::tabs
+::: tabs key:provider
 
-:::tab{label="Anthropic"}
+== Anthropic
 
-::include{file="../examples/guides/run-one-worker-per-item/anthropic/issues.ts" lines="6"}
+<<< @/examples/guides/run-one-worker-per-item/anthropic/issues.ts#model
 
-:::
+== Local
 
-:::tab{label="Local"}
-
-::include{file="../examples/guides/run-one-worker-per-item/local/issues.ts" lines="6"}
+<<< @/examples/guides/run-one-worker-per-item/local/issues.ts#model
 
 :::
-
-::::
 
 The [Source](../reference/glossary.md#source), the worker and the [Pool](../reference/glossary.md#pool):
 
-::include{file="../examples/guides/run-one-worker-per-item/anthropic/issues.ts" lines="8-76"}
+<<< @/examples/guides/run-one-worker-per-item/anthropic/issues.ts#pool
 
 The file has five parts:
 
