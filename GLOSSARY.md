@@ -41,6 +41,12 @@ An Instance under GitOps, whose manifests deploy the Orchestrator with its confi
 a local cluster and on a real cluster.
 _Avoid_: deployment
 
+**Assistant**:
+The AI product that works for its user in an Instance folder, on the host and outside any cluster and any run: it
+writes Machines, config and Sandbox Images from the docs that its Kit version bundles. It is never an Agent: an Agent
+works inside a run, and an Assistant never does.
+_Avoid_: agent (unqualified), coding agent (a `coder` Agent codes too), copilot, AI (unqualified)
+
 **Console**:
 The browser surface that the Orchestrator serves, where a person sees the Workflows, their runs and their Machines.
 Observation needs no token; the Instance token unlocks control, so that a person can start runs and see and answer the
@@ -69,6 +75,11 @@ A Machine or a Chart registered under a name in an Instance: the unit that the O
 names, from one of three origins, a Machine in the Assembly, a Chart file in the Assembly, or a Chart published at run time; a named Chart is a child of its Chart wrapper, named `<wrapper>/<name>`. A Workflow is only that name, because the Machine carries all its parts, so the kit ships Machines and never
 Workflows.
 _Avoid_: app, pipeline
+
+**Authoring surface**:
+The names that an author writes in a Workflow's module or in an Instance's config, and nothing else. What the kit's own
+packages share with each other is internal, and the Machines that the kit ships are not part of it.
+_Avoid_: public API (the CLI and the HTTP API are public too), SDK, authoring API
 
 **Orchestrator**:
 The runtime that runs Machines, as the single writer of their run snapshots. Single means one writer, not one Workflow
