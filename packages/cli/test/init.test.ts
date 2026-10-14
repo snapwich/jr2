@@ -91,6 +91,34 @@ test("init fills the block only from a peer at the exact version it pins", async
   assert.equal(scaffoldAgentsMd("the index\n").includes(`${BEGIN_MARKER}\nthe index\n${END_MARKER}\n`), true);
 });
 
+test("init leaves a user's own AGENTS.md and CLAUDE.md alone, and says what keeps the docs index from an Assistant", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-init-own-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, "AGENTS.md"), "# My rules\n");
+  await writeFile(join(dir, "CLAUDE.md"), "Be brief.\n");
+  const lines: string[] = [];
+  const io: Io = { stdout: () => {}, stderr: (l) => lines.push(l), env: {}, cwd: dir };
+  assert.equal(await init([], io), 0);
+  assert.equal(await readFile(join(dir, "AGENTS.md"), "utf8"), "# My rules\n");
+  assert.equal(await readFile(join(dir, "CLAUDE.md"), "utf8"), "Be brief.\n");
+  const text = lines.join("");
+  assert.match(
+    text,
+    /skip {3}AGENTS\.md \(exists\)\n {9}AGENTS\.md has no jr2-docs markers: add the lines <!-- BEGIN:jr2-docs --> and <!-- END:jr2-docs -->, and jr2 up fills them/,
+  );
+  assert.match(
+    text,
+    /skip {3}CLAUDE\.md \(exists\)\n {9}CLAUDE\.md does not import AGENTS\.md: add the line @AGENTS\.md, so that Claude Code reads it/,
+  );
+
+  // A file that already does both gets no hint.
+  await writeFile(join(dir, "AGENTS.md"), scaffoldAgentsMd());
+  await writeFile(join(dir, "CLAUDE.md"), "Be brief.\n@AGENTS.md\n");
+  lines.length = 0;
+  assert.equal(await init([], io), 0);
+  assert.doesNotMatch(lines.join(""), /markers:|does not import/);
+});
+
 test("init's package.json matches the default template's but for name and description", async (t) => {
   const dir = await scaffold();
   t.after(() => rm(dir, { recursive: true, force: true }));

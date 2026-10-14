@@ -240,10 +240,11 @@ since prefix probing on an open route would be a run-id enumeration oracle.
 **`jr2 init` (v1).** Scaffolds the minimum runnable instance: `jr2.config.ts` (root marker), `package.json` (deps on
 `@jr2/*` + xstate), one starter `workflows/<name>.ts`, `images/default/Dockerfile` (the Sandbox Image every Workspace
 falls back to, ADR-0037), `.gitignore` (`.jr2/`, `.env`, `node_modules/`), and `AGENTS.md` with a `CLAUDE.md` that
-imports it (the index of the Kit's bundled docs for an Assistant, ADR-0072). `[dir]` positional (default cwd); `--force`
-to overwrite an existing `jr2.config.ts`. `manifests/` and `.env` are added by their later slices. No auto-install — it
-prints the next step, naming no package manager, since the instance's lockfile is what picks one
-([ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)).
+imports it (the index of the Kit's bundled docs for an Assistant, ADR-0072). `[dir]` positional (default cwd); `--name`
+for the package name (default: the folder's name). It skips each file that exists, and says so; for an `AGENTS.md` with
+no markers, or a `CLAUDE.md` that does not import `AGENTS.md`, it also says what to add. `manifests/` and `.env` are
+added by their later slices. No auto-install — it prints the next step, naming no package manager, since the instance's
+lockfile is what picks one ([ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)).
 
 ## Consequences
 

@@ -16,7 +16,8 @@
 // `test/init.test.ts` enforces that; without it the two drift silently, and since the manifest
 // carries the kit version that same test is the version-bump tripwire (bump the kit, re-render the
 // template). Existing files are left untouched (init is additive); created paths are reported on
-// stderr.
+// stderr. A user's own AGENTS.md or CLAUDE.md that keeps an Assistant from the docs index gets one
+// hint line under its skip line (ADR-0072).
 //
 // ONE template serves both checkout and installed mode (ADR-0043) — a branch there would mean the
 // tested output and the shipped output diverge. So the scaffold names no package manager, and pins
@@ -37,7 +38,15 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseCommand } from "../command-table.ts";
-import { AGENTS_MD, CLAUDE_MD, readAgentsBlock, scaffoldAgentsMd } from "../agents-md.ts";
+import {
+  AGENTS_MD,
+  BEGIN_MARKER,
+  CLAUDE_MD,
+  END_MARKER,
+  placeAgentsBlock,
+  readAgentsBlock,
+  scaffoldAgentsMd,
+} from "../agents-md.ts";
 import { CLI_ROOT, CLI_VERSION, resolvePackage, type ResolvedPackage } from "../kit-version.ts";
 import { activity, type Io } from "../output.ts";
 
@@ -63,6 +72,8 @@ export async function init(args: string[], io: Io): Promise<number> {
     const full = join(dir, file.path);
     if (await exists(full)) {
       activity(io, `  skip   ${file.path} (exists)`);
+      const hint = await existingHint(file.path, full);
+      if (hint) activity(io, `         ${hint}`);
       continue;
     }
     await mkdir(dirname(full), { recursive: true });
@@ -77,6 +88,23 @@ export async function init(args: string[], io: Io): Promise<number> {
  * the scaffold pins, else nothing (`jr2 up` fills it once the Instance resolves its Kit). */
 export function scaffoldBlock(peer: ResolvedPackage | undefined, pinned: string = CLI_VERSION): string | undefined {
   return peer && peer.version === pinned ? readAgentsBlock(peer.root) : undefined;
+}
+
+/** One line for a user's own `AGENTS.md` or `CLAUDE.md` that init left alone and that keeps an
+ * Assistant from the docs index (ADR-0072): a file with no markers has opted out, and Claude Code
+ * reads `AGENTS.md` only through a `CLAUDE.md` that imports it. Said, never fixed: the file is the
+ * user's. */
+export async function existingHint(path: string, full: string): Promise<string | undefined> {
+  if (path === AGENTS_MD) {
+    const place = placeAgentsBlock(await readFile(full, "utf8"));
+    if (place.kind === "opted-out")
+      return `AGENTS.md has no jr2-docs markers: add the lines ${BEGIN_MARKER} and ${END_MARKER}, and jr2 up fills them`;
+    if (place.kind === "broken") return `AGENTS.md: ${place.reason}, so jr2 up does not update the jr2 block`;
+    return undefined;
+  }
+  if (path === "CLAUDE.md" && !/^@AGENTS\.md\s*$/m.test(await readFile(full, "utf8")))
+    return "CLAUDE.md does not import AGENTS.md: add the line @AGENTS.md, so that Claude Code reads it";
+  return undefined;
 }
 
 async function exists(path: string): Promise<boolean> {
