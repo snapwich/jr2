@@ -19,6 +19,14 @@ repos/
 # and docs/adr. Generated, so never checked in — the one source is the page or the code.
 packages/orchestrator/docs/
 
+# the docs site (ADR-0072): `pnpm docs:site` builds the bundle into .vitepress/bundle, copies its
+# Reference into reference/ for VitePress to render, and writes the site to .vitepress/dist.
+docs/site/reference/
+docs/site/.vitepress/bundle/
+docs/site/.vitepress/cache/
+docs/site/.vitepress/dist/
+docs/site/.vitepress/.temp/
+
 # go
 operator/bin/
 operator/testbin/

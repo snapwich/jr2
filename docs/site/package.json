@@ -3,12 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The hand-written docs pages, the site's navigation, and docs:build, which assembles the docs bundle that @jr2/orchestrator ships (ADR-0072). Nothing here ships as a package.",
+  "description": "The hand-written docs pages, the site's navigation, docs:build, which assembles the docs bundle that @jr2/orchestrator ships, and docs:site, which builds the VitePress site (ADR-0072). Nothing here ships as a package.",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "docs:build": "node build/main.ts",
+    "docs:dev": "node build/site.ts && vitepress dev",
+    "docs:site": "node build/site.ts && vitepress build",
+    "docs:preview": "vitepress preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts"
   },
@@ -16,7 +19,11 @@
     "@jr2/machines": "workspace:*",
     "@jr2/orchestrator": "workspace:*",
     "@types/node": "^26.0.1",
+    "mermaid": "11.17.2",
     "typescript": "^5.6.0",
+    "vitepress": "1.6.4",
+    "vitepress-plugin-mermaid": "2.0.17",
+    "vitepress-plugin-tabs": "0.9.1",
     "xstate": "^5.18.0",
     "zod": "^4.4.3"
   }

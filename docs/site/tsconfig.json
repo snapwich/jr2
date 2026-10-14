@@ -9,5 +9,5 @@
       "@you/labeler": ["./examples/guides/publish-a-machine-as-an-npm-package/labeler/src/index.ts"]
     }
   },
-  "include": ["test", "build", "examples"]
+  "include": ["test", "build", "examples", ".vitepress/*.ts", ".vitepress/theme/*.ts"]
 }

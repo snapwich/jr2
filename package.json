@@ -10,6 +10,8 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "docs:build": "pnpm --filter @jr2/docs-site docs:build",
+    "docs:dev": "pnpm --filter @jr2/docs-site docs:dev",
+    "docs:site": "pnpm --filter @jr2/docs-site docs:site",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "husky"

@@ -49,6 +49,11 @@ jobs:
       - name: Unit + conformance
         run: pnpm -r --if-present test
 
+      # The docs site (ADR-0072): the strict docs build, then VitePress, which fails on a page that
+      # it cannot compile and on a dead link in the site.
+      - name: Docs site
+        run: pnpm docs:site
+
       # Black-box (ADR-0010): each scenario spawns the real `jr2` binary against a real
       # orchestrator process. No docker, no cluster.
       - name: Default e2e profile
