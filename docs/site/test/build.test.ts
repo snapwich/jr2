@@ -9,16 +9,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildDocs, REPO, writeBundle } from "../build/build.ts";
 import { formatError } from "../build/markdown.ts";
-import { allPages, readSitemap } from "../build/sitemap.ts";
+import { allPages, readSitemap, type Page, type Sitemap } from "../build/sitemap.ts";
 
 const tmp = await mkdtemp(join(tmpdir(), "jr2-docs-build-"));
 test.after(() => rm(tmp, { recursive: true, force: true }));
 
-/** A site folder with the real sitemap and the pages given, so the Reference is the repo's. */
-async function site(name: string, pages: Record<string, string>): Promise<string> {
+/** A site folder with the real sitemap and the pages given, so the Reference is the repo's. Each
+ * of `extra` is one more page of the first Concepts group, which no folder holds a file for. */
+async function site(name: string, pages: Record<string, string>, extra: Page[] = []): Promise<string> {
   const dir = join(tmp, name);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "sitemap.json"), await readFile(join(REPO, "docs/site/sitemap.json")));
+  const map = await readSitemap();
+  map.sections.find((s) => s.title === "Concepts")!.groups![0]!.pages.push(...extra);
+  await writeFile(join(dir, "sitemap.json"), JSON.stringify(map));
   for (const [slug, text] of Object.entries(pages)) {
     await mkdir(join(dir, slug, ".."), { recursive: true });
     await writeFile(join(dir, `${slug}.md`), text);
@@ -29,11 +32,15 @@ async function site(name: string, pages: Record<string, string>): Promise<string
 const page = (title: string, body: string) => `---\ntitle: ${title}\ndescription: A page.\n---\n\n${body}\n`;
 
 test("strict fails on each sitemap page with no file; --partial skips them and unlinks links to them", async () => {
-  const dir = await site("partial", {
-    "concepts/workspaces": page("Workspaces", "See [Write a Workflow](../guides/write-a-workflow.md)."),
-  });
+  // docs/site holds every page of the real sitemap, so the page that no file holds anywhere is a
+  // fixture: a link to a real page would resolve on disk.
+  const unwritten: Page = { slug: "concepts/unwritten", title: "Unwritten", source: "page" };
+  const dir = await site("partial", { "concepts/workspaces": page("Workspaces", "See [Unwritten](unwritten.md).") }, [
+    unwritten,
+  ]);
   const strict = await buildDocs({ site: dir });
-  const missing = allPages(await readSitemap()).filter((p) => p.source === "page" && p.slug !== "concepts/workspaces");
+  const map = JSON.parse(await readFile(join(dir, "sitemap.json"), "utf8")) as Sitemap;
+  const missing = allPages(map).filter((p) => p.source === "page" && p.slug !== "concepts/workspaces");
   const lines = strict.errors.map(formatError);
   assert.deepEqual(
     lines.filter((l) => l.includes("has no file")),
@@ -45,7 +52,7 @@ test("strict fails on each sitemap page with no file; --partial skips them and u
   // Strict, the link to a missing page is broken too.
   assert.ok(
     lines.includes(
-      "docs/site/concepts/workspaces.md:6: the link ../guides/write-a-workflow.md resolves to docs/site/guides/write-a-workflow.md, which does not exist",
+      "docs/site/concepts/workspaces.md:6: the link unwritten.md resolves to docs/site/concepts/unwritten.md, which does not exist",
     ),
     lines.join("\n"),
   );
@@ -53,10 +60,10 @@ test("strict fails on each sitemap page with no file; --partial skips them and u
   const partial = await buildDocs({ site: dir, partial: true });
   assert.deepEqual(partial.errors.map(formatError), []);
   assert.equal(partial.skipped.length, missing.length);
-  assert.ok(!partial.files.has("guides/write-a-workflow.md"));
+  assert.ok(!partial.files.has("concepts/unwritten.md"));
   assert.equal(
     partial.files.get("concepts/workspaces.md"),
-    "---\ntitle: Workspaces\ndescription: A page.\n---\n\n# Workspaces\n\nSee Write a Workflow.\n",
+    "---\ntitle: Workspaces\ndescription: A page.\n---\n\n# Workspaces\n\nSee Unwritten.\n",
   );
 });
 
@@ -93,10 +100,9 @@ test("a full partial build of this repo succeeds, and writes the bundle", async 
   const dirs = [...block.matchAll(/\|([\w./-]+):\{/g)].map((m) => m[1]!);
   assert.deepEqual(dirs, [...new Set(dirs)], "a directory has two entries in the block");
   assert.ok(block.endsWith("\n") && !block.includes("BEGIN:jr2-docs"));
-  assert.match(
-    await readFile(join(out, "llms.txt"), "utf8"),
-    /^# jr2\n\n> .+\n\n## Reference\n\n- \[Authoring surface\]\(reference\/authoring-surface\.md\): /,
-  );
+  const llms = await readFile(join(out, "llms.txt"), "utf8");
+  assert.match(llms, /^# jr2\n\n> .+\n\n## /);
+  assert.match(llms, /\n## Reference\n\n- \[Authoring surface\]\(reference\/authoring-surface\.md\): /);
   // A second build replaces the first; a folder that is not a bundle is refused, not emptied.
   await writeBundle(r.files, out);
   const other = join(tmp, "not-a-bundle");
