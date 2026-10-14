@@ -71,15 +71,104 @@ import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 // meets it first, and `import { open } from "@jr2/orchestrator"` is the only spelling anyone writes.
 export { open } from "./open.ts";
 
-/** What a Repo Slot resolves to (GLOSSARY.md "Binding"): the url, and the base the branch
- * Worktree is cut from — absent, the Repo's own default branch. */
-export type Binding = { url: string; ref?: string };
-
 /**
- * One Repo Slot's value: BOUND (a url, or `{ url, ref? }`), OPEN (the {@link open} sentinel —
- * someone downstream binds it), or PER-RUN (a mapper over the wrapper's door, so a run input — a
- * ticket field — decides). Bound and open are what `jr2 up` can see; per-run is the run's business,
- * fenced at attach by `git.credentials` (ADR-0051).
+ * The repository of a Repo Slot: `{ url, ref }`. `url` is the Repo's git url. `ref` is the branch
+ * or commit that the branch Worktree starts from; absent, the Repo's default branch. Where only a
+ * url is needed, a string is enough.
+ *
+ * `workspace()` and `customize()` refuse:
+ * - an empty `url`: ``<where>: Repo Slot "<slot>" is bound to an empty url (got <value>) — a slot
+ *   is `open`, a url, `{ url, ref? }`, or a mapper `({ input }) => url | { url, ref? }` over the
+ *   door (ADR-0051).``
+ * - an empty `ref`: the same text, with `bound with an empty ref` in place of `bound to an empty
+ *   url`.
+ * - a url that names no Repo, such as a relative path: ``<where>: Repo Slot "<slot>" binds
+ *   "<url>", which names no Repo — <reason> (ADR-0051).``
+ *
+ * @example
+ * ```ts
+ * import { jr2Setup, workspace, type Binding } from "@jr2/orchestrator";
+ *
+ * const app: Binding = { url: "https://github.com/you/app.git", ref: "release-2" };
+ *
+ * const body = jr2Setup({ events: [] }).createMachine({
+ *   id: "body",
+ *   initial: "done",
+ *   states: { done: { type: "final" } },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app },
+ *   spec: () => ({ branch: "jr2/hotfix" }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/workspaces.md
+ * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
+ */
+// What a Repo Slot resolves to (CONTEXT.md "Binding").
+export type Binding = {
+  /** The Repo's git url. */
+  url: string;
+  /** The branch or commit that the branch Worktree starts from. Default: the Repo's default
+   * branch. */
+  ref?: string;
+};
+
+// Bound and open are what `jr2 up` can see; per-run is the run's business, fenced at attach by
+// `git.credentials` (ADR-0051).
+/**
+ * The value of one Repo Slot in `workspace({ repos })`. One of:
+ * - a url, or a {@link Binding} `{ url, ref }`: the Machine names the Repo.
+ * - {@link open}: the Instance that registers the Machine binds it with `customize()`. `jr2 up`
+ *   refuses a Workflow that leaves it open: ``refusing: workflow "<name>" leaves Repo Slot
+ *   "<slot>" open — bind it where the Machine is registered: export const machine =
+ *   customize(<import>, …)  (ADR-0051)``, with the whole `customize` line to paste.
+ * - a function of the run input, `({ input }) => url` or a {@link Binding}: each run chooses. The
+ *   url must match an entry of `git.credentials` in `jr2.config.ts`, or the run cannot use it.
+ *
+ * The key of the slot is a directory name under `/work`. It starts with a letter, and
+ * `workspace()` and `customize()` refuse a key that does not: ``<where>: Repo Slot key "<key>" is
+ * not a directory name — a slot becomes `/work/<slot>` and its order matters, so it starts with a
+ * letter and matches /^[A-Za-z][A-Za-z0-9._-]*$/ (ADR-0051).`` They refuse a value of another
+ * shape: ``<where>: Repo Slot "<slot>" is <what> — a slot is `open`, a url, `{ url, ref? }`, or a
+ * mapper `({ input }) => url | { url, ref? }` over the door (ADR-0051).``
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { jr2Setup, open, workspace, type RepoSlot, type Workspaced } from "@jr2/orchestrator";
+ *
+ * const runInput = z.object({ service: z.string() });
+ * type RunInput = z.infer<typeof runInput>;
+ *
+ * const service: RepoSlot<RunInput> = ({ input }) => `https://github.com/you/${input.service}.git`;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { input: Workspaced<RunInput, "service" | "docs" | "config"> },
+ *   events: [],
+ * }).createMachine({
+ *   id: "body",
+ *   initial: "done",
+ *   states: { done: { type: "final" } },
+ * });
+ *
+ * // A Machine for a package: the Instance that registers it binds `config`.
+ * export const deploy = workspace(body, {
+ *   input: runInput,
+ *   repos: {
+ *     service,
+ *     docs: "https://github.com/you/docs.git",
+ *     config: open,
+ *   },
+ *   spec: ({ input }) => ({ branch: `deploy/${input.service}` }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/workspaces.md
+ * @see docs/guides/bind-open-parts.md
+ * @see docs/guides/give-the-cluster-git-credentials.md
+ * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
  */
 export type RepoSlot<TInput = unknown> =
   | typeof open

@@ -144,22 +144,56 @@ export function loadWarningsOf(machine: AnyStateMachine): string[] {
   return loadWarnings.get(machine.config) ?? [];
 }
 
+// What the HOST adds to the input of the machine a run STARTS with, beside the door
+// (`RunHost.start`). One field today: the run's seed Instance ID, minted with the run and
+// reported by `jr2 status`. It names the RUN, never a conversation — jr2 mints every Agent
+// Instance ID in the input mapper (ADR-0016, ADR-0057), and a Machine cannot pass one in.
+//
+// It is deliberately NOT door material (ADR-0033): no caller sends it — `start` overwrites
+// whatever arrived, after the parse — and it is never served as JSON Schema, so putting it in a
+// door schema would publish it and demand of every caller a field the host supplies anyway.
+//
+// It is also PLACEMENT-DEPENDENT: only the ROOT machine is started with it. A machine invoked
+// further down is fed by its parent, which passes what it chooses. No type can see where a machine
+// sits, so the one contract that must reason about this — `workspace()`'s body guard — takes the
+// permissive answer and counts these keys as PROVIDED, which lets a body declare the field
+// honestly. Counting them as provided (rather than subtracting them from what the body demands)
+// is what keeps their TYPE checked: `instanceId` is a string, and a body asking for anything else
+// is still rejected.
 /**
- * What the HOST adds to the input of the machine a run STARTS with, beside the door
- * (`RunHost.start`). One field today: the run's seed Instance ID, minted with the run and
- * reported by `jr2 status`. It names the RUN, never a conversation — jr2 mints every Agent
- * Instance ID in the input mapper (ADR-0016, ADR-0057), and a Machine cannot pass one in.
+ * The fields that jr2 adds to the input of the Machine that a run starts, beside the input that
+ * the caller sent. Today it is one field: `instanceId`, an id that jr2 makes for the run.
  *
- * It is deliberately NOT door material (ADR-0033): no caller sends it — `start` overwrites
- * whatever arrived, after the parse — and it is never served as JSON Schema, so putting it in a
- * door schema would publish it and demand of every caller a field the host supplies anyway.
+ * Add it to the type of your root Machine's input when the Machine reads it:
+ * `HostInjectedInput & RunInput`. Do not put it in the `input` schema that a run starts with. No
+ * caller sends it. jr2 writes it over any value that a caller sends.
  *
- * It is also PLACEMENT-DEPENDENT: only the ROOT machine is started with it. A machine invoked
- * further down is fed by its parent, which passes what it chooses. No type can see where a machine
- * sits, so the one contract that must reason about this — `workspace()`'s body guard — takes the
- * permissive answer and counts these keys as PROVIDED, which lets a body declare the field
- * honestly. Counting them as provided (rather than subtracting them from what the body demands)
- * is what keeps their TYPE checked: `instanceId` is a string, and a body asking for anything else
- * is still rejected.
+ * Only the root Machine of a run gets it. A Machine that another Machine invokes gets the input
+ * that its parent gives it. A `workspace()` passes its input to its body, so the body of a root
+ * `workspace()` gets it too: `Workspaced<HostInjectedInput & RunInput, "app">`.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
+ *
+ * const runInput = z.object({ ticket: z.string() });
+ * type Input = HostInjectedInput & z.infer<typeof runInput>;
+ *
+ * export const machine = jr2Setup({
+ *   types: {} as { input: Input; context: Input; output: { run: string; ticket: string } },
+ *   events: [],
+ * }).createMachine({
+ *   id: "ticket",
+ *   input: runInput,
+ *   context: ({ input }) => input,
+ *   initial: "done",
+ *   states: { done: { type: "final" } },
+ *   output: ({ context }) => ({ run: context.instanceId, ticket: context.ticket }),
+ * });
+ * ```
+ *
+ * @see docs/guides/write-a-workflow.md
+ * @see docs/reference/decisions/0033-a-machine-declares-the-input-that-starts-it.md
  */
 export type HostInjectedInput = { instanceId: string };

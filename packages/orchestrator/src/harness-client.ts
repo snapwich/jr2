@@ -508,23 +508,112 @@ export function createLiveSetPush(options: {
 }
 
 /**
- * THE authoring surface for an Agent (ADR-0049): one definition in, one actor slot out —
- * `jr2Setup({ actors: { coder: agent({ model, instructions }) } })`, invoked as `src: "coder"`.
- * The slot key is the Agent's name (the Harness route, the minted iid, the markers), so a name
- * the Machine does not carry is a compile error on `src`, and two Machines in one run may each
- * carry their own `coder`.
+ * Make an Agent: an actor slot that runs one Turn of a model each time a state invokes it. Put it
+ * under `actors` in `jr2Setup`, and invoke it by its key: `actors: { coder: agent(…) }`, then
+ * `invoke: { src: "coder", input: { prompt } }`. The key is the Agent's name.
  *
- * Everything live is constructed per-invocation from serializable input: the wire client from
- * `input.endpoint` (which Sandbox's Harness — or the wire-compatible dev stub; either way it's
- * only a URL, one code path). Lives here, not in actor.ts, so the actor logic and its unit tests
- * never touch the wire.
+ * The invoke's `input` is the Turn: `prompt` (required), `cwd`, `model`, `thinkingLevel` and
+ * `continue`. `cwd` is the absolute directory where the Working tools work. Absent, it is the
+ * Worktree of the Workspace's one Repo Slot. `continue: true` continues the Agent's conversation
+ * in this Machine. Absent, each Turn starts a new conversation. The Turn ends when the state that
+ * invoked the Agent exits, usually on a pick from the Agent's Menu.
  *
- * It takes a DECLARATION (ADR-0054), so a packaged Machine may write `agent({ model: open, … })`
- * and leave the one part it cannot honestly fill to whoever registers it. What rides the Turn is
- * still an `AgentDefinition`: the actor narrows on start and refuses an Open one there. A model
- * can lack the definition's thinking level (see {@link ThinkingLevel}).
+ * An Agent with `workspace: "write"` or `"read"` works in a Sandbox, so invoke it inside a
+ * `workspace()` body. An Agent with `workspace: "none"` can run anywhere. A model can lack the
+ * definition's thinking level: see {@link ThinkingLevel}.
+ *
+ * When a Turn starts, it refuses:
+ * - a key in `input` that a Turn does not have: ``agent "<slot>": the Turn's input carries
+ *   `<key>`, which a Turn has no use for — its input is its Frame (`prompt`, `cwd`), its Dials
+ *   (`model`, `thinkingLevel`), and `continue` (ADR-0057)``
+ * - no `cwd` under a Workspace with more than one Repo Slot: ``turn <id>: agent "<slot>" works
+ *   under a Workspace carrying more than one Repo Slot (<slots>) and its Turn framed no `cwd` —
+ *   say which Worktree it works in (`cwd: context.workspace.repos.<slot>`, one of those), because
+ *   the kit gives no slot a meaning (ADR-0051) and a Turn's Frame is where it works (ADR-0057)``
+ * - a `cwd` that is not an absolute path: ``agent "<slot>": the Turn's Frame carries a `cwd` that
+ *   is not an absolute path — the Frame says WHERE this Turn works (ADR-0057), and a Turn rooted
+ *   anywhere else would work in the wrong directory silently``. The Harness makes this refusal
+ *   when it admits the Turn, and the error starts with `harness admission failed (400): `.
+ * - an Agent with Working tools outside a `workspace()`: ``turn <id>: agent "<slot>" has
+ *   workspace: "<access>" — invoke it inside a workspace() (ambient resolution), or pass an
+ *   explicit `endpoint` (workspace-less stub path)``
+ * - a `model` that is still `open`: ``agent "<slot>" has an Open model — nobody bound it; bind it
+ *   where the Machine is registered (`customize(<machine>, { agents: { <slot>: { model:
+ *   "<provider>/<model>" } } })`), because a packaged Machine cannot pick a model on your behalf
+ *   (ADR-0054)``. `jr2 up` refuses this before it builds anything.
+ *
+ * @param declaration - The Agent's definition (see {@link AgentDefinition}). `model` may be `open`
+ *   in a Machine that you publish as a package.
+ * @returns The actor logic of the Agent's slot.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { agent, defineEvent, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ *
+ * const finish = defineEvent({
+ *   name: "finish",
+ *   description: "Call this when `node --test` passes.",
+ *   input: z.object({}),
+ * });
+ * const runInput = z.object({ branch: z.string() });
+ * type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { input: BodyInput; context: BodyInput },
+ *   events: [finish],
+ *   actors: {
+ *     coder: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You fix failing tests. You change no test.",
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "fix",
+ *   context: ({ input }) => input,
+ *   initial: "coding",
+ *   states: {
+ *     coding: {
+ *       invoke: {
+ *         src: "coder",
+ *         input: ({ context }) => ({
+ *           prompt: "Make `node --test` pass, then commit.",
+ *           cwd: context.workspace.repos.app,
+ *           thinkingLevel: "high",
+ *         }),
+ *       },
+ *       on: { finish: "done" },
+ *     },
+ *     done: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   input: runInput,
+ *   repos: { app: "https://github.com/you/app.git" },
+ *   spec: ({ input }) => ({ branch: input.branch }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/agents-and-turns.md
+ * @see docs/guides/write-a-workflow.md
+ * @see docs/reference/decisions/0049-a-machine-carries-its-parts-and-composes-by-invoke.md
+ * @see docs/reference/decisions/0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md
  */
 export function agent(declaration: AgentDeclaration): AgentLogic {
+  // THE authoring surface for an Agent (ADR-0049): one definition in, one actor slot out. The
+  // slot key is the Agent's name (the Harness route, the minted iid, the markers), so a name the
+  // Machine does not carry is a compile error on `src`, and two Machines in one run may each carry
+  // their own `coder`.
+  //
+  // Everything live is constructed per-invocation from serializable input: the wire client from
+  // `input.endpoint` (which Sandbox's Harness — or the wire-compatible dev stub; either way it's
+  // only a URL, one code path). Lives here, not in actor.ts, so the actor logic and its unit
+  // tests never touch the wire.
+  //
+  // It takes a DECLARATION (ADR-0054), so a packaged Machine may write `agent({ model: open, … })`
+  // and leave the one part it cannot honestly fill to whoever registers it. What rides the Turn
+  // is still an `AgentDefinition`: the actor narrows on start and refuses an Open one there.
   return agentActorWith(
     (endpoint, bearer) => createHarnessAgentRunClient({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
     declaration,
@@ -601,26 +690,168 @@ export function createExecPort(options: {
 }
 
 /**
- * THE authoring surface for a `command` Effect (ADR-0067): `actors: { tests: command(["pnpm",
- * "test"]) }`, invoked as `src: "tests"`. `argv` is never shell text — an `arg("x")` entry is ONE
- * argument, filled from the invoke's input — and `sh -c` is the author's explicit choice. It runs
- * in the Harness container of the enclosing Workspace's Sandbox, in a Repo Slot's Worktree
- * (`slot`, needed only where the Workspace carries several); outside a Workspace it is refused.
- * Every outcome is output: `exited | timeout | killed | unknown`.
+ * Make a `command` Effect: an actor slot that runs one program in the Workspace's Sandbox when a
+ * state invokes it. Put it under `actors` and invoke it by its key: `actors: { tests:
+ * command(["node", "--test"]) }`, then `invoke: { src: "tests", onDone: … }`.
+ *
+ * `argv` is a list, never shell text: each entry is one argument. An `arg("name")` entry is filled
+ * from the invoke's `input` (`input: { name: "…" }`), as one argument whatever its text. To use a
+ * shell, write it: `["sh", "-c", "…"]`.
+ *
+ * Where it runs:
+ * - With no Effect secret in `env`, in the Harness container of the enclosing Workspace's Sandbox.
+ *   It runs in the Worktree of a Repo Slot. The Agent's Working tools also run in this container.
+ * - With an Effect secret in `env`, in the Sandbox Effector, against a commit of the branch. This
+ *   is the branch tip when it starts, or with `pin: true` the commit that the invoke's `input.sha`
+ *   names. The output then says `dirty: true` when the Worktree held edits that the command did
+ *   not see.
+ *
+ * Every outcome is output for `onDone`, never an error: `{ outcome: "exited", code, tail }`,
+ * `{ outcome: "timeout", tail }`, `{ outcome: "killed", signal, tail }`, or `{ outcome: "unknown",
+ * reason }` when jr2 cannot know what happened. `tail` is the end of the output stream.
+ *
+ * After an Orchestrator restart:
+ * - A command with no Effect secret in `env` never runs twice. jr2 attaches to it again, or settles
+ *   `unknown`.
+ * - A command with an Effect secret in `env` runs again when the Sandbox Effector no longer holds
+ *   it. It runs against the same commit. If jr2 has no commit for it, it settles `unknown`.
+ *
+ * When the state exits, the command stops: jr2 kills its process group. `onError` is only for a
+ * Machine or config defect.
+ *
+ * It refuses, when you call it:
+ * - an empty `argv`: `command(argv): argv is a non-empty list — each entry one argument, never
+ *   shell text`
+ * - an entry that is not a string or `arg()`: `command(argv): an argv entry is a string or
+ *   arg("name"), got <entry>`
+ * - a `timeout` that is not a positive duration: `command: timeout "<timeout>" is not a positive
+ *   duration (like "90s", "10m", "1h")`
+ * - an `env` name that is not a variable name, or `PATH`, `HOME` or `TMPDIR`: ``command(argv, {
+ *   env }): "<name>" is not a variable the author sets — PATH, HOME and TMPDIR are the Effector's
+ *   (ADR-0067)``
+ * - `pin: true` with no Effect secret in `env`: ``command(argv, { pin: true }) names no secret in
+ *   its env: `pin` chooses the commit a credentialed command runs against in the Sandbox
+ *   Effector, and a command that names no secret runs in the live Worktree (ADR-0067) — name its
+ *   secret, command(argv, { env: { NAME: secret("x") }, pin: true }), or drop `pin` ``
+ *
+ * And when it starts, with no Effect secret in `env`:
+ * - outside a `workspace()`: `command "<slot>" runs in the Harness container of a Workspace, and
+ *   its state is not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`
+ * - no `slot` under a Workspace with more than one Repo Slot: `command "<slot>" runs under a
+ *   Workspace carrying more than one Repo Slot (<slots>) and names none — say which Worktree it
+ *   runs in: command(argv, { slot: "<slot>" }) (ADR-0051)`
+ * - a `slot` that the Workspace does not have: `command "<slot>" names Repo Slot "<name>", which
+ *   its Workspace does not carry (<slots>)`
+ * - an `arg()` with no string in `input`: `command "<slot>": argv slot <<name>> has no string
+ *   value in its input (got <type>) — map it in the invoke's input`. The angle brackets around the
+ *   arg's name are in the text: `argv slot <file>`. `<type>` is `nothing` when `input` has no such
+ *   field, or the type of its value, such as `number`.
+ *
+ * And when it starts, with an Effect secret in `env`:
+ * - outside a `workspace()`: `command "<slot>" runs in the Sandbox Effector of a Workspace, and its
+ *   state is not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`
+ * - no `slot` under a Workspace with more than one Repo Slot: `command "<slot>" runs under a
+ *   Workspace carrying more than one Repo Slot (<slots>) — say which: { slot: "<slot>" }
+ *   (ADR-0051)`
+ * - a Workspace with no Repo Slot: `command "<slot>" runs under a Workspace carrying no Repo Slot
+ *   (none) — say which: { slot: "<slot>" } (ADR-0051)`
+ * - a `slot` that the Workspace does not have: `command "<slot>" names Repo Slot "<name>", which
+ *   its Workspace does not carry (<slots>)`
+ * - `pin: true` and an `input.sha` that is not a full commit id: `command "<slot>" (pin): its
+ *   input's sha is not a full commit id`
+ * - an `arg()` with no string in `input`: the same text as above.
+ *
+ * @param argv - The program and its arguments: strings and `arg("name")` entries. Or `open`, in a
+ *   Machine that you publish as a package, for the Instance that registers it to bind with
+ *   `customize()`.
+ * @param options - Optional. `slot`: the Repo Slot whose Worktree the command runs in; needed only
+ *   where the Workspace has more than one. `timeout`: `"90s"`, `"10m"` or `"1h"`, default
+ *   `"10m"`; when it expires, the output is `timeout`. `tail`: how many characters of the end of
+ *   the output stream to keep, default 4096. `env`: environment variables. Each value is
+ *   `secret("name")` for the value of an Effect secret, or `secret("name").path` for the path of a
+ *   file that holds it. `pin`: `true` to run against the commit in `input.sha`. Use `pin` only
+ *   with an Effect secret in `env`.
+ * @returns The actor logic of the Effect's slot. Its output is a `CommandOutput`.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { arg, command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ *
+ * const runInput = z.object({ branch: z.string() });
+ * type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { input: BodyInput },
+ *   events: [],
+ *   actors: {
+ *     tests: command(["node", "--test", arg("file")], { timeout: "5m" }),
+ *   },
+ * }).createMachine({
+ *   id: "check",
+ *   initial: "testing",
+ *   states: {
+ *     testing: {
+ *       invoke: {
+ *         src: "tests",
+ *         input: { file: "test/greet.test.js" },
+ *         onDone: [
+ *           {
+ *             guard: ({ event }) => event.output.outcome === "exited" && event.output.code === 0,
+ *             target: "passed",
+ *           },
+ *           { target: "failed" },
+ *         ],
+ *       },
+ *     },
+ *     passed: { type: "final" },
+ *     failed: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   input: runInput,
+ *   repos: { app: "https://github.com/you/app.git" },
+ *   spec: ({ input }) => ({ branch: input.branch }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
+ */
+export function command<const A extends readonly (string | Arg)[], const Opt extends CommandOptions = CommandOptions>(
+  argv: A,
+  options?: Opt,
+): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
+/**
+ * Make a `command` Effect whose argv is Open: `command(open, options)`, in a Machine that you
+ * publish as a package. The Instance that registers the Machine binds the argv one time:
+ * `customize(machine, { effects: { <slot>: { argv } } })`. {@link command} tells the rest, and
+ * what it refuses.
+ *
+ * @param argv - `open`.
+ * @param options - Optional. The same options as for a written argv.
+ * @returns The actor logic of the Effect's slot. Its output is a `CommandOutput`.
+ *
+ * @see docs/guides/bind-open-parts.md
+ * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
  */
 export function command<const Opt extends CommandOptions = CommandOptions>(
   argv: typeof open,
   options?: Opt,
 ): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv" | EnvOpenParts<Opt>>;
-export function command<const A extends readonly (string | Arg)[], const Opt extends CommandOptions = CommandOptions>(
-  argv: A,
-  options?: Opt,
-): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
 export function command(
   argv: readonly (string | Arg)[] | typeof open,
   options: CommandOptions = {},
   // The implementation of the overloads above: each one states the input type.
 ): EffectLogic<any, CommandOutput> {
+  // THE authoring surface for a `command` Effect (ADR-0067). `argv` is never shell text — an
+  // `arg("x")` entry is ONE argument, filled from the invoke's input — and `sh -c` is the author's
+  // explicit choice. Bound to the real exec port here; `commandWith` in effect.ts is the seam the
+  // unit tests share.
+  //
   // An Open argv (ADR-0054) is the composer's to bind with `customize()`; see open-effect.ts.
   return commandWith(
     (endpoint, bearer) => createExecPort({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),

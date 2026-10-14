@@ -37,31 +37,80 @@ import { gate } from "./gate.ts";
 import { attachWrapperBody, type JR2Wrapper, type WrapperActors } from "./parts.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
+// The rich shape's `open` is the one bit that separates DRAINED from DEADLOCKED when the pool goes
+// idle (ADR-0017); a bare `null` means drained-when-idle.
 /**
- * What `next` resolves. A plain item claims it; `null` says "nothing ready now" (drained, when
- * nothing is running); the rich shape adds `open` — how many items exist but are not ready —
- * which is the one bit that separates DRAINED from DEADLOCKED when the pool goes idle.
+ * What the `next` of a Source resolves to: an item, to claim it; `null`, when no item is ready
+ * now; or `{ item, open }`, where `open` is the number of items that exist but are not ready.
+ * When no worker runs and `next` gives no item, the Pool ends: `drained` when `open` is 0 or
+ * absent, `deadlocked` when `open` is more than 0.
  */
 export type SourceNextResult<T> = T | null | { item: T | null; open: number };
 
-/** The Source port (ADR-0017): where a pool draws work from. Build one with {@link source}. */
+// The Source port (ADR-0017).
+/** Where a Pool gets its work items: the Source. Make one with {@link source}. */
 export type SourceSpec<T> = {
-  /** Claim the next ready item, excluding the ones already being worked (`input.active`).
-   * A union of the accepted output shapes because xstate's actor-logic type is invariant in its
-   * output — a `fromPromise` inferred as `T | null` must still assign. */
+  // A union of the accepted output shapes because xstate's actor-logic type is invariant in its
+  // output — a `fromPromise` inferred as `T | null` must still assign.
+  /** Claim the next ready item. Write it as an xstate promise actor,
+   * `fromPromise(async ({ input }) => …)`. Its input is `{ active }`: the ids of the items that
+   * workers have now, which it must not give again. It must also not give again an item that a
+   * worker finished. It resolves to a {@link SourceNextResult}. The Pool calls it when the run
+   * starts, after each claim, and when a worker settles. While workers run and no item is ready, it
+   * also calls it on `wake` and every `pollEvery`. */
   next:
     | PromiseActorLogic<SourceNextResult<T>, { active: string[] }>
     | PromiseActorLogic<{ item: T | null; open: number }, { active: string[] }>
     | PromiseActorLogic<T | null, { active: string[] }>
     | PromiseActorLogic<null, { active: string[] }>;
-  /** An external event def that wakes discovery early (webhook / `jr2 send` push seam). The pool
-   * serves it as a standing gate named "source"; the def IS the pool machine's vocabulary. */
+  // The webhook / `jr2 send` push seam. The def IS the pool machine's vocabulary (ADR-0011).
+  /** An external event, made with `defineEvent`, that tells the Pool that new work is ready, for
+   * example from a webhook or `jr2 send`. While workers run and no item is ready, it makes the Pool
+   * call `next` at once. The Pool serves it as a Gate named `source` for the whole run
+   * (`<path>.source` when the Pool is composed in another Machine). Default: none. */
   wake?: EventDef;
-  /** Re-query cadence while parked, in ms — for sets that mutate underneath us. */
+  // For sets that mutate underneath us.
+  /** While workers run and no item is ready, call `next` again after this many milliseconds. Use
+   * it for a Source whose items change while the run waits. Default: none, so the Pool calls
+   * `next` again only when a worker settles or `wake` comes. */
   pollEvery?: number;
 };
 
-/** Declare a Source. Identity by design — the value IS the spec; this is the naming/typing seam. */
+// Identity by design — the value IS the spec; this is the naming/typing seam.
+/**
+ * Declare a Source: where a `pool()` gets its work items, one at a time. It gives back the spec
+ * that you pass. The item type `T` types what `next` gives. `pool()` does not carry `T` to
+ * `itemId` and `itemInput`, so write the item type on their parameter, as the `pool()` example does.
+ *
+ * @param spec - How to claim the next item, and when to look again. See {@link SourceSpec}.
+ * @returns The same spec.
+ *
+ * @example
+ * ```ts
+ * import { fromPromise } from "xstate";
+ * import { source } from "@jr2/orchestrator";
+ *
+ * type Issue = { id: string; title: string };
+ *
+ * const backlog: Issue[] = [
+ *   { id: "ISSUE-1", title: "Fix the greeting." },
+ *   { id: "ISSUE-2", title: "Add a --name flag." },
+ * ];
+ *
+ * export const issues = source<Issue>({
+ *   next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+ *     const issue = backlog.find((i) => !input.active.includes(i.id)) ?? null;
+ *     if (issue) backlog.splice(backlog.indexOf(issue), 1);
+ *     return issue;
+ *   }),
+ *   pollEvery: 60_000,
+ * });
+ * ```
+ *
+ * @see docs/guides/run-one-worker-per-item.md
+ * @see docs/concepts/pools-and-sources.md
+ * @see docs/reference/decisions/0017-pool-over-a-source-port.md
+ */
 export function source<T>(spec: SourceSpec<T>): SourceSpec<T> {
   return spec;
 }
@@ -69,30 +118,37 @@ export function source<T>(spec: SourceSpec<T>): SourceSpec<T> {
 /** How a pool run ends (its machine output). `items` maps itemId → the worker's output. */
 export type PoolOutput = { status: "drained" | "deadlocked"; items: Record<string, unknown> };
 
-/**
- * How a pool is configured (ADR-0017, ADR-0033). `TInput` is what came through the pool's door:
- * the PARSED schema when `input` declares one, and `unknown` when it does not — absence is
- * permissive, so jr2 knows nothing and says so, exactly as `workspace()`'s door-less path does.
- * A pool that is fed by something other than a caller may state what it is fed by annotating the
- * mapper's parameter; for anything a caller starts, the honest fix is to declare `input`.
- */
+// How a pool is configured (ADR-0017, ADR-0033). `TInput` is what came through the pool's door:
+// the PARSED schema when `input` declares one, and `unknown` when it does not — absence is
+// permissive, so jr2 knows nothing and says so, exactly as `workspace()`'s door-less path does.
+// A pool that is fed by something other than a caller may state what it is fed by annotating the
+// mapper's parameter; for anything a caller starts, the honest fix is to declare `input`.
+/** What you pass to `pool()`: where the items come from, how many workers run at once, and what
+ * each worker gets. */
 export type PoolSpec<T, TInput = unknown> = {
-  /** The machine id (the workflow's name in the Console). Default "pool". */
+  /** The Machine id: the name of the Pool in the Console. Default: `"pool"`. */
   id?: string;
-  /** The pool's OWN declared run input (ADR-0033) — what `cap` and `itemInput` read off the door,
-   * and what types their `input`. The WORKER's schema is deliberately not the door: workers are
-   * fed per-ITEM (the source item, or `itemInput`'s result), never the run body, so it describes
-   * nothing a starter sends. */
+  // The WORKER's schema is deliberately not the door (ADR-0033): workers are fed per-ITEM (the
+  // source item, or `itemInput`'s result), never the run body, so it describes nothing a starter
+  // sends.
+  /** The run input of the Pool, as a zod object: what a caller sends to start a run. `cap` and
+   * `itemInput` read it, typed by it. A worker never gets it: each worker gets its item. Default:
+   * none, and then their `input` is `unknown`. */
   input?: z.ZodObject;
+  /** Where the items come from. Make it with {@link source}. */
   source: SourceSpec<T>;
-  /** Stable child identity: the spawn id, the active-set entry, the outcome key. */
+  // Stable child identity: the spawn id, the active-set entry, the outcome key.
+  /** The id of an item. The Pool uses it as the id of the item's worker and in the `active` list
+   * that `next` gets. It is also the key of that worker's output in `items`. Give each item an id
+   * of its own, and the same id every time. */
   itemId: (item: T) => string;
-  /** Max concurrent workers — a number, or derived from run input. Default 1. */
+  /** The most workers that run at once: a number, or a function of the run input. Default: `1`. */
   cap?: number | ((args: { input: TInput }) => number);
-  /** Map an item (+ run input) to the worker's input. Default: the item itself. */
+  /** Make a worker's input from its item and the run input. Default: the item itself. */
   itemInput?: (item: T, args: { input: TInput }) => unknown;
-  /** Terminal policy when the source runs dry and children settle. Only "final" exists today
-   * (jr semantics: runs END); a parking policy can be added when a workflow needs one. */
+  // jr semantics: runs END; a parking policy can be added when a workflow needs one.
+  /** What the Pool does when the Source has no more items and every worker has settled. Only
+   * `"final"`: the run ends. Default: `"final"`. */
   onDrained?: "final";
 };
 
@@ -102,6 +158,8 @@ export type PoolSpec<T, TInput = unknown> = {
  * TRANSPARENT to its worker (ADR-0049), so `customize(machine, { agents })` on a pool-rooted
  * workflow offers the WORKER's Agents and the composer never spells `worker`. {@link JR2Wrapper} is
  * what marks it a jr2 wrapper: the transparency follows the marker, not the slot's spelling.
+ *
+ * @internal
  */
 export type PoolMachine<TWorker extends AnyStateMachine, TInput> = StateMachine<
   any,
@@ -146,15 +204,85 @@ function normalizeClaim(output: unknown): Claim {
   return { item: output, open: 0 };
 }
 
+// Build the pool machine (ADR-0017). Returns a plain machine — the usual workflow ROOT, but
+// nestable as a child like any other. Its vocabulary is the wake def alone: the worker keeps its
+// own (ADR-0011, ADR-0049).
 /**
- * Build the pool machine (ADR-0017). Returns a plain machine — the usual workflow ROOT
- * (`export const machine = pool(...)`), but nestable as a child like any other. Its vocabulary is
- * the wake def alone: the worker keeps its own (ADR-0011, ADR-0049).
+ * Make a Pool: a Machine that runs one worker Machine for each item that a Source gives, with at
+ * most `cap` workers at once. Use it as the root of a Workflow (`export const machine = pool(…)`),
+ * or compose it in another Machine.
+ *
+ * The run ends when the Source has no item ready and no worker runs. Its output is
+ * `{ status, items }`: `status` is `"drained"` when all the work is done, or `"deadlocked"` when
+ * items exist but none can start; `items` holds each worker's output by item id. While workers
+ * wait on Gates, the run stays open.
+ *
+ * `customize()` reaches through a Pool to its worker: `customize(pool, { agents })` retunes the
+ * worker's Agents. The events that the Pool accepts are its `wake` event only; each worker keeps
+ * its own.
+ *
+ * @param worker - The Machine to run for each item. It gets the item, or what `itemInput` makes
+ * of it, as its input. It does not get the run input.
+ * @param spec - The Source, the item id, the cap, and the worker's input. See {@link PoolSpec}.
+ * @returns The Pool, as a Machine.
+ *
+ * @example
+ * ```ts
+ * import { fromPromise } from "xstate";
+ * import { customize, pool, source } from "@jr2/orchestrator";
+ * import { task } from "@jr2/machines";
+ *
+ * type Issue = { id: string; title: string };
+ *
+ * const backlog: Issue[] = [
+ *   { id: "ISSUE-1", title: "Fix the greeting." },
+ *   { id: "ISSUE-2", title: "Add a --name flag." },
+ * ];
+ *
+ * const issues = source<Issue>({
+ *   next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+ *     const issue = backlog.find((i) => !input.active.includes(i.id)) ?? null;
+ *     if (issue) backlog.splice(backlog.indexOf(issue), 1);
+ *     return issue;
+ *   }),
+ * });
+ *
+ * const fixer = customize(task, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ * });
+ *
+ * export const machine = pool(fixer, {
+ *   id: "issues",
+ *   source: issues,
+ *   itemId: (issue: Issue) => issue.id,
+ *   cap: 2,
+ *   itemInput: (issue: Issue) => ({ prompt: issue.title, branch: `fix/${issue.id}` }),
+ * });
+ * ```
+ *
+ * @see docs/guides/run-one-worker-per-item.md
+ * @see docs/concepts/pools-and-sources.md
+ * @see docs/reference/decisions/0017-pool-over-a-source-port.md
  */
 export function pool<TWorker extends AnyStateMachine, TSchema extends z.ZodObject>(
   worker: TWorker,
   spec: PoolSpec<any, z.infer<TSchema>> & { input: TSchema },
 ): PoolMachine<TWorker, z.infer<TSchema>>;
+/**
+ * Make a Pool with no `input` schema. A Pool is a Machine that runs one worker Machine for each
+ * item that a Source gives, with at most `cap` workers at once. See {@link pool} for the full description and
+ * an example.
+ *
+ * @param worker - The Machine to run for each item. It gets the item, or what `itemInput` makes
+ * of it, as its input. It does not get the run input.
+ * @param spec - The Source, the item id, the cap, and the worker's input. See {@link PoolSpec}.
+ * @returns The Pool, as a Machine.
+ *
+ * @see docs/guides/run-one-worker-per-item.md
+ * @see docs/concepts/pools-and-sources.md
+ * @see docs/reference/decisions/0017-pool-over-a-source-port.md
+ */
 export function pool<TWorker extends AnyStateMachine, TInput = unknown>(
   worker: TWorker,
   spec: PoolSpec<any, TInput> & { input?: never },

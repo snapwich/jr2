@@ -83,18 +83,26 @@ import { httpFileWith, sandboxEffectorPort } from "./sandbox-effect.ts";
 
 // --- Naming a secret -----------------------------------------------------------------------------
 
-/** A secret an Effect names, by its name in the config's `secrets` list (ADR-0068). Naming it in an
- * Effect is what places it in that Effect's Effector: an Effect secret. Its value never leaves the
- * Effector; on the wire it is a name. */
+// Naming it in an Effect is what places it in that Effect's Effector (ADR-0068). On the wire it is
+// a name.
+/** What `secret("name")` gives: an Effect secret, by its name in the `secrets` list of
+ * `jr2.config.ts`. Put it in an Effect's `auth`, a header, a `text` or a command's `env`. Its
+ * `.path` is the path of a file that holds the value. The value stays in the Effector, so the
+ * Machine and the Agent never see it. */
 export type Secret = { readonly secret: string; readonly path: { readonly secret: string; readonly path: true } };
 
-/** A string the Effector builds: literal text and secrets, in order — the `text` template's value. */
+/** What the `text` template gives: a string of literal text and Effect secrets, in order. The
+ * Effector builds the string, so the Machine never sees the value of a secret. */
 export type Text = { readonly text: readonly TextPart[] };
 
 declare const openSecretMark: unique symbol;
 /** The TYPE half of an Open secret (ADR-0054): whatever carries `secret(open)` — the secret, its
  * `.path`, a `text` or a `basic` pair holding it, a `bearer` of it — carries this mark, so the
- * Effect's constructor states the Open part "secret" and `customize()` offers `{ secret }`. Phantom. */
+ * Effect's constructor states the Open part "secret" and `customize()` offers `{ secret }`.
+ * Phantom.
+ *
+ * @internal
+ */
 export type OpenSecretMark = { readonly [openSecretMark]: true };
 
 /** A named secret, never `secret(open)`: where a definition's Open part is a whole that holds a
@@ -121,9 +129,95 @@ const SECRET_NAME = /^[A-Za-z0-9._-]{1,253}$/;
  * (a value and its `.path`) is told from one that names two. */
 const openSecretOf = new WeakMap<object, object>();
 
-/** Name a secret: `secret("jira")`. `secret(open)` leaves the name to the composer (ADR-0054). */
-export function secret(name: typeof open): OpenSecret;
+/**
+ * Name an Effect secret: `secret("jira")`. The name is the `name` of an entry in the `secrets`
+ * list of `jr2.config.ts`. The Effector reads the value and puts it into the call, or into the env
+ * of a `command`. The Agent never reads it, and the Orchestrator never holds it.
+ *
+ * Use it in `bearer`, `basic` or `text`, or in the `env` of a `command`. In an `env`,
+ * `secret("x")` gives the value, and `secret("x").path` gives the path of a file that holds the
+ * value.
+ *
+ * `secret(open)` leaves the name to the composer of a packaged Machine, who binds it one time:
+ * `customize(machine, { effects: { <slot>: { secret: "<name>" } } })`. An Effect can have one Open
+ * secret, in its `auth`, a header or its `env`. A url cannot have one: leave the whole url Open
+ * (`url: open`) instead.
+ *
+ * It refuses, when you call it:
+ * - a name that is not letters, digits, `.`, `_` and `-`, that starts with `.`, or that is longer
+ *   than 253 characters: `secret("<name>"): a secret's name is letters, digits, ".", "_" and "-",
+ *   and does not start with "." — it is the file the Effector reads it from (ADR-0068)`
+ * - an Effect that names `secret(open)` in two places that are two secrets: `an Effect takes one
+ *   Open secret — it names secret(open) in two places that are two secrets; name one secret(open)
+ *   and use it in each place, or name the others with secret("<name>") (ADR-0054)`
+ * - `secret(open)` in a url: ``secret(open) in a url: a url's secret is not an Open part — leave
+ *   the whole url Open (`url: open`) and let the composer bind it with its secret in its path
+ *   (ADR-0054)``
+ *
+ * And at `jr2 up`:
+ * - a name that the `secrets` list does not have: ``workflow "<workflow>": the <kind> Effect
+ *   "<slot>" names secret("<name>"), which the `secrets` list does not hold — add it: secrets: [{
+ *   name: "<name>", value: process.env.<NAME> }] (ADR-0068)``
+ * - a value of fewer than 8 characters: `secrets[<i>] (<name>) is an Effect secret shorter than 8
+ *   characters — the Effector replaces every match of a secret in what it returns, and a value
+ *   this short would match ordinary text. Use the whole credential; the value itself is not shown
+ *   (ADR-0068)`
+ *
+ * @param name - The name of an entry in the `secrets` list.
+ * @returns The Effect secret, for an Effect. Its `.path` names the file of the secret, for the
+ *   `env` of a `command`.
+ *
+ * @example
+ * ```ts
+ * import { command, jr2Setup, secret, workspace, type Workspaced } from "@jr2/orchestrator";
+ *
+ * type Input = Workspaced<{}, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
+ *   events: [],
+ *   actors: {
+ *     // The command reads the file at $KUBECONFIG. The Agent never reads the secret.
+ *     deploy: command(["kubectl", "apply", "-f", "k8s/"], {
+ *       env: { KUBECONFIG: secret("kube").path },
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "deploy",
+ *   context: ({ input }) => input,
+ *   initial: "deploying",
+ *   states: {
+ *     deploying: { invoke: { src: "deploy", onDone: "done" } },
+ *     done: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: () => ({ branch: "deploy" }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/secrets-and-trust.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
+ * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
+ */
 export function secret(name: string): Secret;
+/**
+ * Leave an Effect secret Open: `secret(open)`, in a Machine that you publish as a package. The
+ * composer binds its name one time: `customize(machine, { effects: { <slot>: { secret: "<name>"
+ * } } })`. {@link secret} tells the rest, and what it refuses.
+ *
+ * @param name - `open`.
+ * @returns The Open secret, for an Effect. Its `.path` names the file of the secret, for the `env`
+ *   of a `command`.
+ *
+ * @see docs/concepts/secrets-and-trust.md
+ * @see docs/guides/bind-open-parts.md
+ * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
+ */
+export function secret(name: typeof open): OpenSecret;
 export function secret(name: string | typeof open): Secret | OpenSecret {
   if ((name as unknown) === open) {
     // An Open secret (ADR-0054): the composer binds its name once, with `customize()`'s
@@ -149,7 +243,11 @@ export function secret(name: string | typeof open): Secret | OpenSecret {
   return s;
 }
 
-/** What a value that may hold `secret(open)` gives: marked when it does. */
+/**
+ * What a value that may hold `secret(open)` gives: marked when it does.
+ *
+ * @internal
+ */
 type MarkedIf<V, T> = [Extract<V, OpenSecretMark>] extends [never] ? T : T & OpenSecretMark;
 
 /** The values of a record type, or never. */
@@ -159,7 +257,10 @@ type ValuesOf<R> = R extends Readonly<Record<string, infer V>> ? V : never;
 export type OpenSecretIn<V> = [Extract<V, OpenSecretMark>] extends [never] ? never : "secret";
 
 /** The Open parts an http definition's types state (ADR-0054): its url, when it is `open`, and its
- * secret, when its auth or a header holds `secret(open)`. */
+ * secret, when its auth or a header holds `secret(open)`.
+ *
+ * @internal
+ */
 export type HttpOpenParts<U, A, H> = (U extends typeof open ? "url" : never) | OpenSecretIn<A | ValuesOf<H>>;
 
 /** A secret's wire part: `{ secret: name }` — for an Open secret, a part that stands for it. */
@@ -170,7 +271,47 @@ function partOf(s: Secret): TextPart {
   return part;
 }
 
-/** A string with secrets in it: text`Token ${secret("x")}`. Each `${…}` is a secret or a string. */
+/**
+ * Make a string from literal text and Effect secrets, as a tagged template:
+ * `` text`Token ${secret("x")}` ``. The Effector puts in the value of each secret when it makes
+ * the call. Use it for a url with a secret in its path, or for a header value. Use it also for
+ * `auth`, where it is the whole `Authorization` header, or for a part of `basic`.
+ *
+ * It refuses a `${…}` that is not a `secret(...)` or a string: `` text`…`: a value is a
+ * secret("name") or a string, got <value> ``.
+ *
+ * @param strings - The literal text of the template.
+ * @param values - The `${…}` values, each a `secret(...)` or a string.
+ * @returns The string, which the Effector makes.
+ *
+ * @example
+ * ```ts
+ * import { http, jr2Setup, secret, text } from "@jr2/orchestrator";
+ *
+ * export const machine = jr2Setup({
+ *   events: [],
+ *   actors: {
+ *     notify: http({
+ *       method: "POST",
+ *       url: text`https://api.telegram.org/bot${secret("telegram")}/sendMessage`,
+ *       headers: { "x-run-source": text`jr2` },
+ *       request: () => ({ json: { chat_id: "12345", text: "The run is done." } }),
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "notify",
+ *   initial: "notifying",
+ *   states: {
+ *     notifying: { invoke: { src: "notify", onDone: "done" } },
+ *     done: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/concepts/secrets-and-trust.md
+ * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
+ */
 export function text<const V extends Array<Secret | OpenSecret | string>>(
   strings: TemplateStringsArray,
   ...values: V
@@ -194,15 +335,89 @@ export function text(strings: TemplateStringsArray, ...values: Array<Secret | st
   return { text: parts };
 }
 
-/** `Authorization: Bearer <value>`. The secret may be `secret(open)` (ADR-0054). */
+/**
+ * Make the `auth` of an `http` Effect that sends `Authorization: Bearer <value>`, with the value
+ * of an Effect secret. In a packaged Machine, the secret can be `secret(open)`.
+ *
+ * It refuses a value that is not a secret: `bearer(…) takes a secret("name")`.
+ *
+ * @param s - The secret: `secret("name")`, or `secret(open)`.
+ * @returns The `auth` of an `http` Effect.
+ *
+ * @example
+ * ```ts
+ * import { bearer, http, jr2Setup, secret } from "@jr2/orchestrator";
+ *
+ * export const machine = jr2Setup({
+ *   events: [],
+ *   actors: {
+ *     status: http({
+ *       method: "GET",
+ *       url: "https://api.github.com/repos/you/app",
+ *       auth: bearer(secret("github")),
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "status",
+ *   initial: "reading",
+ *   states: {
+ *     reading: { invoke: { src: "status", onDone: "done" } },
+ *     done: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/concepts/secrets-and-trust.md
+ * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
+ * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
+ */
 export function bearer<const S extends Secret>(s: S): MarkedIf<S, { readonly bearer: Secret }>;
 export function bearer(s: Secret): { readonly bearer: Secret } {
   if (!isSecret(s)) throw new Error('bearer(…) takes a secret("name")');
   return { bearer: s };
 }
 
-/** `Authorization: Basic base64(user:password)`. Each is a string, a secret, or a `text`; either may
- * hold `secret(open)` (ADR-0054). */
+/**
+ * Make the `auth` of an `http` Effect that sends `Authorization: Basic <value>`, where the value
+ * is the base64 of `user:password`. The Effector puts in the value of each secret.
+ *
+ * Each of `user` and `password` is a string, a `secret(...)` or a `text`. In a packaged Machine,
+ * one of them can hold `secret(open)`. It refuses another value: `` expected a string, a
+ * secret("name") or a text`…`, got <value> ``.
+ *
+ * @param user - The user name: a string, a `secret(...)` or a `text`.
+ * @param password - The password: a string, a `secret(...)` or a `text`.
+ * @returns The `auth` of an `http` Effect.
+ *
+ * @example
+ * ```ts
+ * import { basic, http, jr2Setup, secret } from "@jr2/orchestrator";
+ *
+ * export const machine = jr2Setup({
+ *   events: [],
+ *   actors: {
+ *     issue: http({
+ *       method: "GET",
+ *       url: "https://jira.example.com/rest/api/2/issue/APP-1",
+ *       auth: basic("jr2-bot@example.com", secret("jira-token")),
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "issue",
+ *   initial: "reading",
+ *   states: {
+ *     reading: { invoke: { src: "issue", onDone: "done" } },
+ *     done: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/concepts/secrets-and-trust.md
+ * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
+ * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
+ */
 export function basic<const U extends string | Secret | Text, const P extends string | Secret | Text>(
   user: U,
   password: P,
@@ -292,27 +507,122 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
   readonly file: {
     /** The file, relative to the Repo Slot's Worktree. */
     readonly path: FromInput<S, string>;
-    /** The Repo Slot whose Worktree holds it — needed only where the Workspace carries several. */
+    /** The Repo Slot whose Worktree holds it. Write it only when the Workspace has more than one.
+     */
     readonly slot?: string;
-    /** Path segments appended to the url, as `request`'s `path` is for a json or text body. */
+    /** Path segments that jr2 adds to the end of the url, as `path` of `request` does for a json
+     * or text body. */
     readonly segments?: FromInput<S, readonly string[]>;
-    /** The body's content type: this or a `content-type` header of the definition's, not both (a
-     * definition with both is refused). With neither it is `application/octet-stream`. */
+    /** The content type of the body. Write it or a `content-type` header, not both. With neither,
+     * it is `application/octet-stream`. */
     readonly contentType?: string;
   };
 };
 
 /**
- * A Worktree file as an `http` body (ADR-0067): `body: file("dist/report.pdf")`. The Effect then runs in
- * the Sandbox Effector of the Workspace whose body invokes it, which opens the file beneath the
- * Worktree — a symlink at any component, `..`, an absolute path, a FIFO, a directory and a file
- * with more than one link are output `refused`, with nothing sent. `path` and `segments` may be
- * functions of the Effect's input.
+ * Make a Worktree file the body of an `http` Effect: `body: file("dist/report.pdf")`. The Effect
+ * then runs in the Sandbox Effector of the Workspace whose body invokes it. That Effector opens the
+ * file in the Worktree and sends it. Use it with `PUT`, `POST` or `PATCH`. `path` and `segments`
+ * can be functions of the input of the Effect.
+ *
+ * Some paths and files give the output `refused`, and then nothing is sent. The path has a symlink
+ * in it, has `..`, or is absolute. Or the file is a FIFO, a directory, or a file with more than one
+ * link.
+ *
+ * It refuses, when you call it:
+ * - a path that is not a string or a function: `file(path): the path is a string, or a function of
+ *   the Effect's input that returns one`
+ *
+ * And when `http` takes the definition:
+ * - a method other than `PUT`, `POST` and `PATCH`: `http({ method: "<method>", body: file(...) }):
+ *   a file body is sent with PUT, POST, PATCH (ADR-0068)`
+ * - a `request` beside it: ``http({ body: file(...), request }): with a file body the run's part
+ *   is file()'s — its path, from the input if it must be, and its `segments` — so write no
+ *   `request` (ADR-0068)``
+ * - a `content-type` header and `contentType`: `http({ headers, body: file(path, { contentType })
+ *   }): "content-type" is set by file()'s contentType — write one of them (ADR-0067)`
+ *
+ * And at `jr2 up`, an Effect that no `workspace()` invokes: `workflow "<workflow>": the http Effect
+ * "<slot>" sends a Worktree file as its body, and no workspace() invokes it — outside a Workspace
+ * there is no Worktree to read; invoke it from a workspace()'s body, or send a json or text body
+ * (ADR-0068)`.
+ *
+ * @param path - The file, relative to the Worktree of the Repo Slot: a string, or a function of
+ *   the input of the Effect that gives one.
+ * @param options - Optional. Each field says what it does.
+ * @returns The `body` of an `http` Effect.
+ *
+ * @example
+ * ```ts
+ * import {
+ *   bearer,
+ *   command,
+ *   file,
+ *   http,
+ *   jr2Setup,
+ *   secret,
+ *   workspace,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
+ *
+ * type Input = Workspaced<{}, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
+ *   events: [],
+ *   actors: {
+ *     build: command(["npm", "run", "report"]),
+ *     upload: http({
+ *       method: "PUT",
+ *       url: "https://files.example.com/reports",
+ *       auth: bearer(secret("files")),
+ *       body: file("dist/report.pdf", {
+ *         segments: ["report.pdf"],
+ *         contentType: "application/pdf",
+ *       }),
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "report",
+ *   context: ({ input }) => input,
+ *   initial: "building",
+ *   states: {
+ *     building: { invoke: { src: "build", onDone: "uploading" } },
+ *     uploading: { invoke: { src: "upload", onDone: "done" } },
+ *     done: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: () => ({ branch: "report" }),
+ * });
+ * ```
+ *
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/concepts/effects.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
  */
 export function file<S extends z.ZodType | undefined = undefined>(
   path: FromInput<S, string>,
-  options: { slot?: string; segments?: FromInput<S, readonly string[]>; contentType?: string } = {},
+  options: {
+    /** The Repo Slot whose Worktree holds the file. Write it only when the Workspace has more than
+     * one. */
+    slot?: string;
+    /**
+     * Path segments that jr2 adds to the end of the url, as `path` does in `request` for a json or
+     * text body. A list of strings, or a function of the input of the Effect that gives one.
+     */
+    segments?: FromInput<S, readonly string[]>;
+    /**
+     * The content type of the body. Default `application/octet-stream`. Do not write it beside a
+     * `content-type` header.
+     */
+    contentType?: string;
+  } = {},
 ): FileBody<S> {
+  // The Sandbox Effector opens the file beneath the Worktree with no symlink at any component
+  // (ADR-0067, ADR-0068); the refusals it makes are output, never a fault.
   if (typeof path !== "string" && typeof path !== "function") {
     throw new Error("file(path): the path is a string, or a function of the Effect's input that returns one");
   }
@@ -331,12 +641,16 @@ const FILE_METHODS: readonly HttpMethod[] = ["PUT", "POST", "PATCH"];
 
 // --- The definition ------------------------------------------------------------------------------
 
-/** What `request` returns: the run's part of the request. Everything else is the definition's. */
+/** What the `request` of an `http` definition returns: the part of the request that changes for
+ * each run. The definition fixes the rest. */
 export type HttpRequestParts = {
-  /** Path segments appended to the url: each is encoded; `.`, `..` and an empty one are refused
-   * in the Effector as output, with nothing sent. */
+  /**
+   * Path segments that jr2 adds to the end of the url. jr2 encodes each segment. A segment that
+   * is `.`, `..` or empty gives the output `refused`, and nothing is sent.
+   */
   path?: readonly string[];
-  /** A JSON body. */
+  /** A JSON body. Do not give `text` too. When it starts, the Effect refuses both: ``http:
+   * `request` returned both json and text``. */
   json?: unknown;
   /** A text body. */
   text?: string;
@@ -344,33 +658,97 @@ export type HttpRequestParts = {
 
 /** An `http` Effect's definition. */
 export type HttpDefinition<S extends z.ZodType | undefined = undefined> = {
+  /**
+   * The HTTP method: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS`. It refuses
+   * another: `http({ method: "<method>" }): the method is one of GET, HEAD, POST, PUT, PATCH,
+   * DELETE, OPTIONS`.
+   */
   method: HttpMethod;
-  /** The url. Its scheme and host are fixed here — never a param — and a secret may sit only in
-   * its path: text`https://api.telegram.org/bot${secret("tg")}/sendMessage`. Or `open`: a packaged
-   * Machine that cannot know the host leaves the url Open, and the composer binds it once with
-   * `customize(machine, { effects: { <slot>: { url } } })` — never per run (ADR-0054). */
+  // The scheme and host are literal so that no param reaches the host (ADR-0068); an Open url is
+  // bound once by the composer, never per run (ADR-0054).
+  /**
+   * The url: `http://` or `https://`, then a literal host. No input, param or Effect secret can
+   * change where the call goes. An Effect secret can be only in the path:
+   * `` text`https://api.telegram.org/bot${secret("tg")}/sendMessage` ``.
+   *
+   * Or `open`: a packaged Machine that cannot know the host leaves the url Open, and the composer
+   * binds it one time with `customize(machine, { effects: { <slot>: { url } } })`.
+   *
+   * It refuses:
+   * - a scheme or host that is not literal: `` http({ url }): the url is an http:// or https:// url
+   *   whose scheme and host are literal — a secret may sit only in its path, after a "/":
+   *   text`https://api.example.com/bot${secret("tg")}/send` (ADR-0068) ``
+   * - an Effect secret after `?` or `#`: `` http({ url }): secret("<name>") sits in the url's query
+   *   or fragment — a secret may sit only in its path; send it in `auth` or a header instead:
+   *   headers: { "x-api-key": text`${secret("...")}` } (ADR-0068) ``
+   * - a host that is not a host: `http({ url }): "<scheme>://<host>" is not a host`
+   * - a user name or password in the url: ``http({ url }): the url carries userinfo — use `auth` ``
+   */
   url: string | Text | typeof open;
-  /** Static headers, lowercase; a value may be a `text` with a secret. */
+  /**
+   * Headers that are the same for each run. Each name is lowercase. A value is a string, or a
+   * `text` with an Effect secret.
+   *
+   * It refuses:
+   * - a name that is not lowercase, or that frames or routes the request (`host`,
+   *   `content-length`, `transfer-encoding`, `connection`, `upgrade`, `te`, `trailer`,
+   *   `keep-alive`, `proxy-*`): `http({ headers }): "<name>" is not a header an Effect sets — a
+   *   lowercase name that does not frame or route the request (ADR-0068)`
+   * - an `authorization` header beside `auth`: ``http({ headers }): "authorization" is set by
+   *   `auth` — write one of them``
+   */
   headers?: Readonly<Record<string, string | Text>>;
+  /**
+   * The `Authorization` header: `bearer(secret("x"))`, `basic(user, password)`, or a `text` that
+   * is the whole value.
+   */
   auth?: { readonly bearer: Secret } | { readonly basic: { user: Text; password: Text } } | Text;
-  /** The Effect's input — what an invoke's `input` (or `fromPick`) hands it. */
+  /**
+   * The zod schema of the input of the Effect: what the `input` of the `invoke`, or `fromPick`,
+   * gives it. jr2 parses the input with it before the call. When it starts, input that does not
+   * agree with it makes the Effect fail (its `onError` route): `http "<slot>": its input does not
+   * match the definition's input schema — <path>: <message>`, one `<path>: <message>` for each
+   * problem, joined by `; `.
+   */
   input?: S;
-  /** The run's part of the request, from the input. */
+  /**
+   * A function that makes the part of the request that changes for each run, from the input:
+   * `path` segments, and a `json` or `text` body. It cannot change the host, a header or an
+   * Effect secret. Do not write it beside `body`.
+   */
   request?: (input: S extends z.ZodType ? z.infer<S> : void) => HttpRequestParts;
-  /** A Worktree file as the body: `file(path, { slot?, segments?, contentType? })` (ADR-0067). Then the
-   * Effect runs in its Workspace's Sandbox Effector, and `request` is not written: `file()`'s
-   * `segments` are the path. */
+  // A file body is an ADR-0067 Effect: the Sandbox Effector of the Workspace sends it.
+  /**
+   * A Worktree file as the body: `file(path, { slot?, segments?, contentType? })`. The Effect then
+   * runs in the Sandbox Effector of its Workspace. Do not write `request` beside it: the `segments`
+   * of `file` are the path. It refuses another body: ``http({ body }): a body is file(path, {
+   * slot?, segments?, contentType? }) — json and text come from `request` ``.
+   */
   body?: FileBody<S>;
-  /** Default 30s. Past it with no answer: output `unknown`. */
+  /**
+   * How long jr2 waits for the answer: a number and a unit, such as `"30s"` or `"2m"`. Default
+   * `"30s"`. With no answer in that time, the output is `unknown`. It refuses a value that is not
+   * a positive duration: `http: timeout "<timeout>" is not a positive duration (like "30s",
+   * "2m")`.
+   */
   timeout?: Duration;
-  /** Bytes of a text body returned. Default 65536. */
+  /**
+   * The largest number of bytes of a text response body that the output keeps. Default 65536.
+   * When jr2 cuts the body, `truncated` is `true`. It refuses a value that is not a positive whole
+   * number: `http({ maxBody }): a positive number of bytes`.
+   */
   maxBody?: number;
-  /** Marked by the author: the call may be sent twice (it carries its own idempotency key, or it
-   * is a read). A restore that finds no replica holding it then sends it again; unmarked, it
-   * settles `unknown` (ADR-0067). Default false. */
+  // The restore rule (ADR-0067): a restore that finds no replica holding the call sends it again
+  // only when it is marked; unmarked, it settles `unknown`.
+  /**
+   * `true` when it is safe to send the call two times: it has its own idempotency key, or it only
+   * reads. Default `false`. After an Orchestrator restart, jr2 cannot always tell if the call went
+   * out. Then it sends an idempotent call again, and gives any other call the output `unknown`.
+   */
   idempotent?: boolean;
 };
 
+/** @internal */
 export type HttpInput<S> = S extends z.ZodType ? z.infer<S> : void;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -509,8 +887,8 @@ export function openHttpParts<S extends z.ZodType | undefined>(def: HttpDefiniti
 /**
  * The unbound logic of an http definition with Open parts (ADR-0054) — its url, an Open secret in
  * its auth or a header, or both — or undefined when every part is fixed. Binding builds the Effect
- * again, whole, with `rebuild` (its own constructor) over the definition with the bound parts, so the
- * bound one is checked like any definition; a binding that names one of two Open parts gives an
+ * again, whole, with `rebuild` (its own constructor) over the definition with the bound parts, so
+ * the bound one is checked like any definition; a binding that names one of two Open parts gives an
  * Effect still Open in the other.
  */
 export function openHttpOf<S extends z.ZodType | undefined>(
@@ -884,8 +1262,8 @@ async function drive<I, O>(
 /**
  * The state that invoked this Effect exited (D1) — or the host is parking the run. Parking keeps
  * the call for the restore to find. An exit stops the polling and records the abort, "outcome
- * unknown": an http Effect has no stop route, so the Effector finishes the call and drops an outcome nobody
- * reads. The Machine never hears it.
+ * unknown": an http Effect has no stop route, so the Effector finishes the call and drops an
+ * outcome nobody reads. The Machine never hears it.
  */
 function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): void {
   const run = running.get(self);
@@ -960,12 +1338,66 @@ function parseDuration(d: Duration): number {
 }
 
 /**
- * THE authoring surface for an `http` Effect (ADR-0068): `actors: { comment: http({ method, url,
- * auth: bearer(secret("jira")), input, request }) }`, invoked as `src: "comment"`. It runs in the
- * Instance Effector, which `jr2 up` converges because this definition is placed there — or, with
- * `body: file(...)`, in the Sandbox Effector of the Workspace whose body invokes it (ADR-0067). The
- * Orchestrator signs the call and holds no secret. Every outcome is output:
- * `response | unreachable | refused | unknown`.
+ * Make an `http` Effect: a call to a URL, with Effect secrets that the Agent never reads. Put it
+ * in `actors`, and invoke it by its key: `actors: { comment: http({ ... }) }`, then `invoke: {
+ * src: "comment" }`.
+ *
+ * It runs in the Instance Effector, which `jr2 up` deploys when a Machine has an `http` Effect.
+ * With `body: file(...)`, it runs in the Sandbox Effector of the Workspace whose body invokes it.
+ * The Effector makes the call. The Orchestrator holds no secret.
+ *
+ * Every outcome is output (`HttpOutput`): `response`, `unreachable`, `refused` or `unknown`. A 4xx
+ * or 5xx status is output too. jr2 sends the call at most one time, unless you mark it
+ * `idempotent`. When its state exits while the call runs, jr2 stops waiting for it. The Effector
+ * can still send it.
+ *
+ * Each field of {@link HttpDefinition} tells what it refuses. `createMachine` also refuses an
+ * Effect written directly in an `invoke`: `machine "<id>": state "<state>" invokes an Effect
+ * inline — a Part is a key of actors, so it has a name that the ledger, the report and
+ * customize() share: actors: { <name>: http(...) }, then invoke: { src: "<name>" }`.
+ *
+ * @param def - The definition. Each field tells what it does.
+ * @returns An Effect, for `actors`.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { bearer, http, jr2Setup, secret } from "@jr2/orchestrator";
+ *
+ * const comment = http({
+ *   method: "POST",
+ *   url: "https://jira.example.com/rest/api/2/issue",
+ *   auth: bearer(secret("jira")),
+ *   input: z.object({ key: z.string(), body: z.string() }),
+ *   request: ({ key, body }) => ({ path: [key, "comment"], json: { body } }),
+ * });
+ *
+ * export const machine = jr2Setup({
+ *   types: {} as { context: { key: string }; input: { key: string } },
+ *   events: [],
+ *   actors: { comment },
+ * }).createMachine({
+ *   id: "comment",
+ *   context: ({ input }) => input,
+ *   initial: "commenting",
+ *   states: {
+ *     commenting: {
+ *       invoke: {
+ *         src: "comment",
+ *         input: ({ context }) => ({ key: context.key, body: "The build passed." }),
+ *         onDone: "done",
+ *       },
+ *     },
+ *     done: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/concepts/secrets-and-trust.md
+ * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
  */
 export function http<
   S extends z.ZodType | undefined = undefined,
@@ -978,6 +1410,8 @@ export function http<
 export function http<S extends z.ZodType | undefined = undefined>(
   def: HttpDefinition<S>,
 ): EffectLogic<HttpInput<S>, HttpOutput> {
+  // The Orchestrator signs the start, and the Effector builds the request: the definition's parts,
+  // and `request`'s from the input (ADR-0068).
   if (def.body !== undefined) return httpFileWith(sandboxEffectorPort, def);
   return httpWith(
     (target) => createEffectorClient({ key: target.key, transport: nodeEffectorTransport(target.service) }),

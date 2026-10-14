@@ -116,14 +116,25 @@ type SlotsOf<M extends AnyStateMachine> =
     ? TActor
     : never;
 
-/** The logic a Machine declares under one slot key. */
+/**
+ * The logic a Machine declares under one slot key.
+ *
+ * @internal
+ */
 type LogicAt<M extends AnyStateMachine, K extends string> = Extract<SlotsOf<M>, { src: K }>["logic"];
 
-/** The Agent slots — told from every other slot by their logic, which no other actor kind has. */
+/**
+ * The Agent slots — told from every other slot by their logic, which no other actor kind has.
+ *
+ * @internal
+ */
 type AgentSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AgentLogic }>["src"];
 
 /** The Effect slots with an Open part — told by the phantom `OpenEffect` their constructor's
- * overload states for an `open` url or argv, or a `secret(open)` (open-effect.ts). */
+ * overload states for an `open` url or argv, or a `secret(open)` (open-effect.ts).
+ *
+ * @internal
+ */
 type OpenEffectSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: OpenEffect<OpenEffectPart> }>["src"];
 
 /** What one Open part binds to: a url, an argv, a secret's name, a dispatch's target — another
@@ -142,14 +153,24 @@ type PartBinding<P> = P extends "url"
 type Intersected<U> = (U extends unknown ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
 
 /** What one Open Effect binds to: its url, its argv or its secret — for an Effect with two Open
- * parts, one object with both keys, the intersection of their bindings (ADR-0054). */
+ * parts, one object with both keys, the intersection of their bindings (ADR-0054).
+ *
+ * @internal
+ */
 type BindingOf<L> = L extends OpenEffect<infer P> ? Intersected<PartBinding<P>> : never;
 
 /** The child-Machine slots: the slots composition reaches (ADR-0049 — a nested Machine is an
- * ordinary `invoke` of an ordinary slot). */
+ * ordinary `invoke` of an ordinary slot).
+ *
+ * @internal
+ */
 type ChildSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AnyStateMachine }>["src"];
 
-/** The child Machine under one slot key, constrained so `Customize` may recurse into it. */
+/**
+ * The child Machine under one slot key, constrained so `Customize` may recurse into it.
+ *
+ * @internal
+ */
 type ChildAt<M extends AnyStateMachine, K extends string> = Extract<LogicAt<M, K>, AnyStateMachine>;
 
 /**
@@ -163,6 +184,7 @@ type ChildAt<M extends AnyStateMachine, K extends string> = Extract<LogicAt<M, K
 // Each step is taken on the wrapper's MARKER (`JR2Wrapper`, parts.ts), never on a slot's spelling —
 // an author is free to name a slot `body` or `worker`, and routing through it because of the name
 // would offer the Agents of a Machine the composer never named.
+/** @internal */
 type Reached<M extends AnyStateMachine> = M extends JR2Wrapper<infer TBody> ? Reached<TBody> : M;
 
 /**
@@ -170,68 +192,124 @@ type Reached<M extends AnyStateMachine> = M extends JR2Wrapper<infer TBody> ? Re
  * {@link Reached}: down through the wrappers to the first Machine that composes a Sandbox, which
  * is the one whose `JR2Repos` marker says which slots exist (ADR-0051). `never` when no wrapper on
  * the chain composes one, which is what makes `repos` unavailable there rather than `{}`.
+ *
+ * @internal
  */
 type WorkspaceOf<M extends AnyStateMachine> =
   M extends JR2Repos<any> ? M : M extends JR2Wrapper<infer TBody> ? WorkspaceOf<TBody> : never;
 
 /** The Repo Slot keys the reached `workspace()` declared. The `never` case is tested by itself,
  * because `never extends JR2Repos<infer TSlots>` is true with nothing to infer from — and an
- * uninferred `TSlots` widens to `string`, which would offer every key exactly where there are none. */
+ * uninferred `TSlots` widens to `string`, which would offer every key exactly where there are none.
+ *
+ * @internal
+ */
 type RepoSlotsOf<M extends AnyStateMachine> = [WorkspaceOf<M>] extends [never]
   ? never
   : WorkspaceOf<M> extends JR2Repos<infer TSlots>
     ? TSlots
     : never;
 
+// What may be retuned on one Machine, mirroring the DECLARATION's own shape and recursively
+// partial (ADR-0049): every key optional, every Agent override a partial definition, every child a
+// `Customize` of that child. `image`/`user` are the `workspace()` options (ADR-0037, ADR-0005) and
+// apply to the wrapper the chain reaches; a Machine that composes no Sandbox refuses them at build
+// time, because there is nothing for them to name.
 /**
- * What may be retuned on one Machine, mirroring the DECLARATION's own shape and recursively
- * partial (ADR-0049): every key optional, every Agent override a partial definition, every child
- * a `Customize` of that child.
+ * The parts of one Machine that `customize()` can retune: its Agents, its Open Effects, the
+ * Machines it composes, and the Sandbox of its `workspace()`. The type comes from the Machine
+ * itself, so it offers only the parts that the Machine declares. A key for a part the Machine does
+ * not declare does not compile. The `agents`, `effects`, `actors` and `repos` keys take no value
+ * when the Machine has no such part. `image`, `user` and `resources` compile on every Machine, and
+ * `customize()` refuses them when the Machine composes no `workspace()`.
  *
- * `image`/`user` are the `workspace()` options (ADR-0037, ADR-0005) and apply to the wrapper the
- * chain reaches; a Machine that composes no Sandbox refuses them at build time, because there is
- * nothing for them to name.
+ * Every key is optional. Write only what you change.
+ *
+ * @example
+ * ```ts
+ * import { customize, type Customize } from "@jr2/orchestrator";
+ * import { task } from "@jr2/machines";
+ *
+ * const parts: Customize<typeof task> = {
+ *   repos: { app: { url: "https://github.com/you/app.git", ref: "main" } },
+ *   agents: { coder: { model: "anthropic/claude-sonnet-5-5", thinkingLevel: "high" } },
+ * };
+ *
+ * export const machine = customize(task, parts);
+ * ```
+ *
+ * @see docs/guides/bind-open-parts.md
+ * @see docs/concepts/composition.md
+ * @see docs/reference/decisions/0049-a-machine-carries-its-parts-and-composes-by-invoke.md
  */
 export type Customize<M extends AnyStateMachine> = {
-  /** Retune an Agent this Machine carries: the override is layered over the stock definition, so
-   * `{ model }` alone keeps the instructions the author wrote — and BINDS the model when the
-   * author left it Open (ADR-0054), which is the common consumer line for a packaged Machine. The
-   * override is a `Partial<AgentDefinition>`, never a declaration: a composer binds, and binding
-   * to `open` again is not a thing anyone means. A Machine carrying no Agent takes `never` rather
-   * than `{}`: an empty object type accepts any literal, which would make the one case with
-   * nothing to name the one case with nothing checked. */
+  // `{ model }` alone BINDS the model when the author left it Open (ADR-0054), which is the common
+  // consumer line for a packaged Machine. The override is a `Partial<AgentDefinition>`, never a
+  // declaration: a composer binds, and binding to `open` again is not a thing anyone means
+  // (ADR-0054). A Machine carrying no Agent takes `never` rather than `{}`: an empty object type
+  // accepts any literal, which would make the one case with nothing to name the one case with
+  // nothing checked.
+  /** Retune the Agents that this Machine carries, by slot name: `{ coder: { model } }`. Each
+   * override goes over the definition that the author wrote, field by field, so `{ model }` alone
+   * keeps the author's instructions. When the author left the model Open, this is where you bind
+   * it. Allowed fields: the fields of an `agent()` definition. At run time, `customize()` refuses a
+   * slot that holds no Agent: `customize(): machine "<id>" carries no Agent slot "<slot>" — its Agents are: <slots>`. */
   agents?: [AgentSlots<Reached<M>>] extends [never]
     ? never
     : { [K in AgentSlots<Reached<M>>]?: Partial<AgentDefinition> };
-  /** Bind an Effect's Open parts (ADR-0054): `{ url }` for an http Effect (whatever its body) whose url
-   * the package left Open, `{ argv }` for a command whose argv it left Open, `{ secret }` for an
-   * Effect that names `secret(open)`, `{ target: { url, token: secret("<name>") } }` for a dispatch
-   * whose target it left Open (ADR-0071) — one object with both keys for an Effect with two, so a binding
-   * that leaves one out does not compile. Bound once, here — a value, never a mapper over the door,
-   * so the host is fixed before any run. Only an Effect with an Open part is offered: a part its
-   * author fixed stays fixed. A Machine with none takes `never`, as `agents` does. */
+  // `{ url }` is for an http Effect whatever its body (ADR-0054); `{ target }` binds a dispatch's
+  // url and token as one (ADR-0071). Bound once, here — a value, never a mapper over the door, so
+  // the host is fixed before any run (ADR-0054). Only an Effect with an Open part is offered: a
+  // part its author fixed stays fixed. A Machine with none takes `never`, as `agents` does.
+  /** Bind the Open parts of this Machine's Effects, by slot name: `{ url }` for an `http` Effect
+   * whose url is Open, `{ argv }` for a `command` whose argv is Open, `{ secret }` for an Effect
+   * that names `secret(open)`, `{ target: { url, token: secret("<name>") } }` for a `dispatch`
+   * whose target is Open. For an Effect with two Open parts, one object holds both keys, and
+   * a binding that leaves one out does not compile. Only Effects with an Open part are offered.
+   * See {@link EffectBinding} for the values and the refusals. */
   effects?: [OpenEffectSlots<Reached<M>>] extends [never]
     ? never
     : { [K in OpenEffectSlots<Reached<M>>]?: BindingOf<LogicAt<Reached<M>, K>> };
-  /** Retune a Machine this one composes — the same shape, one level down. */
+  /** Retune a Machine that this Machine composes, by slot name. The value has the same shape as
+   * these parts, one level down. At run time, `customize()` refuses a slot that holds no Machine:
+   * `customize(): machine "<id>" composes no Machine under "<slot>"`. */
   actors?: [ChildSlots<Reached<M>>] extends [never]
     ? never
     : { [K in ChildSlots<Reached<M>>]?: Customize<ChildAt<Reached<M>, K>> };
-  /** The Sandbox Image (ADR-0037): a `file:` URL to a docker context this module ships, or a
-   * registry ref. */
+  // The Sandbox Image (ADR-0037).
+  /** The Sandbox Image: a `file:` URL to a docker context that your module ships
+   * (`import.meta.resolve("./image")`), which `jr2 up` builds, or a registry ref. It replaces the
+   * image of the `workspace()`. When the Machine composes no `workspace()`, `customize()` refuses it
+   * at run time. */
   image?: string;
-  /** The User Container (ADR-0005): its image in the same two shapes, or `{ image, resources }`
-   * with its split of the Size (ADR-0060). Replaces the seat whole — split included. */
+  // The User Container (ADR-0005), in the same two shapes, or `{ image, resources }` with its split
+  // of the Size (ADR-0060). Replaces the seat whole — split included.
+  /** The User Container: its image, as a `file:` URL or a registry ref, or a
+   * {@link UserContainer} that also gives its part of the Size. It replaces the whole User
+   * Container, its part of the Size included. When the Machine composes no `workspace()`,
+   * `customize()` refuses it at run time. */
   user?: string | UserContainer;
-  /** The Size (ADR-0060), layered field by field over the `workspace()`'s own: the composer's
-   * Repo may be bigger than the author's. `limits.memory` and `limits.cpu`, nothing else. */
+  // The Size (ADR-0060), layered over the `workspace()`'s own: the composer's Repo may be bigger
+  // than the author's.
+  /** The Size, layered field by field over the Size of the `workspace()`: `{ limits: { memory } }`
+   * keeps the author's cpu. Only `limits.memory` and `limits.cpu`. See {@link Size}. Only for a
+   * Machine that composes a `workspace()`. */
   resources?: Size;
-  /** Bind the Repo Slots the reached `workspace()` declared (ADR-0051) — an open slot to a url,
-   * or a bound or per-run one to a different Binding; any of the three forms, so a consumer can
-   * also bind a mapper over the wrapper's door. A slot the Machine does not declare is a compile
-   * error, and a Machine that composes no Sandbox takes `never`, as `agents` does. A `workspace()`
-   * that declared its map Open takes any keys — they are the composer's words, in the order the
-   * Machine documents — and at least one, checked at the call. */
+  // Any of the three slot forms, so a consumer can also bind a mapper over the wrapper's door
+  // (ADR-0051). A Machine that composes no Sandbox takes `never`, as `agents` does. A
+  // `workspace()` that declared its map Open takes any keys — they are the composer's words, in the
+  // order the Machine documents — and at least one, checked at the call.
+  /** Bind the Repo Slots of the `workspace()`, by slot name. Each value is one of these:
+   *
+   * - a url
+   * - a Binding `{ url, ref? }`
+   * - a function `({ input }) => url | { url, ref? }` over the run input
+   * - `open`, to leave the slot for the next composer to bind
+   *
+   * You can bind an Open slot, or give a bound or per-run slot a different Binding. A slot that
+   * the Machine does not declare does not compile. Some Machines, such as `task`, leave their
+   * whole slot map Open. Then you name every slot, and at least one. The keys are your names for
+   * the Repos, and the Machine says what their order means. */
   repos?: [RepoSlotsOf<M>] extends [never] ? never : { [K in RepoSlotsOf<M>]?: RepoSlot<InputFrom<WorkspaceOf<M>>> };
 };
 
@@ -246,10 +324,55 @@ type LooseParts = {
   resources?: Size;
 };
 
+// Returns a NEW Machine of the same type — the original is untouched, so two customizations of one
+// import are two independent Machines (ADR-0049's `deep`/`quick`), and a run of either carries what
+// it was given.
 /**
- * Retune the parts a Machine carries, returning a NEW Machine of the same type — the original is
- * untouched, so two customizations of one import are two independent Machines (ADR-0049's
- * `deep`/`quick`), and a run of either carries what it was given.
+ * Retune the parts that a Machine carries, without a change to the module that exports it. Use it
+ * where you register a Machine as a Workflow. It binds the parts that a packaged Machine leaves
+ * Open: its Repo Slots, an Agent's model, or an Effect's url, argv or secret. It also changes the
+ * parts that its author fixed: an Agent's instructions, the Sandbox Image, or the Size.
+ *
+ * It gives back a new Machine of the same type. The original does not change, so two
+ * `customize()` calls on one import give two Machines. Only the parts the Machine declares can be
+ * retuned. You cannot add a part: a Machine that needs another Agent is a new Machine. The types
+ * refuse most mistakes when you compile. At run time, `customize()` also throws:
+ *
+ * - `customize(): machine "<id>" carries no Agent slot "<slot>" — its Agents are: <slots>`
+ * - `customize(): machine "<id>" composes no Machine under "<slot>" — the Machines it composes are: <slots>`
+ * - `customize(): machine "<id>" carries no Effect slot "<slot>" — its Effects are: <slots>`
+ * - `customize(): machine "<id>" declares no Repo Slot "<slot>" — its slots are: <slots>`
+ * - `customize(): machine "<id>" declares its Repo Slots open as a map — name at least one`
+ * - `` customize(): `repos` say what a SANDBOX is made of, how big it is and which Repos it attaches, and machine "<id>" composes none ``
+ *   (for `resources`, the text starts `` customize(): `resources` ``; for `image` or `user`, it
+ *   starts `` customize(): `image`/`user` ``)
+ * - `customize(): machine "<id>": <errors>`, when an Effect argv that you bind fails the checks
+ *   that the Machine passed when it was built
+ * - the refusals of {@link EffectBinding}, {@link RepoSlot}, {@link Size} and {@link UserContainer}, which start
+ *   with `customize()`
+ *
+ * @param machine - The Machine to retune: one you import from a package, or one you wrote. When
+ * its root is a `workspace()` or a `pool()`, `customize()` reaches through to the Machine inside,
+ * so you never name the wrapper's own slot.
+ * @param parts - The parts to change. See {@link Customize}.
+ * @returns A new Machine of the same type, with the parts changed.
+ *
+ * @example
+ * ```ts
+ * import { customize } from "@jr2/orchestrator";
+ * import { task } from "@jr2/machines";
+ *
+ * export const machine = customize(task, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   resources: { limits: { memory: "4Gi" } },
+ * });
+ * ```
+ *
+ * @see docs/guides/bind-open-parts.md
+ * @see docs/concepts/composition.md
+ * @see docs/reference/decisions/0049-a-machine-carries-its-parts-and-composes-by-invoke.md
+ * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
  */
 export function customize<M extends AnyStateMachine>(machine: M, parts: Customize<M>): M {
   const { agents, effects, actors, image, user, repos, resources } = parts as LooseParts;

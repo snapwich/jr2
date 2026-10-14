@@ -57,6 +57,53 @@ import {
 
 /** One argv entry an Effect's input fills: ONE argument, whatever its bytes (never shell text). */
 export type Arg<N extends string = string> = { readonly arg: N };
+
+/**
+ * Mark one argv entry of a `command` that the input of the Effect fills. `arg("file")` is one
+ * argument: the value of the `file` key of the input, whatever its characters. No shell reads it.
+ *
+ * The input of the Effect then has a string key for each `arg`. Give it in the `input` of the
+ * `invoke`, or use `fromPick` to give it from a pick.
+ *
+ * When it starts, with no string in the input for an entry, the Effect fails (its `onError`
+ * route): `command "<slot>": argv slot <<name>> has no string value in its input (got <type>) —
+ * map it in the invoke's input`. The angle brackets around the name are in the text.
+ *
+ * @param name - The key of the input that fills this entry.
+ * @returns The argv entry, for the argv list of `command`.
+ *
+ * @example
+ * ```ts
+ * import { arg, command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ *
+ * type Input = Workspaced<{ file: string }, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
+ *   events: [],
+ *   actors: { lint: command(["npx", "eslint", arg("file")]) },
+ * }).createMachine({
+ *   id: "lint",
+ *   context: ({ input }) => input,
+ *   initial: "lint",
+ *   states: {
+ *     lint: {
+ *       invoke: { src: "lint", input: ({ context }) => ({ file: context.file }), onDone: "done" },
+ *     },
+ *     done: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: () => ({ branch: "lint" }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ */
 export const arg = <const N extends string>(name: N): Arg<N> => ({ arg: name });
 
 /** A `command` Effect's plain data. */
@@ -105,10 +152,10 @@ export type HttpParts = {
   readonly maxBody: number;
   /** Marked by the author: a restore that cannot find the Effect sends it again. */
   readonly idempotent: boolean;
-  /** The body is a Worktree file (`body: file(...)`, ADR-0067): the Effect runs in the Sandbox Effector
-   * of the Workspace whose body invokes it. `slot` is the Repo Slot whose Worktree holds the file —
-   * needed only where the Workspace carries several. Absent: a json, text or no body, in the
-   * Instance Effector. */
+  /** The body is a Worktree file (`body: file(...)`, ADR-0067): the Effect runs in the Sandbox
+   * Effector of the Workspace whose body invokes it. `slot` is the Repo Slot whose Worktree holds
+   * the file — needed only where the Workspace carries several. Absent: a json, text or no body, in
+   * the Instance Effector. */
   readonly file?: { readonly slot?: string; readonly contentType?: string };
 };
 
@@ -249,12 +296,76 @@ export function inputKeysOf(parts: EffectParts): string[] | undefined {
 
 // --- Output -------------------------------------------------------------------------------------
 
-/** The outside world may have acted, and jr2 cannot tell: the Harness lost the exec, or its state
- * exited while it ran. Output the Machine routes on; never repeated by jr2. */
+/** The output `{ outcome: "unknown", reason }`: the Effect may have acted, and jr2 cannot tell.
+ * For example, the Harness lost the exec, or its state exited while it ran. Route on it. jr2 does
+ * not run the Effect again. */
 export type Unknown = { outcome: "unknown"; reason: string };
 
-/** A `command` Effect's output: it exited, its timeout killed it, a signal killed it, or unknown. A
- * credentialed command's says `dirty` when the Worktree held edits it did not see (ADR-0067). */
+// `dirty` is a credentialed command's alone (ADR-0067): it runs in the Sandbox Effector against
+// the pinned commit, never the live Worktree.
+/**
+ * The output of a `command` Effect: what the `onDone` of its state gets as `event.output`. Every
+ * outcome is output. A failed program is output too. Route on `outcome`:
+ *
+ * - `exited`: the program ended. `code` is its exit code. A program that the container does not
+ *   have is `exited` with code 127.
+ * - `timeout`: the command ran past its `timeout`, and jr2 killed it.
+ * - `killed`: a signal ended it. `signal` names the signal.
+ * - `unknown`: jr2 cannot tell what the command did, for example because the Harness restarted
+ *   while it ran. `reason` tells why. jr2 does not run it again.
+ *
+ * `tail` is the end of what the command wrote, at most the `tail` option of `command` in
+ * characters. `dirty` is `true` when a command that names an Effect secret ran against a commit,
+ * and the Worktree held changes that it did not see.
+ *
+ * @example
+ * ```ts
+ * import {
+ *   command,
+ *   jr2Setup,
+ *   workspace,
+ *   type CommandOutput,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
+ *
+ * type Input = Workspaced<{}, "app">;
+ *
+ * const passed = (output: CommandOutput): boolean =>
+ *   output.outcome === "exited" && output.code === 0;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
+ *   events: [],
+ *   actors: { tests: command(["npm", "test"], { timeout: "15m" }) },
+ * }).createMachine({
+ *   id: "tests",
+ *   context: ({ input }) => input,
+ *   initial: "testing",
+ *   states: {
+ *     testing: {
+ *       invoke: {
+ *         src: "tests",
+ *         onDone: [
+ *           { guard: ({ event }) => passed(event.output), target: "green" },
+ *           { target: "red" },
+ *         ],
+ *       },
+ *     },
+ *     green: { type: "final" },
+ *     red: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: () => ({ branch: "tests" }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ */
 export type CommandOutput = (ExecOutcome & { dirty?: boolean }) | Unknown;
 
 /**
@@ -387,24 +498,26 @@ const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   dispatch: ["output", "report"],
 };
 
-/** A kind's tail for one output. The NEWEST push of its Repo Slot whose sync did not finish
- * (`busy`, `not-synced`) keeps its bundle: the sync that runs again before the next push of that
- * slot moves the branch from it, and the Agent's store may not hold the published commits without it.
- * Once a sync finished, or once a newer push of the slot published, the bundle goes: only the
- * newest push's sync runs again (`lastPushOf`), so an older bundle has no reader. */
+/** A kind's tail for one output. The NEWEST push of its Repo Slot whose sync did not finish (`busy`,
+ * `not-synced`) keeps its bundle: the sync that runs again before the next push of that slot moves
+ * the branch from it, and the Agent's store may not hold the published commits without it. Once a
+ * sync finished, or once a newer push of the slot published, the bundle goes: only the newest
+ * push's sync runs again (`lastPushOf`), so an older bundle has no reader. */
 function tailsOf(kind: EffectRow["kind"], output: Record<string, unknown>, newest: boolean): readonly string[] {
   if (kind === "push" && newest && (output.sync === "busy" || output.sync === "not-synced")) return ["detail"];
   return TAILS[kind];
 }
 
-/** A settled push row that published: its pair, and its sync's answer and bundle when it has them. */
+/** A settled push row that published: its pair, and its sync's answer and bundle when it has them.
+ */
 export type PushedRow = { published: string; source: string; sync?: SyncAnswer["sync"]; bundle?: string } & Record<
   string,
   unknown
 >;
 
 /** The ledger's last push of a Workspace's Repo Slot that published: its row, by `at`, never this
- * Effect's (`self`). A Workspace with two Repo Slots has two branches on two remotes, so two pairs. */
+ * Effect's (`self`). A Workspace with two Repo Slots has two branches on two remotes, so two pairs.
+ */
 export function lastPushOf(
   rows: Readonly<Record<string, EffectRow>>,
   sandbox: string,
@@ -481,7 +594,8 @@ export type EffectMarker = {
 
 /** The Harness's exec, as the Effect drives it. `read` answers undefined for an exec the Harness
  * does not know (404): it restarted, and jr2 settles `unknown`. `start` rejects with `ExecNotSent`
- * only when the request certainly never reached the Harness — the one failure it is sent again on. */
+ * only when the request certainly never reached the Harness — the one failure it is sent again on.
+ */
 export interface ExecPort {
   start(id: string, req: ExecRequest, signal: AbortSignal): Promise<void>;
   read(id: string, offset: number | undefined, signal: AbortSignal): Promise<ExecRead | undefined>;
@@ -504,9 +618,13 @@ type Fault = { type: "jr2.effect.error"; error: unknown };
 
 /** An Effect slot's logic: xstate `ActorLogic`, typed by its input and output, branded with its
  * parts. The brand is a runtime property (`isEffect`) and part of the type, as `definition` is
- * not on an Agent's: nothing substitutes a fake for an Effect's parts. */
+ * not on an Agent's: nothing substitutes a fake for an Effect's parts.
+ *
+ * @internal
+ */
 export type EffectLogic<I, O> = ActorLogic<EffectSnapshot<O, I>, EventObject, I> & EffectSlot;
 
+/** @internal */
 type ArgNames<A extends readonly unknown[]> = A[number] extends infer E ? (E extends Arg<infer N> ? N : never) : never;
 /** A command's input: one string per argv slot, and with `pin` the approved commit (`{ sha }`);
  * none when there is neither. */
@@ -516,32 +634,78 @@ export type CommandInput<A extends readonly unknown[], P = false> = [
   ? void
   : { [K in ArgNames<A> | ([P] extends [true] ? "sha" : never)]: string };
 
-/** An Open argv's input (ADR-0054): its slots are the composer's, so any key is one string — what
- * the package's invoke hands it, read by the argv the composer binds. The compiler checks no slot
- * against it: one the invoke does not supply faults when the Effect starts (`argvOf`). */
+// An Open argv's slots are the composer's (ADR-0054), so any key is one string — what the
+// package's invoke hands it, read by the argv the composer binds (`argvOf`).
+/** The input of a `command(open)`: a string for each `arg()` of the argv that the Instance binds,
+ * and with `pin`, the commit (`{ sha }`). The compiler cannot check the names. When the input has
+ * no string for an `arg()`, the Effect fails when it starts. */
 export type OpenCommandInput<P = false> = Readonly<Record<string, string>> &
   ([P] extends [true] ? { sha: string } : unknown);
 
+/** A length of time: a positive number and a unit, `s`, `m` or `h`. For example `"90s"`, `"10m"`
+ * or `"1h"`. */
 export type Duration = `${number}s` | `${number}m` | `${number}h`;
 
 export type CommandOptions = {
-  /** The Repo Slot whose Worktree is the cwd — needed only where the Workspace carries several. */
+  /**
+   * The Repo Slot whose Worktree is the working directory of the command. Write it only when the
+   * Workspace has more than one Repo Slot.
+   *
+   * When it starts, it refuses:
+   * - no `slot` under a Workspace with more than one Repo Slot: `command "<slot>" runs under a
+   *   Workspace carrying more than one Repo Slot (<slots>) and names none — say which Worktree it
+   *   runs in: command(argv, { slot: "<slot>" }) (ADR-0051)`. When `env` names an Effect secret,
+   *   the text is `command "<slot>" runs under a Workspace carrying more than one Repo Slot
+   *   (<slots>) — say which: { slot: "<slot>" } (ADR-0051)`.
+   * - with an Effect secret in `env`, a Workspace with no Repo Slot: `command "<slot>" runs under
+   *   a Workspace carrying no Repo Slot (none) — say which: { slot: "<slot>" } (ADR-0051)`.
+   * - a `slot` that the Workspace does not have: `command "<slot>" names Repo Slot "<name>", which
+   *   its Workspace does not carry (<slots>)`.
+   */
   slot?: string;
-  /** Default 10m. On expiry the Harness kills the process group: output `timeout`. */
+  /**
+   * How long the command can run: a number and a unit, such as `"90s"`, `"10m"` or `"1h"`.
+   * Default `"10m"`. When the time ends, jr2 kills the process group, and the output is
+   * `timeout`. It refuses a value that is not a positive duration: `command: timeout "<timeout>"
+   * is not a positive duration (like "90s", "10m", "1h")`.
+   */
   timeout?: Duration;
-  /** Characters of the stream's end kept in the output. Default 4096. */
+  /** The number of characters that `tail` keeps from the end of what the command wrote. Default
+   * 4096. */
   tail?: number;
-  /** The env, each a secret's value — `secret("x")` — or its file's path — `secret("x").path`
-   * (ADR-0067). Naming a secret places the command in the Sandbox Effector, against the pinned
-   * commit; with none it runs in the Harness container. */
+  // Naming a secret is the placement (ADR-0067, ADR-0068): there is no placement key.
+  /**
+   * The environment variables of the command, each an Effect secret. `secret("x")` gives the
+   * value, and `secret("x").path` gives the path of a file that holds the value. When `env` names
+   * one, the command runs in the Sandbox Effector against one commit, not in the Worktree that the
+   * Agent changes. Without `env`, it runs in the Harness container, beside the Agent.
+   *
+   * It refuses a name that is not a variable name, and `PATH`, `HOME` and `TMPDIR`: ``command(argv,
+   * { env }): "<name>" is not a variable the author sets — PATH, HOME and TMPDIR are the
+   * Effector's (ADR-0067)``.
+   */
   env?: CommandEnv;
-  /** A credentialed command's commit: the Effect's input names it (`{ sha }`, an approved one);
-   * absent, the Agent's branch tip when it starts. */
+  /**
+   * Only for a command whose `env` names an Effect secret. `true`: the input of the Effect names
+   * the commit to run against (`{ sha }`, a full commit id, for example one that a Gate approved).
+   * Default: the tip of the Agent's branch when the Effect starts.
+   *
+   * It refuses `pin: true` on a command that names no Effect secret: ``command(argv, { pin: true
+   * }) names no secret in its env: `pin` chooses the commit a credentialed command runs against in
+   * the Sandbox Effector, and a command that names no secret runs in the live Worktree (ADR-0067)
+   * — name its secret, command(argv, { env: { NAME: secret("x") }, pin: true }), or drop `pin` ``.
+   *
+   * When it starts, it refuses an input `sha` that is not a full commit id: `command "<slot>"
+   * (pin): its input's sha is not a full commit id`.
+   */
   pin?: boolean;
 };
 
 /** The Open part a command's options state (ADR-0054): its secret, when its env holds
- * `secret(open)` or its `.path`. */
+ * `secret(open)` or its `.path`.
+ *
+ * @internal
+ */
 export type EnvOpenParts<Opt> = Opt extends { readonly env: infer E }
   ? OpenSecretIn<E extends Readonly<Record<string, infer V>> ? V : never>
   : never;

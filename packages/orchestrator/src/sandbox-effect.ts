@@ -151,36 +151,154 @@ export function repoRefOf(ambient: AmbientHandles, repoSlot: string): RepoRef & 
 
 // --- The definitions -------------------------------------------------------------------------------
 
-/** `push()`'s options (ADR-0067). */
+/** The options of `push()`. */
 export type PushOptions = {
-  /** The Effect's input names the commit (`{ sha }`, one a Gate approved); absent, the Agent's
-   * branch tip when the Effect starts. A pinned push the Agent pruned is refused by the remote,
-   * never substituted. */
+  // A pinned commit the Agent pruned is refused by the remote, never substituted (ADR-0067).
+  /**
+   * `true`: the input of the Effect names the commit to push (`{ sha }`, a full commit id, for
+   * example one that a Gate approved). Default: the tip of the Agent's branch when the Effect
+   * starts. When the Agent removed that commit from its branch, the remote refuses the push. jr2
+   * never pushes another commit in its place.
+   *
+   * When it starts, it refuses a `sha` that is not a full commit id: `push({ pin: true }): its
+   * input's sha is not a full commit id (got <sha>)`.
+   */
   pin?: boolean;
-  /** Push signed copies; the matching `git.credentials` entry's `sign` names the key. */
+  /**
+   * `true`: push signed copies of the commits. The `sign` field of the `git.credentials` entry that
+   * the Binding matches names the key. Default `false`.
+   *
+   * At `jr2 up`, it refuses an entry with no `sign` field: `<push> signed, and git.credentials
+   * entry "<match>" holds no sign field — add sign: { sshKey: "<a Secret with identity>", name:
+   * "<committer name>", email: "<committer email>" } to it; the email must belong to the forge
+   * account that holds the key (ADR-0051, ADR-0067)`. `<push>` names the push: `workflow
+   * "<workflow>": push "<slot>" pushes Repo Slot "<name>" (<url>)`.
+   */
   sign?: boolean;
-  /** Squash into one commit; the Effect's input carries the message (`{ message }`). Signed, its
-   * committer is the signer's; unsigned, the matching `git.credentials` entry's `committer`, which
-   * `jr2 up` requires when the entry has no `sign` (ADR-0067). */
+  /**
+   * `true`: push one commit that holds all the changes. The input of the Effect gives its message
+   * (`{ message }`). Signed, its committer is the signer. Unsigned, it is the `committer` of the
+   * `git.credentials` entry that the Binding matches. Default `false`.
+   *
+   * When it starts, it refuses an input with no message: `push({ squash: true }): its input
+   * carries no message`.
+   *
+   * At `jr2 up`, it refuses an unsigned squash whose entry has no `sign` and no `committer`:
+   * `<push> squashed without sign, and git.credentials entry "<match>" holds neither sign nor
+   * committer — the squashed commit is new and needs a committer; add committer: { name:
+   * "<committer name>", email: "<committer email>" } to it, or sign the push — push({ squash:
+   * true, sign: true }) — and add sign: { sshKey: "<a Secret with identity>", name: "<committer
+   * name>", email: "<committer email>" } to it (ADR-0051, ADR-0067)`.
+   */
   squash?: boolean;
-  /** Replace what the remote holds. */
+  /** `true`: replace what the remote branch holds. Default `false`. */
   force?: boolean;
-  /** The Repo Slot pushed — needed only where the Workspace carries several. */
+  /**
+   * The Repo Slot to push. Write it only when the Workspace has more than one.
+   *
+   * When it starts, it refuses:
+   * - no `slot` under a Workspace with more than one Repo Slot: `push "<slot>" runs under a
+   *   Workspace carrying more than one Repo Slot (<slots>) — say which: { slot: "<slot>" }
+   *   (ADR-0051)`
+   * - a `slot` that the Workspace does not have: `push "<slot>" names Repo Slot "<name>", which
+   *   its Workspace does not carry (<slots>)`
+   */
   slot?: string;
-  /** Default 5m. Past it with no answer: output `unknown`. */
+  /**
+   * How long jr2 waits for the push: a number and a unit, such as `"90s"` or `"5m"`. Default
+   * `"5m"`. With no answer in that time, the output is `unknown`. It refuses a value that is not a
+   * positive duration: `timeout "<timeout>" is not a positive duration (like "30s", "5m")`.
+   */
   timeout?: Duration;
 };
 
-/** A push's input: what `pin` and `squash` add. */
+/** The input of a `push` Effect: `{ sha }` with `pin`, and `{ message }` with `squash`. */
 export type PushInput<O extends PushOptions> = (O["pin"] extends true ? { sha: string } : unknown) &
   (O["squash"] extends true ? { message: string } : unknown);
 
-/** The sync's answer as a push's output carries it: a field beside the outcome, never the outcome. */
+/**
+ * The sync's answer as a push's output carries it: a field beside the outcome, never the outcome.
+ *
+ * @internal
+ */
 export type SyncState = SyncAnswer["sync"];
 
-/** A push's output, as the Machine routes on it: `pushed | rejected | diverged | unknown`, and beside
- * `pushed` the sync's answer — `synced | already | skipped | busy | not-synced`, with its reason
- * when it did not move the branch. The sync's bundle never reaches the Machine. */
+// The sync's bundle never reaches the Machine: `deliver` drops it from the output (ADR-0067).
+/**
+ * The output of a `push` Effect: what the `onDone` of its state gets as `event.output`. Every
+ * outcome is output, so route on `outcome`:
+ *
+ * - `pushed`: the remote has the commit. `published` is the commit on the remote, and `source` is
+ *   the Agent's commit that it comes from. They are the same commit, unless the push was signed or
+ *   squashed. `previous` is what the remote had before, and `unchanged` is `true` when the remote
+ *   had the commit already. `squashed` is `signed` or `unsigned` when the commit on the remote is
+ *   one squashed commit. `via` tells how jr2 found the new commits after a signed push:
+ *   `ancestry`, `pair`, `cherry` or `force`.
+ * - `rejected`: git or the remote refused the push. `stage` tells where, `reason` tells why, and
+ *   `detail` has the words of git.
+ * - `diverged`: the commit on the remote is not in the history of the Agent's branch, and jr2
+ *   could not pair it with a commit there. Nothing was pushed. `reason` tells why, and `published`
+ *   and `source` name the two commits.
+ * - `unknown`: jr2 cannot tell what the push did. `reason` tells why.
+ *
+ * Beside `pushed`, `sync` tells what jr2 did to the Agent's branch after the push:
+ *
+ * - `synced`: the commit on the remote is not the Agent's own, and jr2 moved the branch to the
+ *   published commits.
+ * - `already`: the branch has the published commit already.
+ * - `skipped`: the remote has the Agent's own commit, so the branch does not move.
+ * - `busy`: a rebase, merge, cherry-pick or revert of the branch is in progress. Nothing changed.
+ * - `not-synced`: the branch did not move.
+ *
+ * With `busy` or `not-synced`, `syncReason` tells why, and jr2 tries again before the next push.
+ *
+ * @example
+ * ```ts
+ * import { jr2Setup, push, workspace, type PushOutput, type Workspaced } from "@jr2/orchestrator";
+ *
+ * type Input = Workspaced<{ sha: string }, "app">;
+ *
+ * // A push that did not happen (`rejected` or `diverged`) is a different problem from one jr2
+ * // cannot see (`unknown`).
+ * const notPushed = (output: PushOutput): boolean =>
+ *   output.outcome === "rejected" || output.outcome === "diverged";
+ *
+ * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
+ *   events: [],
+ *   actors: { publish: push({ pin: true }) },
+ * }).createMachine({
+ *   id: "release",
+ *   context: ({ input }) => input,
+ *   initial: "publishing",
+ *   states: {
+ *     publishing: {
+ *       invoke: {
+ *         src: "publish",
+ *         input: ({ context }) => ({ sha: context.sha }),
+ *         onDone: [
+ *           { guard: ({ event }) => event.output.outcome === "pushed", target: "published" },
+ *           { guard: ({ event }) => notPushed(event.output), target: "notPushed" },
+ *           { target: "unknown" },
+ *         ],
+ *       },
+ *     },
+ *     published: { type: "final" },
+ *     notPushed: { type: "final" },
+ *     unknown: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: () => ({ branch: "release" }),
+ * });
+ * ```
+ *
+ * @see docs/guides/push-and-sign-a-branch.md
+ * @see docs/concepts/effects.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ */
 export type PushOutput =
   | Exclude<PushWireOutput, { outcome: "pushed" }>
   | (Omit<Extract<PushWireOutput, { outcome: "pushed" }>, "bundle"> & { sync: SyncState; syncReason?: string });
@@ -232,8 +350,8 @@ export function pushStartOf(
   };
 }
 
-/** A file-body http's start for one run (ADR-0067): the definition's parts, the url's segments, and the
- * Worktree file as the body. */
+/** A file-body http's start for one run (ADR-0067): the definition's parts, the url's segments, and
+ * the Worktree file as the body. */
 export function fileStartOf(
   parts: HttpParts,
   worktree: string,
@@ -248,7 +366,8 @@ export function fileStartOf(
   return { ...http, body: { file: { worktree, path: run.path, ...(contentType ? { contentType } : {}) } } };
 }
 
-/** A credentialed command's env as its definition names it. */
+/** The `env` of a `command`: for each variable, `secret("name")` for the value of an Effect
+ * secret, or `secret("name").path` for the path of a file that holds it. */
 export type CommandEnv = Readonly<Record<string, { readonly secret: string; readonly path: unknown }>>;
 
 export function commandEnvParts(env: CommandEnv): Pick<CommandParts, "env" | "secrets" | "openSecret"> {
@@ -579,7 +698,8 @@ async function drive<I, O>(
   }
 }
 
-/** The settled row's Repo Slot, or none when the Workspace does not name one the kind can run on. */
+/** The settled row's Repo Slot, or none when the Workspace does not name one the kind can run on.
+ */
 function repoField(spec: KindSpec, ambient: AmbientHandles, slot: string): { repo?: string } {
   try {
     return { repo: spec.repoOf(ambient, slot) };
@@ -660,9 +780,10 @@ function stoppedText(state: EffectState | undefined): string {
 }
 
 /** A start over the bytes an Effector reads is sent nowhere, and settles as its kind's own outcome
- * (ADR-0067): an http `refused`; a push `rejected` at stage `start` — nothing pushed; a credentialed
- * command `exited` 127 with the reason in its tail, the Effector's own form for a command that
- * could not start. An Agent's pick parameter — a squash message, an argv part — can reach the bound. */
+ * (ADR-0067): an http `refused`; a push `rejected` at stage `start` — nothing pushed; a
+ * credentialed command `exited` 127 with the reason in its tail, the Effector's own form for a
+ * command that could not start. An Agent's pick parameter — a squash message, an argv part — can
+ * reach the bound. */
 function tooLarge(req: StartRequest): HttpOutput | PushWireOutput | CommandWireOutput | undefined {
   const bytes = Buffer.byteLength(JSON.stringify(req), "utf8");
   if (bytes <= MAX_START_BYTES) return undefined;
@@ -800,8 +921,9 @@ function syncFields(answer: SyncAnswer): { sync: SyncState; syncReason?: string 
 
 export { lastPushOf };
 
-/** An http whose body is a Worktree file (ADR-0067), over an injected port factory — the seam `http()`
- * and the unit tests share. It runs in the Sandbox Effector of the Workspace whose body invokes it. */
+/** An http whose body is a Worktree file (ADR-0067), over an injected port factory — the seam
+ * `http()` and the unit tests share. It runs in the Sandbox Effector of the Workspace whose body
+ * invokes it. */
 export function httpFileWith<
   S extends z.ZodType | undefined = undefined,
   const U extends HttpDefinition<S>["url"] = string,
@@ -847,7 +969,8 @@ export function httpFileWith<S extends z.ZodType | undefined = undefined>(
   });
 }
 
-/** A command whose env names a secret: it runs in the Sandbox Effector against the pinned commit. */
+/** A command whose env names a secret: it runs in the Sandbox Effector against the pinned commit.
+ */
 export function credentialedCommandWith(
   portFactory: EffectorPortFactory,
   parts: CommandParts,
@@ -879,12 +1002,95 @@ export function credentialedCommandWith(
 }
 
 /**
- * THE authoring surface for a push (ADR-0067): `actors: { publish: push({ sign: true }) }`, invoked
- * from a Workspace's body. It pushes the Workspace's branch to its Repo Slot's Binding from the
- * Sandbox Effector, with the push credential of the `git.credentials` entry the Binding matches.
- * Every outcome is output: `pushed | rejected | diverged | unknown`.
+ * Make a `push` Effect: it pushes the branch of the Workspace to the Binding of its Repo Slot.
+ * Put it in `actors`, and invoke it from the body of a `workspace()`: `actors: { publish: push({
+ * sign: true }) }`.
+ *
+ * It runs in the Sandbox Effector of the Workspace, with the push credential of the
+ * `git.credentials` entry that the Binding matches. The Agent never reads that credential. It
+ * pushes one commit: the tip of the Agent's branch when the Effect starts, or, with `pin`, the
+ * commit that the input names. After an Orchestrator restart, jr2 pushes only that same commit
+ * again. With `sign` or `squash`, the commit on the remote is not the Agent's own. Then jr2 moves
+ * the Agent's branch to it.
+ *
+ * Every outcome is output (`PushOutput`): `pushed`, `rejected`, `diverged` or `unknown`. Each
+ * field of {@link PushOptions} tells what it refuses. When it starts, it also refuses a push
+ * outside a Workspace: `push "<slot>" runs in the Sandbox Effector of a Workspace, and its state is
+ * not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`.
+ *
+ * @param options - Optional. Each field tells what it does.
+ * @returns An Effect, for `actors`.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import {
+ *   agent,
+ *   defineEvent,
+ *   jr2Setup,
+ *   push,
+ *   workspace,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
+ *
+ * const committed = defineEvent({
+ *   name: "committed",
+ *   description: "Say that the fix is committed.",
+ *   input: z.object({}),
+ * });
+ *
+ * type Input = Workspaced<{}, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
+ *   events: [committed],
+ *   actors: {
+ *     coder: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You are a careful engineer.",
+ *     }),
+ *     publish: push({ sign: true }),
+ *   },
+ * }).createMachine({
+ *   id: "fix-test",
+ *   context: ({ input }) => input,
+ *   initial: "coding",
+ *   states: {
+ *     coding: {
+ *       invoke: { src: "coder", input: { prompt: "Fix the failing test, and commit the fix." } },
+ *       // The Agent moves the Machine on with a pick. An Agent's actor never ends, so `onDone`
+ *       // never fires.
+ *       on: { committed: "publishing" },
+ *     },
+ *     publishing: {
+ *       invoke: {
+ *         src: "publish",
+ *         onDone: [
+ *           { guard: ({ event }) => event.output.outcome === "pushed", target: "done" },
+ *           { target: "failed" },
+ *         ],
+ *       },
+ *     },
+ *     done: { type: "final" },
+ *     failed: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: () => ({ branch: "fix-test" }),
+ * });
+ * ```
+ *
+ * @see docs/guides/push-and-sign-a-branch.md
+ * @see docs/concepts/effects.md
+ * @see docs/guides/give-the-cluster-git-credentials.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
  */
 export function push<const O extends PushOptions>(options?: O): EffectLogic<PushInput<O> | void, PushOutput> {
+  // After an Orchestrator restart, a push is sent again with only the commit its intent row holds
+  // (ADR-0067): a run is a function of the commit, never of the Agent's tip now.
   return pushWith(sandboxEffectorPort, options);
 }
 

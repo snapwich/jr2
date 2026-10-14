@@ -54,11 +54,10 @@ import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./part
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
 import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } from "./vocabulary.ts";
 
-/**
- * The events jr2's own mechanism delivers into any workflow machine, injected into every jr2Setup
- * union. Dotted names by construction (`NAME_RE` forbids dots in workflow event names), so they
- * can never collide with a def.
- */
+// Injected into every jr2Setup union. Dotted names by construction (`NAME_RE` forbids dots in
+// workflow event names), so they can never collide with a def.
+/** The events that jr2 itself sends into each Machine that `jr2Setup` makes. A Mechanism event's
+ * name has a dot, and a workflow event's name cannot, so the two never collide. */
 export type MechanismEvent = FaultTelemetry | WorkspaceLost;
 
 /**
@@ -69,15 +68,19 @@ export type MechanismEvent = FaultTelemetry | WorkspaceLost;
  */
 export type WorkspaceLost = { type: "workspace.lost"; reason?: string; message?: string };
 
-/** The full event union a jr2Setup machine sees: the defs' derived types plus the mechanism's. A
- * workflow event a party delivered carries its `sender` (ADR-0015); the Machine's own events
- * (`raise`, `sendTo` itself) carry none. */
+// The defs' derived types plus the mechanism's (ADR-0015).
+/** The type of `event` in a Machine that `jr2Setup` makes: each workflow event in its `events`,
+ * and each Mechanism event. A workflow event that an Agent or a Gate sent has `event.sender`. An
+ * event that the Machine sent to itself (`raise`, `sendTo`) has no `sender`. */
 export type WorkflowEvent<TDefs extends readonly EventDef[]> =
   | (EventFrom<TDefs[number]> & { readonly sender?: Sender })
   | MechanismEvent;
 
 /** The guard jr2Setup registers for every Machine — `sentBy(id)` (ADR-0015) — in the typed guard
- * map, so `sentBy("coder")` and `and([sentBy("coder"), "ready"])` type-check with no cast. */
+ * map, so `sentBy("coder")` and `and([sentBy("coder"), "ready"])` type-check with no cast.
+ *
+ * @internal
+ */
 type SentByGuards = { [SENT_BY]: { id: string } };
 
 /** The jr2 actor every workflow can invoke by name without listing it (ADR-0015). `gate` is the
@@ -86,21 +89,113 @@ type SentByGuards = { [SENT_BY]: { id: string } };
 const jr2Actors = { gate };
 type JR2Actors = typeof jr2Actors;
 
-/** Consumer actors merge OVER the pre-registered set: same name → the consumer's logic wins. */
+/**
+ * Consumer actors merge OVER the pre-registered set: same name → the consumer's logic wins.
+ *
+ * @internal
+ */
 type MergedActors<TActors extends Record<string, UnknownActorLogic>> = Omit<JR2Actors, keyof TActors> & TActors;
 
 // Local equivalents of xstate's non-exported setup() mapped helpers (setup.d.ts) — same shapes,
 // so the declared signature below composes with the public `ActionFunction`/`GuardPredicate`.
+/** @internal */
 type ToParameterizedObject<T extends Record<string, ParameterizedObject["params"] | undefined>> = {
   [K in keyof T & string]: { type: K; params: T[K] };
 }[keyof T & string];
+/** @internal */
 type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
   [K in keyof TActors & string]: { src: K; logic: TActors[K]; id: string | undefined };
 }[keyof TActors & string];
 
 /**
- * Author a workflow machine (ADR-0015). Like `setup()`, but `types.events` is gone: the event
- * union derives from `events` (defineEvent defs, taken as values) plus the mechanism events.
+ * Set up a Machine that takes workflow events: the jr2 form of xstate's `setup()`. Write a Machine
+ * with it when an Agent or a Gate sends events into the Machine. Call `.createMachine(config)` on
+ * the result, as with `setup()`. The Machine you get is a plain xstate Machine.
+ *
+ * What it adds to `setup()`:
+ * - `events` replaces `types.events`. The event type of the Machine comes from the
+ *   `defineEvent` events you list, plus the events jr2 itself sends (`agent.fault`,
+ *   `workspace.lost`). An event that a party sent has `event.sender`.
+ * - The `gate` actor is ready to invoke by name: `invoke: { src: "gate" }`.
+ * - Each Agent slot (`actors: { coder: agent(…) }`) gets its Menu from the states that invoke it.
+ * - The `sentBy(id)` guard is ready to use.
+ * - `createMachine` also takes `input`: a zod object for the input that starts a run. jr2 checks
+ *   each start against it. Without it, a run can start with any input.
+ *
+ * `createMachine` refuses a Machine that it cannot run as written. Among the refusals:
+ * - an `on` key that no listed event has: ``machine "<id>" handles event "<key>", which no def in
+ *   jr2Setup({ events }) declares (declared: <names>) — a typo, or a missing defineEvent``
+ * - a listed event that no state takes: ``machine "<id>" declares "<name>", which no state handles
+ *   — a pick no state takes is on no Menu and no Gate: handle it, or drop it from
+ *   jr2Setup({ events })``
+ * - an entry of `events` that `defineEvent` did not make, or one name listed twice:
+ *   ``machine "<id>": `events` entry is not a defineEvent() def: <entry>``,
+ *   ``machine "<id>": duplicate event "<name>" in `events` ``
+ * - an `agent()`, an Effect or a `workspace()` written on `invoke.src` instead of under `actors`:
+ *   ``machine "<id>": state "<state>" invokes <part> inline — a Part is a key of actors, so it has
+ *   a name that the ledger, the report and customize() share: actors: { <name>: <factory>(...) },
+ *   then invoke: { src: "<name>" }``. `<part>` is `an Agent`, `an Effect` or `a Workspace`.
+ *   `<factory>` is `agent`, the Effect's kind (such as `command`), or `workspace`.
+ * - a parallel state at or below a state that invokes an Agent: ``machine "<id>": state "<state>"
+ *   is parallel, at or below Agent "<slot>"'s state "<state>" — a parallel region below an Agent's
+ *   state is reserved for picks the Agent does not wait for, which jr2 does not build; background
+ *   work goes above the Agent's state``
+ * - a state below an Agent's state that invokes something and that nothing enters: ``machine
+ *   "<id>": state "<state>" below Agent "<slot>"'s state "<state>" is entered by nothing, so what
+ *   it invokes (<src>) never runs — target it from a pick or a route, or delete it``
+ *
+ * It also refuses a `sentBy` that names no party (see `sentBy`). It refuses a pick param that
+ * nothing reads, where the pick enters a state that invokes an Effect (see `fromPick`). Shapes that are legal but probably not what you mean, such as a mode that
+ * nothing enters, are warnings that `jr2 up` prints.
+ *
+ * @param def - What `setup()` takes, with `events` in place of `types.events`.
+ * @returns What `setup()` returns. Call `.createMachine(config)` on it.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { agent, defineEvent, jr2Setup } from "@jr2/orchestrator";
+ *
+ * const proposed = defineEvent({
+ *   name: "proposed",
+ *   description: "Call this with your plan.",
+ *   input: z.object({ plan: z.string() }),
+ * });
+ * const approve = defineEvent({ name: "approve", input: z.object({}) });
+ * const reject = defineEvent({ name: "reject", input: z.object({ reason: z.string() }) });
+ *
+ * export const machine = jr2Setup({
+ *   types: {} as { input: { goal: string }; context: { goal: string } },
+ *   events: [proposed, approve, reject],
+ *   actors: {
+ *     planner: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You plan small releases.",
+ *       workspace: "none",
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "plan",
+ *   input: z.object({ goal: z.string() }),
+ *   context: ({ input }) => ({ goal: input.goal }),
+ *   initial: "planning",
+ *   states: {
+ *     planning: {
+ *       invoke: { src: "planner", input: ({ context }) => ({ prompt: `Plan this: ${context.goal}` }) },
+ *       on: { proposed: "review" },
+ *     },
+ *     review: {
+ *       invoke: { src: "gate" },
+ *       on: { approve: "approved", reject: "planning" },
+ *     },
+ *     approved: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/guides/write-a-workflow.md
+ * @see docs/concepts/machines-and-workflows.md
+ * @see docs/reference/decisions/0015-authoring-surface-absorbs-the-mechanism.md
  */
 export function jr2Setup<
   TContext extends MachineContext = MachineContext,
@@ -115,7 +210,8 @@ export function jr2Setup<
   TEmitted extends EventObject = EventObject,
   TMeta extends MetaObject = MetaObject,
 >(def: {
-  /** context/input/output/tags/emitted/meta — never `events`; the union is derived. */
+  /** The types of the Machine, as in `setup()`: `context`, `input`, `output`, `tags`, `emitted`
+   * and `meta`. Not `events`: the event type comes from `events`. */
   types?: {
     context?: TContext;
     input?: TInput;
@@ -124,9 +220,16 @@ export function jr2Setup<
     emitted?: TEmitted;
     meta?: TMeta;
   };
-  /** This Machine's vocabulary, as values — the single source for types, validation, delivery. */
+  // The single source for types, validation and delivery.
+  /** The workflow events this Machine takes: each one made by `defineEvent`. Required; `[]` when the
+   * Machine takes none. Each listed event must be the name of an `on` key. Each `on` key must be
+   * listed, if it is not a jr2 or xstate event (an event with a `.` in its name). */
   events: TDefs;
+  /** The actors the states invoke by name, as in `setup()`: Agent slots (`agent(…)`), Effects
+   * (`command(…)`, `http(…)`, `push(…)`), child Machines, `workspace(…)` and plain xstate logic.
+   * The key is the slot's name. An actor named `gate` replaces jr2's Gate. */
   actors?: TActors;
+  /** Named actions, as in `setup()`. Their `event` has the type of this Machine's events. */
   actions?: {
     [K in keyof TActions]: ActionFunction<
       TContext,
@@ -140,9 +243,11 @@ export function jr2Setup<
       TEmitted
     >;
   };
+  /** Named guards, as in `setup()`. `sentBy` is there already; do not name a guard `jr2.sentBy`. */
   guards?: {
     [K in keyof TGuards]: GuardPredicate<TContext, WorkflowEvent<TDefs>, TGuards[K], ToParameterizedObject<TGuards>>;
   };
+  /** Named delays, as in `setup()`. */
   delays?: {
     [K in TDelay]: DelayConfig<
       TContext,
@@ -165,6 +270,8 @@ export function jr2Setup<
   TEmitted,
   TMeta
 > {
+  // Like `setup()`, but `types.events` is gone (ADR-0015): the event union derives from `events`
+  // (defineEvent defs, taken as values) plus the mechanism events.
   const inner = setup({
     types: def.types,
     actors: { ...jr2Actors, ...(def.actors ?? {}) },

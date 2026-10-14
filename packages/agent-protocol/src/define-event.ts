@@ -8,37 +8,68 @@
 
 import { z } from "zod";
 
+// How delivering the event resolves for the caller (ADR-0006):
+// - `ack`  the pick is delivered and answered. A pick that moves the workflow to work inside the
+//          Agent's state is answered when that work is done (ADR-0024): the answer is the Machine's,
+//          never a schema on the pick, so no pick declares an output.
+// - `poll` the caller pulls queued down-channel messages (cooperative steer checkpoint). Reserved,
+//          not built (ADR-0013).
 /**
- * How delivering the event resolves for the caller (ADR-0006):
- * - `ack`  the pick is delivered and answered. A pick that moves the workflow to work inside the
- *          Agent's state is answered when that work is done (ADR-0024): the answer is the Machine's,
- *          never a schema on the pick, so no pick declares an output.
- * - `poll` the caller pulls queued down-channel messages (cooperative steer checkpoint). Reserved,
- *          not built (ADR-0013).
+ * How the party that sends an event gets its answer.
+ *
+ * - `"ack"`, the default: jr2 delivers the event and answers the sender. When the event starts
+ *   work inside the Agent's state, the answer comes when that work is done.
+ * - `"poll"`: reserved. `createMachine` refuses it: ``machine "<id>": event "<name>" is `poll`,
+ *   which is reserved but NOT IMPLEMENTED (ADR-0013). Only `ack` events can be delivered today;
+ *   nothing drains a steer inbox, and degrading it to `ack` would hand the Agent a lying tool
+ *   contract.``
+ *
+ * @see docs/concepts/the-menu.md
+ * @see docs/reference/decisions/0006-agent-control-surface.md
  */
 export type EventSemantics = "ack" | "poll";
 
+// Stated BY KIND (ADR-0015). Unset, each writing — each `on` key — belongs to the party that its
+// state, or the nearest state above it, invokes (an Agent slot, a `gate`, or both); with none
+// above, both. Set it only to give a pick to the other party (`submit: "any"` lets an in-Turn
+// Gate's caller send the Agent's pick) or to hold a root pick back (`report_blocked: "agent"`;
+// `approve: "external"` guarantees no Agent state can offer it).
 /**
- * Who may deliver the event, stated BY KIND (ADR-0015): `agent` (an Agent's pick), `external` (a
- * Gate's caller), `any` (both). Leave it UNSET for the default: each writing of the event — each
- * `on` key — belongs to the party that its state, or the nearest state above it, invokes (an Agent
- * slot, a `gate`, or both); with none above, both. Set it only to give a pick to the other party
- * (`submit: "any"` lets an in-Turn Gate's caller send the Agent's pick) or to hold a root pick back
- * (`report_blocked: "agent"`; `approve: "external"` guarantees no Agent state can offer it).
+ * Who may send an event: `"agent"` (an Agent, as a pick from its Menu), `"external"` (the caller of
+ * a Gate), or `"any"` (both).
+ *
+ * Leave it unset in most cases. Then the position of each `on` key decides: the event belongs to
+ * the party that its state, or the nearest state above it, invokes. An `on` key on a state that
+ * invokes no party, with no such state above it, belongs to both. Set an audience only to give an
+ * event to the other party too (`"any"`). Or set it to keep an event on the root from one party
+ * (`"agent"` or `"external"`).
+ *
+ * @see docs/concepts/the-menu.md
+ * @see docs/concepts/gates.md
+ * @see docs/reference/decisions/0015-authoring-surface-absorbs-the-mechanism.md
  */
 export type EventAudience = "agent" | "external" | "any";
 
+// `name` doubles as the MCP tool name (agent side) and the xstate event `type` (Machine side).
 /**
- * A workflow-defined control event: pure data (plus zod schemas), safe to import anywhere.
- * `name` doubles as the MCP tool name (agent side) and the xstate event `type` (Machine side).
+ * A workflow event, as `defineEvent` gives it back: plain, frozen data and a zod schema, safe to
+ * import anywhere. Give it to `jr2Setup({ events })`. A Machine accepts only the events in that
+ * list.
+ *
+ * @see docs/guides/write-a-workflow.md
+ * @see docs/reference/decisions/0011-workflow-defined-events.md
  */
 export type EventDef<Name extends string = string, Input extends z.ZodObject = z.ZodObject> = {
+  /** The event's name: its xstate event `type`, and the name of its tool on the Agent's Menu. */
   readonly name: Name;
+  /** What the event means. An Agent's model reads it as the tool's description. */
   readonly description?: string;
-  /** Input schema — a flat tagged object, never a `oneOf` (ADR-0006 encoding rule). */
+  // The ADR-0006 encoding rule: a flat tagged object, never a `oneOf`.
+  /** The schema of the event's payload: a flat `z.object`, never a union. */
   readonly input: Input;
+  /** How the sender gets its answer: always `"ack"` on an event that `createMachine` accepts. */
   readonly semantics: EventSemantics;
-  /** Absent: each writing's state decides who may send it (see {@link EventAudience}). */
+  /** Who may send the event. Absent: the state of each `on` key decides (see {@link EventAudience}). */
   readonly audience?: EventAudience;
 };
 
@@ -47,6 +78,8 @@ export type EventDef<Name extends string = string, Input extends z.ZodObject = z
  * unions, so a `setup` event union derives from the defs — one source of truth, no drift:
  *
  *   events: EventFrom<typeof approve | typeof requestChanges> | { type: "agent.fault"; ... }
+ *
+ * @internal
  */
 export type EventFrom<D extends EventDef> =
   D extends EventDef<infer N, infer I>
@@ -73,16 +106,86 @@ export const SENDER_KEY = "sender";
 /** Who delivered an event: an Agent by its slot, or a Gate by its invoke id (ADR-0015). */
 export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
 
-/** Define one control event. Pure — returns a frozen def; registration happens nowhere. */
+/**
+ * Define one workflow event: an event that an Agent or the caller of a Gate may send into your
+ * Machine. Give the result to `jr2Setup({ events })`, and write its name as an `on` key on the
+ * states that take it. An Agent sees each event it may send as one tool on its Menu.
+ *
+ * It gives back a frozen {@link EventDef} and registers nothing. Each Machine whose `jr2Setup`
+ * lists the event takes it. A Machine that does not list it does not take it.
+ *
+ * It refuses:
+ * - a name with a character other than a letter, a digit, `_` or `-`:
+ *   `defineEvent: invalid name "<name>" — must match /^[a-zA-Z0-9_-]+$/ (it becomes an MCP tool
+ *   name and an xstate event type)`
+ * - an `input` with a `sender` field:
+ *   ``defineEvent: "<name>" declares `sender` in its input — the Orchestrator writes that field
+ *   on every delivered event (who sent it); name the payload field something else``
+ * - an `output` field:
+ *   ``defineEvent: "<name>" declares an `output`, which is retired — every pick is answered when
+ *   the work it started is done, and the answer is the Machine's, not the def's``. With
+ *   `semantics: "deferred"`, the text says ``declares `deferred` `` in place of
+ *   ``declares an `output` ``.
+ *
+ * @param def - The event: its `name`, its `input` schema, and optionally its `description`,
+ *   `semantics` and `audience`.
+ * @returns The event, as plain data to list in `jr2Setup({ events })`.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { agent, defineEvent, jr2Setup } from "@jr2/orchestrator";
+ *
+ * const done = defineEvent({
+ *   name: "done",
+ *   description: "Call this when the summary is written.",
+ *   input: z.object({ summary: z.string() }),
+ * });
+ *
+ * export const machine = jr2Setup({
+ *   events: [done],
+ *   actors: {
+ *     writer: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You write short summaries.",
+ *       workspace: "none",
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "summary",
+ *   initial: "writing",
+ *   states: {
+ *     writing: {
+ *       invoke: { src: "writer", input: { prompt: "Summarize the release notes in one line." } },
+ *       on: { done: "finished" },
+ *     },
+ *     finished: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/guides/write-a-workflow.md
+ * @see docs/concepts/the-menu.md
+ * @see docs/reference/decisions/0011-workflow-defined-events.md
+ */
 export function defineEvent<const Name extends string, Input extends z.ZodObject>(def: {
+  /** The event's name: the `on` key that takes it, and the name of its tool on the Agent's Menu.
+   * Letters, digits, `_` and `-` only. */
   name: Name;
+  /** What the event means, and when to send it. An Agent's model reads it as the tool's
+   * description. Make it true at every state that takes the event. */
   description?: string;
+  /** The schema of the payload: a flat `z.object`. Use `z.object({})` for an event with no
+   * payload. Do not name a field `sender`: jr2 writes that field. */
   input: Input;
-  /** Default: `ack`. */
+  /** How the sender gets its answer. Default: `"ack"`, the only value `createMachine` accepts. */
   semantics?: EventSemantics;
-  /** Default: unset — each writing's state decides (see {@link EventAudience}). */
+  /** Who may send the event: `"agent"`, `"external"` or `"any"`. Default: unset, and the state of
+   * each `on` key decides (see {@link EventAudience}). */
   audience?: EventAudience;
 }): EventDef<Name, Input> {
+  // Pure: no import-time side effect and no global registry (ADR-0011). Scoping is per Machine,
+  // done by `jr2Setup`, never here.
   if (!NAME_RE.test(def.name)) {
     throw new Error(
       `defineEvent: invalid name "${def.name}" — must match ${NAME_RE} ` +

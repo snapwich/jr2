@@ -33,9 +33,106 @@ import { isAgent } from "./agent.ts";
 import { boundRun } from "./registration.ts";
 import type { PickAnswer } from "./wire.ts";
 
-/** The pick's params, read off the event that entered the state. Throws — a jr2 or author defect
- * the load walk refuses first — when the event is not this pick. */
+/**
+ * Read the params of a pick from the event that entered the state. Use it in a plain `input`
+ * mapper when the Machine must change a param before the invoked actor gets it. When the params go
+ * to the input as they are, use `fromPick`.
+ *
+ * It parses the params with the `input` schema of the pick. It refuses an event that is not this
+ * pick: `state entered by "<event>", but its input reads the params of pick "<pick>"`.
+ *
+ * `createMachine` calls each mapper one time to see which params it reads. When the mapper throws
+ * there, `jr2 up` prints a warning before a run starts: `pick "<pick>" enters state "<state>"
+ * (Effect "<slot>"): could not probe the input mapper (<error>); its params are unchecked`.
+ *
+ * `createMachine` refuses a param of a pick that enters a state that invokes an Effect, when
+ * nothing reads the param: `machine "<id>": pick "<pick>" enters state "<state>" (Effect
+ * "<slot>"), which never reads "<param>": the Agent supplies it and nothing uses it — map it in an
+ * invoke's input, store it with assign, or drop it from the def`.
+ *
+ * @param event - The event that entered the state: the `event` that the mapper gets.
+ * @param def - The pick, as `defineEvent` made it.
+ * @returns The params of the pick, typed by its `input` schema.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import {
+ *   agent,
+ *   arg,
+ *   command,
+ *   defineEvent,
+ *   jr2Setup,
+ *   paramsOf,
+ *   workspace,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
+ *
+ * const runTest = defineEvent({
+ *   name: "run_test",
+ *   description: "Run the tests of one module.",
+ *   input: z.object({ module: z.string() }),
+ * });
+ *
+ * const finished = defineEvent({
+ *   name: "finished",
+ *   description: "Say that all the tests pass.",
+ *   input: z.object({}),
+ * });
+ *
+ * type Input = Workspaced<{}, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
+ *   events: [runTest, finished],
+ *   actors: {
+ *     coder: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You are a careful engineer.",
+ *     }),
+ *     test: command(["node", "--test", arg("file")]),
+ *   },
+ * }).createMachine({
+ *   id: "fix-tests",
+ *   context: ({ input }) => input,
+ *   initial: "coding",
+ *   states: {
+ *     coding: {
+ *       invoke: {
+ *         src: "coder",
+ *         input: { prompt: "Make the tests pass. Run the tests of one module at a time." },
+ *       },
+ *       on: { finished: "done" },
+ *       initial: "ready",
+ *       states: {
+ *         ready: { on: { run_test: "testing" } },
+ *         testing: {
+ *           invoke: {
+ *             src: "test",
+ *             // A plain mapper: the Machine makes the file name from the pick's `module`.
+ *             input: ({ event }) => ({ file: `test/${paramsOf(event, runTest).module}.test.js` }),
+ *             onDone: "ready",
+ *           },
+ *         },
+ *       },
+ *     },
+ *     done: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: () => ({ branch: "fix-tests" }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ */
 export function paramsOf<N extends string, I extends z.ZodObject>(event: EventObject, def: EventDef<N, I>): z.infer<I> {
+  // Throws on a jr2 or author defect, which the load walk (effect-checks.ts) finds first: it probes
+  // the mapper before the Machine runs.
   if (event.type !== def.name) {
     throw new Error(`state entered by "${event.type}", but its input reads the params of pick "${def.name}"`);
   }
@@ -55,9 +152,163 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
   return typeof value === "function" && "pick" in value;
 }
 
+/**
+ * Make the `input` of the invoke of a state that a pick enters: the params of the pick go to the
+ * input of the invoked actor by name. With `fill`, the Machine adds the keys that the Agent must
+ * not choose. So one expression shows the security boundary: the pick is what the Agent gives, and
+ * `fill` is what the Machine adds.
+ *
+ * TypeScript checks the params and the keys of `fill` together against the input type of the
+ * invoked actor. It finds a missing key or a key of the wrong type, but it accepts an extra key.
+ *
+ * So `createMachine` refuses:
+ * - a param that is no key of the input of the Effect, and that nothing else reads: ``machine
+ *   "<id>": pick "<pick>" enters state "<state>" (Effect "<slot>") with fromPick: "<param>" is no
+ *   key of the Effect's input (<keys>), and nothing else reads it — the Agent supplies it and it
+ *   reaches nothing; name an argv slot for it, read it in `fill`, store it with assign, or drop it
+ *   from the def``
+ * - a key that `fill` sets and that is also a param: ``machine "<id>": pick "<pick>" enters state
+ *   "<state>" (Effect "<slot>"): `fill` sets "<param>", which is also a param of the pick — the
+ *   Machine's value wins and the Agent's is dropped; rename one, or drop it from the def``
+ * - a `fromPick` in a state that another event enters: `machine "<id>": state "<state>" (Effect
+ *   "<slot>") reads the params of pick "<pick>" but is entered on "<event>" — that event does not
+ *   carry them`
+ *
+ * The input of an Open argv is one string for each key, so TypeScript checks no key for it. A key
+ * that the bound argv names and the input does not give stops the Effect when it starts.
+ *
+ * @param def - The pick, as `defineEvent` made it.
+ * @returns An `input` mapper for the `invoke` of the state.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { agent, defineEvent, fromPick, http, jr2Setup } from "@jr2/orchestrator";
+ *
+ * const postNote = defineEvent({
+ *   name: "post_note",
+ *   description: "Post a note to the team channel.",
+ *   input: z.object({ text: z.string() }),
+ * });
+ *
+ * export const machine = jr2Setup({
+ *   types: {} as { context: {}; input: {} },
+ *   events: [postNote],
+ *   actors: {
+ *     writer: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You write one short note for the team.",
+ *       workspace: "none",
+ *     }),
+ *     note: http({
+ *       method: "POST",
+ *       url: "https://hooks.example.com/notes",
+ *       input: z.object({ text: z.string() }),
+ *       request: ({ text }) => ({ json: { text } }),
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "note",
+ *   initial: "writing",
+ *   states: {
+ *     writing: {
+ *       invoke: {
+ *         src: "writer",
+ *         input: { prompt: "Write a note that says the release is out, and post it." },
+ *       },
+ *       initial: "ready",
+ *       states: {
+ *         ready: { on: { post_note: "posting" } },
+ *         posting: {
+ *           // The `text` of the pick goes to the input of `note` as it is.
+ *           invoke: { src: "note", input: fromPick(postNote), onDone: "#done" },
+ *         },
+ *       },
+ *     },
+ *     done: { id: "done", type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ */
 export function fromPick<N extends string, I extends z.ZodObject, C, E extends EventObject>(
   def: EventDef<N, I>,
 ): (args: { context: C; event: E; self: AnyActorRef }) => z.infer<I>;
+/**
+ * Make the `input` from the params of the pick and the keys that `fill` adds. {@link fromPick}
+ * tells the rest, and what `createMachine` refuses.
+ *
+ * @param def - The pick, as `defineEvent` made it.
+ * @param fill - Gets `{ context, params }` and gives back only the keys that the Machine adds. Do
+ *   not set a key that is also a param.
+ * @returns An `input` mapper for the `invoke` of the state.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { agent, bearer, defineEvent, fromPick, http, jr2Setup, secret } from "@jr2/orchestrator";
+ *
+ * const postComment = defineEvent({
+ *   name: "post_comment",
+ *   description: "Post a comment on the ticket.",
+ *   input: z.object({ body: z.string() }),
+ * });
+ *
+ * export const machine = jr2Setup({
+ *   types: {} as { context: { ticket: string }; input: { ticket: string } },
+ *   events: [postComment],
+ *   actors: {
+ *     triager: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You triage tickets.",
+ *       workspace: "none",
+ *     }),
+ *     comment: http({
+ *       method: "POST",
+ *       url: "https://jira.example.com/rest/api/2/issue",
+ *       auth: bearer(secret("jira")),
+ *       input: z.object({ ticket: z.string(), body: z.string() }),
+ *       request: ({ ticket, body }) => ({ path: [ticket, "comment"], json: { body } }),
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "triage",
+ *   context: ({ input }) => input,
+ *   initial: "triaging",
+ *   states: {
+ *     triaging: {
+ *       invoke: {
+ *         src: "triager",
+ *         input: ({ context }) => ({
+ *           prompt: `Read ticket ${context.ticket}, then post one comment on it.`,
+ *         }),
+ *       },
+ *       initial: "ready",
+ *       states: {
+ *         ready: { on: { post_comment: "posting" } },
+ *         posting: {
+ *           invoke: {
+ *             src: "comment",
+ *             // The Agent gives `body`. The Machine gives `ticket`, so the Agent cannot post on
+ *             // another ticket.
+ *             input: fromPick(postComment, ({ context }) => ({ ticket: context.ticket })),
+ *             onDone: "#done",
+ *           },
+ *         },
+ *       },
+ *     },
+ *     done: { id: "done", type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ */
 export function fromPick<N extends string, I extends z.ZodObject, C, E extends EventObject, R extends object>(
   def: EventDef<N, I>,
   fill: (args: { context: C; params: z.infer<I> }) => R,
@@ -113,8 +364,8 @@ export type AnswerSeats = ReadonlySet<Node | null>;
 /**
  * The one place an `answer` runs from (ADR-0067): the Agent's state it is written below, or `null`
  * on a transition below no Agent's state. At a state, it shapes only a pick of the Agent seated
- * there. At `null`, the event that took the transition names the Agent whose pick it shapes (the run
- * host reads it off the event).
+ * there. At `null`, the event that took the transition names the Agent whose pick it shapes (the
+ * run host reads it off the event).
  */
 export type AnswerSeat = Node | null;
 
@@ -124,7 +375,8 @@ const seatsCache = new WeakMap<AnyStateMachine, Map<unknown, Set<Node | null>>>(
 const PLACE = Symbol("jr2.answer.place");
 type Placeable = { [PLACE]: (seat: AnswerSeat) => unknown; readonly jr2Answer: true };
 
-/** An action of `machine` as it is written — inline, or by name — resolved to its implementation. */
+/** An action of `machine` as it is written — inline, or by name — resolved to its implementation.
+ */
 function resolverOf(machine: AnyStateMachine): (a: unknown) => unknown {
   const named = (machine.implementations?.actions ?? {}) as Record<string, unknown>;
   return (a) => {
@@ -177,11 +429,11 @@ function paramsAt(written: unknown, args: EnqueueArgs): unknown {
  * Give every place an `answer` is written in `machine` a copy of its own, bound to that place's
  * seat (ADR-0067): one action object written in two places then shapes, from each, by that place's
  * rule alone — below an Agent's state, only that Agent's pick; on a transition below none, the pick
- * of the Agent the event names. An entry or an exit below no Agent's state is given an `answer` that
- * sets nothing. At run time an action cannot tell where it was written, so the place is decided
- * here. Called for each Machine of a run's tree as its actor is created, before its first state is
- * entered. Each list is replaced, never written in place: a list the author shared between two
- * places stays the author's.
+ * of the Agent the event names. An entry or an exit below no Agent's state is given an `answer`
+ * that sets nothing. At run time an action cannot tell where it was written, so the place is
+ * decided here. Called for each Machine of a run's tree as its actor is created, before its first
+ * state is entered. Each list is replaced, never written in place: a list the author shared between
+ * two places stays the author's.
  */
 export function placeAnswers(machine: AnyStateMachine): void {
   if (placedMachines.has(machine) || !machine?.root) return;
@@ -257,13 +509,127 @@ export function seatsOfAnswer(machine: AnyStateMachine, action: unknown): Answer
   return byAction.get(originalOf(action)) ?? new Set<Node | null>([null]);
 }
 
-/** The brand the load walk reads: this action is an `answer`. */
+/**
+ * The brand the load walk reads: this action is an `answer`.
+ *
+ * @internal
+ */
 export type AnswerAction = { readonly jr2Answer: true };
 
 /** Is this action an `answer`? */
 export const isAnswer = (action: unknown): boolean =>
   typeof action === "function" && (action as Partial<AnswerAction>).jr2Answer === true;
 
+/**
+ * Set what the Agent reads when jr2 answers its pick. It is an xstate action: write it in
+ * `entry`, `exit` or the `actions` of a transition. Without it, the Agent reads the last reply
+ * since the pick.
+ *
+ * `fn` gets `{ context, event, chain }`. `chain` is every reply since the pick, oldest first. Each
+ * link is `{ kind: "output", src, output }`, the output of an invoked actor, or `{ kind: "event",
+ * event }`, an event that a Gate or a nested Agent sent. TypeScript types each link, but not the
+ * order or the number of links. What `fn` gives back goes to the Agent as JSON. A value with no
+ * JSON form clears the answer: the Agent then reads the last reply. When more than one `answer`
+ * runs, the last one wins.
+ *
+ * Where you write it decides which pick it answers:
+ *
+ * - At or below the state of an Agent, it answers only a pick of that Agent.
+ * - On a transition below no Agent's state, it answers a pick of the Agent whose event took the
+ *   transition.
+ * - On an `entry` or an `exit` below no Agent's state, it sets nothing, and `jr2 up` prints a
+ *   warning: `an answer on the <entry|exit> of "<state>" is below no Agent's state, so it shapes
+ *   no pick — an <entry|exit> there is no transition an Agent's event takes; move it under
+ *   "<agent state>", or onto a transition (ADR-0067)`.
+ *
+ * The error of an invoked actor is no link, and the Agent does not see it. To tell the Agent,
+ * write `answer` on the `onError` route. An Effect never takes that route for an outcome: every
+ * outcome is output.
+ *
+ * @param fn - Gets `{ context, event, chain }` and gives back what the Agent reads, as a value
+ *   with a JSON form.
+ * @returns An xstate action.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import {
+ *   agent,
+ *   answer,
+ *   command,
+ *   defineEvent,
+ *   jr2Setup,
+ *   workspace,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
+ *
+ * const runTests = defineEvent({
+ *   name: "run_tests",
+ *   description: "Run the test suite. Its result is this call's answer.",
+ *   input: z.object({}),
+ * });
+ *
+ * const finished = defineEvent({
+ *   name: "finished",
+ *   description: "Say that the tests pass.",
+ *   input: z.object({}),
+ * });
+ *
+ * type Input = Workspaced<{}, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
+ *   events: [runTests, finished],
+ *   actors: {
+ *     coder: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You are a careful engineer.",
+ *     }),
+ *     tests: command(["npm", "test"]),
+ *   },
+ * }).createMachine({
+ *   id: "fix-tests",
+ *   context: ({ input }) => input,
+ *   initial: "coding",
+ *   states: {
+ *     coding: {
+ *       invoke: { src: "coder", input: { prompt: "Make the tests pass." } },
+ *       on: { finished: "done" },
+ *       initial: "ready",
+ *       states: {
+ *         ready: { on: { run_tests: "testing" } },
+ *         testing: {
+ *           invoke: {
+ *             src: "tests",
+ *             onDone: {
+ *               target: "ready",
+ *               // The Agent reads this string, not the whole output of the command.
+ *               actions: answer(({ event }) =>
+ *                 event.output.outcome === "exited" && event.output.code === 0
+ *                   ? "The tests pass."
+ *                   : `The tests fail:\n${"tail" in event.output ? event.output.tail : event.output.reason}`,
+ *               ),
+ *             },
+ *           },
+ *         },
+ *       },
+ *     },
+ *     done: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: () => ({ branch: "fix-tests" }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/the-menu.md
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ * @see docs/reference/decisions/0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md
+ */
 export function answer<
   TContext extends MachineContext,
   TExpressionEvent extends EventObject,

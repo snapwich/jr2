@@ -237,13 +237,20 @@ export type AgentRunInput = {
   menu?: readonly string[];
 };
 
-/** Telemetry sent up when the run is out of options: the Submission settled failed/aborted
- * (infra fault after the turn's own provider retries — ADR-0027), the no-signal nudge budget ran
- * dry, or the runaway reroll budget did (ADR-0035). The ONE terminal event (ADR-0016) — where it
- * routes is workflow policy. */
+// Sent when the run is out of options: the Submission settled failed/aborted (infra fault after
+// the turn's own provider retries — ADR-0027), the no-signal nudge budget ran dry, or the runaway
+// reroll budget did (ADR-0035). The ONE terminal event (ADR-0016) — where it routes is workflow
+// policy.
+/** jr2 sends `agent.fault` to the Machine when an Agent's Turn cannot go on: the Harness failed
+ * the Turn, or the Agent ended its Turns with no pick after every nudge. The Machine decides what
+ * to do next. Route it in the state that invokes the Agent, with `on: { "agent.fault": … }`. */
 export type FaultTelemetry = {
   type: "agent.fault";
+  /** The Instance ID of the Agent's conversation that failed: the same id on each Turn that
+   * continues it. */
   instanceId: string;
+  /** Why the Turn failed, as text for a person or a log: the Harness's error, or that the Agent
+   * ended its Turns without a pick after every nudge. Route on the event, not on this text. */
   reason: string;
 };
 
@@ -479,7 +486,10 @@ function frameCwd(
  *
  * The brand is a RUNTIME property, read back through `isAgent`, and deliberately NOT part of this
  * type: the unit-test seam is `provide({ actors: { coder: fake } })` (ADR-0049), and a required
- * `definition` here would make every fake carry a definition it never uses. */
+ * `definition` here would make every fake carry a definition it never uses.
+ *
+ * @internal
+ */
 export type AgentLogic = CallbackActorLogic<
   AgentRunReceiveEvent,
   AgentTurnInput | (AgentTurnInput & AgentTurnPlacement) | AgentRunInput

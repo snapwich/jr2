@@ -31,14 +31,75 @@ import type { Secret, Text } from "./http-effect.ts";
  * a dispatch's target (its url and token together, ADR-0071). */
 export type OpenEffectPart = "url" | "argv" | "secret" | "target";
 
-/** What a composer binds an Effect's Open parts to, each key one part: a url (a string, or a `text`
- * with a secret in its path), an argv (each entry one argument, never shell text), a secret's name
- * (its file in the Effector's mount, ADR-0068), a dispatch's target (another Orchestrator's origin and
- * the secret that holds its Instance token, bound as one, ADR-0071). One object for an Effect with
- * two Open parts. */
+// What a composer binds an Effect's Open parts to, each key one part (ADR-0054); a dispatch's
+// target is its url and token, bound as one (ADR-0071). One object for an
+// Effect with two Open parts. `customize()` reads each Effect's own binding type off its logic
+// (`BindingOf`, customize.ts), so this loose shape is what the implementation walks.
+/**
+ * The values that bind the Open parts of one Effect. A packaged Machine leaves a part of an Effect
+ * Open when it cannot know it. That part is the url of an `http` Effect, the argv of a `command`,
+ * the name of a secret, written `secret(open)`, or the target of a `dispatch`: the url of another
+ * Orchestrator and the secret that holds its Instance token, bound as one. You bind it once, where you register the
+ * Machine, with `customize(machine, { effects: { <slot>: binding } })`. Each key binds one Open
+ * part. For an Effect with two Open parts, one object holds both keys.
+ *
+ * The binding is a value, never a function of the run: no run chooses an Effect's url, argv or
+ * secret. `customize()` builds the Effect again with the bound parts, so a bound part gets every
+ * check that a part written in the definition gets.
+ *
+ * `customize()` refuses:
+ * - an empty binding, or a key for a part that is not Open: `customize(): the <kind> Effect
+ *   "<slot>" leaves its <parts> Open — bind it with <binding> (ADR-0054)`
+ * - an Effect with no Open part: ``customize(): the <kind> Effect "<slot>" of machine "<id>"
+ *   leaves nothing Open — its parts are fixed in its definition, and only a part a package left
+ *   `open` is bound, once (ADR-0054).``
+ * - `open` as a value: ``customize(): the <kind> Effect "<slot>"'s <part> is bound once, to a
+ *   value — not `open` again: no run chooses an Effect's <part> (ADR-0054)``. A function as a
+ *   value gives the same text, with `a function of the run` for `` `open` again ``.
+ * - a secret that is not a string: `customize(): the <kind> Effect "<slot>"'s secret is bound to
+ *   a secret's name, a string — the file the Effector reads it from: { secret: "<name>" }
+ *   (ADR-0054, ADR-0068)`
+ *
+ * `jr2 up` refuses a registered Machine with an Open part that nobody bound, and prints the
+ * `customize` line that binds it.
+ *
+ * @example
+ * ```ts
+ * import { customize, http, jr2Setup, open, type EffectBinding } from "@jr2/orchestrator";
+ *
+ * const notifier = jr2Setup({
+ *   events: [],
+ *   actors: { notify: http({ method: "POST", url: open }) },
+ * }).createMachine({
+ *   id: "notifier",
+ *   initial: "sending",
+ *   states: {
+ *     sending: { invoke: { src: "notify", onDone: "done" } },
+ *     done: { type: "final" },
+ *   },
+ * });
+ *
+ * const notify = { url: "https://hooks.example.com/build" } satisfies EffectBinding;
+ *
+ * export const machine = customize(notifier, { effects: { notify } });
+ * ```
+ *
+ * @see docs/guides/bind-open-parts.md
+ * @see docs/concepts/effects.md
+ * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
+ * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
+ */
 export type EffectBinding = {
+  /** The url of an `http` Effect whose url is Open: a string, or a `text` template with a secret
+   * in its path, such as `` text`https://hooks.example.com/services/${secret("hook")}` ``. Its
+   * scheme and host must be literal. */
   readonly url?: string | Text;
+  /** The argv of a `command` whose argv is Open: one entry for each argument, never shell text.
+   * An entry is a string or an `arg("<param>")` that the invoke's input fills. It must not be
+   * empty. */
   readonly argv?: readonly (string | Arg)[];
+  /** The name of the secret that `secret(open)` stands for: an entry of `secrets` in
+   * `jr2.config.ts`. The Effector reads it from a file of that name. */
   readonly secret?: string;
   readonly target?: { readonly url: string; readonly token: Secret };
 };
@@ -50,10 +111,16 @@ declare const openPart: unique symbol;
  * `effects` offers exactly the Open slots, each with the binding its parts take — the intersection
  * of each part's, for an Effect with two. Phantom, like `JR2Wrapper`: the property exists in the
  * type alone.
+ *
+ * @internal
  */
 export type OpenEffect<P extends OpenEffectPart> = { readonly [openPart]: P };
 
-/** The phantom for these Open parts, or nothing for none: what a constructor's type adds. */
+/**
+ * The phantom for these Open parts, or nothing for none: what a constructor's type adds.
+ *
+ * @internal
+ */
 export type OpenOf<P extends OpenEffectPart> = [P] extends [never] ? unknown : OpenEffect<P>;
 
 /** The binder an Open Effect carries, under a `Symbol.for` key so a second copy of this module (an

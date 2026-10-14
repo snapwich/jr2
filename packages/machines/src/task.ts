@@ -65,7 +65,12 @@ const THINKING_LEVELS = [
 ] as const satisfies readonly ThinkingLevel[];
 
 const door = z.object({
+  /** What to do, in prose. Required. The coder's first Turn is this prompt, with the Worktree it
+   * works in. */
   prompt: z.string().describe("What to do, in prose. The coder's first turn is this, framed with the worktree."),
+  /** The branch to cut and commit on. Default: `jr2/task-<run id>`, so two runs never use the same
+   * branch. Required when `task` runs inside another Machine, such as a `pool()`: there is no run
+   * id to name the branch after. */
   branch: z
     .string()
     .optional()
@@ -74,17 +79,55 @@ const door = z.object({
   // definition is what `jr2 up` preflights, and a door value overrides it for this one run's Turns.
   // Identity — instructions, workspace access — is deliberately absent: an invocation that rewrote
   // those would make the Agent's name a lie.
+  /** The coder's model for this run only, as `"<provider>/<modelId>"`. Default: the model of the
+   * coder Agent. */
   model: z.string().optional().describe('Override the coder\'s model for this run only, as "<provider>/<modelId>".'),
+  /** The coder's thinking level for this run only: `off`, `minimal`, `low`, `medium`, `high` or
+   * `xhigh`. Default: the thinking level of the coder Agent. */
   thinkingLevel: z
     .enum(THINKING_LEVELS)
     .optional()
     .describe("Override the coder's reasoning effort for this run only."),
 });
 
-/** What a caller sends. */
+/**
+ * The run input of `task`: what a caller sends to start a run, for example with
+ * `jr2 run <workflow> --input '{"prompt":"…"}'`.
+ *
+ * `prompt` is required. `branch`, `model` and `thinkingLevel` are optional. Each field has its own
+ * doc.
+ *
+ * @example
+ * ```ts
+ * import type { TaskInput } from "@jr2/machines";
+ *
+ * export const input: TaskInput = {
+ *   prompt: "Make the failing test in test/greet.test.ts pass.",
+ *   branch: "fix/greet",
+ *   thinkingLevel: "high",
+ * };
+ * ```
+ *
+ * @see docs/reference/machines.md
+ */
 export type TaskInput = z.infer<typeof door>;
 
-/** What a run of `task` settles as — approved by the human, or lost with its Workspace. */
+/**
+ * The output of a run of `task`: `{ outcome: "approved", branch }` when the human approves the
+ * work, or `{ outcome: "lost" }` when the Workspace was lost, with every commit that was not
+ * pushed.
+ *
+ * @example
+ * ```ts
+ * import type { TaskOutput } from "@jr2/machines";
+ *
+ * export function describe(output: TaskOutput): string {
+ *   return output.outcome === "approved" ? `approved on ${output.branch}` : "the Workspace was lost";
+ * }
+ * ```
+ *
+ * @see docs/reference/machines.md
+ */
 export type TaskOutput = { outcome: "approved"; branch: string } | { outcome: "lost" };
 
 // ---------------------------------------------------------------------------------------------
@@ -141,6 +184,31 @@ type BodyContext = BodyInput & {
   notes?: string;
 };
 
+/**
+ * The Machine inside `task`: the coder's loop and the `review` Gate, with no `workspace()` around
+ * it. Use `task` to run it. Use `body` only to put the same loop in a `workspace()` of your own.
+ * For example, your `workspace()` can have Repo Slots or a run input that differ from those of
+ * `task`. Its input is the run
+ * input plus the `workspace` handles, and it works in the first Repo Slot of those handles.
+ *
+ * @example
+ * ```ts
+ * import { customize, workspace } from "@jr2/orchestrator";
+ * import { body, type TaskInput } from "@jr2/machines";
+ *
+ * const fixed = workspace(body, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   spec: ({ input }: { input: TaskInput }) => ({ branch: input.branch ?? "jr2/fix" }),
+ * });
+ *
+ * export const machine = customize(fixed, {
+ *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ * });
+ * ```
+ *
+ * @see docs/reference/machines.md
+ * @see docs/concepts/workspaces.md
+ */
 export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: TaskOutput },
   events: [finish, approve, requestChanges],
@@ -271,6 +339,50 @@ export const body = jr2Setup({
 // The wrapper is this Machine's ROOT, so its `input` is the run's door (ADR-0033) and both mappers
 // are typed by it — nothing here restates a shape.
 
+/**
+ * A Machine in which a coder Agent works on one prompt in a Workspace until a human approves the
+ * work. The coder works in a Sandbox and commits on a branch. Then the run waits at the `review`
+ * Gate. The human answers `request_changes` with `notes`, and the coder continues the same conversation, or
+ * `approve`, and the run ends. A run has no limit on the number of rounds.
+ *
+ * `task` does not push. While the run waits at the Gate, the Sandbox stays. You can exec into it
+ * and read the branch. To keep the work, push it yourself. `approve` removes the Sandbox, and
+ * every commit that was not pushed goes with it. If the Sandbox is lost, the run ends with
+ * `{ outcome: "lost" }`.
+ *
+ * `task` leaves two parts Open, so you bind them with `customize()` where you register it:
+ *
+ * - `repos`: the whole Repo Slot map. Name every slot, and at least one. The first slot is the
+ *   Repo that the coder works in. The coder can read the others.
+ * - `agents.coder.model`: the coder's model, as `"<provider>/<modelId>"`. You can also change the
+ *   coder's other fields, such as `instructions` or `thinkingLevel`.
+ *
+ * `jr2 up` refuses a Workflow that leaves either part Open, and prints the `customize()` line
+ * that binds it. You can also give `task` an `image`, a `user` or a Size (`resources`). Without an
+ * image, it uses the Instance's `images/default`, or jr2's Harness image when there is none.
+ * Without a Size, it uses the Instance's `sandbox.resources`, or the kit's Size when it has none.
+ * Inside another Machine, `task` needs `branch` in its input, or it refuses:
+ * ``task: no `branch` on the door and no run id to derive one from``.
+ *
+ * @example
+ * ```ts
+ * import { customize } from "@jr2/orchestrator";
+ * import { task } from "@jr2/machines";
+ *
+ * export const machine = customize(task, {
+ *   repos: {
+ *     app: { url: "https://github.com/you/app.git" },
+ *     lib: { url: "https://github.com/you/lib.git" },
+ *   },
+ *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ * });
+ * ```
+ *
+ * @see docs/reference/machines.md
+ * @see docs/get-started/an-agent-in-a-sandbox.md
+ * @see docs/guides/bind-open-parts.md
+ * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
+ */
 export const task = workspace(body, {
   input: door,
   // The Repo Slots, OPEN as a map (ADR-0051/0054): the consumer names every slot and every Repo.

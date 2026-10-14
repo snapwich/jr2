@@ -21,11 +21,14 @@ import { z } from "zod";
 
 export const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
 export const HttpMethodShape = z.enum(HTTP_METHODS);
+/** The method of an `http` Effect: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS`. */
 export type HttpMethod = z.infer<typeof HttpMethodShape>;
 
 /** One part of a string the Effector builds: literal text, or a secret it holds, by name. A
  * secret's value is never on the wire. */
 export const TextPartShape = z.union([z.strictObject({ text: z.string() }), z.strictObject({ secret: z.string() })]);
+/** One part of a {@link Text}: `{ text }`, literal text, or `{ secret }`, the name of an Effect
+ * secret. The `text` template makes the parts. */
 export type TextPart = z.infer<typeof TextPartShape>;
 
 export const WireAuthShape = z.union([
@@ -71,7 +74,8 @@ const HEADER_NAME = /^[a-z0-9!#$%&'*+.^_`|~-]+$/;
 export const isEffectHeader = (name: string): boolean =>
   HEADER_NAME.test(name) && !FRAMING_HEADERS.has(name) && !name.startsWith("proxy-");
 
-/** An `http` start; its body may be a Worktree file (ADR-0067), which only a Sandbox Effector serves. */
+/** An `http` start; its body may be a Worktree file (ADR-0067), which only a Sandbox Effector
+ * serves. */
 export const HttpStartShape = z.strictObject({
   kind: z.literal("http"),
   method: HttpMethodShape,
@@ -103,7 +107,8 @@ export type Pair = z.infer<typeof PairShape>;
 /** A `push` start: the Workspace's branch to the Repo Slot's Binding, with the push credential of
  * the `git.credentials` entry the url falls under — the Effector's config holds the entries, and
  * matches the url as the fence does (`credential` names one by its `match` instead). `pin` is the
- * commit; absent, the Effector reads the Agent's branch tip and its answer carries it (`pinned`). */
+ * commit; absent, the Effector reads the Agent's branch tip and its answer carries it (`pinned`).
+ */
 export const PushStartShape = z.strictObject({
   kind: z.literal("push"),
   push: z.strictObject({
@@ -238,6 +243,54 @@ export const HttpOutputShape = z.union([
   HttpResponseShape,
   z.strictObject({ outcome: z.enum(["unreachable", "refused", "unknown"]), reason: z.string() }),
 ]);
+/**
+ * The output of an `http` Effect: what the `onDone` of its state gets as `event.output`. Every
+ * outcome is output. A 4xx or 5xx status is output too. Route on `outcome`:
+ *
+ * - `response`: an answer came back. `status` is its HTTP status. `headers`, `contentType` and
+ *   `size` tell about the body. `body` is there when the body is text: at most `maxBody` bytes
+ *   (`truncated` is `true` when jr2 cut it). A body that is not text gives only its size and
+ *   content type. jr2 replaces each value of an Effect secret that the Effector holds, and its
+ *   usual encodings, with `[secret:<name>]`, in the body and the headers.
+ * - `unreachable`: the call did not go out, for example because the name did not resolve, or the
+ *   connection or TLS failed. `reason` tells why.
+ * - `refused`: jr2 or the Effector refused the call, and nothing was sent. For example, a path
+ *   segment that is `.`, `..` or empty, or a request that is too large. `reason` tells why.
+ * - `unknown`: the call can have gone out, but no answer came, or jr2 cannot tell after a restart.
+ *   `reason` tells why. jr2 does not send it again unless it is marked `idempotent`.
+ *
+ * @example
+ * ```ts
+ * import { http, jr2Setup, type HttpOutput } from "@jr2/orchestrator";
+ *
+ * const ok = (output: HttpOutput): boolean => output.outcome === "response" && output.status < 300;
+ *
+ * export const machine = jr2Setup({
+ *   events: [],
+ *   actors: { health: http({ method: "GET", url: "https://app.example.com/healthz" }) },
+ * }).createMachine({
+ *   id: "health",
+ *   initial: "checking",
+ *   states: {
+ *     checking: {
+ *       invoke: {
+ *         src: "health",
+ *         onDone: [
+ *           { guard: ({ event }) => ok(event.output), target: "healthy" },
+ *           { target: "unhealthy" },
+ *         ],
+ *       },
+ *     },
+ *     healthy: { type: "final" },
+ *     unhealthy: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/concepts/effects.md
+ * @see docs/guides/run-a-command-or-call-a-url.md
+ * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
+ */
 export type HttpOutput = z.infer<typeof HttpOutputShape>;
 
 /**
@@ -276,6 +329,7 @@ export const PushOutputShape = z.union([
   z.strictObject({ outcome: z.literal("diverged"), reason: z.string(), published: z.string(), source: z.string() }),
   z.strictObject({ outcome: z.literal("unknown"), reason: z.string() }),
 ]);
+/** @internal */
 export type PushWireOutput = z.infer<typeof PushOutputShape>;
 
 /** A credentialed command's output, as the command kind's (ADR-0067), and `dirty` when the

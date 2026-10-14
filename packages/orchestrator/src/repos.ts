@@ -54,7 +54,8 @@ export type RepoNodeState = {
 
 /** One `Repo` resource as the instance reports it (`GET /repos`). */
 export type RepoStatus = {
-  /** The cache key (repo-identity.ts): the resource's name, the hostPath leaf, `/repos/<key>`. */
+  // repo-identity.ts makes the key.
+  /** The cache key: the resource's name, the hostPath leaf, `/repos/<key>`. */
   key: string;
   /** The Binding's own spelling — what the cache clones. */
   url: string;

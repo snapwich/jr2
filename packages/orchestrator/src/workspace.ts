@@ -83,73 +83,155 @@ export function leaseDelay(interval: number, which: "first" | "next", random: nu
   return interval * (1 - LEASE_JITTER + 2 * LEASE_JITTER * random);
 }
 
-/** What to attach, in workspace vocabulary only (ADR-0012 boundary): the one branch the body
- * works on, the pod's work group, and the review sha. Derived PER RUN from the wrapper's input,
- * which is what keeps it out here rather than in the options — and which is exactly why the two
- * IMAGES and the REPOS are NOT here (ADR-0049, ADR-0051): `jr2 up` must find them by walking the
- * Machine, and no walk can evaluate a function of run input. They are static `workspace()`
- * options instead; a Repo that IS a function of run input is a per-run slot, a mapper the walk
- * can see the shape of even though it cannot see the url. */
+// What to attach, in workspace vocabulary only (ADR-0012 boundary): the one branch the body works
+// on, the pod's work group, and the review sha. Derived PER RUN from the wrapper's input, which is
+// what keeps it out here rather than in the options — and which is exactly why the two IMAGES and
+// the REPOS are NOT here (ADR-0049, ADR-0051): `jr2 up` must find them by walking the Machine, and
+// no walk can evaluate a function of run input. They are static `workspace()` options instead; a
+// Repo that IS a function of run input is a per-run slot, a mapper the walk can see the shape of
+// even though it cannot see the url.
+/** What the `spec` of a `workspace()` returns: the branch that the Workspace works on, and two
+ * optional fields. jr2 calls `spec` with the run input when the run enters the Workspace. */
 export type WorkspaceSpec = {
+  /** The branch that the Workspace works on: each Repo Slot gets a Worktree for it, at
+   * `/work/<slot>/<branch>`, with each `/` in the branch written as `-`. Required, and not
+   * `default`, which is the directory of the clone. Your Machine decides its name. */
   branch: string;
-  /** The pod's work group (ADR-0005): `fsGroup`, default 2000. The two writing seats may run
-   * different uids — each image's own `USER` decides — and POSIX would then make the other seat's
-   * files read-only; fsGroup (group ownership) plus the default ACL the attach stamps on each
-   * repo root (group writability, umask-proof) closes that, both inert when the uids already
-   * match. The override exists for the image whose sessions already hold a gid of their own —
-   * a root sshd's logins rebuild groups from `/etc/group`, so pointing the work group at one
-   * they have costs no rebuild. Never a config key — pod composition is the spec's business. */
+  // The pod's work group (ADR-0005): `fsGroup`. The two writing seats may run different uids —
+  // each image's own `USER` decides — and POSIX would then make the other seat's files read-only;
+  // fsGroup (group ownership) plus the default ACL the attach stamps on each repo root (group
+  // writability, umask-proof) closes that, both inert when the uids already match. The override
+  // exists for the image whose sessions already hold a gid of their own — a root sshd's logins
+  // rebuild groups from `/etc/group`, so pointing the work group at one they have costs no
+  // rebuild. Never a config key — pod composition is the spec's business.
+  /** The group id that owns the files in `/work`. With it, the Sandbox Image and the User
+   * Container can both write those files when they run as different users. Default: 2000. Set it
+   * to a group id that the User Container's sessions already have, for example when a root sshd
+   * builds their groups from `/etc/group`. A non-negative integer. */
   workGroup?: number;
-  /** Attach the detached review worktree at this sha (ADR-0028): `<branchDir>-review`, a sibling
-   * of the branch worktree, forced to exactly this sha on every attach. Creation-time seat only;
-   * the per-round refresh verb (the sha moves between review rounds) is a later, workflow-driven
-   * change. */
+  // `<branchDir>-review`, a sibling of the branch worktree, forced to exactly this sha on every
+  // attach (ADR-0028). Creation-time seat only; the per-round refresh verb (the sha moves between
+  // review rounds) is a later, workflow-driven change.
+  /** A commit to check out in a second, detached Worktree beside each branch Worktree, for a
+   * reviewer: `/work/<slot>/<branch>-review`. The body gets its paths as `workspace.review`. */
   reviewSha?: string;
 };
 
+// What the workspace hands the BODY (ADR-0012, ADR-0016): worktree geography only, keyed by Repo
+// Slot (ADR-0051) — so a path a prompt names is right in every Instance that consumes the Machine.
+// `endpoint` and `sandbox` are mechanism-internal — the Agent actor resolves them ambiently from
+// the enclosing wrapper (ambient.ts), so a workflow can no longer forget to thread them (the
+// baba71f incident: `sandbox` omitted, every tool call 403'd, fail-closed but silent).
+//
+// `TSlots` has NO default on purpose (ADR-0050): a body names the slots it reads, and
+// `workspace()` holds those names to the ones the wrapper declares. A default of `string` would
+// type `repos` as `Record<string, string>`, under which a misspelled slot reads as a path — the
+// silent widening the slot key exists to refuse. `string` WRITTEN is a different statement: the
+// body names no slot at all — it enumerates them, in the order the composer wrote — which is the
+// body under a wrapper that declares its map Open (`repos: open`, ADR-0051), where the slots are
+// the composer's words and no body could name them.
 /**
- * What the workspace hands the BODY (ADR-0012, ADR-0016): worktree geography only, keyed by Repo
- * Slot (ADR-0051) — so a path a prompt names is right in every Instance that consumes the Machine.
- * `endpoint` and `sandbox` are mechanism-internal — the Agent actor resolves them ambiently from
- * the enclosing wrapper (ambient.ts), so a workflow can no longer forget to thread them (the
- * baba71f incident: `sandbox` omitted, every tool call 403'd, fail-closed but silent).
+ * What the body of a `workspace()` gets as `input.workspace`: the path of each Worktree, and the
+ * branch. A path is correct in each Instance that registers the Machine.
  *
- * `TSlots` has NO default on purpose (ADR-0050): a body names the slots it reads, and
- * `workspace()` holds those names to the ones the wrapper declares. A default of `string` would
- * type `repos` as `Record<string, string>`, under which a misspelled slot reads as a path — the
- * silent widening the slot key exists to refuse. `string` WRITTEN is a different statement: the
- * body names no slot at all — it enumerates them, in the order the composer wrote — which is the body
- * under a wrapper that declares its map Open (`repos: open`, ADR-0051), where the slots are the
- * composer's words and no body could name them.
+ * `TSlots` is the names of the Repo Slots that the body reads. `workspace()` refuses a body that
+ * names a slot that the Workspace does not have. Write `string` for a body that names no slot and
+ * reads the Worktrees in the order of `repos`, as under `repos: open`.
  */
 export type WorkspaceHandles<TSlots extends string> = {
-  /** Every slot's branch-worktree path: `/work/<slot>/<branch>`, keyed in DECLARATION ORDER. The
-   * kit gives no slot a privileged meaning — there is no `workdir` — because which tree an Agent
-   * works in is a fact about that Agent's Turn, not about the Workspace: a body that names its
-   * slots frames each Agent with its own, and a body that names none may give the order a
-   * meaning of its own (`task`: the first is the one the coder edits). The order is the kit's
-   * promise; the meaning is the Machine's (ADR-0051). */
+  // The kit gives no slot a privileged meaning — there is no `workdir` — because which tree an
+  // Agent works in is a fact about that Agent's Turn, not about the Workspace: a body that names
+  // its slots frames each Agent with its own, and a body that names none may give the order a
+  // meaning of its own (`task`: the first is the one the coder edits). The order is the kit's
+  // promise; the meaning is the Machine's (ADR-0051).
+  /** The absolute path of each Repo Slot's Worktree, `/work/<slot>/<branch>`, in the order that
+   * `repos` declares the slots. Give one to an Agent's Turn as its `cwd`. */
   repos: Record<TSlots, string>;
+  /** The branch that the Workspace works on: the `branch` of the spec. */
   branch: string;
-  /** Detached review-worktree paths by slot (ADR-0028) — present only when the spec carried
-   * `reviewSha`. The reviewer's seat: hand one of these as its cwd/prompt frame. */
+  // The review seat (ADR-0028).
+  /** The path of each Repo Slot's review Worktree. Present only when the spec has `reviewSha`.
+   * Give one to a reviewer's Turn as its `cwd`. */
   review?: Partial<Record<TSlots, string>>;
 };
 
+// The composition is the whole reason the door is declared on the wrapper and not on the body
+// (ADR-0033): `Workspaced<RunInput, Slot>` is what the body receives, `RunInput` is what a caller
+// may send, and no caller can send `workspace` (the handles do not exist until a Sandbox is
+// provisioned and attached). Naming it here keeps the body from hand-copying
+// {@link WorkspaceHandles}, which drifts. The slot argument is required, never defaulted, so
+// `workspace.repos.<slot>` is typed by the same keys the wrapper declares (ADR-0050, ADR-0051).
+//
+// The wrapper passes its input through UNTOUCHED, so a ROOT-placed wrapper's body also receives
+// what the host injected beside the door — `HostInjectedInput` today (the run's `instanceId`).
+// That is outside this type on purpose: it depends on where the wrapper sits, and `Workspaced` is
+// the composition the WRAPPER makes.
 /**
- * A body's input under a Workspace: the run input the wrapper passes through, PLUS the handles it
- * injects. The composition is the whole reason the door is declared on the wrapper and not on the
- * body (ADR-0033) — `Workspaced<RunInput, Slot>` is what the body receives, `RunInput` is what a caller
- * may send, and no caller can send `workspace` (the handles do not exist until a Sandbox is
- * provisioned and attached). Naming it here keeps the body from hand-copying
- * {@link WorkspaceHandles}, which drifts. The second argument is the body's word for each Repo
- * Slot it reads (`Workspaced<RunInput, "target">`) — required, never defaulted, so
- * `workspace.repos.<slot>` is typed by the same keys the wrapper declares (ADR-0050, ADR-0051).
+ * The input of a `workspace()` body: the run input, plus `workspace`, the handles that the
+ * Workspace adds (`workspace.repos`, `workspace.branch`, `workspace.review`). Use it as the type of
+ * the body's input.
  *
- * The wrapper passes its input through UNTOUCHED, so a ROOT-placed wrapper's body also receives
- * what the host injected beside the door — `HostInjectedInput` today (the run's `instanceId`).
- * That is outside this type on purpose: it depends on where the wrapper sits, and `Workspaced` is
- * the composition the WRAPPER makes.
+ * The first argument is the run input: the `input` schema of the `workspace()`. The second is the
+ * Repo Slots that the body reads, by name (`"app"` or `"app" | "docs"`). Under `repos: open`, write
+ * `string`: the body cannot know the names, so it reads the slots in order. The second argument
+ * has no default.
+ *
+ * A body under a root `workspace()` also gets the fields of `HostInjectedInput`. Add them when the
+ * body reads them: `Workspaced<HostInjectedInput & RunInput, "app">`.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { agent, defineEvent, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ *
+ * const done = defineEvent({
+ *   name: "done",
+ *   description: "Call this when REVIEW.md is written.",
+ *   input: z.object({}),
+ * });
+ * const runInput = z.object({ branch: z.string(), sha: z.string() });
+ * type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { input: BodyInput; context: BodyInput },
+ *   events: [done],
+ *   actors: {
+ *     reviewer: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You review one commit and write REVIEW.md.",
+ *       workspace: "read",
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "review",
+ *   context: ({ input }) => input,
+ *   initial: "reviewing",
+ *   states: {
+ *     reviewing: {
+ *       invoke: {
+ *         src: "reviewer",
+ *         input: ({ context }) => ({
+ *           prompt: `Review commit ${context.sha} on ${context.workspace.branch}.`,
+ *           cwd: context.workspace.review?.app ?? context.workspace.repos.app,
+ *         }),
+ *       },
+ *       on: { done: "finished" },
+ *     },
+ *     finished: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   input: runInput,
+ *   repos: { app: "https://github.com/you/app.git" },
+ *   spec: ({ input }) => ({ branch: input.branch, reviewSha: input.sha }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/workspaces.md
+ * @see docs/guides/write-a-workflow.md
+ * @see docs/reference/decisions/0012-workspace-wrapper-machine.md
+ * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
  */
 export type Workspaced<TInput, TSlots extends string> = TInput & { workspace: WorkspaceHandles<TSlots> };
 
@@ -383,6 +465,8 @@ type WsContext = {
  * Repo Slots it carries, because a default would widen exactly where the phantom exists to refuse
  * — `JR2Repos<string>` offers `customize()` every key, and `AnyStateMachine` as the body offers no
  * Agent at all. `PoolMachine` names its worker the same way.
+ *
+ * @internal
  */
 export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSlots extends string> = StateMachine<
   any,
@@ -435,6 +519,7 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSl
  */
 // The handles are keyed by the wrapper's DECLARED slots (ADR-0051), so a body demanding a slot the
 // wrapper never declared is refused here too; demanding fewer is fine, as with any other field.
+/** @internal */
 type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor, TSlots extends string> =
   Workspaced<TDoor, TSlots> & HostInjectedInput extends InputFrom<TBody>
     ? BodyNamesNoSlotUnderOpenMap<TBody, TSlots>
@@ -467,6 +552,8 @@ type BodyNamesNoSlotUnderOpenMap<TBody extends AnyStateMachine, TSlots extends s
  * is the same one-direction assignability, on the `workspace` field alone: the handles the wrapper
  * will inject must satisfy what the body declares for them, so a body that names fewer slots, or
  * no handles at all, is fed a superset and passes, as ever.
+ *
+ * @internal
  */
 type BodyAcceptsSlots<TBody extends AnyStateMachine, TSlots extends string> =
   InputFrom<TBody> extends { workspace: infer THandles }
@@ -475,120 +562,254 @@ type BodyAcceptsSlots<TBody extends AnyStateMachine, TSlots extends string> =
       : { "the body's declared handles must accept the Repo Slots the wrapper declares": WorkspaceHandles<TSlots> }
     : unknown;
 
-/**
- * What the Sandbox is MADE OF (ADR-0037, ADR-0005) and which Repos it attaches (ADR-0051), as
- * STATIC options on the wrapper rather than fields of the per-run spec (ADR-0049). Static is the
- * whole point: `jr2 up` walks the registered Machines to find every `file:` context and build it,
- * every bound Repo and warm it, every open slot and refuse it (parts.ts) — and a spec is a function
- * of run input that no walk can evaluate. They are also never persisted — the provisioning state
- * re-reads them off the Machine it was invoked as, so a restore, a `provide()` and a `customize()`
- * all get the image and the slots the Machine carries NOW.
- *
- * Each image is one string in ADR-0037's two shapes: a `file:` URL to a docker context the
- * Machine's module ships (`import.meta.resolve("./image")`), or a registry ref its owner baked and
- * hosts.
- *
- * `TSlots` has no default, here and on the two option types below (ADR-0050): a value annotated
- * with a `string` slot set types `repos` as `Record<string, RepoSlot>`, under which a body naming
- * any slot passes the wrapper's check — the widening {@link WorkspaceHandles} refuses for the
- * same reason. The `workspace()` overloads infer it; an annotation names it.
- */
+// What the Sandbox is MADE OF (ADR-0037, ADR-0005) and which Repos it attaches (ADR-0051), as
+// STATIC options on the wrapper rather than fields of the per-run spec (ADR-0049). Static is the
+// whole point: `jr2 up` walks the registered Machines to find every `file:` context and build it,
+// every bound Repo and warm it, every open slot and refuse it (parts.ts) — and a spec is a function
+// of run input that no walk can evaluate. They are also never persisted — the provisioning state
+// re-reads them off the Machine it was invoked as, so a restore, a `provide()` and a `customize()`
+// all get the image and the slots the Machine carries NOW.
+//
+// Each image is one string in ADR-0037's two shapes: a `file:` URL to a docker context the
+// Machine's module ships (`import.meta.resolve("./image")`), or a registry ref its owner baked and
+// hosts.
+//
+// `TSlots` has no default, here and on the two option types below (ADR-0050): a value annotated
+// with a `string` slot set types `repos` as `Record<string, RepoSlot>`, under which a body naming
+// any slot passes the wrapper's check — the widening WorkspaceHandles refuses for the
+// same reason. The `workspace()` overloads infer it; an annotation names it.
+/** The options of a `workspace()` that say what its Sandbox is made of and which Repos it
+ * clones. They are the same for each run. */
 export type SandboxOptions<TSlots extends string, TInput = unknown> = {
-  /** The Sandbox Image. Absent → the Instance's `images/default`, then the stock Harness. */
+  /** The Sandbox Image: the image of the container where the Agent's Working tools and
+   * `command` Effects run. A `file:` URL to a docker context that your module ships
+   * (`import.meta.resolve("./image")`), which `jr2 up` builds, or a registry ref. Its floor is
+   * glibc and git; jr2 adds its own runtime at `/opt/jr2`. Default: the Instance's
+   * `images/default`, then jr2's Harness image. */
   image?: string;
-  /** The User Container (ADR-0005): its image, or `{ image, resources }` when the Machine states
-   * the seat's split of the Size (ADR-0060) — the widening ADR-0005 foresaw. Absent → the pod has
-   * no third container: there is no default, because the seat's whole identity is "what jr2 does
-   * not own" and jr2 has nothing to put there. Env and ports are deliberately not forwarded. With
-   * no split stated, the seat has no limit of its own and shares the pod's budget. */
+  // The widening ADR-0005 foresaw: `{ image, resources }` states the seat's split of the Size
+  // (ADR-0060). There is no default, because the seat's whole identity is "what jr2 does not own"
+  // and jr2 has nothing to put there. Env and ports are deliberately not forwarded.
+  /** The User Container: a third container in the Sandbox, for a service that must run beside the
+   * Agent, such as an sshd. Its image, in the same two forms as `image`, or `{ image, resources }`
+   * to give it a part of the Size. It runs its own entrypoint, with `/work` mounted. jr2 adds
+   * nothing to it. Default: none. Without `resources`, it has no limit of its own and shares the
+   * Size of the Sandbox. */
   user?: string | UserContainer;
+  // Agent Substrate's template size (ADR-0060), so the Workspace moves there unchanged. A fact of
+  // the Machine, like its image: the author knows the toolchain, the runner, the worker count.
   /**
-   * The Size (ADR-0060): the ceiling for the whole Sandbox, `limits.memory` and `limits.cpu` and
-   * nothing else — Agent Substrate's template size, so the Workspace moves there unchanged. A fact
-   * of the Machine, like its image: the author knows the toolchain, the runner, the worker count.
-   * jr2 reserves all of it (every request equals its limit) and enforces the CPU limit. Absent, or
-   * a field left out → the Instance's `sandbox.resources`, then the kit default (2Gi, 1 cpu). A
-   * composer retunes it with `customize(machine, { resources })`.
+   * The Size: the memory and cpu limit of the whole Sandbox, `{ limits: { memory, cpu } }`, such as
+   * `{ limits: { memory: "4Gi", cpu: "2" } }`. jr2 reserves all of it on the node: each request
+   * equals its limit. jr2 also enforces the cpu limit. Only `limits`,
+   * and in it only `memory` and `cpu`, are accepted. Default: the Instance's `sandbox.resources`,
+   * then 2Gi and 1 cpu. Under a Size that you give, a field you leave out takes the kit's value,
+   * not the Instance's. The Instance that registers the Machine can change it with
+   * `customize(machine, { resources })`.
    */
   resources?: Size;
+  // The handles keep this map's order, and the kit reads nothing into it (ADR-0051). Required, at
+  // least one: a Workspace exists to work on a repository. `repos: open` is the shape a packaged
+  // Machine takes when its body enumerates its checkouts rather than naming them
+  // (`@jr2/machines`'s `task`, whose first slot is the one the coder edits).
   /**
-   * The Repo Slots (ADR-0051), keyed by the Machine's own word for each — the key of the body's
-   * `workspace.repos` handles and the directory under `/work`. The handles keep this map's order,
-   * and the kit reads nothing into it. Required, at least one: a Workspace exists to work on a repository. Each slot is bound (a url,
-   * or `{ url, ref? }` — the package's own), open (`open` — the consumer binds it with
-   * `customize`), or per-run (a mapper over the door: `({ input }) => input.repo`).
+   * The Repo Slots: the repositories that the Sandbox clones, each under a name of your Machine's
+   * choice. The name is the key of `workspace.repos` in the body and the directory under `/work`.
+   * Required, with at least one slot. Each value is one of:
+   * - a url, or `{ url, ref }`, where `ref` is the branch or commit that the Worktree starts from
+   *   (default: the Repo's default branch);
+   * - `open`, for the Instance that registers the Machine to bind with `customize()`;
+   * - a function of the run input, `({ input }) => url` or `{ url, ref }`, when each run chooses.
    *
-   * Or the whole map Open (`repos: open`): the Machine names no slot, the composer names every
-   * one with `customize`, in an order the Machine may give a meaning to. The shape a packaged
-   * Machine takes when its body enumerates its checkouts rather than naming them (`@jr2/machines`'s
-   * `task`, whose first slot is the one the coder edits). Under it `TSlots` is `string`, and the body's handles must say so.
+   * Or `repos: open` for the whole map: the Machine names no slot, and the Instance that registers
+   * it names each one with `customize()`. The body's input is then `Workspaced<RunInput, string>`.
    */
   repos: Record<TSlots, RepoSlot<TInput>> | typeof open;
+  // Naming is placement (ADR-0059): a pod gets the Held secrets something in it names — this
+  // list, and the model keys of the Agents whose Turns run here, which their providers claim
+  // without being listed.
   /**
-   * The Held secrets this Workspace's pod gets (ADR-0059): names of `jr2.config.ts`'s `secrets`
-   * list. Its Custodian holds each one, and the Harness container sees its Stand-in. Naming is
-   * placement: a pod gets the Held secrets something in it names — this list, and the model keys
-   * of the Agents whose Turns run here, which their providers claim without being listed.
+   * The Held secrets that this Sandbox can use: names from the `secrets` list in `jr2.config.ts`.
+   * The Sandbox's Custodian holds each value and puts it into requests to the hosts of that Held
+   * secret. The Agent sees only a Stand-in. You need not list the model key of an Agent that runs here: its
+   * provider claims it. Each name once.
    */
   secrets?: readonly string[];
+  // The container exists only when an Effect below this `workspace()` is placed there (ADR-0068,
+  // ADR-0005). It runs as its own `USER`.
   /**
-   * The Sandbox Effector's image (ADR-0068, ADR-0005): the container that runs this Workspace's
-   * `push`, file-body `http` and credentialed `command` Effects, with the secrets they name. Absent → the
-   * Sandbox Image, whose floor already holds `git` (ADR-0037). Name one for the tools and the
-   * credentials kept out of the Agent's image (`terraform`, `aws`). A `file:` context or a
-   * registry ref, resolved like the User Container's image; it runs as its own `USER`. The
-   * container exists only when an Effect below this `workspace()` is placed there.
+   * The image of the Sandbox Effector. This container runs three kinds of Effect for this
+   * Workspace: a `push`, an `http` Effect with a Worktree file as its body, and a `command` with an
+   * Effect secret in its `env`. It gets the Effect secrets that those Effects name. Give an image
+   * when those Effects need tools or credentials that you keep out of the Sandbox Image, such as
+   * `terraform`. A `file:` URL or a registry ref, as for `image`. Default: the Sandbox Image,
+   * which already holds `git`.
    */
+  // The default is the Sandbox Image, whose floor already holds `git` (ADR-0037).
   effector?: { image: string };
 };
 
-/**
- * How a Workspace with a declared door is configured (ADR-0012, ADR-0033) — the wrapper's own
- * run-input schema, what the pod is made of, and the mapping from what comes through the door to
- * workspace vocabulary.
- */
+// How a Workspace with a declared door is configured (ADR-0012, ADR-0033) — the wrapper's own
+// run-input schema, what the pod is made of, and the mapping from what comes through the door to
+// workspace vocabulary.
+/** The options of a `workspace()` that declares the input that starts a run. */
 export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string> = SandboxOptions<
   TSlots,
   z.infer<TSchema>
 > & {
-  /** The wrapper's OWN declared run input (ADR-0033) — what a caller sends to start a run of it,
-   * what types `spec`'s `input`, and what the body is checked against. Deliberately NOT the body's
-   * schema: the body is fed the run input PLUS the injected `workspace` handles
-   * ({@link Workspaced}), which no caller can send, so the body's contract is the door plus
-   * something that does not exist yet. Symmetric with `PoolSpec.input`. */
+  // Deliberately NOT the body's schema (ADR-0033): the body is fed the run input PLUS the injected
+  // `workspace` handles ({@link Workspaced}), which no caller can send, so the body's contract is
+  // the door plus something that does not exist yet. Symmetric with `PoolSpec.input`.
+  /** The input that starts a run, as a `z.object`. jr2 checks each start against it. It also types
+   * the `input` of `spec` and of a per-run Repo Slot, and the body must accept it plus the
+   * `workspace` handles. Write it here, not on the body. */
   input: TSchema;
-  /** Map what came through the door to the workspace-domain spec: what to attach, on what ref,
-   * on which branch (ADR-0012's boundary — workflow configuration never enters it). */
+  // ADR-0012's boundary: workflow configuration never enters the spec.
+  /** A function from the run input to the Workspace's {@link WorkspaceSpec}: the `branch` it
+   * works on, and optionally `reviewSha` and `workGroup`. jr2 calls it when the run enters the
+   * Workspace. */
   spec: (args: { input: z.infer<TSchema> }) => WorkspaceSpec;
 };
 
+// How a Workspace with NO declared door is configured: absence is permissive (ADR-0033), so jr2
+// has nothing to infer from and says `unknown` rather than `any` — an honest "jr2 does not know",
+// which the mapper must narrow before it reads a field.
 /**
- * How a Workspace with NO declared door is configured: absence is permissive (ADR-0033), so jr2
- * has nothing to infer from and says `unknown` rather than `any` — an honest "jr2 does not know",
- * which the mapper must narrow before it reads a field. A wrapper that is fed by something other
- * than a caller — a pool worker, a nested invoke — may state what it is fed by annotating the
- * parameter (`spec: ({ input }: { input: Item }) => …`), which types the wrapper's input too. For
- * anything a caller starts, the honest fix is to declare `input`.
+ * The options of a `workspace()` with no `input`: it starts with any input. The `input` of `spec`
+ * is then `unknown`, and `spec` must check it before it reads a field.
+ *
+ * Use it for a Workspace that a Pool or another Machine starts. Give the parameter of `spec` a
+ * type to say what that input is: `spec: ({ input }: { input: Item }) => …`. That also types the
+ * input of the Workspace. For a Workspace that a caller starts, declare `input`.
  */
 export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> = SandboxOptions<TSlots, TInput> & {
-  /** Never present on this path. Spelled out so a declared schema can never fall through to the
-   * permissive overload, where the body's door would go unchecked. */
+  // Spelled out so a declared schema can never fall through to the permissive overload, where the
+  // body's door would go unchecked.
+  /** Not present: a `workspace()` without `input` starts with any input. */
   input?: never;
+  /** A function from the input to the Workspace's {@link WorkspaceSpec}. Its `input` is
+   * `unknown` unless you give the parameter a type: `spec: ({ input }: { input: Item }) => …`. */
   spec: (args: { input: TInput }) => WorkspaceSpec;
 };
 
 /**
- * Wrap a body Machine in Sandbox lifecycle (ADR-0012). `spec` maps the wrapper's input to the
- * workspace-domain spec; the body receives the wrapper's input plus `workspace` (the handles) —
- * `Workspaced<TInput, TSlots>`, which is also what the declared door checks the body against. The
- * wrapper's output is the body's output. A body ERROR is deliberately unhandled: it faults the run
- * loudly (RunStatus.fault) and leaves the Sandbox to the operator's idle-timeout GC — the trail
- * stays inspectable, and silent cleanup would destroy the evidence.
+ * Run a body Machine in a Sandbox: a pod of its own, with a Worktree of each Repo Slot on one
+ * branch. The result is a Machine. Register it as a Workflow, or invoke it from another Machine as
+ * an actor slot.
+ *
+ * When a run enters it, the Workspace makes the Sandbox and waits for room on a node, with no
+ * deadline. It clones each Repo Slot and makes its Worktree on the `branch` that `spec` gives. Then
+ * it runs the body with the run input plus `workspace`, the handles (see {@link Workspaced}). The
+ * Agents with Working tools and the `command` Effects in the body run in that Sandbox. An Agent
+ * with `workspace: "none"` runs on the Instance Harness. When the body reaches a final state, the
+ * Workspace deletes the Sandbox, and its output is the body's output. Push the branch before
+ * then: jr2 deletes the Sandbox's commits with it.
+ *
+ * The Sandbox is Lost when its pod is evicted or its node goes. Then the body gets the event
+ * `workspace.lost`, and the body decides what to do. jr2 does not make the Lost Sandbox again.
+ * When the body fails with an error, the run faults. The Sandbox then stays for you to inspect,
+ * until jr2's operator removes it after an idle timeout.
+ *
+ * Give the run input to `input`, not to the body: a body with an `input` schema of its own is
+ * refused. The types refuse a body whose input does not accept the run input plus the handles,
+ * with the message `the body's declared input must accept the door plus the injected handles`.
+ *
+ * It refuses, when you call it:
+ * - a body with its own `input`: ``workspace(): the body "<id>" declares its own run input, which
+ *   nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected
+ *   `workspace` handles, so the body's schema is not the door. Move it to the wrapper:
+ *   workspace(body, { input, spec }) (ADR-0033).``
+ * - an empty `image`: ``workspace(): `image` must be a non-empty string (got <value>) — either a
+ *   `file:` URL to a docker context this module ships (`import.meta.resolve("./image")`) or a
+ *   registry ref (ADR-0037).``
+ * - no Repo Slot: ``workspace(): `repos` must name at least one Repo Slot — `repos: { app:
+ *   "https://…" }`, or `open` for a slot the consumer binds, or a mapper over the door for one the
+ *   run chooses — or be `open` whole, for a map the consumer names (ADR-0051).``
+ * - a bad Repo Slot name or value (see {@link RepoSlot})
+ * - a bad `secrets` list: ``workspace(): `secrets` must be a list of distinct names from
+ *   jr2.config.ts's `secrets` list (got <value>) — secrets: ["JIRA_TOKEN"] (ADR-0059).``
+ * - a bad `effector`: ``workspace(): `effector` is { image } — a `file:` URL to a docker context
+ *   or a registry ref (got <value>) — effector: { image: import.meta.resolve("./effector") }
+ *   (ADR-0068).``
+ * - a `user` that is not an image or `{ image, resources? }`: ``workspace(): `user` must be a
+ *   non-empty string (an image), or { image, resources? } (got <value>) — either a `file:` URL to a
+ *   docker context this module ships (`import.meta.resolve("./image")`) or a registry ref
+ *   (ADR-0037, ADR-0060).``, or ``workspace(): user.<key> is not accepted — the User Container is {
+ *   image, resources? } (ADR-0005, ADR-0060)`` (see {@link UserContainer})
+ * - a `resources` key other than `limits` or `requests`: ``workspace(): resources.<key> is not accepted — a
+ *   Size is { limits: { memory?, cpu? } } and nothing else — Agent Substrate's template size
+ *   (ADR-0060)``, or the same text for `resources.limits.<key>`. The other texts are in
+ *   {@link Size}.
+ *
+ * And when a run enters it, a spec without a `branch` (or with `branch: "default"`), or with a bad
+ * `reviewSha` or `workGroup`: ``workspace spec invalid: <fields> — the spec derives from run input;
+ * does `jr2 run --input` carry every field this workflow's workspace() mapping reads?``
+ *
+ * @param body - The Machine to run in the Sandbox. Its input is `Workspaced<RunInput, Slots>`.
+ * @param options - What the Sandbox is made of (`image`, `user`, `resources`, `effector`), the
+ *   Repo Slots it clones (`repos`), the Held secrets it can use (`secrets`), the run input
+ *   (`input`), and the function from the run input to the branch (`spec`).
+ * @returns A Machine whose input is the run input and whose output is the body's output.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ *
+ * const runInput = z.object({ ticket: z.string(), repo: z.string() });
+ * type BodyInput = Workspaced<z.infer<typeof runInput>, "app" | "docs">;
+ *
+ * const body = jr2Setup({
+ *   types: {} as { input: BodyInput },
+ *   events: [],
+ *   actors: {
+ *     build: command(["npm", "run", "build"], { slot: "app" }),
+ *   },
+ * }).createMachine({
+ *   id: "build",
+ *   initial: "building",
+ *   states: {
+ *     building: { invoke: { src: "build", onDone: "built" } },
+ *     built: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   input: runInput,
+ *   image: "docker.io/library/node:24",
+ *   resources: { limits: { memory: "4Gi", cpu: "2" } },
+ *   repos: {
+ *     app: ({ input }) => input.repo,
+ *     docs: { url: "https://github.com/you/docs.git", ref: "main" },
+ *   },
+ *   spec: ({ input }) => ({ branch: `fix/${input.ticket}` }),
+ * });
+ * ```
+ *
+ * @see docs/concepts/workspaces.md
+ * @see docs/guides/write-a-workflow.md
+ * @see docs/guides/size-a-workspace.md
+ * @see docs/guides/add-tools-to-the-sandbox.md
+ * @see docs/reference/decisions/0012-workspace-wrapper-machine.md
+ * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
  */
 export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMachine, TSlots extends string>(
   body: TBody & BodyAcceptsDoor<TBody, z.infer<TSchema>, TSlots>,
   options: WorkspaceOptions<TSchema, TSlots>,
 ): WorkspaceMachine<z.infer<TSchema>, OutputFrom<TBody>, TBody, TSlots>;
+/**
+ * Run a body Machine in a Sandbox, with no `input` schema: the Workspace starts with any input. Use
+ * it for a Workspace that a Pool or another Machine starts. {@link workspace} tells the rest, and
+ * what it refuses.
+ *
+ * @param body - The Machine to run in the Sandbox. Its input is the input of the Workspace plus
+ *   `workspace`, the handles.
+ * @param options - The options of the Sandbox, and `spec`. There is no `input`.
+ * @returns A Machine whose input is the run input and whose output is the body's output.
+ *
+ * @see docs/concepts/workspaces.md
+ * @see docs/reference/decisions/0033-a-machine-declares-the-input-that-starts-it.md
+ */
 export function workspace<TBody extends AnyStateMachine, TSlots extends string, TInput = unknown>(
   body: TBody & BodyAcceptsSlots<TBody, TSlots>,
   options: PermissiveWorkspaceOptions<TSlots, TInput>,
@@ -597,6 +818,12 @@ export function workspace(
   body: AnyStateMachine,
   options: SandboxOptions<string, any> & { input?: z.ZodObject; spec: (args: { input: any }) => WorkspaceSpec },
 ): AnyStateMachine {
+  // `spec` maps the wrapper's input to the workspace-domain spec (ADR-0012); the body receives
+  // the wrapper's input plus the handles — `Workspaced<TInput, TSlots>`, which is also what the
+  // declared door checks the body against. A body ERROR is deliberately unhandled: it faults the
+  // run loudly (RunStatus.fault) and leaves the Sandbox to the operator's idle-timeout GC — the
+  // trail stays inspectable, and silent cleanup would destroy the evidence.
+  //
   // A body that still declares its own run input is a dead declaration under the door design: the
   // wrapper never serves it, never validates against it, and feeds the body something it does not
   // describe. Silence would leave an author believing a contract that nothing enforces (ADR-0033).

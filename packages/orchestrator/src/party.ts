@@ -24,9 +24,72 @@ import { vocabularyOf } from "./vocabulary.ts";
 /** The guard type `sentBy` names: dotted, so no author guard can take the name. */
 export const SENT_BY = "jr2.sentBy";
 
-/** A writing runs for this party's events, and for the Machine's own: `guard: sentBy("coder")`. The
- * id is an Agent slot, or a Gate's invoke id, of this Machine — an unknown id is refused at load. */
+/**
+ * A guard that is true for an event that one party sent, and false for an event that another party
+ * sent: `guard: sentBy("coder")`. Use it where two parties may send the same event to one state,
+ * and the transition must run for one of them only. It is also true for an event that the Machine
+ * sends itself, which has no sender.
+ *
+ * It can only make a transition decline the events of other parties. It never lets a party send
+ * an event that the party may not send at that state: the position of the `on` key decides that.
+ * When the guard is false, xstate tries the next transition for the event, as for any guard. Use
+ * it alone, or inside `and([…])`.
+ *
+ * `createMachine` refuses an id that is not a party of the Machine: ``machine "<id>":
+ * sentBy("<party>") on "<event>" at "<state>" names no party of this Machine (Agent slots:
+ * <slots>; Gate invoke ids: <ids>)``
+ *
+ * @param id - The party: the slot key of an Agent of this Machine, or the invoke `id` of one of its
+ *   Gates.
+ * @returns A named guard object, for a transition's `guard`.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { agent, defineEvent, jr2Setup, sentBy } from "@jr2/orchestrator";
+ *
+ * const done = defineEvent({
+ *   name: "done",
+ *   description: "Call this when the draft is ready for review.",
+ *   input: z.object({}),
+ * });
+ *
+ * export const machine = jr2Setup({
+ *   events: [done],
+ *   actors: {
+ *     writer: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       instructions: "You write release notes.",
+ *       workspace: "none",
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "notes",
+ *   initial: "drafting",
+ *   states: {
+ *     drafting: {
+ *       invoke: [
+ *         { src: "writer", input: { prompt: "Draft the release notes." } },
+ *         { src: "gate", id: "editor" },
+ *       ],
+ *       on: {
+ *         // The writer's `done` goes to review; the editor's `done` skips it.
+ *         done: [{ guard: sentBy("writer"), target: "review" }, { target: "published" }],
+ *       },
+ *     },
+ *     review: { invoke: { src: "gate" }, on: { done: "published" } },
+ *     published: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/concepts/the-menu.md
+ * @see docs/concepts/gates.md
+ * @see docs/reference/decisions/0015-authoring-surface-absorbs-the-mechanism.md
+ */
 export function sentBy<const Id extends string>(id: Id): { type: typeof SENT_BY; params: { id: Id } } {
+  // A NAMED guard with params, so the load walk can read it (see the module header). The id is
+  // refused at load by `refuseUnknownSentBy` when no Agent slot or Gate invoke id has it.
   return { type: SENT_BY, params: { id } };
 }
 

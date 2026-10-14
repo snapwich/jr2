@@ -23,15 +23,67 @@
 /** A Kubernetes quantity: `"2Gi"`, `"1500m"`, `"2"`, or a plain number (`2` cpus, bytes of memory). */
 export type Quantity = string | number;
 
+// A Size (ADR-0060, CONTEXT.md "Size"): `limits.memory` and `limits.cpu`, nothing else. A field
+// left out resolves down the chain (`resolveSize`) — the Instance's `sandbox.resources`, then the
+// kit default (`KIT_SIZE`). The same shape is the User Container's split (`userSeatOf`,
+// `splitSize`), where a field left out means the seat has no limit of its own for it and shares
+// the pod's budget.
 /**
- * A Size (ADR-0060, GLOSSARY.md "Size"): `limits.memory` and `limits.cpu`, nothing else. A field
- * left out resolves down the chain (`resolveSize`) — the Instance's `sandbox.resources`, then the
- * kit default of 2Gi and 1 cpu.
+ * The Size of a Workspace: the most memory and cpu that its whole Sandbox can use. jr2 reserves
+ * all of it on the node. Thus a Sandbox never gets less than its Size and never uses more.
  *
- * The same shape is the User Container's split (`user: { image, resources }`), where a field left
- * out means the seat has no limit of its own for it and shares the pod's budget.
+ * Write it as `{ limits: { memory, cpu } }`. You can write it in three places: the `resources`
+ * option of `workspace()`, `customize(machine, { resources })`, and `sandbox.resources` in
+ * `jr2.config.ts`.
+ * The Size is a fact of the Machine. The Instance's `sandbox.resources` applies only to a
+ * Workspace that states no Size. A field that neither states comes from the kit default: memory
+ * `2Gi`, cpu `1`.
+ *
+ * The same shape is the User Container's part of the Size, in `user: { image, resources }`. There,
+ * a field you leave out gives the User Container no limit of its own: it shares the pod's budget.
+ *
+ * It refuses any key but `limits.memory` and `limits.cpu`, where you write it. The message names
+ * the field, for example:
+ *
+ * - `workspace(): resources.requests is not accepted — jr2 reserves the whole Size, so every request equals its limit`
+ * - `<where>.limits.<key> is not accepted — a Size is { limits: { memory?, cpu? } } and nothing else`
+ * - `<where>.limits.memory: <value> is not a positive quantity (e.g. "2Gi", "512Mi")`
+ *
+ * `jr2 up` also refuses a Size that leaves the Harness container less than its floor:
+ * `the Size leaves the Harness container <memory> memory, below its 256Mi floor`, or
+ * `the Size leaves the Harness container no cpu`.
+ *
+ * @example
+ * ```ts
+ * import { customize, type Size } from "@jr2/orchestrator";
+ * import { task } from "@jr2/machines";
+ *
+ * const size: Size = { limits: { memory: "4Gi", cpu: "2" } };
+ *
+ * export const machine = customize(task, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   resources: size,
+ * });
+ * ```
+ *
+ * @see docs/guides/size-a-workspace.md
+ * @see docs/concepts/workspaces.md
+ * @see docs/reference/decisions/0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md
  */
-export type Size = { limits: { memory?: Quantity; cpu?: Quantity } };
+export type Size = {
+  /** The two limits. Write `limits: {}` to state no field: each field then comes from the next
+   * source. */
+  limits: {
+    /** The memory limit, as a Kubernetes quantity: `"4Gi"`, `"512Mi"`, or a number of bytes.
+     * It must be more than zero. When you leave it out, it comes from the next source, as above. */
+    memory?: Quantity;
+    /** The cpu limit, as a Kubernetes quantity: `"2"`, `"1500m"`, or a number of cpus. It must be
+     * more than zero. jr2 enforces it. When you leave it out, it comes from the next source, as
+     * above. */
+    cpu?: Quantity;
+  };
+};
 
 /** The kit's default Size (ADR-0060). Node gives each process a V8 heap of about 55% of its
  * container limit, and `tsc` on a mid-size repo aborted below about 1.1Gi, so 1Gi fails a common
@@ -303,11 +355,62 @@ export function splitSize(size: ResolvedSize, user?: Size): SizeSplit {
 
 // --- the User Container seat -------------------------------------------------------------------
 
+// The User Container as a Machine states it (ADR-0005, ADR-0060): an image in ADR-0037's two
+// shapes, and optionally its split of the Size. The object form exists for the split alone.
 /**
- * The User Container as a Machine states it (ADR-0005, ADR-0060): an image in ADR-0037's two
- * shapes, and optionally its split of the Size. The object form exists for the split alone.
+ * The User Container in its object form: its image, and its part of the Workspace's Size. The User
+ * Container is an optional container of your own in the Sandbox pod. It runs its own entrypoint
+ * with `/work` mounted, and jr2 never builds into it, probes it or sends it commands. Use it for a
+ * service that must run without an Agent, such as an sshd.
+ *
+ * Write it in the `user` option of `workspace()` or of `customize()`. That option also takes the
+ * image as a string; use this object form only to give the User Container a part of the Size. A
+ * `customize()` that names `user` replaces the whole User Container, its part of the Size
+ * included.
+ *
+ * It refuses, where you write it:
+ *
+ * - `` `user` must be a non-empty string (an image), or { image, resources? } ``
+ * - `user.<key> is not accepted — the User Container is { image, resources? }`
+ *
+ * `resources` is checked as a {@link Size}, with the same refusals.
+ *
+ * `jr2 up` refuses a part that leaves the Harness container less than its floor:
+ * `the Size leaves the Harness container <memory> memory, below its 256Mi floor`, or
+ * `the Size leaves the Harness container no cpu`.
+ *
+ * @example
+ * ```ts
+ * import { customize, type UserContainer } from "@jr2/orchestrator";
+ * import { task } from "@jr2/machines";
+ *
+ * const sshd: UserContainer = {
+ *   image: "registry.example.com/sshd:1.0",
+ *   resources: { limits: { memory: "256Mi", cpu: "250m" } },
+ * };
+ *
+ * export const machine = customize(task, {
+ *   repos: { app: { url: "https://github.com/you/app.git" } },
+ *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   user: sshd,
+ * });
+ * ```
+ *
+ * @see docs/concepts/workspaces.md
+ * @see docs/guides/size-a-workspace.md
+ * @see docs/reference/decisions/0005-sandbox-pod-composition.md
+ * @see docs/reference/decisions/0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md
  */
-export type UserContainer = { image: string; resources?: Size };
+export type UserContainer = {
+  /** The image: a `file:` URL to a docker context that your module ships
+   * (`import.meta.resolve("./sshd")`), which `jr2 up` builds, or a registry ref. It must not be
+   * empty. */
+  image: string;
+  /** This container's part of the Workspace's Size, as a Size. jr2 takes it from the Harness
+   * container's part. A field you leave out gives this container no limit of its own for it: it
+   * shares the pod's budget. Default: no part. */
+  resources?: Size;
+};
 
 /** The `user` option in either shape, read as its two halves. */
 export function userSeatOf(user: string | UserContainer | undefined): { image?: string; resources?: Size } {
