@@ -5,17 +5,14 @@
 // TWO dialects, one primitive (ADR-0013). The Orchestrator does not speak MCP — nothing does: the
 // Harness presents the Menu to its model itself, and reaches these routes through the Custodian in
 // its pod, which holds the Sandbox token. What is left here are two thin adapters over the same
-// registration table:
+// registration table: the Gate resource of ADR-0011, for a human, a webhook or CI
+// (`GET /runs/:id`, `POST /runs/:id/gates/:gate/events`), and the Agent's surface, for the Agent's
+// Harness through its Custodian and nothing else (`/agents/:iid/*`). `/sandboxes/:name/fetch` also
+// serves the Harness's pod, but it is not an adapter over the registration table.
 //
-//   # human / webhook / CI — the Gate resource of ADR-0011
-//   GET  /runs/:id                     open gates: accepts + schemas + meta      [Instance token]
-//   POST /runs/:id/gates/:gate/events  validate + deliver                        [Instance token]
-//
-//   # the Agent's Harness, through its Custodian, and nothing else
-//   GET  /agents/:iid/surface          accepts + schemas + semantics             [Sandbox token]
-//   POST /agents/:iid/events           validate + deliver → the turn receipt      [Sandbox token]
-//   GET  /agents/:iid/deliveries/:id   long-poll an outstanding pick's answer    [Sandbox token]
-//   POST /sandboxes/:name/fetch        ask the node cache to fetch one Repo      [Sandbox token]
+// Every route, with its band, is a row of `HTTP_ROUTES` below. That table is data: the HTTP API
+// Reference is generated from it (ADR-0072), and http-routes.test.ts holds it to the routes
+// `createApp` registers, both ways.
 //
 //   # named Charts (ADR-0070): a Chart under a name is a Workflow `<wrapper>/<name>`
 //   GET    /workflows/:wrapper/chart-schema           the grammar, narrowed to the Open body    [open]
@@ -80,6 +77,279 @@ import { KIT_VERSION } from "./config.ts";
 import type { AssemblyDoor } from "./assembly.ts";
 import { ChartRefusal } from "./chart.ts";
 import { chartName, NamedChartError, splitChartName, type NamedCharts } from "./charts.ts";
+
+// ---- The route table (ADR-0072) -------------------------------------------------------------
+// The routes `createApp` registers, as data. It is the source of the HTTP API Reference page, so a
+// row says what a CALLER needs: the address, the credential, the body, the answer. Why a route is
+// in its band stays in the comment above its handler. http-routes.test.ts compares the rows with
+// the app's own registrations both ways and checks each row's band on the wire, so the table
+// cannot drift from the code by forgetting.
+
+/** The access bands of ADR-0014, named for the credential each requires. */
+export type HttpBand = "open" | "authenticated" | "instanceOnly";
+
+/** One route of the Orchestrator's HTTP API (ADR-0072). */
+export type HttpRoute = {
+  method: "GET" | "POST";
+  /** In Hono syntax, exactly as registered: `:param`, and `:param{regex}` for a constrained one. */
+  path: string;
+  band: HttpBand;
+  /** One line: what the route does. */
+  summary: string;
+  /** The request body, as a type name or in short; absent when the route reads none. */
+  body?: string;
+  /** The success answer, in short. Errors are `{ error }` with the status the handler says. */
+  response: string;
+  /** `true` when the answer is a Server-Sent Events stream. */
+  stream: boolean;
+  /** The decisions that shape the route, as bare ADR numbers: `"0014"`. */
+  adrs: readonly string[];
+};
+
+/** Every route of the Orchestrator's HTTP API, in the order `createApp` registers them. */
+export const HTTP_ROUTES: readonly HttpRoute[] = [
+  {
+    method: "GET",
+    path: "/healthz",
+    band: "open",
+    summary: "Liveness, and what this instance is: its Kit version and image content hash.",
+    response: "{ ok: true, version, hash? }",
+    stream: false,
+    adrs: ["0009", "0019"],
+  },
+  {
+    method: "GET",
+    path: "/readyz",
+    band: "open",
+    summary: "Readiness.",
+    response: "{ ready: true }",
+    stream: false,
+    adrs: ["0009"],
+  },
+  {
+    method: "GET",
+    path: "/workflows",
+    band: "open",
+    summary: "The names of the registered workflows.",
+    response: "string[]",
+    stream: false,
+    adrs: ["0014"],
+  },
+  {
+    method: "GET",
+    path: "/",
+    band: "open",
+    summary: "The Console page to a browser; a 404 to a JSON caller.",
+    response: "text/html (the Console shell)",
+    stream: false,
+    adrs: ["0032"],
+  },
+  {
+    method: "GET",
+    path: "/workflows/:name",
+    band: "open",
+    summary: "The Console page to a browser; to a JSON caller, the workflow and its declared input schema.",
+    response: "{ name, machineId, input: JSON Schema | null }, or text/html",
+    stream: false,
+    adrs: ["0032", "0033"],
+  },
+  {
+    method: "POST",
+    path: "/workflows/:name/runs",
+    band: "instanceOnly",
+    summary: "Start a run of a registered workflow.",
+    body: "the workflow's input, checked against its declared input schema",
+    response: "201 { runId, instanceId }",
+    stream: false,
+    adrs: ["0033", "0058"],
+  },
+  {
+    method: "GET",
+    path: "/workflows/:name/machine",
+    band: "open",
+    summary: "The registered template Machine's structure, which the Console draws.",
+    response: "MachineDoc",
+    stream: false,
+    adrs: ["0014"],
+  },
+  {
+    method: "GET",
+    path: "/workflows/:name/runs",
+    band: "open",
+    summary: "The live runs of one workflow, as observations: identity and state value, no context.",
+    response: "RunObservation[]",
+    stream: false,
+    adrs: ["0014"],
+  },
+  {
+    method: "GET",
+    path: "/workflows/:name/events",
+    band: "open",
+    summary: "The activity of every run of one workflow, as observations, on one connection.",
+    response: "SSE: runs, status, emit (type only), retry, gone",
+    stream: true,
+    adrs: ["0014", "0022"],
+  },
+  {
+    method: "GET",
+    path: "/workflows/:name/runs/:runId/events",
+    band: "open",
+    summary: "One live run's activity, as observations, until it settles.",
+    response: "SSE: status, emit (type only), retry",
+    stream: true,
+    adrs: ["0014", "0022"],
+  },
+  {
+    method: "GET",
+    path: "/assets/style.css",
+    band: "open",
+    summary: "The Console's stylesheet.",
+    response: "text/css",
+    stream: false,
+    adrs: ["0032"],
+  },
+  {
+    method: "GET",
+    path: "/assets/elk.js",
+    band: "open",
+    summary: "The Console's graph layout library (the elkjs bundle).",
+    response: "text/javascript",
+    stream: false,
+    adrs: ["0032"],
+  },
+  {
+    method: "GET",
+    path: "/assets/:file{[\\w.-]+\\.ts}",
+    band: "open",
+    summary: "A Console source module, with its types erased.",
+    response: "text/javascript",
+    stream: false,
+    adrs: ["0034"],
+  },
+  {
+    method: "GET",
+    path: "/assets/components/:file{[\\w.-]+\\.ts}",
+    band: "open",
+    summary: "A Console view module, with its types erased.",
+    response: "text/javascript",
+    stream: false,
+    adrs: ["0034"],
+  },
+  {
+    method: "GET",
+    path: "/assets/vendor/:file",
+    band: "open",
+    summary: "Preact's browser ESM, which the Console's import map names.",
+    response: "text/javascript",
+    stream: false,
+    adrs: ["0034"],
+  },
+  {
+    method: "GET",
+    path: "/runs",
+    band: "instanceOnly",
+    summary: "The live runs, with their full status.",
+    response: "RunStatus[]",
+    stream: false,
+    adrs: ["0009", "0014"],
+  },
+  {
+    method: "GET",
+    path: "/repos",
+    band: "instanceOnly",
+    summary: "The Repos as the cluster reports them.",
+    response: "{ dataPlane, repos: RepoStatus[] }",
+    stream: false,
+    adrs: ["0048", "0051"],
+  },
+  {
+    method: "GET",
+    path: "/runs/resolve",
+    band: "instanceOnly",
+    summary: "The run ids that start with a prefix (`?prefix=`, at least 4 characters).",
+    response: "{ prefix, runIds: string[], truncated }",
+    stream: false,
+    adrs: ["0009"],
+  },
+  {
+    method: "GET",
+    path: "/runs/:runId",
+    band: "instanceOnly",
+    summary: "One run's status, live or settled, with its open Gates.",
+    response: "RunStatus & { gates: GateView[] }",
+    stream: false,
+    adrs: ["0009", "0011"],
+  },
+  {
+    // `authenticated` in the code, and the handler refuses a Sandbox token itself (ADR-0013): the
+    // credential the route requires is the Instance token's, so this is its band.
+    method: "POST",
+    path: "/runs/:runId/gates/:gate/events",
+    band: "instanceOnly",
+    summary: "Deliver an event to an open Gate of a run.",
+    body: "{ type, ...payload }, checked against the Gate's schema for that event",
+    response: "{ ok: true }; 409 { error, acceptsNow } when the run does not take it now",
+    stream: false,
+    adrs: ["0011", "0013"],
+  },
+  {
+    method: "GET",
+    path: "/runs/:runId/events",
+    band: "instanceOnly",
+    summary: "One run's full activity until it settles; a settled run's final status, once.",
+    response: "SSE: status, emit, retry, admission, pick, placing, placed, child-error, effect, gone",
+    stream: true,
+    adrs: ["0022", "0023", "0064", "0067"],
+  },
+  {
+    method: "POST",
+    path: "/runs/:runId/events",
+    band: "instanceOnly",
+    summary: "Cancel a run: it ends, and its Workspaces go unless `keep` is true.",
+    body: '{ type: "CANCEL", keep?: boolean }',
+    response: "{ ok: true }",
+    stream: false,
+    adrs: ["0002", "0025"],
+  },
+  {
+    method: "GET",
+    path: "/agents/:instanceId/surface",
+    band: "authenticated",
+    summary: "An Agent's Menu and this Turn's Allowed picks. A Sandbox token reads only its own Sandbox's.",
+    response: "AgentSurfaceView",
+    stream: false,
+    adrs: ["0013", "0029"],
+  },
+  {
+    method: "POST",
+    path: "/agents/:instanceId/events",
+    band: "authenticated",
+    summary: "Deliver an Agent's pick into the state that invoked it.",
+    body: "{ type, ...payload }, checked against the pick's input schema",
+    response: 'AgentDeliveryReceipt; 409 { refused: "outstanding", outstanding?, allowed }',
+    stream: false,
+    adrs: ["0013", "0024", "0029"],
+  },
+  {
+    method: "GET",
+    path: "/agents/:instanceId/deliveries/:deliveryId",
+    band: "authenticated",
+    summary: "Long-poll the answer to an outstanding pick; 503 means ask again.",
+    response: "AgentDeliveryReceipt",
+    stream: false,
+    adrs: ["0013", "0024"],
+  },
+  {
+    method: "POST",
+    path: "/sandboxes/:name/fetch",
+    band: "authenticated",
+    summary: "Ask the node cache to fetch one Repo that this Sandbox mounts. A Sandbox token asks only for its own.",
+    body: "{ identity }",
+    response: "FetchAnswer: { fetched } | { stale, asOf }",
+    stream: false,
+    adrs: ["0053"],
+  },
+];
 
 /** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
  * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery: `deferred`
