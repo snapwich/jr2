@@ -7,7 +7,8 @@ Feature: the kit, as a user installs it
 
   Only the REGISTRIES are local — the same rule ADR-0038 applies to the model provider — and there are
   two of them, because the product touches two (ADR-0044): npm, and the home its Kit images are pulled
-  from. The publish, the `npm pack`, the `files:` list, the inter-package resolution, the exact-version
+  from. The publish, the `npm pack`, the `files:` list, the docs bundle `prepack` assembles and the
+  AGENTS.md block `jr2 init` writes from it (ADR-0072), the inter-package resolution, the exact-version
   pin `jr2 init` writes, the frozen install the Assembly is staged from, the strip of the Kit closure,
   the publish to the running Orchestrator (`PUT /assembly`, ADR-0069), the published Kit image tags an
   installed kit deploys instead of building, and the node PULL that fetches them are all the real
@@ -36,9 +37,11 @@ Feature: the kit, as a user installs it
     Scenario: an npm instance in a temp dir converges and runs
       Given a standalone instance scaffolded by the installed jr2
       When I install its dependencies with "npm"
+      # ADR-0072: the packed @jr2/orchestrator holds the docs bundle, and init's AGENTS.md indexes it.
+      Then the AGENTS.md from jr2 init indexes the installed Kit's docs bundle
       # `npm ci --omit=dev` in the staged copy, from the lockfile npm just wrote; the stripped tree
       # is the Assembly `jr2 up` publishes.
-      And I converge it onto the cluster
+      When I converge it onto the cluster
       # ADR-0056 as amended, from the only tier with a real global and a real local: the global on
       # PATH handed off to the Instance's own @jr2/cli, and the report names both — plus the
       # orchestrator the converge just deployed, at the same number.
@@ -59,10 +62,11 @@ Feature: the kit, as a user installs it
     Scenario: a pnpm instance in a temp dir converges and runs
       Given a standalone instance scaffolded by the installed jr2
       When I install its dependencies with "pnpm"
+      Then the AGENTS.md from jr2 init indexes the installed Kit's docs bundle
       # The instance stands alone, so this is NOT the `pnpm deploy` path a workspace member takes:
       # it is `pnpm install --prod --frozen-lockfile` in the staged copy — the branch that only
       # exists off a checkout, and the reason the temp dir has no workspace above it.
-      And I converge it onto the cluster
+      When I converge it onto the cluster
       And I run "ping" with message "dist"
       Then stdout is the terminal status with reply "pong: dist"
       And the command exits 0

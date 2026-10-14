@@ -12,7 +12,7 @@
 import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { realpath, stat, writeFile } from "node:fs/promises";
+import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -408,6 +408,50 @@ async function pulledFromRegistry(
     `no ${opts.what} pod is running ${declared} — the node never pulled it. Pods:\n${pods}`,
   );
 }
+
+/**
+ * ADR-0072's claim, from the one tier that packs the kit: the published `@jr2/orchestrator` holds
+ * the docs bundle, and the `AGENTS.md` the installed `jr2 init` wrote holds exactly its block
+ * between the markers — so an Assistant in a fresh folder reads the index before the first `jr2
+ * up`. Every file the index names is in the bundle, so the index leads nowhere that is not packed.
+ *
+ * The block init wrote came from the GLOBAL CLI's own peer; the one compared is the Instance's
+ * install. They are equal because both are this run's one published version.
+ */
+Then(
+  "the AGENTS.md from jr2 init indexes the installed Kit's docs bundle",
+  async function (this: E2EWorld): Promise<void> {
+    const bundle = join(this.dir, "node_modules", "@jr2", "orchestrator", "docs");
+    const block = await readFile(join(bundle, "agents-block.md"), "utf8").catch(() =>
+      assert.fail(`the installed @jr2/orchestrator packs no docs/agents-block.md under ${bundle} (ADR-0072)`),
+    );
+    const agents = await readFile(join(this.dir, "AGENTS.md"), "utf8");
+    // The marker lines as a user's own AGENTS.md shows them.
+    const begin = "<!-- BEGIN:jr2-docs -->\n";
+    const end = "<!-- END:jr2-docs -->\n";
+    const from = agents.indexOf(begin);
+    const to = agents.indexOf(end);
+    assert.ok(from >= 0 && to > from, `AGENTS.md holds the jr2-docs markers:\n${agents}`);
+    assert.equal(
+      agents.slice(from + begin.length, to),
+      block,
+      "AGENTS.md holds the bundle's block between its markers",
+    );
+
+    const index = block.split("\n").find((l) => l.startsWith("[jr2 docs index]"));
+    assert.ok(index, `the block holds the docs index:\n${block}`);
+    const entries = [...index.matchAll(/\|([\w./-]+):\{([^}]*)\}/g)];
+    assert.ok(entries.length > 0, `the index names no file:\n${index}`);
+    for (const [, dir, files] of entries) {
+      if (dir === "reference/decisions") continue; // one line for the whole folder, not a file list
+      for (const file of files!.split(",")) {
+        await stat(join(bundle, dir!, file)).catch(() =>
+          assert.fail(`the index names ${dir}/${file}, and the packed bundle has no such file`),
+        );
+      }
+    }
+  },
+);
 
 /** kubectl, verbatim, for the claims that reach past the instance's own namespace. */
 async function kubectlOut(args: string[]): Promise<string> {

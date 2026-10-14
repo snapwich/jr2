@@ -12,8 +12,8 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
 ## Decision
 
 - **One Markdown source, three outputs.**
-  - **The bundle.** `@jr2/orchestrator` ships `docs/`: the Concepts, Guides and Reference pages, the Glossary, and the
-    Decisions, as plain Markdown. No site-generator syntax reaches it. It is the main channel for an Assistant.
+  - **The bundle.** `@jr2/orchestrator` ships `docs/`: every page of the sitemap, the generated Reference, the Glossary
+    and the Decisions, as plain Markdown. No site-generator syntax reaches it. It is the main channel for an Assistant.
   - **The `AGENTS.md` block.** A compressed index of the bundle, and one instruction: jr2 is newer than your training
     data, so read the bundled docs before you write a Machine or config.
   - **The site**, on GitHub Pages. HTML for humans, and every page also at a `.md` URL, plus `llms.txt`, for tools that

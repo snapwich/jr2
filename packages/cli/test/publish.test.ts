@@ -24,6 +24,7 @@ type Manifest = {
   bin?: Record<string, string>;
   types?: string;
   exports?: Record<string, string>;
+  scripts?: Record<string, string>;
 };
 
 async function manifest(pkg: string): Promise<Manifest> {
@@ -108,4 +109,15 @@ test("every published package ships an allowlist that holds its entrypoints and 
   // type-erased on the way out), so nothing in the manifest names it and the derived check above
   // cannot see it. Said explicitly, because an orchestrator that packs no `console/` serves 404s.
   assert.ok((await manifest("orchestrator")).files?.includes("console"), "@jr2/orchestrator ships the Console");
+
+  // The same for the docs bundle (ADR-0072): `prepack` assembles `docs/`, and `jr2 init` and
+  // `jr2 up` read its `agents-block.md`. A package that packs no `docs/` leaves every Instance's
+  // AGENTS.md block empty, and nothing fails.
+  const orchestrator = await manifest("orchestrator");
+  assert.ok(orchestrator.files?.includes("docs"), "@jr2/orchestrator ships the docs bundle");
+  assert.match(
+    orchestrator.scripts?.prepack ?? "",
+    /\bdocs:build\b/,
+    "@jr2/orchestrator assembles the bundle in prepack",
+  );
 });

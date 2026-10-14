@@ -14,6 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -114,7 +115,12 @@ async function mkInstalledInstance(): Promise<string> {
 
   const orchestrator = join(modules, "@jr2", "orchestrator");
   await mkdir(orchestrator, { recursive: true });
-  for (const entry of pkg.files) await cp(join(ORCHESTRATOR, entry), join(orchestrator, entry), { recursive: true });
+  for (const entry of pkg.files) {
+    // The docs bundle is made at pack time (ADR-0072), so a checkout holds none until docs:build.
+    // The compiler reads no file of it.
+    if (entry === "docs" && !existsSync(join(ORCHESTRATOR, entry))) continue;
+    await cp(join(ORCHESTRATOR, entry), join(orchestrator, entry), { recursive: true });
+  }
   await writeFile(join(orchestrator, "package.json"), JSON.stringify({ ...pkg, devDependencies: undefined }));
 
   // Flat-hoisted, as npm and pnpm's default public hoisting both leave them. Each is the link the
