@@ -556,7 +556,8 @@ The user must decide these items. Until then, obey the rule for each item.
   confirms that vLLM listens on all addresses by default.
 - **The output.** The writers of stage 3 have no cluster, no key and no model endpoint. Write the output from the code,
   and mark each output block with the comment `<!-- output: not run -->` on the line before it. The manual check runs
-  each command, replaces the output, and removes the comment.
+  each command, replaces the output, and removes the comment. `scripts/publish.sh` refuses a release while a page of the
+  bundle has this comment.
 
 ### The tools and the cluster
 

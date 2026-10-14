@@ -61,6 +61,12 @@ fi
 # `prepack`, which builds it again, strict — but the images go first, so a broken page found only
 # there would fail the release after the push. The build is a second or two; a push is not undone.
 pnpm docs:build
+# An output block that no one has run yet carries `<!-- output: not run -->` (docs/site/README.md).
+# The strict build accepts the marker, so the PR gate and @dist stay green before the manual check;
+# a release does not.
+if grep -rl 'output: not run' packages/orchestrator/docs; then
+  die "docs: output blocks not yet run (docs/site/README.md, Open items)"
+fi
 
 # Images FIRST (ADR-0044): a package whose images are not at the home fails at pull on the user's
 # first `jr2 up`; images with no package are inert. The canonical home is BAKED into the binary
