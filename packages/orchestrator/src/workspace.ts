@@ -665,9 +665,17 @@ export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string>
    * `workspace` handles. Write it here, not on the body. */
   input: TSchema;
   // ADR-0012's boundary: workflow configuration never enters the spec.
-  /** A function from the run input to the Workspace's {@link WorkspaceSpec}: the `branch` it
-   * works on, and optionally `reviewSha` and `workGroup`. jr2 calls it when the run enters the
-   * Workspace. */
+  /**
+   * A function from the run input to the Workspace's {@link WorkspaceSpec}: the `branch` it works
+   * on, and optionally `reviewSha` and `workGroup`. jr2 calls it when the run enters the
+   * Workspace.
+   *
+   * At a root `workspace()`, the input of `spec` also holds `instanceId`, the seed Instance ID of
+   * the run (see {@link HostInjectedInput}). Its type does not show it, so read it with a cast:
+   * ``spec: ({ input }) => ({ branch: `fix/${(input as In & HostInjectedInput).instanceId}` })``,
+   * where `In` is the type of the run input. A `workspace()` that a different Machine invokes
+   * gets only the input that its parent gives it.
+   */
   spec: (args: { input: z.infer<TSchema> }) => WorkspaceSpec;
 };
 

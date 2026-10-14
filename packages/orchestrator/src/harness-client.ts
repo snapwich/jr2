@@ -518,6 +518,9 @@ export function createLiveSetPush(options: {
  * in this Machine. Absent, each Turn starts a new conversation. The Turn ends when the state that
  * invoked the Agent exits, usually on a pick from the Agent's Menu.
  *
+ * The actor of an Agent never finishes, so an `onDone` on its invoke never runs. Give the Agent a
+ * pick, such as `finish`, and route on it.
+ *
  * An Agent with `workspace: "write"` or `"read"` works in a Sandbox, so invoke it inside a
  * `workspace()` body. An Agent with `workspace: "none"` can run anywhere. A model can lack the
  * definition's thinking level: see {@link ThinkingLevel}.

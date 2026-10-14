@@ -655,6 +655,9 @@ export type CommandOptions = {
    * The Repo Slot whose Worktree is the working directory of the command. Write it only when the
    * Workspace has more than one Repo Slot.
    *
+   * The command starts in the root of that Worktree. To run it in a subfolder, give the path as an
+   * argument, or write `["sh", "-c", "cd <dir> && <program>"]`.
+   *
    * When it starts, it refuses:
    * - no `slot` under a Workspace with more than one Repo Slot: `command "<slot>" runs under a
    *   Workspace carrying more than one Repo Slot (<slots>) and names none — say which Worktree it
