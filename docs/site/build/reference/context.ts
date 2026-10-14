@@ -109,7 +109,8 @@ export function checkVoice(ctx: RefContext, doc: Doc | undefined): void {
 /** A TSDoc `@see` target as a Markdown link from `from`: a sitemap page or an ADR, by its bundle
  * path under `docs/`. Anything else is an error. */
 export function seeLink(ctx: RefContext, target: string, from: string): string | { error: string } {
-  const path = target.startsWith("docs/") ? target.slice("docs/".length) : undefined;
+  const bundled = bundlePath(target);
+  const path = bundled.startsWith("docs/") ? bundled.slice("docs/".length) : undefined;
   const page = path && ctx.pages.find((p) => `${p.slug}.md` === path);
   if (page) return `[${page.title}](${relativeHref(from, path)})`;
   const adr = path && ctx.adrs.find((a) => path === `reference/decisions/${a.file}`);
@@ -118,6 +119,15 @@ export function seeLink(ctx: RefContext, target: string, from: string): string |
     error: `@see ${target} is not a sitemap page or an ADR (write docs/<slug>.md or docs/reference/decisions/<file>)`,
   };
 }
+
+// A `@see` path is relative to @jr2/orchestrator's root, which holds the bundle. A TSDoc in
+// another package names the bundle by its package, so an Assistant reading that file in
+// node_modules can follow it: `@jr2/orchestrator/docs/<slug>.md`.
+const BUNDLE_PACKAGE = "@jr2/orchestrator/";
+
+/** A `@see` target as a path from @jr2/orchestrator's root: `docs/…`. */
+export const bundlePath = (target: string): string =>
+  target.startsWith(BUNDLE_PACKAGE) ? target.slice(BUNDLE_PACKAGE.length) : target;
 
 /** A `{@link}` resolver for the page at `from`. */
 export const linker =
@@ -140,8 +150,16 @@ export const anchorOf = (...parts: string[]): string =>
  * unknown target is an error at its tag's line. */
 export function seeAlso(ctx: RefContext, doc: Doc | undefined, from: string): string | undefined {
   const items = (doc?.tags ?? [])
-    .filter((t) => t.name === "see" && seeTarget(t) !== `docs/${from}`)
+    .filter((t) => t.name === "see" && bundlePath(seeTarget(t)) !== `docs/${from}`)
     .map((t) => {
+      if (!doc!.file.startsWith("packages/orchestrator/") && seeTarget(t).startsWith("docs/"))
+        ctx.errors.push(
+          tagError(
+            doc!,
+            t,
+            `@see ${seeTarget(t)} is outside @jr2/orchestrator: write @jr2/orchestrator/${seeTarget(t)}`,
+          ),
+        );
       const l = seeLink(ctx, seeTarget(t), from);
       if (typeof l === "string") return `- ${l}`;
       ctx.errors.push(tagError(doc!, t, l.error));

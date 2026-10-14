@@ -186,7 +186,10 @@ It also changes each relative link:
 - an `::include` of a file that does not exist, or of lines that are not in the file
 - syntax of one site generator in the text: a Vue `{{ }}`, a JSX or MDX tag, `<<<`, or an `import` or `export` line at
   the start of a paragraph. A wrapped line of a paragraph can start with the word "import" or "export".
-- a TSDoc `@see` that is not a sitemap page (`docs/<slug>.md`) or an ADR (`docs/reference/decisions/<file>`)
+- a TSDoc `@see` that is not a sitemap page (`docs/<slug>.md`) or an ADR (`docs/reference/decisions/<file>`). A `@see`
+  path is relative to the root of `@jr2/orchestrator`, which holds the bundle. In the TSDoc of another package, such as
+  `@jr2/machines`, write the path with the package name, `@jr2/orchestrator/docs/<slug>.md`, so that an Assistant who
+  reads the file in `node_modules` can find the page. A `docs/` path there is an error.
 - a TSDoc block tag on the Authoring surface or on `@jr2/machines` other than `@remarks`, `@param`, `@returns`,
   `@example` and `@see`: the Reference does not show it
 - a TSDoc block tag on a type in a Types section, or on a Mechanism event, other than `@remarks`, `@example` and `@see`

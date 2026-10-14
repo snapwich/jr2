@@ -88,6 +88,7 @@ test("a @see target is a sitemap page or an ADR, and anything else is an error",
   const adr = ctx.adrs[0]!;
   assert.equal(typeof seeLink(ctx, "docs/reference/cli.md", "reference/machines.md"), "string");
   assert.equal(typeof seeLink(ctx, `docs/reference/decisions/${adr.file}`, "reference/machines.md"), "string");
+  assert.equal(typeof seeLink(ctx, "@jr2/orchestrator/docs/reference/cli.md", "reference/machines.md"), "string");
   for (const bad of ["docs/guides/nope.md", "docs/reference/decisions/9999-nope.md", "../x.md", "https://x.dev"])
     assert.ok(typeof seeLink(ctx, bad, "reference/machines.md") === "object", bad);
 });
@@ -103,7 +104,7 @@ test("on a named type, a bad @see target and a tag the Reference drops are error
   const errors: typeof ctx.errors = [];
   const doc = {
     summary: "A type.",
-    file: "packages/x/src/x.ts",
+    file: "packages/orchestrator/src/x.ts",
     line: 3,
     tags: [
       { name: "see", text: "docs/concepts/no-such-page.md", line: 5 },
@@ -114,9 +115,28 @@ test("on a named type, a bad @see target and a tag the Reference drops are error
   const tail = typeDocTail({ ...ctx, errors }, doc, "reference/http-api.md");
   assert.deepEqual(
     errors.map((e) => `${e.file}:${e.line}`),
-    ["packages/x/src/x.ts:6", "packages/x/src/x.ts:5"],
+    ["packages/orchestrator/src/x.ts:6", "packages/orchestrator/src/x.ts:5"],
   );
   assert.ok(tail.join("\n").includes("](cli.md)"));
+});
+
+test("outside @jr2/orchestrator, a @see names the bundle by its package, and a docs/ path is an error", () => {
+  const errors: typeof ctx.errors = [];
+  const doc = {
+    summary: "A type.",
+    file: "packages/machines/src/x.ts",
+    line: 3,
+    tags: [
+      { name: "see", text: "docs/reference/cli.md", line: 5 },
+      { name: "see", text: "@jr2/orchestrator/docs/reference/cli.md", line: 6 },
+    ],
+  };
+  const tail = typeDocTail({ ...ctx, errors }, doc, "reference/http-api.md");
+  assert.deepEqual(
+    errors.map((e) => `${e.file}:${e.line}`),
+    ["packages/machines/src/x.ts:5"],
+  );
+  assert.equal(tail.join("\n").split("](cli.md)").length, 3);
 });
 
 test("each command-table row is on the CLI page, with its anchor and each of its flags", () => {

@@ -24,8 +24,8 @@ import { z } from "zod";
  *   nothing drains a steer inbox, and degrading it to `ack` would hand the Agent a lying tool
  *   contract.``
  *
- * @see docs/concepts/the-menu.md
- * @see docs/reference/decisions/0006-agent-control-surface.md
+ * @see @jr2/orchestrator/docs/concepts/the-menu.md
+ * @see @jr2/orchestrator/docs/reference/decisions/0006-agent-control-surface.md
  */
 export type EventSemantics = "ack" | "poll";
 
@@ -44,9 +44,9 @@ export type EventSemantics = "ack" | "poll";
  * event to the other party too (`"any"`). Or set it to keep an event on the root from one party
  * (`"agent"` or `"external"`).
  *
- * @see docs/concepts/the-menu.md
- * @see docs/concepts/gates.md
- * @see docs/reference/decisions/0015-authoring-surface-absorbs-the-mechanism.md
+ * @see @jr2/orchestrator/docs/concepts/the-menu.md
+ * @see @jr2/orchestrator/docs/concepts/gates.md
+ * @see @jr2/orchestrator/docs/reference/decisions/0015-authoring-surface-absorbs-the-mechanism.md
  */
 export type EventAudience = "agent" | "external" | "any";
 
@@ -56,8 +56,8 @@ export type EventAudience = "agent" | "external" | "any";
  * import anywhere. Give it to `jr2Setup({ events })`. A Machine accepts only the events in that
  * list.
  *
- * @see docs/guides/write-a-workflow.md
- * @see docs/reference/decisions/0011-workflow-defined-events.md
+ * @see @jr2/orchestrator/docs/guides/write-a-workflow.md
+ * @see @jr2/orchestrator/docs/reference/decisions/0011-workflow-defined-events.md
  */
 export type EventDef<Name extends string = string, Input extends z.ZodObject = z.ZodObject> = {
   /** The event's name: its xstate event `type`, and the name of its tool on the Agent's Menu. */
@@ -164,9 +164,9 @@ export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
  * });
  * ```
  *
- * @see docs/guides/write-a-workflow.md
- * @see docs/concepts/the-menu.md
- * @see docs/reference/decisions/0011-workflow-defined-events.md
+ * @see @jr2/orchestrator/docs/guides/write-a-workflow.md
+ * @see @jr2/orchestrator/docs/concepts/the-menu.md
+ * @see @jr2/orchestrator/docs/reference/decisions/0011-workflow-defined-events.md
  */
 export function defineEvent<const Name extends string, Input extends z.ZodObject>(def: {
   /** The event's name: the `on` key that takes it, and the name of its tool on the Agent's Menu.

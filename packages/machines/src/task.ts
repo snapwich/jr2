@@ -108,7 +108,7 @@ const door = z.object({
  * };
  * ```
  *
- * @see docs/reference/machines.md
+ * @see @jr2/orchestrator/docs/reference/machines.md
  */
 export type TaskInput = z.infer<typeof door>;
 
@@ -126,7 +126,7 @@ export type TaskInput = z.infer<typeof door>;
  * }
  * ```
  *
- * @see docs/reference/machines.md
+ * @see @jr2/orchestrator/docs/reference/machines.md
  */
 export type TaskOutput = { outcome: "approved"; branch: string } | { outcome: "lost" };
 
@@ -206,8 +206,8 @@ type BodyContext = BodyInput & {
  * });
  * ```
  *
- * @see docs/reference/machines.md
- * @see docs/concepts/workspaces.md
+ * @see @jr2/orchestrator/docs/reference/machines.md
+ * @see @jr2/orchestrator/docs/concepts/workspaces.md
  */
 export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: TaskOutput },
@@ -378,10 +378,10 @@ export const body = jr2Setup({
  * });
  * ```
  *
- * @see docs/reference/machines.md
- * @see docs/get-started/an-agent-in-a-sandbox.md
- * @see docs/guides/bind-open-parts.md
- * @see docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
+ * @see @jr2/orchestrator/docs/reference/machines.md
+ * @see @jr2/orchestrator/docs/get-started/an-agent-in-a-sandbox.md
+ * @see @jr2/orchestrator/docs/guides/bind-open-parts.md
+ * @see @jr2/orchestrator/docs/reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md
  */
 export const task = workspace(body, {
   input: door,

@@ -249,11 +249,20 @@ function renderDoc(
   return out;
 }
 
-/** The package path of a declaration's file, as an Assistant finds it in node_modules. */
+// The packages an Instance lists, so their folders are in its own node_modules: the kit, and
+// @jr2/machines, which the machines page tells the reader to add. Any other @jr2 package is a
+// dependency of @jr2/orchestrator, which a strict node_modules (pnpm) keeps out of the Instance's.
+const LISTED = new Set(["orchestrator", "machines"]);
+
+/** Where a declaration's file is, as Markdown, as an Assistant finds it from the Instance's
+ * node_modules: `@jr2/orchestrator/src/x.ts`, or for a package the Instance does not list, the
+ * file and the package it is in. */
 function declaredIn(ctx: RefContext, d: ts.Declaration): string {
   const file = relative(ctx.repo, d.getSourceFile().fileName);
   const m = /^packages\/([^/]+)\/(.*)$/.exec(file);
-  return m ? `@jr2/${m[1]}/${m[2]}` : file;
+  if (!m) return code(file);
+  if (LISTED.has(m[1]!)) return code(`@jr2/${m[1]}/${m[2]}`);
+  return `${code(m[2]!)} of ${code(`@jr2/${m[1]}`)}, a dependency of ${code("@jr2/orchestrator")}`;
 }
 
 /** The named type of a const whose signature shows only that name (`WorkspaceMachine<…>`): the
@@ -275,7 +284,7 @@ function typeLine(ctx: RefContext, sym: ts.Symbol, named: TypeClosure, from: str
 function renderEntry(ctx: RefContext, e: Entry, from: string, named: TypeClosure): string {
   const parts = [`${anchor(e.anchor)}\n\n### ${code(e.name)}`];
   parts.push(
-    `${e.kind === "type" ? "Type" : e.kind === "const" ? "Constant" : "Function"}, in ${code(declaredIn(ctx, e.decls[0]!))}.`,
+    `${e.kind === "type" ? "Type" : e.kind === "const" ? "Constant" : "Function"}, in ${declaredIn(ctx, e.decls[0]!)}.`,
   );
   const shown = new Set<string>();
   e.decls.forEach((d, i) => {
