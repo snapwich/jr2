@@ -24,13 +24,15 @@ their own maintainers, and the escapes shipped in systems that used them were in
   (`{ type, params }`) and every `invoke.src` a slot name. It carries no function, no import, no secret name, no url, no
   argv, no image and no Repo. A spike against xstate 5.32.2 bound such a chart as a child of a hand-written wrapper,
   with lent actors, named guards and actions reading `params`, `sendParent`, `onDone` output and a snapshot round-trip.
-- **An Open body is the slot a Chart binds.** A Machine declares a body slot and leaves it Open for a run to bind, the
-  one Open part that a run, not a composer, binds
+- **An Open body is the slot a Chart binds, and a Chart wrapper is the Machine that declares it.** A Machine declares a
+  body slot and leaves it Open for a run to bind, the one Open part that a run, not a composer, binds
   ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)), as a per-run Repo Slot is
   bound from the door ([ADR-0051](0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md)). The declaration
   states three things: what it **lends**, by slot name (Agents, Effects, child Machines, guards, actions, delays); what
   a Chart may **define** (the models and the Workspace access its own Agents may have); and the **ceilings** (below).
-  Nothing a Chart names resolves anywhere but there.
+  Nothing a Chart names resolves anywhere but there. "Wrapper" unqualified keeps
+  [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)'s sense, any Machine with a body slot,
+  `workspace()` and `pool()` included; a Chart wrapper is the one whose body a run binds.
 - **A Chart mints routing, events and Agents; it borrows reach.** It mints its states and transitions; its Vocabulary,
   each event `{ name, input: <JSON Schema>, audience? }`, built into zod at admission (zod 4 reads JSON Schema natively,
   and the wire to the Harness was JSON Schema already), so a lent Agent's Menu derives from the Chart's events as from
@@ -54,14 +56,41 @@ their own maintainers, and the escapes shipped in systems that used them were in
   Chart does is states, named guards and lent actions. The kit's own `task` builds its coder prompt with a conditional
   on the round; in a Chart that is two states and a guard. A terminating, side-effect-free expression (CEL-class) is the
   named later addition, as a new reference kind: adding one breaks no Chart, removing one would.
-- **The Chart is the body actor's input.** It arrives as a pick's payload or in the run's door input, so the grammar
-  reaches a planner as the JSON Schema of its pick for free (`chartSchema` is exported by `@jr2/orchestrator`). The body
-  actor constructs the live Machine from it at start and again at restore, which is
-  [ADR-0007](0007-durable-machine-state.md)'s own rule, so the Chart's text persists with the run and the run's shape
-  stamp ([ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md)) hashes the text, never the compiled
-  config, which turns references into closures. Nothing of a Chart lives outside its run: it is one-shot, and
+- **A Chart always runs under a Chart wrapper, and the Chart is the body actor's input.** Four doors, nothing else:
+
+  | Who                            | One-shot                                                        | Named                                                                   |
+  | ------------------------------ | --------------------------------------------------------------- | ----------------------------------------------------------------------- |
+  | HTTP (a human, a tool, an MCP) | `POST /workflows/<wrapper>/runs` with `chart` in the input      | `PUT /charts/<name>` once, then `POST /workflows/<name>/runs`           |
+  | A Machine (an Agent)           | a pick carries the Chart; a state invokes the Open body with it | the Open body's input carries `{ chart: { name } }`, resolved at invoke |
+
+  One-shot, the Chart wrapper is the Workflow whose run it is. Named, the name registers a Workflow that names its Chart
+  wrapper, so the run-start is the ordinary one and `jr2 run <name>` works unchanged. A Chart never runs on its own: the
+  Open body it binds is where its lent parts and ceilings come from. Either way the Chart arrives as the body actor's
+  input, so the grammar reaches a planner as the JSON Schema of its pick for free (`chartSchema` is exported by
+  `@jr2/orchestrator`), and a name is resolved to text at invoke time and admitted exactly as text would be: its lent
+  set must match THIS Open body's. The body actor constructs the live Machine from the text at start and again at
+  restore, which is [ADR-0007](0007-durable-machine-state.md)'s own rule, so the text persists with the run, the run
+  holds what it ran even if the name is later deleted or republished, and the run's shape stamp
+  ([ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md)) hashes the text, never the compiled config,
+  which turns references into closures. A one-shot Chart lives nowhere but its run, and
   [ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)'s pin covers it by
-  construction.
+  construction. Resolving by name is invoke-by-name, which
+  [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md) rejected for Machines; a name here resolves to
+  data the Open body still binds, so nothing that decision protects is lost.
+
+- **A Chart under a name is a Workflow, from one of two origins.** A **Chart file** in the Assembly,
+  `workflows/<name>.chart.json`, naming its Chart wrapper and carrying the Chart: filename-discovered like
+  `workflows/*.ts`, published by `jr2 up`, reproducible from the Instance repo, admitted by the same static door. Or a
+  **runtime Chart**, `PUT /charts/<name>` and `DELETE /charts/<name>` behind the Instance token, not the publish token,
+  because a Chart is data and cannot reach the process, which is the whole point of this decision; it lives on the
+  Orchestrator's volume beside the Assemblies, survives restarts, is held while a live run holds it, and lists in
+  `jr2 runs` and the Console with its origin shown. So a Workflow is one of three things under one name: a Machine from
+  the Assembly, a Chart file from the Assembly, or a runtime Chart. **Names are flat and a collision is a refusal, never
+  a shadow**: a runtime Chart may not take a name the current Assembly holds, and an Assembly publish that introduces a
+  name a runtime Chart holds is refused naming it, so the human deletes the Chart or renames the file. Rejected: a
+  prefix namespace for runtime Charts, a second naming rule for `jr2 run` to learn. An MCP that lets a user's own agent
+  author and run Charts is a client of these routes plus `GET /workflows/<wrapper>` for the Open body's declaration and
+  `GET /runs/<id>/events`; whether the kit ships one is a product question, not this one.
 - **Admission is static and mandatory, because xstate refuses nothing.** The spike found that an un-lent `invoke.src`
   kills the WRAPPER actor with a `TypeError` that bypasses the body invoke's `onError`; an unknown action is silently
   ignored, even in the development build; an unknown delay name fires at once; an unguarded `always` cycle exhausted the
@@ -98,11 +127,17 @@ their own maintainers, and the escapes shipped in systems that used them were in
   with these instructions" is not powerful enough to be worth the door.
 - **An expression language from the start.** Rejected above: it is [ADR-0008](0008-orchestrator-as-deployed-app.md)'s
   rejected DSL arriving through a side door; a reference kind can be added later without breaking a written Chart.
-- **A Chart as a Workflow**: registered, named, re-runnable. Deferred, not rejected: it would be a Workflow registered
-  as DATA, a far safer publish door than an Assembly, and it may come back as the agent-facing API. One-shot keeps
-  [ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)'s one publisher true now.
-- **A Chart as an anonymous run with no wrapper.** Rejected: every fence above is the wrapper's; and the run would have
-  no Workflow name for `jr2 status`, drift reporting and the Console.
+- **One-shot only, no Chart under a name.** Rejected: a test wants the same Chart on every run (the text already gives
+  that), but a person, another tool and an MCP want `jr2 run <name>`, a Console entry and a Chart that outlives the run
+  that wrote it; and a Chart under a name is a Workflow registered as DATA, which keeps
+  [ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)'s one publisher of CODE
+  true.
+- **A Chart as an anonymous run with no Chart wrapper.** Rejected: every fence above is the wrapper's; and the run would
+  have no Workflow name for `jr2 status`, drift reporting and the Console.
+- **A kit Effect that publishes a Chart from a Machine** (`publishChart`, over the Effector's signed wire, no token).
+  Deferred: nothing needs an Agent to keep a Chart yet; a Machine that wants one later runs it by name after a human or
+  a tool published it. If it comes, it is an Effect the author writes in, with or without a Gate, and never a side
+  effect of running an Open body.
 
 ## Consequences
 
@@ -115,8 +150,9 @@ their own maintainers, and the escapes shipped in systems that used them were in
 - `fingerprintOf` moves from `def.machine` to the run's bound Machine with its Chart text; `RunBlob` carries the text;
   restore recompiles it. A Chart that no longer passes the door at restore (a lent slot the Assembly dropped) is drift
   with that reason.
-- The GLOSSARY gains **Chart** and **Open body**, and **Open** no longer says a run never sees one.
+- The GLOSSARY gains **Chart**, **Chart wrapper** and **Open body**; **Workflow** gains its three origins; **Open** no
+  longer says a run never sees one.
 - The `@model` tier gains a claim when an ADR states what a correct planner does with a refusal (resubmits a corrected
   Chart) and a step can observe it; a Chart's prompts are its author's, so the claim measures the refusal text, which is
   jr2's.
-- Deferred, named: a spend ceiling; a CEL-class reference kind; a Chart under a name.
+- Deferred, named: a spend ceiling; a CEL-class reference kind; `publishChart`.

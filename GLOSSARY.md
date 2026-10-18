@@ -65,8 +65,10 @@ The xstate state machine that defines the control flow of a workflow. It is the 
 _Avoid_: workflow, graph
 
 **Workflow**:
-A Machine registered under a name in an Instance: the unit that the Orchestrator runs and that `jr2 run` names. A
-Workflow is only that name, because the Machine carries all its parts, so the kit ships Machines and never Workflows.
+A Machine or a Chart registered under a name in an Instance: the unit that the Orchestrator runs and that `jr2 run`
+names, from one of three origins, a Machine in the Assembly, a Chart file in the Assembly, or a Chart published at run
+time. A Workflow is only that name, because the Machine carries all its parts, so the kit ships Machines and never
+Workflows.
 _Avoid_: app, pipeline
 
 **Orchestrator**:
@@ -150,12 +152,19 @@ _Avoid_: unset, default (an Open part has none), placeholder
 A body slot that a Machine declares and leaves for a run to bind with a Chart, stating the parts it lends, the Agents a
 Chart may define, and the ceilings it sets. It is the one Open part that a run binds, and nothing a Chart names resolves
 anywhere else.
-_Avoid_: wrapper (the Machine that declares it), host, template, sandbox
+_Avoid_: wrapper (any Machine with a body slot; the Chart wrapper is the one that declares an Open body), host,
+template, sandbox
+
+**Chart wrapper**:
+A Machine that declares an Open body: the Workflow a Chart runs under, which lends the Chart its parts, allows its
+Agents and sets its ceilings. A Chart never runs on its own.
+_Avoid_: wrapper (unqualified: any Machine with a body slot, `workspace()` and `pool()` included), host, jig, chassis,
+template, scaffold, fixture
 
 **Chart**:
 A Machine written as data alone, with no code of its own, that a run supplies to bind an Open body. Its states,
 transitions, events and Agents are its own; every other part is one that the Open body lends it, named by its slot.
-_Avoid_: dynamic workflow (it is not a Workflow), plan, script, template, body (the slot, not what fills it)
+_Avoid_: dynamic workflow (a Chart under a name IS a Workflow), plan, script, template, body (the slot, not what fills it)
 
 ### Turns and conversations
 
