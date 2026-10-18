@@ -58,22 +58,23 @@ their own maintainers, and the escapes shipped in systems that used them were in
   named later addition, as a new reference kind: adding one breaks no Chart, removing one would.
 - **A Chart always runs under a Chart wrapper, and the Chart is the body actor's input.** Four doors, nothing else:
 
-  | Who                            | One-shot                                                        | Named                                                                   |
-  | ------------------------------ | --------------------------------------------------------------- | ----------------------------------------------------------------------- |
-  | HTTP (a human, a tool, an MCP) | `POST /workflows/<wrapper>/runs` with `chart` in the input      | `PUT /charts/<name>` once, then `POST /workflows/<name>/runs`           |
-  | A Machine (an Agent)           | a pick carries the Chart; a state invokes the Open body with it | the Open body's input carries `{ chart: { name } }`, resolved at invoke |
+  | Who                            | One-shot                                                        | Named                                                                                                              |
+  | ------------------------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+  | HTTP (a human, a tool, an MCP) | `POST /workflows/<wrapper>/runs` with `chart` in the input      | `PUT /workflows/<wrapper>/charts/<name>` once, then `POST /workflows/<wrapper>/charts/<name>/runs`                 |
+  | A Machine (an Agent)           | a pick carries the Chart; a state invokes the Open body with it | the Open body's input carries `{ chart: { name } }`, the wrapper's own Chart by its short name, resolved at invoke |
 
-  One-shot, the Chart wrapper is the Workflow whose run it is. Named, the name registers a Workflow that names its Chart
-  wrapper, so the run-start is the ordinary one and `jr2 run <name>` works unchanged. A Chart never runs on its own: the
-  Open body it binds is where its lent parts and ceilings come from. Either way the Chart arrives as the body actor's
-  input, so the grammar reaches a planner as the JSON Schema of its pick for free (`chartSchema` is exported by
-  `@jr2/orchestrator`), and a name is resolved to text at invoke time and admitted exactly as text would be, and **a
-  name is a binding**: a named Chart was created against one Chart wrapper and runs under that wrapper only, so the
-  by-name path is accepted from an Open body of that wrapper's Machine and refused from any other, naming both wrappers.
-  Portability belongs to the text alone: to run one Chart under another wrapper, pass the text one-shot or publish it
-  under another name against that wrapper. The body actor constructs the live Machine from the text at start and again
-  at restore, which is [ADR-0007](0007-durable-machine-state.md)'s own rule, so the text persists with the run, the run
-  holds what it ran even if the name is later deleted or republished, and the run's shape stamp
+  One-shot, the Chart wrapper is the Workflow whose run it is. Named, the Chart is a child of its wrapper: its Workflow
+  name is `<wrapper>/<name>`, its routes live under the wrapper's, and `jr2 run task/review-loop` starts it as the
+  ordinary run-start does. A Chart never runs on its own: the Open body it binds is where its lent parts and ceilings
+  come from. Either way the Chart arrives as the body actor's input, so the grammar reaches a planner as the JSON Schema
+  of its pick for free (`chartSchema` is exported by `@jr2/orchestrator`), and a name is resolved to text at invoke time
+  and admitted exactly as text would be, and **a name is a binding**: a named Chart was created against one Chart
+  wrapper and runs under that wrapper only, which its name and its path both say. So the by-name path takes the short
+  name alone, `review-loop`, and resolves it among the Charts of the Machine's own wrapper; there is no way to write
+  another wrapper's. Portability belongs to the text alone: to run one Chart under another wrapper, pass the text
+  one-shot or publish it under that wrapper too. The body actor constructs the live Machine from the text at start and
+  again at restore, which is [ADR-0007](0007-durable-machine-state.md)'s own rule, so the text persists with the run,
+  the run holds what it ran even if the name is later deleted or republished, and the run's shape stamp
   ([ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md)) hashes the text, never the compiled config,
   which turns references into closures. A one-shot Chart lives nowhere but its run, and
   [ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)'s pin covers it by
@@ -81,30 +82,35 @@ their own maintainers, and the escapes shipped in systems that used them were in
   [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md) rejected for Machines; a name here resolves to
   data the Open body still binds, so nothing that decision protects is lost.
 
-- **A Chart under a name is a Workflow, from one of two origins.** A **Chart file** in the Assembly,
-  `workflows/<name>.chart.json`, naming its Chart wrapper and carrying the Chart: filename-discovered like
-  `workflows/*.ts`, published by `jr2 up`, reproducible from the Instance repo, admitted by the same static door. Or a
-  **runtime Chart**, `PUT /charts/<name>` and `DELETE /charts/<name>` behind the Instance token, not the publish token,
-  because a Chart is data and cannot reach the process, which is the whole point of this decision; it lives on the
-  Orchestrator's volume beside the Assemblies, survives restarts, is held while a live run holds it, and lists in
-  `jr2 runs` and the Console with its origin shown. So a Workflow is one of three things under one name: a Machine from
-  the Assembly, a Chart file from the Assembly, or a runtime Chart. **Names are flat and a collision is a refusal, never
-  a shadow**: a runtime Chart may not take a name the current Assembly holds, and an Assembly publish that introduces a
-  name a runtime Chart holds is refused naming it, so the human deletes the Chart or renames the file. Rejected: a
-  prefix namespace for runtime Charts, a second naming rule for `jr2 run` to learn. **jr2 tells a Chart wrapper from two
-  facts it already reads**, and the author marks nothing: the walk sees the Open body on the registered Machine (a kit
-  constructor in `actors`, as `agent()` is), and the door schema
-  ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)) shows which field is `chartSchema`. A wrapper whose
-  door has no Chart field is a wrapper for in-Machine Charts only, run by `jr2 run` like any Workflow; one with a Chart
-  field can also be run one-shot by HTTP and can have named Charts. `GET /workflows` lists both facts. A named Chart's
-  fixed input supplies every Chart-typed field of the wrapper's door and nothing else, so a named Chart stays a Chart
-  and not a preset of a Workflow's door, which would be a decision of its own; a Machine with two Open bodies has two
-  Chart fields and a named Chart fixes both. A named Chart against a wrapper with no Chart door is refused. **An
-  Assembly publish re-admits every named Chart** against the new Assembly, because a lent slot may have gone: a Chart
-  file that fails refuses the publish, since the file is the Instance's own; a runtime Chart that fails is marked
-  unrunnable and reported in the publish's answer, never deleted, because it is someone else's. An MCP that lets a
-  user's own agent author and run Charts is a client of these routes plus `GET /workflows/<wrapper>` for the Open body's
-  declaration and `GET /runs/<id>/events`; whether the kit ships one is a product question, not this one.
+- **A Chart under a name is a Workflow and a child of its wrapper, from one of two origins.** Its name is
+  `<wrapper>/<name>`, one rule for both. A **Chart file** in the Assembly sits at
+  `workflows/<wrapper>/<name>.chart.json` and carries the Chart alone: discovered one level below the flat
+  `workflows/*.ts` of [ADR-0050](0050-what-code-names-config-declares-what-the-cli-names-discovery-finds.md), in a
+  directory named after its wrapper and holding nothing else jr2 reads; published by `jr2 up`, reproducible from the
+  Instance repo, admitted by the same static door. A **runtime Chart** is `PUT /workflows/<wrapper>/charts/<name>` and
+  `DELETE` on the same path, the body the Chart alone, behind the Instance token, not the publish token, because a Chart
+  is data and cannot reach the process, which is the whole point of this decision; it lives on the Orchestrator's volume
+  beside the Assemblies, survives restarts, is held while a live run holds it, and lists in `jr2 runs` and the Console
+  with its origin shown. `GET /workflows` lists each wrapper with its Charts inside its entry, not beside it. So a
+  Workflow is one of three things: a Machine from the Assembly, a Chart file from the Assembly, or a runtime Chart, and
+  the last two are children of the first. **There is no collision rule**: a Machine's name is a filename stem and holds
+  no slash, a Chart's name always holds one, and a wrapper missing from a new Assembly makes its Charts unrunnable by
+  construction, which the publish reports. Rejected: flat names with a collision refusal and the wrapper named in the
+  `PUT` body, the shape this decision first took; the binding was then a rule to check in two places instead of a fact
+  the name and the path state. **jr2 tells a Chart wrapper from two facts it already reads**, and the author marks
+  nothing: the walk sees the Open body on the registered Machine (a kit constructor in `actors`, as `agent()` is), and
+  the door schema ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)) shows which field is `chartSchema`.
+  A wrapper whose door has no Chart field is a wrapper for in-Machine Charts only, run by `jr2 run` like any Workflow;
+  one with a Chart field can also be run one-shot by HTTP and can have named Charts. `GET /workflows` lists both facts.
+  A named Chart's fixed input supplies every Chart-typed field of the wrapper's door and nothing else, so a named Chart
+  stays a Chart and not a preset of a Workflow's door, which would be a decision of its own; a Machine with two Open
+  bodies has two Chart fields and a named Chart fixes both. A `PUT` or a Chart file under a wrapper with no Chart door
+  is refused, as is one under a Workflow that is no wrapper at all. **An Assembly publish re-admits every named Chart**
+  against the new Assembly, because a lent slot may have gone: a Chart file that fails refuses the publish, since the
+  file is the Instance's own; a runtime Chart that fails is marked unrunnable and reported in the publish's answer,
+  never deleted, because it is someone else's. An MCP that lets a user's own agent author and run Charts is a client of
+  these routes plus `GET /workflows/<wrapper>` for the Open body's declaration and `GET /runs/<id>/events`; whether the
+  kit ships one is a product question, not this one.
 - **Admission is static and mandatory, because xstate refuses nothing.** The spike found that an un-lent `invoke.src`
   kills the WRAPPER actor with a `TypeError` that bypasses the body invoke's `onError`; an unknown action is silently
   ignored, even in the development build; an unknown delay name fires at once; an unguarded `always` cycle exhausted the

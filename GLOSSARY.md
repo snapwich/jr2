@@ -66,8 +66,7 @@ _Avoid_: workflow, graph
 
 **Workflow**:
 A Machine or a Chart registered under a name in an Instance: the unit that the Orchestrator runs and that `jr2 run`
-names, from one of three origins, a Machine in the Assembly, a Chart file in the Assembly, or a Chart published at run
-time. A Workflow is only that name, because the Machine carries all its parts, so the kit ships Machines and never
+names, from one of three origins, a Machine in the Assembly, a Chart file in the Assembly, or a Chart published at run time; a named Chart is a child of its Chart wrapper, named `<wrapper>/<name>`. A Workflow is only that name, because the Machine carries all its parts, so the kit ships Machines and never
 Workflows.
 _Avoid_: app, pipeline
 
