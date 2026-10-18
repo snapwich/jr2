@@ -67,14 +67,22 @@ their own maintainers, and the escapes shipped in systems that used them were in
   name is `<wrapper>/<name>`, its routes live under the wrapper's, and `jr2 run task/review-loop` starts it as the
   ordinary run-start does. A Chart never runs on its own: the Open body it binds is where its lent parts and ceilings
   come from. Either way the Chart arrives as the body actor's input, so the grammar reaches a planner as the JSON Schema
-  of its pick for free (`chartSchema` is exported by `@jr2/orchestrator`), and a name is resolved to text at invoke time
-  and admitted exactly as text would be, and **a name is a binding**: a named Chart was created against one Chart
-  wrapper and runs under that wrapper only, which its name and its path both say. So the by-name path takes the short
-  name alone, `review-loop`, and resolves it among the Charts of the Machine's own wrapper; there is no way to write
-  another wrapper's. Portability belongs to the text alone: to run one Chart under another wrapper, pass the text
-  one-shot or publish it under that wrapper too. The body actor constructs the live Machine from the text at start and
-  again at restore, which is [ADR-0007](0007-durable-machine-state.md)'s own rule, so the text persists with the run,
-  the run holds what it ran even if the name is later deleted or republished, and the run's shape stamp
+  of its pick for free (`chartSchema` is exported by `@jr2/orchestrator`), **narrowed per wrapper**:
+  `GET /workflows/<wrapper>/chart-schema` is the grammar with the wrapper's lent slot names, guard, action and delay
+  names, and allowed models as `enum`s, derived from the two facts jr2 already reads. A human writing
+  `workflows/<wrapper>/<name>.chart.json` points an editor at it and gets validation and completion; a planner whose
+  pick is `{ chart }` gets it as its tool parameters, so the model is constrained at generation time, which is as close
+  to a type as a model can get. A Chart file is admitted by `jr2 up`'s host-side walk with the same door, so its errors
+  surface at the same command as `tsc`'s, one step later. That is what compile-time type safety becomes for a Chart: the
+  wrapper stays TypeScript and typechecked, and the Chart's references into it are checked at a door that sees the live
+  lent set, which a compiler would not. And a name is resolved to text at invoke time and admitted exactly as text would
+  be, and **a name is a binding**: a named Chart was created against one Chart wrapper and runs under that wrapper only,
+  which its name and its path both say. So the by-name path takes the short name alone, `review-loop`, and resolves it
+  among the Charts of the Machine's own wrapper; there is no way to write another wrapper's. Portability belongs to the
+  text alone: to run one Chart under another wrapper, pass the text one-shot or publish it under that wrapper too. The
+  body actor constructs the live Machine from the text at start and again at restore, which is
+  [ADR-0007](0007-durable-machine-state.md)'s own rule, so the text persists with the run, the run holds what it ran
+  even if the name is later deleted or republished, and the run's shape stamp
   ([ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md)) hashes the text, never the compiled config,
   which turns references into closures. A one-shot Chart lives nowhere but its run, and
   [ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)'s pin covers it by
@@ -117,8 +125,15 @@ their own maintainers, and the escapes shipped in systems that used them were in
   heap. So the door checks, before `createActor`: the grammar; every `src`, `type` and delay name against the lent set
   and the Chart's own `agents`; every `on` key against the Chart's events and the events against a handling state
   ([ADR-0011](0011-workflow-defined-events.md)'s rules); every minted model against the allowed list and the placed
-  keys; no `always` cycle without a guard; the size cap. A refusal is the body invoke's error, so a wrapper whose
-  `onError` returns to the planning state hands it to the planner as a link in its Chain
+  keys; no `always` cycle without a guard; the size cap; and two checks that stand in for the types a Chart does not
+  have. **Dataflow**: every reference a Chart makes, `{{context.summary}}` or `{ "$ref": "event.notes" }`, must be
+  supplied by something the door can see: the Chart's initial `context`, the door's input schema, a `set` on that path,
+  or the schema of the event the transition handles; a reference nothing supplies would resolve to an empty string in a
+  prompt with no one the wiser, so it is refused. The fields a Chart declares are its types. **Lent input shapes**: an
+  Effect carries an `input` schema and an Agent's Turn input is a fixed key set, so the literal parts of a Chart's
+  `input` objects are validated at the door and the resolved object again at invoke time, where a failure is that
+  invoke's error and never a mid-Turn surprise. A refusal is the body invoke's error, so a wrapper whose `onError`
+  returns to the planning state hands it to the planner as a link in its Chain
   ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)): "Chart refused:
   `src: "linter"` is not a lent actor; lent: coder, reviewer, push", and the planner answers with a corrected Chart. No
   new mechanism: a refusal is a child's error, and an Agent reads its children's outcomes through the Chain already.
