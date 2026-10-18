@@ -1,2 +1,7 @@
 printWidth: 120
 proseWrap: always
+overrides:
+  # A glossary entry keeps its term, definition and _Avoid_ list on lines of their own.
+  - files: GLOSSARY.md
+    options:
+      proseWrap: preserve
