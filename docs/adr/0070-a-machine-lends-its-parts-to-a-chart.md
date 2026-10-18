@@ -67,9 +67,12 @@ their own maintainers, and the escapes shipped in systems that used them were in
   wrapper, so the run-start is the ordinary one and `jr2 run <name>` works unchanged. A Chart never runs on its own: the
   Open body it binds is where its lent parts and ceilings come from. Either way the Chart arrives as the body actor's
   input, so the grammar reaches a planner as the JSON Schema of its pick for free (`chartSchema` is exported by
-  `@jr2/orchestrator`), and a name is resolved to text at invoke time and admitted exactly as text would be: its lent
-  set must match THIS Open body's. The body actor constructs the live Machine from the text at start and again at
-  restore, which is [ADR-0007](0007-durable-machine-state.md)'s own rule, so the text persists with the run, the run
+  `@jr2/orchestrator`), and a name is resolved to text at invoke time and admitted exactly as text would be, and **a
+  name is a binding**: a named Chart was created against one Chart wrapper and runs under that wrapper only, so the
+  by-name path is accepted from an Open body of that wrapper's Machine and refused from any other, naming both wrappers.
+  Portability belongs to the text alone: to run one Chart under another wrapper, pass the text one-shot or publish it
+  under another name against that wrapper. The body actor constructs the live Machine from the text at start and again
+  at restore, which is [ADR-0007](0007-durable-machine-state.md)'s own rule, so the text persists with the run, the run
   holds what it ran even if the name is later deleted or republished, and the run's shape stamp
   ([ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md)) hashes the text, never the compiled config,
   which turns references into closures. A one-shot Chart lives nowhere but its run, and
@@ -88,9 +91,20 @@ their own maintainers, and the escapes shipped in systems that used them were in
   the Assembly, a Chart file from the Assembly, or a runtime Chart. **Names are flat and a collision is a refusal, never
   a shadow**: a runtime Chart may not take a name the current Assembly holds, and an Assembly publish that introduces a
   name a runtime Chart holds is refused naming it, so the human deletes the Chart or renames the file. Rejected: a
-  prefix namespace for runtime Charts, a second naming rule for `jr2 run` to learn. An MCP that lets a user's own agent
-  author and run Charts is a client of these routes plus `GET /workflows/<wrapper>` for the Open body's declaration and
-  `GET /runs/<id>/events`; whether the kit ships one is a product question, not this one.
+  prefix namespace for runtime Charts, a second naming rule for `jr2 run` to learn. **jr2 tells a Chart wrapper from two
+  facts it already reads**, and the author marks nothing: the walk sees the Open body on the registered Machine (a kit
+  constructor in `actors`, as `agent()` is), and the door schema
+  ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)) shows which field is `chartSchema`. A wrapper whose
+  door has no Chart field is a wrapper for in-Machine Charts only, run by `jr2 run` like any Workflow; one with a Chart
+  field can also be run one-shot by HTTP and can have named Charts. `GET /workflows` lists both facts. A named Chart's
+  fixed input supplies every Chart-typed field of the wrapper's door and nothing else, so a named Chart stays a Chart
+  and not a preset of a Workflow's door, which would be a decision of its own; a Machine with two Open bodies has two
+  Chart fields and a named Chart fixes both. A named Chart against a wrapper with no Chart door is refused. **An
+  Assembly publish re-admits every named Chart** against the new Assembly, because a lent slot may have gone: a Chart
+  file that fails refuses the publish, since the file is the Instance's own; a runtime Chart that fails is marked
+  unrunnable and reported in the publish's answer, never deleted, because it is someone else's. An MCP that lets a
+  user's own agent author and run Charts is a client of these routes plus `GET /workflows/<wrapper>` for the Open body's
+  declaration and `GET /runs/<id>/events`; whether the kit ships one is a product question, not this one.
 - **Admission is static and mandatory, because xstate refuses nothing.** The spike found that an un-lent `invoke.src`
   kills the WRAPPER actor with a `TypeError` that bypasses the body invoke's `onError`; an unknown action is silently
   ignored, even in the development build; an unknown delay name fires at once; an unguarded `always` cycle exhausted the
