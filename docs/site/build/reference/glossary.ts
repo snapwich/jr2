@@ -1,4 +1,4 @@
-// The Glossary and the Decisions (ADR-0072): CONTEXT.md and docs/adr, rendered as they are. The
+// The Glossary and the Decisions (ADR-0072): GLOSSARY.md and docs/adr, rendered as they are. The
 // Glossary gains one explicit anchor per term, by the slug rule in docs/site/README.md, so that a
 // link to a term resolves in every site generator; its H1 gives way to the page's. The Decisions
 // page indexes every ADR, and each ADR is copied beside it.
@@ -15,7 +15,7 @@ export const termSlug = (term: string): string => term.toLowerCase().replace(/ /
 
 const TERM = /^\*\*([^*]+)\*\*:/;
 
-/** CONTEXT.md with an anchor before each term, its H1 dropped. Errors name a term whose slug
+/** GLOSSARY.md with an anchor before each term, its H1 dropped. Errors name a term whose slug
  * another term has. */
 export function renderGlossary(context: string): { body: string; terms: string[]; errors: string[] } {
   const lines = context.split("\n");

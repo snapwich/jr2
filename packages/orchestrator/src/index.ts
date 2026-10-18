@@ -1,4 +1,4 @@
-// @jr2/orchestrator — the Authoring surface (CONTEXT.md): the names an author writes in a
+// @jr2/orchestrator — the Authoring surface (GLOSSARY.md): the names an author writes in a
 // workflow module or in `jr2.config.ts`, and no other name. A name is here when an author writes
 // it; a name an author only meets through inference (a jr2Setup event union, a gate's input, a
 // pick's Frame) stays internal. A workflow authors against ONE package — `defineEvent`,

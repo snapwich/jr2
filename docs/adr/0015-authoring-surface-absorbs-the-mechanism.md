@@ -10,7 +10,7 @@ covers the agent turn; [ADR-0017](0017-pool-over-a-source-port.md) covers the ru
 ## The root of `@jr2/orchestrator` is the Authoring surface
 
 A workflow authors against one package: `jr2Setup`, `defineEvent`, `agent`, `workspace`, the Effects, `customize` and
-`defineConfig` all import from `@jr2/orchestrator`. Its root exports the Authoring surface (CONTEXT.md) and nothing
+`defineConfig` all import from `@jr2/orchestrator`. Its root exports the Authoring surface (GLOSSARY.md) and nothing
 else.
 
 - **The rule.** A name is on the surface when an author writes it in a workflow module or in `jr2.config.ts`. No other

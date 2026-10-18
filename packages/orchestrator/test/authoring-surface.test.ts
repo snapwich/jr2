@@ -1,4 +1,4 @@
-// The Authoring surface (CONTEXT.md, ADR-0015) is the root's export list, and this test pins it.
+// The Authoring surface (GLOSSARY.md, ADR-0015, ADR-0072) is the root's export list, and this test pins it.
 // A name joins or leaves the surface only in a change that edits the list below, so a reviewer sees
 // each one. The rule for the list: a name is on the surface when an author writes it in a workflow
 // module or in `jr2.config.ts`; everything else the kit shares goes through

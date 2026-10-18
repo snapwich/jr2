@@ -20,7 +20,7 @@ contributors. It is not a page of the docs.
 | `build/`          | `docs:build`: it makes the bundle and generates the Reference.                     |
 | `test/`           | The tests for `sitemap.json`, the tutorial fixture, and `docs:build`.              |
 
-There is no `reference/` folder. `docs:build` makes the Reference pages from the code, from `CONTEXT.md`, and from
+There is no `reference/` folder. `docs:build` makes the Reference pages from the code, from `GLOSSARY.md`, and from
 `docs/adr/`. A Reference page has no source file here.
 
 ## The navigation
@@ -63,9 +63,9 @@ that the Get started pages share. [The source format](#the-source-format) gives 
   - Use approved words, with one meaning for each word. A technical name stays as it is: a glossary term, a command, a
     field, a file name.
   - Code, commands and refusal text are not sentences. Do not count their words.
-- Spell each glossary term as [CONTEXT.md](../../CONTEXT.md) spells it, with its capital letters. Do not use a word from
-  its _Avoid_ list in its place. For example, write "Workflow" and not "pipeline". Write "Effect" and not "side effect"
-  or "step".
+- Spell each glossary term as [GLOSSARY.md](../../GLOSSARY.md) spells it, with its capital letters. Do not use a word
+  from its _Avoid_ list in its place. For example, write "Workflow" and not "pipeline". Write "Effect" and not "side
+  effect" or "step".
 - Do not write "agent" alone. An Agent works inside a run. An Assistant works for you in the Instance folder.
 - Write "converge" for what `jr2 up` does to a cluster. Do not write "deploy".
 - Do not write "operate" or "operations" for the work of a person. In jr2, the operator is the Kubernetes operator.
@@ -438,14 +438,14 @@ Do not use syntax that only one generator knows:
 ## The bundle
 
 `docs:build` makes the docs bundle that `@jr2/orchestrator` ships. Its inputs are the pages in this folder, the code,
-`CONTEXT.md`, and `docs/adr/`. Its output is plain Markdown (CommonMark and GFM), with no directive and no syntax of a
+`GLOSSARY.md`, and `docs/adr/`. Its output is plain Markdown (CommonMark and GFM), with no directive and no syntax of a
 site generator:
 
 | Bundle path                    | Contents                                                                          |
 | ------------------------------ | --------------------------------------------------------------------------------- |
 | `<slug>.md`                    | Each page of `sitemap.json`, at its slug.                                         |
 | `reference/*.md`               | The Reference, generated from the code. See ADR-0072 for the source of each page. |
-| `reference/glossary.md`        | `CONTEXT.md`, with an anchor before each term.                                    |
+| `reference/glossary.md`        | `GLOSSARY.md`, with an anchor before each term.                                   |
 | `reference/decisions.md`       | An index of the ADRs.                                                             |
 | `reference/decisions/<adr>.md` | Each ADR, with its links changed for the bundle.                                  |
 | `llms.txt`                     | An index of the pages in the llmstxt.org format.                                  |
@@ -464,8 +464,8 @@ It also changes each relative link:
 - A link to a page that `--partial` skipped becomes its text.
 
 - A link to a file in the docs set goes to the bundle path of that file. `docs/adr/X.md` becomes
-  `reference/decisions/X.md`, `CONTEXT.md` becomes `reference/glossary.md`, and a page becomes its slug. The anchor does
-  not change. An anchor in the Glossary, in a Reference page or in an ADR must exist.
+  `reference/decisions/X.md`, `GLOSSARY.md` becomes `reference/glossary.md`, and a page becomes its slug. The anchor
+  does not change. An anchor in the Glossary, in a Reference page or in an ADR must exist.
 - A link to a different file of the repo becomes a GitHub URL at the release tag:
   `https://github.com/snapwich/jr2/blob/v<version>/<path>`.
 

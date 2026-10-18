@@ -1,5 +1,5 @@
 // docs:build (ADR-0072): assemble the docs bundle that `@jr2/orchestrator` ships. Its inputs are
-// the pages in docs/site, the Reference generated from the code, CONTEXT.md and docs/adr; its
+// the pages in docs/site, the Reference generated from the code, GLOSSARY.md and docs/adr; its
 // output is plain CommonMark + GFM at the sitemap's paths, every ADR under reference/decisions/,
 // `llms.txt`, and `agents-block.md`. The whole bundle is made in memory and checked — the source
 // format, the titles, every link — and written only when nothing failed, so a failed build leaves
@@ -176,8 +176,8 @@ export async function buildDocs(opts: BuildOptions = {}): Promise<BuildResult> {
   const ctx = referenceContext(repo, pages);
   const reference = generateReference(ctx);
   errors.push(...ctx.errors);
-  const glossary = renderGlossary(readFileSync(join(repo, "CONTEXT.md"), "utf8"));
-  for (const e of glossary.errors) errors.push({ file: "CONTEXT.md", line: 1, message: e });
+  const glossary = renderGlossary(readFileSync(join(repo, "GLOSSARY.md"), "utf8"));
+  for (const e of glossary.errors) errors.push({ file: "GLOSSARY.md", line: 1, message: e });
   reference.pages.set("reference/glossary", glossary.body);
   reference.pages.set("reference/decisions", renderDecisions(ctx.adrs));
   for (const p of pages.filter((p) => p.source === "generated"))
@@ -206,7 +206,7 @@ export async function buildDocs(opts: BuildOptions = {}): Promise<BuildResult> {
     version,
     repo,
     aliases: new Map([
-      ["CONTEXT.md", GLOSSARY_PAGE],
+      ["GLOSSARY.md", GLOSSARY_PAGE],
       ...adrFiles.map((f): [string, string] => [`docs/adr/${f}`, `reference/decisions/${f}`]),
     ]),
     bundle,
@@ -229,8 +229,8 @@ export async function buildDocs(opts: BuildOptions = {}): Promise<BuildResult> {
   for (const [slug, body] of reference.pages) {
     const page = pages.find((p) => p.slug === slug);
     const bundlePath = `${slug}.md`;
-    const from = slug === "reference/glossary" ? "CONTEXT.md" : `docs/site/${bundlePath}`;
-    const label = slug === "reference/glossary" ? "CONTEXT.md" : `${bundlePath} (generated)`;
+    const from = slug === "reference/glossary" ? "GLOSSARY.md" : `docs/site/${bundlePath}`;
+    const label = slug === "reference/glossary" ? "GLOSSARY.md" : `${bundlePath} (generated)`;
     const head = pageHead(page?.title ?? slug, GENERATED[slug] ?? "");
     const linked = rewriteLinks(body, { from, bundle: bundlePath, file: label }, set);
     errors.push(...linked.errors);

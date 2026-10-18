@@ -2,7 +2,7 @@
 // and on the site, so every relative link in it must land on a file of the bundle:
 //
 //   - a link to a file in the docs set becomes that file's bundle path, relative to the linking
-//     file: docs/adr/X.md is reference/decisions/X.md, CONTEXT.md is reference/glossary.md, and a
+//     file: docs/adr/X.md is reference/decisions/X.md, GLOSSARY.md is reference/glossary.md, and a
 //     docs/site page is its slug. The anchor is kept, and one into the Glossary or the Reference
 //     must exist there;
 //   - a link to any other repo file becomes a GitHub URL at the release tag, `v<version>`;
@@ -24,7 +24,7 @@ export type DocsSet = {
   version: string;
   /** The repo root on disk. */
   repo: string;
-  /** The bundle path of each source file in the set: CONTEXT.md, each ADR. */
+  /** The bundle path of each source file in the set: GLOSSARY.md, each ADR. */
   aliases: ReadonlyMap<string, string>;
   /** Every bundle path the build writes. */
   bundle: ReadonlySet<string>;

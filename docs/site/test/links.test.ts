@@ -15,7 +15,7 @@ const set: DocsSet = {
   version: "1.2.3",
   repo,
   aliases: new Map([
-    ["CONTEXT.md", "reference/glossary.md"],
+    ["GLOSSARY.md", "reference/glossary.md"],
     [`docs/adr/${ADR}`, `reference/decisions/${ADR}`],
   ]),
   bundle: new Set([
@@ -44,7 +44,7 @@ test("a link into the docs set becomes its bundle path, relative to the linking 
     [
       "[home](../index.md)",
       "[the Lease](../reference/glossary.md#lease)",
-      "[the term](../../../CONTEXT.md#authoring-surface)",
+      "[the term](../../../GLOSSARY.md#authoring-surface)",
       `[why](../../adr/${ADR})`,
       `[why, as a page](../reference/decisions/${ADR}#decision)`,
       "[run](../reference/cli.md#run 'jr2 run')",
@@ -64,9 +64,9 @@ test("a link into the docs set becomes its bundle path, relative to the linking 
   );
 });
 
-test("an ADR's link to another ADR, and to CONTEXT.md, resolves from its own place", () => {
+test("an ADR's link to another ADR, and to GLOSSARY.md, resolves from its own place", () => {
   const adr: LinkSource = { from: `docs/adr/${ADR}`, bundle: `reference/decisions/${ADR}`, file: `docs/adr/${ADR}` };
-  const r = rewrite(`[self](${ADR}) and [terms](../../CONTEXT.md)`, adr);
+  const r = rewrite(`[self](${ADR}) and [terms](../../GLOSSARY.md)`, adr);
   assert.deepEqual(r.errors, []);
   assert.equal(r.text, `[self](${ADR}) and [terms](../glossary.md)`);
 });

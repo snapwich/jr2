@@ -23,7 +23,7 @@
 /** A Kubernetes quantity: `"2Gi"`, `"1500m"`, `"2"`, or a plain number (`2` cpus, bytes of memory). */
 export type Quantity = string | number;
 
-// A Size (ADR-0060, CONTEXT.md "Size"): `limits.memory` and `limits.cpu`, nothing else. A field
+// A Size (ADR-0060, GLOSSARY.md "Size"): `limits.memory` and `limits.cpu`, nothing else. A field
 // left out resolves down the chain (`resolveSize`) — the Instance's `sandbox.resources`, then the
 // kit default (`KIT_SIZE`). The same shape is the User Container's split (`userSeatOf`,
 // `splitSize`), where a field left out means the seat has no limit of its own for it and shares

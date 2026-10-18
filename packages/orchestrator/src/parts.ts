@@ -106,7 +106,7 @@ export { open } from "./open.ts";
  * @see docs/concepts/workspaces.md
  * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
  */
-// What a Repo Slot resolves to (CONTEXT.md "Binding").
+// What a Repo Slot resolves to (GLOSSARY.md "Binding").
 export type Binding = {
   /** The Repo's git url. */
   url: string;
