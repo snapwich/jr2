@@ -3,15 +3,16 @@
 jr2 ships as a **library** (engine + agent-protocol) and a **CLI** (`jr2`). You don't build a workflow into its own
 image. Instead you `jr2 init` an **Orchestrator instance** — a small, user-owned _code_ project (a folder) that imports
 the kit, configures it, and holds one or more **workflows** (Machines authored via `jr2Setup`, ADR-0015). One instance
-hosts **many** workflows; the CLI builds the engine + that instance's workflow modules into a single image and deploys
-it. The instance folder is the **jr2 Application** — the GitOps unit; the same folder/manifests run on kind locally and
-on a real cluster.
+hosts **many** workflows; the CLI publishes that instance's workflow modules to a running Orchestrator as its Assembly
+([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). The instance folder is the
+**jr2 Application** — the GitOps unit; the same folder/manifests run on kind locally and on a real cluster.
 
 Machine definitions are **code, not declarative config.** We rejected expressing machines as YAML/CRD config: a useful
 agentic Machine is mostly logic (guards, prompt-building, `assign`s), and a declarative form becomes a DSL-over-xstate
 that loses type-safety and still cannot express branching. The instance is a code project (it imports `@jr2/*`), so
 "code, not config" survives — machine definitions simply live in the user's instance folder rather than baked into the
-kit.
+kit. The rule has one deliberate complement: a human writes code, and what a RUN supplies is data — a Chart bound into a
+Machine's Open body ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)) carries no logic of its own.
 
 ## The Orchestrator instance
 
@@ -43,9 +44,10 @@ process that exits is restarted by the container's restart policy regardless.
 
 ## Consequences
 
-- The deployable unit is an **instance image** (engine + the instance's workflow modules), built and delivered by
-  `jr2 up` (ADR-0019; a CI-only `jr2 build` is planned), run as one `replicas: 1` `Deployment` + `Service`. The two-repo
-  pattern (instance code → image; manifests → GitOps) is expected, and the instance folder carries both.
+- The deployable unit is the Orchestrator **Kit image** plus the instance's **Assembly**, which `jr2 up` publishes to
+  the running Orchestrator ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md);
+  a CI-only `jr2 build` is planned), run as one `replicas: 1` `Deployment` + `Service`. The two-repo pattern (instance
+  code → Assembly; manifests → GitOps) is expected, and the instance folder carries both.
 - Concrete workflows do **not** live in the jr2 source repo — only the kit, the Machines it ships (`@jr2/machines`,
   ADR-0054), and the `templates/default` model instance do. A user's workflows live in their `jr2 init` instance folder.
 - jr2 ships and deploys only its **`Sandbox` operator** (its own CRD), deployed once per cluster. The snapshot store is
@@ -53,5 +55,6 @@ process that exits is restarted by the container's restart policy regardless.
   (model env), it does not own or operate it. Instances are deployed per user/project.
 - Users interact through the **`jr2` CLI** far more than raw HTTP; the HTTP API is the machine-to-machine surface (push
   work, human-in-the-loop, status) the CLI itself sits on top of.
-- Dynamic third-party workflow/plugin loading stays **deferred**; build-time-bake of the instance's code keeps full
-  type-safety for now.
+- Code is never loaded dynamically: only `jr2 up` publishes an Assembly, typechecked on the host first
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). A run may bind a
+  Machine's Open body with a Chart, which is data ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)).

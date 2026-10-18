@@ -25,10 +25,16 @@ there is no Handoff.
 _Avoid_: shim, proxy, wrapper, delegate, relaunch, re-exec
 
 **Kit version**:
-The one version an Instance is: the version of the Orchestrator package that the Instance installs, because that is
-what its image contains, and also the tag of the published Kit images. The jr2 CLI that runs must use that same copy of
-the package; two copies in one Instance are not a version but a refusal.
+The one version an Instance is: the version of the Orchestrator package that the Instance pins, which is the tag of
+every Kit image it deploys, the Orchestrator's own included. The jr2 CLI that runs and the Assembly it publishes must
+use that same version; two copies in one Instance are not a version but a refusal.
 _Avoid_: CLI version, orchestrator version, kit release (when meaning the Instance's pin)
+
+**Assembly**:
+The Instance's Workflows, its config and what they import, as the one unit that the Orchestrator loads: what `jr2 up`
+publishes to a running Orchestrator, and what a run holds for its life. The Orchestrator keeps the current Assembly and
+every Assembly that a live run holds.
+_Avoid_: program (an executable), bundle (the staging mechanism), build, release, generation
 
 **jr2 Application**:
 An Instance under GitOps, whose manifests deploy the Orchestrator with its config and secrets. The same folder runs on
@@ -44,7 +50,8 @@ _Avoid_: visualizer (only one panel of it), dashboard, UI (unqualified), viz
 **Kit image**:
 An image that jr2 owns and builds, and that an Instance deploys but never authors. Kit images are the kit's second
 channel of distribution, beside its packages, and they are released together with the packages, at one version.
-_Avoid_: system image, base image, jr2 image (ambiguous with the Instance's own image)
+_Avoid_: system image, base image, jr2 image (ambiguous with a Sandbox Image), instance image (retired: the
+Orchestrator is a Kit image, and an Instance publishes an Assembly)
 
 **Pinned image**:
 An image that an Instance deploys but that jr2 neither owns nor builds. The kit names its exact bytes, so one Kit
@@ -136,8 +143,19 @@ _Avoid_: action (xstate's word), side effect, job, task, step, operation, errand
 **Open**:
 A part that a Machine declares but does not bind, so that its composer binds it: for example, a Repo Slot with no url,
 an Agent with no model, or an Effect with no url, program or secret. It is the shape that a packaged Machine ships in,
-`jr2 up` refuses an Open part that nobody bound, and a run never sees one.
+`jr2 up` refuses an Open part that nobody bound, and a run never sees one, except an Open body, which a run binds.
 _Avoid_: unset, default (an Open part has none), placeholder
+
+**Open body**:
+A body slot that a Machine declares and leaves for a run to bind with a Chart, stating the parts it lends, the Agents a
+Chart may define, and the ceilings it sets. It is the one Open part that a run binds, and nothing a Chart names resolves
+anywhere else.
+_Avoid_: wrapper (the Machine that declares it), host, template, sandbox
+
+**Chart**:
+A Machine written as data alone, with no code of its own, that a run supplies to bind an Open body. Its states,
+transitions, events and Agents are its own; every other part is one that the Open body lends it, named by its slot.
+_Avoid_: dynamic workflow (it is not a Workflow), plan, script, template, body (the slot, not what fills it)
 
 ### Turns and conversations
 

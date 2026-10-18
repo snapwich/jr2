@@ -91,8 +91,8 @@ pick; a wrong `false` tells an Agent its work is not wanted when the workflow wo
 from that.
 
 **Absent `moved` is not `false`, and absent `allowed` is not empty.** The Harness ships as a stock image and the
-Orchestrator as the instance image (ADR-0027), so the two can skew. A surface without `menu` is read as today's narrowed
-list, presented as tools.
+Orchestrator (ADR-0027), so the two can skew. A surface without `menu` is read as today's narrowed list, presented as
+tools.
 
 **A Gate's accepted set stays whole; `acceptsNow` sits beside it.** `GET /runs/:id` lists each Gate's `accepts` — every
 name it may ever send, with its schema, which drives a form — and `acceptsNow`, the same payload-blind question the

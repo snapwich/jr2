@@ -2,8 +2,9 @@
 
 [ADR-0007](0007-durable-machine-state.md) persists a run's snapshot so a restarted Orchestrator resumes it.
 [ADR-0008](0008-orchestrator-as-deployed-app.md)/[ADR-0019](0019-one-converging-command-against-the-current-context.md)
-bake workflows into the instance image, while the state PVC outlives every rollout. And a persisted run is matched to
-its workflow by **filename stem** — `this.workflowDefs.get(blob.workflow)`.
+publish the Instance's Assembly to an Orchestrator whose volume outlives every publish
+([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). And a persisted run is
+matched to its workflow by **filename stem** — `this.workflowDefs.get(blob.workflow)`.
 
 Those three facts compose into a hole. Park a run at a Gate, edit `workflows/task.ts`, `jr2 up`. The name still
 resolves. The def found under it is a different Machine. Nothing checks, and — this is the part that decides the shape
@@ -72,11 +73,16 @@ reachable only by asking after a run id nobody knows to ask about.
 
 ## Consequences
 
-- **Editing a workflow strands its parked runs, by design.** Draining before a shape-changing deploy is now a real
-  operational step. `jr2 dev`'s reload is unaffected for logic edits, which is the common case, and in-flight runs
-  already keep the definition they started on.
-- **There is no migration path.** A drifted run can be read and cancelled; it cannot be adapted onto the new Machine.
-  That is deliberate for now — a migration story needs a way to express what a state maps to, which nothing here does.
+- **Editing a workflow strands nothing.** A run holds the Assembly it started under, through restarts too
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), so a publish never
+  changes the Machine a live run resolves to. Drift is reached only when a held Assembly cannot be read any more: it
+  does not load under a bumped Kit version, or the volume lost it. The stamp still stands as the last check, because the
+  Assembly hash says which tree was loaded and the stamp says the Machine in it still has the shape it had.
+- **There is no migration path.** A drifted run can be read and cancelled; it cannot be adapted onto a new Machine. That
+  is deliberate for now — a migration story needs a way to express what a state maps to, which nothing here does.
+- **A run with an Open body stamps its bound Machine.** A Chart
+  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)) gives two runs of one Workflow two shapes, so the digest is
+  taken from the run's Machine with its Chart bound, over the Chart's text, never over the compiled config.
 - **A drifted run is not in `jr2 runs`**, which lists only the live registry. It is reachable through the announce line
   and `jr2 status <id>`. If stranded runs become common enough to browse, the listing is where that belongs.
 - **The digest is only as complete as the walk.** A state running `enqueueActions` can spawn children no static analysis

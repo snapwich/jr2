@@ -243,4 +243,5 @@ auto-install — it prints the next step, naming no package manager, since the i
   ([ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)). The CLI ships as the `jr2`
   bin (`npx jr2`).
 - Workspaces are a first-class CLI resource backed by the operator's `Sandbox` CRs, label-linked to their runs.
-- Dynamic third-party workflow/plugin loading stays deferred (ADR-0008); discovery is over the instance's own code.
+- Code is never loaded from a third party at run time (ADR-0008, ADR-0069): discovery is over the instance's own
+  Assembly, which only `jr2 up` publishes. A run may bind a Machine's Open body with a Chart, which is data (ADR-0070).

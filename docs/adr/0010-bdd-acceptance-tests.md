@@ -14,10 +14,10 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   result), stderr (human activity), and the exit code. The e2e tier does not re-test what the in-process tier already
   covers.
 - **The per-scenario orchestrator is the image entrypoint, not a CLI verb.** There is no host dev mode (ADR-0019), but
-  the instance image's server entrypoint is an ordinary Node process — the test fixture boots exactly that process on
-  the host, with `--url`/token env pointing the spawned `jr2` binary at it. Same real server the cluster runs, no
-  cluster, no user-facing verb. The wire-compatible **stub Harness** (ADR-0011) is a fixture owned by this tier and
-  served the same way.
+  the Orchestrator's server entrypoint is an ordinary Node process — the test fixture boots exactly that process on the
+  host, with `--url`/token env pointing the spawned `jr2` binary at it. Same real server the cluster runs, no cluster,
+  no user-facing verb. The wire-compatible **stub Harness** (ADR-0011) is a fixture owned by this tier and served the
+  same way.
 - **`Feature` → `Rule` → `Scenario` maps to criteria.** A `Rule` is one acceptance criterion; a `Scenario` is an example
   of it. This is organizational only — `Rule`s carry no shared state.
 - **`Scenario` is the isolation unit — and the environment is part of it.** Each scenario gets its own scaffolded temp

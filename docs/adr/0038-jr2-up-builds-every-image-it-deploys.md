@@ -4,7 +4,9 @@
 builds exactly one image — the instance's. The Harness and operator images come from `just` recipes at **mutable tags**
 (`jr2-harness:local`), pointed at by `images` overrides in `jr2.config.ts`. Nothing can detect that a mutable tag moved,
 so editing `packages/harness/src` and running `jr2 up` reports convergence onto pods running last week's code — the
-failure the instance image already fixed for itself by hashing the materialized bundle rather than the source folder.
+failure the Instance's own artifact already fixed for itself by hashing the materialized bundle rather than the source
+folder (then its image; now its Assembly,
+[ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)).
 [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md) would add a second class of
 build-it-yourself-first image on top of that.
 
@@ -29,8 +31,8 @@ build-it-yourself-first image on top of that.
   `kitRegistry` when one is set ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)) — and
   delivers nothing: a node pulls it. It is not a Kit image (GLOSSARY.md: "Pinned image"), and moving the pin is a kit
   change.
-- **Every tag is a content address.** Instance, Sandbox, Harness, operator — each addressed by its own inputs and its
-  platform set, the platform as a visible tag suffix
+- **Every tag is a content address.** Orchestrator, Sandbox, Harness, operator — each addressed by its own inputs and
+  its platform set, the platform as a visible tag suffix
   ([ADR-0045](0045-the-platform-joins-the-image-address-and-the-cluster-chooses-it.md)). Three things follow:
   `imagePullPolicy: IfNotPresent` becomes _correct_ rather than lucky (a unique tag per content means "present" implies
   "current"), which is what makes kind and a real cluster behave identically instead of needing `Never` on one and
@@ -42,27 +44,28 @@ build-it-yourself-first image on top of that.
   edit moves the harness image's own tag and touches no Sandbox Image tag. That hash is also the map KEY the deployed
   Orchestrator looks the ref up by, which is what lets a Machine name its context by `file:` URL and be understood on
   both sides without a path table ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)).
-- **A staged bundle records nothing about where or when it was staged.** The instance image's tag addresses the
-  materialized bundle, so anything in that bundle that names its own scratch directory — or the minute it was written —
-  makes one tag name many images, and "present implies current" stops being true for the one image every Instance runs.
-  `pnpm deploy` writes both: each `.bin` shim bakes the staging path into `NODE_PATH`, and `node_modules/.modules.yaml`
-  is nothing but a record of where and when. So the bundle is **sealed** before it is hashed — the staging path is
-  rewritten to `/instance`, the `WORKDIR` the image actually holds it at, so the shims go from _wrong_ to _correct_
-  rather than merely stable; `.modules.yaml` is deleted, beside the `images/` deletion that already precedes the hash.
-  (**Amended by [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: the bundle is
-  `pnpm deploy`'s only for a workspace-member instance; a standalone one is a staged copy plus a frozen lockfile
-  install, whose shims name no absolute path — but whose pnpm branch leaves a second where-and-when record,
+- **A staged tree records nothing about where or when it was staged.** The Assembly's hash addresses the staged tree
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), so anything in that tree
+  that names its own scratch directory — or the minute it was written — makes one hash name many Assemblies, and
+  "present implies current" stops being true for the one artifact every Instance publishes. `pnpm deploy` writes both:
+  each `.bin` shim bakes the staging path into `NODE_PATH`, and `node_modules/.modules.yaml` is nothing but a record of
+  where and when. So the tree is **sealed** before it is hashed — the `.bin` shims are deleted, since the Orchestrator
+  runs no bin from an Assembly and a path that names the Assembly's own directory cannot be rewritten to one that
+  contains its own hash; `.modules.yaml` is deleted with them. (**Amended by
+  [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: the bundle is `pnpm deploy`'s
+  only for a workspace-member instance; a standalone one is a staged copy plus a frozen lockfile install, whose shims
+  name no absolute path — but whose pnpm branch leaves a second where-and-when record,
   `node_modules/.pnpm-workspace-state.json`, deleted with `.modules.yaml`.) A non-UTF-8 file holding the path is a loud
   failure, never a blind rewrite. **Nothing is excluded from the hash any more.** The old exclude set named exactly the
   files that varied, so the tag stood still while the bytes moved and the mechanism that should have exposed the drift
   was the one hiding it; with an empty set the failure inverts — a bundle that ever varies again re-tags on every
   converge, in the open, where a rebuild-and-reload every single time is impossible to miss.
-- **One transport branch for all of them**, the one the instance image already uses: `registry` configured → push; kind
-  context → `kind load`; neither → fail loudly naming `registry`. `jr2 up` records the converged name→ref map as an
-  annotation on the Orchestrator Deployment and diffs it, so a steady-state converge spends a directory walk and no
-  docker at all. **Amended by [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)**: when the record
-  is silent (a fresh namespace), the host daemon's own labeled listing answers the _build_ question — the seal below is
-  what made "present implies current" true enough to ask it — while the record keeps answering the delivery one.
+- **One transport branch for all of them**, the one the Sandbox Images use: `registry` configured → push; kind context →
+  `kind load`; neither → fail loudly naming `registry`. `jr2 up` records the converged name→ref map as an annotation on
+  the Orchestrator Deployment and diffs it, so a steady-state converge spends a directory walk and no docker at all.
+  **Amended by [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)**: when the record is silent (a
+  fresh namespace), the host daemon's own labeled listing answers the _build_ question — the seal below is what made
+  "present implies current" true enough to ask it — while the record keeps answering the delivery one.
 - **The resolved name→ref map reaches the Orchestrator as a ConfigMap, read per provision — never as Deployment env.**
   Env is a pod-template change, so every Dockerfile edit would roll the Orchestrator and put every live run through
   snapshot restore ([ADR-0007](0007-durable-machine-state.md)) for a change that affects only _future_ Sandboxes. The
@@ -149,11 +152,11 @@ build-it-yourself-first image on top of that.
   kit refs, not per-image overrides — a different mechanism, deliberately deferred while nothing is published.
   (**Resolved by [ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)**: the prefix is
   `kitRegistry`, re-homing refs from the canonical `ghcr.io/snapwich` home, fed by a deliberate instance-less mirror.)
-- **The seal deletes garbage at its source.** Before it, every converge built a new image id under an unchanged tag, so
-  each one orphaned a whole instance image — 465 MB on the `@kind` instance — which ADR-0039's sweep then collected.
-  That was garbage produced by the builder on every run, not by iteration, and the collector was doing work that should
-  never have existed. It also made the delivery real: `kind load` skips a node already holding the id, so the kit images
-  cost under a second each while the instance image was re-transferred every time.
+- **The seal deletes garbage at its source.** Before it, every converge produced a new artifact under an unchanged
+  address, so each one orphaned a whole Orchestrator image of the Instance — 465 MB on the `@kind` instance — which
+  ADR-0039's sweep then collected. That was garbage produced by the builder on every run, not by iteration, and the
+  collector was doing work that should never have existed. The same rule now keeps a no-op converge from publishing an
+  Assembly: an unchanged tree has an unchanged hash, and the Orchestrator already holds it.
 - **`jr2 up` leans on `pnpm deploy`, which pnpm still labels experimental**, at `--legacy`. The seal does not deepen
   that exposure — no flag changes — but the assumption that staging is otherwise deterministic is now held by a test
   that stages one Instance into two directories and compares hashes, rather than by trust. A pnpm upgrade that bakes a

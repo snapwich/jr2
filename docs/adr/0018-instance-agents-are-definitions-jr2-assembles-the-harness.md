@@ -27,7 +27,7 @@ holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of 
   server validates it loudly and re-reads model/instructions per Submission, with the Turn's Frame (`prompt`, `cwd`) and
   Dials beside it on the admit body (ADR-0057). No image is built anywhere for a definition edit. (A ConfigMap roster
   read at boot — `JR2_AGENTS_JSON` — was the mechanism between the codegen-at-boot cut and this one; it retired because
-  a Machine edit already rebakes the Orchestrator, so the roster bought nothing a Machine-carried definition loses.)
+  a Machine edit already publishes the Assembly again, so the roster bought nothing a Machine-carried definition loses.)
 - **The kit's server assembly carries the mechanism**: the Menu leash, rooting the Working tools at the Frame's cwd,
   tool assembly — existing only in kit code, unforgettable by construction (symmetric with ADR-0016 making
   endpoint/sandbox threading unrepresentable in workflows).

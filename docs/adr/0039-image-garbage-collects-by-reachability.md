@@ -100,7 +100,8 @@ parsing names.
   twice across a source edit. Recorded as a known limit; the fix — a claim the converge publishes BEFORE it builds,
   making an in-flight ref a root like any other — is not taken here.
 - ADR-0038's `jr2 down` prune clause is **superseded by this ADR**; its `imagePullPolicy`/content-address reasoning
-  stands untouched, and ADR-0038's seal is what finally makes it true of the instance image.
+  stands untouched, and ADR-0038's seal is what finally makes it true of the Instance's own artifact, its Assembly since
+  ADR-0069.
 - **Docker label inheritance makes derived images sweepable.** An image built `FROM` a jr2-labeled base inherits the
   `jr2.dev/*` labels through the image config, so the sweep treats it as jr2's own — observed live with a brought ref
   layered on a built Sandbox Image, collected by the next `jr2 gc`. A truly foreign brought image carries no such labels

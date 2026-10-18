@@ -27,13 +27,15 @@ patched one symptom of. This ADR settles which binary runs, and what "the Instan
   Importing `src/cli.ts` would make the local's internal layout and `main` signature a cross-version API the global must
   honor forever, and the global is the copy that cannot be updated once it ships. One extra Node start per invocation is
   the price. Ctrl-C is unchanged: both share the process group.
-- **An Instance has one Kit version: the `@jr2/orchestrator` it resolves**, because that is what its image bakes.
-  Wherever the CLI loads an Instance (the root walk every Instance verb goes through; `--url` verbs skip the walk per
-  ADR-0009, `jr2 init` has no Instance yet), it resolves `@jr2/orchestrator/package.json` from the Instance root and
-  from itself and requires the two **real paths** to be equal. Not equal — or absent — is a refusal that names both
-  versions and the two lines to edit, then says reinstall. Real-path identity rather than a version compare: same file
-  means same version by construction under npm hoisting, pnpm dedup, and checkout symlinks alike, and it is exactly the
-  property the class-identity bug needs.
+- **An Instance has one Kit version: the `@jr2/orchestrator` it resolves**, because that is the Kit image its
+  Orchestrator runs and the version its Assembly is written against
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). Wherever the CLI loads
+  an Instance (the root walk every Instance verb goes through; `--url` verbs skip the walk per ADR-0009, `jr2 init` has
+  no Instance yet), it resolves `@jr2/orchestrator/package.json` from the Instance root and from itself and requires the
+  two **real paths** to be equal. Not equal — or absent — is a refusal that names both versions and the two lines to
+  edit, then says reinstall. Real-path identity rather than a version compare: same file means same version by
+  construction under npm hoisting, pnpm dedup, and checkout symlinks alike, and it is exactly the property the
+  class-identity bug needs.
 - **`@jr2/orchestrator` is a peer of `@jr2/cli`, not a dependency.** `peerDependencies: workspace:*` (pnpm rewrites it
   exact at publish) plus the same under `devDependencies` for the checkout's own tests. npm then fails a mismatched pin
   at install (`ERESOLVE`), before anything runs; pnpm and bun warn and the check above refuses. The CLI stops carrying

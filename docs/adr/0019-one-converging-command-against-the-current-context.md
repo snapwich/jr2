@@ -27,13 +27,12 @@ loudly narrated, safe to re-run:
   operator and **never downgrades** — if another instance upgraded it past this kit's pin, warn and leave it (CRD
   versioning is the skew contract). `operator.manage: false` skips the layer to run the controller loop in the
   foreground (kit development).
-- **Orchestrator** (per-instance): the one image an instance produces — engine + its `workflows/` baked (ADR-0008) —
-  built by `up` and **content-addressed by its deploy bundle**: the tag is a hash of the materialized bundle, which is
-  the actual image input. The kit is in there as resolved source, so a kit edit in a workspace checkout and a kit
-  upgrade from the registry both move the tag, by one rule that knows nothing about which of the two it is looking at.
-  Hashing the instance _folder_ instead — where the kit appears only as a version range — is what let `up` skip builds
-  it needed. `--force` rebuilds against an unchanged hash. Delivery keys off config: no `registry` → `docker build` +
-  `kind load`; `registry` set → build + push. Targeting a non-kind cluster without a registry fails loudly.
+- **Orchestrator** (per-instance): a Kit image at the Kit version, resolved like the operator's, plus the instance's
+  **Assembly** — its `workflows/`, config and deps, with the kit's packages stripped — staged, sealed, and
+  **content-addressed by the staged tree**, then published to the running Orchestrator over its API
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). A kit upgrade rolls the
+  image; a Machine edit publishes an Assembly and rolls nothing. Hashing the instance _folder_ instead — where deps
+  appear only as version ranges — is what let `up` skip work it needed. `--force` publishes against an unchanged hash.
 - **Harness**: no per-instance Harness image (ADR-0018). The Harness is a Kit image, resolved like the operator's
   (checkout-built or published, ADR-0038/0044), and the Custodian beside it in every Harness pod runs a Pinned image
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); the Harness reaches each Sandbox as
@@ -136,6 +135,6 @@ from env.
 - The snapshot store (sqlite) moves onto a PVC in the instance's namespace; `.jr2/` shrinks to scratch.
 - `jr2 build` (build + push + render manifests, no apply — the pure-GitOps CI verb) is planned but deferred; `up` in CI
   covers the interim.
-- The e2e tier (ADR-0010) loses `jr2 dev` as its per-scenario fixture; the fixture boots the instance image's server
+- The e2e tier (ADR-0010) loses `jr2 dev` as its per-scenario fixture; the fixture boots the Orchestrator's server
   entrypoint as a host process instead — the same real server the cluster runs, no cluster, no user-facing verb.
 - The justfile returns to kit-repo development only; no instance operation appears in it.

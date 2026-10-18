@@ -5,25 +5,26 @@ implies current" — hashed the build's **inputs** and nothing else. But the byt
 and no build passed `--platform`: the daemon default (or a remembered `DOCKER_DEFAULT_PLATFORM`) decided silently. So
 one tag named an amd64 or an arm64 image depending on who built it last, and both skips that rest on tag equality — the
 cluster record and [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)'s host-held listing — delivered
-an amd64 instance image to an arm64-only cluster, surfacing as an opaque rollout timeout (`exec format error`, found
-only by hand). The hole is in ADR-0038's core invariant, and it covers every image `jr2 up` builds — instance, Sandbox,
+an amd64 Sandbox Image to an arm64-only cluster, surfacing as an opaque rollout timeout (`exec format error`, found only
+by hand). The hole is in ADR-0038's core invariant, and it covers every image `jr2 up` builds — Orchestrator, Sandbox,
 and the checkout-mode kit three. Published Kit images were already immune
 ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md): multi-arch manifest lists, mirrored
 whole).
 
 ## Decision
 
-- **A tag names (inputs × platform set), and says so visibly**: `<repo>:<hash>-<arch>` — `jr2-instance-x:4a77b1-arm64`,
-  and `…:4a77b1-amd64-arm64` for a multi-platform build (sorted, joined). In the tag, not the salt: the triggering
-  failure was invisible precisely because the tag did not say, and a self-describing tag is diagnosability applied at
-  the naming layer. Every `docker build` passes `--platform` explicitly — the daemon default and
-  `DOCKER_DEFAULT_PLATFORM` stop being steering, which deletes the manual step whose forgetting was the failure.
+- **A tag names (inputs × platform set), and says so visibly**: `<repo>:<hash>-<arch>` —
+  `jr2-sandbox-x-default:4a77b1-arm64`, and `…:4a77b1-amd64-arm64` for a multi-platform build (sorted, joined). In the
+  tag, not the salt: the triggering failure was invisible precisely because the tag did not say, and a self-describing
+  tag is diagnosability applied at the naming layer. Every `docker build` passes `--platform` explicitly — the daemon
+  default and `DOCKER_DEFAULT_PLATFORM` stop being steering, which deletes the manual step whose forgetting was the
+  failure.
 - **The cluster's nodes choose the platform set.** `jr2 up` reads the schedulable nodes' `.status.nodeInfo.architecture`
   — the union of the nodes an ordinary pod lands on (the Orchestrator's placement) and the Instance's Sandbox nodes
   (ADR-0052), so a tainted pool no Sandbox reaches is never built for — and intersects with the **supported set** — the
   platforms the kit releases for (`linux/amd64`, `linux/arm64`), one constant beside `KIT_IMAGES` that `just kit-push`
   builds from too, so the two cannot drift. A node arch outside the supported set is reported and skipped, never built
-  for: an instance image for `s390x` is dead weight, since no kit image could sit beside it in the pod. An empty
+  for: a Sandbox Image for `s390x` is dead weight, since no kit image could sit beside it in the pod. An empty
   intersection is a loud error. Reading a singleton set is not an assumption; only a non-singleton set involves
   judgement, and that case builds rather than guesses (next bullet).
 - **A multi-arch node set gets a multi-arch build**: `docker buildx build --platform <set> --push`, the `just kit-push`

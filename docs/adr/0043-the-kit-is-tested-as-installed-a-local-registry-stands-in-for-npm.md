@@ -160,7 +160,7 @@ dispatch row plus its tests, no design change.
 - **The published packages carry `files:` allowlists, and the over-include half is a unit assertion**
   (`packages/cli/test/publish.test.ts`). A `files:` list fails loudly only when it OMITS something, so the `@dist` tier
   is structurally incapable of catching a package that ships its test tree — and these are prod deps, unpacked into
-  every instance image.
+  every Assembly.
 - The staged bundle drops `node_modules/.pnpm-workspace-state.json` beside `.modules.yaml` (ADR-0038's seal): it is a
   `lastValidatedTimestamp` and nothing else, so leaving it in re-addressed every pnpm bundle on every converge — a
   pod-template change, and a snapshot restore for every live run, on a no-op `up`.
