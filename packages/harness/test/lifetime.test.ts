@@ -493,7 +493,7 @@ test("a port another container took is ONE line naming the port and the cause, t
     assert.deepEqual(exits, [1]);
     assert.deepEqual(lines, [
       `port ${port} is taken inside this pod: another container listens on it — ` +
-        "the Harness's and the Custodian's ports are the pod's (CONTEXT.md)",
+        "the Harness's and the Custodian's ports are the pod's (ADR-0005)",
     ]);
   } finally {
     squatter.close();

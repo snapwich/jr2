@@ -24,7 +24,7 @@
 export type Quantity = string | number;
 
 /**
- * A Size (ADR-0060, CONTEXT.md "Size"): `limits.memory` and `limits.cpu`, nothing else. A field
+ * A Size (ADR-0060, GLOSSARY.md "Size"): `limits.memory` and `limits.cpu`, nothing else. A field
  * left out resolves down the chain (`resolveSize`) — the Instance's `sandbox.resources`, then the
  * kit default of 2Gi and 1 cpu.
  *

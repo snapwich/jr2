@@ -43,7 +43,7 @@ can get away with fetching once, because a person can press a button; an API can
   settled run's own listener set, and a workflow's watcher must survive every run it watches. Placing the set on the
   host makes that structurally true instead of a comment asking the next reader not to clear the wrong one.
 - **A quiet feed pings**: an SSE comment frame every 15s, on all three feeds. It is deliberately **not** Lease
-  vocabulary — CONTEXT.md puts _heartbeat_ and _keepalive_ on that entry's Avoid list, and this asserts nothing and
+  vocabulary — GLOSSARY.md puts _heartbeat_ and _keepalive_ on that entry's Avoid list, and this asserts nothing and
   expects no answer. The write doubles as the liveness probe: a failed write is how a silently-dead peer is discovered,
   which is why it is wired to the handler's exit.
 - **A settled run is the client's own memory.** A run appears in the page's `settled` list iff _this page_ watched it

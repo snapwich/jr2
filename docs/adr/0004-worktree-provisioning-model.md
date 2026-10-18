@@ -18,7 +18,7 @@ worktree-cheap (`--shared` `.git` ~7M vs a worktree's ~7M, vs a full copy ~33M).
 
 The isolation is the point, not the speed: the read-only source plus a private pod-local clone is what confines an
 Agent's blast radius to its own pod (it physically cannot write — or `gc` — the canonical source or any sibling's work),
-which is the Sandbox thesis (CONTEXT.md) applied to git.
+which is the Sandbox thesis (GLOSSARY.md) applied to git.
 
 We keep jr's worktree _ergonomics_ — fast spin-up, a working dir that looks like a totally normal checkout, one
 canonical checkout everything branches from — because borrowing objects sets up about as cheaply as a worktree while

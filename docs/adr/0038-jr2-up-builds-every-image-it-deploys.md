@@ -27,7 +27,7 @@ build-it-yourself-first image on top of that.
   both worlds — checkout and installed alike — and `imagePullPolicy: IfNotPresent` is correct for the same reason a
   content-addressed tag is. `jr2 up` resolves its ref into the image map (the `custodian` key) — re-homed onto
   `kitRegistry` when one is set ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)) — and
-  delivers nothing: a node pulls it. It is not a Kit image (CONTEXT.md: "Pinned image"), and moving the pin is a kit
+  delivers nothing: a node pulls it. It is not a Kit image (GLOSSARY.md: "Pinned image"), and moving the pin is a kit
   change.
 - **Every tag is a content address.** Instance, Sandbox, Harness, operator — each addressed by its own inputs and its
   platform set, the platform as a visible tag suffix

@@ -3,7 +3,7 @@
 // here the way a user's own `workflows/` file registers it, and nothing else. If the line below
 // stops being the line the package's own prose tells a user to write, this file is wrong.
 //
-// The kit ships Machines and never Workflows (CONTEXT.md): `task` is a Machine, and `task` the
+// The kit ships Machines and never Workflows (GLOSSARY.md): `task` is a Machine, and `task` the
 // WORKFLOW is the name this module's filename gives it. Both parts the package left OPEN are
 // bound right here, because a package cannot know the repository and cannot pay for the model —
 // the seed repository this tier serves in-cluster, and the scripted model behind the fake

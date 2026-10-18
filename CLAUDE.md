@@ -1,7 +1,7 @@
 # jr2
 
-Greenfield kit for agentic workflows as xstate machines. **Read [CONTEXT.md](./CONTEXT.md) (glossary) and the relevant
-[docs/adr/](./docs/adr/) before designing or naming anything** — terms in CONTEXT.md are deliberate and carry `Avoid:`
+Greenfield kit for agentic workflows as xstate machines. **Read [GLOSSARY.md](./GLOSSARY.md) and the relevant
+[docs/adr/](./docs/adr/) before designing or naming anything** — terms in GLOSSARY.md are deliberate and carry `_Avoid_`
 lists; match them in code, comments, and commits.
 
 ## Judging a change
@@ -9,8 +9,8 @@ lists; match them in code, comments, and commits.
 jr2 is greenfield. Nothing currently runs in production. Therefore:
 
 - Do not argue from impact, adoption, or "blast radius". These are zero for every change, so they separate nothing.
-- Judge a change by the design: does it agree with [CONTEXT.md](./CONTEXT.md) and the [ADRs](./docs/adr/)? Does it make
-  the next decision easier or harder? Is the name correct?
+- Judge a change by the design: does it agree with [GLOSSARY.md](./GLOSSARY.md) and the [ADRs](./docs/adr/)? Does it
+  make the next decision easier or harder? Is the name correct?
 - A wrong design costs more here than in a mature codebase, because everything written later builds on it.
 
 ## Testing strategy (ADR-0010, ADR-0027)

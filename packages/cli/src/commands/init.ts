@@ -189,7 +189,7 @@ node_modules/
 `;
 
 const PING_TS = `// The simplest jr2 workflow: no Agent, no Workspace, no data plane at all. A Machine is free to "just
-// respond to the request" with a plain actor (CONTEXT.md: a workflow need not spawn a Workspace) —
+// respond to the request" with a plain actor (ADR-0001: a worktree is one piece a coding Machine bolts on) —
 // this is that case, and the one workflow that runs end-to-end on a fresh instance before any Sandbox /
 // Harness infrastructure exists. Filename \`ping.ts\` → workflow "ping".
 //

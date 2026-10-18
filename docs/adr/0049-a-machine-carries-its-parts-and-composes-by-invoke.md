@@ -97,7 +97,7 @@ because they are one problem: **what a Machine depends on that is not inside it.
 
 ## Consequences
 
-- **Agent identity moves from the Instance to the Machine.** CONTEXT.md's Agent entry restates: an Agent is a part of a
+- **Agent identity moves from the Instance to the Machine.** GLOSSARY.md's Agent entry restates: an Agent is a part of a
   Machine, not an Instance-scoped roster entry; `customize` is a definition-level act by the composer, so ADR-0018's
   identity-vs-Dial line is untouched — a Turn still sets `model`/`thinkingLevel` and nothing else.
 - **A Workflow is a Machine registered under a name.** The "wired to its Agents and config" clause retires: the wiring

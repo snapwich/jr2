@@ -26,7 +26,7 @@ import { assertSize, type Size } from "./size.ts";
 // ------------------------------------------------------------------------------------------------
 // `git.credentials` (ADR-0051): how the cluster authenticates to a Repo, and the fence.
 //
-// A Repo is identified by its url and nothing in this file names one (CONTEXT.md "Repo"). What
+// A Repo is identified by its url and nothing in this file names one (GLOSSARY.md "Repo"). What
 // the config declares is CREDENTIALS, matched by prefix on the identity — the Argo and Flux shape.
 // The Orchestrator resolves the entry when it creates a Repo CR and writes a `secretRef`; the
 // cache agent reads only that. The list is also the fence: a per-run url (run input, a ticket

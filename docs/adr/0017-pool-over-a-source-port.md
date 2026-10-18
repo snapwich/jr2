@@ -24,8 +24,14 @@ without penalty, not fighting a framework.
 
 The pool draws from a **Source** port — `next(active) → item | null`, plus an optional `wake` event def (webhook /
 `jr2 send` push seam) and `pollEvery` (the set mutates underneath us) — a queue, a generator, or a re-queried set. tk's
-claim actor is one adapter; CONTEXT.md's **Work Source** reframes as _the ticket-flavored Source adapter_, and the
+claim actor is one adapter; GLOSSARY.md's **Work Source** reframes as _the Source adapter for tickets_, and the
 Ready-set doctrine (re-query, never materialize) survives as that adapter's semantics, not the primitive's.
+
+A Work Source — `tk`, GitHub issues, Jira, a task queue — is a behavior port, not a canonical data schema: verbs like
+`claimNext`, `updateStatus` and `comment`, each gated by a capability the adapter advertises. It owns the dependency
+graph and hands out the Ready-set, the currently-unblocked items in dependency order, so the Machine never encodes a
+dependency edge. The Ready-set mutates during execution — items can be reopened or created mid-run — so it is not a
+static FIFO queue.
 
 ## Terminal triage is three-valued, surfaced as status
 

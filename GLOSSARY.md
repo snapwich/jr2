@@ -1,0 +1,376 @@
+# jr2
+
+A kit of composable pieces that a user assembles into an xstate Machine for any agentic workflow, coding or otherwise.
+Agents that use a Workspace work in isolated Sandboxes, and an Orchestrator that runs the Machine coordinates them.
+
+## Language
+
+### Instance and distribution
+
+**Instance**:
+A user-owned folder, made by `jr2 init`, that holds its Workflows and the deployment facts that a Machine cannot carry,
+such as reach and credentials. This folder is the deployed Orchestrator, and it is a deployment assembly, not a unit to
+share: reusable work is published as packages.
+_Avoid_: workspace (collides with Workspace), project
+
+**jr2 CLI**:
+The `jr2` binary: the primary interface to an Instance, on top of the Orchestrator's API. It is installed globally and
+also in each Instance; inside an Instance, a Handoff makes the Instance's own copy the one that runs.
+_Avoid_: cli tool, launcher (the global copy is the same package)
+
+**Handoff**:
+The passing of a command, unchanged, from a global jr2 CLI to the Instance's own copy when the Instance holds a
+different copy; the global copy then does nothing else. Outside an Instance, or when the Instance holds the same copy,
+there is no Handoff.
+_Avoid_: shim, proxy, wrapper, delegate, relaunch, re-exec
+
+**Kit version**:
+The one version an Instance is: the version of the Orchestrator package that the Instance installs, because that is
+what its image contains, and also the tag of the published Kit images. The jr2 CLI that runs must use that same copy of
+the package; two copies in one Instance are not a version but a refusal.
+_Avoid_: CLI version, orchestrator version, kit release (when meaning the Instance's pin)
+
+**jr2 Application**:
+An Instance under GitOps, whose manifests deploy the Orchestrator with its config and secrets. The same folder runs on
+a local cluster and on a real cluster.
+_Avoid_: deployment
+
+**Console**:
+The browser surface that the Orchestrator serves, where a person sees the Workflows, their runs and their Machines.
+Observation needs no token; the Instance token unlocks control, so that a person can start runs and see and answer the
+open Gates.
+_Avoid_: visualizer (only one panel of it), dashboard, UI (unqualified), viz
+
+**Kit image**:
+An image that jr2 owns and builds, and that an Instance deploys but never authors. Kit images are the kit's second
+channel of distribution, beside its packages, and they are released together with the packages, at one version.
+_Avoid_: system image, base image, jr2 image (ambiguous with the Instance's own image)
+
+**Pinned image**:
+An image that an Instance deploys but that jr2 neither owns nor builds. The kit names its exact bytes, so one Kit
+version always deploys the same image.
+_Avoid_: kit image (it is not jr2-owned), vendored image, third-party image, base image
+
+### Machines and authoring
+
+**Machine**:
+The xstate state machine that defines the control flow of a workflow. It is the unit that a user writes.
+_Avoid_: workflow, graph
+
+**Workflow**:
+A Machine registered under a name in an Instance: the unit that the Orchestrator runs and that `jr2 run` names. A
+Workflow is only that name, because the Machine carries all its parts, so the kit ships Machines and never Workflows.
+_Avoid_: app, pipeline
+
+**Orchestrator**:
+The runtime that runs Machines, as the single writer of their run snapshots. Single means one writer, not one Workflow
+per process: one Orchestrator hosts many Workflows and many runs.
+_Avoid_: runner, engine
+
+**Actor**:
+An xstate actor in a Machine that drives a remote worker through a Harness: a local handle in the Orchestrator for work
+that occurs remotely. An Agent is an Actor in a named slot.
+_Avoid_: agent actor
+
+**Agent**:
+A configured worker, such as a coder or a reviewer: a model, instructions, Working tools and access to the Workspace.
+It is a data definition that a Machine carries in a named Actor slot, so its name is the slot's name and its scope is
+that Machine; a Turn can set its Dials but never its identity.
+_Avoid_: role, persona, roster entry
+
+**Dials**:
+The two fields of an Agent's definition that a Machine state can set for one Turn: the model and the thinking level,
+which tell how hard to run and not who runs. All other fields are identity, which only the definition sets; what a Turn
+is about and where it works is its Frame, not a Dial.
+_Avoid_: options, overrides, settings
+
+**Frame**:
+What a Machine state sets for one Turn that is neither identity nor a Dial: the prompt, and the root directory of the
+Working tools. It belongs to the Turn and not to the definition, because a Worktree exists only after its run starts,
+so no definition can name it.
+_Avoid_: overrides, input (unqualified), working directory (the mechanism, not the concept)
+
+**Turn Placement**:
+The mechanism half of a Turn, stated instead of resolved: where its Harness is and which Sandbox can deliver its picks.
+It is not an authoring surface: in a real run, an Agent in a Sandbox gets it from its Workspace and an Agent with no
+access to the Workspace goes to the Instance Harness, so only a test tier with no Workspace states it.
+_Avoid_: coordinates, connection, transport
+
+**Vocabulary**:
+The workflow events that a Machine accepts, each with a name, a payload schema and an optional audience, scoped to that
+Machine alone: a nested Machine keeps its own. It is the set that a Gate's accepted events and an Agent's Menu come
+from, and the set that each delivery is validated against.
+_Avoid_: events (unqualified), event manifest (the retired module export), schema
+
+**writing**:
+The transitions that one state writes for one event name; one name can have several writings, on one path or on
+different paths. A writing belongs to the party that its state, or the nearest state above it, invokes, and at the root
+it belongs to both parties.
+
+**Machine shape**:
+The facts about a Machine that decide whether it can still read a persisted snapshot: its states, invokes and
+transition targets, but not what its guards and actions do. A mismatch between a snapshot and its Machine's shape is
+**drift**, and jr2 keeps a run with drift but never resumes it.
+_Avoid_: version (a content address, not an ordering), schema
+
+**Gate**:
+A pending external input on a run, from a human or any outside system (a webhook, CI), that lives while the state that
+invokes it is active. It is an addressable resource with its own accepted events, because concurrent children park at
+the same time and a caller acts on one specific decision.
+_Avoid_: humanGate (humans are one caller among many), approval (one possible event, not the resource)
+
+**Sender**:
+The party that delivered an event: an Agent or a Gate. Only the Orchestrator writes the Sender, on each event that a
+party delivers, and the Machine's own events have none.
+_Avoid_: origin, caller (the human or system behind a Gate)
+
+**Emit**:
+A message of progress or notice that a Machine's author sends from it to whoever watches the run, beside its
+automatic status. It is never control: nothing consumes an Emit, and an Emit cannot drive a Machine.
+_Avoid_: event (what a Gate or an Agent delivers), log (not a diagnostic)
+
+**Effect**:
+Work that a Machine does outside itself: it runs a command, calls a URL or pushes a branch.
+_Avoid_: action (xstate's word), side effect, job, task, step, operation, errand, tool
+
+**Open**:
+A part that a Machine declares but does not bind, so that its composer binds it: for example, a Repo Slot with no url,
+an Agent with no model, or an Effect with no url, program or secret. It is the shape that a packaged Machine ships in,
+`jr2 up` refuses an Open part that nobody bound, and a run never sees one.
+_Avoid_: unset, default (an Open part has none), placeholder
+
+### Turns and conversations
+
+**Turn**:
+One Agent's answer to the Frame that a Machine state set for it: the prompt, the work, and the pick that ends it. It
+belongs to the state that asked for it and ends when that state stops waiting; it rides on a Submission but is not one.
+_Avoid_: session (a conversation spans Turns), generation, request
+
+**Instance ID**:
+The identifier of one Agent's conversation, which jr2 computes and no author names. A Turn gets a fresh one unless it
+continues, and one Agent has one continued conversation per Machine instance, which every state of that Machine may
+continue until jr2 faults that conversation.
+_Avoid_: conversation id, session id, conversation pin, scope
+
+**Submission**:
+One admitted prompt on a conversation: the Harness's unit of work. A Turn rides on a Submission, and a conversation,
+which an Instance ID names, spans many Submissions.
+_Avoid_: request, job
+
+**Admission**:
+The Harness's acceptance of a Submission, which the Orchestrator keeps as the coordinate it re-attaches by after a
+restart.
+_Avoid_: handle, ticket
+
+**Settlement**:
+How a Submission ends: completed, failed or aborted. It is what the history view reports for each Submission.
+_Avoid_: result, status
+
+**Runaway**:
+A Turn that will not end on its own, which the Harness ends when the Turn runs past the point where jr2 stops believing
+it will end. It is a fault class, named for what jr2 observed and not for what the model did.
+_Avoid_: degeneration (the model behavior, not the fault class), loop, hang, stall
+
+**Compaction**:
+The cut that the Harness makes in a conversation's model context during a Turn: a summary plus a retained tail replaces
+the earlier context. jr2 alone decides when it occurs, and it changes what the model sees, never what jr2
+recorded.
+_Avoid_: summarization (one step of a Compaction), truncation (the failure that Compaction prevents), pruning
+
+**Menu**:
+The workflow events that an Agent can ever be offered in its Machine, which do not change for the life of a
+conversation. It is what the Agent may say, as its Working tools are what it may do; the part that one Turn may pick now
+is its Allowed picks.
+_Avoid_: tools (unqualified), tool list
+
+**Allowed picks**:
+The part of the Menu that one Turn may pick now: the picks that the live Machine would accept from this Agent at this
+moment. They follow the active mode and the guards, and they are empty while the invoking state is not at Rest.
+_Avoid_: menu (the fixed set), open picks, active tools, legal moves
+
+**mode**:
+A child state of an Agent's state that invokes nothing. The Agent is at Rest there, with a different set of Allowed
+picks.
+_Avoid_: substate, phase
+
+**Rest**:
+The condition of an Agent's state in which a pick is answered: no state below it runs something, and no pending timer
+will move the Machine to another state inside it. jr2 reads it from the Machine, and it is not a state.
+_Avoid_: idle, the rest state (a state named rest means nothing to jr2)
+
+**outstanding**:
+A pick that is delivered and not yet answered.
+_Avoid_: held pick (collides with Held secret), pending
+
+**Chain**:
+Every reply since a pick, oldest first, each one a **link**: a child's output, or an event of the Machine's that a party
+below the Agent's state delivered, such as a Gate's answer or a nested Agent's pick. An event that the Machine sends
+itself and a child's error are not links, and the last link is the pick's default answer.
+_Avoid_: history (the view of Settlements), log
+
+**Briefing**:
+jr2's own text to the model: the facts about the Agent's seat and the mechanism that a correct Agent needs and cannot
+find out for itself, and nothing about the task. It has a standing part, the same on every Turn, and a Turn part after
+the Frame's prompt that carries the Allowed picks and any **notices**.
+_Avoid_: system prompt (the Turn part is not in it), preamble, header, instructions (identity's word), nudge (a
+re-prompt of an open Turn)
+
+**Working tools**:
+The file and shell tools that the Harness runs in its own container: what an Agent may do, as its Menu is what it may
+say. The Agent's access to the Workspace decides which of them it gets, and a Menu-only Agent gets none.
+_Avoid_: tools (unqualified), sandbox tools
+
+### Sandboxes, Harnesses and secrets
+
+**Sandbox**:
+The isolated pod in which an Agent works, with a filesystem of its own. Agents in different Sandboxes share no host
+resources: no ports, no filesystem, no process space.
+_Avoid_: worker pod, container
+
+**Harness**:
+jr2's own long-running server that hosts the conversations of Agents and executes their Working tools, in every Sandbox
+and once per Instance as the Instance Harness. It holds no Agent of its own: each Submission carries the definition
+that it runs.
+_Avoid_: flue agent, server, `local()`
+
+**Instance Harness**:
+The one Harness of an Instance that is in no Sandbox: the Turns of every Menu-only Agent run on it, also when a
+Workspace encloses that Agent. Its pod has a Custodian and no Worktree, and it keeps a conversation only while a live
+run holds it.
+_Avoid_: shared harness, global harness, dev harness
+
+**Custodian**:
+The jr2-composed container in every Harness pod, a Sandbox or the Instance Harness, that holds the pod's Held secrets
+and carries the Harness's traffic out. The Agent executes no code in it, and it controls no egress: a client that goes
+around it sends only a Stand-in.
+_Avoid_: proxy (the mechanism, and the Handoff's word), sidecar (its deployment shape), MITM, vault, egress gateway,
+firewall
+
+**Held secret**:
+A credential that the Harness uses through its pod's Custodian but never holds: a model API key above all, and the
+Sandbox token. The Harness holds only its Stand-in, so the Agent cannot take the secret out of the pod, but it can spend
+it through the Custodian while the pod lives.
+_Avoid_: masked secret, injected secret, proxied key, secret (unqualified)
+
+**Stand-in**:
+The public value that the Harness holds in place of a Held secret. It means something only to the Custodian, and only
+toward a host that the secret is bound to; sent anywhere else, it arrives as it left.
+_Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
+
+**Effector**:
+The container where jr2's own process runs a Machine's Effects and holds their secrets, and where the Agent executes
+nothing: a Sandbox Effector or the Instance Effector. Every Effect runs in it except a command that names no secret, and
+a command that runs in it sees a pinned commit, never the live Worktree.
+_Avoid_: Courier, Actuator, Clerk, machine container, tool image
+
+**Sandbox Effector**:
+The Effector as a container in a Sandbox pod, present only when a Machine needs it, that can read the Worktree but not
+write it. It runs a branch push, an Effect that calls a URL with a Worktree file as its body, and a command that names
+an Effect secret.
+_Avoid_: sidecar, worker, runner
+
+**Instance Effector**:
+The Effector as a stateless pod of its own, one per Instance, for an Effect that calls a URL and reads no Worktree file.
+_Avoid_: sidecar, worker, runner
+
+**Effect secret**:
+A secret as an Effect uses it: the real value, in an Effector. It is a placement, not a kind: one secret is a Held
+secret where an Agent's pod names it and an Effect secret where an Effect names it, and it can be both.
+_Avoid_: secret (unqualified), injected secret
+
+**Sandbox Image**:
+The user-owned image that a Sandbox's Harness runs in: the tools that the Agent's Working tools can reach, and the shell
+that a human gets where the Harness runs. A Workspace names it as a fact of its Machine, built by `jr2 up` or brought
+from a registry, and it carries no part of jr2.
+_Avoid_: workspace image (a Workspace is a Machine; the image is the pod's), agent image, harness image (the kit's own),
+toolchain
+
+**Sandbox node**:
+A node that an Instance's Sandboxes may be placed on: every node where an ordinary pod lands, unless the Instance
+selects otherwise, and no node needs a jr2 label. The set moves as nodes come and go, and the node caches of Repos are
+kept on exactly these nodes.
+_Avoid_: worker, candidate node, eligible node, data-plane node, schedulable node (the wider set that build platforms
+are read from)
+
+**Size**:
+The ceiling of memory and CPU, and nothing else, that a Workspace states for its whole Sandbox and that jr2 reserves in
+full. It is a fact of the Machine, never of a run: a composer can change it, and an Instance only sets the default for a
+Workspace that states none.
+_Avoid_: resources, requests, limits (the pod fields it becomes), class (a placement word), quota (the cluster owner's
+cap)
+
+**User Container**:
+The optional third container in a Sandbox pod: a user-owned image, named by the Workspace like the Sandbox Image, that
+runs its own entrypoint and shares the pod's checkouts and ports. It is the zero-contract seat for unattended services
+and for sessions whose credentials the Agent must not reach: jr2 puts nothing in its process and never commands or
+probes it.
+_Avoid_: sidecar (its deployment shape), debug container (a one-off attach, not a seat), dev container
+
+### Work, Workspaces and Repos
+
+**Source**:
+The port from which a Pool gets its work items. A queue, a generator or a re-queried set can be a Source, and a Work
+Source is one Source adapter.
+_Avoid_: queue (one possible backing, and not FIFO), feed
+
+**Pool**:
+The Machine that the kit supplies to run one worker Machine for each Source item, with a limit on how many run at the
+same time.
+_Avoid_: scheduler, work loop
+
+**Work Source**:
+The Source adapter for tickets, modeled as a set of behaviors and not as one common data schema. It owns the dependency
+graph of its items and gives out the Ready-set, so the Machine never encodes a dependency edge.
+_Avoid_: ticket system, backend
+
+**Ready-set**:
+The work items that a Work Source can give out now: the items that nothing blocks, in dependency order. It changes
+during a run, so it is not a fixed queue.
+_Avoid_: queue, backlog (all the items; the Ready-set is the unblocked part)
+
+**Workspace**:
+A long-lived Sandbox bound to one unit of work, modeled as a child Machine that wraps the author's body Machine. A coder
+Agent and a reviewer Agent of that unit of work share one Workspace, so a Workspace is per unit of work and not per
+Agent run.
+_Avoid_: workspace pod
+
+**Placing**:
+The Workspace state in which its Sandbox waits, with no deadline, for capacity: a node, or room under the cluster
+owner's quota.
+_Avoid_: pending (a Pod phase, and the Gate's word), queued, parked (a Gate's), admission (the Harness's)
+
+**Lease**:
+The assertion that a Workspace is still wanted, renewed for the whole life of its Sandbox; a Sandbox whose Lease lapses
+can be reaped as abandoned. It only asserts: the run learns nothing about Continuity from the Lease.
+_Avoid_: heartbeat (the timer it replaced), keepalive (the annotation, not the concept)
+
+**Continuity**:
+Whether a Workspace is still the one that its body Machine attached to. It is not existence: a Sandbox can still exist
+after its clones, Worktrees and unpushed commits are gone.
+_Avoid_: liveness (what the Lease asserts), health (a probe concept, about serving)
+
+**Repo**:
+A git repository, identified by the host and path of its url, so urls that differ only in scheme, user or a `.git`
+suffix are one Repo. A Machine names a Repo only through a Repo Slot: a Repo has no name, and a user declares no catalog
+of Repos.
+_Avoid_: project, source, remote, catalog entry, repo name
+
+**Repo Slot**:
+The Machine's own name for one Repo that its Workspace attaches. The Machine binds it, leaves it Open, or binds it from
+each run's input; jr2 gives it no meaning.
+_Avoid_: role, alias, repo name, workdir, primary repo
+
+**Binding**:
+What a Repo Slot resolves to: a Repo's url and an optional base from which the Worktree is cut. With no base, the
+Worktree is cut from the Repo's own default branch.
+_Avoid_: config, catalog entry
+
+**Project layout**:
+The convention for the checkouts in a Sandbox: under each Repo Slot, the Sandbox's own clone of the Repo, with the
+Worktrees beside it. The node's cache of the Repo is not part of the layout.
+_Avoid_: directory structure, repo tree
+
+**Worktree**:
+A git worktree of a Repo Slot for the one branch that its Workspace works on, beside the Sandbox's own clone. Its work
+is sequential commits on that branch, not separate worktrees; the Machine, not jr2, chooses the branch and its scope.
+_Avoid_: per-task worktree, task branch

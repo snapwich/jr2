@@ -55,7 +55,7 @@ presentation surface.
 - **The XSS caveat is the real one and is bounded by what the page is:** a token in `sessionStorage` is readable by
   scripts on the page, so the Console must keep serving only its own assets — no CDN, no third-party script, exactly the
   constraint the viz page already lives under.
-- **CONTEXT.md**: **Console** becomes a glossary term (visualizer, dashboard, UI, viz on its Avoid list).
+- **GLOSSARY.md**: **Console** becomes a glossary term (visualizer, dashboard, UI, viz on its Avoid list).
 - **The Console's UX gets a browser tier** — `@console`-tagged Cucumber scenarios holding a Playwright page, in
   `@jr2/e2e`, excluded from the default profile ([ADR-0010](0010-bdd-acceptance-tests.md) as amended). What the page
   _believes_ stays unit-tested in `console-store.test.ts`; the browser tier asserts what a user does and sees.

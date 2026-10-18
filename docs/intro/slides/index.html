@@ -715,7 +715,7 @@ stateDiagram-v2
         <!-- =========================================================================== after -->
         <section data-kicker="in the box">
           <h2>one pod, three containers</h2>
-          <!-- Sources: CONTEXT.md (Harness, Custodian, User Container, Sandbox Image), ADR-0005 (pod composition),
+          <!-- Sources: GLOSSARY.md (Harness, Custodian, User Container, Sandbox Image), ADR-0005 (pod composition),
                ADR-0013 and ADR-0059 (the Harness reads its Menu and sends its pick as plain HTTP to the Custodian on
                127.0.0.1:8081; the Custodian swaps the Stand-in for the Sandbox token and forwards three routes, no
                other), ADR-0037 (the Harness runtime mounts at /opt/jr2 into the Sandbox Image), ADR-0058 (the
@@ -749,7 +749,7 @@ stateDiagram-v2
                 <h3>User Container <em>optional</em></h3>
                 <p class="img">your image, your entrypoint</p>
                 <p>e.g. an sshd, a forwarded ssh agent</p>
-                <p class="why">jr2 never builds, probes, or commands it</p>
+                <p class="why">jr2 puts nothing in it, and never probes or commands it</p>
               </div>
               <div class="vol">
                 <strong>/work</strong>
@@ -1189,7 +1189,7 @@ working: {
           <pre><code>npm i -g @jr2/cli
 jr2 init my-agents
 jr2 up</code></pre>
-          <p class="dim">github.com/snapwich/jr2 · CONTEXT.md for the words · docs/adr for the whys</p>
+          <p class="dim">github.com/snapwich/jr2 · GLOSSARY.md for the words · docs/adr for the whys</p>
         </section>
       </div>
     </div>

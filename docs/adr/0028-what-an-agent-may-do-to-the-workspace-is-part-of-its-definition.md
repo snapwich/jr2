@@ -80,7 +80,7 @@ definition can state.
 - **The definition stays plain data.** No code enters the ConfigMap channel; composition by re-export/spread (ADR-0018)
   is preserved. Custom tool _implementations_ remain out of the contract — this decision adds a restriction vocabulary,
   not an extension one. Growing extension tools is a separate, later decision.
-- **CONTEXT.md arbitrates the three senses of "tools"**: the Menu (control plane — what an Agent may say) and Working
+- **GLOSSARY.md arbitrates the three senses of "tools"**: the Menu (control plane — what an Agent may say) and Working
   tools (data plane — what it may do) become glossary entries; unqualified "tools" joins the Avoid lists.
 - **The `@kind` tier gains the containment scenario**: from the review worktree, a write probe followed by a commit must
   leave the branch ref and the coder's worktree untouched.

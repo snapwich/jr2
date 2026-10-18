@@ -6,7 +6,7 @@ host-isolated Kubernetes pod (Sandbox), hosted by jr2's own Harness (ADR-0027, b
 [pi-agent-core](https://github.com/earendil-works/pi)). Local development runs on [kind](https://kind.sigs.k8s.io/)
 (Kubernetes in Docker).
 
-See [CONTEXT.md](./CONTEXT.md) for the glossary (the terms below are defined there) and [docs/adr/](./docs/adr/) for
+See [GLOSSARY.md](./GLOSSARY.md) for the glossary (the terms below are defined there) and [docs/adr/](./docs/adr/) for
 architecture decisions.
 
 ## Packages
@@ -25,7 +25,7 @@ configures and never builds.
 
 ## Status
 
-Pre-1.0. Design in progress via `/grill-with-docs`; see [CONTEXT.md](./CONTEXT.md) and [docs/adr/](./docs/adr/). The
+Pre-1.0. Design in progress via `/grill-with-docs`; see [GLOSSARY.md](./GLOSSARY.md) and [docs/adr/](./docs/adr/). The
 instance-facing packages publish to npm as `@jr2/{cli,orchestrator,agent-protocol,machines}`; 0.x minors break.
 
 ## Prerequisites

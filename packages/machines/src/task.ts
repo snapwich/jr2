@@ -2,7 +2,7 @@
 // done. It is the smallest shape that is still worth packaging — a coder in a Sandbox, a Gate a
 // human answers, and a loop between them that ends when the human ends it.
 //
-// Both of the parts a package cannot honestly fill are left OPEN (CONTEXT.md, ADR-0051/0054): the
+// Both of the parts a package cannot honestly fill are left OPEN (GLOSSARY.md, ADR-0051/0054): the
 // Repo Slots are Open as a MAP, because the package cannot know the repository — nor how many
 // checkouts the task wants beside it — and the Agent `coder` has no model, because the package
 // cannot pay for one. A consumer binds both on the line that registers this Machine as a

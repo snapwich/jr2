@@ -182,5 +182,5 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   `agent({ ..., workspace: "none" })` a Machine carries, which is its entire user-facing surface.
 - **The harness conformance suite (ADR-0027) gains the Menu-only shape**: a Turn whose definition withholds every
   Working tool, settled by pick alone — no infra, same scripted provider.
-- **CONTEXT.md**: Harness's "inside a Sandbox" loosens to name the second placement; **Instance Harness** becomes a
+- **GLOSSARY.md**: Harness's "inside a Sandbox" loosens to name the second placement; **Instance Harness** becomes a
   glossary term.

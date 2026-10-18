@@ -1,5 +1,5 @@
 // The first workflow with an Agent in it. A Workflow is only the NAME an Instance registers a
-// Machine under (CONTEXT.md), and `task` is a Machine the kit ships (ADR-0054) — one prompt, one
+// Machine under (GLOSSARY.md), and `task` is a Machine the kit ships (ADR-0054) — one prompt, one
 // Workspace, one human says done — so the whole file is the two bindings the package cannot
 // honestly make for itself: it does not know the repository, and it cannot pay for a model.
 //

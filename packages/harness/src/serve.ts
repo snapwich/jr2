@@ -33,7 +33,7 @@ export function listenFault(err: unknown, port: number): string | undefined {
   if ((err as NodeJS.ErrnoException | undefined)?.code !== "EADDRINUSE") return undefined;
   return (
     `port ${port} is taken inside this pod: another container listens on it — ` +
-    "the Harness's and the Custodian's ports are the pod's (CONTEXT.md)"
+    "the Harness's and the Custodian's ports are the pod's (ADR-0005)"
   );
 }
 

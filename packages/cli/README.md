@@ -1,6 +1,6 @@
 # @jr2/cli
 
-The `jr2` binary: the interface to a jr2 [Instance](https://github.com/snapwich/jr2/blob/main/CONTEXT.md) — a folder of
+The `jr2` binary: the interface to a jr2 [Instance](https://github.com/snapwich/jr2/blob/main/GLOSSARY.md) — a folder of
 workflows deployed to whatever cluster the current `kubectl` context names.
 
 ```sh

@@ -212,5 +212,5 @@ the machine it is called on and **cannot reach actors inside child machines**, s
 past one level — and the host has injected nothing since ADR-0011's static-import doctrine ("actor logic is code; live
 things are built per-invocation from serializable input"). Workflows author machines against statically-imported
 mechanisms. What survives of the idea: the kernel "everything pluggable is an xstate actor", and `.provide()` as the
-unit-test seam. The mock-vs-real swap it wanted lives at the wire instead (ADR-0011's stub Harness). CONTEXT.md's
+unit-test seam. The mock-vs-real swap it wanted lives at the wire instead (ADR-0011's stub Harness). GLOSSARY.md's
 **Template** and **Provider** entries retired with it.

@@ -234,7 +234,7 @@ const PING_MS = 15_000;
  * is the `error: terminated` an attached `jr2 run` hit). The frame is an SSE COMMENT (`:\n\n`):
  * every client ignores it, so it needs no place in the wire vocabulary.
  *
- * It is deliberately a **ping**, not a heartbeat or keepalive — CONTEXT.md puts both on the Lease's
+ * It is deliberately a **ping**, not a heartbeat or keepalive — GLOSSARY.md puts both on the Lease's
  * Avoid list, and this asserts nothing and expects no answer.
  *
  * It is NOT a liveness probe, and must not be mistaken for one: `stream.write` swallows its own

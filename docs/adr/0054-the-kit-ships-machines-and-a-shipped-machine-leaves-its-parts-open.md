@@ -2,19 +2,19 @@
 
 The kit's only worked Machines lived in `examples/`: two model Instances, one of them (`coding`) four workflows deep,
 written against surfaces three ADRs old, runnable by nobody but the author, and installable by no one — an example is
-copied, never imported. ADR-0049 had already settled that "a package exports a Machine, nothing beside it" and
-CONTEXT.md that "reusable workflows travel as npm packages", yet the kit itself shipped none, so the packaged-Machine
-story had no first instance to hold it honest. The grill of 2026-09-14 replaced the examples with a package, and in
-doing so found the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
+copied, never imported. ADR-0049 had already settled that "a package exports a Machine, nothing beside it" and ADR-0019
+that "reusable work is published as npm packages", yet the kit itself shipped none, so the packaged-Machine story had no
+first instance to hold it honest. The grill of 2026-09-14 replaced the examples with a package, and in doing so found
+the one part ADR-0049/0051 left a package unable to leave unsaid: **the model.**
 
 ## Decision
 
 - **The kit ships Machines as `@jr2/machines`.** A fourth published package beside
   `@jr2/{cli,orchestrator,agent-protocol}` (ADR-0043), on the same release train, exporting named Machines from its
   index: `import { task } from "@jr2/machines"`. It ships Machines and never Workflows — a Workflow is the name an
-  Instance registers a Machine under, and only the Instance's `workflows/` file can do that (CONTEXT.md). Rejected:
-  `@jr2/workflows` — it names exactly the thing the kit does not ship, and `workflow` is on Machine's avoid-list for the
-  reason ADR-0049/0050 lean on the distinction.
+  Instance registers a Machine under, and only the Instance's `workflows/` file can do that (GLOSSARY.md, ADR-0009).
+  Rejected: `@jr2/workflows` — it names exactly the thing the kit does not ship, and `workflow` is on Machine's
+  avoid-list for the reason ADR-0049/0050 lean on the distinction.
 - **`@jr2/machines` authors against the consumer's `@jr2/orchestrator`: peer dependencies, no regular ones.** Every part
   a Machine carries is keyed in maps `@jr2/orchestrator` holds (vocabulary.ts, parts.ts) and in `xstate`'s own `provide`
   and `isMachine`; a second copy of either is a Machine whose Menus are empty and whose Gates accept nothing, with no
@@ -112,7 +112,7 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
 - `@jr2/machines` joins the `PUBLIC` list in `publish.test.ts` and the guard loop in `scripts/dist-publish.sh`; the
   `@dist` tier publishes it to verdaccio, so its pack and `files:` list execute there even though no `@dist` scenario
   runs it.
-- CONTEXT.md gains **Open** as a term, and the Workflow entry says the kit ships Machines. Eleven earlier ADRs cite
+- GLOSSARY.md gains **Open** as a term, and the Workflow entry says the kit ships Machines. Eleven earlier ADRs cite
   `examples/`; the citations are retargeted in place.
 - A `customize` that binds a model is now the common consumer line, not the exotic one; `jr2 up`'s refusal for an Open
   Agent prints it, as it does for an Open Repo Slot and an Open Effect (its `effects` line).

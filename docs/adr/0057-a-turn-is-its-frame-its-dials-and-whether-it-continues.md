@@ -8,7 +8,7 @@ The package compensated with prose, and a weak model ignored prose: it wrote `SU
 ways to name one conversation (`session: "continue"`, `scope`, `conversation`, and an undeclared `instanceId`), one of
 them (`scope`) with two unrelated author intents, none with a stated precedence, and every `@kind` fixture bypassing all
 of them. ADR-0028 already said the reviewing state hands a per-round worktree path as the reviewer's "cwd and prompt";
-ADR-0018 and CONTEXT.md said `cwd` is identity, never per Turn. The decided thing had no field to land in.
+ADR-0018 and GLOSSARY.md said `cwd` is identity, never per Turn. The decided thing had no field to land in.
 
 ## Decision
 
@@ -137,6 +137,7 @@ ADR-0018 and CONTEXT.md said `cwd` is identity, never per Turn. The decided thin
   already computed today's pin.
 - A regression scenario for the silent success: a `task` whose model uses relative paths must produce its file inside
   the worktree, and a multi-slot Machine with no `cwd` must be refused with the slots named.
-- CONTEXT.md: **Frame** enters; **Dials** loses `cwd`; **Instance ID** states the `continue` scope and the epoch.
-  ADR-0016 (continuation), ADR-0018 (identity line), ADR-0031 (placement scenario), ADR-0035 (reroll gate wording),
-  ADR-0049 (persona hazard), and ADR-0054 (`task`'s continuation) are edited to state this truth.
+- GLOSSARY.md: **Frame** enters; **Dials** loses `cwd`; **Instance ID** states the `continue` scope and that a faulted
+  conversation is not continued. ADR-0016 (continuation), ADR-0018 (identity line), ADR-0031 (placement scenario),
+  ADR-0035 (reroll gate wording), ADR-0049 (persona hazard), and ADR-0054 (`task`'s continuation) are edited to state
+  this truth.

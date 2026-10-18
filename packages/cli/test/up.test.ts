@@ -3575,7 +3575,7 @@ test("no ADR, glossary entry or source says `jr2 up` reads `.env` into the Orche
   // tells a reader the Orchestrator holds a value — ADR-0043 and two comments on the bundle stage
   // said so once.
   const stale = /(?:\.env`?|reads it) [^.]{0,40}into the Orchestrator's (?:Secret|env)/i;
-  const texts: Array<[string, string]> = [["CONTEXT.md", await readFile(join(REPO_ROOT, "CONTEXT.md"), "utf8")]];
+  const texts: Array<[string, string]> = [["GLOSSARY.md", await readFile(join(REPO_ROOT, "GLOSSARY.md"), "utf8")]];
   for (const dir of ["docs/adr", "packages/cli/src", "packages/cli/test", "packages/orchestrator/src"]) {
     for (const file of await readdir(join(REPO_ROOT, dir), { recursive: true })) {
       if (!/\.(md|ts)$/.test(file) || file === "up.test.ts") continue;
@@ -3593,7 +3593,7 @@ test("no ADR, glossary entry or source says `jr2 up` reads `.env` into the Orche
 test("no ADR and no glossary entry says `jr2 up` writes a Sandbox's Custodian configuration (ADR-0059)", async () => {
   // `jr2 up` DECLARES; a pod's maker renders its files — the Orchestrator a Sandbox's at provision.
   // A sentence that gives `jr2 up` the whole of Envoy's configuration tells a reader the
-  // Orchestrator renders nothing: ADR-0059, -0005, -0010, -0013 and CONTEXT.md said so once.
+  // Orchestrator renders nothing: ADR-0059, -0005, -0010, -0013 and GLOSSARY.md said so once.
   const stale = [
     /`jr2 up` writes Envoy's whole configuration/,
     /`jr2 up` writes into the Custodian's configuration/,
@@ -3601,7 +3601,7 @@ test("no ADR and no glossary entry says `jr2 up` writes a Sandbox's Custodian co
     /bootstrap and script `jr2 up` writes/,
     /its pod's config \(`jr2-held`\)/,
   ];
-  const texts: Array<[string, string]> = [["CONTEXT.md", await readFile(join(REPO_ROOT, "CONTEXT.md"), "utf8")]];
+  const texts: Array<[string, string]> = [["GLOSSARY.md", await readFile(join(REPO_ROOT, "GLOSSARY.md"), "utf8")]];
   for (const file of await readdir(join(REPO_ROOT, "docs/adr"))) {
     if (file.endsWith(".md")) texts.push([file, await readFile(join(REPO_ROOT, "docs/adr", file), "utf8")]);
   }

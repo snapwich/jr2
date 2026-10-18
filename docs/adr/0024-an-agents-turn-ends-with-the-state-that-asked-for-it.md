@@ -180,7 +180,7 @@ single-threaded.
   rather than what was hoped; for an outstanding pick it is read at Rest, on the answer. `deliveryId` addresses that
   answer ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)). **This is the hint, not
   the guarantee**, and it is named for the Agent's frame rather than the wire's: the Agent has no submissions, it has a
-  Turn (CONTEXT.md).
+  Turn (GLOSSARY.md).
 - **The Harness renders the receipt as prose**, because a model reads the tool result's text: the pick was delivered,
   the workflow consumed it, the turn is over.
 - **The Agent instructions gain the stop half.** "You MUST finish by calling `review_verdict`" is half a contract — it

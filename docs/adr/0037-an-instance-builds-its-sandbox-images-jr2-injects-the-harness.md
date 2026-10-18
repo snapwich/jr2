@@ -157,5 +157,5 @@ every build) and promotes incidental image properties into contract items.
   checkout (whose modes are the host's umask) is copied `a+rX`. (The copy restated this with a `chmod`.)
 - **`images/` is instance-local by design.** A built Sandbox Image travels as a folder to copy; a shared one travels as
   a registry ref — which is now a first-class origin, so sharing needs no further mechanism.
-- **CONTEXT.md**: **Sandbox Image** covers both origins; **Harness** names the runtime as mounted, not baked; **User
-  Container** is defined by ADR-0005.
+- **GLOSSARY.md**: **Sandbox Image** covers both origins and carries no part of jr2; **User Container** is defined by
+  ADR-0005.

@@ -3,7 +3,7 @@
 Every transition of a run persists its whole snapshot (ADR-0007). The scaling review (R6) read the store and listed its
 costs: `JSON.stringify` of the whole run, a synchronous upsert with an fsync on the event loop, a Pool's run as one blob
 holding every worker, terminal rows never deleted, and `restore()` parsing every row before the server listens. It also
-found the words "Postgres opt-in" in CONTEXT.md, ADR-0008 and ADR-0009, with no such store in the code. Measured on the
+found the words "Postgres opt-in" in GLOSSARY.md, ADR-0008 and ADR-0009, with no such store in the code. Measured on the
 home cluster's chaos Instance (2026-09-30, `local-path` volume): a persist costs **4.5 ms, whatever the blob's size** (1
 KB or 100 KB), because the cost is the fsync, not the JSON; with the write-ahead log and `synchronous=NORMAL` the same
 upserts cost 0.04 ms (1 KB) and 0.18 ms (100 KB). A run's blob is about 1 KB; a Pool of 40 workers is about 100 KB.
@@ -58,8 +58,8 @@ upserts cost 0.04 ms (1 KB) and 0.18 ms (100 KB). A run's blob is about 1 KB; a 
 
 ## Consequences
 
-- ADR-0008 and ADR-0009 lose "Postgres opt-in" and `DATABASE_URL`; CONTEXT.md's Orchestrator persists "to sqlite on its
-  volume". ADR-0007 points here for the store's durability.
+- ADR-0008 and ADR-0009 lose "Postgres opt-in" and `DATABASE_URL`; ADR-0008's Orchestrator persists its snapshots "to
+  sqlite on its volume". ADR-0007 points here for the store's durability.
 - The Instance's volume gains `state.db-wal` and `state.db-shm` beside `state.db`.
 - A `drifted` run (ADR-0030) is swept a week after the deploy that changed its Machine, not a week after it ended; a
   week is the time a human has to read it.

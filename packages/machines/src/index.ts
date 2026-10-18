@@ -3,8 +3,8 @@
 // Machines from this index: `import { task } from "@jr2/machines"`.
 //
 // It ships MACHINES and never Workflows. A Workflow is the name an Instance registers a Machine
-// under, and only the Instance's `workflows/` file can do that (CONTEXT.md) — so what a consumer
-// receives is a Machine object, and the line that turns it into a Workflow is theirs:
+// under, and only the Instance's `workflows/` file can do that (GLOSSARY.md, ADR-0009) — so what a
+// consumer receives is a Machine object, and the line that turns it into a Workflow is theirs:
 //
 //   import { customize } from "@jr2/orchestrator";
 //   import { task } from "@jr2/machines";
@@ -21,7 +21,7 @@
 // rejected for working by the ACCIDENT of equal versions and installing two copies silently on
 // skew (ADR-0054).
 //
-// Every Machine exported here leaves its unfillable parts OPEN (CONTEXT.md, ADR-0054): a package
+// Every Machine exported here leaves its unfillable parts OPEN (GLOSSARY.md, ADR-0054): a package
 // cannot know the repository or pay for the model, so it says so rather than guessing. `jr2 up`
 // refuses an Open part nobody bound and prints the `customize` line that binds it.
 

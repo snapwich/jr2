@@ -8,7 +8,7 @@ Submission — forget it and the Agent is silently mute, the same footgun class 
 ADR-0004/0012 sandbox geography (working tools execute in the Harness container against `/work`), the dependency pin
 that must match the Orchestrator's wire, and the image contracts the operator imposes (numeric uid, `:8080` = Ready, git
 present). The only content a user genuinely owns is the persona: model + instructions (+ someday tools/skills).
-CONTEXT.md already promised the split — an Agent is a definition jr2 maps into the Harness, and the Instance folder
+GLOSSARY.md already promised the split — an Agent is a definition jr2 maps into the Harness, and the Instance folder
 holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of the things it can).
 
 ## Decision

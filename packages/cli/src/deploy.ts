@@ -501,7 +501,7 @@ export function instanceObjects(opts: {
         annotations: { [ANNOTATION_IMAGES]: imagesJson },
       },
       spec: {
-        replicas: 1, // single WRITER (CONTEXT.md): the snapshot store brooks no split-brain
+        replicas: 1, // single WRITER (GLOSSARY.md): the snapshot store brooks no split-brain
         strategy: { type: "Recreate" }, // two writers may never overlap on the PVC
         selector: { matchLabels: { app: ORCHESTRATOR_SERVICE } },
         template: {
@@ -553,7 +553,7 @@ export function instanceObjects(opts: {
                 // `failureThreshold` is then raised to hold the tolerance the default period gave,
                 // because ONE knob sets two unrelated things: how fast a boot is noticed, and how
                 // long a running pod may stall before the kubelet takes it out of service. The
-                // Orchestrator is `replicas: 1` (CONTEXT.md: single writer), so its Service has
+                // Orchestrator is `replicas: 1` (GLOSSARY.md: single writer), so its Service has
                 // exactly one endpoint and losing it is an outage, not a failover — and its store
                 // writes are synchronous, so a GC pause or a node busy with a docker build can
                 // silence `/healthz` for seconds. 15 × 2s keeps the 30s the default 3 × 10s gave.

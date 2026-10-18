@@ -224,4 +224,4 @@ Container offers a human session — with its edges stated plainly:
 - **Routable access is a follow-up, deliberately untaken**: the operator's Service serves the Harness at `:8080`, and a
   managed system wanting cluster-routed ssh to the User Container needs a declared port there. `kubectl port-forward`
   reaches any listener in the pod without one, which covers the human case day one.
-- **CONTEXT.md**: **User Container** is a glossary term.
+- **GLOSSARY.md**: **User Container** is a glossary term.

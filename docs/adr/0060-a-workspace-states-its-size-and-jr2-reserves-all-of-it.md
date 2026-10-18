@@ -104,4 +104,4 @@ unchanged.
   limits on microVM runtimes only, and gVisor refuses them.
 - `jr2 up` warns — never refuses — when no current Sandbox node could hold a Workspace's Size (the ADR-0052 stance: the
   node set moves).
-- CONTEXT.md gains **Size**.
+- GLOSSARY.md gains **Size**.

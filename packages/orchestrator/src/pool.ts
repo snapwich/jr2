@@ -10,7 +10,7 @@
 // The Source port is generalized — `next(active) → item | null`, plus an optional `wake` event
 // def (a webhook / `jr2 send` push seam, served as a standing gate named "source") and
 // `pollEvery` (the set mutates underneath us — re-query). A queue, a generator, or a re-queried
-// set; tk's claim actor is one adapter (CONTEXT.md: Work Source is the ticket-flavored Source).
+// set; tk's claim actor is one adapter (GLOSSARY.md: Work Source is the Source adapter for tickets).
 //
 // Terminal triage is three-valued (ADR-0017, forced by parking-is-retention):
 //   - drained    — source empty and all children settled → final (jr exit 0);

@@ -62,7 +62,7 @@ import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 // is one of three states, and the walk tells them apart without evaluating anything. A Machine
 // whose body names no slot — it enumerates whatever is attached — declares the whole MAP Open
 // instead (`repos: open`): the composer names every slot, in an order the Machine may give a
-// meaning to. Open at the map is the same word as Open at a slot, one level up (CONTEXT.md).
+// meaning to. Open at the map is the same word as Open at a slot, one level up (ADR-0051).
 
 // The sentinel itself lives in open.ts, a module with nothing else in it: since ADR-0054 it marks
 // an Agent's model too, and agent.ts must read it without importing this file (the walk imports
@@ -70,7 +70,7 @@ import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 // meets it first, and `import { open } from "@jr2/orchestrator"` is the only spelling anyone writes.
 export { open } from "./open.ts";
 
-/** What a Repo Slot resolves to (CONTEXT.md "Binding"): the url, and the base the branch
+/** What a Repo Slot resolves to (GLOSSARY.md "Binding"): the url, and the base the branch
  * Worktree is cut from — absent, the Repo's own default branch. */
 export type Binding = { url: string; ref?: string };
 

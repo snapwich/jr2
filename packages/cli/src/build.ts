@@ -553,7 +553,7 @@ export function kitImageBuild(
  * `docker images` readable, while the hash is the identity.
  * Names are for humans and for content addressing only: nothing reads ownership out of this string
  * any more (ADR-0039). `jr2-sandbox-`, never `jr2-workspace-`: a Workspace is a Machine, and the image
- * is the POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). A ref the user merely BROUGHT takes no
+ * is the POD's (GLOSSARY.md, Sandbox Image's first `Avoid:`). A ref the user merely BROUGHT takes no
  * suffix and never passes here — jr2 never builds it, so its platforms are the registry's business. */
 export function sandboxImageTag(
   instance: string,

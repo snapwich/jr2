@@ -71,4 +71,4 @@ Workspaces for the Instance (R4), and concurrent Turns per model provider (R5)?
   inside the idle timeout" goes away. ADR-0001: the operator publishes a quota refusal like an Unschedulable pod.
 - A Workspace parked in `placing` holds no node, only a CR and a Secret. A Workspace that waits a long time still holds
   its run's place in any `pool()`: the Pool's cap is the Machine's own concurrency policy.
-- CONTEXT.md gains **Placing**, and **Lease** covers the Sandbox's whole life.
+- GLOSSARY.md gains **Placing**, and **Lease** covers the Sandbox's whole life.

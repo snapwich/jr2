@@ -89,4 +89,4 @@ whose processes are gone, with no way to know why.
 - The Briefing is how a Turn learns its Allowed picks: the tools block is the whole Menu, fixed for a conversation so it
   does not break the cache
   ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)).
-- CONTEXT.md gains **Briefing**.
+- GLOSSARY.md gains **Briefing**.
