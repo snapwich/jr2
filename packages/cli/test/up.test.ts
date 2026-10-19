@@ -13,6 +13,7 @@ import { randomBytes, X509Certificate } from "node:crypto";
 import {
   CUSTODIAN_PROGRAM,
   configMapDigest,
+  imageContextDigest,
   MOUNTED_CONFIGMAPS,
   custodianRef,
   effectorKey,
@@ -241,6 +242,15 @@ function fakeBuild(
       // The Instance's own files ride the bundle, as a real install keeps them: the staged
       // Workflows must be the ones the walk loaded (ADR-0069).
       await cp(join(dir, "workflows"), join(out, "workflows"), { recursive: true }).catch(() => {});
+      // `images/` too, minus what staging drops at every depth (`node_modules`, `.git`, `.env`,
+      // `.env.*`, `.npmrc`; ADR-0043): a context's key is its STAGED copy's digest (ADR-0069).
+      const dropped = (p: string) => {
+        const name = p.split("/").at(-1)!;
+        return ["node_modules", ".git", ".env", ".npmrc"].includes(name) || name.startsWith(".env.");
+      };
+      await cp(join(dir, "images"), join(out, "images"), { recursive: true, filter: (src) => !dropped(src) }).catch(
+        () => {},
+      );
       for (const [rel, content] of Object.entries(files)) {
         await mkdir(join(out, dirname(rel)), { recursive: true });
         await writeFile(join(out, rel), content);
@@ -1120,6 +1130,41 @@ test("`platforms` overrides the cluster absolutely, and an unpublished entry is 
   const bad = await mkInstance(`export default { name: "b", platforms: ["linux/s390x"] };\n`, "b");
   const w2 = mkWorld(bad);
   await assert.rejects(() => up(["--yes"], w2.io), /`platforms` names linux\/s390x/);
+});
+
+test("a context is keyed by the digest of its STAGED copy, which drops a `.env` the folder holds (ADR-0069)", async () => {
+  // The door and every provision digest the landed copy, and staging drops `.env`, `.git`,
+  // `node_modules` and `.npmrc` at every depth. Keyed off the Instance folder, a context that holds
+  // one of those names would be in the map under a digest the Orchestrator never computes, and
+  // every publish would be refused "not in the image map".
+  const kit = await mkKit();
+  const root = await withImage(await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)), "box");
+  await writeFile(join(root, "images", "box", ".env"), "SECRET=1\n");
+  await writeFile(
+    join(root, "workflows", "boxed.ts"),
+    `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, {\n` +
+      `  repos: { app: { url: "https://e.test/a.git" } },\n` +
+      `  image: import.meta.resolve("../images/box"),\n` +
+      `  spec: () => ({ branch: "b" }),\n` +
+      `});\n`,
+  );
+  const w = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], w.io), 0);
+  const sandbox = imagesOf(w).sandbox as Record<string, string>;
+  const digest = Object.keys(sandbox).find((k) => k !== "default")!;
+  assert.ok(digest, "the carried context is in the map");
+  // The staged copy: the Dockerfile alone.
+  const stagedLike = await mkdtemp(join(tmpdir(), "jr2-ctx-"));
+  await writeFile(join(stagedLike, "Dockerfile"), "FROM node:24-slim\n");
+  assert.equal(digest, await imageContextDigest(stagedLike), "keyed by the staged copy's digest");
+  assert.notEqual(
+    digest,
+    await imageContextDigest(join(root, "images", "box")),
+    "not by the folder's, which holds .env",
+  );
 });
 
 test("a `file:` context the Machine carries is built and keyed by its content DIGEST (ADR-0049)", async () => {

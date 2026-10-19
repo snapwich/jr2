@@ -57,7 +57,7 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
@@ -114,7 +114,7 @@ import {
   type JR2Config,
   type ResolvedSize,
 } from "@jr2/orchestrator";
-import { stageAssembly } from "../assembly.ts";
+import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
 import {
   assertEmulation,
@@ -353,6 +353,16 @@ export async function up(args: string[], io: Io): Promise<number> {
   activity(io, "assembly: staging");
   const staged = await stageAssembly(build, root);
   let assembly: { hash: string; kitVersion: string; workflows: string[]; tar: Buffer };
+  // The scaffolded `images/default` is a PATH CONVENTION, not discovery (ADR-0049/0050): exactly
+  // one path is checked, and it is keyed `default` rather than by digest, because that reserved
+  // key IS the middle leg of the resolution chain a `workspace()` that names no image lands on.
+  const fallback = await defaultImageContext(root);
+  // Every `file:` context is keyed by the digest of its STAGED copy (ADR-0037, ADR-0069): the
+  // bytes the door checks against the image map and a provision resolves, which the Instance
+  // folder's own copy need not equal (staging drops `node_modules`, `.git`, `.env`, `.npmrc` at
+  // every depth). The build below still reads the folder; only the key comes from here. A context
+  // the Assembly does not carry is refused now, before any cluster spend.
+  let contextDigests: Map<string, string>;
   try {
     assembly = {
       hash: staged.hash,
@@ -360,6 +370,10 @@ export async function up(args: string[], io: Io): Promise<number> {
       workflows: staged.workflows,
       tar: await packAssembly(staged.dir),
     };
+    contextDigests = await stagedContextDigests(staged.dir, root, [
+      ...(fallback ? [fallback] : []),
+      ...contexts.map((image: CarriedImage) => image.dir),
+    ]);
   } finally {
     await staged.dispose();
   }
@@ -739,10 +753,6 @@ export async function up(args: string[], io: Io): Promise<number> {
   // composes a Sandbox has no Sandboxes, so it must not pay a docker build for an image it can
   // never use. Said out loud, because a silent skip of a folder you just wrote reads as a bug.
   if (carried.composesSandbox) {
-    // The scaffolded `images/default` is a PATH CONVENTION, not discovery (ADR-0049/0050): exactly
-    // one path is checked, and it is keyed `default` rather than by digest, because that reserved
-    // key IS the middle leg of the resolution chain a `workspace()` that names no image lands on.
-    const fallback = await defaultImageContext(root);
     const built: Array<{ dir: string; name: string; reserved?: "default" }> = [
       ...(fallback ? [{ dir: fallback, name: "default", reserved: "default" as const }] : []),
       ...contexts.map((image: CarriedImage) => ({ dir: image.dir, name: image.name })),
@@ -751,20 +761,13 @@ export async function up(args: string[], io: Io): Promise<number> {
       activity(io, "sandbox images: none carried (a workspace() names one, or scaffold images/default)");
     }
     for (const image of built) {
-      // A `file:` URL that names no folder fails HERE, at converge (ADR-0037) — the one moment a
-      // context's existence is checkable at all, since the pod only ever resolves a digest.
-      const digest = await imageContextDigest(image.dir).catch((err: NodeJS.ErrnoException) => {
-        throw new Error(
-          `the Sandbox Image context ${image.dir} cannot be read (${err.code ?? "read failed"}) — a ` +
-            '`workspace()` names its image with `import.meta.resolve("./<dir>")`, so that directory must exist ' +
-            "beside the Machine's own module (ADR-0037/0049).",
-        );
-      });
-      // Every carried context is keyed by that digest, which is how the Orchestrator finds this
-      // ref again from the `file:` URL the Assembly's copy of the module carries — no path table
-      // on either side (ADR-0049, ADR-0069). The TAG carries the digest either way, so a Machine that names
+      // The digest of the context's staged copy, taken above with the Assembly: every carried
+      // context is keyed by it, which is how the Orchestrator finds this ref again from the
+      // `file:` URL the Assembly's copy of the module carries — no path table on either side
+      // (ADR-0049, ADR-0069). The TAG carries the digest either way, so a Machine that names
       // `images/default` by URL lands on the same tag as the reserved key: two records, one build
       // (the host-held check below spends nothing the second time).
+      const digest = contextDigests.get(image.dir)!;
       const key = image.reserved ?? digest;
       const ref = sandboxImageTag(name, image.name, digest, { platforms, registry });
       // A record is only worth skipping on when it is COMPLETE: the ref AND the seat the image
@@ -942,7 +945,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // --- what each Sandbox Effector's image owes its pushes (ADR-0068) ------------------------
   // Before anything is applied: an image that lacks a push form's tools, or the passwd entry ssh
   // needs, is refused here with the fix, not at the first push in a pod.
-  await checkEffectorImages(build, config, placements.sandbox, converged, platforms);
+  await checkEffectorImages(build, config, placements.sandbox, converged, platforms, contextDigests);
 
   // --- push credentials (ADR-0051): one Secret per git.credentials entry, never per pod ----
   // After the deploy keys exist (a generated one included), before anything else is applied: a
@@ -1264,6 +1267,30 @@ function mountedDigests(list: string): Record<string, string> {
     }
   }
   return out;
+}
+
+/**
+ * The key of each `file:` Sandbox Image context (ADR-0037, ADR-0049, ADR-0069): the digest of its
+ * copy in the staged Assembly at `stagedDir`, by the host directory the walk named. A context the
+ * Assembly does not carry is refused by name: a `file:` URL that names no folder, or a folder the
+ * Instance's install leaves out, is checkable HERE and nowhere later, since the pod only ever
+ * resolves a digest.
+ */
+async function stagedContextDigests(stagedDir: string, root: string, dirs: string[]): Promise<Map<string, string>> {
+  const digests = new Map<string, string>();
+  for (const dir of new Set(dirs)) {
+    const copy = await stagedCopyOf(stagedDir, root, dir);
+    const shown = relative(root, dir).startsWith("..") ? dir : relative(root, dir);
+    if (copy === undefined) {
+      throw new Error(
+        `the Sandbox Image context ${shown} is not in the staged Assembly — a \`workspace()\` names its image with ` +
+          '`import.meta.resolve("./<dir>")`, so that directory must exist beside the Machine\'s own module and ' +
+          "travel with it: check that it exists, and that the package's `files:` list keeps it (ADR-0037/0049, ADR-0069)",
+      );
+    }
+    digests.set(dir, await imageContextDigest(copy));
+  }
+  return digests;
 }
 
 /** What `PUT /assembly` answers, read loosely: the 200 body, or a refusal with its report. */
@@ -1814,6 +1841,8 @@ async function checkEffectorImages(
   sandbox: readonly SandboxEffectorPlan[],
   converged: ConvergedImages,
   platforms: readonly string[],
+  /** Each `file:` context's key in the map: the digest of its staged copy (ADR-0069). */
+  contextDigests: ReadonlyMap<string, string>,
 ): Promise<void> {
   const list = config.git?.credentials ?? [];
   for (const plan of sandbox) {
@@ -1830,7 +1859,10 @@ async function checkEffectorImages(
     let key = "default";
     if (image !== undefined) {
       if (!image.startsWith("file:")) continue;
-      key = await imageContextDigest(fileURLToPath(image));
+      // A Workspace's image is a context the walk carried, so it was keyed with the Assembly.
+      const digest = contextDigests.get(fileURLToPath(image));
+      if (digest === undefined) continue;
+      key = digest;
     }
     const ref = converged.sandbox[key];
     if (ref === undefined) {

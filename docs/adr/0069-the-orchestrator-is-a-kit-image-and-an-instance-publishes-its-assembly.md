@@ -77,18 +77,19 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   ([ADR-0050](0050-what-code-names-config-declares-what-the-cli-names-discovery-finds.md)) and every duty that needs the
   host or the cluster: it loads the Instance folder with the same `loadWorkflows` and `partsOf` the Orchestrator runs,
   stages the Assembly before any cluster spend and refuses a converge whose staged Workflow set differs from the walked
-  one, builds and delivers `file:` Sandbox Images, writes the images ConfigMap, materializes Secrets and held-secret
-  Secrets, warms Repos, preflights the provider, and refuses every Open part nobody bound in one listing, the listing
-  the door produces too. Then it publishes, after the cluster objects exist and after any image roll. At the door the
-  Orchestrator unpacks to staging, refuses a Kit package carried in the tree, imports the config and every
-  `workflows/*.ts`, which is the first check (no `export const machine`, a `jr2Setup.createMachine` refusal), and runs
-  the same walk to refuse what it can see: an Open part, a secret the config does not declare, a `file:` digest absent
-  from its map, a Vocabulary error, a Kit version mismatch. The door checks are true when the Assembly lands because the
-  cluster work came first, and because the publish waits for the kubelet: a publish rolls no pod, and the ConfigMaps the
-  converge wrote reach the process on the kubelet's own period, so `jr2 up` compares the digests `GET /assembly` reports
-  with the data it applied and sends the PUT only once they agree. The server has no `tsc`: types are the author's duty
-  and the typecheck is the host's gate; a type error that survives shows as an import error at the door, named in the
-  refusal.
+  one, builds and delivers `file:` Sandbox Images keyed by the digest of each context's staged copy (the bytes the door
+  and every provision hash; the folder's own copy may hold a `.env` or a `node_modules` that staging drops), writes the
+  images ConfigMap, materializes Secrets and held-secret Secrets, warms Repos, preflights the provider, and refuses
+  every Open part nobody bound in one listing, the listing the door produces too. Then it publishes, after the cluster
+  objects exist and after any image roll. At the door the Orchestrator unpacks to staging, refuses a Kit package carried
+  in the tree, imports the config and every `workflows/*.ts`, which is the first check (no `export const machine`, a
+  `jr2Setup.createMachine` refusal), and runs the same walk to refuse what it can see: an Open part, a secret the config
+  does not declare, a `file:` digest absent from its map, a Vocabulary error, a Kit version mismatch. The door checks
+  are true when the Assembly lands because the cluster work came first, and because the publish waits for the kubelet: a
+  publish rolls no pod, and the ConfigMaps the converge wrote reach the process on the kubelet's own period, so `jr2 up`
+  compares the digests `GET /assembly` reports with the data it applied and sends the PUT only once they agree. The
+  server has no `tsc`: types are the author's duty and the typecheck is the host's gate; a type error that survives
+  shows as an import error at the door, named in the refusal.
 - **A publish is atomic and reloads; it never rolls.** The Orchestrator unpacks to `assemblies/<hash>/` on its own
   volume beside `state.db`, fsyncs, flips one `current` pointer, and reloads: the `reload()` the deployed entrypoint
   never used. A crash before the flip leaves the old Assembly current; after it, the new. The pod rolls only when the

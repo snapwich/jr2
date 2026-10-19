@@ -90,10 +90,12 @@ because they are one problem: **what a Machine depends on that is not inside it.
   it, with no `customize()` route below it.
 - **`jr2 up` walks the registered Machines** — `implementations.actors`, descending into child Machines — to collect
   models to preflight and `file:` image contexts to build. A context is keyed by its content digest (the same digest
-  ADR-0038 tags by), so the host at `jr2 up` and the Orchestrator, whose Assembly holds the same folder, agree without a
-  path table. Repos are slots on the same walk (ADR-0051): a bound slot's url is collected, so its `Repo` resource is
-  warm before a run asks; an open slot nobody bound is refused, naming the Machine, the slot, and the `customize` line
-  that fixes it; a per-run slot is the run's business and the walk leaves it alone.
+  ADR-0038 tags by), taken over its copy in the staged Assembly, the bytes the Orchestrator holds
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), so the host at `jr2 up`
+  and the Orchestrator agree without a path table even where staging dropped a `.env` or a `node_modules` the folder
+  holds. Repos are slots on the same walk (ADR-0051): a bound slot's url is collected, so its `Repo` resource is warm
+  before a run asks; an open slot nobody bound is refused, naming the Machine, the slot, and the `customize` line that
+  fixes it; a per-run slot is the run's business and the walk leaves it alone.
 
 ## Consequences
 

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { KIT_VERSION } from "@jr2/orchestrator";
-import { checkSealed, closureOf, stageAssembly } from "../src/assembly.ts";
+import { checkSealed, closureOf, stageAssembly, stagedCopyOf } from "../src/assembly.ts";
 import type { BuildPort } from "../src/build.ts";
 
 type Entry = string | { link: string };
@@ -449,5 +449,36 @@ test("checkSealed: rewrites nothing", async () => {
     assert.equal(await readFile(join(dir, "keep.txt"), "utf8"), "/instance/node_modules\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stagedCopyOf: a context under the root keeps its path; one a linked package ships maps under node_modules/<name>", async () => {
+  // A workspace package is a link to its checkout, so a module's `file:` URL names a directory
+  // outside the Instance root; the Assembly holds that package hoisted at node_modules/<name>.
+  const scratch = await mkdtemp(join(tmpdir(), "jr2-staged-copy-"));
+  const root = join(scratch, "instance");
+  const checkout = join(scratch, "checkout", "tools");
+  const staged = join(scratch, "staged");
+  try {
+    await write(root, { "images/box/Dockerfile": "FROM x\n", "package.json": pkg("inst", "1.0.0") });
+    await write(checkout, { "package.json": pkg("@acme/tools", "2.0.0"), "images/go/Dockerfile": "FROM go\n" });
+    await mkdir(join(root, "node_modules", "@acme"), { recursive: true });
+    await symlink(checkout, join(root, "node_modules", "@acme", "tools"));
+    await write(staged, {
+      "images/box/Dockerfile": "FROM x\n",
+      "node_modules/@acme/tools/package.json": pkg("@acme/tools", "2.0.0"),
+      "node_modules/@acme/tools/images/go/Dockerfile": "FROM go\n",
+    });
+    assert.equal(await stagedCopyOf(staged, root, join(root, "images", "box")), join(staged, "images", "box"));
+    // Named through the link, or by its real location: both land on the hoisted copy.
+    const viaLink = join(root, "node_modules", "@acme", "tools", "images", "go");
+    const expected = join(staged, "node_modules", "@acme", "tools", "images", "go");
+    assert.equal(await stagedCopyOf(staged, root, viaLink), expected);
+    assert.equal(await stagedCopyOf(staged, root, join(checkout, "images", "go")), expected);
+    // Not carried: a folder the install left out, and a directory no package names.
+    assert.equal(await stagedCopyOf(staged, root, join(root, "images", "absent")), undefined);
+    assert.equal(await stagedCopyOf(staged, root, join(scratch, "elsewhere")), undefined);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
   }
 });

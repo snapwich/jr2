@@ -381,6 +381,51 @@ export async function checkSealed(dir: string): Promise<void> {
   await walk(dir);
 }
 
+// --- where a host directory sits in the Assembly -------------------------------------------------
+
+/**
+ * The staged copy of a host directory (ADR-0069): what the Orchestrator holds in place of `dir`
+ * once the Assembly lands. A directory under the Instance root keeps its relative path. A
+ * directory a dependency ships sits under that package's hoisted copy, `node_modules/<name>/…`:
+ * a module's `file:` URL names the module's real location, and pnpm links a workspace package to
+ * its checkout, outside the root. `undefined` when the Assembly does not carry it.
+ *
+ * This is what keys a `file:` Sandbox Image context (ADR-0037, ADR-0049): the host digests the
+ * staged copy, the door and every provision digest the landed copy, and the two are the same bytes
+ * by construction. The Instance folder's own copy can differ, since staging drops `node_modules`,
+ * `.git`, `.env` and `.npmrc` at every depth (ADR-0043), so a digest of it would name a context
+ * the Orchestrator never sees.
+ */
+export async function stagedCopyOf(stagedDir: string, root: string, dir: string): Promise<string | undefined> {
+  const real = await realpath(dir).catch(() => dir);
+  const rootReal = await realpath(root).catch(() => root);
+  let candidate: string | undefined;
+  if (isInside(rootReal, real)) candidate = join(stagedDir, relative(rootReal, real));
+  else {
+    const pkg = await packageAbove(real);
+    if (pkg) candidate = join(stagedDir, "node_modules", pkg.name, relative(pkg.dir, real));
+  }
+  if (candidate === undefined) return undefined;
+  try {
+    return (await stat(candidate)).isDirectory() ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The nearest package above `dir`, by its manifest's name; undefined when no manifest names one. */
+async function packageAbove(dir: string): Promise<{ name: string; dir: string } | undefined> {
+  for (let d = dir; ; d = dirname(d)) {
+    try {
+      const m = JSON.parse(await readFile(join(d, "package.json"), "utf8")) as { name?: string };
+      if (m.name) return { name: m.name, dir: d };
+    } catch {
+      // no manifest here; keep walking
+    }
+    if (dirname(d) === d) return undefined;
+  }
+}
+
 function isInside(parent: string, child: string): boolean {
   const r = relative(parent, child);
   return r === "" || (r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r));
