@@ -136,9 +136,15 @@ their own maintainers, and the escapes shipped in systems that used them were in
   carries the grammar as cached tool parameters on every Turn, so an author who wants a planner that only sometimes
   writes a Chart gives the pick to a seat of its own. The grammar's fields keep terse sentences at the places a planner
   got wrong (`agents`, `invoke.input`, `invoke.onDone`, `events`, `output`), because a model reads a property's
-  description as it emits the property. The door's report stays complete, one line per fault, as the second teacher. A
-  worked example in the schema is the next lever, if a measured run says the text is not enough; it is not taken ahead
-  of one.
+  description as it emits the property. The door's report stays complete, one line per fault, as the second teacher. And
+  a narrowed grammar shows ONE worked fragment, as JSON Schema `examples` on the state definition and on `events`: an
+  Agent state invoking the body's first lent Agent, and the declared pick with a `required` field that ends its Turn,
+  handled in `on` with a `target` and a `set`. It is the one shape every Agent state must have to run, so it steers no
+  path: not the number of states, their order, the prompts, loops, guards or minted Agents. A whole Chart as an example
+  was refused for that reason, since the instrument copies what it is shown (it wrote the briefing's `set` verbatim),
+  and a Chart template in the grammar would make every Chart that Chart. A body that lends no Agent shows nothing: there
+  is no real name. `examples` is advisory in JSON Schema and some providers strip it from tool parameters, so it is a
+  lever for an instrument that passes the schema through, never a contract.
 
 - **A Chart under a name is a Workflow and a child of its wrapper, from one of two origins.** Its name is
   `<wrapper>/<name>`, one rule for both, and `<name>` is lower-case letters, digits and hyphens, 63 at most. A **Chart
@@ -293,6 +299,8 @@ their own maintainers, and the escapes shipped in systems that used them were in
   thinking-on cell, run once to ask whether the misses are knowledge or care: 5 of 10 with three void trials (the first
   Chart admitted more often), the same kinds of miss (events declared and handled by no state, `gate` named though no
   grammar offered it), 8% longer per trial and a third more wall time for the voids. Not kept: it does not clear the
-  floor, and it answers the question: the misses are knowledge. What the next Chart gets wrong is in the trial evidence;
-  the next lever named is a worked example in the narrowed grammar.
+  floor, and it answers the question: the misses are knowledge. With the worked fragment in the narrowed grammar, 9 of
+  10 with no void trial, in 15 minutes against 23: the one miss was a malformed string, the first reports fell to a
+  median of two lines, and the ten second Charts kept their own state and event names (two of ten reused the fragment's
+  `finished`). The baseline is that run's. What the next Chart gets wrong is in the trial evidence.
 - Deferred, named: a spend ceiling; a CEL-class reference kind; `publishChart`.

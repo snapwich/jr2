@@ -314,7 +314,27 @@ export function jsonFaults(value: unknown): Array<{ path: PropertyKey[]; message
  */
 const ID_PREFIX = "jr2.";
 
+/**
+ * The grammar's worked fragment (ADR-0070): one Agent state and the pick that ends its Turn, with
+ * the body's first lent Agent as the name. It is the one shape every Agent state must have to run,
+ * and nothing of a Chart's path. A grammar with no lent Agent shows nothing: there is no real name.
+ */
+function fragmentOf(narrow?: Narrow): { state: unknown; events: unknown } | undefined {
+  const agent = narrow?.lentAgents[0];
+  if (agent === undefined) return undefined;
+  return {
+    state: {
+      invoke: { src: agent, input: { prompt: "Do this step." } },
+      on: { finished: { target: "next", actions: [{ type: "set", path: "result", from: "{{event.result}}" }] } },
+    },
+    events: {
+      finished: { input: { type: "object", properties: { result: { type: "string" } }, required: ["result"] } },
+    },
+  };
+}
+
 function grammar(narrow?: Narrow): z.ZodType<ChartText> {
+  const fragment = fragmentOf(narrow);
   const name = (what: string) => z.string().regex(NAME, `a ${what} is letters, digits, "_" and "-" only`);
   const template = z
     .json()
@@ -451,7 +471,13 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
       tags: z.array(z.string()).optional(),
       description: z.string().optional(),
     })
-    .meta({ id: `${ID_PREFIX}ChartState` }) as never;
+    .meta({
+      id: `${ID_PREFIX}ChartState`,
+      description: "A state. One that runs an Agent handles, in `on`, the pick that ends its Turn.",
+      // The one shape every Agent state must have to run, with a real lent name, and nothing of
+      // the path: not how many states, not their order, not the prompts (ADR-0070, measured).
+      ...(fragment ? { examples: [fragment.state] } : {}),
+    }) as never;
 
   const event = z.strictObject({
     description: z.string().optional(),
@@ -479,7 +505,10 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
       events: z
         .record(name("event name"), event)
         .optional()
-        .describe("Every pick an Agent of this Chart may make, by name; a state handles it in `on`."),
+        .meta({
+          description: "Every pick an Agent of this Chart may make, by name; a state handles it in `on`.",
+          ...(fragment ? { examples: [fragment.events] } : {}),
+        }),
       // A body that allows no model mints nothing, so its grammar has no `agents` at all: a planner
       // reads a field it cannot fill as one to fill (measured: eight of ten first Charts minted).
       ...(narrow !== undefined && narrow.models.length === 0

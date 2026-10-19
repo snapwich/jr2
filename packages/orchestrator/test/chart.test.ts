@@ -1132,6 +1132,31 @@ test("the Chart briefing is the grammar's root description, per body: no model a
   assert.equal(mintless.safeParse(lentOnly).success, true, "the grammar; the door judges the names");
 });
 
+test("a narrowed grammar shows one Agent state and its pick as `examples`, with the first lent Agent's name; it admits (ADR-0070)", () => {
+  type Json = { $defs: Record<string, { examples?: unknown[] }>; properties: Record<string, { examples?: unknown[] }> };
+  const json = (schema: z.ZodType<ChartText>) => z.toJSONSchema(schema, { unrepresentable: "any" }) as unknown as Json;
+  const narrowed = json(chartSchemaFor(decl));
+  const [state] = narrowed.$defs["jr2.ChartState"]!.examples as [
+    { invoke: { src: string }; on: Record<string, unknown> },
+  ];
+  assert.equal(state.invoke.src, "coder");
+  assert.deepEqual(Object.keys(state.on), ["finished"]);
+  const [events] = narrowed.properties.events!.examples as [Record<string, unknown>];
+  assert.deepEqual(Object.keys(events), ["finished"]);
+  // The fragment is a runnable Chart once given its next state: the door admits it as shown.
+  assert.deepEqual(
+    report({ initial: "step", events, states: { step: state, next: { type: "final" } }, output: "{{context.result}}" }),
+    [],
+  );
+  // No lent Agent, no real name to show; the un-narrowed grammar shows nothing either.
+  assert.equal(
+    json(chartSchemaFor({ ...decl, lends: { guards: ["underLimit"] } })).$defs["jr2.ChartState"]!.examples,
+    undefined,
+  );
+  assert.equal(json(chartSchema).$defs["jr2.ChartState"]!.examples, undefined);
+  assert.equal(json(chartSchema).properties.events!.examples, undefined);
+});
+
 test("the grammar's JSON Schema ids are jr2's own, so an author's id beside it never collides", () => {
   const withOwn = z.object({ chart: chartSchema, other: z.object({}).meta({ id: "ChartState" }) });
   const json = z.toJSONSchema(withOwn, { unrepresentable: "any" }) as { $defs: Record<string, unknown> };
