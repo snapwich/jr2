@@ -74,5 +74,9 @@
   "continue-after-signed-push/off": {
     "passed": 9,
     "trials": 10
+  },
+  "chart-refusal/off": {
+    "passed": 7,
+    "trials": 10
   }
 }

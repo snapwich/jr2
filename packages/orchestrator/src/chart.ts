@@ -154,6 +154,10 @@ export const CHART_BRIEFING = chartBriefing();
 export function chartBriefing(narrow?: Narrow): string {
   const lent = narrow?.lentAgents.length ? ` (${narrow.lentAgents.map((n) => `\`${n}\``).join(", ")})` : "";
   const mints = narrow !== undefined && narrow.models.length === 0;
+  const gate = narrow?.gate
+    ? ' `src: "gate"` is the kit\'s Gate: the Chart waits there for an outside answer (a human, a webhook), ' +
+      'one of its `events` with `audience: "external"`, not an Agent\'s Turn.'
+    : "";
   const agents = mints
     ? `A state runs an Agent with \`invoke: { src, input: { prompt } }\`: \`src\` is a lent Agent's name${lent}. ` +
       "This Chart mints no Agent of its own: there is no `agents`."
@@ -161,7 +165,7 @@ export function chartBriefing(narrow?: Narrow): string {
       "a key of `agents`; a lent Agent needs no entry in `agents`, which mints new ones.";
   return (
     `A Chart is a workflow written as data: states, the events its Agents pick${mints ? "" : ", and the Agents it mints"}. ` +
-    `${agents} An Agent's Turn ends only when it ` +
+    `${agents}${gate} An Agent's Turn ends only when it ` +
     "picks one of the Chart's `events`: declare each pick in `events` with an `input` schema " +
     '(`{ "type": "object", "properties": { "<field>": { "type": "string" } }, "required": ["<field>"] }`; a field not in ' +
     "`required` may be absent), and " +
@@ -228,6 +232,7 @@ export function pathSegments(path: string): Array<string | number> {
 type Narrow = {
   srcs: string[];
   lentAgents: string[];
+  gate: boolean;
   guards: string[];
   actions: string[];
   delays: string[];
@@ -400,7 +405,10 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
     : z.string();
   const invoke = z
     .strictObject({
-      src: src.describe("A lent Agent, Effect or Machine, the kit's `gate`, or a key of this Chart's `agents`."),
+      src: src.describe(
+        "A lent Agent, Effect or Machine by its name; the kit's `gate` (waits for an outside answer: a human, a " +
+          "webhook) where the body lends it; or a key of this Chart's `agents`.",
+      ),
       id: name("invoke id").optional(),
       input: template.optional().describe("An Agent takes `{ prompt }`; an Effect or a Machine takes its own input."),
       onDone: transitions
@@ -569,6 +577,7 @@ function lendsOf(decl: OpenBodyDeclaration) {
     guards: decl.lends.guards ?? [],
     actions: decl.lends.actions ?? [],
     delays: decl.lends.delays ?? [],
+    gate: decl.lends.gate === true,
   };
 }
 
@@ -586,8 +595,9 @@ export function narrowedChartSchema(decl: OpenBodyDeclaration): Record<string, u
 function narrowOf(decl: OpenBodyDeclaration): Narrow {
   const l = lendsOf(decl);
   return {
-    srcs: [...l.agents, ...l.effects, ...l.machines, "gate"],
+    srcs: [...l.agents, ...l.effects, ...l.machines, ...(l.gate ? ["gate"] : [])],
     lentAgents: l.agents,
+    gate: l.gate,
     guards: l.guards,
     actions: l.actions,
     delays: l.delays,
@@ -1025,7 +1035,7 @@ class Door {
   private lentText(): string {
     const actors = this.lentActors().map((a) => `${a.name} (${a.kind})`);
     const minted = Object.keys(this.chart.agents ?? {});
-    return `lent: ${names(actors)}; kit: gate; minted: ${names(minted)}`;
+    return `lent: ${names(actors)}; kit: ${this.lends.gate ? "gate" : "none"}; minted: ${names(minted)}`;
   }
 
   /** What an invoke's `src` names, or undefined after a refusal line. */
@@ -1042,7 +1052,14 @@ class Door {
     if (this.lends.agents.includes(src)) return "agent";
     if (this.lends.effects.includes(src)) return "effect";
     if (this.lends.machines.includes(src)) return "machine";
-    if (src === "gate") return "gate";
+    if (src === "gate") {
+      if (this.lends.gate) return "gate";
+      this.fail(
+        3,
+        `${path}: "gate" is the kit's Gate, which waits for an outside answer (a human, a webhook), and this Open body does not lend it (\`lends.gate: true\` would); ${this.lentText()}`,
+      );
+      return undefined;
+    }
     if (Object.hasOwn(this.chart.agents ?? {}, src)) return "minted";
     this.fail(3, `${path}: "${src}" is not a lent actor or an Agent of this Chart; ${this.lentText()}`);
     return undefined;

@@ -45,8 +45,11 @@ their own maintainers, and the escapes shipped in systems that used them were in
   `const`, `additionalProperties`, the numeric and length bounds, `title` and `description`; `pattern`, `$ref`, the
   combinators and the conditionals are refused by name, because the Orchestrator checks every pick against the schema in
   its own process, and a payload field named `type` is refused, because the event name is a constant the Orchestrator
-  writes after the payload. It mints its Gates, whose ids sit below the body's own actor path, so a Chart cannot take
-  the name of its wrapper's Gate; and its own Agents, because an Agent is five plain fields
+  writes after the payload. Its Gates it BORROWS: the kit's Gate is reach to the outside (a human's or a webhook's
+  answer into the run), so the Open body lends it whole, `lends.gate: true`, and a body that does not has no `gate` in
+  its grammar and refuses one at the door; a lent Gate's ids sit below the body's own actor path, so a Chart cannot take
+  the name of its wrapper's Gate. (Measured: with `gate` offered beside one lent Agent, three of five missed second
+  Charts reached for it as a worker.) And it mints its own Agents, because an Agent is five plain fields
   ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)) and the Harness runs whatever definition
   rides the Turn. A minted Agent's model must be one the Open body allows and the Assembly placed a key for;
   `workspace: "none"` needs the Instance Harness the Assembly converged. Both are door refusals, never a 401 mid-run. It
@@ -54,7 +57,7 @@ their own maintainers, and the escapes shipped in systems that used them were in
   only its input slots), every Repo and image, every secret, every child Machine, and every guard, action or delay
   beyond the generic set. Lending is attenuated by construction; an author who lends
   `command(["sh", "-c", arg("script")])` has lent a shell, and that is theirs to choose. A lent name may not be dotted,
-  `gate`, a generic action's name or an integer, because those are the kit's.
+  `gate`, a generic action's name or an integer, because those are the kit's; the Gate itself is lent as `gate: true`.
 - **Constants for authority, references for data.** `invoke.src`, guard and action `type`s, delay names and event names
   are constants, checked against the lent set and the Chart's own declarations at admission. Data flows through
   references: a placeholder `{{context.ticket.title}}`, or `{ "$ref": "event.summary" }`, in an invoke's `input`, an
@@ -278,9 +281,13 @@ their own maintainers, and the escapes shipped in systems that used them were in
   additional properties"); with `agents` gone from that grammar, 1 of 10 (the second Chart's fault was now one line,
   "context.summary is supplied by nothing", in six of nine, and every one of them WAS written, from a pick field the
   Chart never put in `required`, which the line hid); with that line naming the write and the field, and the briefing
-  teaching `required`, 5 of 10, and every miss admitted on the third Chart. The misses that remain are two the kit still
-  lures: the narrowed `src` enum offers the kit's `gate` beside the one lent Agent, and three second Charts reached for
-  it as "the linter"; and a pick that carries the Chart as a JSON string, which pi's validation refuses ("chart: must be
-  object") before the door sees it, twelve times in ten trials. What the next Chart gets wrong is in the trial evidence;
-  the claim's baseline is written when a read run clears the floor.
+  teaching `required`, 5 of 10, and every miss admitted on the third Chart; three of the five misses reached for the
+  kit's `gate`, offered in the `src` enum beside the one lent Agent, and the rest of the noise was the Chart sent as a
+  JSON string, which pi's validation refused ("chart: must be object") twelve times in ten trials. With the Gate a lend,
+  4 of 10 and no `gate` fault; in three of the six misses the measured pick was that string refusal, twenty times in ten
+  trials. Then, with [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)'s parse
+  of a JSON-text argument in place, 7 of 10: the floor, and the baseline is written from that read run. The parse fired
+  on nothing in it (every string the model sent was malformed), so the pass is the Gate lend's and the run's own
+  variance; the misses were a Chart without `events`, a state `output` beside the Chart's, and one malformed string.
+  What the next Chart gets wrong is in the trial evidence.
 - Deferred, named: a spend ceiling; a CEL-class reference kind; `publishChart`.

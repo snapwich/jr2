@@ -51,6 +51,7 @@ const decl: OpenBodyDeclaration = {
     guards: ["underLimit"],
     actions: ["notify"],
     delays: ["cooldown"],
+    gate: true,
   },
   allows: { models: ["stub/model"], workspace: ["none", "write"] },
   ceilings: { turns: 6, wallClock: "10m", transitions: 500, fanOut: 2, size: 65536 },
@@ -1166,6 +1167,28 @@ test("openBody validates its declaration and carries it as its brand", () => {
   assert.deepEqual(declarationFaults({ ...decl, allows: { models: [], workspace: ["all"] } }), [
     'allows.workspace: "all" is not a Workspace access (write, read, none)',
   ]);
+  assert.deepEqual(declarationFaults({ ...decl, lends: { gate: "yes" as unknown as boolean } }), [
+    "lends.gate: the kit's Gate is lent whole: true or false",
+  ]);
+});
+
+test("3. the kit's Gate is lent whole (`lends.gate: true`): unlent, it is not a `src`, in the grammar or at the door", () => {
+  const gated: ChartText = {
+    events: { go: { input: { type: "object" }, audience: "external" } },
+    initial: "wait",
+    states: { wait: { invoke: { src: "gate" }, on: { go: "over" } }, over: { type: "final" } },
+  };
+  assert.deepEqual(report(gated), []);
+  const unlent = { ...decl, lends: { agents: ["coder"] } };
+  assert.deepEqual(report(gated, undefined, unlent), [
+    'states.wait.invoke.src: "gate" is the kit\'s Gate, which waits for an outside answer (a human, a webhook), and this Open body does not lend it (`lends.gate: true` would); lent: coder (Agent); kit: none; minted: none',
+  ]);
+  const srcs = (narrowed: z.ZodType<ChartText>) =>
+    JSON.stringify(z.toJSONSchema(narrowed, { unrepresentable: "any" })).includes('"gate"');
+  assert.equal(srcs(chartSchemaFor(decl)), true, "lent: in the src enum and the briefing");
+  assert.equal(srcs(chartSchemaFor(unlent)), false, "unlent: no `gate` anywhere in the grammar");
+  assert.match(chartBriefingOf(chartSchemaFor(decl))!, /`src: "gate"` is the kit's Gate/);
+  assert.doesNotMatch(chartBriefingOf(chartSchemaFor(unlent))!, /Gate/);
 });
 
 test("a declaration's wall clock is one timer: at most 2147483647 ms", () => {

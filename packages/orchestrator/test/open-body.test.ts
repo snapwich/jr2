@@ -1060,7 +1060,7 @@ function lendingMachine(
       ...machines,
       body: openBodyWith(
         {
-          lends: { agents: ["coder"], machines: Object.keys(machines), guards: ["keepGoing"] },
+          lends: { agents: ["coder"], machines: Object.keys(machines), guards: ["keepGoing"], gate: true },
           allows: { models: ["stub/model"], workspace: ["none", "write"] },
           ceilings: { ...CEILINGS, ...opts.ceilings },
         },

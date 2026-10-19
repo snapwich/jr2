@@ -106,7 +106,8 @@ export function jsonOver(value: unknown, cap: number): boolean {
   return false;
 }
 
-/** The kinds of part an Open body lends, each as a list of the wrapper's own slot names. */
+/** The kinds of part an Open body lends, each as a list of the wrapper's own slot names; and the
+ * kit's Gate, lent whole (`gate: true`), since there is one and it has no name to list. */
 export type Lends = {
   agents?: string[];
   effects?: string[];
@@ -114,6 +115,7 @@ export type Lends = {
   guards?: string[];
   actions?: string[];
   delays?: string[];
+  gate?: boolean;
 };
 
 /** What an Open body states (ADR-0070): the parts it lends, what a Chart may define, the ceilings. */
@@ -195,8 +197,12 @@ export function declarationFaults(decl: unknown): string[] {
   if (typeof lends !== "object" || lends === null) faults.push("lends: expected an object of slot-name lists");
   else {
     for (const key of Object.keys(lends)) {
-      if (!(LEND_KINDS as readonly string[]).includes(key)) {
-        faults.push(`lends.${key}: an Open body lends ${LEND_KINDS.join(", ")} only`);
+      if (key === "gate") {
+        if (typeof (lends as { gate?: unknown }).gate !== "boolean") {
+          faults.push("lends.gate: the kit's Gate is lent whole: true or false");
+        }
+      } else if (!(LEND_KINDS as readonly string[]).includes(key)) {
+        faults.push(`lends.${key}: an Open body lends ${LEND_KINDS.join(", ")} and gate only`);
       }
     }
     for (const kind of LEND_KINDS) {
@@ -254,6 +260,7 @@ function frozen(decl: OpenBodyDeclaration): OpenBodyDeclaration {
     const v = decl.lends[kind];
     if (v !== undefined) lends[kind] = Object.freeze([...v]) as string[];
   }
+  if (decl.lends.gate !== undefined) lends.gate = decl.lends.gate;
   return Object.freeze({
     lends: Object.freeze(lends),
     allows: Object.freeze({

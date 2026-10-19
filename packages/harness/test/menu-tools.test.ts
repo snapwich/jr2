@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Menu } from "../src/menu.ts";
-import { menuTools } from "../src/menu-tools.ts";
+import { menuTools, parsedObjectArguments } from "../src/menu-tools.ts";
 
 const parameters = { type: "object", properties: { verdict: { type: "string" } } };
 
@@ -47,4 +47,21 @@ test("a pick that fails makes the tool throw — pi turns it into the error the 
     },
   ]);
   await assert.rejects(() => tool!.execute("call-1", {} as never, undefined as never), /this turn is over/);
+});
+
+test("a JSON text where the schema declares an object is that value, before pi validates; anything else passes through", () => {
+  const params = { type: "object", properties: { chart: { type: "object" }, note: { type: "string" } } };
+  const chart = { initial: "a", states: { a: { type: "final" } } };
+  assert.deepEqual(parsedObjectArguments({ chart: JSON.stringify(chart), note: "{}" }, params), { chart, note: "{}" });
+  assert.deepEqual(parsedObjectArguments({ chart }, params), { chart }, "an object is left as it is");
+  const notJson = { chart: "{initial: a}" };
+  assert.equal(parsedObjectArguments(notJson, params), notJson, "not JSON: the model's, still refused by pi");
+  const list = { chart: "[1]" };
+  assert.equal(parsedObjectArguments(list, params), list, "JSON but not an object: untouched");
+  assert.equal(parsedObjectArguments("x", params), "x");
+  // The tool carries it as pi's shim.
+  const [tool] = menuTools([
+    { event: "run_chart", name: "run_chart", description: "", parameters: params, pick: async () => "" },
+  ]);
+  assert.deepEqual(tool!.prepareArguments!({ chart: JSON.stringify(chart) }), { chart });
 });

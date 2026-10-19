@@ -35,9 +35,37 @@ export function menuTools(menu: Menu): AgentTool[] {
     label: item.event,
     description: item.description,
     parameters: item.parameters as unknown as TSchema,
+    prepareArguments: (args) => parsedObjectArguments(args, item.parameters),
     execute: async (_toolCallId, params, signal) => ({
       content: [{ type: "text", text: await item.pick(params, signal) }],
       details: undefined,
     }),
   }));
+}
+
+/**
+ * A model's argument that is a JSON text where the pick's schema declares an object is that
+ * value (ADR-0029): pi validates the result against the parameters as it would have, and the
+ * Orchestrator validates the pick again at delivery, so nothing is accepted that the schema would
+ * not. Measured: a 35B model writes a Chart, the first Menu parameter of any size, as a string in
+ * about one call of three, and read "chart: must be object" for it. Anything else passes through
+ * untouched: a string that is not JSON, or not an object, is still the model's and still refused.
+ */
+export function parsedObjectArguments(args: unknown, parameters: Record<string, unknown>): unknown {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return args;
+  const properties = (parameters.properties ?? {}) as Record<string, { type?: unknown }>;
+  let out: Record<string, unknown> | undefined;
+  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+    if (typeof value !== "string" || properties[key]?.type !== "object") continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+    out ??= { ...(args as Record<string, unknown>) };
+    out[key] = parsed;
+  }
+  return out ?? args;
 }

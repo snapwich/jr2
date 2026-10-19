@@ -70,6 +70,16 @@ whole history again. It also left the history calling tools the request no longe
 - **Presentation stays in the Harness's neutral layer.** `menu.ts` renders the Allowed-picks text and every receipt; a
   presenter (`menu-tools.ts` for pi) only maps Menu items to its tool API and places the text it is handed. A second
   harness — one that takes MCP tools fixed per session and the prompt as text — needs a presenter, not a second Menu.
+  The presenter does one more thing before the engine validates a call: **an argument that is a JSON text where the
+  pick's schema declares an object is that value** (pi's `prepareArguments`). On the home-lab instrument writing a Chart
+  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)), the first Menu parameter of any size, about one call in
+  three carried the object as a string, and the engine refused each with "chart: must be object" before the Orchestrator
+  saw it. The parse is one-directional and refuses nothing less than the schema would: the engine still validates the
+  result against the parameters, and the Orchestrator validates the pick again at delivery. A string that is not JSON,
+  or not an object, stays the model's and is still refused. The schema the model reads is unchanged, so nothing invites
+  more strings. Measured honestly: of 89 such strings across every trial on that instrument, none was JSON (each had its
+  braces unbalanced around a `{{...}}` reference), so the parse fired on none of them and the run that followed it owes
+  nothing to it; it stays because it costs nothing and a cleaner stringifier is the common case.
 
 **The guard question is asked twice, because the two askings can see different things.**
 

@@ -1200,7 +1200,7 @@ test("a pick whose parameters are the Chart grammar (recursive `$ref`s) is offer
   const tool = provider.calls[0]?.tools?.find((t) => t.function?.name === "mcp__jr2__run_chart");
   const offered = JSON.stringify(tool ?? {});
   assert.match(offered, /\$ref/, "the recursive grammar reaches the provider with its references");
-  assert.match(offered, /"enum":\["summarizer","gate"\]/, "narrowed: the lent names are an enum");
+  assert.match(offered, /"enum":\["summarizer"\]/, "narrowed: the lent names are an enum");
   assert.deepEqual(sandbox.delivered, [{ type: "run_chart", chart }]);
 });
 
