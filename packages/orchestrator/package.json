@@ -35,7 +35,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit && tsc -p console --noEmit",
-    "test": "node --test"
+    "test": "node --test --test-global-setup=../../scripts/test-tmpdir.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.6",

@@ -37,8 +37,8 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test 'test/**/*.test.ts'",
-    "test:custodian": "node --test --test-concurrency=1 test/custodian.docker.ts"
+    "test": "node --test --test-global-setup=../../scripts/test-tmpdir.ts 'test/**/*.test.ts'",
+    "test:custodian": "node --test --test-global-setup=../../scripts/test-tmpdir.ts --test-concurrency=1 test/custodian.docker.ts"
   },
   "dependencies": {
     "ts-blank-space": "^0.9.0"

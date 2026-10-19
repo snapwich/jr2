@@ -34,7 +34,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test"
+    "test": "node --test --test-global-setup=../../scripts/test-tmpdir.ts"
   },
   "dependencies": {
     "zod": "^4.4.3"

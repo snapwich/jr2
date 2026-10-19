@@ -11,7 +11,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test"
+    "test": "node --test --test-global-setup=../../scripts/test-tmpdir.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.82.1",
