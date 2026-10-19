@@ -285,9 +285,10 @@ their own maintainers, and the escapes shipped in systems that used them were in
   kit's `gate`, offered in the `src` enum beside the one lent Agent, and the rest of the noise was the Chart sent as a
   JSON string, which pi's validation refused ("chart: must be object") twelve times in ten trials. With the Gate a lend,
   4 of 10 and no `gate` fault; in three of the six misses the measured pick was that string refusal, twenty times in ten
-  trials. Then, with [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)'s parse
-  of a JSON-text argument in place, 7 of 10: the floor, and the baseline is written from that read run. The parse fired
-  on nothing in it (every string the model sent was malformed), so the pass is the Gate lend's and the run's own
-  variance; the misses were a Chart without `events`, a state `output` beside the Chart's, and one malformed string.
-  What the next Chart gets wrong is in the trial evidence.
+  trials. The next run, otherwise unchanged, gave 7 of 10: the floor, and the baseline is written from that read run,
+  with the reading that the gain from 4 is the instrument's own variance across ten trials. A parse of the JSON-text
+  argument was tried in that run and measured inert, since every such string was malformed
+  ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md), rejected). The misses of
+  the passing run were a Chart without `events`, a state `output` beside the Chart's, and one malformed string. What the
+  next Chart gets wrong is in the trial evidence.
 - Deferred, named: a spend ceiling; a CEL-class reference kind; `publishChart`.
