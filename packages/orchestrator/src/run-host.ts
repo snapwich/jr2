@@ -89,10 +89,10 @@ export type WorkflowDef = {
   /** Build this run's live providers. A test seam (ADR-0015): discovery injects nothing. */
   provide: (ctx: { instanceId: string }) => RunProviders;
   /**
-   * The hash of the Assembly this Machine came from (ADR-0069), set at register. A run holds the
-   * Assembly it started under, so every save of the run stamps this hash. Absent only for a def
-   * that no Assembly loaded: an in-process test host. Such a host stamps nothing and checks
-   * nothing on restore.
+   * The hash of the Assembly this Machine came from (ADR-0069): set at register for the current
+   * Assembly, and by `resolveDef` for a held one at restore. A run holds the Assembly it started
+   * under, so every save of the run stamps this hash. Absent only for a def that no Assembly
+   * loaded: an in-process test host, which stamps nothing.
    */
   assembly?: string;
 };
@@ -644,6 +644,19 @@ export type RunHostOptions = {
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
   /** Injectable id generator (deterministic ids in tests). Default: `crypto.randomUUID`. */
   newId?: () => string;
+  /**
+   * Resolve a stamped blob's Workflow inside the Assembly it names (ADR-0069): the Machine that
+   * Assembly's `workflows/<name>.ts` exports, as a def stamped with that hash, or why it cannot be
+   * read (`drifted`: not on the volume, published for another Kit version, does not import). The
+   * host never learns the volume layout; `startInstance` supplies this over `assemblies/<hash>`.
+   * A def it returns is NOT registered: the registry is the current Assembly's alone. A throw is a
+   * fault, not a verdict: the row stays live for the next boot (`failed`).
+   *
+   * Absent (an in-process host): a stamped blob resolves to the registered def of its name only
+   * when that def came from the same Assembly hash, since one hash names one tree and so one
+   * Machine; otherwise the run is `drifted`.
+   */
+  resolveDef?: (blob: { workflow: string; assembly: string }) => Promise<WorkflowDef | { drifted: string }>;
   /** Report a run that threw during restore (ADR-0030). The row is left `live` for the next boot,
    * so this is the only account of why — the entrypoint logs it. Default: silent. */
   onRestoreError?: (runId: string, err: unknown) => void;
@@ -798,6 +811,7 @@ export class RunHost {
   private readonly reconcile: (run: RunRecord) => boolean | Promise<boolean>;
   private readonly newId: () => string;
   private readonly onRestoreError?: (runId: string, err: unknown) => void;
+  private readonly resolveDef?: RunHostOptions["resolveDef"];
   private readonly sandbox?: SandboxPort;
   private readonly instanceHarness?: string;
   private readonly harnessBearer?: (placement: string) => string;
@@ -840,12 +854,14 @@ export class RunHost {
   /** `<iid> <deliveryId>` of every outstanding pick of a run this host parked (`stop`). */
   private readonly parked = new Set<string>();
   #stopping = false;
+  #restorePending = false;
 
   constructor(opts: RunHostOptions) {
     this.store = opts.store;
     this.reconcile = opts.reconcile ?? (() => true);
     this.newId = opts.newId ?? (() => randomUUID());
     this.onRestoreError = opts.onRestoreError;
+    this.resolveDef = opts.resolveDef;
     this.sandbox = opts.sandbox;
     this.instanceHarness = opts.instanceHarness;
     this.harnessBearer = opts.harnessBearer;
@@ -882,8 +898,9 @@ export class RunHost {
     return [...this.workflowDefs.keys()];
   }
 
-  /** The live runs by the hash of the Assembly each started under (ADR-0069): what holds an
-   * Assembly. A run from a def with no Assembly holds none. */
+  /** The runs this process hosts, by the hash of the Assembly each started under (ADR-0069). A
+   * run from a def with no Assembly holds none. The store's live rows are the hold
+   * (`SnapshotStore.liveAssemblies`); this adds a run started a moment ago, before its first save. */
   assemblyHolds(): Map<string, string[]> {
     const holds = new Map<string, string[]>();
     for (const [runId, run] of this.runs) {
@@ -950,6 +967,33 @@ export class RunHost {
   }
 
   /**
+   * The def that reads `blob` (ADR-0069), or the verdict when none can. A stamped blob resolves
+   * inside the Assembly it names, through `resolveDef`; an unstamped blob resolves by name in the
+   * registry, and only on a host that loads no Assembly. A blob that names no Workflow the
+   * registry holds is `lost`: there is nothing it could ever be read by.
+   */
+  private async defFor(blob: RunBlob): Promise<WorkflowDef | { drifted: string } | { lost: string }> {
+    const registered = this.workflowDefs.get(blob.workflow);
+    if (blob.assembly !== undefined) {
+      const ref = { workflow: blob.workflow, assembly: blob.assembly };
+      if (this.resolveDef) {
+        const found = await this.resolveDef(ref);
+        return "drifted" in found ? found : { ...found, assembly: blob.assembly };
+      }
+      if (registered?.assembly === blob.assembly) return registered;
+      return {
+        drifted: `workflow "${blob.workflow}" saved under Assembly ${blob.assembly}, which this host does not hold`,
+      };
+    }
+    // A blob that names no Assembly cannot be vouched for on a host that loads Assemblies:
+    // greenfield, no migration (ADR-0069).
+    if (this.resolveDef || registered?.assembly !== undefined) {
+      return { drifted: `workflow "${blob.workflow}": saved under no Assembly` };
+    }
+    return registered ?? { lost: `no workflow "${blob.workflow}"` };
+  }
+
+  /**
    * Restore every persisted live run: hydrate, reconcile against the live world, and either
    * re-attach (re-spawn from the rewritten child input), mark lost, or refuse as drifted. Returns
    * the run ids handled, by outcome — the caller announces it, because a boot that silently skipped
@@ -960,8 +1004,10 @@ export class RunHost {
    * later run in the store never restored at all. One run that cannot be resumed is one run, not an
    * outage.
    *
-   * `drifted` and `failed` are different claims, deliberately. Drift is a DURABLE verdict — the
-   * Machine changed, and it will still have changed on the next boot — so it is written to the row.
+   * `drifted` and `failed` are different claims, deliberately. Drift is a DURABLE verdict — this
+   * Orchestrator cannot read what it saved (the Assembly is gone, at another Kit version, does not
+   * load, or its Machine's shape does not match), and the next boot will not read it either — so it
+   * is written to the row.
    * A throw is not: `reconcile` talks to a cluster, and a kubectl blip must not permanently condemn
    * a run. Those rows are left `live` to be retried on the next boot, and reported every time until
    * they stop failing.
@@ -973,43 +1019,55 @@ export class RunHost {
     const failed: string[] = [];
 
     for (const stored of await this.store.live()) {
+      // A run this process hosts already is not restored a second time. A deferred restore
+      // (ADR-0069) that throws as a whole stays pending, and the next publish tries it again; a run
+      // started under the current Assembly between those two publishes has a live row and a live
+      // actor, and must not get a second actor.
+      if (this.runs.has(stored.runId)) continue;
       const blob = stored.snapshot as RunBlob | null;
-      const def = blob ? this.workflowDefs.get(blob.workflow) : undefined;
-      // A stamped blob whose Workflow the current Assembly does not hold is drift, not loss
-      // (ADR-0069): the snapshot is intact, and only this process cannot read it. `markDrifted`
-      // keeps the snapshot, so `jr2 status` still shows the run. Step 2 restores it inside the
-      // Assembly it names.
-      if (blob && !def && blob.assembly !== undefined) {
-        await this.store.markDrifted(
-          stored.runId,
-          `workflow "${blob.workflow}" saved under Assembly ${blob.assembly}, which the current Assembly does not hold`,
-        );
-        drifted.push(stored.runId);
-        continue;
-      }
-      if (!blob || !def) {
-        await this.store.markLost(stored.runId, blob ? `no workflow "${blob.workflow}"` : "empty snapshot");
+      if (!blob) {
+        await this.store.markLost(stored.runId, "empty snapshot");
         lost.push(stored.runId);
         continue;
       }
 
-      // A blob that names no Assembly cannot be vouched for (ADR-0069): greenfield, no migration.
-      // Step 1 resolves a stamped blob's Workflow in the current Assembly and checks its
-      // fingerprint below, as before. A host whose defs came from no Assembly checks nothing here.
-      if (def.assembly !== undefined && blob.assembly === undefined) {
-        await this.store.markDrifted(stored.runId, `workflow "${blob.workflow}": saved under no Assembly`);
-        drifted.push(stored.runId);
+      // Which Machine reads this snapshot (ADR-0069). One rule: a stamped blob restores from its
+      // Assembly; an unstamped blob restores from the registry; a stamped host never has unstamped
+      // blobs it can vouch for. So a publish strands nothing: the def comes from the Assembly the
+      // run started under, never from the current one. Drift is only "I can no longer read what I
+      // saved", and it keeps the snapshot (`markDrifted`), so `jr2 status` still reads the run.
+      let def: WorkflowDef;
+      try {
+        const found = await this.defFor(blob);
+        if ("lost" in found) {
+          await this.store.markLost(stored.runId, found.lost);
+          lost.push(stored.runId);
+          continue;
+        }
+        if ("drifted" in found) {
+          await this.store.markDrifted(stored.runId, found.drifted);
+          drifted.push(stored.runId);
+          continue;
+        }
+        def = found;
+      } catch (err) {
+        // A fault while reading the Assembly, not a verdict on it: left live, as below.
+        this.onRestoreError?.(stored.runId, err);
+        failed.push(stored.runId);
+        this.unhosted.set(stored.runId, blob.agents ?? {});
         continue;
       }
 
-      // The workflow name resolved a def; this asks whether that def is still the Machine this
-      // snapshot was written by (ADR-0030). Refused BEFORE `reconcile`, which talks to the cluster:
-      // there is no point proving a Sandbox is alive for a run that cannot be read.
+      // The def is the Machine this snapshot names; this asks whether it is still the shape this
+      // snapshot was written by (ADR-0030). Inside one Assembly the same bytes give the same
+      // Machine, so this guards a hash collision or a hand-edited volume. Refused BEFORE
+      // `reconcile`, which talks to the cluster: there is no point proving a Sandbox is alive for
+      // a run that cannot be read.
       const expected = fingerprintOf(def.machine);
       if (blob.machine !== expected) {
         await this.store.markDrifted(
           stored.runId,
-          `workflow "${blob.workflow}" changed shape since this run was saved ` +
+          `workflow "${blob.workflow}"${def.assembly !== undefined ? ` in Assembly ${def.assembly}` : ""} changed shape since this run was saved ` +
             `(saved under ${blob.machine ?? "an unstamped Machine"}, now ${expected})`,
         );
         drifted.push(stored.runId);
@@ -1034,10 +1092,11 @@ export class RunHost {
           this.assemble(def, blob.instanceId),
           { snapshot: hydrated as never },
           record,
-          // The run keeps the Assembly it started under (ADR-0069), so the stamp of every later
-          // save names it, not the Assembly whose Machine restored it. Step 1 restores into the
-          // current Assembly after the fingerprint check; step 2 restores inside the one named here.
-          blob.assembly !== undefined ? { ...def, assembly: blob.assembly } : def,
+          // The def of the Assembly the run started under (ADR-0069), so every later save names
+          // that hash. The config the run provisions under is the CURRENT Assembly's all the same:
+          // the ports read it through the binding a publish replaces, and a held Assembly lends
+          // only its Machines (ADR-0069).
+          def,
           agents,
           // The burned conversations come back with the admissions (ADR-0057): a restored run's
           // next `continue` must land where this run's last one did, not on a dead conversation.
@@ -1055,6 +1114,8 @@ export class RunHost {
         // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
         // records them again.
         startAndRearm(actor, blob.timers ?? [], this.now());
+        // A run an earlier restore left live to retry is hosted now.
+        this.unhosted.delete(stored.runId);
         reattached.push(stored.runId);
       } catch (err) {
         // Left `live` on purpose — see the note above. The row is unchanged, so the next boot tries
@@ -1071,6 +1132,7 @@ export class RunHost {
     this.stateLiveSet();
     this.scheduleLiveSet();
 
+    this.#restorePending = false;
     return { reattached, lost, drifted, failed };
   }
 
@@ -1808,6 +1870,19 @@ export class RunHost {
     return this.#stopping;
   }
 
+  /** The live rows of a prior process are not restored yet: a boot with no current Assembly
+   * deferred their restore to the first publish (ADR-0069). Those Turns are not over, so the
+   * Agents' surface must not say they are (ADR-0026). Set by `deferRestore`, cleared when a
+   * `restore()` completes; a restore that throws as a whole leaves it set. */
+  get restorePending(): boolean {
+    return this.#restorePending;
+  }
+
+  /** Mark the restore deferred: until a `restore()` completes, `restorePending` is true. */
+  deferRestore(): void {
+    this.#restorePending = true;
+  }
+
   /**
    * End every open feed because the host is going away — the shutdown counterpart to `subscribe`.
    *
@@ -2024,6 +2099,7 @@ export class RunHost {
     const binding: RunBinding = {
       runId: record.runId,
       workflow: record.workflow,
+      ...(def.assembly !== undefined ? { assembly: def.assembly } : {}),
       table: this.table,
       sandbox: this.sandbox,
       instanceHarness: this.instanceHarness,

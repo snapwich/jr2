@@ -4,10 +4,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { serverMain } from "../src/server.ts";
 import { repoIdentity } from "../src/repo-identity.ts";
 import { kubeClient } from "../src/kube-client.ts";
@@ -57,6 +58,40 @@ test("boots the instance from env and announces its address and its current Asse
     // It serves, authenticated with the supplied token (the deployed Secret's credential).
     const res = await fetch(`${inst.url}/runs`, { headers: { authorization: "Bearer tok" } });
     assert.equal(res.status, 200);
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the announce line names the runs the boot did not resume and the Assemblies it collected, and no `waiting` (ADR-0030, ADR-0069)", async () => {
+  // A run parked under A; B published; then the volume loses A. The boot restores the run inside
+  // A, which is gone, so the run is drifted naming A. B, current, is kept, and a tree with no
+  // record is collected.
+  const dir = await scratchInstance("server-drift");
+  const first = await boot(dir);
+  const a = await publishTree(first, dir, {
+    "workflows/task.ts":
+      `import { setup } from "xstate";\n` +
+      `export const machine = setup({}).createMachine({ id: "task", initial: "coding", states: { coding: {} } });\n`,
+  });
+  const { runId } = await first.host.start("task");
+  const b = await publishTree(first, dir, FIXTURE_ASSEMBLY);
+  await first.close();
+  const store = join(dir, ".jr2", "assemblies");
+  await rm(join(store, a), { recursive: true });
+  await rm(join(store, `${a}.json`));
+  await mkdir(join(store, "aaaaaaaaaaaa"), { recursive: true });
+
+  const lines: string[] = [];
+  const inst = await boot(dir, {}, { announce: (line) => lines.push(line) });
+  try {
+    const parsed = JSON.parse(lines[0]!) as Record<string, unknown>;
+    assert.equal(parsed.assembly, b);
+    assert.deepEqual(parsed.drifted, [runId]);
+    assert.deepEqual(parsed.collected, ["aaaaaaaaaaaa"]);
+    assert.equal("waiting" in parsed, false);
+    assert.match((await inst.host.read(runId))?.reason ?? "", new RegExp(`Assembly ${a} is not on the volume`));
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });
@@ -473,7 +508,10 @@ test("a provision on a cluster with no operator fails naming the fix, at the fir
 
 /** An Assembly whose one Workflow binds its Repo Slot PER RUN, so the provision checks the url
  * against `git.credentials`, the fence (ADR-0051). `credentials` goes into its `jr2.config.ts`. */
-async function mkFencedAssembly(credentials: Array<{ match: string }>): Promise<string> {
+async function mkFencedAssembly(
+  credentials: Array<{ match: string }>,
+  opts: { waitMs?: number; bound?: boolean } = {},
+): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "jr2-server-fence-"));
   await writeFile(
     join(dir, "jr2.config.ts"),
@@ -486,7 +524,14 @@ async function mkFencedAssembly(credentials: Array<{ match: string }>): Promise<
     `import { setup } from ${JSON.stringify(import.meta.resolve("xstate"))};\n` +
       `import { workspace } from ${JSON.stringify(src)};\n` +
       `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: () => "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+      // With `bound`, the Slot is bound statically instead, so the Repo pass binds it (ADR-0051).
+      `const ws = workspace(body, { repos: { app: ${opts.bound ? "" : "() => "}"https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n` +
+      // With `waitMs`, the run parks before its Workspace for that long: a timer the restore arms
+      // again, so a run saved in one process provisions in the next.
+      (opts.waitMs === undefined
+        ? `export const machine = ws;\n`
+        : `export const machine = setup({ actors: { ws } }).createMachine({ id: "ws", initial: "wait", states: { ` +
+          `wait: { after: { ${opts.waitMs}: "work" } }, work: { invoke: { src: "ws" } } } });\n`),
   );
   return dir;
 }
@@ -500,13 +545,61 @@ async function faultOf(url: string): Promise<string> {
       body: "{}",
     })
   ).json()) as { runId: string };
+  return faultOfRun(url, started.runId);
+}
+
+/** Wait for run `runId`'s fault. */
+async function faultOfRun(url: string, runId: string): Promise<string> {
   let final: { status: string; fault?: string } | undefined;
-  for (let i = 0; i < 300 && final?.status !== "error"; i++) {
+  for (let i = 0; i < 400 && final?.status !== "error"; i++) {
     await new Promise((r) => setTimeout(r, 10));
-    final = (await (await fetch(`${url}/runs/${started.runId}`, authed)).json()) as typeof final;
+    final = (await (await fetch(`${url}/runs/${runId}`, authed)).json()) as typeof final;
   }
   assert.equal(final?.status, "error");
   return final?.fault ?? "";
+}
+
+/** A publish over the HTTP door, as `jr2 up` makes it. */
+async function putAssembly(url: string, src: string): Promise<void> {
+  const res = await fetch(`${url}/assembly`, {
+    method: "PUT",
+    headers: {
+      authorization: "Bearer pub",
+      "content-type": "application/x-tar",
+      "jr2-kit-version": KIT_VERSION,
+      "jr2-assembly-hash": await assemblyHash(src),
+    },
+    body: new Uint8Array(await packAssembly(src)),
+  });
+  assert.equal(res.status, 200, await res.clone().text());
+}
+
+/** Boot a deployed instance on `dir` with the fenced Assembly `src` published, start one run that
+ * parks before its Workspace, and close: the next boot on `dir` restores the run under `src`. */
+async function parkedUnder(
+  src: string,
+  then?: (url: string) => Promise<void>,
+): Promise<{ dir: string; runId: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-server-held-"));
+  const env = { JR2_NAMESPACE: "ws", JR2_PUBLISH_TOKEN: "pub" };
+  const first = await boot(dir, env, { kube: fakeCluster().kube });
+  await publishTree(first, dir, src);
+  const { runId } = await first.host.start("ws");
+  // Saved before the close, or the next boot has nothing to restore.
+  const saved = () => {
+    const db = new DatabaseSync(join(dir, ".jr2", "state.db"));
+    try {
+      return db.prepare("SELECT 1 FROM machine_snapshots WHERE run_id = ?").get(runId) !== undefined;
+    } finally {
+      db.close();
+    }
+  };
+  for (let i = 0; i < 200 && !saved(); i++) await new Promise((r) => setTimeout(r, 5));
+  await then?.(first.url);
+  // A process exit stops no actors; in one test process the restart is simulated by `stop`.
+  await first.host.stop(runId);
+  await first.close();
+  return { dir, runId };
 }
 
 test("after a publish, a provision reads the NEW Assembly's config: the fence moves (ADR-0069)", async () => {
@@ -522,17 +615,7 @@ test("after a publish, a provision reads the NEW Assembly's config: the fence mo
     assert.equal(inst.publishToken, "pub");
     assert.match(await faultOf(inst.url), /refuses the per-run repo/);
 
-    const res = await fetch(`${inst.url}/assembly`, {
-      method: "PUT",
-      headers: {
-        authorization: "Bearer pub",
-        "content-type": "application/x-tar",
-        "jr2-kit-version": KIT_VERSION,
-        "jr2-assembly-hash": await assemblyHash(next),
-      },
-      body: new Uint8Array(await packAssembly(next)),
-    });
-    assert.equal(res.status, 200, await res.clone().text());
+    await putAssembly(inst.url, next);
 
     const fault = await faultOf(inst.url);
     assert.doesNotMatch(fault, /refuses the per-run repo/);
@@ -540,5 +623,169 @@ test("after a publish, a provision reads the NEW Assembly's config: the fence mo
   } finally {
     await inst.close();
     for (const d of [dir, fenced, next]) await rm(d, { recursive: true, force: true });
+  }
+});
+
+test("a run restored under a held Assembly provisions under the CURRENT config: the fence it started under is gone (ADR-0069)", async () => {
+  // R starts under A, whose config admits no per-run url, and parks before its Workspace. B, which
+  // admits it, is published; then the process restarts. R restores inside A (its Machine), and
+  // its provision reads B's config (D3): it passes the fence and fails later, at the image map.
+  const fenced = await mkFencedAssembly([], { waitMs: 800 });
+  const open = await mkFencedAssembly([{ match: "example.test/" }]);
+  const { dir, runId } = await parkedUnder(fenced, (url) => putAssembly(url, open));
+  const inst = await boot(dir, { JR2_NAMESPACE: "ws", JR2_PUBLISH_TOKEN: "pub" }, { kube: fakeCluster().kube });
+  try {
+    assert.deepEqual(inst.restored.reattached, [runId]);
+    assert.equal(inst.host.status(runId)?.assembly, await assemblyHash(fenced), "R is under A");
+    const fault = await faultOfRun(inst.url, runId);
+    assert.doesNotMatch(fault, /refuses the per-run repo/);
+    assert.match(fault, /no image map/);
+  } finally {
+    await inst.close();
+    for (const d of [dir, fenced, open]) await rm(d, { recursive: true, force: true });
+  }
+});
+
+test("with no current Assembly, a held run waits, the read routes answer and `/agents/*` answers 503; the publish restores it inside its Assembly, and it provisions under the published config (ADR-0026, ADR-0069)", async () => {
+  // The pointer names a tree that is gone, so no config is bound. R waits: no restore, no
+  // provision. `jr2 status` reads `GET /repos` and `GET /assembly` in this window, and both answer,
+  // and so does R's feed. A waiting Turn is not over, so the Agents' surface answers 503 (ask
+  // again), never 404 (ADR-0026).
+  // The publish of B, whose config admits the per-run url A's refused, restores R inside A (its
+  // Machine), and R provisions under B's config (D3): it passes the fence and fails later, at the
+  // image map no test mounts.
+  const fenced = await mkFencedAssembly([], { waitMs: 800 });
+  const open = await mkFencedAssembly([{ match: "example.test/" }]);
+  const { dir, runId } = await parkedUnder(fenced);
+  await writeFile(join(dir, ".jr2", "assemblies", "current"), "0123456789ab\n");
+  const lines: string[] = [];
+  const env = { JR2_NAMESPACE: "ws", JR2_PUBLISH_TOKEN: "pub" };
+  const inst = await boot(dir, env, { kube: fakeCluster().kube, announce: (l) => lines.push(l) });
+  try {
+    const announced = JSON.parse(lines[0]!) as Record<string, unknown>;
+    assert.equal(announced.assembly, null);
+    assert.deepEqual(announced.waiting, [runId]);
+    assert.equal("drifted" in announced, false);
+    assert.deepEqual(inst.restored.reattached, []);
+    assert.equal(inst.host.status(runId), undefined, "not re-attached: no run runs in the window");
+
+    const repos = await fetch(`${inst.url}/repos`, authed);
+    assert.equal(repos.status, 200, await repos.clone().text());
+    const view = await fetch(`${inst.url}/assembly`);
+    assert.equal(view.status, 200, await view.clone().text());
+    const a = await assemblyHash(fenced);
+    assert.deepEqual(((await view.json()) as { held: unknown }).held, [
+      { hash: a, kitVersion: KIT_VERSION, runs: [runId] },
+    ]);
+    assert.equal((await fetch(`${inst.url}/healthz`)).status, 200);
+    const feed = await fetch(`${inst.url}/runs/${runId}/events`, authed);
+    assert.equal(feed.status, 200);
+    assert.match(await feed.text(), /event: status/, "the feed reads R from its row");
+
+    // The Agents' surface: a waiting run's registration is not here yet, and that is not "over".
+    const agents = async () => [
+      (await fetch(`${inst.url}/agents/some-iid/surface`, authed)).status,
+      (
+        await fetch(`${inst.url}/agents/some-iid/events`, {
+          method: "POST",
+          headers: { ...authed.headers, "content-type": "application/json" },
+          body: JSON.stringify({ type: "done" }),
+        })
+      ).status,
+      (await fetch(`${inst.url}/agents/some-iid/deliveries/d1`, authed)).status,
+    ];
+    assert.deepEqual(await agents(), [503, 503, 503], "not restored yet: ask again");
+
+    await putAssembly(inst.url, open);
+    assert.deepEqual(await agents(), [404, 404, 404], "restored: an iid no run holds is over");
+    assert.equal(inst.host.status(runId)?.assembly, a, "R is under A");
+    const fault = await faultOfRun(inst.url, runId);
+    assert.doesNotMatch(fault, /refuses the per-run repo/);
+    assert.doesNotMatch(fault, /no current Assembly/);
+    assert.match(fault, /no image map/);
+    assert.equal(lines.length, 1, "every run resumed, so the deferred restore announces nothing");
+  } finally {
+    await inst.close();
+    for (const d of [dir, fenced, open]) await rm(d, { recursive: true, force: true });
+  }
+});
+
+test("the restore a publish runs announces the runs it did not resume, naming the Assembly it landed (ADR-0030, ADR-0069)", async () => {
+  // The Kit bump window: A, current, names the old Kit version. The boot leaves R waiting; the
+  // publish restores R inside A, which this Kit version cannot load, so R drifts then.
+  const dir = await scratchInstance("server-deferred");
+  const first = await boot(dir);
+  const a = await publishTree(first, dir, {
+    "workflows/task.ts":
+      `import { setup } from "xstate";\n` +
+      `export const machine = setup({}).createMachine({ id: "task", initial: "coding", states: { coding: {} } });\n`,
+  });
+  const { runId } = await first.host.start("task");
+  await first.close();
+  const record = join(dir, ".jr2", "assemblies", `${a}.json`);
+  await writeFile(record, JSON.stringify({ ...JSON.parse(await readFile(record, "utf8")), kitVersion: "0.0.0-old" }));
+
+  const lines: string[] = [];
+  const inst = await boot(dir, {}, { announce: (line) => lines.push(line) });
+  try {
+    const announced = JSON.parse(lines[0]!) as Record<string, unknown>;
+    assert.equal(announced.assembly, null);
+    assert.deepEqual(announced.waiting, [runId]);
+    const b = await publishTree(inst, dir, FIXTURE_ASSEMBLY);
+    assert.deepEqual(
+      lines.slice(1).map((l) => JSON.parse(l) as unknown),
+      [{ assembly: b, drifted: [runId] }],
+    );
+    assert.match(
+      (await inst.host.read(runId))?.reason ?? "",
+      new RegExp(`Assembly ${a} was published for Kit version 0\\.0\\.0-old`),
+    );
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the Repo pass binds the Repos of every held Assembly, not the current one's alone (ADR-0051, ADR-0069)", async () => {
+  // A binds a Repo statically, and R parks under A before its Workspace; B binds none. The publish
+  // of B binds A's Repo again, because R holds A, and the reconcile never unlabels it.
+  const a = await mkFencedAssembly([], { waitMs: 60_000, bound: true });
+  const b = await mkdtemp(join(tmpdir(), "jr2-server-none-"));
+  await mkdir(join(b, "workflows"), { recursive: true });
+  await writeFile(
+    join(b, "workflows", "plain.ts"),
+    `import { setup } from ${JSON.stringify(import.meta.resolve("xstate"))};\n` +
+      `export const machine = setup({}).createMachine({ id: "plain", initial: "a", states: { a: {} } });\n`,
+  );
+  const lines: string[] = [];
+  const { api, kube } = fakeCluster();
+  const { inst, dir } = await bootPublished(a, kube, (l) => lines.push(l), {
+    JR2_NAMESPACE: "ws",
+    JR2_PUBLISH_TOKEN: "pub",
+  });
+  const { key } = repoIdentity("https://example.test/app.git");
+  const { runId } = await inst.host.start("ws");
+  try {
+    await putAssembly(inst.url, b);
+    const repos = await announcedRepos(lines, 2);
+    assert.deepEqual(
+      repos.filter((l) => l.repo === key),
+      [
+        { repo: key, url: "https://example.test/app.git", bound: true },
+        { repo: key, url: "https://example.test/app.git", bound: true },
+      ],
+      "bound by A's publish, and again by B's while R holds A",
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    const unlabels = api.calls.filter(
+      (c) =>
+        c.method === "PATCH" &&
+        JSON.stringify(c.body) === JSON.stringify({ metadata: { labels: { "jr2.dev/bound": null } } }),
+    );
+    assert.deepEqual(unlabels, [], "the held Repo is never unlabeled");
+  } finally {
+    await inst.host.stop(runId);
+    await inst.close();
+    for (const d of [dir, a, b]) await rm(d, { recursive: true, force: true });
   }
 });

@@ -204,9 +204,26 @@ test("a context the last converge did not build fails at provision, naming `jr2 
       assert.match(err.message, /no Sandbox Image for file:/);
       assert.match(err.message, /context digest [0-9a-f]{12}/);
       assert.match(err.message, /jr2 up/, "names the fix");
+      assert.match(err.message, /held Assembly .*current walk's contexts only/, "and the case it does not fix");
       return true;
     },
   );
+});
+
+test("a held run's context the current Assembly dropped fails naming the run and both Assemblies, not `jr2 up` (ADR-0069)", async () => {
+  const shipped = await mkContext({ Dockerfile: "FROM golang:1.23\n" });
+  const held = { runId: "r1", assembly: "aaaaaaaaaaaa", current: "bbbbbbbbbbbb" };
+  for (const resolve of [
+    () => resolveSandboxImage(refs({ sandbox: { default: "d" } }), shipped.url, held),
+    () => resolveUserImage(refs(), shipped.url, held),
+  ]) {
+    await assert.rejects(resolve, (err: Error) => {
+      assert.match(err.message, /run r1 is under the held Assembly aaaaaaaaaaaa/);
+      assert.match(err.message, /the current Assembly bbbbbbbbbbbb does not carry/);
+      assert.doesNotMatch(err.message, /Re-run `jr2 up`/, "`jr2 up` is not the fix for this case");
+      return true;
+    });
+  }
 });
 
 test("a context the current Assembly does not hold names the path, not a cluster fault", async () => {

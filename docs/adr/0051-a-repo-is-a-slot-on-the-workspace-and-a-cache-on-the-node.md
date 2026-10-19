@@ -159,8 +159,10 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   holds a credential (ADR-0005), and the same failure lets that fetch fall through to the cache's objects with a warning
   on stderr. A clone that fails on a cold node fails that provision pointedly, naming the repository and the error, and
   the CR status carries it for `jr2 status` (ADR-0048's pattern).
-- **Eviction is reachability plus age.** `jr2 gc` deletes a `Repo` CR that no registered Machine binds and no run has
-  attached within its TTL; the cache agent removes the node copy on CR deletion, once no pod on that node mounts it.
+- **Eviction is reachability plus age.** `jr2 gc` deletes a `Repo` CR that no Machine of a held Assembly binds (the
+  current one's, and every one a live run holds,
+  [ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)) and no run has attached
+  within its TTL; the cache agent removes the node copy on CR deletion, once no pod on that node mounts it.
 
 ## Considered options
 

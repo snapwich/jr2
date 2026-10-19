@@ -14,7 +14,12 @@ import { E2EWorld, type PublishAnswer } from "./world.ts";
 type AssemblyView = {
   kitVersion: string;
   current: { hash: string; kitVersion: string; workflows: string[] } | null;
+  /** Every Assembly a live run holds, the current one first. */
+  held: Array<{ hash: string; kitVersion: string; runs: string[] }>;
 };
+
+/** A run's status as these steps read it off `jr2 status <id>`. */
+type RunRead = { status: string; value: unknown; assembly?: string; reason?: string };
 
 /** Per scenario: the last `GET /assembly` answer, and the last refused publish. */
 const seen = new WeakMap<E2EWorld, AssemblyView>();
@@ -73,7 +78,10 @@ Then("`jr2 status` names the current Assembly", async function (this: E2EWorld):
   assert.ok(hash, "the Assembly was read first");
   const table = await this.runCli(["status"]);
   assert.equal(table.code, 0, `jr2 status failed: ${table.stderr}`);
-  assert.match(table.stdout, new RegExp(`^assembly: ${hash} \\(kit v\\S+\\), \\d+ live runs? holds? it$`, "m"));
+  assert.match(
+    table.stdout,
+    new RegExp(`^assembly: ${hash} \\(kit v\\S+, current\\), \\d+ live runs? holds? it$`, "m"),
+  );
 });
 
 Then("the current Assembly has the hash it had before the restart", async function (this: E2EWorld): Promise<void> {
@@ -153,3 +161,217 @@ When(
     assert.notEqual(answer.body.unchanged, true, "another shape is another Assembly");
   },
 );
+
+// A run holds the Assembly it started under (ADR-0069). "The first Assembly" is the one the
+// fixture published at boot, which every run these scenarios start at boot started under.
+
+/** The hash of the Assembly the fixture published first. */
+function firstAssembly(world: E2EWorld): string {
+  const first = world.publishedHashes[0];
+  assert.ok(first, "the fixture published an Assembly");
+  return first;
+}
+
+/** The hash of the current Assembly: the one the last landed publish names. */
+function currentAssembly(world: E2EWorld): string {
+  const current = world.currentHash;
+  assert.ok(current, "the fixture published an Assembly");
+  return current;
+}
+
+/** `jr2 status <id>`, read as JSON, until the run is at `value` or the wait runs out. */
+async function readRun(world: E2EWorld, runId: string, value?: string): Promise<RunRead> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const r = await world.runCli(["status", runId]);
+    assert.equal(r.code, 0, `jr2 status ${runId} failed: ${r.stderr}`);
+    const s = world.resultJson<RunRead>();
+    if (value === undefined || s.value === value || Date.now() > deadline) return s;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+Then(
+  "the run resumes under the first Assembly, at state {string}",
+  async function (this: E2EWorld, value: string): Promise<void> {
+    assert.equal(this.announced?.drifted, undefined, "a reshape at the door strands nothing");
+    assert.equal(this.announced?.failed, undefined);
+    assert.notEqual(currentAssembly(this), firstAssembly(this), "the reshape published another Assembly");
+    const s = await readRun(this, this.runId!, value);
+    assert.equal(s.status, "active", JSON.stringify(s));
+    assert.equal(s.value, value, "resumed where it was parked, in the Machine that wrote it");
+    assert.equal(s.assembly, firstAssembly(this), "the run keeps the Assembly it started under");
+  },
+);
+
+Then(
+  "the orchestrator lists the first Assembly as held by the run, and the current one by no run",
+  async function (this: E2EWorld): Promise<void> {
+    const view = await getJson<AssemblyView>(this, "/assembly");
+    assert.equal(view.current?.hash, currentAssembly(this));
+    assert.deepEqual(
+      view.held.map((h) => [h.hash, h.runs]),
+      [
+        [currentAssembly(this), []],
+        [firstAssembly(this), [this.runId]],
+      ],
+      "every held Assembly, the current one first",
+    );
+  },
+);
+
+Then(
+  "`jr2 status` names the current Assembly first, then the first Assembly held by {int} live run",
+  async function (this: E2EWorld, runs: number): Promise<void> {
+    const table = await this.runCli(["status"]);
+    assert.equal(table.code, 0, `jr2 status failed: ${table.stderr}`);
+    const lines = table.stdout.split("\n").filter((l) => l.startsWith("assembly: "));
+    assert.equal(lines.length, 2, table.stdout);
+    assert.match(
+      lines[0]!,
+      new RegExp(`^assembly: ${currentAssembly(this)} \\(kit v\\S+, current\\), 0 live runs hold it$`),
+    );
+    assert.match(
+      lines[1]!,
+      new RegExp(`^assembly: ${firstAssembly(this)} \\(kit v[^,)]+\\), ${runs} live runs? holds? it$`),
+    );
+  },
+);
+
+Then(
+  "a new {string} run starts under the current Assembly, at state {string}",
+  async function (this: E2EWorld, workflow: string, value: string): Promise<void> {
+    const endpoint = await this.stubHarnessUrl();
+    const started = await this.runCli([
+      "run",
+      workflow,
+      "--detach",
+      "--input",
+      JSON.stringify({ endpoint, attempts: 0 }),
+    ]);
+    assert.equal(started.code, 0, `jr2 run ${workflow} failed: ${started.stderr}`);
+    const runId = this.resultJson<{ runId: string }>().runId;
+    assert.ok(runId && runId !== this.runId, "another run");
+    const s = await readRun(this, runId, value);
+    assert.equal(s.value, value, "a new run starts in the current Assembly's Machine");
+    assert.equal(s.assembly, currentAssembly(this));
+  },
+);
+
+Then("the first Assembly is on the volume", function (this: E2EWorld): void {
+  assert.deepEqual(this.assemblyOnVolume(firstAssembly(this)), { tree: true, record: true }, "a live run holds it");
+  assert.deepEqual(this.published?.body.collected, [], "the publish let nothing go while the run holds it");
+});
+
+When("I publish a third Assembly", async function (this: E2EWorld): Promise<void> {
+  // Any change to the published bytes is another Assembly: here, one more Workflow.
+  await this.installFixtureWorkflow("guarded", "guarded-third");
+  const answer = await this.publish();
+  assert.notEqual(answer.body.unchanged, true, "other bytes are another Assembly");
+  assert.equal(this.publishedHashes.length, 3, "three Assemblies landed");
+});
+
+/** Collection removes both halves of every Assembly that is not current and that no live run
+ * holds, and nothing else (ADR-0069, by the reachability of ADR-0039). `expected` is the whole
+ * verdict: every hash this scenario published except the current one, since no run is live. */
+function assertCollected(world: E2EWorld, collected: string[] | undefined, by: string): void {
+  const current = currentAssembly(world);
+  const expected = world.publishedHashes.filter((h) => h !== current).sort();
+  assert.ok(expected.includes(firstAssembly(world)), "the first Assembly is one of them");
+  assert.deepEqual(collected, expected, `${by} names every unheld Assembly that is not current`);
+  for (const hash of expected) {
+    assert.deepEqual(
+      world.assemblyOnVolume(hash),
+      { tree: false, record: false },
+      `${hash}: the tree and the record are gone`,
+    );
+  }
+  assert.deepEqual(world.assemblyOnVolume(current), { tree: true, record: true }, "never the current Assembly");
+}
+
+Then(
+  "the publish collected the first and second Assemblies, and they are gone from the volume",
+  function (this: E2EWorld): void {
+    assert.equal(this.publishedHashes.length, 3, "three Assemblies landed");
+    assertCollected(this, this.published?.body.collected, "the publish answer");
+  },
+);
+
+Then("the boot collected the first Assembly, and it is gone from the volume", function (this: E2EWorld): void {
+  assert.equal(this.publishedHashes.length, 2, "two Assemblies landed");
+  assertCollected(this, this.announced?.collected, "the boot's announce line");
+});
+
+Then("the orchestrator no longer lists the first Assembly as held", async function (this: E2EWorld): Promise<void> {
+  const view = await getJson<AssemblyView>(this, "/assembly");
+  assert.equal(view.current?.hash, currentAssembly(this));
+  assert.ok(!view.held.some((h) => h.hash === firstAssembly(this)), JSON.stringify(view.held));
+  assert.equal(view.held[0]?.hash, currentAssembly(this), "the current Assembly is listed first");
+});
+
+When(
+  "the first Assembly is removed from the volume and the orchestrator restarts",
+  async function (this: E2EWorld): Promise<void> {
+    await this.stopServer();
+    await this.removeAssembly(firstAssembly(this));
+    await this.bootServer();
+  },
+);
+
+// A boot with no current Assembly restores nothing (ADR-0069): the live rows wait, untouched, and
+// the first publish that lands restores each inside the Assembly its snapshot names.
+
+When(
+  "the current Assembly is removed from the volume and the orchestrator restarts",
+  async function (this: E2EWorld): Promise<void> {
+    // The pointer stays, and names a tree that is gone. The first Assembly, which the run holds,
+    // stays on the volume.
+    await this.stopServer();
+    await this.removeAssembly(currentAssembly(this));
+    await this.bootServer();
+  },
+);
+
+Then(
+  "the boot reports the run as waiting, and serves no current Assembly",
+  async function (this: E2EWorld): Promise<void> {
+    assert.equal(this.announced?.assembly, null);
+    assert.match(this.announced?.assemblyError ?? "", /is not on the volume/);
+    assert.deepEqual(this.announced?.waiting, [this.runId], "the announce line names the run it left untouched");
+    assert.equal(this.announced?.drifted, undefined, "nothing is drifted before the publish");
+    assert.equal(this.announced?.lost, undefined);
+    const view = await getJson<AssemblyView>(this, "/assembly");
+    assert.equal(view.current, null);
+    assert.deepEqual(
+      view.held.map((h) => [h.hash, h.runs]),
+      [[firstAssembly(this), [this.runId]]],
+      "the waiting run's row holds the first Assembly",
+    );
+  },
+);
+
+Then(
+  "the run reads as live, still parked at {string}, under the first Assembly",
+  async function (this: E2EWorld, value: string): Promise<void> {
+    const s = await readRun(this, this.runId!);
+    assert.equal(s.status, "active", JSON.stringify(s));
+    assert.equal(s.value, value, "the row is untouched");
+    assert.equal(s.assembly, firstAssembly(this));
+  },
+);
+
+Then("`jr2 status` answers while no Assembly is current", async function (this: E2EWorld): Promise<void> {
+  const table = await this.runCli(["status"]);
+  assert.equal(table.code, 0, `jr2 status failed: ${table.stderr}`);
+  assert.match(table.stdout, /^assembly: none/m, table.stdout);
+});
+
+Then("the run is in the runs list", async function (this: E2EWorld): Promise<void> {
+  const r = await this.runCli(["runs"]);
+  assert.equal(r.code, 0, `jr2 runs failed: ${r.stderr}`);
+  const list = this.resultJson<Array<{ runId: string }>>();
+  assert.ok(
+    list.some((run) => run.runId === this.runId),
+    "the publish re-attached the run: it is a live run again",
+  );
+});

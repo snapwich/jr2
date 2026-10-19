@@ -400,6 +400,9 @@ export class RegistrationTable {
 export type RunBinding = {
   runId: string;
   workflow: string;
+  /** The hash of the Assembly the run holds (ADR-0069): the one it started under, through
+   * restarts. Absent for a run no Assembly started. */
+  assembly?: string;
   table: RegistrationTable;
   /** The host's Sandbox backend, when it has a cluster (`workspace()` resolves it here —
    * one cluster per orchestrator instance, so it is host infrastructure like the table). */

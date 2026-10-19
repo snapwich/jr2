@@ -360,7 +360,7 @@ test("`jr2 status` with no run reports the data plane and every Repo, failing no
       Promise.resolve(Response.json(String(url).endsWith("/assembly") ? view : { dataPlane: true, repos })),
   });
   assert.equal(await main(["status"], table.io), 0);
-  assert.match(table.out(), /^assembly: a1b2c3d4e5f6 \(kit v0\.3\.0\), 2 live runs hold it$/m);
+  assert.match(table.out(), /^assembly: a1b2c3d4e5f6 \(kit v0\.3\.0, current\), 2 live runs hold it$/m);
   assert.equal(json.err(), "→ http://test\n");
 
   // Freshness degrades, absence does not (ADR-0004/0051): a fetch that fails on a WARM cache is

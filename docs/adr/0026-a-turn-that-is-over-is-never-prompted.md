@@ -24,11 +24,14 @@ false: the Orchestrator was going away, not the Turn.
   the conversation. It is not `failed`: nothing is wrong, and a signal that cries wolf cannot also be the alarm.
   ADR-0024 already says jr2 never observes the settlement of a Turn it aborted, so the Orchestrator side does not
   change.
-- **Only a Turn that is over answers 404.** While its host is stopping, the Orchestrator answers `/agents/*` with
-  **503**, not 404. The Harness treats a 503 on the surface read as unanswered and re-asks on ADR-0042's ladder, which
-  outlasts a rollout; the restarted Orchestrator restores its runs before it listens, so the re-ask finds the live
-  surface. A pick that gets 503 fails with "try it again", as a transport failure does — `deliver` still never retries
-  on its own (ADR-0042).
+- **Only a Turn that is over answers 404.** While its host is stopping, and while a boot with no current Assembly still
+  waits for the publish that restores its runs
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), the Orchestrator answers
+  `/agents/*` with **503**, not 404, for a surface it does not host. The Harness treats a 503 on the surface read as
+  unanswered and re-asks on ADR-0042's ladder, which outlasts a rollout; a boot with a current Assembly restores its
+  runs before it listens, and a boot without one restores them at the first publish, so the re-ask finds the live
+  surface either way. A pick that gets 503 fails with "try it again", as a transport failure does — `deliver` still
+  never retries on its own (ADR-0042).
 - **Acting against a Turn that is over still fails loudly.** A pick delivered after the state moved on gets 404 on
   `POST /agents/:iid/events`, and the Harness throws it to the model as "this turn is over".
 - **`GET /agents/:iid/surface` on the Orchestrator stays a plain REST resource,** 404 for no registration; the mechanics

@@ -22,9 +22,13 @@ export type RunStatus = {
   /** Every Workspace waiting for capacity, and why (ADR-0064). Optional: an orchestrator older
    * than ADR-0064 does not send it. */
   waiting?: RunWaiting[];
-  /** Why the host set this status, for statuses the Machine did not choose — `drifted` says the
-   * workflow changed shape since the run was saved, and names both fingerprints (ADR-0030). */
+  /** Why the host set this status, for statuses the Machine did not choose — `drifted` names the
+   * Assembly hash and why this Orchestrator cannot read it: not on the volume, published for
+   * another Kit version, or does not load (ADR-0030, ADR-0069). */
   reason?: string;
+  /** The hash of the Assembly the run started under, and holds while it is live (ADR-0069).
+   * Absent for a run no Assembly started. */
+  assembly?: string;
 };
 
 /** One item on a run's observation feed — mirrors the orchestrator's `RunFeedEvent`. */

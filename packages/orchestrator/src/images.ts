@@ -252,21 +252,41 @@ function judgeUser(recorded: string | undefined): Pick<ResolvedImage, "fallbackS
 }
 
 /**
+ * The run a provision resolves images for, when it holds an Assembly that is not the current one
+ * (ADR-0069). The image map holds the current walk's contexts only, so a held run whose context the
+ * current Assembly dropped cannot provision, and `jr2 up` cannot fix it: the error must say which
+ * case it is.
+ */
+export type HeldImageScope = { runId: string; assembly: string; current: string | undefined };
+
+/**
  * Look one built key up in the map this converge wrote — for the Sandbox Image and the User
  * Container alike, because ADR-0005 gives the User Container "the same resolution" deliberately.
  *
  * An unknown key throws: a converge-time check is impossible for a ref and unnecessary for a
  * context (the walk built every one it found), so this fires when the Orchestrator's own
  * `node_modules` holds a context the LAST converge did not build — a stale deployment. The error
- * says exactly that, because "re-run `jr2 up`" is the whole fix.
+ * says exactly that, because "re-run `jr2 up`" is the fix. It also fires for a run under a held
+ * Assembly (ADR-0069) whose context the current walk no longer carries, which `jr2 up` cannot fix.
+ * With `held`, the error names that case alone: the run, the held Assembly and the current one.
  */
-function builtRef(refs: ImageRefs, key: string, image: string, what: string): string {
+function builtRef(refs: ImageRefs, key: string, image: string, what: string, held?: HeldImageScope): string {
   const ref = refs.sandbox[key];
   if (ref === undefined) {
+    if (held) {
+      throw new Error(
+        `no ${what} for ${image} (context digest ${key}) — run ${held.runId} is under the held Assembly ` +
+          `${held.assembly}, whose context ${key} the current Assembly ${held.current ?? "(none)"} does not ` +
+          "carry. The image map holds the current Assembly's contexts only, so `jr2 up` does not fix this: " +
+          "publish an Assembly that names the context again, or cancel the run (ADR-0069).",
+      );
+    }
     throw new Error(
       `no ${what} for ${image} (context digest ${key}) — this instance's last converge built ` +
         `${Object.keys(refs.sandbox).length} image(s), none of them this one. Re-run \`jr2 up\`: it walks the ` +
-        "registered Machines and builds every `file:` context they carry (ADR-0037/0049).",
+        "registered Machines and builds every `file:` context they carry (ADR-0037/0049). A run under a held " +
+        "Assembly (ADR-0069) whose context the current Assembly no longer carries is the one case it does not " +
+        "fix: the map holds the current walk's contexts only.",
     );
   }
   return ref;
@@ -282,7 +302,11 @@ function builtRef(refs: ImageRefs, key: string, image: string, what: string): st
  * look up and nothing to say about its tag discipline — the cluster pulls it, and nothing was
  * inspected, so no seat fact is known.
  */
-export async function resolveSandboxImage(refs: ImageRefs, image?: string): Promise<ResolvedImage> {
+export async function resolveSandboxImage(
+  refs: ImageRefs,
+  image?: string,
+  held?: HeldImageScope,
+): Promise<ResolvedImage> {
   if (image === undefined) {
     const ref = refs.sandbox["default"];
     if (ref === undefined) return { ref: refs.harness, fallbackSeat: false };
@@ -290,7 +314,7 @@ export async function resolveSandboxImage(refs: ImageRefs, image?: string): Prom
   }
   if (!isImageContext(image)) return { ref: image, fallbackSeat: false };
   const key = await imageKey(image);
-  return { ref: builtRef(refs, key, image, "Sandbox Image"), ...judgeUser(refs.sandboxUser?.[key]) };
+  return { ref: builtRef(refs, key, image, "Sandbox Image", held), ...judgeUser(refs.sandboxUser?.[key]) };
 }
 
 /**
@@ -300,7 +324,7 @@ export async function resolveSandboxImage(refs: ImageRefs, image?: string): Prom
  * the one place ADR-0005 promises none. Its `USER` is not judged either: the seat carries no
  * `securityContext` at all, so root is allowed there.
  */
-export async function resolveUserImage(refs: ImageRefs, image: string): Promise<string> {
+export async function resolveUserImage(refs: ImageRefs, image: string, held?: HeldImageScope): Promise<string> {
   if (!isImageContext(image)) return image;
-  return builtRef(refs, await imageKey(image), image, "User Container image");
+  return builtRef(refs, await imageKey(image), image, "User Container image", held);
 }

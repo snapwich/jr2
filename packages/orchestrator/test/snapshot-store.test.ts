@@ -98,3 +98,24 @@ test("sweep deletes old non-live rows only — not a live row of any age, not a 
     await store.close();
   });
 });
+
+test("liveAssemblies: the live rows by the Assembly their blob names, terminal rows hold nothing (ADR-0069)", async () => {
+  const store = new SqliteSnapshotStore(":memory:");
+  await store.init();
+  await store.save("r1", { workflow: "w", assembly: "aaaaaaaaaaaa" });
+  await store.save("r2", { workflow: "w", assembly: "bbbbbbbbbbbb" });
+  await store.save("r3", { workflow: "w", assembly: "aaaaaaaaaaaa" });
+  await store.save("done", { workflow: "w", assembly: "cccccccccccc" }, "done");
+  await store.save("unstamped", { workflow: "w" });
+  await store.save("drift", { workflow: "w", assembly: "dddddddddddd" });
+  await store.markDrifted("drift", "Assembly dddddddddddd is not on the volume");
+  await store.markLost("gone", "empty snapshot");
+  assert.deepEqual(
+    [...(await store.liveAssemblies())],
+    [
+      ["aaaaaaaaaaaa", ["r1", "r3"]],
+      ["bbbbbbbbbbbb", ["r2"]],
+    ],
+  );
+  await store.close();
+});

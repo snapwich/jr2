@@ -255,7 +255,7 @@ test("an Assembly that carries a Kit package â†’ 422 naming it (ADR-0054, ADR-00
 });
 
 test("a publish lands: current flips, the Workflows swap, GET /assembly and /healthz report it", async () => {
-  const { inst, dir } = await bootWithEcho();
+  const { inst, dir, echo } = await bootWithEcho();
   try {
     const a = await mkAssembly({ "workflows/next.ts": machineSrc("next"), "workflows/other.ts": machineSrc("other") });
     const res = await put(inst, a);
@@ -266,7 +266,10 @@ test("a publish lands: current flips, the Workflows swap, GET /assembly and /hea
       kitVersion: KIT_VERSION,
       workflows: ["next", "other"],
       held: [{ hash: a.hash, kitVersion: KIT_VERSION, runs: [] }],
+      // The Assembly that was current, which no run holds, is let go (ADR-0069, ADR-0039).
+      collected: [echo.hash],
     });
+    assert.equal(existsSync(join(assembliesDir(dir), echo.hash)), false);
     // The volume: the tree under its hash, its record, and the pointer.
     assert.equal((await readFile(join(assembliesDir(dir), "current"), "utf8")).trim(), a.hash);
     assert.ok(existsSync(join(assembliesDir(dir), a.hash, "workflows", "next.ts")));
@@ -303,13 +306,19 @@ test("a publish lands: current flips, the Workflows swap, GET /assembly and /hea
     assert.equal(again.status, 200);
     assert.equal(((await again.json()) as { unchanged?: boolean }).unchanged, true);
 
-    // Step 1 holds the current Assembly only: a publish leaves the run on its def, but lists no
-    // hold for the earlier Assembly.
+    // A publish leaves the run on the Assembly it started under, and holds that Assembly: `held`
+    // lists every Assembly held, the current one first, on the answer and on `GET /assembly`.
     const b = await mkAssembly({ "workflows/next.ts": machineSrc("next-b") });
-    assert.equal((await put(inst, b)).status, 200);
-    assert.deepEqual((await json<{ held: unknown[] }>(fetch(`${inst.url}/assembly`))).held, [
+    const landed = await put(inst, b);
+    assert.equal(landed.status, 200);
+    const held = [
       { hash: b.hash, kitVersion: KIT_VERSION, runs: [] },
-    ]);
+      { hash: a.hash, kitVersion: KIT_VERSION, runs: [started.runId] },
+    ];
+    const answer = (await landed.json()) as { held: unknown; collected: unknown };
+    assert.deepEqual(answer.held, held);
+    assert.deepEqual(answer.collected, [], "a run holds the Assembly that was current");
+    assert.deepEqual((await json<{ held: unknown[] }>(fetch(`${inst.url}/assembly`))).held, held);
   } finally {
     await inst.close();
   }
@@ -472,7 +481,7 @@ test("a pointer naming a missing tree: the boot announces why, and serves with n
   }
 });
 
-test("an Assembly published for another Kit version is not loaded, and its runs wait: the boot says why", async () => {
+test("an Assembly published for another Kit version is not loaded, and is kept while `current` names it: the boot says why", async () => {
   const dir = await mkInstance();
   const hash = "abcdefabcdef";
   await mkdir(join(assembliesDir(dir), hash, "workflows"), { recursive: true });
@@ -488,6 +497,9 @@ test("an Assembly published for another Kit version is not loaded, and its runs 
     assert.match(inst.assemblyError ?? "", /published for Kit version 0\.0\.0-old/);
     assert.deepEqual(inst.workflows, []);
     assert.deepEqual(inst.restored, { reattached: [], lost: [], drifted: [], failed: [] });
+    // `current` names it, so the collection keeps it for the image it was published for.
+    assert.deepEqual(inst.collected, []);
+    assert.ok(existsSync(join(assembliesDir(dir), hash)));
   } finally {
     await inst.close();
   }
@@ -521,5 +533,31 @@ test("admitTree refuses the same way a PUT does: a walk refusal through admit â†
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an `unchanged` answer whose held read fails is still 200, naming the current Assembly alone (ADR-0069)", async (t) => {
+  const dir = await mkInstance();
+  const store = new SqliteSnapshotStore(":memory:");
+  const live = store.liveAssemblies.bind(store);
+  let broken = false;
+  store.liveAssemblies = async () => {
+    if (broken) throw new Error("SQLITE_BUSY");
+    return live();
+  };
+  const logged = t.mock.method(console, "error", () => {});
+  const inst = await startInstance({ dir, store, signingKey: KEY });
+  try {
+    const echo = await mkAssembly({ "workflows/echo.ts": machineSrc("echo") });
+    assert.equal((await put(inst, echo)).status, 200);
+    broken = true;
+    const again = await put(inst, echo);
+    assert.equal(again.status, 200);
+    const body = (await again.json()) as { unchanged?: boolean; held?: unknown };
+    assert.equal(body.unchanged, true);
+    assert.deepEqual(body.held, [{ hash: echo.hash, kitVersion: KIT_VERSION, runs: [] }]);
+    assert.ok(logged.mock.calls.some((c) => String(c.arguments[0]).includes("SQLITE_BUSY")));
+  } finally {
+    await inst.close();
   }
 });

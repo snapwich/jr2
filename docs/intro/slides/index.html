@@ -1006,7 +1006,7 @@ secrets: [{
                history), ADR-0016/0027 (a dead Harness surfaces as agent.fault), task.ts (routes it to the review Gate
                and re-briefs with turns: 0).
                Tested: features/kind.feature "a live Sandbox survives an orchestrator restart";
-               features/agent-and-gates.feature "a run is not resumed into a Machine that changed shape".
+               features/assembly.feature "a run whose Assembly the volume lost is refused, kept, readable and announced".
                Caveat, not on the slide: a kill in the instant between admit and persist is at-most-once (ADR-0007). -->
           <div class="durable">
             <div class="line">

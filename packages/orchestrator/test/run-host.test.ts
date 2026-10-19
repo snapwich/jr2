@@ -511,7 +511,7 @@ test("a blob that names no Assembly is drift: saved under no Assembly (ADR-0069)
   assert.match((await store.load(runId))!.reason ?? "", /saved under no Assembly/);
 });
 
-test("a blob stamped with an Assembly resolves in the current one and restores", async () => {
+test("a stamped blob restores inside the Assembly it names, through the resolver, and is not registered (ADR-0069)", async () => {
   const store = await mkStore();
   const hostA = new RunHost({ store });
   hostA.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
@@ -519,18 +519,82 @@ test("a blob stamped with an Assembly resolves in the current one and restores",
   await tick();
   await waitForStamp(store, runId);
 
-  // Step 1 resolves the Workflow name in the CURRENT Assembly and checks the fingerprint only.
-  const hostB = new RunHost({ store, reconcile: () => true });
-  hostB.register({ ...codingDef(new Map()), assembly: "bbbbbbbbbbbb" });
+  // The current Assembly registers another shape under the name; the run's own Assembly resolves
+  // the Machine that wrote it.
+  const asked: Array<{ workflow: string; assembly: string }> = [];
+  const hostB = new RunHost({
+    store,
+    reconcile: () => true,
+    resolveDef: async (ref) => {
+      asked.push(ref);
+      return { ...codingDef(new Map()), assembly: ref.assembly };
+    },
+  });
+  hostB.register({ ...reshapedCodingDef(), assembly: "bbbbbbbbbbbb" });
   const { reattached, drifted } = await hostB.restore();
   assert.deepEqual([reattached, drifted], [[runId], []]);
-  // The run keeps the Assembly it started under through the restore: its status and every later
-  // save name `aaaa…`, not the Assembly whose Machine restored it (step 2 restores inside it).
+  assert.deepEqual(asked, [{ workflow: "coding", assembly: "aaaaaaaaaaaa" }]);
   assert.equal(hostB.status(runId)?.assembly, "aaaaaaaaaaaa");
   assert.deepEqual([...hostB.assemblyHolds()], [["aaaaaaaaaaaa", [runId]]]);
+  assert.notEqual(hostB.status(runId)?.value, "elsewhere", "the run reads under the Machine that wrote it");
+  // The registry stays the current Assembly's: the held Machine was lent to the run alone.
+  const fresh = await hostB.start("coding");
+  assert.equal(hostB.status(fresh.runId)?.value, "elsewhere");
+  assert.equal(hostB.status(fresh.runId)?.assembly, "bbbbbbbbbbbb");
+  await hostB.cancel(fresh.runId);
   await hostB.cancel(runId);
   assert.equal(((await store.load(runId))!.snapshot as { assembly?: string }).assembly, "aaaaaaaaaaaa");
   await hostB.close();
+});
+
+test("the resolver's drift keeps the snapshot; its throw leaves the row live (ADR-0030, ADR-0069)", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
+  const { runId: one } = await hostA.start("coding");
+  const { runId: two } = await hostA.start("coding");
+  await tick();
+  await waitForStamp(store, two);
+
+  // The first row's Assembly is gone from the volume; reading the second's faults.
+  const errors: string[] = [];
+  let asked = 0;
+  const hostB = new RunHost({
+    store,
+    reconcile: () => true,
+    onRestoreError: (runId) => errors.push(runId),
+    resolveDef: async () => {
+      if (asked++ === 0) return { drifted: "Assembly aaaaaaaaaaaa is not on the volume" };
+      throw new Error("EIO");
+    },
+  });
+  const { drifted, failed, lost } = await hostB.restore();
+  assert.deepEqual([drifted, failed, lost], [[one], [two], []]);
+  const row = (await store.load(one))!;
+  assert.equal(row.status, "drifted");
+  assert.match(row.reason ?? "", /aaaaaaaaaaaa is not on the volume/);
+  assert.ok(row.snapshot, "drift keeps the snapshot");
+  assert.equal((await store.load(two))!.status, "live", "a fault is retried at the next boot");
+  assert.deepEqual(errors, [two]);
+});
+
+test("without a resolver, a stamped blob resolves only to a registered def of the same hash", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
+  const { runId } = await hostA.start("coding");
+  await tick();
+  await waitForStamp(store, runId);
+
+  const same = new RunHost({ store, reconcile: () => true });
+  same.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
+  assert.deepEqual((await same.restore()).reattached, [runId], "one hash names one Machine");
+  await same.close();
+
+  const other = new RunHost({ store, reconcile: () => true });
+  other.register({ ...codingDef(new Map()), assembly: "bbbbbbbbbbbb" });
+  assert.deepEqual((await other.restore()).drifted, [runId], "another hash is another Assembly");
+  assert.match((await store.load(runId))!.reason ?? "", /saved under Assembly aaaaaaaaaaaa/);
 });
 
 test("a stamped blob whose Workflow the current Assembly lacks is drift, and keeps its snapshot (ADR-0069)", async () => {

@@ -569,6 +569,46 @@ test("a context this converge did not build fails the provision with NOTHING app
   assert.deepEqual(calls, []);
 });
 
+test("a held run whose context the current Assembly dropped fails the provision naming both Assemblies (ADR-0069)", async () => {
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    ...exec,
+    currentAssembly: () => "bbbbbbbbbbbb",
+  });
+  await assert.rejects(
+    () =>
+      port.provision({
+        name: "sb",
+        runId: "r",
+        workflow: "w",
+        image: GOLANG.url,
+        assembly: "aaaaaaaaaaaa",
+        ...withApp,
+      }),
+    (err: Error) => {
+      assert.match(err.message, /run r is under the held Assembly aaaaaaaaaaaa/);
+      assert.match(err.message, /the current Assembly bbbbbbbbbbbb does not carry/);
+      return true;
+    },
+  );
+  assert.deepEqual(calls, []);
+  // A run under the current Assembly is the stale-deployment case, and names `jr2 up`.
+  await assert.rejects(
+    () =>
+      port.provision({
+        name: "sb",
+        runId: "r",
+        workflow: "w",
+        image: GOLANG.url,
+        assembly: "bbbbbbbbbbbb",
+        ...withApp,
+      }),
+    /Re-run `jr2 up`/,
+  );
+});
+
 test("a recorded USER the kubelet would refuse fails the provision by NAME, not by timeout", async () => {
   // The failure this replaces is the worst-shaped one jr2 has: `runAsNonRoot` with no `runAsUser`
   // makes the kubelet resolve the image's USER itself, a non-numeric or root one is

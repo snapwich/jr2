@@ -32,8 +32,8 @@ _Avoid_: CLI version, orchestrator version, kit release (when meaning the Instan
 
 **Assembly**:
 The Instance's Workflows, its config and what they import, as the one unit that the Orchestrator loads: what `jr2 up`
-publishes to a running Orchestrator, and what a run holds for its life. The Orchestrator keeps the current Assembly and
-every Assembly that a live run holds.
+publishes to a running Orchestrator, and what a run holds for its life. The Orchestrator keeps the current Assembly,
+every Assembly that a live run holds, and the one its `current` pointer names, and collects the rest.
 _Avoid_: program (an executable), bundle (the staging mechanism), build, release, generation
 
 **jr2 Application**:
@@ -118,7 +118,8 @@ it belongs to both parties.
 **Machine shape**:
 The facts about a Machine that decide whether it can still read a persisted snapshot: its states, invokes and
 transition targets, but not what its guards and actions do. A mismatch between a snapshot and its Machine's shape is
-**drift**, and jr2 keeps a run with drift but never resumes it.
+**drift**, as is an Assembly the run holds that the Orchestrator can no longer read (lost from the volume, published
+for another Kit version, or failing to load); jr2 keeps a run with drift but never resumes it.
 _Avoid_: version (a content address, not an ordering), schema
 
 **Gate**:

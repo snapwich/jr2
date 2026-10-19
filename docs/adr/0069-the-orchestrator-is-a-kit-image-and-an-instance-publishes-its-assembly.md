@@ -55,24 +55,31 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   been promised is not. So one `jr2 up` that bumps the Kit version rolls the Orchestrator image first and publishes the
   Assembly built against the new version second. The new image boots on the old pointer, whose record names the old Kit
   version, and refuses it as the door would: between the roll and the publish the Orchestrator serves and holds no
-  current Assembly, for seconds. A boot with no current Assembly restores nothing, because every Workflow name would
-  resolve to nothing and a verdict from an empty registry would mark every live run `lost`; it leaves the live rows
-  untouched, announces them as `waiting`, and the first publish restores them under the Assembly it lands.
+  current Assembly: for a kubelet ConfigMap period in a converge, and until the next `jr2 up` after a volume loss. In
+  that window `/agents/*` answers 503 for a surface the process does not host, never 404
+  ([ADR-0026](0026-a-turn-whose-surface-is-gone-is-aborted-not-failed.md)). A boot with no current Assembly restores
+  nothing, because no config is bound in that window and a run that provisioned under none would fault for good; it
+  leaves the live rows untouched, announces them as `waiting`, and the first publish restores them, each inside the
+  Assembly its snapshot names. A run whose Assembly was published for the old Kit version is `drifted` at that publish,
+  naming the hash and both versions. That verdict is final, and the collection that follows removes the Assembly: an
+  image rolled back before the publish still finds every run live, an image rolled back after it does not.
 - **The route is one noun and two verbs.** `PUT /assembly`, behind a **publish token**: one tarball, the Kit version and
-  the content hash in headers; `200 { hash, workflows, held }` or `4xx` carrying the walk's report, the old Assembly
-  untouched. The publish token is not the Instance token. Publishing an Assembly is importing code into a process that
-  holds the ServiceAccount, so it must cost what deploying an image cost: cluster write access. The token lives in the
-  Instance's Secret beside the Instance token, `jr2 up` reads it through the kube API alone, and no env var and no
-  `--url` path can supply it, so an ingress-exposed Instance exposes no publish door. The Instance token keeps its
-  meaning ([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)): start runs, answer Gates, read.
-  `GET /assembly`, public like `GET /workflows`: the current hash and Kit version, the Assemblies held with the runs
-  that hold them, and, when deployed, the digest of each ConfigMap the process reads through a mount (`jr2-images`,
-  `jr2-held`), so a publisher can see what the process reads. `jr2 status` prints it; `/healthz` prints the current hash
-  where it printed the content hash. A repeat publish of the current hash answers `200 { unchanged: true }` before the
-  body is read; `--force` sends the PUT anyway and gets the same answer, because the hash names bytes the Orchestrator
-  already holds. Rejected: an OCI artifact the Orchestrator pulls, which needs the registry that dropping docker
-  removed; a ConfigMap, at 1 MiB; a git ref the Orchestrator clones, when
-  [ADR-0048](0048-the-orchestrator-boots-without-its-repos.md) just took cloning out of the Orchestrator.
+  the content hash in headers; `200 { hash, kitVersion, workflows, held, collected }` or `4xx` carrying the walk's
+  report, the old Assembly untouched. `held` lists every Assembly a live run holds, the current one first, each with the
+  runs that hold it; `collected` names the Assemblies the publish let go. The publish token is not the Instance token.
+  Publishing an Assembly is importing code into a process that holds the ServiceAccount, so it must cost what deploying
+  an image cost: cluster write access. The token lives in the Instance's Secret beside the Instance token, `jr2 up`
+  reads it through the kube API alone, and no env var and no `--url` path can supply it, so an ingress-exposed Instance
+  exposes no publish door. The Instance token keeps its meaning
+  ([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)): start runs, answer Gates, read. `GET /assembly`,
+  public like `GET /workflows`: the current hash and Kit version, the Assemblies held with the runs that hold them, and,
+  when deployed, the digest of each ConfigMap the process reads through a mount (`jr2-images`, `jr2-held`), so a
+  publisher can see what the process reads. `jr2 status` prints it; `/healthz` prints the current hash where it printed
+  the content hash. A repeat publish of the current hash answers `200 { unchanged: true }` before the body is read;
+  `--force` sends the PUT anyway and gets the same answer, because the hash names bytes the Orchestrator already holds.
+  Rejected: an OCI artifact the Orchestrator pulls, which needs the registry that dropping docker removed; a ConfigMap,
+  at 1 MiB; a git ref the Orchestrator clones, when [ADR-0048](0048-the-orchestrator-boots-without-its-repos.md) just
+  took cloning out of the Orchestrator.
 - **The walk runs twice, with different duties.** On the host, `jr2 up` keeps the typecheck
   ([ADR-0050](0050-what-code-names-config-declares-what-the-cli-names-discovery-finds.md)) and every duty that needs the
   host or the cluster: it loads the Instance folder with the same `loadWorkflows` and `partsOf` the Orchestrator runs,
@@ -100,19 +107,31 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   [ADR-0048](0048-the-orchestrator-boots-without-its-repos.md): degrade the capability, not the daemon.
 - **A run holds the Assembly it started under.** A new run starts under the current Assembly. A live run keeps the one
   it started under, through restarts too: the snapshot records the Assembly hash, and restore resolves the Workflow's
-  name inside that Assembly. The Orchestrator holds the current Assembly and every Assembly that a live run holds, and
-  lets one go when no live run holds it, by reachability ([ADR-0039](0039-image-garbage-collects-by-reachability.md)). A
-  held Assembly lends only its Machines: the config that applies is always the current Assembly's, because config is
-  reach and credentials, not a Machine, and a held run must meet today's `git.credentials` fence, not the one it started
-  under. So a publish strands nothing: the "editing a workflow strands its parked runs" consequence of
-  [ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md) is retired, and drift is what it always meant,
-  "I can no longer read what I saved": an Assembly that cannot load after a Kit version bump, or a volume that lost it.
-  Such a run is `drifted` with a reason naming the Assembly hash and the import error; no new status. Drift keeps the
-  snapshot, as it always did; `lost`, which drops it, is for a blob that names no Workflow at all. Rejected: report the
-  runs a publish will strand and let them drift at the next restart, which turns today's loud stranding into a deferred,
-  silent one. Staged: the first slice stamps the hash on every save and restores from the current Assembly only, so a
-  stamped run whose Workflow the current Assembly does not hold is `drifted` naming its hash; the second slice holds
-  every named Assembly and restores inside it.
+  name inside that Assembly, imported once per Assembly and never registered, so `jr2 runs`, `jr2 run <name>` and
+  `GET /workflows/<name>/machine` are the current Assembly's alone. The Orchestrator holds the current Assembly and
+  every Assembly that a live run holds, and lets one go when no live run holds it, by reachability
+  ([ADR-0039](0039-image-garbage-collects-by-reachability.md)): at boot after restore, after each publish, and on the
+  hourly sweep; a hold is the live row, so a run this process failed to restore still holds its Assembly; the hash the
+  `current` pointer names is a root even when this process cannot load it, so an image rolled back finds its Assembly; a
+  failed removal is reported and skipped, never allowed to abandon the rest. A held Assembly lends only its Machines:
+  the config that applies is always the current Assembly's, because config is reach and credentials, not a Machine, and
+  a held run must meet today's `git.credentials` fence, not the one it started under. The Repo pass binds the Repos of
+  every held Machine, so a held run's Workspace mounts what its own Machine binds. The cluster parts `jr2 up` derives
+  from the current walk alone are the current Assembly's too: the `file:` Sandbox Image digests in `jr2-images`, the
+  Effector manifests, the held-secret Secrets, and the roots of the image sweep. A held run that still needs one the
+  current Assembly dropped fails at that provision, naming the held Assembly; so a publish strands no run whose Machine
+  it changed, and a publish that drops a Sandbox Image context a parked run has not yet provisioned is the one edit that
+  still can. The Console draws a run on the current Machine; a held run's `assembly` is in its status, and a Console
+  that marks or draws held runs is a later decision. So a publish strands nothing: the "editing a workflow strands its
+  parked runs" consequence of [ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md) is retired, and
+  drift is what it always meant, "I can no longer read what I saved": an Assembly that cannot load after a Kit version
+  bump, or a volume that lost it. Such a run is `drifted` with a reason naming the Assembly hash and the import error;
+  no new status. Drift keeps the snapshot, as it always did; `lost`, which drops it, is for a blob with nothing to keep:
+  an empty snapshot, one that names no Workflow, or a live world that `reconcile` reports gone
+  ([ADR-0007](0007-durable-machine-state.md)). A fault while reading a held Assembly (a permission, a record that does
+  not parse) is `failed`, not drift, and the row stays live and holding
+  ([ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md)). Rejected: report the runs a publish will
+  strand and let them drift at the next restart, which turns today's loud stranding into a deferred, silent one.
 - **The data plane is always wired.** `serverMain` decided at boot, from the walk, whether to wire Sandbox support at
   all; a reload can publish the first `workspace()`. The Orchestrator always wires its kube client, and a provision on a
   cluster where `jr2 up` deployed no operator (`operator.manage: false`) fails pointedly naming `jr2 up`. `jr2 up` keeps

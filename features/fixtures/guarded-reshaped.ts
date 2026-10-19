@@ -1,7 +1,8 @@
 // `guarded.ts` after an edit that changes its SHAPE (ADR-0030): the state a parked run is sitting
-// in is renamed `working` → `implementing`. Same workflow name, same vocabulary, same everything a
-// restore matches on today — which is the point. Installed OVER "guarded" by the drift scenario to
-// play the one sequence that actually happens: edit a workflow, redeploy, meet the parked runs.
+// in is renamed `working` → `implementing`. Same workflow name, same vocabulary. Installed OVER
+// "guarded" by the "strands nothing" scenarios of features/assembly.feature, it is the SECOND
+// Assembly: a run parked in `working` under the first resumes under the first, and a new run
+// starts here, at `implementing` (ADR-0069).
 
 import { z } from "zod";
 import { agent, defineEvent, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator";

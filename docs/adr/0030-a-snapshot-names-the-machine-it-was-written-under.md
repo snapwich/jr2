@@ -4,7 +4,8 @@
 [ADR-0008](0008-orchestrator-as-deployed-app.md)/[ADR-0019](0019-one-converging-command-against-the-current-context.md)
 publish the Instance's Assembly to an Orchestrator whose volume outlives every publish
 ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). And a persisted run is
-matched to its workflow by **filename stem** — `this.workflowDefs.get(blob.workflow)`.
+matched to its workflow by **filename stem**: by name inside the Assembly its snapshot names, and, for a run that no
+Assembly started (an in-process test host), by name in the registry.
 
 Those three facts compose into a hole. Park a run at a Gate, edit `workflows/task.ts`, `jr2 up`. The name still
 resolves. The def found under it is a different Machine. Nothing checks, and — this is the part that decides the shape
@@ -52,8 +53,11 @@ rejects `startInstance`, which crash-loops the pod — taking every _later_ run 
 Each run is now handled independently.
 
 **The boot announces what it did not resume.** `restore()` returns `{ reattached, lost, drifted, failed }`, and the
-entrypoint puts the last three on its announce line. Resumed runs are routine and stay quiet. Without this, `drifted` is
-reachable only by asking after a run id nobody knows to ask about.
+entrypoint puts the last three on its announce line. A boot with no current Assembly lists its runs as `waiting`
+instead, and the first publish, which restores them, announces one line `{ assembly, lost?, drifted?, failed? }` when
+any was not resumed ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)).
+Resumed runs are routine and stay quiet. Without this, `drifted` is reachable only by asking after a run id nobody knows
+to ask about.
 
 ## Considered options
 
@@ -68,8 +72,9 @@ reachable only by asking after a run id nobody knows to ask about.
   mechanism, so a new column would silently not appear on an existing PVC. The blob is versioned by being JSON.
 - **Warn and resume anyway.** Rejected: there is no safe interpretation to fall back on. xstate resumes a missing state
   as `undefined` rather than failing, so a warning would be the only signal, on a run already running wrong.
-- **Fold the workflow name into the digest.** Rejected: restore resolves the def by name first, so a rename never
-  reaches the comparison — it would only make a rename look like a shape change on a run that no longer resolves at all.
+- **Fold the workflow name into the digest.** Rejected: restore resolves the def by name first, inside the run's own
+  Assembly, so a rename never reaches the comparison — it would only make a rename look like a shape change on a run
+  that no longer resolves at all.
 
 ## Consequences
 

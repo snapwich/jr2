@@ -6,7 +6,8 @@
 
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { cp, mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assembliesDir, type PublishAnswer } from "../src/assembly.ts";
@@ -55,4 +56,19 @@ export async function publishTree(inst: RunningInstance, dir: string, src: TreeS
   const answer = await admitTree(inst, dir, src);
   assert.equal(answer.status, 200, `the fixture Assembly was refused: ${JSON.stringify(answer.body)}`);
   return answer.body.hash as string;
+}
+
+/** What the volume holds for one hash (ADR-0069): its tree, and its record `<hash>.json`. */
+export function onVolume(dir: string, hash: string): { tree: boolean; record: boolean } {
+  return {
+    tree: existsSync(join(assembliesDir(dir), hash)),
+    record: existsSync(join(assembliesDir(dir), `${hash}.json`)),
+  };
+}
+
+/** The Assembly hashes on the volume, by tree or record, sorted. Never the pointer or staging. */
+export async function hashesOnVolume(dir: string): Promise<string[]> {
+  const names = await readdir(assembliesDir(dir)).catch(() => [] as string[]);
+  const hashes = new Set(names.map((n) => n.replace(/\.json$/, "")).filter((n) => /^[0-9a-f]{12}$/.test(n)));
+  return [...hashes].sort();
 }

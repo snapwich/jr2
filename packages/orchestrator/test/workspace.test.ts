@@ -32,6 +32,8 @@ import { approveDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 class FakeSandbox implements SandboxPort {
   calls: string[] = [];
   provisioned = new Map<string, { runId: string; workflow: string }>();
+  /** The Assembly each place request named (ADR-0069). */
+  assemblies: Array<string | undefined> = [];
   /** Who is listening to the watch, per Sandbox name (ADR-0063). */
   private listeners = new Map<string, Set<(seen: Continuity) => void>>();
   private _present = true;
@@ -122,6 +124,7 @@ class FakeSandbox implements SandboxPort {
     this.composition.push({ user: req.user, workGroup: req.workGroup });
     this.repos.push(req.repos);
     this.routes.push(req.route);
+    this.assemblies.push(req.assembly);
     this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
     if (!this.holdPlacing) return;
     await new Promise<void>((resolve, reject) => {
@@ -215,6 +218,18 @@ const wrapped = workspace(body, { repos: { app: { url: APP, ref: "main" } }, spe
 function wsDef(): WorkflowDef {
   return { name: "ws", machine: wrapped, provide: () => ({}) };
 }
+
+test("a place request names the Assembly the run holds, so a held run's image failure can name it (ADR-0069)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ ...wsDef(), assembly: "aaaaaaaaaaaa" });
+  host.register({ ...wsDef(), name: "bare" });
+  const held = await host.start("ws");
+  await waitFor(() => host.gates(held.runId).length === 1);
+  const bare = await host.start("bare");
+  await waitFor(() => host.gates(bare.runId).length === 1);
+  assert.deepEqual(sandbox.assemblies, ["aaaaaaaaaaaa", undefined], "a run no Assembly started names none");
+});
 
 test("workspaceName is deterministic, DNS-1123, and distinct per (run, wsId)", () => {
   const a = workspaceName("run-A", "feature/42");

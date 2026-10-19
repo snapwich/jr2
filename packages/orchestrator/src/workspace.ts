@@ -196,6 +196,9 @@ export type PlaceRequest = {
   /** The Sandbox Effector's image as the `workspace()` names it (ADR-0068): the port resolves it,
    * and adds the container only when `jr2 up` placed an Effect there. Absent → the Sandbox Image. */
   effector?: string;
+  /** The hash of the Assembly the run holds (ADR-0069). When it is not the current one, an image
+   * the map lacks fails naming it. Absent for a run no Assembly started. */
+  assembly?: string;
 };
 
 /** One Repo Slot as the port receives it at provision (ADR-0051): resolved to a Binding, and
@@ -866,6 +869,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
         ...(parts.resources !== undefined ? { resources: parts.resources } : {}),
         ...(user.resources !== undefined ? { userResources: user.resources } : {}),
         ...(parts.effector !== undefined ? { effector: parts.effector.image } : {}),
+        ...(binding.assembly !== undefined ? { assembly: binding.assembly } : {}),
       },
       { onWait, signal },
     );

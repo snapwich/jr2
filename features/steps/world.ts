@@ -82,15 +82,23 @@ export type CliResult = { stdout: string; stderr: string; code: number };
 export type ServerInfo = { url: string; token: string };
 
 /** The entrypoint's one-line boot report. `lost`/`drifted`/`failed` appear only when non-empty —
- * the runs this boot did not resume (ADR-0030). */
+ * the runs this boot did not resume (ADR-0030) — and so do `waiting`, the runs a boot with no
+ * current Assembly left for the first publish, and `collected`, the Assemblies the boot removed
+ * because no live run holds them (ADR-0069). */
 export type Announcement = {
   url?: string;
   workflows?: string[];
   /** The current Assembly's hash (ADR-0069); `null` before the first publish. */
   assembly?: string | null;
+  /** Why there is no current Assembly where the volume named one (ADR-0069). */
+  assemblyError?: string;
   lost?: string[];
   drifted?: string[];
   failed?: string[];
+  /** The live runs a boot with no current Assembly left untouched; the first publish restores them
+   * (ADR-0069). */
+  waiting?: string[];
+  collected?: string[];
 };
 
 /** What the door answered one `world.publish()` (ADR-0069): the status, the hash the fixture
@@ -98,10 +106,17 @@ export type Announcement = {
 export type PublishAnswer = {
   status: number;
   hash: string;
-  body: { hash?: string; workflows?: string[]; unchanged?: boolean; error?: string; report?: string[] } & Record<
-    string,
-    unknown
-  >;
+  body: {
+    hash?: string;
+    workflows?: string[];
+    unchanged?: boolean;
+    /** Every Assembly a live run holds, the current one first (ADR-0069). */
+    held?: Array<{ hash: string; kitVersion: string; runs: string[] }>;
+    /** The Assemblies this publish let go, because no live run holds them (ADR-0069). */
+    collected?: string[];
+    error?: string;
+    report?: string[];
+  } & Record<string, unknown>;
 };
 
 export class E2EWorld {
@@ -113,6 +128,12 @@ export class E2EWorld {
   announced?: Announcement;
   /** The door's answer to the last `publish()` (ADR-0069). */
   published?: PublishAnswer;
+  /** The hash of each Assembly this scenario's publishes landed, in order, each once: the first is
+   * the Assembly a run started at boot started under (ADR-0069). */
+  publishedHashes: string[] = [];
+  /** The hash of the Assembly the last landed publish names: the current one. A re-publish of an
+   * earlier hash (a rollback) makes it current again, but adds nothing to `publishedHashes`. */
+  currentHash?: string;
   /** The serving orchestrator's address + Instance token, once serving. */
   server?: ServerInfo;
   /** The in-process stub Harness (ADR-0011), started on demand; its url is run input. */
@@ -456,10 +477,36 @@ export class E2EWorld {
         assert.equal(res.status, 200, `the fixture's publish was refused: ${JSON.stringify(answer.body)}`);
       }
       this.published = answer;
+      if (res.status === 200) {
+        this.currentHash = hash;
+        if (!this.publishedHashes.includes(hash)) this.publishedHashes.push(hash);
+      }
       return answer;
     } finally {
       await rm(staging, { recursive: true, force: true });
     }
+  }
+
+  /** Where Assembly `hash` lives on this instance's state volume (ADR-0069): its tree and its
+   * record. The host-booted fixture's volume is the instance folder's `.jr2/`. */
+  assemblyPaths(hash: string): { tree: string; record: string } {
+    const dir = join(this.dir, ".jr2", "assemblies");
+    return { tree: join(dir, hash), record: join(dir, `${hash}.json`) };
+  }
+
+  /** Which halves of Assembly `hash` are on the volume: a collection removes both. */
+  assemblyOnVolume(hash: string): { tree: boolean; record: boolean } {
+    const paths = this.assemblyPaths(hash);
+    return { tree: existsSync(paths.tree), record: existsSync(paths.record) };
+  }
+
+  /** Remove Assembly `hash` from the volume by hand, as a volume that lost it would (ADR-0069).
+   * Only while the orchestrator is down: a live process keeps what it imported. */
+  async removeAssembly(hash: string): Promise<void> {
+    assert.equal(this.serverProc, undefined, "the volume is edited while the orchestrator is down");
+    const paths = this.assemblyPaths(hash);
+    await rm(paths.tree, { recursive: true, force: true });
+    await rm(paths.record, { force: true });
   }
 
   /** Boot the server entrypoint and wait for its announce line, publishing nothing: a restart

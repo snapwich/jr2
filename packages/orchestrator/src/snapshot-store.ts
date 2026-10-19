@@ -16,6 +16,14 @@ export interface SnapshotStore {
    * filtered by the store, not the host, so a boot never parses a week of finished runs. */
   live(): Promise<StoredSnapshot[]>;
   /**
+   * The `live` runs by the Assembly hash their blob names (ADR-0069), each list in insertion order:
+   * what holds an Assembly. A hold is the ROW, not the process: a run this process failed to
+   * restore is still live here, so it still holds its Assembly. Read without parsing a snapshot,
+   * because `GET /assembly` and every collection ask. A live row that names no Assembly is not
+   * listed.
+   */
+  liveAssemblies(): Promise<Map<string, string[]>>;
+  /**
    * Delete every non-live row last written before `olderThan`, and answer how many (ADR-0065). A
    * `live` row is never swept, whatever its age: a run parked on a Gate for a month is restored.
    * A swept id is gone as if it never ran — `read()` answers undefined, and its abbreviations are
@@ -32,11 +40,13 @@ export interface SnapshotStore {
   save(runId: string, snapshot: unknown, status?: string): Promise<void>;
   markLost(runId: string, reason: string): Promise<void>;
   /**
-   * Record a run whose Machine changed shape underneath it (ADR-0030) — refused, not resumed.
+   * Record a run this Orchestrator can no longer read (ADR-0030, ADR-0069) — refused, not resumed:
+   * the Assembly its snapshot names is not on the volume, was published for another Kit version or
+   * does not load, or its Machine's shape does not match the snapshot's stamp.
    *
    * Unlike {@link markLost} this KEEPS the snapshot. A lost run has nothing left to look at, so
-   * nulling it costs nothing; a drifted run is intact and merely unreadable by the Machine now
-   * loaded, and it is the one a human most needs to inspect. Nulling it would also hide the run
+   * nulling it costs nothing; a drifted run is intact and only unreadable by this Orchestrator,
+   * and it is the one a human most needs to inspect. Nulling it would also hide the run
    * entirely: `read()` returns undefined for a null blob, so `jr2 status <id>` would answer
    * `no run` — a refusal indistinguishable from a run that never existed.
    */
@@ -106,6 +116,21 @@ export class SqliteSnapshotStore implements SnapshotStore {
       if (row.reason !== null) stored.reason = row.reason;
       return stored;
     });
+  }
+
+  async liveAssemblies(): Promise<Map<string, string[]>> {
+    const rows = this.db
+      .prepare(
+        `SELECT run_id, json_extract(snapshot, '$.assembly') AS assembly FROM machine_snapshots
+         WHERE status = 'live' AND json_valid(snapshot) ORDER BY rowid`,
+      )
+      .all() as Array<{ run_id: string; assembly: unknown }>;
+    const held = new Map<string, string[]>();
+    for (const { run_id, assembly } of rows) {
+      if (typeof assembly !== "string") continue;
+      held.set(assembly, [...(held.get(assembly) ?? []), run_id]);
+    }
+    return held;
   }
 
   /**

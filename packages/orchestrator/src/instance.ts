@@ -8,9 +8,11 @@
 //      with that Assembly's hash (workflow name = filename, mirroring flue's
 //      `agents/<name>.ts`; module contract, ADR-0011 revised by ADR-0015: `export const machine`
 //      — the vocabulary rides the machine object via jr2Setup); register on the RunHost;
-//   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007) —
-//      at boot when there is a current Assembly, else at the first publish — then sweep finished
-//      runs older than a week, and again every hour (ADR-0065);
+//   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007),
+//      each inside the Assembly its snapshot names (ADR-0069). With no current Assembly the live
+//      rows wait, untouched, and the first publish restores them. Then sweep finished runs older
+//      than a week and collect every Assembly no live row holds, and again every hour (ADR-0065,
+//      ADR-0069);
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
 // The one design point worth stating (ADR-0011 static-import doctrine): a workflow module is
@@ -24,6 +26,8 @@ import type { JR2Config } from "./config.ts";
 import { loadConfig } from "./config.ts";
 import {
   assemblyDoor,
+  heldAssemblies,
+  heldAssembly,
   removeStaging,
   resolveAssembly,
   type AssemblyDoor,
@@ -42,7 +46,7 @@ import { createApp } from "./http.ts";
 import type { FetchAnswer } from "./repo-fetch.ts";
 import type { RepoStatus } from "./repos.ts";
 import { RunHost } from "./run-host.ts";
-import type { RunRecord } from "./run-host.ts";
+import type { RunRecord, WorkflowDef } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import { createAuthenticator, effectorKey, harnessToken, loadSigningKey, mintInstanceToken } from "./tokens.ts";
@@ -66,17 +70,26 @@ export type InstanceOptions = {
   /** The digests of the mounted ConfigMaps, which `GET /assembly` reports (ADR-0069). Present only
    * when deployed. */
   mounts?: () => Promise<Record<string, string>>;
-  /** Called after a publish has landed and the Workflows swapped, before a deferred restore: the
-   * new current Assembly, its config and its Machines, which the entrypoint swaps into the ports
-   * (ADR-0069). Synchronous, so the swap cannot half-apply. */
+  /** Called after a publish has landed and the Workflows swapped: the new current Assembly, its
+   * config and its Machines, which the entrypoint swaps into the ports (ADR-0069). Synchronous, so
+   * the swap cannot half-apply. */
   onPublish?: (published: {
     current: CurrentAssembly;
     config: JR2Config | undefined;
     workflows: LoadedWorkflow[];
   }) => void;
-  /** Called with what a restore deferred to the first publish did (ADR-0030, ADR-0069): the boot
-   * had no current Assembly, so the runs it found waited for one. */
-  onRestore?: (restored: RestoreOutcome & { assembly: string }) => void;
+  /** Called after the restore a boot with no current Assembly deferred, which the first publish
+   * that lands runs (ADR-0069): the hash it landed, and what the restore did. The entrypoint
+   * announces the runs it did not resume. A boot with a current Assembly never calls it: its
+   * outcome is `RunningInstance.restored`. */
+  onRestore?: (outcome: { assembly: string } & RestoreOutcome) => void;
+  /** Called with the hashes the hourly sweep collected, when it collected any (ADR-0069): the
+   * entrypoint announces them as one line. The boot's collection is `RunningInstance.collected`;
+   * a publish's rides its answer. Default: one log line. */
+  onCollect?: (collected: string[]) => void;
+  /** How one Assembly's Workflows are imported from its root. Default: `loadWorkflows`. A test
+   * seam, so a test can count the imports per Assembly that the ESM cache would hide. */
+  importWorkflows?: (root: string) => Promise<LoadedWorkflow[]>;
   /** Listen port. Default 0 → an ephemeral port (read back from the running instance's `url`). */
   port?: number;
   /** Listen hostname. Default `127.0.0.1`. */
@@ -142,17 +155,28 @@ export type RunningInstance = {
   assemblyError?: string;
   /** Names of the workflows discovered + registered from the Assembly's `workflows/` at boot. */
   workflows: string[];
-  /** What this boot did with the runs it found persisted (ADR-0007, ADR-0030) — resumed, given up
-   * on, refused because their Machine changed shape, or errored (left for the next boot to retry).
-   * The entrypoint announces everything but the resumed ones. Empty when the boot had no current
-   * Assembly: those runs are `waiting`. */
+  /** The Machines of every Assembly held now (ADR-0069): the current one's, then those of each
+   * Assembly a live run holds that this process can import. What the Repo pass binds: a held run's
+   * Workspace mounts the Repos its own Machine binds, whatever the current Assembly binds. An
+   * Assembly that cannot be imported lends nothing: its runs are drifted or failed. */
+  heldMachines: () => Promise<AnyStateMachine[]>;
+  /** What this boot did with the runs it found persisted (ADR-0007, ADR-0030, ADR-0069) — resumed
+   * inside the Assembly each names, given up on, refused because their Assembly or their Machine
+   * can no longer be read, or errored (left for the next boot to retry). The entrypoint announces
+   * everything but the resumed ones. Empty when the boot had no current Assembly: those runs are
+   * `waiting`. */
   restored: RestoreOutcome;
   /**
-   * The live runs a boot with no current Assembly left untouched (ADR-0069): no Workflow could
-   * resolve them, and a verdict from an empty registry would be a lie. The first publish restores
-   * them. Empty when the boot had a current Assembly.
+   * The live runs a boot with no current Assembly left untouched (ADR-0069). No config is bound
+   * in that window, and at a Kit bump every held Assembly is still at the old Kit version, so a
+   * restore now would drift runs that an image rollback could resume. The first publish that lands
+   * restores them, under the config it binds (`onRestore`). Empty when the boot had a current
+   * Assembly.
    */
   waiting: string[];
+  /** The Assemblies this boot collected after its restore (ADR-0069): on the volume, not current,
+   * and held by no live run. Sorted. */
+  collected: string[];
   /**
    * The door's checks 4 to 6 over a staging directory that holds an unpacked `tree/` (ADR-0069):
    * the hash, the import and the walk, the landing, the swap. What a publish calls after the
@@ -199,9 +223,57 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   const resolved = opts.assembly ?? (await resolveAssembly(opts.dir));
   let current = resolved.current;
 
+  // The Machines of each Assembly this process has imported, by hash (ADR-0069): a held Assembly
+  // is imported once, whether one run holds it or fifty, and the current one shares the entry. A
+  // load that fails is not kept, so a fault on the volume is tried again by the next restore. An
+  // Assembly the collection removes leaves the map; Node's module cache keeps its modules, which no
+  // run reaches any more.
+  const imported = new Map<string, Promise<LoadedWorkflow[]>>();
+  const importWorkflows = opts.importWorkflows ?? loadWorkflows;
+  const importAssembly = (hash: string, root: string): Promise<LoadedWorkflow[]> => {
+    let loading = imported.get(hash);
+    if (!loading) {
+      loading = importWorkflows(root);
+      imported.set(hash, loading);
+      loading.catch(() => imported.delete(hash));
+    }
+    return loading;
+  };
+
+  /**
+   * A run's Workflow inside the Assembly its snapshot names (ADR-0069): the tree and the record on
+   * the volume, at this Orchestrator's Kit version, and its `workflows/<name>.ts` imported. Every
+   * other answer is drift naming the hash: the snapshot is intact, and this process can no longer
+   * read it. The def is not registered: the registry is the current Assembly's alone.
+   */
+  const resolveDef = async (blob: {
+    workflow: string;
+    assembly: string;
+  }): Promise<WorkflowDef | { drifted: string }> => {
+    const held = await heldAssembly(opts.dir, blob.assembly);
+    if ("error" in held) return { drifted: `workflow "${blob.workflow}": ${held.error}` };
+    let loaded: LoadedWorkflow[];
+    try {
+      loaded = await importAssembly(blob.assembly, held.root);
+    } catch (err) {
+      return {
+        drifted: `workflow "${blob.workflow}": the Assembly ${blob.assembly} does not load: ${err instanceof Error ? err.message : err}`,
+      };
+    }
+    const found = loaded.find((w) => w.name === blob.workflow);
+    if (!found) {
+      return {
+        drifted: `workflow "${blob.workflow}": the Assembly ${blob.assembly} does not load: it holds no workflows/${blob.workflow}.ts`,
+      };
+    }
+    // `provide` injects nothing, as at register (ADR-0011).
+    return { name: found.name, machine: found.machine, provide: () => ({}), assembly: blob.assembly };
+  };
+
   const host = new RunHost({
     store,
     reconcile: opts.reconcile,
+    resolveDef,
     sandbox: opts.sandbox,
     instanceHarness: opts.instanceHarness,
     harnessBearer: (placement) => harnessToken(signingKey, placement),
@@ -247,32 +319,23 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
 
   // 2. Filename discovery: every `workflows/<name>.ts` of the current Assembly exports its Machine
   // by name. No current Assembly → no Workflows, and the process still serves (ADR-0048).
-  if (current) swap(await loadWorkflows(current.root), current);
+  if (current) swap(await importAssembly(current.hash, current.root), current);
 
-  // 3. Resume in-flight runs persisted by a prior process (ADR-0007). The outcome is reported, not
-  // swallowed (ADR-0030): a boot that declined to resume runs must say so, or "drifted" is only
-  // discoverable by asking after a specific run id nobody knows to ask about.
-  //
-  // Only when there is a current Assembly. With none (the Kit bump window of ADR-0069, volume
-  // loss, a pointer to a tree that is gone), every name resolves to nothing, and a restore would
-  // write `lost` on every live run. The rows wait, untouched, and the first publish restores them.
-  let restorePending = current === null;
-  const empty: RestoreOutcome = { reattached: [], lost: [], drifted: [], failed: [] };
-  const restored = current ? await host.restore() : empty;
-  const waiting = current ? [] : (await store.live()).map((row) => row.runId);
+  // What holds an Assembly (ADR-0069): the live ROWS, not this process's runs, so a run this boot
+  // failed to restore still holds its own; and the runs this process hosts, for a run started a
+  // moment ago that has no row yet. A terminal row holds nothing.
+  const holdsByHash = async (): Promise<Map<string, string[]>> => {
+    const holds = await store.liveAssemblies();
+    for (const [hash, runs] of host.assemblyHolds()) {
+      const known = holds.get(hash) ?? [];
+      holds.set(hash, [...known, ...runs.filter((r) => !known.includes(r))]);
+    }
+    return holds;
+  };
 
-  // Right after restore, not before: restore reads live rows only, and a row it marks `lost` or
-  // `drifted` here is written now, so its week starts now (ADR-0065). A sweep is housekeeping,
-  // never a reason to stay up — nor to fail a boot that has already resumed runs: a failed sweep,
-  // at boot or on the hour, is logged, and the next hour sweeps again. The timer holds no process
-  // alive. A sweep deletes finished rows only, so it never takes a waiting run.
-  const sweep = () =>
-    store
-      .sweep(new Date(Date.now() - RETAIN_MS))
-      .catch((err) => console.error(`sweep failed: ${err instanceof Error ? err.message : err}`));
-  await sweep();
-  const sweeper = setInterval(() => void sweep(), SWEEP_EVERY_MS);
-  sweeper.unref();
+  // Whether the boot deferred its restore to the first publish (step 3 below says why). The host
+  // keeps the flag, so `/agents/*` answers 503 for a waiting run, not 404 (ADR-0026).
+  if (current === null) host.deferRestore();
 
   // The publish door (ADR-0069). Its walk imports the tree at `assemblies/<hash>`, where it stays:
   // the config, every Workflow, then the refusals this process can see. The swap reuses what the
@@ -281,10 +344,14 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     dir: opts.dir,
     current: () => current,
     workflows: () => host.workflows(),
-    holds: () => host.assemblyHolds(),
+    holds: async () => heldAssemblies(opts.dir, current, await holdsByHash()),
+    roots: async () => new Set((await holdsByHash()).keys()),
+    onCollect: (collected) => {
+      for (const hash of collected) imported.delete(hash);
+    },
     load: async (root) => {
       const config = await loadConfig(root);
-      const workflows = await loadWorkflows(root);
+      const workflows = await importWorkflows(root);
       const refusals = await assemblyRefusals({
         config,
         workflows,
@@ -296,13 +363,19 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
         workflows: workflows.map((w) => w.name),
         activate: async (next) => {
           swap(workflows, next);
+          // The Machines the walk imported are this hash's, so a run restored inside it later
+          // (the next boot is a new process; this is for the same one) needs no second import.
+          imported.set(next.hash, Promise.resolve(workflows));
           opts.onPublish?.({ current: next, config, workflows });
-          // The restore a boot with no current Assembly deferred: the ports now read this
-          // Assembly's config, so a re-attached run provisions under it.
-          if (!restorePending) return;
+          // The restore a boot with no current Assembly deferred (ADR-0069). After the swap and
+          // `onPublish`, so the config that applies is bound: a re-attached run provisions under
+          // it. Each run restores inside the Assembly its blob names, as at boot; one whose
+          // Assembly was published for the old Kit version drifts now, and that is final. The
+          // door's collection follows in the same publish, so it removes the Assemblies only those
+          // drifted rows named.
+          if (!host.restorePending) return;
           try {
             const outcome = await host.restore();
-            restorePending = false;
             opts.onRestore?.({ assembly: next.hash, ...outcome });
           } catch (err) {
             // Left pending: the next publish, or the next boot, tries again. The publish itself
@@ -313,6 +386,54 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       };
     },
   });
+
+  // 3. Resume in-flight runs persisted by a prior process (ADR-0007), each inside the Assembly its
+  // snapshot names (ADR-0069). A run whose Assembly this Orchestrator cannot load (a volume that
+  // lost it, another Kit version) is `drifted` with its hash named, and its snapshot is kept. The
+  // outcome is reported, not swallowed (ADR-0030): a boot that declined to resume runs must say
+  // so, or "drifted" is only discoverable by asking after a specific run id nobody knows to ask
+  // about.
+  //
+  // Only when there is a current Assembly. With none (no pointer, a pointer this process cannot
+  // load, a pointer at another Kit version), no config is bound, so a re-attached run that reaches
+  // a provision would fault, which is terminal. And in the Kit bump window ("rolls the image first,
+  // publishes second") every held Assembly is at the old Kit version: a restore now would drift
+  // every live run before the publish, and an image rollback could not resume them. So the rows
+  // wait, untouched, and the first publish restores them (`activate` above).
+  const restored: RestoreOutcome = current
+    ? await host.restore()
+    : { reattached: [], lost: [], drifted: [], failed: [] };
+  const waiting = current ? [] : (await store.live()).map((row) => row.runId);
+
+  // Right after restore, not before: restore reads live rows only, and a row it marks `lost` or
+  // `drifted` here is written now, so its week starts now (ADR-0065). After the rows, the
+  // Assemblies: restore decided which rows stay live, and so which Assemblies stay held (ADR-0069).
+  // A sweep deletes finished rows only, so it never takes a waiting run; and with the restore
+  // deferred, every live row is a root, and so is the pointer's target, so the boot collection
+  // removes only the Assemblies nothing names.
+  // A sweep is housekeeping, never a reason to stay up — nor to fail a boot that has already
+  // resumed runs: a failed sweep or collection, at boot or on the hour, is logged, and the next
+  // hour tries again. The timer holds no process alive.
+  const sweep = async (): Promise<string[]> => {
+    await store
+      .sweep(new Date(Date.now() - RETAIN_MS))
+      .catch((err) => console.error(`sweep failed: ${err instanceof Error ? err.message : err}`));
+    return door.collect();
+  };
+  const collected = await sweep();
+  const onCollect =
+    opts.onCollect ??
+    ((hashes: string[]) => console.log(`collected Assemblies no live run holds: ${hashes.join(", ")}`));
+  const sweeper = setInterval(() => {
+    // `onCollect` is a callback the caller injects (the server's announce): a throw from it is
+    // logged, never an unhandled rejection that ends the process.
+    void sweep()
+      .then((hashes) => {
+        if (hashes.length) onCollect(hashes);
+      })
+      .catch((err) => console.error(`collection announce failed: ${err instanceof Error ? err.message : err}`));
+  }, SWEEP_EVERY_MS);
+  sweeper.unref();
 
   // 4. Serve, authenticated (ADR-0013) — the tokens and key resolved above.
   const auth = createAuthenticator({ instanceToken, signingKey, publishToken });
@@ -340,8 +461,24 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     },
     ...(resolved.error !== undefined ? { assemblyError: resolved.error } : {}),
     workflows: host.workflows(),
+    heldMachines: async () => {
+      const machines: AnyStateMachine[] = [];
+      const now = current;
+      const hashes = [...(now ? [now.hash] : []), ...(await holdsByHash()).keys()];
+      for (const hash of new Set(hashes)) {
+        try {
+          const held = now && hash === now.hash ? { root: now.root } : await heldAssembly(opts.dir, hash);
+          if ("error" in held) continue;
+          machines.push(...(await importAssembly(hash, held.root)).map((w) => w.machine));
+        } catch {
+          // A fault on the volume or in the import: the restore reported it for the run.
+        }
+      }
+      return machines;
+    },
     restored,
     waiting,
+    collected,
     admit: door.admit,
     close: async () => {
       // Before `server.close()`, not after: it waits for in-flight requests, and an observation

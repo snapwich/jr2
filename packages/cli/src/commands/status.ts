@@ -1,8 +1,8 @@
 // `jr2 status [runId|abbrev]` (ADR-0009): print a run's status as JSON on stdout, reading through to the
 // store so a completed run still reports its terminal status + final context. A genuinely unknown run → 1.
 //
-// With NO run named, the verb answers about the INSTANCE instead (ADR-0048/0051/0069): its current
-// Assembly and the live runs that hold it, whether it has a data plane at all, and every Repo
+// With NO run named, the verb answers about the INSTANCE instead (ADR-0048/0051/0069): every
+// Assembly a live run holds, the current one first, whether it has a data plane at all, and every Repo
 // resource's per-node state, so a Repo that will not clone — an
 // unregistered deploy key (ADR-0047), a wrong url, a git host outage — is discoverable by asking
 // the thing that knows, rather than by tailing pod logs. The Orchestrator serves either way; only
@@ -52,7 +52,7 @@ export async function status(args: string[], io: Io): Promise<number> {
 }
 
 /**
- * The instance's own status: the current Assembly, the data-plane switch and every Repo resource. As a table on stdout —
+ * The instance's own status: the held Assemblies, the data-plane switch and every Repo resource. As a table on stdout —
  * every node's state per Repo, and every node whose last attempt FAILED spelled out with git's own
  * error, since that is the line a human acts on — or, with `--json`, as the one object (extensible:
  * the instance has more to report eventually). An instance with no data plane says so — "it runs
@@ -80,23 +80,49 @@ async function readAssembly(fetchImpl: FetchLike, url: string): Promise<Assembly
   try {
     const res = await fetchImpl(`${url.replace(/\/+$/, "")}/assembly`);
     if (!res.ok) return { error: `GET /assembly answered HTTP ${res.status}` };
-    return (await res.json()) as AssemblyView;
+    // Read loosely: a `held` that is absent or not a list reads as none held, so a report never
+    // fails on the shape of one field (ADR-0048: a report is not a failure of the asking).
+    const view = (await res.json()) as Partial<AssemblyView>;
+    return {
+      kitVersion: view.kitVersion ?? "",
+      current: view.current ?? null,
+      held: Array.isArray(view.held) ? view.held : [],
+    };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-/** The Assembly line: the current one and how many live runs hold it, or why there is none. */
-function assemblyLine(view: AssemblyView | { error: string } | undefined): string {
+/**
+ * The Assembly lines (ADR-0069): one per Assembly a live run holds, the current one first and so
+ * marked, each with how many live runs hold it — or why there is none. A run holds the Assembly it
+ * started under, so after a publish the previous one stays on the volume while a run still holds it.
+ * The current Assembly prints first, whatever order `held` uses; the other held Assemblies follow
+ * in the server's order.
+ */
+function assemblyLines(view: AssemblyView | { error: string } | undefined): string {
   if (view === undefined) return "";
   if ("error" in view) return `assembly: unknown — ${view.error}\n`;
   const current = view.current;
-  if (!current) return "assembly: none — `jr2 up` publishes\n";
-  const runs = view.held.find((h) => h.hash === current.hash)?.runs.length ?? 0;
-  return `assembly: ${current.hash} (kit v${current.kitVersion}), ${runs} live run${runs === 1 ? "" : "s"} hold${runs === 1 ? "s" : ""} it\n`;
+  const heldList = view.held;
+  const line = (hash: string, kitVersion: string, runs: number, isCurrent: boolean): string =>
+    `assembly: ${hash} (kit v${kitVersion}${isCurrent ? ", current" : ""}), ` +
+    `${runs} live run${runs === 1 ? "" : "s"} hold${runs === 1 ? "s" : ""} it\n`;
+  let out = "";
+  if (current) {
+    const runs = heldList.find((h) => h.hash === current.hash)?.runs.length ?? 0;
+    out += line(current.hash, current.kitVersion, runs, true);
+  } else {
+    out += "assembly: none — `jr2 up` publishes\n";
+  }
+  for (const held of heldList) {
+    if (held.hash === current?.hash) continue;
+    out += line(held.hash, held.kitVersion, held.runs.length, false);
+  }
+  return out;
 }
 
-/** The human table — the current Assembly, one line per Repo, one per node under it, then the
+/** The human table — the held Assemblies, current first, one line per Repo, one per node under it, then the
  * hints for what was seen. */
 export function renderInstanceStatus({
   assembly,
@@ -107,7 +133,7 @@ export function renderInstanceStatus({
   dataPlane: boolean;
   repos: RepoStatus[];
 }): string {
-  let out = assemblyLine(assembly);
+  let out = assemblyLines(assembly);
   out += dataPlane
     ? "data plane: yes\n"
     : "data plane: none — this Orchestrator runs outside a cluster, so it provisions no Sandbox (ADR-0069)\n";

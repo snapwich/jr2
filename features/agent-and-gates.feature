@@ -101,24 +101,6 @@ Feature: Agents and gates drive a run from outside
       Then the delivery is refused naming the accepted events
       And the run's status shows state "humanReview"
 
-  Rule: a run is not resumed into a Machine that changed shape underneath it
-    ADR-0030. A run is matched to its workflow by NAME, and the state outlives the image that wrote
-    it — so a run parked when the orchestrator went down meets whatever the next Assembly holds.
-    The snapshot names the Machine that wrote it; a mismatch is refused, kept, and announced. It is
-    refused rather than merely warned about because xstate does not validate a restored state value:
-    resumed into a chart missing that state, the run would simply carry on from nowhere.
-
-    Scenario: editing a workflow refuses its parked runs instead of resuming them
-      Given a fresh instance
-      And the instance also has the "guarded" workflow
-      And the orchestrator is serving
-      And I start the "guarded" workflow against the stub harness with 0 attempts
-      Then the run's status shows state "working"
-      When the "guarded" workflow is replaced with the "guarded-reshaped" fixture and the orchestrator restarts
-      Then the boot reports the run as drifted
-      And the run reads as drifted, still parked at "working", and says why
-      And the run is absent from the runs list
-
   Rule: CANCEL ends a run, and ending it ends its Agents' turns
     ADR-0025. `jr2 send --event CANCEL` is the human saying "abandon this". It is not a park: the
     run settles `cancelled` rather than staying restorable, and the Agent it was waiting on stops

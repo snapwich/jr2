@@ -136,23 +136,10 @@ When(
   },
 );
 
-// The redeploy, played honestly: the workflow's CODE changes under the same name, the fixture
-// publishes it while the run is parked (`jr2 up` after an edit, minus the cluster), and the
-// orchestrator restarts on the same store and volume. The live run keeps its def until the
-// restart; the restart boots from `current` and restores into the new Machine (ADR-0030, ADR-0069).
-When(
-  "the {string} workflow is replaced with the {string} fixture and the orchestrator restarts",
-  async function (this: E2EWorld, name: string, fixture: string): Promise<void> {
-    await this.installFixtureWorkflow(fixture, name);
-    await this.publish();
-    await this.restartServer();
-  },
-);
-
 Then("the boot reports the run as drifted", function (this: E2EWorld): void {
   // Not merely discoverable by asking after a run id — announced, because nobody knows to ask.
   assert.deepEqual(this.announced?.drifted, [this.runId], "the announce line names the refused run");
-  assert.equal(this.announced?.failed, undefined, "a shape change is a verdict, not an error");
+  assert.equal(this.announced?.failed, undefined, "drift is a verdict, not an error");
 });
 
 When("I cancel the run", async function (this: E2EWorld): Promise<void> {
@@ -208,14 +195,20 @@ Then("the run's status shows {string}", async function (this: E2EWorld, terminal
 // A refused run is still a READABLE run — the difference from `lost`, which nulls the snapshot and
 // so answers `no run "<id>"`, indistinguishable from one that never existed (ADR-0030).
 Then(
-  "the run reads as drifted, still parked at {string}, and says why",
-  async function (this: E2EWorld, value: string): Promise<void> {
+  "the run reads as drifted, still parked at {string}, and says its Assembly {string}",
+  async function (this: E2EWorld, value: string, why: string): Promise<void> {
     const r = await this.runCli(["status", this.runId!]);
     assert.equal(r.code, 0, `jr2 status on a drifted run must still succeed: ${r.stderr}`);
-    const s = this.resultJson<{ status: string; value: unknown; reason?: string }>();
+    const s = this.resultJson<{ status: string; value: unknown; reason?: string; assembly?: string }>();
     assert.equal(s.status, "drifted");
     assert.equal(s.value, value, "kept exactly where it was — nothing was interpreted");
-    assert.match(s.reason ?? "", /changed shape/, "and the refusal explains itself");
+    // The refusal explains itself (ADR-0069): it names the Assembly the snapshot was saved under,
+    // and what about it this Orchestrator cannot read — the one cause the scenario gives.
+    assert.ok(s.assembly, "a drifted run still names the Assembly it started under");
+    assert.ok(
+      (s.reason ?? "").includes(`Assembly ${s.assembly} ${why}`),
+      `the reason names the hash and says "${why}": ${s.reason}`,
+    );
   },
 );
 

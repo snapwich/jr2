@@ -97,7 +97,7 @@ import {
   type SandboxEffectorManifest,
 } from "./sandbox-effector.ts";
 import { GIT_PUSH_MANIFEST_KEY, placedPushRefusal, readGitPushManifest } from "./git-push.ts";
-import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
+import { readImageRefs, resolveSandboxImage, resolveUserImage, type HeldImageScope, type ImageRefs } from "./images.ts";
 import {
   CONVERSATIONS_DIR,
   CONVERSATIONS_DIR_ENV,
@@ -493,6 +493,11 @@ export type KubeSandboxOptions = {
    * PriorityClass that a provision reads are the ones current when it runs.
    */
   settings?: () => KubeSandboxSettings;
+  /** The current Assembly's hash, read per provision (ADR-0069). A provision for a run under
+   * another Assembly (a held run) whose `file:` context is not in the image map fails naming both
+   * hashes, because the map holds the current Assembly's contexts only. Absent → no current
+   * Assembly is known, and such a failure names none. */
+  currentAssembly?: () => string | undefined;
 };
 
 /** The options of {@link KubeSandboxOptions} that come from the Instance's config. */
@@ -553,9 +558,15 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    * and the standard managed-access shape (a root sshd that setuids sessions down) must run
    * unmodified.
    */
-  const userSidecar = async (refs: ImageRefs, image: string, keys: string[], split: SizeSplit) => ({
+  const userSidecar = async (
+    refs: ImageRefs,
+    image: string,
+    keys: string[],
+    split: SizeSplit,
+    held: HeldImageScope | undefined,
+  ) => ({
     name: "user",
-    image: await resolveUserImage(refs, image),
+    image: await resolveUserImage(refs, image, held),
     volumeMounts: [
       { name: "work", mountPath: WORK_ROOT },
       RUNTIME_VOLUME_MOUNT,
@@ -575,11 +586,12 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     refs: ImageRefs,
     keys: string[],
     split: SizeSplit,
+    held: HeldImageScope | undefined,
     user?: string,
     effector?: Record<string, unknown>,
   ) => [
     custodian.custodianContainer,
-    ...(user !== undefined ? [await userSidecar(refs, user, keys, split)] : []),
+    ...(user !== undefined ? [await userSidecar(refs, user, keys, split, held)] : []),
     ...(effector !== undefined ? [effector] : []),
   ];
 
@@ -595,11 +607,12 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     keys: string[],
     seat: Seat,
     manifest: SandboxEffectorManifest,
+    held: HeldImageScope | undefined,
   ) => {
     let image = seat.image;
     let securityContext: Record<string, unknown> = seat.securityContext;
     if (req.effector !== undefined) {
-      const named = await resolveSandboxImage(refs, req.effector);
+      const named = await resolveSandboxImage(refs, req.effector, held);
       if (named.refusedUser !== undefined) {
         throw new Error(
           `the Sandbox Effector's image "${req.effector}" declares \`USER ${named.refusedUser}\`, which cannot run a jr2 ` +
@@ -696,12 +709,16 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     securityContext: typeof HARDENED & { runAsUser?: number };
   };
 
-  const seatFor = async (refs: ImageRefs, name?: string): Promise<Seat> => {
+  const seatFor = async (
+    refs: ImageRefs,
+    name: string | undefined,
+    held: HeldImageScope | undefined,
+  ): Promise<Seat> => {
     // ONE resolution, so the ref and the two seat facts can never come off different legs of
     // ADR-0037's chain (images.ts). It is async because a `file:` context is keyed by its content
     // digest, which is a directory walk — the price of the host and the pod agreeing about an
     // image without a path table (ADR-0049).
-    const { ref: image, fallbackSeat, refusedUser } = await resolveSandboxImage(refs, name);
+    const { ref: image, fallbackSeat, refusedUser } = await resolveSandboxImage(refs, name, held);
     // Fail HERE, before a Secret or a CR exists, on a `USER` the kubelet will refuse (images.ts).
     // The alternative is the worst shape a failure has: the preflight container never starts, so
     // it has no logs, and the whole 120s Ready budget burns before anything is said. The converge
@@ -741,6 +758,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       workGroup?: number;
       userResources?: Size;
       effector?: string;
+      assembly?: string;
     },
     refs: ImageRefs,
     repos: FencedRepo[],
@@ -750,10 +768,17 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     gitCredentials: readonly string[] = [],
   ) => {
     const placement = cfg().placement;
-    const seat = await seatFor(refs, req.image);
+    // A run under a held Assembly (ADR-0069): an image this map lacks is that case, not a stale
+    // deployment, and the failure says so, naming both hashes.
+    const current = opts.currentAssembly?.();
+    const held: HeldImageScope | undefined =
+      req.assembly !== undefined && req.assembly !== current
+        ? { runId: req.runId, assembly: req.assembly, current }
+        : undefined;
+    const seat = await seatFor(refs, req.image, held);
     const keys = repos.map((r) => r.key);
-    const effector = effectorManifest ? await effectorFor(req, refs, keys, seat, effectorManifest) : undefined;
-    const sidecars = await sidecarsFor(custodian, refs, keys, split, req.user, effector?.container);
+    const effector = effectorManifest ? await effectorFor(req, refs, keys, seat, effectorManifest, held) : undefined;
+    const sidecars = await sidecarsFor(custodian, refs, keys, split, held, req.user, effector?.container);
     return {
       apiVersion: "core.jr2.dev/v1alpha1",
       kind: "Sandbox",

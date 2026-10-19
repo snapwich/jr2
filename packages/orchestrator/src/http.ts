@@ -85,6 +85,11 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The 503 body while a deferred restore is pending (ADR-0026, ADR-0069): ask again. */
+function restorePendingMessage(what: string): string {
+  return `the Orchestrator has not restored its runs yet (no current Assembly) — ask again for ${what}`;
+}
+
 /** Why the publish token is refused everywhere but `PUT /assembly` (ADR-0069): it is not an
  * Instance principal, so it reads no run, starts none, and speaks for no Agent. */
 const PUBLISHER_ONLY = "the publish token publishes an Assembly (PUT /assembly) and does nothing else";
@@ -461,7 +466,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // `mounts` is what this process reads from its mounted ConfigMaps, so a publish can wait until
   // the kubelet has delivered the data the converge wrote.
   app.get("/assembly", async (c) => {
-    const view = opts.assembly ? opts.assembly.view() : { kitVersion: KIT_VERSION, current: null, held: [] };
+    const view = opts.assembly ? await opts.assembly.view() : { kitVersion: KIT_VERSION, current: null, held: [] };
     return c.json(opts.mounts ? { ...view, mounts: await opts.mounts() } : view);
   });
 
@@ -882,6 +887,13 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       };
     }
     const surface = host.agentSurface(instanceId);
+    // A boot with no current Assembly listens before it restores (ADR-0069): until the first
+    // publish restores the waiting runs, a registration this host does not have may be one of
+    // theirs, and that Turn is not over either. AFTER the lookup, so a run that is hosted already
+    // (re-attached, or started under the published Assembly) is served.
+    if (!surface && host.restorePending) {
+      return { error: c.json({ error: restorePendingMessage(`instance "${instanceId}"`) }, 503) };
+    }
     // The one catch point (ADR-0011): no live registration (settled run, exited state, unknown
     // iid) → there is no surface to serve. 404 BEFORE the scope check — a caller with a valid
     // token learns nothing from it that it did not already know.
@@ -953,6 +965,10 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       return c.json({ error: `the Orchestrator is stopping — ask again for delivery "${deliveryId}"` }, 503);
     }
     const scope = host.deliveryScope(instanceId, deliveryId);
+    // Not restored yet is not over (ADR-0026, ADR-0069): the restored host answers from the hold.
+    if (!scope && host.restorePending) {
+      return c.json({ error: restorePendingMessage(`delivery "${deliveryId}"`) }, 503);
+    }
     if (!scope) return c.json({ error: `no delivery "${deliveryId}" for instance "${instanceId}"` }, 404);
     if (!mayDeliverToAgent(principalOf(c), scope.sandbox)) {
       return c.json({ error: `this token cannot speak for instance "${instanceId}"` }, 403);

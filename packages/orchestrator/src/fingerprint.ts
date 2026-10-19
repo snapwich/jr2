@@ -1,7 +1,8 @@
 // The content address of a Machine's SHAPE (ADR-0030). A persisted snapshot names the Machine it
-// was written under; restore compares and refuses a mismatch, because a workflow is matched to a
-// run by filename alone and the state volume outlives the image that wrote it — so a run parked at
-// a Gate meets whatever `jr2 up` baked in next, and nothing used to notice.
+// was written under; restore compares and refuses a mismatch. A run restores inside the Assembly
+// its snapshot names (ADR-0069), and the same bytes give the same Machine, so inside one Assembly
+// a mismatch means a hash collision or a hand-edited volume. An unstamped blob is still matched to
+// its Machine by workflow name alone, and there the check is the only guard.
 //
 // What it hashes is RESTORABILITY, not behavior: the facts that decide whether an old snapshot can
 // still be interpreted — state ids and nesting, which state is initial, what each state invokes and
