@@ -1,0 +1,8 @@
+{
+  "initial": "lint",
+  "states": {
+    "lint": {
+      "invoke": { "src": "linter", "input": { "prompt": "Lint {{input.task}}" } }
+    }
+  }
+}

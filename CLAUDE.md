@@ -56,10 +56,11 @@ measured that such changes are large (the same Allowed picks: 0/10 obeyed ahead 
 runs in CI. **You run it.**
 
 **When.** After any change to what the model reads or is offered, before calling the change done: the Briefing
-(`packages/harness/src/briefing.ts`), the Menu's rendering or its refusal text, the nudge, the Working tools and their
-descriptions, Compaction's summary, the admit body's notices, the pi pin, a provider adapter, or an authoring surface
-that changes a Frame. Also before bumping pi: it is the third canary beside conformance and `@kind`. If you are
-reviewing a feature or refactor that touched one of these and did not run it, say so.
+(`packages/harness/src/briefing.ts`), the Chart briefing (`CHART_BRIEFING`, `packages/orchestrator/src/chart.ts`), the
+Menu's rendering or its refusal text, the nudge, the Working tools and their descriptions, Compaction's summary, the
+admit body's notices, the pi pin, a provider adapter, or an authoring surface that changes a Frame. Also before bumping
+pi: it is the third canary beside conformance and `@kind`. If you are reviewing a feature or refactor that touched one
+of these and did not run it, say so.
 
 **How.**
 
@@ -74,16 +75,17 @@ and exits 0 — report that skip in your handoff exactly as you would a result; 
 key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone and never a file. Reachability from the PODS is
 `jr2 up`'s own provider preflight, per scenario.
 
-**What it runs.** Eighteen scenarios in `features/model.feature`, serial (the endpoint is one shared capacity). Sixteen
-are CLAIMS — an ADR's measured claim as N trials with a floor: `obedience` (Allowed picks obeyed, thinking off and on),
-`advised` (a Menu-only Agent's first call is its pick), `workdir` (a relative write lands in the Worktree), `noticed` (a
-memory-kill notice is acted on), the mode and step-boundary claims (`mode-follow`, `mode-refusal`, `mode-stop`, `wake`,
-`push-follow`), the held-answer claims (`chain-answer`, `cut-pick`), the command-Effect claims (`answered`,
-`allowed-after-route`, `unknown-outcome`), and the push claim (`continue-after-signed-push`: the push after a signed
-push publishes). Two are THE RUN — `ticket`: planner, coder, reviewer, and a commit verified in the pod (branch ahead of
-`main`, HEAD is the named commit, tree clean, `node --test` passes); and `ticket-modes`, one coder Turn through three
-modes. The whole tier is about 70 minutes on the home lab (four runs, 65 to 75); each claim is a few minutes,
-`mode-stop` and `wake` about ten.
+**What it runs.** Nineteen scenarios in `features/model.feature`, serial (the endpoint is one shared capacity).
+Seventeen are CLAIMS — an ADR's measured claim as N trials with a floor: `obedience` (Allowed picks obeyed, thinking off
+and on), `advised` (a Menu-only Agent's first call is its pick), `workdir` (a relative write lands in the Worktree),
+`noticed` (a memory-kill notice is acted on), the mode and step-boundary claims (`mode-follow`, `mode-refusal`,
+`mode-stop`, `wake`, `push-follow`), the held-answer claims (`chain-answer`, `cut-pick`), the command-Effect claims
+(`answered`, `allowed-after-route`, `unknown-outcome`), the push claim (`continue-after-signed-push`: the push after a
+signed push publishes), and the Chart claim (`chart-refusal`: after the door refuses a planner's Chart, its next Chart
+admits; its floor is set ahead of a measured run, ADR-0070). Two are THE RUN — `ticket`: planner, coder, reviewer, and a
+commit verified in the pod (branch ahead of `main`, HEAD is the named commit, tree clean, `node --test` passes); and
+`ticket-modes`, one coder Turn through three modes. The whole tier is about 70 minutes on the home lab (four runs, 65 to
+75); each claim is a few minutes, `mode-stop` and `wake` about ten.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
 `scorecard: <model> <cell>: k/N`. Every trial, pass or not, keeps its evidence in

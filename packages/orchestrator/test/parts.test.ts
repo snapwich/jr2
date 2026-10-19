@@ -15,6 +15,7 @@ import { file, http, secret } from "../src/http-effect.ts";
 import { push } from "../src/sandbox-effect.ts";
 import { arg, commandWith } from "../src/effect.ts";
 import { jr2Setup } from "../src/setup.ts";
+import { openBody } from "../src/open-body.ts";
 import { pool, source } from "../src/pool.ts";
 import { workspace } from "../src/workspace.ts";
 import { defineEvent } from "@jr2/agent-protocol";
@@ -141,6 +142,8 @@ const NOTHING = {
   openEffects: [],
   sizes: [],
   composesSandbox: false,
+  openBodies: [],
+  models: [],
 };
 
 test("no Agents anywhere is an empty answer — a workflow may invoke none, and compose no Sandbox", () => {
@@ -276,6 +279,11 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
     // Instance default and the kit's, and splits it (ADR-0060).
     sizes: [{ path: ["feature"], route: ["feature"] }],
     composesSandbox: true,
+    // No Open body; every bound model is preflighted, and the `"none"` Agent's converges the
+    // Instance Harness (ADR-0031).
+    openBodies: [],
+    models: ["anthropic/claude-haiku", "anthropic/claude-x", "vllm/qwen"],
+    instanceHarness: { models: ["anthropic/claude-haiku"] },
   });
 });
 
@@ -682,4 +690,89 @@ test("workspace() refuses a secrets list that is not distinct names", () => {
       /`secrets` must be a list of distinct names/,
     );
   }
+});
+
+// --- Open bodies (ADR-0070): the one Open part a run binds --------------------------------------
+
+test("the walk carries each Open body, its allowed models, and the Instance Harness it needs (ADR-0070)", () => {
+  const coder = agent({ model: "anthropic/claude-sonnet-4-6", instructions: "code" });
+  const wrapper = jr2Setup({
+    events: [],
+    actors: {
+      coder,
+      body: openBody({
+        lends: { agents: ["coder"] },
+        allows: { models: ["openai/gpt-5", "anthropic/claude-sonnet-4-6"], workspace: ["none", "write"] },
+        ceilings: { turns: 3, wallClock: "10m", transitions: 100, fanOut: 2, size: 4096 },
+      }),
+    },
+  }).createMachine({ id: "charted", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  const carried = partsOf([wrapper]);
+  assert.deepEqual(
+    carried.openBodies.map((b) => ({ slot: b.slot, path: b.path, lends: b.declaration.lends })),
+    [{ slot: "body", path: [], lends: { agents: ["coder"] } }],
+  );
+  assert.deepEqual(carried.models, ["anthropic/claude-sonnet-4-6", "openai/gpt-5"], "every model a key is placed for");
+  assert.deepEqual(carried.instanceHarness, { models: ["anthropic/claude-sonnet-4-6", "openai/gpt-5"] });
+  assert.deepEqual(carried.openAgents, [], "an Open body reports nothing Open");
+  assert.deepEqual(carried.openSlots, []);
+
+  const plain = partsOf([
+    jr2Setup({ events: [], actors: { coder } }).createMachine({
+      id: "p",
+      initial: "a",
+      states: { a: { invoke: { src: "coder", input: { prompt: "x" } } } },
+    }),
+  ]);
+  assert.deepEqual(plain.openBodies, []);
+  assert.deepEqual(plain.models, ["anthropic/claude-sonnet-4-6"]);
+  assert.equal(plain.instanceHarness, undefined, 'no "none" Agent and no Open body allowing it');
+});
+
+test("an Open body that allows only a Workspace places its models in that Workspace's pod, not the Instance Harness", () => {
+  const body = jr2Setup({
+    events: [],
+    actors: {
+      body: openBody({
+        lends: {},
+        allows: { models: ["openai/gpt-5"], workspace: ["write"] },
+        ceilings: { turns: 3, wallClock: "10m", transitions: 100, fanOut: 2, size: 4096 },
+      }),
+    },
+  }).createMachine({ id: "inner", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  const ws = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "feat-1" }) });
+  const carried = partsOf([ws]);
+  assert.equal(carried.instanceHarness, undefined);
+  assert.deepEqual(carried.models, ["openai/gpt-5"]);
+  assert.deepEqual(workspacePodsOf(ws)[0]!.models, ["openai/gpt-5"]);
+});
+
+test("a lent Agent's Turn runs where its own access says, so the allowed models are placed there too (ADR-0070)", () => {
+  const ceilings = { turns: 3, wallClock: "10m" as const, transitions: 100, fanOut: 2, size: 4096 };
+  // A "write" coder lent by a body that allows Chart Agents "none" only: a Chart may dial the
+  // coder's model to prov/B, and the coder's Turn runs in the pod, so the pod needs prov/B's key.
+  const writeLent = jr2Setup({
+    events: [],
+    actors: {
+      coder: agent({ model: "prov/A", instructions: "code" }),
+      body: openBody({ lends: { agents: ["coder"] }, allows: { models: ["prov/B"], workspace: ["none"] }, ceilings }),
+    },
+  }).createMachine({ id: "inner", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  const ws = workspace(writeLent, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "f" }) });
+  assert.deepEqual(workspacePodsOf(ws)[0]!.models, ["prov/A", "prov/B"]);
+
+  // A "none" Agent lent by a body that allows Chart Agents "write" only: its Turn runs at the
+  // Instance Harness, so the Instance Harness needs prov/B's key.
+  const noneLent = jr2Setup({
+    events: [],
+    actors: {
+      summarizer: agent({ model: "prov/C", instructions: "sum", workspace: "none" }),
+      body: openBody({
+        lends: { agents: ["summarizer"] },
+        allows: { models: ["prov/B"], workspace: ["write"] },
+        ceilings,
+      }),
+    },
+  }).createMachine({ id: "charted", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  assert.deepEqual(partsOf([noneLent]).instanceHarness, { models: ["prov/B", "prov/C"] });
 });

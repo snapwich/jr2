@@ -75,6 +75,7 @@ import {
   vocabularyOf,
 } from "./vocabulary.ts";
 import { isEffect, type Arg } from "./effect.ts";
+import { attachLent, copyOpenBody, lentIn, openBodiesOf, openBodyDeclarationOf } from "./open-body.ts";
 import { effectChecks } from "./effect-checks.ts";
 import type { Text } from "./http-effect.ts";
 import {
@@ -331,6 +332,18 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
       );
     }
     actors[name] = customize(child, childParts as Customize<AnyStateMachine>);
+  }
+  // An Open body lends by slot name (ADR-0070), and its stamped lent set must be the retuned slots,
+  // not the import's: each body is copied (the import keeps its own stamp) and stamped again over
+  // the retuned actors.
+  if (Object.keys(actors).length > 0) {
+    const impl = machine.implementations as Parameters<typeof lentIn>[0];
+    const merged = { ...impl, actors: { ...(impl.actors ?? {}), ...actors } };
+    for (const { slot, logic } of openBodiesOf(machine)) {
+      const copy = copyOpenBody(logic);
+      attachLent(copy, lentIn(merged, openBodyDeclarationOf(logic)));
+      actors[slot] = copy;
+    }
   }
   const out = substitute(machine, actors);
   if (bound.length === 0) return out;

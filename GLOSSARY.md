@@ -162,9 +162,16 @@ _Avoid_: wrapper (unqualified: any Machine with a body slot, `workspace()` and `
 template, scaffold, fixture
 
 **Chart**:
-A Machine written as data alone, with no code of its own, that a run supplies to bind an Open body. Its states,
-transitions, events and Agents are its own; every other part is one that the Open body lends it, named by its slot.
+A Machine written as data alone, with no code of its own, that a run supplies to bind an Open body. Its author is an
+Agent whose pick carries it; a Chart kept under a name is the same text, kept. Its states, transitions, events and
+Agents are its own; every other part is one that the Open body lends it, named by its slot. It carries no url and names
+no Turn's placement: the Open body places the Turns its Chart starts.
 _Avoid_: dynamic workflow (a Chart under a name IS a Workflow), plan, script, template, body (the slot, not what fills it)
+
+**Reference**:
+A path lookup a Chart writes in place of data, `{{context.ticket.title}}` or `{ "$ref": "event.summary" }`, that jr2
+resolves on the run's context, event or input at invoke time. A path walk and nothing else: no operator, no call.
+_Avoid_: template, expression, interpolation, variable, placeholder (the `{{ }}` spelling of a reference, not the thing)
 
 ### Turns and conversations
 
@@ -238,7 +245,8 @@ _Avoid_: history (the view of Settlements), log
 **Briefing**:
 jr2's own text to the model: the facts about the Agent's seat and the mechanism that a correct Agent needs and cannot
 find out for itself, and nothing about the task. It has a standing part, the same on every Turn, and a Turn part after
-the Frame's prompt that carries the Allowed picks and any **notices**.
+the Frame's prompt that carries the Allowed picks, any **notices**, and a **pick's briefing** for an Allowed pick whose
+parameter needs one (a Chart).
 _Avoid_: system prompt (the Turn part is not in it), preamble, header, instructions (identity's word), nudge (a
 re-prompt of an open Turn)
 

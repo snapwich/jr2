@@ -48,6 +48,7 @@ import { isAgent } from "./agent.ts";
 import { isEffect } from "./effect.ts";
 import { effectChecks } from "./effect-checks.ts";
 import { gate } from "./gate.ts";
+import { attachLent, isOpenBody, openBodyDeclarationOf, type LentParts } from "./open-body.ts";
 import { refuseInlineParts } from "./parts.ts";
 import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
@@ -183,6 +184,11 @@ export function jr2Setup<
     // Resolve the defs first (duplicates and reserved semantics fail HERE, naming the machine —
     // the same loud failure `eventMap` gave the manifest, moved to machine-build time)…
     const defs = eventMap((machineConfig as { id?: string }).id ?? "(machine)", def.events);
+
+    // Every Open body slot (ADR-0070), found by its brand: each name it lends resolves against THIS
+    // setup's own parts, or the Machine is refused naming it. The resolved set is stamped on the slot,
+    // for the door that admits a Chart before a run and for the walk at `jr2 up`.
+    stampOpenBodies((machineConfig as { id?: string }).id ?? "(machine)", def);
 
     // …then rewrite the config (ADR-0015): every Agent-slot/`gate` invoke's input is wrapped to
     // append its DERIVED menu and finalize the mechanism fields. Static — the walk sees the same
@@ -666,7 +672,13 @@ function restWarnings(machine: AnyStateMachine, actors: Record<string, UnknownAc
               }
               continue;
             }
-            if (isAgent(logic) || isEffect(logic) || (logic as { root?: unknown } | undefined)?.root !== undefined)
+            // An Open body (ADR-0070) runs a Chart, as a child Machine runs its states.
+            if (
+              isAgent(logic) ||
+              isEffect(logic) ||
+              isOpenBody(logic) ||
+              (logic as { root?: unknown } | undefined)?.root !== undefined
+            )
               continue;
             if (settlesOnItsOwn(logic)) continue;
             out.push(
@@ -684,6 +696,64 @@ function restWarnings(machine: AnyStateMachine, actors: Record<string, UnknownAc
   };
   visit(machine.root);
   return out;
+}
+
+/**
+ * Resolve and stamp every Open body slot's lent set (ADR-0070). Each name an Open body lends must be
+ * a part of this setup, of the kind it is lent as: an `agents` entry an Agent slot (an Open one too:
+ * its composer binds it as today), an `effects` entry an Effect, a `machines` entry a Machine, and a
+ * guard, action or delay one this setup implements. An unknown name refuses the createMachine naming
+ * it, so an Open body whose names did not resolve never reaches the walk.
+ */
+function stampOpenBodies(
+  machineId: string,
+  def: {
+    actors?: Record<string, unknown>;
+    guards?: Record<string, unknown>;
+    actions?: Record<string, unknown>;
+    delays?: Record<string, unknown>;
+  },
+): void {
+  const actors = def.actors ?? {};
+  for (const [slot, logic] of Object.entries(actors)) {
+    if (!isOpenBody(logic)) continue;
+    const decl = openBodyDeclarationOf(logic);
+    const faults: string[] = [];
+    const lent: LentParts = { actors: {}, guards: {}, actions: {}, delays: {} };
+    const actorKinds = [
+      ["agents", "an Agent slot (agent(...))", isAgent],
+      ["effects", "an Effect slot", isEffect],
+      ["machines", "a Machine", (l: unknown) => (l as { root?: unknown } | undefined)?.root !== undefined],
+    ] as const;
+    for (const [kind, what, test] of actorKinds) {
+      for (const name of decl.lends[kind] ?? []) {
+        const found = actors[name];
+        if (name === slot) faults.push(`lends.${kind}: "${name}" is the Open body itself`);
+        else if (found === undefined) {
+          faults.push(
+            `lends.${kind}: "${name}" is no actor slot of this Machine; its actors: ${Object.keys(actors).join(", ")}`,
+          );
+        } else if (!test(found)) faults.push(`lends.${kind}: "${name}" is not ${what}`);
+        else lent.actors[name] = found as UnknownActorLogic;
+      }
+    }
+    const implKinds = [
+      ["guards", def.guards ?? {}, lent.guards],
+      ["actions", def.actions ?? {}, lent.actions],
+      ["delays", def.delays ?? {}, lent.delays],
+    ] as const;
+    for (const [kind, impl, into] of implKinds) {
+      for (const name of decl.lends[kind] ?? []) {
+        if (impl[name] === undefined) {
+          faults.push(
+            `lends.${kind}: "${name}" is no ${kind.slice(0, -1)} of this Machine; its ${kind}: ${Object.keys(impl).join(", ") || "none"}`,
+          );
+        } else (into as Record<string, unknown>)[name] = impl[name];
+      }
+    }
+    if (faults.length) throw new Error(`machine "${machineId}": Open body "${slot}": ${faults.join("; ")}`);
+    attachLent(logic, lent);
+  }
 }
 
 /**

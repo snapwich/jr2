@@ -27,7 +27,8 @@
 // `assembly` is the current Assembly's hash, or `null` with `assemblyError` saying why when the
 // volume named one this process cannot load. The line also names the runs the boot did not resume
 // (`lost`, `drifted`, `failed`; ADR-0030), each restored inside the Assembly its snapshot names,
-// and the Assemblies the boot `collected` because no live run holds them (ADR-0069). A boot with
+// and the Assemblies the boot `collected` because no live run holds them (ADR-0069), and, when any
+// exists, the named Charts as `charts: { files, runtime, unrunnable }` (ADR-0070). A boot with
 // no current Assembly restores nothing: it names the live runs it left untouched as `waiting`, and
 // the first publish that lands restores them and announces one more line,
 // `{ assembly, lost?, drifted?, failed? }`, when any run was not resumed. The hourly sweep
@@ -319,6 +320,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // the announce line (ADR-0030) — the one thing every boot prints, whatever is reading it. Without
   // this, `drifted` is only reachable by asking after a run id nobody knows to ask about.
   const { lost, drifted, failed } = inst.restored;
+  const chartCounts = inst.charts;
   opts.announce(
     JSON.stringify({
       url: inst.url,
@@ -333,6 +335,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       // The live runs a boot with no current Assembly left untouched; the first publish restores them.
       ...(inst.waiting.length ? { waiting: inst.waiting } : {}),
       ...(inst.collected.length ? { collected: inst.collected } : {}),
+      // The named Charts (ADR-0070), when any exists: how many Chart files and runtime Charts, and
+      // the ones that cannot run now, with why.
+      ...(chartCounts.files || chartCounts.runtime ? { charts: chartCounts } : {}),
     }),
   );
   // After serving, never awaited: the bound Repos' resources (ADR-0051). Serving does not wait on

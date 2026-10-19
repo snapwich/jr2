@@ -70,12 +70,33 @@ import {
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { composesSandbox } from "./parts.ts";
 import { fingerprintOf } from "./fingerprint.ts";
-import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
+import {
+  serializeMachine,
+  type ChildMachineDoc,
+  type MachineBodyDoc,
+  type MachineDoc,
+  type MachineStateDoc,
+} from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import type { AgentAdmission } from "./actor.ts";
 import { dropSavedTails, type EffectRow } from "./effect.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
+import { admitChart, chartBriefingOf, chartHash, ChartRefusal, isChartSchema, type ChartText } from "./chart.ts";
+import type { ChartOrigin, NamedChart } from "./charts.ts";
+import {
+  admitBodyChart,
+  admitWrapperChart,
+  boundChartRoutesOf,
+  chartWrapperMachineOf,
+  boundMachineOf,
+  compileChart,
+  isOpenBody,
+  lentIn,
+  openBodiesOf,
+  openBodyDeclarationOf,
+  type BoundChartRoute,
+} from "./open-body.ts";
 
 /** The actors filled into a run's named slots — `.provide()` is the unit-test seam (ADR-0015);
  * production instances inject nothing. Built fresh at start and at restore. */
@@ -95,7 +116,103 @@ export type WorkflowDef = {
    * loaded: an in-process test host, which stamps nothing.
    */
   assembly?: string;
+  /**
+   * The def is a Chart wrapper (ADR-0070): `body` is its (first) Open body's slot key, and
+   * `chartFields` are the door's fields that are `chartSchema` — empty for a wrapper whose Charts
+   * only its own states supply. `register` reads both off the Machine when the caller leaves this
+   * out.
+   */
+  wrapper?: { body: string; chartFields: string[] };
+  /**
+   * The def is a named Chart (ADR-0070): the Workflow `<wrapper>/<name>`, whose `machine` is its
+   * wrapper's. A start supplies every Chart field of the wrapper's door from `text` and takes the
+   * rest from the caller.
+   */
+  chart?: { wrapper: string; name: string; text: ChartText; hash: string; origin: ChartOrigin };
 };
+
+/**
+ * One entry of `GET /workflows` (ADR-0070): a Workflow and where it came from. A Chart wrapper's
+ * entry carries its Open body, whether its door takes a Chart (`oneShot`), and its named Charts.
+ */
+export type WorkflowListing = {
+  name: string;
+  origin: "machine" | ChartOrigin;
+  wrapper?: {
+    body: string;
+    oneShot: boolean;
+    charts: Array<{ name: string; origin: ChartOrigin; unrunnable?: string }>;
+  };
+  unrunnable?: string;
+};
+
+/** What makes a Machine a Chart wrapper (ADR-0070), read off it: its first Open body's slot key and
+ * the door's fields that are `chartSchema`. The bodies are seen through jr2's transparent wrappers
+ * (a Chart wrapper that is a `workspace()`'s body), and the door is the registered Machine's.
+ * Undefined for a Machine with no Open body. */
+function wrapperOf(machine: AnyStateMachine): WorkflowDef["wrapper"] | undefined {
+  const bodies = openBodiesOf(chartWrapperMachineOf(machine).machine);
+  if (!bodies.length) return undefined;
+  const shape = (inputSchemaOf(machine)?.shape ?? {}) as Record<string, unknown>;
+  return { body: bodies[0]!.slot, chartFields: Object.keys(shape).filter((k) => isChartSchema(shape[k])) };
+}
+
+/** A pick one of whose parameters is a Chart (by schema identity, ADR-0070) is marked with that
+ * grammar's briefing, for the Turn part. */
+function briefingOf(input: z.ZodObject): { briefing?: string } {
+  const shape = input.shape as Record<string, unknown>;
+  for (const key of Object.keys(shape)) {
+    const briefing = chartBriefingOf(shape[key]);
+    if (briefing !== undefined) return { briefing };
+  }
+  return {};
+}
+
+/** The short wrapper name of a Workflow name: `<wrapper>` of `<wrapper>/<name>`, else the name. */
+function wrapperName(workflow: string): string {
+  const at = workflow.indexOf("/");
+  return at > 0 ? workflow.slice(0, at) : workflow;
+}
+
+/**
+ * Why a run's bound Charts no longer read under `machine` (ADR-0070, D-B), or undefined when each
+ * does: every bound Chart is admitted again against the Open body slot it binds, resolved on the
+ * Machine through `implementations.actors` (a lent child Machine's own slots included), with the
+ * lent set that Machine has now. A text whose hash does not match is drift too: a hand-edited
+ * volume.
+ */
+function chartDrift(machine: AnyStateMachine, routes: readonly BoundChartRoute[]): string | undefined {
+  for (const route of routes) {
+    const where = `chart "${route.path.join("/")}" under body "${route.src}"`;
+    let at: AnyStateMachine = machine;
+    let resolved = true;
+    for (const src of route.srcs.slice(0, -1)) {
+      const logic = (at.implementations.actors as Record<string, unknown>)[src];
+      // The lent parts a bound body's Chart invokes are its wrapper's: the next hop is resolved there.
+      if (isOpenBody(logic)) continue;
+      const child = (logic as AnyStateMachine | undefined)?.root ? (logic as AnyStateMachine) : undefined;
+      if (!child) {
+        resolved = false;
+        break;
+      }
+      at = child;
+    }
+    const logic = resolved ? (at.implementations.actors as Record<string, unknown>)[route.src] : undefined;
+    if (!isOpenBody(logic)) return `${where}: the Machine has no Open body "${route.src}" now`;
+    const hash = chartHash(route.chart);
+    if (hash !== route.chartHash) {
+      return `${where}: its hash ${route.chartHash} does not match its text (${hash}); the stored run was edited`;
+    }
+    const decl = openBodyDeclarationOf(logic);
+    try {
+      admitBodyChart(route.chart, decl, lentIn(at.implementations as never, decl));
+    } catch (err) {
+      if (!(err instanceof ChartRefusal)) throw err;
+      return `${where}: ${err.report.join("; ")}`;
+    }
+  }
+  return undefined;
+}
 
 /** The serializable identity of a run — what reconcile sees and what restore rebuilds from. */
 export type RunRecord = { runId: string; workflow: string; instanceId: string };
@@ -352,6 +469,12 @@ export type RunStatus = RunRecord & {
   /** The hash of the Assembly the run started under (ADR-0069). Absent for a run no Assembly
    * started. */
   assembly?: string;
+  /** The run binds at least one Chart (ADR-0070): its Machine is the bound one, `runMachine`. */
+  bound?: true;
+  /** The hashes of the Charts the run binds now, distinct and sorted (ADR-0070). A run can bind a
+   * second Chart in its life (a planner whose first Chart reaches a ceiling picks again), so these,
+   * not the run id, say which bound Machine `runMachine` draws. Absent when it binds none. */
+  chartHashes?: string[];
 };
 
 /**
@@ -377,6 +500,12 @@ export type RunObservation = {
   status: string;
   value: unknown;
   children: RunChild[];
+  /** The run binds a Chart (ADR-0070): the Console draws `GET /workflows/:name/runs/:runId/machine`.
+   * Structure, like `value`. */
+  bound?: true;
+  /** The hashes of the Charts it binds now (see {@link RunStatus.chartHashes}). Structure: a hash
+   * of a Chart's text, which `runMachine` already serves on the open band. */
+  chartHashes?: string[];
 };
 
 /** Project a full status down to what an observer may see. The one place the line is drawn. */
@@ -387,6 +516,8 @@ export function observe(status: RunStatus): RunObservation {
     status: status.status,
     value: status.value,
     children: status.children,
+    ...(status.bound ? { bound: true as const } : {}),
+    ...(status.chartHashes ? { chartHashes: status.chartHashes } : {}),
   };
 }
 
@@ -428,7 +559,16 @@ export type GateView = {
 
 /** One event on an Agent's Menu, as the surface serves it: a tool, its `input` schema the tool's
  * parameters. `semantics` rides along so the Harness refuses a reserved one (ADR-0013). */
-export type SurfaceEvent = { name: string; description?: string; input: unknown; semantics: EventSemantics };
+/** One pick on the surface. `briefing` marks a pick whose parameter is a Chart: jr2's text on how a
+ * Chart runs (`CHART_BRIEFING`, ADR-0070), which the Harness says in the Turn part when the pick is
+ * Allowed, so only the Turns that may write a Chart carry it. */
+export type SurfaceEvent = {
+  name: string;
+  description?: string;
+  input: unknown;
+  semantics: EventSemantics;
+  briefing?: string;
+};
 
 /**
  * One live agent surface, as the Harness reads it through its Custodian (`GET /agents/:iid/surface`
@@ -842,6 +982,27 @@ export class RunHost {
    * than a comment asking the next reader not to clear the wrong Set.
    */
   private readonly workflowListeners = new Map<string, Set<WorkflowListener>>();
+  /** Every timer a run's actor system has armed and not yet fired or cleared: an `after`, a Chart's
+   * wall clock (ADR-0070). `close()` unrefs them, so a timer of hours never holds the process. */
+  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  /** The clock every run's actor system arms its timers on: xstate's own, with each timer kept in
+   * {@link timers} and unref'd once the host is closing. The scheduled events stay in the system's
+   * snapshot, so a restore arms them again. */
+  private readonly clock = {
+    setTimeout: (fn: (...args: unknown[]) => void, ms: number) => {
+      const timer = setTimeout(() => {
+        this.timers.delete(timer);
+        fn();
+      }, ms);
+      this.timers.add(timer);
+      if (this.#stopping) (timer as { unref?: () => void }).unref?.();
+      return timer;
+    },
+    clearTimeout: (timer: ReturnType<typeof setTimeout>) => {
+      this.timers.delete(timer);
+      clearTimeout(timer);
+    },
+  };
   /** The registration each hold was opened under, this boot: the same address re-registered by
    * another invocation (`continue: true`) is another Turn. A restored hold adopts the first. */
   private readonly holdRegs = new WeakMap<Hold, Registration>();
@@ -880,7 +1041,56 @@ export class RunHost {
    * declared them and resolved at invoke time off the invoking Machine (ADR-0011, ADR-0049), so
    * a nested Machine's defs are never the root's — or this host's — to hold. */
   register(def: WorkflowDef): void {
-    this.workflowDefs.set(def.name, def);
+    const wrapper = def.wrapper ?? wrapperOf(def.machine);
+    this.workflowDefs.set(def.name, wrapper ? { ...def, wrapper } : def);
+  }
+
+  /**
+   * Register a named Chart as the Workflow `<wrapper>/<name>` (ADR-0070). The registry of named
+   * Charts (charts.ts) calls this for each runnable one; it keeps where the Charts are stored, and
+   * the unrunnable ones, itself. Replacing a Chart a live run holds is fine: the run holds its text.
+   */
+  registerChart(def: WorkflowDef & { chart: NonNullable<WorkflowDef["chart"]> }): void {
+    this.register(def);
+  }
+
+  /** Drop a named Chart's Workflow. A live run of it keeps its text and runs on. */
+  unregisterChart(wrapper: string, name: string): void {
+    const key = `${wrapper}/${name}`;
+    if (this.workflowDefs.get(key)?.chart) this.workflowDefs.delete(key);
+  }
+
+  /** The registered named Chart `<wrapper>/<name>`, or undefined. */
+  namedChart(wrapper: string, name: string): NamedChart | undefined {
+    const chart = this.workflowDefs.get(`${wrapper}/${name}`)?.chart;
+    return (
+      chart && { wrapper: chart.wrapper, name: chart.name, text: chart.text, hash: chart.hash, origin: chart.origin }
+    );
+  }
+
+  /**
+   * Every registered Workflow with its origin (ADR-0070): a Machine, or a named Chart from a file or
+   * at run time. A Chart wrapper's entry carries its Open body, whether its door takes a Chart, and
+   * its named Charts: a named Chart lists inside its wrapper's entry, not beside it, and has an
+   * entry of its own only when its wrapper is not registered.
+   */
+  workflowList(): WorkflowListing[] {
+    const defs = [...this.workflowDefs.values()];
+    const wrappers = new Set(defs.filter((d) => !d.chart && d.wrapper).map((d) => d.name));
+    return defs.flatMap((def): WorkflowListing[] => {
+      if (def.chart) return wrappers.has(def.chart.wrapper) ? [] : [{ name: def.name, origin: def.chart.origin }];
+      if (!def.wrapper) return [{ name: def.name, origin: "machine" }];
+      const charts = defs
+        .filter((d) => d.chart?.wrapper === def.name)
+        .map((d) => ({ name: d.chart!.name, origin: d.chart!.origin }));
+      return [
+        {
+          name: def.name,
+          origin: "machine",
+          wrapper: { body: def.wrapper.body, oneShot: def.wrapper.chartFields.length > 0, charts },
+        },
+      ];
+    });
   }
 
   /** Drop a workflow's registration (a workflow the host no longer discovers). In-flight
@@ -918,6 +1128,60 @@ export class RunHost {
   }
 
   /**
+   * The run's bound Machine (ADR-0070): the Workflow's Machine with each bound Open body's subgraph
+   * the compiled Chart's (its `src` stays the slot key, so the live child joins it as before) —
+   * from the live actor's bound Machine, or, for a stored run, compiled again from the text its
+   * blob holds. Undefined for an unknown run, and for a stored run whose Workflow is not registered.
+   */
+  async runMachine(runId: string): Promise<MachineDoc | undefined> {
+    const live = this.runs.get(runId);
+    let workflow: string;
+    let machine: AnyStateMachine;
+    let bodies: Array<{ route: BoundChartRoute; compiled: AnyStateMachine | string }>;
+    if (live) {
+      workflow = live.record.workflow;
+      machine = live.def.machine;
+      const refs = new Map<string, AnyActorRef>();
+      const collect = (ref: AnyActorRef, path: string[]): void => {
+        for (const [id, child] of Object.entries(childrenOfRef(ref))) {
+          refs.set([...path, id].join("/"), child);
+          collect(child, [...path, id]);
+        }
+      };
+      collect(live.actor, []);
+      bodies = boundChartRoutesOf(live.actor.getSnapshot()).map((route) => {
+        const ref = refs.get(route.path.join("/"));
+        return { route, compiled: (ref && boundMachineOf(ref)) ?? "the live body holds no compiled Chart" };
+      });
+    } else {
+      const stored = await this.store.load(runId);
+      const blob = stored?.snapshot as RunBlob | null | undefined;
+      if (!blob) return undefined;
+      const def = this.workflowDefs.get(blob.workflow) ?? this.workflowDefs.get(wrapperName(blob.workflow));
+      if (!def) return undefined;
+      workflow = blob.workflow;
+      machine = def.machine;
+      bodies = boundChartRoutesOf(blob.snapshot).map((route) => ({
+        route,
+        compiled: compileStored(def.machine, route),
+      }));
+    }
+    const doc = serializeMachine(workflow, machine);
+    const notDrawn: NonNullable<MachineDoc["chartsNotDrawn"]> = [];
+    for (const { route, compiled } of bodies) {
+      if (typeof compiled === "string") {
+        // The doc keeps the slot's own subgraph, and says so: a doc that drew the wrapper's body
+        // with no word would disagree with the run's `bound` (ADR-0070, D-B).
+        notDrawn.push({ path: route.path.join("/"), src: route.src, reason: compiled });
+        continue;
+      }
+      const { workflow: _w, opaqueStates: _o, ...body } = serializeMachine(route.src, compiled);
+      placeBody(doc, route.srcs, body);
+    }
+    return notDrawn.length ? { ...doc, chartsNotDrawn: notDrawn } : doc;
+  }
+
+  /**
    * The workflow's declared run-input contract as JSON Schema (ADR-0033) — what the workflow
    * detail serves and the Console's start form generates from. `null` for a machine that
    * declares none (a run of it starts with anything), undefined for an unknown workflow. A
@@ -926,7 +1190,11 @@ export class RunHost {
   inputSchema(name: string): Record<string, unknown> | null | undefined {
     const def = this.workflowDefs.get(name);
     if (!def) return undefined;
-    const schema = inputSchemaOf(def.machine);
+    let schema = inputSchemaOf(def.machine);
+    // A named Chart's door is its wrapper's minus the Chart fields, which the Chart supplies (ADR-0070).
+    if (schema && def.chart && def.wrapper?.chartFields.length) {
+      schema = schema.omit(Object.fromEntries(def.wrapper.chartFields.map((f) => [f, true])) as never);
+    }
     // `io: "input"`: this schema describes what a caller SENDS — a defaulted field is optional
     // at the door (the default is applied by `start`'s parse), not required of the form.
     return schema ? (z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>) : null;
@@ -936,6 +1204,13 @@ export class RunHost {
   async start(workflow: string, input: Record<string, unknown> = {}): Promise<{ runId: string; instanceId: string }> {
     const def = this.workflowDefs.get(workflow);
     if (!def) throw new Error(`no workflow registered as "${workflow}"`);
+
+    // A named Chart supplies every Chart field of its wrapper's door, and the caller the rest
+    // (ADR-0070): what the caller sent under a Chart field is not the run's.
+    if (def.chart && def.wrapper) {
+      input = { ...input };
+      for (const field of def.wrapper.chartFields) input[field] = def.chart.text;
+    }
 
     // A declared schema is enforced at the door (ADR-0033), and what starts the run is the
     // PARSED shape (defaults applied, unknown keys stripped) — exactly what a gate delivery
@@ -956,6 +1231,10 @@ export class RunHost {
     const record: RunRecord = { runId, workflow, instanceId };
 
     const machine = this.assemble(def, instanceId);
+    // Every Chart field of a Chart wrapper's door is admitted BEFORE the run exists (ADR-0070): a
+    // refusal throws `ChartRefusal`, which the wire answers `422 { error: "refused", report }`. The
+    // lent set is the run's own Machine's, with its providers in.
+    this.admitDoorCharts(def, machine, runInput);
     // The root machine gets the parsed door PLUS what the host injects beside it —
     // `HostInjectedInput` (vocabulary.ts): the seed Instance ID, added after the parse because no
     // caller sends it and nothing serves it (ADR-0033). Only the root: a machine invoked below is
@@ -964,6 +1243,19 @@ export class RunHost {
     const actor = this.spawn(machine, { input: { ...runInput, instanceId } }, record, def);
     actor.start();
     return { runId, instanceId };
+  }
+
+  /**
+   * Admit every Chart field present in a Chart wrapper's parsed door (ADR-0070): the whole door,
+   * the compile included, against each Open body (the door cannot tell which body a field feeds).
+   * `input.*` references are the body's to check at its start: the Chart's `input` is what the
+   * wrapper's invoke sends, which is not the door. Throws ChartRefusal.
+   */
+  private admitDoorCharts(def: WorkflowDef, machine: AnyStateMachine, input: Record<string, unknown>): void {
+    for (const field of def.wrapper?.chartFields ?? []) {
+      if (input[field] === undefined) continue;
+      admitWrapperChart(machine, input[field]);
+    }
   }
 
   /**
@@ -1070,6 +1362,16 @@ export class RunHost {
           `workflow "${blob.workflow}"${def.assembly !== undefined ? ` in Assembly ${def.assembly}` : ""} changed shape since this run was saved ` +
             `(saved under ${blob.machine ?? "an unstamped Machine"}, now ${expected})`,
         );
+        drifted.push(stored.runId);
+        continue;
+      }
+
+      // The Charts the run binds (ADR-0070, D-B): the shape stamp is the wrapper's, and each Chart's
+      // identity is its text, kept in its body's snapshot. Each is admitted again against the Open
+      // body it binds and the lent set the Machine has now; one that no longer admits is drift.
+      const charts = chartDrift(def.machine, boundChartRoutesOf(blob.snapshot));
+      if (charts !== undefined) {
+        await this.store.markDrifted(stored.runId, charts);
         drifted.push(stored.runId);
         continue;
       }
@@ -1223,6 +1525,7 @@ export class RunHost {
         description: def.description,
         input: z.toJSONSchema(def.input),
         semantics: def.semantics,
+        ...briefingOf(def.input),
       })),
       allowed: allowedOf(reg),
     };
@@ -1835,6 +2138,7 @@ export class RunHost {
       fault: blob.fault,
       reason: stored.reason,
       ...(blob.assembly !== undefined ? { assembly: blob.assembly } : {}),
+      ...boundFields(snap),
     };
   }
 
@@ -1897,6 +2201,8 @@ export class RunHost {
     // Harness re-asks on ADR-0042's ladder, and never 404, which says a Turn is over (ADR-0026).
     this.#stopping = true;
     clearTimeout(this.liveSetTimer);
+    // A run's timers stay armed (a run is untouched by a close), but none holds the process alive.
+    for (const timer of this.timers) (timer as { unref?: () => void }).unref?.();
     // Every long poll answers `outstanding` now, so the server can close; the Harness asks again,
     // and a restarted Orchestrator answers it from the same hold (ADR-0024).
     for (const hold of [...this.holdWaiters.keys()]) this.closeHold(hold);
@@ -2055,6 +2361,7 @@ export class RunHost {
       held: heldOf(run.holds.values()),
       fault: run.fault,
       ...(run.def.assembly !== undefined ? { assembly: run.def.assembly } : {}),
+      ...boundFields(snap),
     };
   }
 
@@ -2214,6 +2521,8 @@ export class RunHost {
         const hold = holds.get(instanceId);
         if (hold) hold.fetched = true;
       },
+      // A Chart by name (ADR-0070, D-C): among the Charts of the wrapper that is the run's Workflow.
+      chartNamed: (name) => this.namedChart(wrapperName(record.workflow), name)?.text,
     };
     let bound = false;
     let firedTimer: ((source: unknown, event: unknown) => boolean) | undefined;
@@ -2223,6 +2532,7 @@ export class RunHost {
     const childRefsOf = (snapshot: unknown): Set<AnyActorRef> =>
       new Set(Object.values((snapshot as { children?: Record<string, AnyActorRef> } | undefined)?.children ?? {}));
     const actor = createActor(machine, {
+      clock: this.clock,
       ...options,
       inspect: (ev) => {
         // Bind the run's actor SYSTEM on the ROOT's creation event — the first inspection event,
@@ -2458,7 +2768,13 @@ export class RunHost {
       fault: run.fault,
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
-    void this.store.save(run.record.runId, blob, status);
+    // A save that fails is this run's fault, never the process's: an unhandled rejection would end
+    // the Orchestrator and every run on it. The run keeps its last saved snapshot.
+    this.store.save(run.record.runId, blob, status).catch((err: unknown) => {
+      console.error(
+        `run ${run.record.runId}: its snapshot was not saved: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
     // The save is on disk (the store writes synchronously, ADR-0065): a settled row whose transition
     // it carries keeps no tail in the next one (ADR-0067).
     dropSavedTails(run.effects, snapshot);
@@ -2496,4 +2812,63 @@ function stillRunning(reg: Registration): boolean {
 function atOrBelow(actor: AnyActorRef, ref: AnyActorRef): boolean {
   for (let at: AnyActorRef | undefined = actor; at !== undefined; at = at._parent) if (at === ref) return true;
   return false;
+}
+
+/** A status's bound fields (ADR-0070): `bound`, and the hashes of the Charts bound, distinct and
+ * sorted. Both absent when the snapshot binds no Chart. */
+function boundFields(snap: unknown): { bound?: true; chartHashes?: string[] } {
+  const hashes = [...new Set(boundChartRoutesOf(snap).map((route) => route.chartHash))].sort();
+  return hashes.length ? { bound: true, chartHashes: hashes } : {};
+}
+
+/** A live actor's children, by id. */
+function childrenOfRef(ref: AnyActorRef): Record<string, AnyActorRef> {
+  return (ref.getSnapshot() as { children?: Record<string, AnyActorRef> } | undefined)?.children ?? {};
+}
+
+/** A stored run's bound Chart, compiled again from its text under the Open body it binds, for the
+ * run's doc — or why it is not: the doc then keeps the slot's subgraph and names the reason. */
+function compileStored(machine: AnyStateMachine, route: BoundChartRoute): AnyStateMachine | string {
+  let at: AnyStateMachine = machine;
+  for (const src of route.srcs.slice(0, -1)) {
+    const logic = (at.implementations.actors as Record<string, unknown>)[src];
+    if (isOpenBody(logic)) continue;
+    if (!(logic as AnyStateMachine | undefined)?.root) return `no Machine at slot "${src}"`;
+    at = logic as AnyStateMachine;
+  }
+  const logic = (at.implementations.actors as Record<string, unknown>)[route.src];
+  if (!isOpenBody(logic)) return `slot "${route.src}" is no Open body`;
+  const decl = openBodyDeclarationOf(logic);
+  const lent = lentIn(at.implementations as never, decl);
+  try {
+    return compileChart(admitChart(route.chart, decl, lent), lent, decl, { id: route.src });
+  } catch (err) {
+    return err instanceof ChartRefusal
+      ? `the door refuses the Chart: ${err.report.join("; ")}`
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  }
+}
+
+/** Put a compiled Chart's body under the states of `doc` that invoke the Open body at the end of
+ * `srcs`, descending through the child Machine docs the earlier slots name. */
+function placeBody(doc: MachineBodyDoc, srcs: readonly string[], body: MachineBodyDoc): void {
+  const [src, ...rest] = srcs;
+  if (src === undefined) return;
+  const visit = (state: MachineStateDoc): void => {
+    if (rest.length === 0) {
+      for (const inv of state.invoke) {
+        if (inv.src !== src) continue;
+        const child: ChildMachineDoc = { src, label: inv.id, via: "invoke", machine: body };
+        const at = state.children.findIndex((c) => c.src === src);
+        if (at >= 0) state.children[at] = child;
+        else state.children.push(child);
+      }
+    } else {
+      for (const child of state.children) if (child.src === src && child.machine) placeBody(child.machine, rest, body);
+    }
+    for (const nested of state.states) visit(nested);
+  };
+  visit(doc.root);
 }

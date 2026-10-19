@@ -1,15 +1,14 @@
 // The shared form (start-run + gate delivery — ADR-0033): one component for both writes the
 // Console makes. A flat object schema becomes typed inputs (string/number/boolean/enum, required
-// marked), no schema becomes a raw JSON textarea. `onSubmit` resolves to an error string to render
+// marked; an object or array property is a JSON textarea, so a Chart wrapper's `chart` field —
+// ADR-0070 — goes as an object, not as a string), no schema becomes a raw JSON textarea. `onSubmit` resolves to an error string to render
 // inline (the server's 400 names the accepted shape — that text IS the form's error display) or null when the write
 // landed. The inputs are UNCONTROLLED: what the reader is typing is theirs, not state, and the
 // vdom's keyed diff keeps the elements — and so the half-typed text — alive across status frames.
 
 import { h, type JSX } from "preact";
 import { useState } from "preact/hooks";
-
-/** One property of a flat object schema, as far as the form reads it. */
-type SchemaProp = { type?: string; enum?: unknown[]; description?: string };
+import { jsonField, type SchemaProp } from "../json-field.ts";
 
 /** The schema's `properties`, or null when there is no schema to generate from (→ raw textarea). */
 function propsOf(schema: unknown): Record<string, SchemaProp> | null {
@@ -89,11 +88,15 @@ function field(key: string, prop: SchemaProp, required: Set<unknown>): JSX.Eleme
         );
   } else if (prop.type === "number" || prop.type === "integer") {
     input = h("input", { name: key, type: "number", step: "any" });
+  } else if (isJsonType(prop.type)) {
+    input = h("textarea", { name: key, rows: 4, placeholder: `JSON ${prop.type}` });
   } else {
     input = h("input", { name: key, type: "text" });
   }
   return h("label", { key, title: prop.description }, h("span", null, required.has(key) ? `${key} *` : key), input);
 }
+
+const isJsonType = (type: string | undefined): type is "object" | "array" => type === "object" || type === "array";
 
 /** The submit body, read back off the DOM the fields live in. Typed fields: empty optional inputs
  *  are ABSENT, not "" — the server's schema is the authority on required-ness and says so in its
@@ -116,6 +119,11 @@ function collect(form: HTMLFormElement, properties: Record<string, SchemaProp> |
   const body: Record<string, unknown> = {};
   for (const [key, prop] of Object.entries(properties)) {
     const el = form.elements.namedItem(key);
+    if (el instanceof HTMLTextAreaElement) {
+      const value = jsonField(key, prop, el.value);
+      if (value !== undefined) body[key] = value;
+      continue;
+    }
     if (!(el instanceof HTMLInputElement || el instanceof HTMLSelectElement)) continue;
     if (el instanceof HTMLInputElement && el.type === "checkbox") {
       body[key] = el.checked; // a required boolean: always an answer, by design

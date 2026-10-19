@@ -16,10 +16,13 @@ whose processes are gone, with no way to know why.
   change that knowing could cause is an attempt to go around the Custodian.
 - **Two parts, placed by how often they change.** The standing part is the same on every Turn of a seat; it follows
   `instructions` in the system prompt, in its own delimited section, and is byte-stable (no timestamps, no counters, no
-  Menu names). The Turn part follows the Frame's prompt in a delimited block: the working directory, the Turn's Allowed
-  picks ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)) and the notices.
-  So the Briefing never breaks the provider's prompt cache — the Turn part sits in the newest message, which is uncached
-  anyway, and stays unchanged in the history after.
+  Menu names). The Turn part follows the Frame's prompt in a delimited block: the working directory, the notices, a
+  **pick's briefing** for each Allowed pick that has one (jr2's text on the pick's parameter, which the Orchestrator's
+  surface marks on the pick: the Chart briefing of [ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md), said only
+  on a Turn that may make that pick), and the Turn's Allowed picks
+  ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). So the Briefing never
+  breaks the provider's prompt cache — the Turn part sits in the newest message, which is uncached anyway, and stays
+  unchanged in the history after.
 - **How the Agent acts on the workflow is one standing statement**, true whether a pick ends the Turn or keeps it open
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): "You act on the workflow by picking from
   your Menu: a call to one of the workflow's tools that the newest "Allowed now" lists. Each pick's answer says if your
@@ -32,7 +35,7 @@ whose processes are gone, with no way to know why.
   boundary, in a `<jr2-turn>` block of their own: "The workflow's state changed since you last read the Allowed picks.
   Allowed now: …" ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). It is
   appended, never a rewrite of the first, so the cache argument above holds for it too. It carries no notice: notices
-  are for the next Turn in their scope.
+  are for the next Turn in their scope. It carries a pick's briefing when the restatement opens that pick.
 - **The Turn part comes last, because a model obeys what it read last.** Measured on the home-lab vLLM model: with a
   prompt that argued for a pick the Turn did not allow, the Allowed picks placed ahead of the prompt were obeyed 0/10
   (thinking off) and 5/10 (thinking on); placed after it, 10/10 both. Wording made no difference. The author's task

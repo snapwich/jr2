@@ -85,9 +85,10 @@ to ask about.
   Assembly hash says which tree was loaded and the stamp says the Machine in it still has the shape it had.
 - **There is no migration path.** A drifted run can be read and cancelled; it cannot be adapted onto a new Machine. That
   is deliberate for now — a migration story needs a way to express what a state maps to, which nothing here does.
-- **A run with an Open body stamps its bound Machine.** A Chart
-  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)) gives two runs of one Workflow two shapes, so the digest is
-  taken from the run's Machine with its Chart bound, over the Chart's text, never over the compiled config.
+- **A run with an Open body keeps its wrapper's stamp.** A Chart
+  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)) is the run's data, not its Machine's shape: the Chart's
+  text and its hash ride the body's own snapshot, restore admits the text again and compares the hash, and a mismatch or
+  a refusal is drift naming the body slot and the reason, after the stamp check and in the same words.
 - **A drifted run is not in `jr2 runs`**, which lists only the live registry. It is reachable through the announce line
   and `jr2 status <id>`. If stranded runs become common enough to browse, the listing is where that belongs.
 - **The digest is only as complete as the walk.** A state running `enqueueActions` can spawn children no static analysis

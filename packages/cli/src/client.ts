@@ -29,6 +29,31 @@ export type RunStatus = {
   /** The hash of the Assembly the run started under, and holds while it is live (ADR-0069).
    * Absent for a run no Assembly started. */
   assembly?: string;
+  /** The run binds at least one Chart (ADR-0070): its Machine is the Chart wrapper's with each bound
+   * Open body's Chart compiled in, which `GET /workflows/:name/runs/:runId/machine` serves.
+   * Absent when the run binds none. */
+  bound?: true;
+  /** The hashes of the Charts the run binds now, distinct and sorted (ADR-0070). */
+  chartHashes?: string[];
+};
+
+/** Where a Workflow came from (ADR-0070): a Machine in the Assembly, a Chart file in the Assembly, or
+ * a runtime Chart put by `PUT /workflows/:wrapper/charts/:name`. */
+export type WorkflowOrigin = "machine" | "file" | "runtime";
+
+/** One entry of `GET /workflows` (ADR-0070) — mirrors the orchestrator's `WorkflowListing`
+ * (run-host.ts). A Chart wrapper's entry carries its Open body slot, whether its door takes a Chart
+ * one-shot, and its named Charts, inside its entry and not beside it. `unrunnable` is why a
+ * Workflow cannot start now (a runtime Chart a publish no longer admits). */
+export type WorkflowListing = {
+  name: string;
+  origin: WorkflowOrigin;
+  wrapper?: {
+    body: string;
+    oneShot: boolean;
+    charts: Array<{ name: string; origin: "file" | "runtime"; unrunnable?: string }>;
+  };
+  unrunnable?: string;
 };
 
 /** One item on a run's observation feed — mirrors the orchestrator's `RunFeedEvent`. */
@@ -69,14 +94,25 @@ export class JR2HttpError extends Error {
   readonly status: number;
   readonly path: string;
   readonly instance?: InstanceIdentity;
+  /** The door's report lines, when the answer carried them: a refused Chart is
+   * `422 { error: "refused", report }` (ADR-0070), one line per rule it fails. */
+  readonly report?: string[];
 
-  constructor(message: string, status: number, path: string, instance?: InstanceIdentity) {
+  constructor(message: string, status: number, path: string, instance?: InstanceIdentity, report?: string[]) {
     super(message);
     this.name = "JR2HttpError";
     this.status = status;
     this.path = path;
     this.instance = instance;
+    if (report) this.report = report;
   }
+}
+
+/** The path of a Workflow's routes. The name is ONE path segment, encoded: a named Chart's
+ * `<wrapper>/<name>` rides as `<wrapper>%2F<name>` (ADR-0070), which the Orchestrator reads as the
+ * same Workflow as `/workflows/<wrapper>/charts/<name>`. */
+export function workflowPath(workflow: string): string {
+  return `/workflows/${encodeURIComponent(workflow)}`;
 }
 
 export class JR2Client {
@@ -97,20 +133,40 @@ export class JR2Client {
     return this.token ? { ...extra, authorization: `Bearer ${this.token}` } : extra;
   }
 
-  /** `GET /workflows` — names of the registered workflows. */
-  async workflows(): Promise<string[]> {
-    return (await this.json(await this.fetchImpl(`${this.baseUrl}/workflows`), "/workflows")) as string[];
+  /** `GET /workflows` — every registered Workflow with its origin, each Chart wrapper's Charts inside
+   * its entry (ADR-0070). An orchestrator older than ADR-0070 answers bare names; each reads as a
+   * Machine, so the listing has one shape for every caller. */
+  async workflows(): Promise<WorkflowListing[]> {
+    const body = await this.json(await this.fetchImpl(`${this.baseUrl}/workflows`), "/workflows");
+    // An answer that is no listing is not "none registered": say what came back (`jr2 runs` prints
+    // `workflows: unknown — ...` for it, never "none registered").
+    if (!Array.isArray(body)) throw new Error("GET /workflows: the answer is not a listing");
+    return body.map((w: unknown) =>
+      typeof w === "string" ? { name: w, origin: "machine" as const } : (w as WorkflowListing),
+    );
   }
 
   /** `GET /workflows/:name/machine` — the workflow's Machine as the Console's DTO. */
   async machine(workflow: string): Promise<MachineDoc> {
-    const res = await this.fetchImpl(`${this.baseUrl}/workflows/${encodeURIComponent(workflow)}/machine`);
+    const res = await this.fetchImpl(`${this.baseUrl}${workflowPath(workflow)}/machine`);
     return (await this.json(res, "/workflows/:name/machine")) as MachineDoc;
   }
 
-  /** `POST /workflows/:name/runs` — start a run; unknown workflow → 404 → throws. */
+  /** `GET /workflows/:name/runs/:runId/machine` — the run's bound Machine (ADR-0070): the Chart
+   * wrapper's Machine with each bound Open body's Chart compiled in. An unknown run → undefined. */
+  async runMachine(workflow: string, runId: string): Promise<MachineDoc | undefined> {
+    const res = await this.fetchImpl(
+      `${this.baseUrl}${workflowPath(workflow)}/runs/${encodeURIComponent(runId)}/machine`,
+    );
+    if (res.status === 404) return undefined;
+    return (await this.json(res, "/workflows/:name/runs/:runId/machine")) as MachineDoc;
+  }
+
+  /** `POST /workflows/:name/runs` — start a run; unknown workflow → 404 → throws. A named Chart's
+   * name `<wrapper>/<name>` rides the path as one encoded segment (ADR-0070); a refused Chart in
+   * the input → 422 → throws with the door's `report`. */
   async start(workflow: string, input: Record<string, unknown> = {}): Promise<{ runId: string; instanceId: string }> {
-    const res = await this.fetchImpl(`${this.baseUrl}/workflows/${encodeURIComponent(workflow)}/runs`, {
+    const res = await this.fetchImpl(`${this.baseUrl}${workflowPath(workflow)}/runs`, {
       method: "POST",
       headers: this.headers(JSON_HEADERS),
       body: JSON.stringify(input),
@@ -244,10 +300,12 @@ export class JR2Client {
     const text = await res.text();
     const body = text ? JSON.parse(text) : undefined;
     if (!res.ok) {
-      const message = (body as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`;
+      const { error, report } = (body ?? {}) as { error?: string; report?: unknown };
+      const message = error ?? `HTTP ${res.status}`;
+      const lines = Array.isArray(report) ? report.map(String) : undefined;
       // Probe HERE, not at the catch site: by the time the error reaches `cli.ts` the command's
       // `finally` has closed the port-forward, and there is nothing left to ask.
-      throw new JR2HttpError(message, res.status, path, await this.identify());
+      throw new JR2HttpError(message, res.status, path, await this.identify(), lines);
     }
     return body;
   }

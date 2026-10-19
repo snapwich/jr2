@@ -75,7 +75,9 @@ import {
   imageContextDigest,
   isSshUrl,
   loadConfig,
+  loadCharts,
   loadWorkflows,
+  chartFileRefusals,
   machineBodies,
   matchCredential,
   openPartRefusals,
@@ -105,7 +107,6 @@ import {
   seatLine,
   serializeMachine,
   splitSize,
-  type CarriedAgent,
   type CarriedImage,
   type CarriedRepo,
   type HeldManifest,
@@ -250,6 +251,17 @@ export async function up(args: string[], io: Io): Promise<number> {
     for (const line of open) activity(io, `refusing: ${line}`);
     return 1;
   }
+  // Each Chart file is admitted HERE by the door's own check (ADR-0070), so a Chart file the
+  // Orchestrator would refuse is refused at the same command as `tsc`'s errors, before any
+  // cluster work, with the lines the publish would answer.
+  const chartRefusals = chartFileRefusals(
+    await loadCharts(root, (line) => activity(io, `warning: ${line}`)),
+    workflows,
+  );
+  if (chartRefusals.length) {
+    for (const line of chartRefusals) activity(io, `refusing: ${line}`);
+    return 1;
+  }
   // What each registered Machine runs outside itself (ADR-0067, ADR-0068): every Effect slot, with
   // the plain data it carries — a command's argv, its timeout, the Repo Slot it runs in; an http
   // Effect's method, its fixed target and the secrets it names — read, never run.
@@ -298,6 +310,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // What names each secret, read off the walk (ADR-0059, ADR-0068): every Effect, every Workspace's
   // pod — its `workspace()`'s `secrets` and the models of the Agents whose Turns run there — and the
   // models of the `"none"` Agents the Instance Harness hosts.
+  // An Open body that allows "none" needs the Instance Harness, holding a key for each model it
+  // allows (ADR-0070), as a "none" Agent does. The door's walk says both, so `jr2 up` and the
+  // publish door place the same set.
   const placementWalk = placementWalkOf(workflows);
   refuseEffectSecrets(config, placementWalk);
   // Who may send what, per state (ADR-0015): the audience rule's answer for each registered
@@ -343,6 +358,33 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
   const agentNames = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
   activity(io, `agents: ${agentNames} (carried by ${workflows.length} workflow machine(s))`);
+  // Each Chart wrapper (ADR-0070): what its Open body lends a Chart, how many models a Chart's own
+  // Agents may name (each gets its key placed below), and the Chart files the Assembly carries for
+  // it. The walk reads the Open body's declaration, so the keys and the Instance Harness a Chart
+  // could need are placed before any run.
+  const chartFiles = await chartFilesIn(root);
+  for (const w of workflows) {
+    const bodies = partsOf([w.machine]).openBodies.filter((b) => b.path !== undefined && b.path.length === 0);
+    if (!bodies.length) continue;
+    const lends = [
+      ...new Set(
+        bodies.flatMap(({ declaration: { lends } }) => [
+          ...(lends.agents ?? []),
+          ...(lends.effects ?? []),
+          ...(lends.machines ?? []),
+          ...(lends.guards ?? []),
+          ...(lends.actions ?? []),
+          ...(lends.delays ?? []),
+        ]),
+      ),
+    ];
+    const models = new Set(bodies.flatMap((b) => b.declaration.allows.models));
+    const files = chartFiles.filter((n) => n.startsWith(`${w.name}/`)).length;
+    activity(
+      io,
+      `chart wrapper "${w.name}": lends ${lends.join(", ") || "nothing"}; allows ${models.size} model(s); ${files} Chart file(s)`,
+    );
+  }
 
   // --- the Assembly (ADR-0069): staged here, published last ---------------------------------------
   // Staged BEFORE any cluster spend, so its refusals cost nothing: a second copy of a Kit package
@@ -363,6 +405,8 @@ export async function up(args: string[], io: Io): Promise<number> {
   // every depth). The build below still reads the folder; only the key comes from here. A context
   // the Assembly does not carry is refused now, before any cluster spend.
   let contextDigests: Map<string, string>;
+  // The Chart files the staged Assembly carries (ADR-0070): Workflows the door registers too.
+  let stagedCharts: string[] = [];
   try {
     assembly = {
       hash: staged.hash,
@@ -374,21 +418,25 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...(fallback ? [fallback] : []),
       ...contexts.map((image: CarriedImage) => image.dir),
     ]);
+    stagedCharts = await chartFilesIn(staged.dir);
   } finally {
     await staged.dispose();
   }
   // The walk above loaded the Instance folder; the door loads the Assembly (ADR-0069). The two must
   // hold the same Workflows, or a Workflow the walk built and placed for is absent at the door, and
   // `jr2 run` names it unknown after a converge that said it succeeded.
-  const walked = workflows.map((w) => w.name);
-  const absent = walked.filter((n) => !assembly.workflows.includes(n));
-  const extra = assembly.workflows.filter((n) => !walked.includes(n));
+  // A Chart file is a Workflow too (ADR-0070), `<wrapper>/<name>`, at `workflows/<wrapper>/<name>.chart.json`.
+  const walked = [...workflows.map((w) => w.name), ...chartFiles];
+  const inAssembly = [...assembly.workflows, ...stagedCharts];
+  const absent = walked.filter((n) => !inAssembly.includes(n));
+  const extra = inAssembly.filter((n) => !walked.includes(n));
+  const fileOf = (n: string) => (n.includes("/") ? `workflows/${n}.chart.json` : `workflows/${n}.ts`);
   if (absent.length || extra.length) {
     activity(
       io,
       `refusing: the staged Assembly does not hold the Workflows this folder holds (ADR-0069)` +
-        (absent.length ? `; absent from the Assembly: ${absent.map((n) => `workflows/${n}.ts`).join(", ")}` : "") +
-        (extra.length ? `; only in the Assembly: ${extra.map((n) => `workflows/${n}.ts`).join(", ")}` : "") +
+        (absent.length ? `; absent from the Assembly: ${absent.map(fileOf).join(", ")}` : "") +
+        (extra.length ? `; only in the Assembly: ${extra.map(fileOf).join(", ")}` : "") +
         ` — the Assembly holds what the Instance's install keeps; check the \`files:\` list in package.json`,
     );
     return 1;
@@ -932,7 +980,8 @@ export async function up(args: string[], io: Io): Promise<number> {
     ctx,
     envFromKeys,
     secretKeys,
-    models: agents.map((a) => a.definition.model).filter((m): m is string => typeof m === "string"),
+    // Every bound Agent's model, and every model an Open body allows a Chart's own Agents (ADR-0070).
+    models: carried.models,
     caBundle: caPem,
   });
 
@@ -953,7 +1002,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   const gitPush = await resolveGitPush(io, kube, config, placements.sandbox, namespace, ctx);
 
   // --- provider preflight (ADR-0019): probe the endpoint FROM INSIDE the cluster ----------------
-  await preflightProvider(io, kube, config, agents, namespace, ctx, caPem);
+  await preflightProvider(io, kube, config, carried.models, namespace, ctx, caPem);
 
   // --- apply + rollout ---------------------------------------------------------------------------
   // The trust bundles first, and server-side: every pod that mounts them must find them, and they
@@ -1084,11 +1133,22 @@ export async function up(args: string[], io: Io): Promise<number> {
   // deleted with its conversations: the layer converges toward the Machines like every other layer
   // converges toward the config.
   const menuOnly = [...new Set(agents.filter((a) => a.definition.workspace === "none").map((a) => a.name))];
-  if (menuOnly.length > 0) {
-    activity(
-      io,
-      `instance harness: converging (${menuOnly.join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none")`,
-    );
+  // A Chart wrapper whose Open body allows "none" needs it too: a Chart's own Agent may be Menu-only (ADR-0070).
+  const noneWrappers = workflows
+    .filter((w) => partsOf([w.machine]).openBodies.some((b) => b.declaration.allows.workspace.includes("none")))
+    .map((w) => w.name);
+  if (carried.instanceHarness !== undefined) {
+    const why = [
+      ...(menuOnly.length
+        ? [`${menuOnly.join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none"`]
+        : []),
+      ...(noneWrappers.length
+        ? [
+            `chart wrapper${noneWrappers.length === 1 ? "" : "s"} ${noneWrappers.map((n) => `"${n}"`).join(", ")} allow${noneWrappers.length === 1 ? "s" : ""} workspace: "none"`,
+          ]
+        : []),
+    ];
+    activity(io, `instance harness: converging (${why.join("; ")})`);
     const harnessImage = refs.harness;
     const instance = instanceHeld(held.objects);
     await kube.apply({
@@ -2221,7 +2281,7 @@ async function preflightProvider(
   io: Io,
   kube: KubeAdmin,
   config: JR2Config,
-  agents: CarriedAgent[],
+  carriedModels: readonly string[],
   namespace: string,
   ctx: { context?: string },
   caPem?: string,
@@ -2236,14 +2296,8 @@ async function preflightProvider(
   // An Open model is nobody's model yet (ADR-0054), so there is nothing to probe for it. The walk
   // already refused the converge above, so this filter is the type's, not the flow's.
   const prefix = `${provider.id}/`;
-  const models = [
-    ...new Set(
-      agents
-        .map((a) => a.definition.model)
-        .filter((m): m is string => typeof m === "string" && m.startsWith(prefix))
-        .map((m) => m.slice(prefix.length)),
-    ),
-  ];
+  // An Open body's allowed models are probed too (ADR-0070): a Chart's own Agent may name one.
+  const models = [...new Set(carriedModels.filter((m) => m.startsWith(prefix)).map((m) => m.slice(prefix.length)))];
   if (models.length === 0) {
     activity(
       io,
@@ -2325,4 +2379,23 @@ function noteDeferred(io: Io, repos: CarriedRepo[]): void {
 function sizeLine(path: readonly string[]): string {
   const binds = '{ resources: { limits: { memory: "<memory>" } } }';
   return `customize(<import>, ${path.reduceRight((parts, key) => `{ actors: { ${key}: ${parts} } }`, binds)})`;
+}
+
+/**
+ * The Chart files under an Assembly root (ADR-0070), as Workflow names `<wrapper>/<name>`: each
+ * `workflows/<wrapper>/<name>.chart.json`, one level below the flat `workflows/*.ts`, in a directory
+ * named after its wrapper. The layout the Orchestrator's discovery reads (charts.ts); a directory
+ * whose name starts with `_` or `.` is not a wrapper's.
+ */
+async function chartFilesIn(root: string): Promise<string[]> {
+  const out: string[] = [];
+  const dir = join(root, "workflows");
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith("_") || entry.name.startsWith(".")) continue;
+    const files = await readdir(join(dir, entry.name)).catch(() => [] as string[]);
+    for (const f of files)
+      if (f.endsWith(".chart.json")) out.push(`${entry.name}/${f.slice(0, -".chart.json".length)}`);
+  }
+  return out.sort();
 }

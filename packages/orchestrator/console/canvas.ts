@@ -82,6 +82,8 @@ export type MachineDoc = MachineBodyDoc & {
   workflow: string;
   /** States whose child list may be incomplete (enqueueActions closures) — surfaced as a notice. */
   opaqueStates?: string[];
+  /** A run's doc only: each bound Chart it could not draw, and why (ADR-0070) — surfaced as a notice. */
+  chartsNotDrawn?: Array<{ path: string; src: string; reason: string }>;
 };
 
 /** One live child actor as the observation band reports it — `ObservedRun.children`, deepened

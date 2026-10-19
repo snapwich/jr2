@@ -1,0 +1,13 @@
+{
+  "initial": "draft",
+  "states": {
+    "draft": {
+      "invoke": { "src": "coder", "input": { "prompt": "Draft {{input.task}}" } },
+      "after": { "50": "review" }
+    },
+    "review": {
+      "invoke": { "src": "coder", "input": { "prompt": "Review {{input.task}}" } },
+      "after": { "50": "draft" }
+    }
+  }
+}

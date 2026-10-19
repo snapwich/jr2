@@ -8,7 +8,9 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assemblyRefusals } from "../src/assembly-checks.ts";
+import { assemblyRefusals, placementWalkOf } from "../src/assembly-checks.ts";
+import { partsOf } from "../src/parts.ts";
+import { chartedSrc, machineOf } from "./_assembly.ts";
 import { agent } from "../src/harness-client.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
@@ -39,4 +41,13 @@ test("a `file:` context not in the image map is named relative to the Assembly, 
   assert.equal(lines.length, 1, lines.join("\n"));
   assert.match(lines[0]!, /^the Sandbox Image context images\/box that workflow "build" names \(digest [0-9a-f]{12}\)/);
   assert.ok(!lines[0]!.includes(".staging-"), "the staging path never reaches the report");
+});
+
+test('the placement walk\'s Instance Harness holds the models of an Open body that allows "none" (ADR-0070)', async () => {
+  // `charted` has no "none" Agent; its Open body allows "none" and `stub/model`, so a Chart's
+  // minted "none" Agent may name that model: the door and `jr2 up` place its key from one walk.
+  const machine = await machineOf(chartedSrc());
+  const walk = placementWalkOf([{ name: "charted", machine }]);
+  assert.deepEqual(walk.instanceHarness, { models: ["stub/model"] });
+  assert.deepEqual(walk.instanceHarness, partsOf([machine]).instanceHarness);
 });

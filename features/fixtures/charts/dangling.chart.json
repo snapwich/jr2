@@ -1,0 +1,16 @@
+{
+  "events": {
+    "submit": { "description": "The notes are applied.", "input": { "type": "object", "properties": {} } }
+  },
+  "initial": "draft",
+  "states": {
+    "draft": {
+      "invoke": {
+        "src": "coder",
+        "input": { "prompt": "Apply these notes: {{context.notes}}" }
+      },
+      "on": { "submit": "done" }
+    },
+    "done": { "type": "final" }
+  }
+}

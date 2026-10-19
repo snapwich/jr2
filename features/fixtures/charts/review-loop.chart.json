@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "id": "review-loop",
+  "context": { "round": 0, "notes": "" },
+  "events": {
+    "submit": {
+      "description": "The change is ready for review.",
+      "input": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    "approve": {
+      "description": "The change is ready to ship.",
+      "input": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    "revise": {
+      "description": "The change needs another round: say what to change.",
+      "input": {
+        "type": "object",
+        "properties": { "notes": { "type": "string", "description": "What the coder changes next." } },
+        "required": ["notes"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "agents": {
+    "reviewer": {
+      "model": "stub/model",
+      "instructions": "You review a change. Pick approve when it is ready, or revise with notes.",
+      "workspace": "none"
+    }
+  },
+  "initial": "draft",
+  "states": {
+    "draft": {
+      "invoke": {
+        "src": "coder",
+        "input": {
+          "prompt": "Implement this task: {{input.task}}\nReview notes so far: {{context.notes}}",
+          "continue": true
+        }
+      },
+      "on": { "submit": "review" }
+    },
+    "review": {
+      "invoke": {
+        "src": "reviewer",
+        "input": {
+          "prompt": "Review the change for this task: {{input.task}}",
+          "continue": true
+        }
+      },
+      "on": {
+        "approve": "shipped",
+        "revise": {
+          "guard": "underLimit",
+          "target": "draft",
+          "actions": [
+            { "type": "increment", "path": "round" },
+            { "type": "set", "path": "notes", "from": "{{event.notes}}" }
+          ]
+        }
+      }
+    },
+    "shipped": { "type": "final", "output": { "rounds": "{{context.round}}" } }
+  }
+}

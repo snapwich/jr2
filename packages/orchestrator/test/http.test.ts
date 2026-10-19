@@ -6,13 +6,20 @@
 // These apps are built WITHOUT an authenticator, which leaves the surface open: that is the seam
 // under test here. Who may call what is auth.test.ts's subject.
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { KIT_VERSION } from "../src/config.ts";
 import type { RepoStatus } from "../src/repos.ts";
 import { admittedIid, codingDef, gatedDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
+import { existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chartHash, type ChartText } from "../src/chart.ts";
+import { NamedCharts } from "../src/charts.ts";
+import { chartedSrc, machineOf, reviewLoop } from "./_assembly.ts";
 
 /** A host + app pair with the `coding` workflow registered. */
 async function mkApp() {
@@ -53,7 +60,12 @@ test("GET /workflows lists registered workflows", async () => {
   const { app } = await mkApp();
   const res = await app.request("/workflows");
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), ["coding"]);
+  // Each entry is a listing with its origin (ADR-0070); `coding` declares no Open body.
+  const listing = (await res.json()) as Array<{ name: string; origin: string; wrapper?: unknown }>;
+  assert.deepEqual(
+    listing.map((w) => [w.name, w.origin, w.wrapper]),
+    [["coding", "machine", undefined]],
+  );
 });
 
 test("POST /workflows/:name/runs starts a run, then it shows in /runs and /runs/:id", async () => {
@@ -372,4 +384,247 @@ test("SSE: GET /runs/:id/events on a PARKED run streams its status, then `gone` 
   assert.deepEqual(events, ["status", "gone"]);
   assert.match(body, /event: status\ndata: .*"status":"active"/);
   assert.match(body, new RegExp(`event: gone\\ndata: \\{"runId":"${runId}"\\}`));
+});
+
+// ---- Named Charts (ADR-0070) ------------------------------------------------------------------
+
+/** A host with the Chart wrapper `charted`, the plain `coding`, and the in-Machine-only wrapper
+ * `inner` registered, and the named-Chart registry bound to them over a fresh volume. */
+const chartHosts: RunHost[] = [];
+// A Chart run's body arms its wall-clock ceiling, which a stop (a park) leaves armed: each Chart run
+// is cancelled, and each host closed, at the end.
+after(() =>
+  Promise.all(
+    chartHosts.map(async (h) => {
+      for (const r of h.list()) await h.cancel(r.runId, { keep: false }).catch(() => {});
+      await h.close();
+    }),
+  ),
+);
+
+async function mkChartApp() {
+  const host = new RunHost({ store: await mkStore() });
+  chartHosts.push(host);
+  const clients = new Map<string, MockFlueClient>();
+  host.register(codingDef(clients));
+  const charted = await machineOf(chartedSrc());
+  const inner = await machineOf(chartedSrc({ id: "inner", door: false }));
+  host.register({ name: "charted", machine: charted, provide: () => ({}) });
+  host.register({ name: "inner", machine: inner, provide: () => ({}) });
+  const dir = await mkdtemp(join(tmpdir(), "jr2-http-charts-"));
+  const charts = new NamedCharts({ dir, host });
+  const workflows = [
+    { name: "charted", machine: charted },
+    { name: "inner", machine: inner },
+    { name: "coding", machine: codingDef(clients).machine },
+  ];
+  charts.bind({ workflows, files: [] });
+  return { host, app: createApp(host, undefined, { charts }), charts, dir, workflows };
+}
+
+const jsonPut = (body: unknown): RequestInit => ({
+  method: "PUT",
+  headers: { "content-type": "application/json" },
+  body: typeof body === "string" ? body : JSON.stringify(body),
+});
+
+/** A closed loopback port: an Agent the Chart invokes faults at once, which no assertion reads. */
+const NO_HARNESS = "http://127.0.0.1:9";
+
+test("GET /workflows/:wrapper/chart-schema is the grammar narrowed to the Open body; 404 for a non-wrapper", async () => {
+  const { app } = await mkChartApp();
+  const res = await app.request("/workflows/charted/chart-schema");
+  assert.equal(res.status, 200);
+  const schema = (await res.json()) as {
+    properties: { agents: { additionalProperties: { properties: Record<string, { enum?: unknown[] }> } } };
+    $defs: {
+      "jr2.ChartInvoke": { properties: { src: { anyOf: Array<{ enum?: unknown[] }> } } };
+      "jr2.ChartGuard": { anyOf: Array<{ enum?: unknown[]; properties?: { type?: { enum?: unknown[] } } }> };
+    };
+  };
+  // Each lent or allowed name is an `enum` where the grammar takes it, not only a word in the text.
+  const agent = schema.properties.agents.additionalProperties.properties;
+  assert.deepEqual(agent.model?.enum, ["stub/model"]);
+  assert.deepEqual(agent.workspace?.enum, ["none", "write"]);
+  assert.ok(schema.$defs["jr2.ChartInvoke"].properties.src.anyOf[0]!.enum!.includes("coder"), "a lent src");
+  assert.deepEqual(schema.$defs["jr2.ChartGuard"].anyOf[0]!.enum, ["underLimit"]);
+  assert.deepEqual(schema.$defs["jr2.ChartGuard"].anyOf.find((g) => g.properties?.type?.enum)?.properties?.type?.enum, [
+    "underLimit",
+  ]);
+  assert.equal((await app.request("/workflows/coding/chart-schema")).status, 404);
+  assert.equal((await app.request("/workflows/nope/chart-schema")).status, 404);
+});
+
+test("PUT /workflows/:wrapper/charts/:name: 201, then 200 replacing; 400, 404, 409 and 422 by cause", async () => {
+  const { app, dir } = await mkChartApp();
+  const text = await reviewLoop();
+  const created = await app.request("/workflows/charted/charts/loop", jsonPut(text));
+  assert.equal(created.status, 201);
+  assert.deepEqual(await created.json(), {
+    name: "charted/loop",
+    origin: "runtime",
+    hash: chartHash(text as ChartText),
+  });
+  assert.ok(existsSync(join(dir, ".jr2", "charts", "charted", "loop.chart.json")), "kept on the volume");
+  assert.equal((await app.request("/workflows/charted/charts/loop", jsonPut(text))).status, 200);
+
+  assert.equal((await app.request("/workflows/charted/charts/Bad_Name", jsonPut(text))).status, 400);
+  // A name too long for a file name is a bad name, never the volume's 500.
+  assert.equal((await app.request(`/workflows/charted/charts/${"a".repeat(300)}`, jsonPut(text))).status, 400);
+  assert.equal((await app.request(`/workflows/charted/charts/${"a".repeat(64)}`, jsonPut(text))).status, 400);
+  assert.equal((await app.request(`/workflows/charted/charts/${"a".repeat(63)}`, jsonPut(text))).status, 201);
+  assert.equal((await app.request("/workflows/nope/charts/loop", jsonPut(text))).status, 404);
+  const noDoor = await app.request("/workflows/inner/charts/loop", jsonPut(text));
+  assert.equal(noDoor.status, 409);
+  assert.match(((await noDoor.json()) as { error: string }).error, /no Chart door/);
+  const noWrapper = await app.request("/workflows/coding/charts/loop", jsonPut(text));
+  assert.equal(noWrapper.status, 409);
+  assert.match(((await noWrapper.json()) as { error: string }).error, /no Chart wrapper/);
+
+  const refused = await app.request("/workflows/charted/charts/bad", jsonPut({ ...text, initial: "nowhere" }));
+  assert.equal(refused.status, 422);
+  const body = (await refused.json()) as { error: string; report: string[] };
+  assert.equal(body.error, "refused");
+  assert.ok(body.report.length > 0);
+  const notJson = await app.request("/workflows/charted/charts/bad", jsonPut("{ nope"));
+  assert.equal(notJson.status, 422);
+  assert.match(((await notJson.json()) as { report: string[] }).report[0]!, /not JSON/);
+});
+
+test("DELETE /workflows/:wrapper/charts/:name: 204, then 404; a Chart file is 409", async () => {
+  const { app, charts, workflows } = await mkChartApp();
+  const text = await reviewLoop();
+  await app.request("/workflows/charted/charts/loop", jsonPut(text));
+  assert.equal((await app.request("/workflows/charted/charts/loop", { method: "DELETE" })).status, 204);
+  assert.equal((await app.request("/workflows/charted/charts/loop", { method: "DELETE" })).status, 404);
+  // A name or a wrapper no file can have is "no such Chart", never the volume's 500.
+  const del = (path: string) => Promise.resolve(app.request(path, { method: "DELETE" })).then((r) => r.status);
+  assert.equal(await del(`/workflows/charted/charts/${"a".repeat(300)}`), 404);
+  assert.equal(await del("/workflows/a%00b/charts/x"), 404);
+  assert.equal(await del(`/workflows/${"w".repeat(300)}/charts/x`), 404);
+  charts.bind({
+    workflows,
+    files: [{ wrapper: "charted", name: "sample", path: "workflows/charted/sample.chart.json", text }],
+  });
+  const file = await app.request("/workflows/charted/charts/sample", { method: "DELETE" });
+  assert.equal(file.status, 409);
+  assert.match(((await file.json()) as { error: string }).error, /Instance's own/);
+});
+
+test("GET /workflows lists each wrapper with its Charts inside its entry, with origins", async () => {
+  const { app, charts, workflows } = await mkChartApp();
+  const text = await reviewLoop();
+  await app.request("/workflows/charted/charts/loop", jsonPut(text));
+  charts.bind({
+    workflows,
+    files: [{ wrapper: "charted", name: "sample", path: "workflows/charted/sample.chart.json", text }],
+  });
+  const listing = (await (await app.request("/workflows")).json()) as Array<{
+    name: string;
+    origin: string;
+    wrapper?: { body: string; oneShot: boolean; charts: Array<{ name: string; origin: string }> };
+  }>;
+  const charted = listing.find((w) => w.name === "charted");
+  assert.equal(charted?.origin, "machine");
+  assert.equal(charted?.wrapper?.body, "body");
+  assert.equal(charted?.wrapper?.oneShot, true);
+  assert.deepEqual(
+    charted?.wrapper?.charts.map((c) => [c.name, c.origin]),
+    [
+      ["loop", "runtime"],
+      ["sample", "file"],
+    ],
+  );
+  assert.equal(listing.find((w) => w.name === "inner")?.wrapper?.oneShot, false, "no Chart field, so no one-shot");
+  assert.equal(listing.find((w) => w.name === "coding")?.wrapper, undefined);
+  assert.ok(
+    !listing.some((w) => w.name.includes("/")),
+    "a runnable named Chart lists inside its wrapper, not beside it",
+  );
+});
+
+test("a named Chart starts by its documented route and by its encoded name, with the rest of the door", async () => {
+  const { host, app } = await mkChartApp();
+  await app.request("/workflows/charted/charts/loop", jsonPut(await reviewLoop()));
+  const detail = await app.request("/workflows/charted%2Floop");
+  assert.equal(detail.status, 200);
+  const doc = (await detail.json()) as {
+    name: string;
+    input: { properties: Record<string, unknown> };
+    chart: { origin: string; hash: string };
+  };
+  assert.equal(doc.name, "charted/loop");
+  assert.deepEqual(Object.keys(doc.input.properties).sort(), ["endpoint", "task"], "the door minus its Chart field");
+  assert.equal(doc.chart.origin, "runtime");
+
+  for (const path of ["/workflows/charted/charts/loop/runs", "/workflows/charted%2Floop/runs"]) {
+    const res = await app.request(path, jsonPost({ endpoint: NO_HARNESS, task: "add a test" }));
+    assert.equal(res.status, 201, path);
+    const { runId } = (await res.json()) as { runId: string };
+    assert.equal(host.status(runId)?.workflow ?? (await host.read(runId))?.workflow, "charted/loop");
+  }
+  const bad = await app.request("/workflows/charted/charts/loop/runs", jsonPost({ task: "no endpoint" }));
+  assert.equal(bad.status, 400, "the rest of the door is the wrapper's, checked as ever");
+});
+
+test("a named Chart that cannot run now is listed with why, and its start is 409", async () => {
+  const { host, app, charts } = await mkChartApp();
+  await app.request("/workflows/charted/charts/loop", jsonPut(await reviewLoop()));
+  const dropped = await machineOf(chartedSrc({ lendCoder: false }));
+  host.register({ name: "charted", machine: dropped, provide: () => ({}) });
+  charts.bind({ workflows: [{ name: "charted", machine: dropped }], files: [] });
+  const res = await app.request("/workflows/charted/charts/loop/runs", jsonPost({ endpoint: NO_HARNESS, task: "t" }));
+  assert.equal(res.status, 409);
+  assert.match(((await res.json()) as { error: string }).error, /cannot run: Chart refused: .*coder/);
+  const listing = (await (await app.request("/workflows")).json()) as Array<{
+    name: string;
+    wrapper?: { charts: Array<{ name: string; unrunnable?: string }> };
+  }>;
+  const loop = listing.find((w) => w.name === "charted")?.wrapper?.charts.find((c) => c.name === "loop");
+  assert.match(loop?.unrunnable ?? "", /coder/);
+  // Its detail and its Machine answer why, as its start does: never a 404 for a listed name.
+  for (const path of ["/workflows/charted%2Floop", "/workflows/charted%2Floop/machine"]) {
+    const got = await app.request(path);
+    assert.equal(got.status, 409, path);
+    const body = (await got.json()) as { unrunnable: string; chart: { origin: string } };
+    assert.match(body.unrunnable, /coder/, path);
+    assert.equal(body.chart.origin, "runtime");
+  }
+});
+
+test("the one-shot door: a Chart field the door refuses is 422 with the report, before any run", async () => {
+  const { host, app } = await mkChartApp();
+  const before = host.list().length;
+  const text = await reviewLoop();
+  const res = await app.request(
+    "/workflows/charted/runs",
+    jsonPost({
+      endpoint: NO_HARNESS,
+      task: "t",
+      chart: { ...text, states: { ...(text.states as object), draft: { invoke: { src: "linter" } } } },
+    }),
+  );
+  assert.equal(res.status, 422);
+  const body = (await res.json()) as { error: string; report: string[] };
+  assert.equal(body.error, "refused");
+  assert.match(body.report.join("\n"), /linter/);
+  assert.equal(host.list().length, before, "nothing started");
+});
+
+test("GET /workflows/:name/runs/:runId/machine: the run's bound Machine; 404 for an unknown run", async () => {
+  const { app } = await mkChartApp();
+  const res = await app.request(
+    "/workflows/charted/runs",
+    jsonPost({ endpoint: NO_HARNESS, task: "t", chart: await reviewLoop() }),
+  );
+  assert.equal(res.status, 201);
+  const { runId } = (await res.json()) as { runId: string };
+  const doc = await app.request(`/workflows/charted/runs/${runId}/machine`);
+  assert.equal(doc.status, 200);
+  const text = JSON.stringify(await doc.json());
+  for (const state of ["draft", "review", "shipped"]) assert.ok(text.includes(`"${state}"`), state);
+  assert.equal((await app.request("/workflows/charted/runs/nope/machine")).status, 404);
+  // Only through the Workflow the run is of, as the per-run feed (open band).
+  assert.equal((await app.request(`/workflows/coding/runs/${runId}/machine`)).status, 404);
+  assert.equal((await app.request(`/workflows/other/runs/${runId}/machine`)).status, 404);
 });

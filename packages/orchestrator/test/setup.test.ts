@@ -13,7 +13,8 @@ import type { AgentDefinition } from "../src/agent.ts";
 import { agent } from "../src/harness-client.ts";
 import { bindRun, mayMove, RegistrationTable, wouldMove, type RunBinding } from "../src/registration.ts";
 import { jr2Setup } from "../src/setup.ts";
-import { vocabularyOf } from "../src/vocabulary.ts";
+import { loadWarningsOf, vocabularyOf } from "../src/vocabulary.ts";
+import { lentOf, openBody } from "../src/open-body.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
 /** The Agent every fixture here carries. Its content never matters — no model is called — but a
@@ -841,4 +842,75 @@ test("a handler that neither targets nor acts is not a handler", async () => {
 test("no invoker to ask means offer everything — the predicate fails open", () => {
   assert.equal(mayMove(undefined, "anything"), true);
   assert.equal(wouldMove(undefined, { type: "anything" }), true);
+});
+
+// --- Open bodies (ADR-0070): found by brand at createMachine, their lent names resolved ------------
+
+const lendingDecl = (lends: Parameters<typeof openBody>[0]["lends"]) =>
+  openBody({
+    lends,
+    allows: { models: ["stub/model"], workspace: ["none"] },
+    ceilings: { turns: 2, wallClock: "1m", transitions: 10, fanOut: 1, size: 4096 },
+  });
+
+test("an Open body's lent names resolve against the setup's own parts, and the set is stamped on the slot", () => {
+  const coder = agent({ model: "stub/model", instructions: "code" });
+  const underLimit = () => true;
+  const body = lendingDecl({ agents: ["coder"], guards: ["underLimit"], delays: ["cooldown"], actions: ["note"] });
+  const note = () => {};
+  jr2Setup({
+    events: [],
+    actors: { coder, body },
+    guards: { underLimit },
+    actions: { note },
+    delays: { cooldown: 5 },
+  }).createMachine({ id: "w", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  const lent = lentOf(body)!;
+  assert.equal(lent.actors.coder, coder);
+  assert.equal(lent.guards.underLimit, underLimit);
+  assert.equal(lent.actions.note, note);
+  assert.equal(lent.delays.cooldown, 5);
+});
+
+test("an Open body that lends a name the setup lacks, or a part of the wrong kind, refuses the createMachine", () => {
+  const coder = agent({ model: "stub/model", instructions: "code" });
+  const build = () =>
+    jr2Setup({
+      events: [],
+      actors: {
+        coder,
+        helper: fromCallback(() => {}),
+        body: lendingDecl({ agents: ["coder", "tester"], effects: ["helper"], guards: ["ready"] }),
+      },
+    }).createMachine({ id: "w", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  assert.throws(build, (err: Error) => {
+    assert.match(err.message, /^machine "w": Open body "body": /);
+    assert.match(err.message, /lends\.agents: "tester" is no actor slot of this Machine/);
+    assert.match(err.message, /lends\.effects: "helper" is not an Effect slot/);
+    assert.match(err.message, /lends\.guards: "ready" is no guard of this Machine/);
+    return true;
+  });
+});
+
+test("an Open body below an Agent's state is no Rest warning: it runs a Chart, as a child Machine runs", () => {
+  const plan = defineEvent({ name: "plan", input: z.object({}) });
+  const machine = jr2Setup({
+    events: [plan],
+    actors: { planner: agent({ model: "stub/model", instructions: "plan" }), body: lendingDecl({}) },
+  }).createMachine({
+    id: "p",
+    initial: "planning",
+    states: {
+      planning: {
+        invoke: { src: "planner", input: { prompt: "plan" } },
+        on: { plan: ".running" },
+        initial: "idle",
+        states: { idle: {}, running: { invoke: { src: "body", input: {} } } },
+      },
+    },
+  });
+  assert.deepEqual(
+    loadWarningsOf(machine).filter((w) => w.includes("body")),
+    [],
+  );
 });

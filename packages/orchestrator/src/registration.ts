@@ -35,6 +35,7 @@ import type { AnswerSeat } from "./pick.ts";
 import type { Notice, PickAnswer } from "./wire.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
+import type { ChartText } from "./chart.ts";
 import { notTaken, senderText, takesNow, type NotTakenWriting } from "./party.ts";
 import { restOf } from "./rest.ts";
 
@@ -375,9 +376,10 @@ export class RegistrationTable {
     if (!parsed.success) {
       throw new EventValidationError(`invalid "${type}" payload: ${parsed.error.message}`);
     }
+    // `type` after the payload: a payload never names the event the Machine receives (ADR-0011).
     const event: DeliveredEvent = {
-      type: def.name,
       ...parsed.data,
+      type: def.name,
       ...(reg.sender ? { [SENDER_KEY]: reg.sender } : {}),
     };
     // Exact, with the real payload (ADR-0015): a delivery whose selection holds a writing that is
@@ -547,6 +549,13 @@ export type RunBinding = {
    * one the host remembered to equip.
    */
   pendingAborts?: Map<string, Promise<void>>;
+  /**
+   * A named Chart of the run's own Workflow, by its short name (ADR-0070, D-C): what an Open body
+   * whose input is `{ chart: { name } }` binds. The host resolves it among the Charts of the
+   * wrapper that is the run's Workflow (`<wrapper>` of `<wrapper>/<name>`, or the Workflow itself),
+   * and only for a body that wrapper invokes itself. Absent outside a RunHost: no name resolves.
+   */
+  chartNamed?: (name: string) => ChartText | undefined;
 };
 
 /** A conversation's latest outstanding pick, as the Agent's Actor reads it (ADR-0024). `answered`: the Machine

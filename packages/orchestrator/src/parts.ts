@@ -52,6 +52,7 @@ import { isAgent, isOpenAgent, type AgentDeclaration } from "./agent.ts";
 import { argvText, isEffect, placementOf, type EffectParts, type Placement } from "./effect.ts";
 import { effectBindingLine, openPartsOf, type OpenEffectPart } from "./open-effect.ts";
 import { isImageContext } from "./images.ts";
+import { isOpenBody, openBodyDeclarationOf, type OpenBodyDeclaration } from "./open-body.ts";
 import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import { userSeatOf, type Size, type UserContainer } from "./size.ts";
@@ -515,6 +516,25 @@ export type CarriedParts = {
   sizes: CarriedSize[];
   /** Whether any Machine reached, at any depth, composes a Sandbox — the data-plane switch. */
   composesSandbox: boolean;
+  /**
+   * Every Open body slot (ADR-0070), in walk order, with its declaration: what it lends, what a Chart
+   * may define, its ceilings. The one Open part a run binds, not a composer, so it is never in an
+   * Open list: an Open body whose lent names did not resolve never reaches the walk (createMachine
+   * refused it).
+   */
+  openBodies: Array<{ slot: string; declaration: OpenBodyDeclaration; path: OpenSlot["path"] }>;
+  /**
+   * Every model a key is placed and a provider preflighted for: each bound Agent's, and each model
+   * an Open body allows a Chart's own Agents (ADR-0070: a minted model is a door refusal, never a
+   * 401 mid-run). Deduped, sorted.
+   */
+  models: string[];
+  /**
+   * The Instance Harness is needed (ADR-0031): an Agent declares `workspace: "none"`, or an Open
+   * body allows it. `models` are the models its Turns may run: those Agents', and those Open bodies'
+   * allowed ones. Absent when nothing needs it.
+   */
+  instanceHarness?: { models: string[] };
 };
 
 /** A machine actor, told apart from a promise/callback/observable one by having a state tree.
@@ -602,6 +622,9 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const openAgents: OpenSlot[] = [];
   const openEffects: CarriedParts["openEffects"] = [];
   const sizes: CarriedSize[] = [];
+  const openBodies: CarriedParts["openBodies"] = [];
+  // The Machine that declares each Open body: where its lent Agents are read (not carried data).
+  const bodyWrappers = new Map<CarriedParts["openBodies"][number], AnyStateMachine>();
   let sandboxed = false;
   const seen = new Set<string>();
   // Cycle guard AND work saver: a Machine reached twice carries the same parts both times, and a
@@ -685,7 +708,11 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(path, name, logic.definition);
-      else if (isEffect(logic)) {
+      else if (isOpenBody(logic)) {
+        const body = { slot: name, declaration: openBodyDeclarationOf(logic), path };
+        openBodies.push(body);
+        bodyWrappers.set(body, machine);
+      } else if (isEffect(logic)) {
         const effect = carriedEffectOf(name, path, route, logic.effect);
         effects.push(effect);
         if (effect.kind !== "push" && effect.open !== undefined)
@@ -699,7 +726,47 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   };
 
   for (const machine of machines) walk(machine, [], []);
-  return { agents, effects, images, repos, openSlots, openAgents, openEffects, sizes, composesSandbox: sandboxed };
+  const bound = (m: unknown): m is string => typeof m === "string";
+  const models = new Set<string>(agents.map((a) => a.definition.model).filter(bound));
+  for (const body of openBodies) for (const m of body.declaration.allows.models) models.add(m);
+  const menuOnly = agents.filter((a) => a.definition.workspace === "none");
+  const noneBodies = openBodies.filter((b) => bodyTurnsRunIn(bodyWrappers.get(b)!, b.declaration, "instance"));
+  const harnessModels = new Set<string>(menuOnly.map((a) => a.definition.model).filter(bound));
+  for (const body of noneBodies) for (const m of body.declaration.allows.models) harnessModels.add(m);
+  return {
+    agents,
+    effects,
+    images,
+    repos,
+    openSlots,
+    openAgents,
+    openEffects,
+    sizes,
+    composesSandbox: sandboxed,
+    openBodies,
+    models: [...models].sort(),
+    ...(menuOnly.length || noneBodies.length ? { instanceHarness: { models: [...harnessModels].sort() } } : {}),
+  };
+}
+
+/**
+ * Can a Turn under an Open body of `wrapper` run where `where` says, with a model the body allows
+ * (ADR-0070: a minted model needs a key the Assembly placed, a door refusal and never a 401)? A
+ * Chart's own Agent runs where its Workspace access says, so a body that allows "write" or "read"
+ * runs Turns in a pod, and one that allows "none" at the Instance Harness. A lent Agent runs where
+ * its own access says, and a Chart may set its `model` dial to an allowed model: a lent Agent that
+ * is not "none" is a pod Turn, and a "none" one an Instance Harness Turn.
+ */
+function bodyTurnsRunIn(wrapper: AnyStateMachine, decl: OpenBodyDeclaration, where: "pod" | "instance"): boolean {
+  const atInstance = (w: string | undefined) => w === "none";
+  if (decl.allows.workspace.some((w) => (where === "instance" ? atInstance(w) : !atInstance(w)))) return true;
+  const actors = wrapper.implementations.actors as Record<string, unknown>;
+  return (decl.lends.agents ?? []).some((slot) => {
+    const logic = actors[slot];
+    if (!isAgent(logic)) return false;
+    const access = (logic.definition as { workspace?: string }).workspace;
+    return where === "instance" ? atInstance(access) : !atInstance(access);
+  });
 }
 
 /** The `customize()` route to a child of slot `name`: a wrapper's body does not extend it. */
@@ -814,7 +881,8 @@ export type WorkspacePod = {
   secrets: string[];
   /** The model of every bound Agent whose Turn runs in this pod: each Agent below the
    * `workspace()` that is not `workspace: "none"` (those run at the Instance Harness, ADR-0031),
-   * down to the next `workspace()`, which is a pod of its own. Sorted, deduped. */
+   * down to the next `workspace()`, which is a pod of its own, and every model an Open body below
+   * it allows a Chart's own Agents when it allows "write" or "read" (ADR-0070). Sorted, deduped. */
   models: string[];
   /** The Effects placed in this pod's Sandbox Effector (ADR-0068): every `push`, file-body `http` and
    * credentialed `command` slot below the `workspace()`, down to the next `workspace()` — read off
@@ -858,6 +926,14 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
       if (isAgent(logic)) {
         const { model, workspace } = logic.definition;
         if (workspace !== "none" && typeof model === "string") models.add(model);
+        continue;
+      }
+      // A Turn under an Open body may run in this pod with any model the body allows (ADR-0070):
+      // a Chart's own Agent, when the body allows a Workspace access other than "none", and a lent
+      // Agent that is not "none", whose `model` dial a Chart may set to an allowed model.
+      if (isOpenBody(logic)) {
+        const decl = openBodyDeclarationOf(logic);
+        if (bodyTurnsRunIn(machine, decl, "pod")) for (const m of decl.allows.models) models.add(m);
         continue;
       }
       if (isEffect(logic)) {

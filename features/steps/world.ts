@@ -562,6 +562,60 @@ export class E2EWorld {
     await exited;
   }
 
+  /**
+   * One request to this scenario's orchestrator with the Instance token, the answer read as JSON
+   * (an empty body reads as `null`). What the Chart steps put, delete and read with (ADR-0070): no
+   * verb puts or deletes a runtime Chart, so an MCP or curl is the client, and this plays it.
+   */
+  async api<T = unknown>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
+    assert.ok(this.server, "the orchestrator is serving");
+    const res = await fetch(`${this.server.url.replace(/\/+$/, "")}${path}`, {
+      method,
+      headers: { ...this.authHeaders(), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
+    });
+    const text = await res.text();
+    return { status: res.status, body: (text ? JSON.parse(text) : null) as T };
+  }
+
+  /**
+   * A pick's answer (ADR-0024), as the Harness reads it inside the pick's one tool call: the
+   * delivery's receipt, long-polled at `GET /agents/<iid>/deliveries/<id>` until the workflow is
+   * back at Rest in the Agent's state or has left it. A 503 (the orchestrator is not ready to
+   * answer) is asked again.
+   */
+  async deliveryAnswer<T = Record<string, unknown>>(iid: string, deliveryId: string): Promise<T> {
+    const path = `/agents/${encodeURIComponent(iid)}/deliveries/${encodeURIComponent(deliveryId)}`;
+    for (let i = 0; i < 20; i++) {
+      const res = await this.api<T>("GET", path);
+      if (res.status === 200) return res.body;
+      assert.equal(res.status, 503, `GET ${path} answered ${res.status}: ${JSON.stringify(res.body)}`);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`GET ${path} never answered`);
+  }
+
+  /** A fixture Chart's text (`features/fixtures/charts/<name>.chart.json`, ADR-0070), as data. */
+  async chartText(name: string): Promise<Record<string, unknown>> {
+    const file = fileURLToPath(new URL(`../fixtures/charts/${name}.chart.json`, import.meta.url));
+    return JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+  }
+
+  /** Put a fixture Chart in the instance as the Chart file `workflows/<wrapper>/<name>.chart.json`
+   * (ADR-0070). It reaches the orchestrator with the next `publish()`, as `jr2 up` would take it. */
+  async addChartFile(chart: string, wrapper: string, name: string): Promise<void> {
+    await mkdir(join(this.dir, "workflows", wrapper), { recursive: true });
+    await copyFile(
+      fileURLToPath(new URL(`../fixtures/charts/${chart}.chart.json`, import.meta.url)),
+      join(this.dir, "workflows", wrapper, `${name}.chart.json`),
+    );
+  }
+
+  /** Remove the Chart file `workflows/<wrapper>/<name>.chart.json` from the instance. */
+  async removeChartFile(wrapper: string, name: string): Promise<void> {
+    await rm(join(this.dir, "workflows", wrapper, `${name}.chart.json`));
+  }
+
   /** The terminal stdout line parsed as JSON (the one machine-readable result a verb prints). */
   resultJson<T = Record<string, unknown>>(): T {
     const lines = (this.last?.stdout ?? "").trim().split("\n");

@@ -4409,3 +4409,74 @@ test("the Orchestrator may apply a Sandbox Effector's Service — and may not re
   const rules = role.rules.filter((r: { resources: string[] }) => r.resources.includes("services"));
   assert.deepEqual(rules, [{ apiGroups: [""], resources: ["services"], verbs: ["create", "patch"] }]);
 });
+
+// --- Chart wrappers (ADR-0070): the walk reads an Open body's declaration --------------------------
+
+/** The Open body's constructor, by its module: the same module instance the kit's index loads. */
+const OPEN_BODY_SRC = new URL("./open-body.ts", KIT_SRC).href;
+
+/** A Chart wrapper lending `coder`, `tests` and a guard, allowing two models and `none`, with a
+ * Chart door and one Chart file (`chart`: its text, by default one the door admits). */
+async function withChartWrapper(
+  root: string,
+  allows: { models: string[]; workspace: string[] },
+  chart: unknown = { initial: "a", states: { a: { type: "final" } } },
+): Promise<string> {
+  await writeFile(
+    join(root, "workflows", "charted.ts"),
+    `import { z } from ${JSON.stringify(import.meta.resolve("zod"))};\n` +
+      `import { agent, chartSchema, command, jr2Setup } from ${JSON.stringify(KIT_SRC)};\n` +
+      `import { openBody } from ${JSON.stringify(OPEN_BODY_SRC)};\n` +
+      `export const machine = jr2Setup({ events: [], actors: {\n` +
+      `  coder: agent({ model: "anthropic/claude-x", instructions: "i" }),\n` +
+      `  tests: command(["pnpm", "test"]),\n` +
+      `  body: openBody({ lends: { agents: ["coder"], effects: ["tests"], guards: ["ready"] }, allows: ${JSON.stringify(allows)},\n` +
+      `    ceilings: { turns: 6, wallClock: "10m", transitions: 500, fanOut: 2, size: 65536 } }),\n` +
+      `}, guards: { ready: () => true } })\n` +
+      `  .createMachine({ id: "charted", input: z.object({ chart: chartSchema }), initial: "run",\n` +
+      `    states: { run: { invoke: { src: "body", input: ({ event }) => event.input } } } });\n`,
+  );
+  await mkdir(join(root, "workflows", "charted"), { recursive: true });
+  await writeFile(join(root, "workflows", "charted", "sample.chart.json"), JSON.stringify(chart));
+  return root;
+}
+
+test("a Chart wrapper is narrated with what it lends, its allowed models and its Chart files (ADR-0070)", async () => {
+  const root = await withChartWrapper(await mkInstance(`export default { name: "myinst" };\n`), {
+    models: ["anthropic/claude-x", "openai/gpt-5"],
+    workspace: ["none"],
+  });
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0, w.err.join("\n"));
+  const err = w.err.join("\n");
+  assert.match(err, /chart wrapper "charted": lends coder, tests, ready; allows 2 model\(s\); 1 Chart file\(s\)/);
+  // An Open body that allows "none" converges the Instance Harness, as a "none" Agent does (ADR-0031).
+  assert.match(err, /instance harness: converging \(chart wrapper "charted" allows workspace: "none"\)/);
+  assert.ok(findInstanceHarness(w).statefulSet, "the Instance Harness is applied");
+});
+
+test("a Chart file the door would refuse is refused by `jr2 up` before any cluster work (ADR-0070)", async () => {
+  const root = await withChartWrapper(
+    await mkInstance(`export default { name: "myinst" };\n`),
+    { models: ["anthropic/claude-x"], workspace: ["write"] },
+    { initial: "a", states: { a: { invoke: { src: "linter" } } } },
+  );
+  await writeFile(join(root, "workflows", "loose.chart.json"), "{}");
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(err, /refusing: workflows\/charted\/sample\.chart\.json: Chart refused: .*linter/);
+  assert.match(err, /warning: workflows\/loose\.chart\.json: ignored/, "a Chart file at the flat level is named");
+  assert.equal(appliedObjects(w).size, 0, "nothing was applied");
+});
+
+test("an Open body that allows only a Workspace access converges no Instance Harness", async () => {
+  const root = await withChartWrapper(await mkInstance(`export default { name: "myinst" };\n`), {
+    models: ["anthropic/claude-x"],
+    workspace: ["write"],
+  });
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0, w.err.join("\n"));
+  assert.doesNotMatch(w.err.join("\n"), /instance harness: converging/);
+  assert.equal(findInstanceHarness(w).statefulSet, undefined);
+});

@@ -17,6 +17,13 @@
 //   GET  /agents/:iid/deliveries/:id   long-poll an outstanding pick's answer    [Sandbox token]
 //   POST /sandboxes/:name/fetch        ask the node cache to fetch one Repo      [Sandbox token]
 //
+//   # named Charts (ADR-0070): a Chart under a name is a Workflow `<wrapper>/<name>`
+//   GET    /workflows/:wrapper/chart-schema           the grammar, narrowed to the Open body    [open]
+//   PUT    /workflows/:wrapper/charts/:name           admit + keep a runtime Chart              [Instance token]
+//   DELETE /workflows/:wrapper/charts/:name           remove a runtime Chart                    [Instance token]
+//   POST   /workflows/:wrapper/charts/:name/runs      start the named Chart                     [Instance token]
+//   GET    /workflows/:name/runs/:runId/machine       the run's bound Machine, Charts compiled  [open]
+//
 //   # `jr2 up`, and nothing else (ADR-0069)
 //   PUT  /assembly                     publish the next Assembly                 [publish token]
 //   GET  /assembly                     the current Assembly and the held ones    [open]
@@ -53,6 +60,8 @@ import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal
 import { observe, type RunFeedEvent, type RunHost, type RunStatus, type WorkflowFeedEvent } from "./run-host.ts";
 import { KIT_VERSION } from "./config.ts";
 import type { AssemblyDoor } from "./assembly.ts";
+import { ChartRefusal } from "./chart.ts";
+import { chartName, NamedChartError, splitChartName, type NamedCharts } from "./charts.ts";
 
 /** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
  * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery: `deferred`
@@ -401,6 +410,13 @@ export type CreateAppOptions = {
    * (ADR-0013, ADR-0024). Default 25 s: every request stays far below undici's 300 s and the
    * Custodian's idle limit. Tests shorten it. */
   deliveryWaitMs?: number;
+  /**
+   * The named Charts of the Instance (ADR-0070): what `PUT`/`DELETE /workflows/:wrapper/charts/:name`
+   * change, what `GET /workflows/:wrapper/chart-schema` narrows the grammar from, and the
+   * unrunnable ones `GET /workflows` adds to the host's listing. Absent for the in-process tests
+   * that build an app straight over a host: those routes then answer 404.
+   */
+  charts?: NamedCharts;
 };
 
 /**
@@ -459,7 +475,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // unauthenticated. They expose no run, drive nothing, and the Console is a BROWSER page — it
   // loads before any token is entered (ADR-0032). Everything that reads or moves a run is guarded
   // below.
-  app.get("/workflows", (c) => c.json(host.workflows()));
+  // Each Workflow with its origin, and each Chart wrapper's Charts inside its entry (ADR-0070); a
+  // named Chart that cannot run now is listed with why.
+  app.get("/workflows", (c) => {
+    const listing = host.workflowList();
+    return c.json(opts.charts ? opts.charts.listing(listing) : listing);
+  });
 
   // The current Assembly and the ones live runs hold (ADR-0069). Open like `/workflows`: a hash
   // and a Kit version are identity, the class of thing `/healthz` already serves.
@@ -498,6 +519,115 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return c.json(answer.body, answer.status);
   });
 
+  // ---- Named Charts (ADR-0070) ----------------------------------------------------------------
+  // Before every `/workflows/:name/*` route. A Chart is data and cannot reach the process, so a
+  // runtime Chart is kept behind the Instance token, not the publish token; the door that admits it
+  // is the one a run's Chart passes. A Chart file is the Assembly's own: no route changes one.
+
+  /** A `NamedChartError` as its answer. */
+  const chartError = (c: Context<JR2Env>, err: unknown): Response => {
+    if (err instanceof NamedChartError) return c.json(err.body, err.status);
+    throw err;
+  };
+  const noCharts = (c: Context<JR2Env>) => c.json({ error: "this instance keeps no named Charts" }, 404);
+
+  // The grammar narrowed to the wrapper's Open body: its lent names, guard, action and delay names,
+  // allowed models and Workspace accesses as `enum`s. Structure, like the Machine doc: open band.
+  app.get("/workflows/:wrapper/chart-schema", (c) => {
+    const wrapper = c.req.param("wrapper");
+    const schema = opts.charts?.schema(wrapper);
+    return schema ? c.json(schema) : c.json({ error: `no Chart wrapper "${wrapper}"` }, 404);
+  });
+
+  // The body is the Chart text alone. 201 when new, 200 when it replaced one: a live run of the
+  // old text holds its own.
+  app.put("/workflows/:wrapper/charts/:name", instanceOnly, async (c) => {
+    if (!opts.charts) return noCharts(c);
+    let text: unknown;
+    try {
+      text = JSON.parse(await c.req.text());
+    } catch (err) {
+      return c.json({ error: "refused", report: [`(chart): the body is not JSON: ${errMessage(err)}`] }, 422);
+    }
+    try {
+      const put = await opts.charts.put(c.req.param("wrapper"), c.req.param("name"), text);
+      // `unrunnable`: a publish bound a wrapper that refuses the text while it was written. It is
+      // kept on the volume and listed with that reason, as each publish's re-admission does.
+      return c.json(
+        {
+          name: put.name,
+          origin: "runtime",
+          hash: put.hash,
+          ...(put.unrunnable !== undefined ? { unrunnable: put.unrunnable } : {}),
+        },
+        put.created ? 201 : 200,
+      );
+    } catch (err) {
+      return chartError(c, err);
+    }
+  });
+
+  app.delete("/workflows/:wrapper/charts/:name", instanceOnly, async (c) => {
+    if (!opts.charts) return noCharts(c);
+    try {
+      await opts.charts.remove(c.req.param("wrapper"), c.req.param("name"));
+      return c.body(null, 204);
+    } catch (err) {
+      return chartError(c, err);
+    }
+  });
+
+  /**
+   * Start a run of a Workflow (ADR-0009). A named Chart that cannot run now is 409 with why
+   * (ADR-0070); a Chart in the input that the door refuses is 422 with the report; input failing
+   * the door schema is 400 (ADR-0033); an unknown Workflow is 404.
+   */
+  const startRun = async (c: Context<JR2Env>, name: string): Promise<Response> => {
+    const unrunnable = opts.charts?.get(name)?.unrunnable;
+    if (unrunnable !== undefined) return c.json({ error: `named Chart "${name}" cannot run: ${unrunnable}` }, 409);
+    const input = await readJson(c.req.text());
+    try {
+      const { runId, instanceId } = await host.start(name, input);
+      return c.json({ runId, instanceId }, 201);
+    } catch (err) {
+      if (err instanceof ChartRefusal) return c.json({ error: "refused", report: err.report }, 422);
+      if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
+      return c.json({ error: errMessage(err) }, 404);
+    }
+  };
+
+  // The documented start of a named Chart; `POST /workflows/<wrapper>%2F<name>/runs` is the same.
+  app.post("/workflows/:wrapper/charts/:name/runs", instanceOnly, (c) =>
+    startRun(c, chartName(c.req.param("wrapper"), c.req.param("name"))),
+  );
+
+  // The run's bound Machine (ADR-0070): the wrapper's doc with each bound body's Chart compiled in,
+  // so the Console draws the states a Chart run moves through. Structure: open band, and only
+  // through the Workflow the run is of, as the per-run feed is: an observer names the Workflow
+  // it already knows. A settled run's doc is served too, so the Console draws where it ended.
+  app.get("/workflows/:name/runs/:runId/machine", async (c) => {
+    const runId = c.req.param("runId");
+    const doc = await host.runMachine(runId);
+    return doc && doc.workflow === c.req.param("name")
+      ? c.json(doc)
+      : c.json({ error: `no run "${runId}" of workflow "${c.req.param("name")}"` }, 404);
+  });
+
+  /** A named Chart that is listed but cannot run now (ADR-0070): 409 with why, as its start is,
+   * never a 404 for a name `GET /workflows` lists. */
+  const unrunnableChart = (c: Context<JR2Env>, name: string): Response | undefined => {
+    const named = opts.charts?.get(name);
+    if (named?.unrunnable === undefined) return undefined;
+    return c.json(
+      {
+        error: `named Chart "${name}" cannot run: ${named.unrunnable}`,
+        unrunnable: named.unrunnable,
+        chart: { origin: named.origin, hash: named.hash },
+      },
+      409,
+    );
+  };
+
   // The two PAGE addresses (ADR-0032): `/` and `/workflows/:name` negotiate. A browser navigation
   // (`Accept` prefers text/html) gets the one Console shell — the path carries the selection, the
   // shell is the same bytes for any of them. Every other caller gets JSON, the default dialect.
@@ -515,8 +645,19 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     if (prefersHtml(c)) return consoleAsset("page.html", "text/html; charset=utf-8");
     const name = c.req.param("name");
     const doc = host.machine(name);
-    if (!doc) return c.json({ error: `no workflow "${name}"` }, 404);
-    return c.json({ name, machineId: doc.id, input: host.inputSchema(name) ?? null });
+    if (!doc) return unrunnableChart(c, name) ?? c.json({ error: `no workflow "${name}"` }, 404);
+    // A named Chart answers its door minus the Chart fields, and its origin and hash; a Chart
+    // wrapper answers its Open bodies' declarations, for a client that writes Charts (ADR-0070).
+    const split = splitChartName(name);
+    const named = split && (opts.charts?.get(name) ?? host.namedChart(split.wrapper, split.name));
+    const wrapper = split ? undefined : opts.charts?.wrapperOf(name);
+    return c.json({
+      name,
+      machineId: doc.id,
+      input: host.inputSchema(name) ?? null,
+      ...(named ? { chart: { origin: named.origin, hash: named.hash } } : {}),
+      ...(wrapper ? { openBodies: wrapper.bodies.map((b) => ({ slot: b.slot, ...b.declaration })) } : {}),
+    });
   });
 
   // Push work: start a run of a registered workflow. Unknown workflow → host.start throws → 404.
@@ -525,24 +666,16 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // schema (`POST /runs/:id/gates/:gate/events` below). Instance-band (ADR-0058): starting work is
   // run control, and a Sandbox token's scope is its own agent surface — the Custodian's route
   // allowlist not forwarding this route is a second layer, not the control (ADR-0059).
-  app.post("/workflows/:name/runs", instanceOnly, async (c) => {
-    const name = c.req.param("name");
-    const input = await readJson(c.req.text());
-    try {
-      const { runId, instanceId } = await host.start(name, input);
-      return c.json({ runId, instanceId }, 201);
-    } catch (err) {
-      if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
-      return c.json({ error: errMessage(err) }, 404);
-    }
-  });
+  // A Chart wrapper's one-shot door (ADR-0070): a Chart field in the body is admitted before the
+  // run starts, and a refusal is 422 with the report. A named Chart rides the path encoded.
+  app.post("/workflows/:name/runs", instanceOnly, (c) => startRun(c, c.req.param("name")));
 
   // The registered template Machine's structure — what the Console's diagram renders (structure
   // is provider-independent, so the un-`provide()`d template is exactly right).
   app.get("/workflows/:name/machine", (c) => {
     const name = c.req.param("name");
     const doc = host.machine(name);
-    return doc ? c.json(doc) : c.json({ error: `no workflow "${name}"` }, 404);
+    return doc ? c.json(doc) : (unrunnableChart(c, name) ?? c.json({ error: `no workflow "${name}"` }, 404));
   });
 
   // ---- Observation (`GET /workflows/:name/runs*`) ---------------------------------------------

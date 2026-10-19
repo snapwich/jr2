@@ -7,10 +7,14 @@
 // kube context — ADR-0019) rather than a per-invocation runtime, because jr2 runs are durable and may
 // park indefinitely on an approval gate. `--detach` prints the runId and returns, leaving the run
 // going server-side.
+//
+// A named Chart is a Workflow (ADR-0070): `jr2 run <wrapper>/<name>` starts it as any other run, the
+// name riding the path as one encoded segment. A Chart the door refuses (one-shot, in `--input`)
+// is a 422 whose report lines this prints, one per rule the Chart fails.
 
 import { parseArgs } from "node:util";
 import type { ChildErrorMarker, PlacingMarker } from "@jr2/orchestrator";
-import { JR2Client } from "../client.ts";
+import { JR2Client, JR2HttpError } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 
@@ -28,7 +32,7 @@ export async function run(args: string[], io: Io): Promise<number> {
 
   const workflow = positionals[0];
   if (!workflow) {
-    activity(io, "usage: jr2 run <workflow> [--input <json>] [--detach]");
+    activity(io, "usage: jr2 run <workflow | wrapper/chart> [--input <json>] [--detach]");
     return 2;
   }
   const input = values.input ? (JSON.parse(String(values.input)) as Record<string, unknown>) : {};
@@ -36,7 +40,14 @@ export async function run(args: string[], io: Io): Promise<number> {
   try {
     const client = new JR2Client(target.url, io.fetch, target.token);
 
-    const { runId } = await client.start(workflow, input);
+    let runId: string;
+    try {
+      ({ runId } = await client.start(workflow, input));
+    } catch (err) {
+      if (!(err instanceof JR2HttpError) || !err.report) throw err;
+      activity(io, refusalActivity(workflow, err.report));
+      return 1;
+    }
     if (values.detach) {
       result(io, { runId });
       return 0;
@@ -77,6 +88,14 @@ export async function run(args: string[], io: Io): Promise<number> {
   } finally {
     target.close?.();
   }
+}
+
+/**
+ * The door's refusal of a Chart (ADR-0070) as activity: the Workflow, then each report line, which
+ * names the path in the Chart and the rule it fails.
+ */
+export function refusalActivity(workflow: string, report: readonly string[]): string {
+  return [`error: the door refused the Chart for "${workflow}"`, ...report.map((line) => `  ${line}`)].join("\n");
 }
 
 /**

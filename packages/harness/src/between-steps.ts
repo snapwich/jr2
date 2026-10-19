@@ -55,11 +55,11 @@ export async function between(
   instanceId: string,
   told: ToldPicks,
   signal?: AbortSignal,
-  step: { stopped?: boolean } = {},
+  step: { stopped?: boolean; briefings?: ReadonlyMap<string, string> } = {},
 ): Promise<string | undefined> {
   const now = await readAllowed(opts, instanceId, signal);
   if (now === undefined || !told.differs(now)) return undefined;
   if (step.stopped && now.length === 0) return undefined;
   told.heard(now);
-  return restatedTurnPart(now, opts.toolName);
+  return restatedTurnPart(now, opts.toolName, step.briefings);
 }

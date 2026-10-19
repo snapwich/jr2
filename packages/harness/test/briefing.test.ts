@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { briefedPrompt, seatFacts, standingBriefing, turnPart } from "../src/briefing.ts";
+import { briefedPrompt, restatedTurnPart, seatFacts, standingBriefing, turnPart } from "../src/briefing.ts";
 
 const GI = 1024 ** 3;
 const INSTRUCTIONS = "You review diffs.";
@@ -110,6 +110,22 @@ test("a kernel memory kill has no peak — the notice says the limit alone", () 
   });
   assert.match(part, /killed at its memory limit of 2Gi during `tester`'s Turn/);
   assert.match(part, /Allowed now: none/);
+});
+
+test("a Chart pick's briefing is said right before the Allowed picks, only on a Turn that may make it (ADR-0070)", () => {
+  const briefings = new Map([["run_chart", "A Chart is a workflow written as data."]]);
+  const toolName = (name: string) => `mcp__jr2__${name}`;
+  const may = turnPart({ workspace: "none", cwd: "/work", allowed: ["run_chart", "stop"], toolName, briefings });
+  assert.match(may, /`mcp__jr2__run_chart` takes a Chart\. A Chart is a workflow written as data\.\nAllowed now: /);
+  const mayNot = turnPart({ workspace: "none", cwd: "/work", allowed: ["stop"], toolName, briefings });
+  assert.doesNotMatch(mayNot, /takes a Chart/);
+  // The restatement says it too when the pick opens mid-Turn.
+  const restated = restatedTurnPart(["run_chart"], toolName, briefings);
+  assert.match(
+    restated,
+    /state changed.*`mcp__jr2__run_chart` takes a Chart\. A Chart is a workflow written as data\.\nAllowed now: `mcp__jr2__run_chart`\./s,
+  );
+  assert.doesNotMatch(restatedTurnPart(["stop"], toolName, briefings), /takes a Chart/);
 });
 
 test("a Menu-only Agent's Turn part names no working directory — it has no Working tools to root", () => {

@@ -27,10 +27,12 @@ import { KIT_VERSION } from "../src/config.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import {
   admitTree,
+  chartedSrc,
   FIXTURE_ASSEMBLY,
   hashesOnVolume,
   onVolume,
   publishTree,
+  reviewLoop,
   scratchInstance,
   stageTree,
 } from "./_assembly.ts";
@@ -80,8 +82,11 @@ test("discovers workflows and serves the HTTP surface", async () => {
     assert.equal(health.status, 200);
     assert.equal(((await health.json()) as { ok: boolean }).ok, true);
 
-    const workflows = await (await fetch(`${inst.url}/workflows`, auth(inst))).json();
-    assert.deepEqual(workflows, ["echo"]);
+    const workflows = (await (await fetch(`${inst.url}/workflows`, auth(inst))).json()) as Array<{ name: string }>;
+    assert.deepEqual(
+      workflows.map((w) => [w.name, (w as { origin?: string }).origin]),
+      [["echo", "machine"]],
+    );
 
     // Push work over HTTP → a run is minted and observable.
     const started = await fetch(`${inst.url}/workflows/echo/runs`, { method: "POST", body: "{}", ...auth(inst) });
@@ -1083,6 +1088,80 @@ test("a failed removal is reported and skipped: the collection goes on to the ne
     assert.deepEqual(onVolume(dir, "aaaaaaaaaaaa"), { tree: false, record: false });
   } finally {
     await chmod(join(store, "aaaaaaaaaaaa", "workflows"), 0o755).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- Named Charts (ADR-0070) ------------------------------------------------------------------
+
+/** A scratch instance with the Chart wrapper `charted` published. */
+async function bootCharted(dir?: string): Promise<{ inst: RunningInstance; dir: string }> {
+  const at = dir ?? (await scratchInstance("charts"));
+  const inst = await startInstance({ dir: at, store: new SqliteSnapshotStore(":memory:"), signingKey: KEY });
+  if (!dir) await publishTree(inst, at, { "workflows/charted.ts": chartedSrc() });
+  return { inst, dir: at };
+}
+
+const putChart = (inst: RunningInstance, path: string, text: unknown) =>
+  fetch(`${inst.url}${path}`, {
+    method: "PUT",
+    body: JSON.stringify(text),
+    headers: { ...auth(inst).headers, "content-type": "application/json" },
+  });
+
+type Listing = Array<{
+  name: string;
+  origin: string;
+  unrunnable?: string;
+  wrapper?: { charts: Array<{ name: string; origin: string; unrunnable?: string }> };
+}>;
+
+test("a runtime Chart survives a restart: the next boot reads it off the volume and admits it again", async () => {
+  const { inst, dir } = await bootCharted();
+  const text = await reviewLoop();
+  try {
+    assert.equal((await putChart(inst, "/workflows/charted/charts/loop", text)).status, 201);
+    // Behind the Instance token: a Chart is data, so it is not the publish token's (ADR-0070).
+    const anon = await fetch(`${inst.url}/workflows/charted/charts/other`, {
+      method: "PUT",
+      body: JSON.stringify(text),
+    });
+    assert.equal(anon.status, 401);
+  } finally {
+    await inst.close();
+  }
+  const { inst: again } = await bootCharted(dir);
+  try {
+    assert.deepEqual(again.charts, { files: 0, runtime: 1, unrunnable: [] });
+    assert.ok(again.host.workflows().includes("charted/loop"));
+    const listing = (await (await fetch(`${again.url}/workflows`)).json()) as Listing;
+    assert.deepEqual(
+      listing.find((w) => w.name === "charted")?.wrapper?.charts.map((c) => [c.name, c.origin]),
+      [["loop", "runtime"]],
+    );
+  } finally {
+    await again.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("`jr2 run <wrapper>/<name>`: the named Chart starts with the rest of the door, as a Workflow of its own name", async () => {
+  const { inst, dir } = await bootCharted();
+  try {
+    await putChart(inst, "/workflows/charted/charts/loop", await reviewLoop());
+    const res = await fetch(`${inst.url}/workflows/${encodeURIComponent("charted/loop")}/runs`, {
+      method: "POST",
+      body: JSON.stringify({ endpoint: "http://127.0.0.1:9", task: "add a test" }),
+      ...auth(inst),
+    });
+    assert.equal(res.status, 201, await res.clone().text());
+    const { runId } = (await res.json()) as { runId: string };
+    const status = (await (await fetch(`${inst.url}/runs/${runId}`, auth(inst))).json()) as { workflow: string };
+    assert.equal(status.workflow, "charted/loop");
+    // A park leaves the body's wall-clock ceiling armed: the run is cancelled, so the suite ends.
+    await inst.host.cancel(runId, { keep: false });
+  } finally {
+    await inst.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

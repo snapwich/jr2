@@ -32,7 +32,9 @@ usage: jr2 <command> [args]
   run <workflow> [--input <json>]   start a run; stream activity, print terminal result
        [--detach]                   ...or just print the runId and return
   runs                              list live runs; "placing" names the Workspaces that wait for
-                                    capacity (ADR-0064), and "status <runId>" says why
+                                    capacity (ADR-0064), and "status <runId>" says why; the
+                                    Workflows and their named Charts on stderr (ADR-0070)
+       [--workflows]                ...or print that listing as the result (see "runs --help")
   status [runId]                    print a run's current status (read-through),
          [--json]                   or the instance's Repos, per node, when given none (ADR-0048/0051)
   logs <runId> [-f]                 replay a run's status; -f to follow until it settles

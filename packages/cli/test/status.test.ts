@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderInstanceStatus } from "../src/commands/status.ts";
+import { boundActivity, renderInstanceStatus } from "../src/commands/status.ts";
 
 const lines = (out: string): string[] => out.split("\n").filter((l) => l.startsWith("assembly:"));
 
@@ -67,4 +67,24 @@ test("an Assembly answer that cannot be read is one line naming the reason", () 
     repos: [],
   });
   assert.deepEqual(lines(out), ["assembly: unknown — GET /assembly answered HTTP 500"]);
+});
+
+// `jr2 status <run>` (ADR-0070): a run that binds a Chart says so as `chart: bound`, with the route
+// that draws its bound Machine; a run that binds none says nothing.
+
+test("a bound run reads `chart: bound` with its Machine route; an unbound one prints no line", () => {
+  const run = { runId: "r1", workflow: "charted/loop", instanceId: "i", status: "active", value: "x", context: {} };
+  assert.equal(
+    boundActivity({ ...run, bound: true }),
+    "chart: bound — GET /workflows/charted%2Floop/runs/r1/machine draws the Machine this run binds",
+  );
+  assert.equal(boundActivity(run), undefined);
+});
+
+test("a drifted bound run says so: its Machine route may not draw the Chart", () => {
+  const run = { runId: "r1", workflow: "charted", instanceId: "i", status: "drifted", value: "x", context: {} };
+  assert.equal(
+    boundActivity({ ...run, bound: true }),
+    "chart: bound, drifted — GET /workflows/charted/runs/r1/machine names each Chart it cannot draw",
+  );
 });

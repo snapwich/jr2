@@ -45,8 +45,16 @@ export type MenuItem = {
   description: string;
   /** The event's input, as JSON Schema — without `$schema`. */
   parameters: Record<string, unknown>;
+  /** jr2's text on this pick's parameter (a Chart, ADR-0070), said in the Turn part when the pick
+   * is Allowed — never in the tools block, which is the same bytes on every Turn. */
+  briefing?: string;
   pick: (params: unknown, signal?: AbortSignal) => Promise<string>;
 };
+
+/** The briefings of a Menu, by event name: what the Turn part says for each Allowed pick that has one. */
+export function briefingsOf(menu: Menu): Map<string, string> {
+  return new Map(menu.flatMap((item) => (item.briefing === undefined ? [] : [[item.event, item.briefing]])));
+}
 
 /** One conversation's Menu (ADR-0029): the same items, in the same order, on every Turn. */
 export type Menu = MenuItem[];
@@ -62,6 +70,8 @@ export type SurfaceEvent = {
   /** The event's input schema, as JSON Schema — this becomes the tool's parameters. */
   input: unknown;
   semantics: "ack" | "poll";
+  /** The Orchestrator's mark on a pick whose parameter is a Chart: jr2's text on how one runs. */
+  briefing?: string;
 };
 
 /**
@@ -234,6 +244,7 @@ function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent, cl
     name: sanitizeToolNamePart(event.name),
     description: event.description ?? "",
     parameters: parametersOf(event.input),
+    ...(event.briefing === undefined ? {} : { briefing: event.briefing }),
     pick: (params, pickSignal) => {
       // The claim is taken before the first `await`: that is what makes it message order.
       if (claim.held !== undefined) {

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
+import { narrowedChartSchema } from "@jr2/orchestrator";
 import { cutPickResult, unsentPickResult, type Surface } from "../src/menu.ts";
 import { harnessServer, type HarnessServer } from "../src/app.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
@@ -1162,6 +1163,45 @@ test("a Menu pick reaches the Orchestrator and its receipt reaches the model; th
     JSON.stringify(receipt ?? {}).includes('Delivered \\"review_verdict\\"'),
     `the delivery receipt is the tool result the model reads (got: ${JSON.stringify(receipt)})`,
   );
+});
+
+test("a pick whose parameters are the Chart grammar (recursive `$ref`s) is offered, filled and delivered (ADR-0070)", async () => {
+  // The planner's pick `{ chart }` (ADR-0070): the grammar narrowed to an Open body, whose states,
+  // invokes and transitions are recursive, so the tool's parameters carry `$defs` and `$ref`s.
+  const grammar = narrowedChartSchema({
+    lends: { agents: ["summarizer"] },
+    allows: { models: ["fake/model-x"], workspace: ["none"] },
+    ceilings: { turns: 4, wallClock: "5m", transitions: 200, fanOut: 2, size: 65536 },
+  });
+  const { $defs, $schema: _schema, ...chartField } = grammar as { $defs: unknown; $schema?: unknown };
+  const input = { type: "object", properties: { chart: chartField }, required: ["chart"], $defs };
+  const chart = {
+    initial: "summarize",
+    events: { done: { input: { type: "object", properties: {} } } },
+    states: {
+      summarize: {
+        invoke: { src: "summarizer", input: { prompt: "Summarize {{input.change}}" } },
+        on: { done: "end" },
+      },
+      end: { type: "final" },
+    },
+  };
+  provider.reset([
+    { text: "", toolCall: { id: "call_1", name: "mcp__jr2__run_chart", args: JSON.stringify({ chart }) } },
+    { text: "Done." },
+  ]);
+  const event = { name: "run_chart", description: "Run this Chart.", input, semantics: "ack" as const };
+  sandbox.reset({ ...surfaceAllowing([], []), menu: [event], allowed: ["run_chart"] });
+  const iid = "conf/chart-pick";
+
+  const admission = await admit(iid, "Write a Chart and run it.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+
+  const tool = provider.calls[0]?.tools?.find((t) => t.function?.name === "mcp__jr2__run_chart");
+  const offered = JSON.stringify(tool ?? {});
+  assert.match(offered, /\$ref/, "the recursive grammar reaches the provider with its references");
+  assert.match(offered, /"enum":\["summarizer","gate"\]/, "narrowed: the lent names are an enum");
+  assert.deepEqual(sandbox.delivered, [{ type: "run_chart", chart }]);
 });
 
 test("the instructions reach a custom provider as `system`, never `developer`: a chat template knows only the first", async () => {

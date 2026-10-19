@@ -278,7 +278,7 @@ export async function collectAssemblies(dir: string, roots: Set<string>): Promis
 }
 
 /** The temp file `writeDurably` renames over its target. A crash before the rename leaves one. */
-const DURABLE_TMP = /\.tmp-[0-9a-f]{8}$/;
+export const DURABLE_TMP = /\.tmp-[0-9a-f]{8}$/;
 
 /** Remove every `.staging-*` a crashed publish left, and every temp file a crashed pointer or
  * record write left. A boot ignores them; this is the cleanup. */
@@ -306,6 +306,10 @@ export type LoadedAssembly = {
   refusals: string[];
   workflows: string[];
   activate: (next: CurrentAssembly) => Promise<void>;
+  /** Fields this publish adds to its own 200 answer, read under the door's lock after `activate`
+   * (ADR-0070: the named Charts this Assembly left unrunnable). Per publish, never a shared slot,
+   * so a second publish that starts meanwhile cannot change this one's answer. */
+  answer?: () => Record<string, unknown>;
 };
 
 /** A publish as it reaches the door, after authentication. */
@@ -326,7 +330,9 @@ export type AssemblyDoorOptions = {
   dir: string;
   /** The Assembly the process serves now. */
   current: () => CurrentAssembly | null;
-  /** The names the process registers now, for `GET /assembly`. */
+  /** The current Assembly's own Workflow names (its record's `workflows`: the Machines and the
+   * Chart files), for `GET /assembly` and the publish answer. Never the runtime Charts the process
+   * also registers: they are not part of an Assembly (ADR-0070). */
   workflows: () => string[];
   /** The Assemblies held, current first (ADR-0069): what `GET /assembly` and the publish answer
    * list. The instance reads them from the store's live rows and the records
@@ -548,7 +554,16 @@ export function assemblyDoor(opts: AssemblyDoorOptions): AssemblyDoor {
     // 7. The Assembly that was current may now be unheld: collected before the answer, which
     // names what went.
     const collected = await collectHeld();
-    return { status: 200, body: { ...answer(next), held: await heldAfterLanding(next), collected } };
+    return {
+      status: 200,
+      body: {
+        ...answer(next),
+        workflows: loaded.workflows,
+        ...loaded.answer?.(),
+        held: await heldAfterLanding(next),
+        collected,
+      },
+    };
   };
 
   const admit: AssemblyDoor["admit"] = async (staging, header) => {
@@ -678,7 +693,7 @@ async function syncTree(dir: string): Promise<void> {
 
 /** Write a file so that a crash leaves the old content or the new, never a part: a temp file,
  * fsynced, renamed over the target, and the directory fsynced. */
-async function writeDurably(path: string, text: string): Promise<void> {
+export async function writeDurably(path: string, text: string): Promise<void> {
   const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;
   await writeFile(tmp, text);
   await fsyncPath(tmp);
@@ -691,7 +706,8 @@ function fsyncDir(dir: string): Promise<void> {
   return fsyncPath(dir);
 }
 
-async function fsyncPath(path: string): Promise<void> {
+/** fsync one file or directory. */
+export async function fsyncPath(path: string): Promise<void> {
   const handle = await open(path, "r");
   try {
     await handle.sync();

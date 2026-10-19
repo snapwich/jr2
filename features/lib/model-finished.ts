@@ -34,4 +34,6 @@ export const FINISHED: Record<string, (s: RunEnd) => boolean> = {
   "allowed-after-route": outcomeIn("filed", "shipped"),
   "unknown-outcome": outcomeIn("checked", "announced"),
   "continue-after-signed-push": outcomeIn("finished"),
+  // A planner that sent the door's limit of refused Charts also reached a final its task allows.
+  "chart-refusal": finalIn("admitted", "refused"),
 };

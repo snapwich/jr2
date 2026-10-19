@@ -34,7 +34,7 @@ import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { RunawayError, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
-import { cutPickResult, readMenu, unsentPickResult, type MenuItem, type MenuOptions } from "./menu.ts";
+import { briefingsOf, cutPickResult, readMenu, unsentPickResult, type MenuItem, type MenuOptions } from "./menu.ts";
 import { MENU_TOOL_PREFIX, menuToolName, menuTools } from "./menu-tools.ts";
 import { attachPrinter, printLines, renderCompaction, renderMessage, type PrinterOut } from "./printer.ts";
 import { piSession } from "./pi-engine.ts";
@@ -110,6 +110,8 @@ type Assembled = {
      * drops it before the hook sees it, so a summary would outlive the sweep that cancelled its
      * turn (ADR-0024) unless jr2 carries the signal itself. */
     signal: AbortSignal;
+    /** The Menu's pick briefings (`briefingsOf`): fixed with the Menu, read once per Submission. */
+    briefings: ReadonlyMap<string, string>;
   };
 };
 
@@ -205,7 +207,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     }
 
     if (!assembled) {
-      const current = { definition, model, thinkingLevel, signal };
+      const current = { definition, model, thinkingLevel, signal, briefings: briefingsOf(read.menu) };
       // Held, not inlined: Compaction appends its entry to THIS session (ADR-0036), and
       // `AgentHarness` exposes no accessor for the one it was given. Opened, not created, when the
       // conversation was rebuilt: the engine part a previous process wrote (ADR-0031).
@@ -241,9 +243,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         if (!live()) return;
         // A step with no tool result is the model stopping: the ask-again rule (ADR-0016).
         const stopped = event.toolResults.length === 0;
-        const text = await between(menuOptions, deps.instanceId, told, current.signal, { stopped }).catch(
-          () => undefined,
-        );
+        const text = await between(menuOptions, deps.instanceId, told, current.signal, {
+          stopped,
+          briefings: current.briefings,
+        }).catch(() => undefined);
         if (text === undefined || !live()) return;
         await harness.steer(text).catch((err: unknown) => {
           console.error(`[${deps.agentName}] could not restate the Allowed picks:`, err);
@@ -350,6 +353,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       assembled.current.model = model;
       assembled.current.thinkingLevel = thinkingLevel;
       assembled.current.signal = signal;
+      assembled.current.briefings = briefingsOf(read.menu);
       const live = assembled.harness.getModel() as { provider: string; id: string };
       if (live.provider !== model.provider || live.id !== model.id) await assembled.harness.setModel(model);
       if (assembled.harness.getThinkingLevel() !== thinkingLevel) {
@@ -403,6 +407,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
             cwd: definition.cwd,
             allowed: read.allowed,
             toolName: menuToolName,
+            briefings: assembled.current.briefings,
             ...(submission.notices ? { notices: submission.notices } : {}),
           }),
         ),

@@ -7,7 +7,10 @@
 //      tree under `<dir>/.jr2/assemblies/<hash>`; none before the first publish), each def stamped
 //      with that Assembly's hash (workflow name = filename, mirroring flue's
 //      `agents/<name>.ts`; module contract, ADR-0011 revised by ADR-0015: `export const machine`
-//      — the vocabulary rides the machine object via jr2Setup); register on the RunHost;
+//      — the vocabulary rides the machine object via jr2Setup); register on the RunHost. Then the
+//      named Charts (ADR-0070): the Assembly's Chart files `workflows/<wrapper>/<name>.chart.json`
+//      and the runtime Charts on the volume (`<dir>/.jr2/charts`), each admitted against its
+//      wrapper and registered as the Workflow `<wrapper>/<name>`, or kept unrunnable with why;
 //   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007),
 //      each inside the Assembly its snapshot names (ADR-0069). With no current Assembly the live
 //      rows wait, untouched, and the first publish restores them. Then sweep finished runs older
@@ -35,6 +38,7 @@ import {
   type ResolvedAssembly,
 } from "./assembly.ts";
 import { assemblyRefusals, type LoadedWorkflow } from "./assembly-checks.ts";
+import { chartName, NamedCharts, readChartFiles, splitChartName, type ChartCounts, type ChartFile } from "./charts.ts";
 import type { ImageRefs } from "./images.ts";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -153,8 +157,12 @@ export type RunningInstance = {
   readonly assembly: CurrentAssembly | null;
   /** Why the boot found no current Assembly where the volume named one. */
   assemblyError?: string;
-  /** Names of the workflows discovered + registered from the Assembly's `workflows/` at boot. */
+  /** Names of the workflows discovered + registered from the Assembly's `workflows/` at boot,
+   * the runnable named Charts (`<wrapper>/<name>`, ADR-0070) among them. */
   workflows: string[];
+  /** The named Charts (ADR-0070): the Assembly's Chart files and the runtime Charts on the volume,
+   * and the ones that cannot run now, with why. Read when asked: a `PUT` or a publish changes it. */
+  readonly charts: ChartCounts;
   /** The Machines of every Assembly held now (ADR-0069): the current one's, then those of each
    * Assembly a live run holds that this process can import. What the Repo pass binds: a held run's
    * Workspace mounts the Repos its own Machine binds, whatever the current Assembly binds. An
@@ -260,14 +268,17 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
         drifted: `workflow "${blob.workflow}": the Assembly ${blob.assembly} does not load: ${err instanceof Error ? err.message : err}`,
       };
     }
-    const found = loaded.find((w) => w.name === blob.workflow);
+    // A named Chart's run (ADR-0070, D-B) is read by its wrapper's Machine: the Chart text it ran
+    // is in the body's own snapshot, so the run holds it even when the name is gone.
+    const machineName = splitChartName(blob.workflow)?.wrapper ?? blob.workflow;
+    const found = loaded.find((w) => w.name === machineName);
     if (!found) {
       return {
-        drifted: `workflow "${blob.workflow}": the Assembly ${blob.assembly} does not load: it holds no workflows/${blob.workflow}.ts`,
+        drifted: `workflow "${blob.workflow}": the Assembly ${blob.assembly} does not load: it holds no workflows/${machineName}.ts`,
       };
     }
     // `provide` injects nothing, as at register (ADR-0011).
-    return { name: found.name, machine: found.machine, provide: () => ({}), assembly: blob.assembly };
+    return { name: blob.workflow, machine: found.machine, provide: () => ({}), assembly: blob.assembly };
   };
 
   const host = new RunHost({
@@ -298,9 +309,25 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       console.error(`restore failed for run ${runId}: ${err instanceof Error ? err.message : err}`),
   });
 
+  // The named Charts (ADR-0070). The runtime ones are read from the volume now, and admitted when
+  // the first Assembly binds; with none current, every one waits unrunnable ("not in the current
+  // Assembly") and is never deleted.
+  const charts = new NamedCharts({ dir: opts.dir, host });
+  await charts.load();
+  // The current Assembly's own Workflow names (ADR-0069, ADR-0070): its Machines and its Chart
+  // files, as its record lists them. `GET /assembly` answers these; the runtime Charts the host
+  // also registers are not part of an Assembly.
+  let currentWorkflows: string[] = [];
+
   /** Swap the registry to `loaded` and make `next` current, in one synchronous step: nothing in it
-   * awaits, so no request sees half of one Assembly and half of another (ADR-0069). */
-  const swap = (loaded: LoadedWorkflow[], next: CurrentAssembly): void => {
+   * awaits, so no request sees half of one Assembly and half of another (ADR-0069). The named
+   * Charts are re-admitted against the new Machines in the same step (ADR-0070), so a Chart never
+   * starts under a wrapper it was not admitted against. Answers the named Charts that cannot run. */
+  const swap = (
+    loaded: LoadedWorkflow[],
+    files: readonly ChartFile[],
+    next: CurrentAssembly,
+  ): ChartCounts["unrunnable"] => {
     const names = new Set(loaded.map((w) => w.name));
     for (const { name, machine } of loaded) {
       host.register({
@@ -313,13 +340,22 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
         assembly: next.hash,
       });
     }
-    for (const name of host.workflows()) if (!names.has(name)) host.unregister(name);
+    // A Machine's name holds no slash (ADR-0070): the named Charts are the registry's to drop.
+    for (const name of host.workflows()) if (!splitChartName(name) && !names.has(name)) host.unregister(name);
+    const unrunnable = charts.bind({ workflows: loaded, files, assembly: next.hash });
     current = next;
+    currentWorkflows = [...loaded.map((w) => w.name), ...files.map((f) => chartName(f.wrapper, f.name))];
+    return unrunnable;
   };
 
   // 2. Filename discovery: every `workflows/<name>.ts` of the current Assembly exports its Machine
   // by name. No current Assembly → no Workflows, and the process still serves (ADR-0048).
-  if (current) swap(await importAssembly(current.hash, current.root), current);
+  if (current) {
+    const booted = current;
+    swap(await importAssembly(booted.hash, booted.root), await readChartFiles(booted.root), booted);
+  } else {
+    charts.bind({ workflows: [], files: [] });
+  }
 
   // What holds an Assembly (ADR-0069): the live ROWS, not this process's runs, so a run this boot
   // failed to restore still holds its own; and the runs this process hosts, for a run started a
@@ -340,10 +376,10 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // The publish door (ADR-0069). Its walk imports the tree at `assemblies/<hash>`, where it stays:
   // the config, every Workflow, then the refusals this process can see. The swap reuses what the
   // walk imported, so nothing is imported after the pointer flips.
-  const door = assemblyDoor({
+  const assemblies = assemblyDoor({
     dir: opts.dir,
     current: () => current,
-    workflows: () => host.workflows(),
+    workflows: () => currentWorkflows,
     holds: async () => heldAssemblies(opts.dir, current, await holdsByHash()),
     roots: async () => new Set((await holdsByHash()).keys()),
     onCollect: (collected) => {
@@ -352,17 +388,27 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     load: async (root) => {
       const config = await loadConfig(root);
       const workflows = await importWorkflows(root);
+      // The Assembly's Chart files (ADR-0070): the door admits each against its wrapper, and one
+      // that fails refuses the publish naming the file.
+      const files = await readChartFiles(root);
       const refusals = await assemblyRefusals({
         config,
         workflows,
+        charts: files,
         ...(opts.imageMap ? { images: opts.imageMap } : {}),
         root,
       });
+      // What THIS publish left unrunnable, for its own answer: a slot per `load`, so no other
+      // publish can change it (ADR-0070).
+      let unrunnable: ChartCounts["unrunnable"] = [];
       return {
         refusals,
-        workflows: workflows.map((w) => w.name),
+        workflows: [...workflows.map((w) => w.name), ...files.map((f) => chartName(f.wrapper, f.name))],
+        answer: () => (unrunnable.length ? { charts: { unrunnable } } : {}),
         activate: async (next) => {
-          swap(workflows, next);
+          // Every named Chart is re-admitted against the new Assembly (ADR-0070): a runtime Chart
+          // that fails is marked unrunnable, kept on the volume, and named in the publish's answer.
+          unrunnable = swap(workflows, files, next);
           // The Machines the walk imported are this hash's, so a run restored inside it later
           // (the next boot is a new process; this is for the same one) needs no second import.
           imported.set(next.hash, Promise.resolve(workflows));
@@ -386,6 +432,10 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       };
     },
   });
+
+  // The publish's answer names the named Charts the new Assembly left unrunnable (ADR-0070): each
+  // `load` above adds them to its own answer, under the door's lock.
+  const door: AssemblyDoor = assemblies;
 
   // 3. Resume in-flight runs persisted by a prior process (ADR-0007), each inside the Assembly its
   // snapshot names (ADR-0069). A run whose Assembly this Orchestrator cannot load (a volume that
@@ -440,6 +490,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // The Repos are read PER REQUEST, never snapshotted here: a cache the agent cloned minutes
   // after boot must show as present the next time anyone asks (ADR-0048/0051).
   const app = createApp(host, auth, {
+    charts,
     dataPlane: opts.dataPlane,
     repos: opts.repos,
     fetchRepo: opts.fetchRepo,
@@ -461,6 +512,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     },
     ...(resolved.error !== undefined ? { assemblyError: resolved.error } : {}),
     workflows: host.workflows(),
+    get charts() {
+      return charts.counts();
+    },
     heldMachines: async () => {
       const machines: AnyStateMachine[] = [];
       const now = current;
@@ -554,6 +608,17 @@ export async function loadWorkflows(dir: string): Promise<Array<{ name: string; 
     loaded.push({ name, machine: await importMachine(name, file) });
   }
   return loaded;
+}
+
+/**
+ * Discover + read every Chart file an Assembly root holds (ADR-0070):
+ * `workflows/<wrapper>/<name>.chart.json`, one level below the flat `workflows/*.ts`. The sibling
+ * of {@link loadWorkflows}, for `jr2 up`'s host-side walk, which admits each file against its
+ * wrapper with `chartFileRefusals`, the check the door's `assemblyRefusals({ charts })` runs. Any other file in a
+ * wrapper's directory is ignored and named to `warn`.
+ */
+export function loadCharts(root: string, warn?: (line: string) => void): Promise<ChartFile[]> {
+  return readChartFiles(root, warn);
 }
 
 /**

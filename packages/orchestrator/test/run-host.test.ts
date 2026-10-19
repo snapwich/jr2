@@ -7,11 +7,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup } from "xstate";
+import { assign, setup } from "xstate";
+import { z } from "zod";
 import { doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
 import { agent } from "../src/harness-client.ts";
 import { jr2Setup } from "../src/setup.ts";
+import { chartSchema, ChartRefusal, type ChartText } from "../src/chart.ts";
+import { openBody } from "../src/open-body.ts";
+import type { AgentDefinition } from "../src/agent.ts";
 import { RunHost, type RunStatus, type WorkflowDef } from "../src/run-host.ts";
 import { EventValidationError } from "../src/registration.ts";
 import {
@@ -1069,4 +1073,195 @@ test("a failing live-set statement logs once per failing streak and touches no r
   const lines = errors.mock.calls.map((c) => String(c.arguments[0]));
   assert.equal(lines.length, 1, lines.join("\n"));
   assert.match(lines[0]!, /live-set statement to http:\/\/harness\.invalid failed.*ECONNREFUSED/);
+});
+
+// --- Chart wrappers and named Charts (ADR-0070) ----------------------------------------------------
+
+/** A Chart wrapper: its door takes a Chart and an endpoint; its Open body lends `coder`. */
+function chartWrapper() {
+  const def: AgentDefinition = { model: "stub/model", instructions: "code" };
+  const coder = new MockFlueClient();
+  const machine = jr2Setup({
+    types: {} as {
+      context: { chart: unknown; endpoint: string; result?: unknown };
+      input: { chart: unknown; endpoint: string };
+    },
+    events: [],
+    actors: {
+      coder: agent(def),
+      body: openBody({
+        lends: { agents: ["coder"] },
+        allows: { models: ["stub/model"], workspace: ["none"] },
+        ceilings: { turns: 4, wallClock: "1h", transitions: 100, fanOut: 2, size: 65536 },
+      }),
+    },
+  }).createMachine({
+    id: "charted",
+    input: z.object({ endpoint: z.string(), chart: chartSchema }),
+    context: ({ input }) => ({ ...input }),
+    initial: "run",
+    states: {
+      run: {
+        invoke: {
+          src: "body",
+          input: ({ context }: { context: { chart: unknown; endpoint: string } }) => ({
+            chart: context.chart,
+            endpoint: context.endpoint,
+          }),
+          onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
+        },
+      },
+      done: { type: "final" },
+    },
+  });
+  const wf: WorkflowDef = {
+    name: "charted",
+    machine,
+    provide: () => ({ actors: { coder: agentActorWith(() => coder, def) } }),
+  };
+  return { wf, coder, machine };
+}
+
+const oneTurn: ChartText = {
+  events: { finish: { input: { type: "object", properties: {}, additionalProperties: false } } },
+  initial: "work",
+  states: {
+    work: {
+      invoke: { src: "coder", input: { prompt: "work" } },
+      on: { finish: "over" },
+    },
+    over: { type: "final", output: { finished: true } },
+  },
+};
+
+test("a Chart wrapper registers with its body and Chart fields; the listing shows both facts (ADR-0070)", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  const { wf, machine } = chartWrapper();
+  host.register(wf);
+  host.register(codingDef(new Map()));
+  host.registerChart({
+    ...wf,
+    name: "charted/loop",
+    chart: { wrapper: "charted", name: "loop", text: oneTurn, hash: "h1", origin: "runtime" },
+  });
+  assert.deepEqual(host.workflows().sort(), ["charted", "charted/loop", "coding"], "every registered name");
+  assert.deepEqual(
+    host.workflowList(),
+    [
+      {
+        name: "charted",
+        origin: "machine",
+        wrapper: { body: "body", oneShot: true, charts: [{ name: "loop", origin: "runtime" }] },
+      },
+      { name: "coding", origin: "machine" },
+    ],
+    "a named Chart lists inside its wrapper's entry, not beside it",
+  );
+  // A named Chart whose wrapper is not registered has an entry of its own.
+  host.registerChart({
+    ...wf,
+    name: "gone/loop",
+    chart: { wrapper: "gone", name: "loop", text: oneTurn, hash: "h2", origin: "runtime" },
+  });
+  assert.deepEqual(
+    host.workflowList().filter((w) => w.name.includes("/")),
+    [{ name: "gone/loop", origin: "runtime" }],
+  );
+  host.unregisterChart("gone", "loop");
+  assert.deepEqual(host.namedChart("charted", "loop"), {
+    wrapper: "charted",
+    name: "loop",
+    text: oneTurn,
+    hash: "h1",
+    origin: "runtime",
+  });
+  // A named Chart's door is the wrapper's minus the Chart field, and its Machine doc the wrapper's.
+  const door = host.inputSchema("charted/loop") as { properties: Record<string, unknown>; required?: string[] };
+  assert.deepEqual(Object.keys(door.properties), ["endpoint"]);
+  assert.ok(Object.keys((host.inputSchema("charted") as { properties: object }).properties).includes("chart"));
+  assert.equal(host.machine("charted/loop")?.id, machine.id);
+
+  host.unregisterChart("charted", "loop");
+  assert.equal(host.namedChart("charted", "loop"), undefined);
+  host.unregisterChart("charted", "nope");
+  host.unregisterChart("coding", "x");
+  assert.deepEqual(host.workflows().sort(), ["charted", "coding"], "a Machine is never dropped as a Chart");
+});
+
+test("a named Chart's start supplies the Chart field from its text and takes the rest from the caller", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  const { wf, coder } = chartWrapper();
+  host.register(wf);
+  host.registerChart({
+    ...wf,
+    name: "charted/loop",
+    chart: { wrapper: "charted", name: "loop", text: oneTurn, hash: "h1", origin: "file" },
+  });
+  // A caller's `chart` is not the run's: the named Chart fixes it.
+  const { runId } = await host.start("charted/loop", { endpoint: "http://harness.invalid", chart: { bogus: 1 } });
+  await waitFor(() => coder.admits.length === 1);
+  const status = host.status(runId)!;
+  assert.equal(status.workflow, "charted/loop");
+  assert.equal(status.bound, true);
+  const observed = host.observations("charted/loop");
+  assert.equal(observed[0]!.bound, true, "the open band carries the fact, not the Chart");
+  assert.equal((observed[0] as Record<string, unknown>).context, undefined);
+  host.sendToAgent(coder.admits[0]!.instanceId, { type: "finish" });
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.deepEqual((final?.context as { result: unknown }).result, { outcome: "done", output: { finished: true } });
+  assert.equal(final?.bound, undefined, "a settled run binds no Chart any more");
+});
+
+test("the one-shot door refuses a Chart before any run exists: ChartRefusal with the report", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(chartWrapper().wf);
+  const bad = { ...oneTurn, agents: { tester: { model: "openai/gpt-5", instructions: "test" } } };
+  await assert.rejects(
+    () => host.start("charted", { endpoint: "http://harness.invalid", chart: bad }),
+    (err: unknown) =>
+      err instanceof ChartRefusal &&
+      err.report.some((l) => l.startsWith("agents.tester.model") && l.includes("stub/model")),
+  );
+  // The grammar is the door's schema: a text that is no Chart is the door's own 400.
+  await assert.rejects(
+    () => host.start("charted", { endpoint: "http://harness.invalid", chart: { states: {} } }),
+    EventValidationError,
+  );
+  assert.deepEqual(host.list(), []);
+});
+
+test("a snapshot save that fails is logged for its run, and never ends the process", async () => {
+  const store = await mkStore();
+  const failing: SnapshotStore = Object.assign(Object.create(store) as SnapshotStore, {
+    save: async () => {
+      throw new RangeError("Invalid string length");
+    },
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (err: unknown) => unhandled.push(err);
+  process.on("unhandledRejection", onUnhandled);
+  const logged: string[] = [];
+  const error = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+  try {
+    const host = new RunHost({ store: failing });
+    host.register({
+      name: "bare",
+      machine: setup({}).createMachine({ id: "bare", initial: "a", states: { a: {} } }),
+      provide: () => ({}),
+    });
+    const { runId } = await host.start("bare", {});
+    await tick();
+    await host.stop(runId);
+    await tick();
+    assert.deepEqual(unhandled, [], "no rejection escapes the save");
+    assert.ok(
+      logged.some((l) => l.includes(runId) && l.includes("not saved") && l.includes("Invalid string length")),
+      `the failed save is logged for its run (logged: ${JSON.stringify(logged)})`,
+    );
+  } finally {
+    console.error = error;
+    process.off("unhandledRejection", onUnhandled);
+  }
 });

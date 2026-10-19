@@ -154,6 +154,10 @@ export type MachineDoc = MachineBodyDoc & {
    * to discover the diagram is lying. Absent on the nested `MachineBodyDoc`s: it is a whole-doc
    * question, and the root's walk already covers them. */
   opaqueStates?: string[];
+  /** A run's doc only (`runMachine`, ADR-0070): each bound Chart the doc could not draw, so its Open
+   * body shows the slot's own subgraph — the body's path in the run, its slot, and why (a stored
+   * Chart the door no longer admits is drift, D-B). Absent when every bound Chart is drawn. */
+  chartsNotDrawn?: Array<{ path: string; src: string; reason: string }>;
 };
 
 /** Normalize a guard to a display name: setup() name, parameterized type, or `"inline"`. */

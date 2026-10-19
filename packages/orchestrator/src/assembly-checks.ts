@@ -11,6 +11,7 @@ import { imageContextDigest, type ImageRefs } from "./images.ts";
 import { openPartsText } from "./open-effect.ts";
 import { customizeLine, partsOf, placedEffectsOf, workspacePodsOf } from "./parts.ts";
 import { refuseEffectSecrets, type PlacementWalk } from "./secret-placement.ts";
+import { chartFileRefusals, type ChartFile } from "./charts.ts";
 
 /** One registered Workflow, as `loadWorkflows` gives it. */
 export type LoadedWorkflow = { name: string; machine: AnyStateMachine };
@@ -72,21 +73,19 @@ export function openPartRefusals(workflows: readonly LoadedWorkflow[]): string[]
 
 /**
  * What the registered Machines name for secret placement (ADR-0059, ADR-0068): every Effect and
- * every Workspace's pod, per route, and the models of the `"none"` Agents the Instance Harness
- * hosts. `jr2 up` and the door build the same walk from the same Workflows.
+ * every Workspace's pod, per route, and the models the Instance Harness hosts: those of the `"none"`
+ * Agents and of every Open body that allows `"none"` (ADR-0070). `jr2 up` and the door build the same walk from the same Workflows.
  */
 export function placementWalkOf(workflows: readonly LoadedWorkflow[]): PlacementWalk {
-  const agents = partsOf(workflows.map((w) => w.machine)).agents;
-  const menuOnlyModels = agents
-    .filter((a) => a.definition.workspace === "none" && typeof a.definition.model === "string")
-    .map((a) => a.definition.model as string);
+  // The walk's own `instanceHarness` (ADR-0068, ADR-0070): the models of the "none" Agents and of
+  // every Open body that allows "none", so a Chart's minted "none" Agent has its key placed, or the
+  // publish is refused, never a 401 mid-run.
+  const { instanceHarness } = partsOf(workflows.map((w) => w.machine));
   return {
     // Per route, not per Machine object: a Machine placed twice is checked where each copy runs.
     effects: workflows.flatMap((w) => placedEffectsOf(w.machine).map((effect) => ({ workflow: w.name, effect }))),
     workspaces: workflows.flatMap((w) => workspacePodsOf(w.machine).map((pod) => ({ workflow: w.name, pod }))),
-    ...(agents.some((a) => a.definition.workspace === "none")
-      ? { instanceHarness: { models: [...new Set(menuOnlyModels)].sort() } }
-      : {}),
+    ...(instanceHarness ? { instanceHarness: { models: [...instanceHarness.models] } } : {}),
   };
 }
 
@@ -95,6 +94,11 @@ export type AssemblyRefusalInput = {
   config: JR2Config | undefined;
   /** Every Workflow the Assembly registers, loaded. */
   workflows: readonly LoadedWorkflow[];
+  /**
+   * The Assembly's Chart files (ADR-0070), read: `workflows/<wrapper>/<name>.chart.json`. Each is
+   * admitted against its wrapper's Open body by the same door a run's Chart passes. Absent, none.
+   */
+  charts?: readonly ChartFile[];
   /**
    * The image map the Orchestrator reads per provision (ADR-0038), or a reader of it. Present
    * only when deployed: a host-booted process has no map, and no Sandbox to provision. When
@@ -113,12 +117,15 @@ export type AssemblyRefusalInput = {
  * The door's walk (ADR-0069): the refusals the Orchestrator can see in an Assembly it has already
  * imported. An import error, a missing `export const machine` and a Vocabulary error are the
  * caller's: they throw at import, before this runs. Here: every Open part, a secret the config does
- * not declare (or a literal one too short to scrub), and a `file:` image context whose digest the
- * mounted image map does not hold. The door runs this after `jr2 up` did its cluster work, so each
+ * not declare (or a literal one too short to scrub), a `file:` image context whose digest the
+ * mounted image map does not hold, and a Chart file that does not admit under its wrapper
+ * (ADR-0070), each line naming the file. The door runs this after `jr2 up` did its cluster work, so each
  * check is true when the Assembly lands.
  */
 export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<string[]> {
   const lines = openPartRefusals(input.workflows);
+  // A Chart file is the Instance's own (ADR-0070): one that fails refuses the publish.
+  if (input.charts?.length) lines.push(...chartFileRefusals(input.charts, input.workflows));
   try {
     refuseEffectSecrets(input.config ?? {}, placementWalkOf(input.workflows));
   } catch (err) {

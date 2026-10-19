@@ -11,10 +11,13 @@
 // Two output classes (ADR-0009 as amended): `status <runId>` is a RESULT verb — the RunStatus as one
 // JSON line on stdout, for the pipe. Bare `status` is a REPORT verb — a human table on stdout, or the
 // one object with `--json`.
+//
+// A run that binds a Chart (ADR-0070) carries `bound: true`; the verb says so beside the result as
+// `chart: bound`, with the route that draws the Machine the run binds, its Charts compiled in.
 
 import { parseArgs } from "node:util";
 import type { AssemblyView, RepoStatus } from "@jr2/orchestrator";
-import { JR2Client, type FetchLike } from "../client.ts";
+import { JR2Client, type FetchLike, type RunStatus, workflowPath } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
@@ -45,10 +48,23 @@ export async function status(args: string[], io: Io): Promise<number> {
       return 1;
     }
     result(io, s);
+    const note = boundActivity(s);
+    if (note) activity(io, note);
     return 0;
   } finally {
     target.close?.();
   }
+}
+
+/** The `chart: bound` line for a run that binds a Chart (ADR-0070), or undefined for one that binds
+ * none. The Workflow name rides the route as one encoded segment. */
+export function boundActivity(s: RunStatus): string | undefined {
+  if (s.bound !== true) return undefined;
+  const route = `GET ${workflowPath(s.workflow)}/runs/${encodeURIComponent(s.runId)}/machine`;
+  // A drifted run's Chart may no longer admit (D-B): the route then draws the slot's own subgraph
+  // and names why in `chartsNotDrawn`, so the line does not claim more than the route draws.
+  if (s.status === "drifted") return `chart: bound, drifted — ${route} names each Chart it cannot draw`;
+  return `chart: bound — ${route} draws the Machine this run binds`;
 }
 
 /**

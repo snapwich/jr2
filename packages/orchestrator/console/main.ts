@@ -25,17 +25,27 @@
 // hand-rolled memo()/paint() machinery did. This file is the BOOTSTRAP and owns only working
 // state — the machine-doc cache, the input-schema cache, the fetch serials, the zoom readout; the
 // diagram's own working state (fold set, viewport, what is shown) lives in canvas.ts.
+//
+// A run that binds a Chart (ADR-0070) draws ITS Machine, not the Workflow's: the definition's doc
+// has the Open body as one opaque child, and a Chart one cannot watch is a Chart one cannot trust.
+// So the doc the center pane draws is chosen per selection (`machineDocSource`): the Workflow's
+// Machine, or, when the selected run's observation says `bound`, the run's own from
+// `GET /workflows/:name/runs/:runId/machine`, cached per run id. The live child still joins its
+// subgraph by `src`, which the per-run doc keeps as the body's slot key.
 
 import { h, render } from "preact";
 import {
   applyFrame,
   emptyStore,
+  machineDocSource,
+  selectedRun,
   type Frame,
   type GateCard,
   type ObservedRun,
   type Store,
   type HeldLine,
   type WaitingLine,
+  type WorkflowListing,
 } from "./store.ts";
 import { zoomFit, zoomIn, zoomOut, zoomReset, type MachineDoc } from "./canvas.ts";
 import { App, type AppApi, type MachineView } from "./components/app.ts";
@@ -58,6 +68,9 @@ function rerender(): void {
 function dispatch(frame: Frame): void {
   store = applyFrame(store, frame);
   rerender();
+  // A frame can change which doc the pane draws: a new selection, a run selected, a run that now
+  // binds a Chart. The check is a key compare; only a change fetches.
+  void syncMachine();
 }
 
 // ---- The token (ADR-0032) -----------------------------------------------------------------------
@@ -228,34 +241,68 @@ async function selectWorkflow(
   const moved = name !== store.workflow;
   if (push && moved) history.pushState({}, "", name ? `/workflows/${encodeURIComponent(name)}` : "/");
   document.title = name ? `jr2 · ${name}` : "jr2 · Console";
-  dispatch({ kind: "select", workflow: name });
+  // Re-selecting the selection (a popstate re-fire) with its diagram in hand keeps the feed.
+  const reconnect = moved || !view.doc;
+  if (reconnect) {
+    feed?.close();
+    feed = null;
+    // Forget the old diagram NOW, before the `select` frame: the new feed's frames start landing
+    // before the new doc is in hand, and they must not re-layout (or highlight) the machine the
+    // reader just left — the render reaches the canvas effect, which clears it.
+    view = { doc: null, placeholder: name ? null : "select a workflow from the fleet", note: null };
+    shownKey = null;
+  }
+  dispatch({ kind: "select", workflow: name }); // the dispatch starts the doc's fetch (syncMachine)
   if (runId) dispatch({ kind: "selectRun", runId });
-  if (!moved && view.doc) return; // re-selecting the selection (a popstate re-fire): nothing to do
-  feed?.close();
-  feed = null;
-  // Forget the old diagram NOW: the new feed's frames start landing before the new doc is in hand,
-  // and they must not re-layout (or highlight) the machine the reader just left — the render below
-  // reaches the canvas effect, which clears it.
-  view = { doc: null, placeholder: name ? null : "select a workflow from the fleet", note: null };
-  rerender();
-  if (!name) return;
+  if (!reconnect || !name) return;
   connectFeed(name);
-  await loadMachine(name);
+  await syncMachine();
 }
 
-/** The selected workflow's Machine docs, kept across navigations — structure does not change under
- *  a running orchestrator, so going back to a workflow is instant. Misses are NOT cached: a name
- *  can be registered after this page loaded, and re-selecting it should find it. */
+/** Machine docs, kept across navigations and keyed by `machineDocSource`: a Workflow's doc is one
+ *  per name (structure does not change under a running orchestrator, so going back is instant), and
+ *  a run that binds a Chart has its own per run id (ADR-0070). Misses are NOT cached: a name can be
+ *  registered after this page loaded, and re-selecting it should find it. */
 const docs = new Map<string, MachineDoc>();
 
-async function loadMachine(name: string): Promise<void> {
-  let doc: MachineDoc | null | undefined = docs.get(name);
-  if (doc === undefined) {
-    const res = await fetch(`/workflows/${encodeURIComponent(name)}/machine`);
-    doc = res.ok ? ((await res.json()) as MachineDoc) : null;
-    if (doc) docs.set(name, doc);
+/** The doc key the pane draws or is fetching — so a frame that changes nothing fetches nothing, and
+ *  an answer for a key the reader has left is dropped. */
+let shownKey: string | null = null;
+
+async function fetchDoc(source: { key: string; path: string }): Promise<MachineDoc | null> {
+  const cached = docs.get(source.key);
+  if (cached) return cached;
+  try {
+    const res = await fetch(source.path);
+    const doc = res.ok ? ((await res.json()) as MachineDoc) : null;
+    if (doc) docs.set(source.key, doc);
+    return doc;
+  } catch {
+    return null; // network trouble reads as a miss; the next selection retries
   }
-  if (store.workflow !== name) return; // the reader moved on while the fetch was out
+}
+
+/** Bring the pane's doc in line with the selection: the selected run's bound Machine when it binds
+ *  a Chart, else the Workflow's (`machineDocSource`, ADR-0070). */
+async function syncMachine(): Promise<void> {
+  const name = store.workflow;
+  if (!name) return;
+  const source = machineDocSource(name, selectedRun(store));
+  if (source.key === shownKey) return;
+  shownKey = source.key;
+  let doc = await fetchDoc(source);
+  if (shownKey !== source.key) return; // the reader moved on while the fetch was out
+  let note: MachineView["note"] = null;
+  if (!doc && source.key.startsWith("run:")) {
+    // The run's own Machine could not be read (an Orchestrator older than the route, or the run
+    // left the store): draw the Workflow's, and say the Chart's states are not in it.
+    doc = await fetchDoc(machineDocSource(name, null));
+    if (shownKey !== source.key) return;
+    note = {
+      text: "this run binds a Chart, and its Machine could not be read: the Chart's states are not shown",
+      notice: true,
+    };
+  }
   if (!doc) {
     view = { doc: null, placeholder: null, note: { text: `no workflow "${name}"`, notice: false } };
     rerender();
@@ -264,8 +311,19 @@ async function loadMachine(name: string): Promise<void> {
   // Nothing live yet: every child machine renders once, as a dimmed template (the canvas effect
   // picks the doc up from here). The first status frame of a run with children swaps those for
   // one subgraph per instance.
-  view = { doc, placeholder: null, note: opaqueNotice(doc) };
+  view = { doc, placeholder: null, note: note ?? notDrawnNotice(doc) ?? opaqueNotice(doc) };
   rerender();
+}
+
+/** Say so when a run's doc could not draw a Chart the run binds (ADR-0070, D-B): its Open body then
+ *  shows the slot's own subgraph, and the server names why (`MachineDoc.chartsNotDrawn`). */
+function notDrawnNotice(doc: MachineDoc): MachineView["note"] {
+  const missing = doc.chartsNotDrawn ?? [];
+  if (!missing.length) return null;
+  return {
+    notice: true,
+    text: `this run binds a Chart this diagram does not draw — ${missing.map((m) => `body "${m.src}" (${m.path}): ${m.reason}`).join("; ")}`,
+  };
 }
 
 /** Say so when the diagram is knowingly incomplete: a child spawned inside an `enqueueActions`
@@ -340,7 +398,7 @@ async function snapshotWorkflow(name: string): Promise<void> {
 async function snapshotFleet(): Promise<void> {
   try {
     const res = await fetch("/workflows");
-    if (res.ok) dispatch({ kind: "workflows", workflows: (await res.json()) as string[] });
+    if (res.ok) dispatch({ kind: "workflows", workflows: (await res.json()) as WorkflowListing[] });
   } catch {
     // transient — the next tick tries again
   }
@@ -381,7 +439,7 @@ async function boot(): Promise<void> {
   // observation), then the selection the address carries — deep links work on load.
   try {
     const res = await fetch("/workflows");
-    if (res.ok) dispatch({ kind: "workflows", workflows: (await res.json()) as string[] });
+    if (res.ok) dispatch({ kind: "workflows", workflows: (await res.json()) as WorkflowListing[] });
   } catch {
     // the interval retries; the rail says "no workflows registered" until then
   }

@@ -2,14 +2,18 @@
 // master–detail shell (ADR-0032). Every row derives from store selectors (`fleetRuns`), never a
 // component-local cache; the vdom's keyed diff is what keeps a half-typed start form alive under
 // the status frames that used to demand main.js's hand-rolled `memo()`.
+//
+// A named Chart is a Workflow (ADR-0070): it lists under its Chart wrapper, indented, with its origin
+// (`chart file` or `chart`) and, when a publish no longer admits it, `unrunnable` with the reason.
 
 import { h, type JSX } from "preact";
-import { fleetRuns, type ObservedRun, type Store } from "../store.ts";
+import { fleetEntries, fleetRuns, type FleetEntry, type ObservedRun, type Store } from "../store.ts";
 import { SchemaForm } from "./schema-form.ts";
 import type { AppApi } from "./app.ts";
 
 export function Fleet(props: { store: Store; schemas: ReadonlyMap<string, unknown>; api: AppApi }): JSX.Element {
   const { store, schemas, api } = props;
+  const entries = fleetEntries(store.listing);
   return h(
     "aside",
     { id: "fleet" },
@@ -17,18 +21,38 @@ export function Fleet(props: { store: Store; schemas: ReadonlyMap<string, unknow
     h(
       "ul",
       { id: "workflow-list" },
-      store.workflows.length
-        ? store.workflows.map((name) => workflowItem(name, store, schemas, api))
+      entries.length
+        ? entries.map((entry) => workflowItem(entry, store, schemas, api))
         : h("li", { class: "empty" }, "no workflows registered"),
     ),
   );
 }
 
-function workflowItem(name: string, store: Store, schemas: ReadonlyMap<string, unknown>, api: AppApi): JSX.Element {
+/** How the rail names an origin (ADR-0070); a Machine that is no Chart wrapper shows none. */
+function originTag(entry: FleetEntry): string | null {
+  if (entry.origin === "file") return "chart file";
+  if (entry.origin === "runtime") return "chart";
+  if (entry.wrapper) return entry.wrapper.oneShot ? "chart wrapper, one-shot" : "chart wrapper";
+  return null;
+}
+
+function workflowItem(
+  entry: FleetEntry,
+  store: Store,
+  schemas: ReadonlyMap<string, unknown>,
+  api: AppApi,
+): JSX.Element {
+  const name = entry.name;
   const rows = fleetRuns(store, name);
+  const tag = originTag(entry);
   return h(
     "li",
-    { key: name, class: name === store.workflow ? "wf wf--selected" : "wf" },
+    {
+      key: name,
+      class: `${name === store.workflow ? "wf wf--selected" : "wf"}${entry.depth ? " wf--chart" : ""}`,
+      // A Chart indents under its wrapper; the rail's stylesheet has no rule for depth yet.
+      style: entry.depth ? { marginLeft: "14px" } : undefined,
+    },
     h(
       "div",
       { class: "wf-head", onClick: () => void api.selectWorkflow(name, { push: true }) },
@@ -45,8 +69,17 @@ function workflowItem(name: string, store: Store, schemas: ReadonlyMap<string, u
         store.expanded.has(name) ? "▾" : "▸",
       ),
       h("span", { class: "wf-name" }, name),
+      tag ? h("span", { class: "wf-count wf-origin" }, tag) : null,
+      entry.unrunnable ? h("span", { class: "wf-count wf-unrunnable", title: entry.unrunnable }, "unrunnable") : null,
+      entry.shadows
+        ? h(
+            "span",
+            { class: "wf-count wf-unrunnable", title: entry.shadows.unrunnable ?? "a Chart of this name is shadowed" },
+            entry.shadows.origin === "runtime" ? "shadows a chart" : "shadows a chart file",
+          )
+        : null,
       h("span", { class: "wf-count" }, String(rows.filter((r) => !r.settled).length)),
-      store.token === "live"
+      store.token === "live" && !entry.unrunnable
         ? h(
             "button",
             {

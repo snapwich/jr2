@@ -206,6 +206,24 @@ Feature: a real model drives the kit
       And every trial finished
       And the cell "cut-pick/off" is written to the scorecard
 
+  Rule: a planner told why its Chart was refused picks a Chart the door admits
+    ADR-0070. A Chart the door refuses is the Open body's output (D-A), so the pick that carried it
+    is answered with the door's report: one line per fault, naming the path in the Chart and what
+    the Open body lends. The report is jr2's text, and the claim measures it; the prompt is fixed
+    data. The `chart-refusal` workflow's planner is asked for a Chart that runs "the linter" and
+    then the summarizer, and is told no slot name; its Open body lends `summarizer` alone. The
+    first Chart is expected to name `linter`, and the next `run_chart` is the measurement: the door
+    admits it. A trial whose first Chart admits saw no refusal, and is void. No run has measured
+    this claim yet: the floor, 7 of 10, is set ahead of one, and the first run that is read sets
+    the baseline.
+
+    Scenario: after the door refuses its Chart, the planner's next Chart admits
+      Given the model instance is serving
+      When I run the "chart-refusal" workflow 10 times with thinking off
+      Then the pick after the door's refusal admitted in at least 7 trials
+      And every trial finished
+      And the cell "chart-refusal/off" is written to the scorecard
+
   Rule: a command Effect's answer is its output, and the Agent acts on it
     ADR-0067. A pick whose target runs a `command` in the Agent's own Sandbox is outstanding while
     it runs, and answered at Rest with the command's output and the Allowed picks read after the

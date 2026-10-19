@@ -54,8 +54,30 @@ export function vocabularyOf(machine: AnyStateMachine): Map<string, EventDef> | 
  * silently accepting a name nobody declared.
  */
 export function invokingMachine(self: AnyActorRef): AnyStateMachine | undefined {
-  const logic = (self._parent as { logic?: unknown } | undefined)?.logic as AnyStateMachine | undefined;
+  // An Open body's actor (ADR-0070) delegates to the Machine compiled from the Chart it binds, and
+  // its own logic is no Machine: the bound Machine is the scope of the Agents and Gates its states
+  // invoke, so it is asked first.
+  const parent = self._parent;
+  const bound = parent ? boundMachines.get(parent) : undefined;
+  if (bound) return bound;
+  const logic = (parent as { logic?: unknown } | undefined)?.logic as AnyStateMachine | undefined;
   return logic?.root ? logic : undefined;
+}
+
+// The Machine an Open body's actor runs (ADR-0070): compiled from the Chart the run bound, per
+// actor, at start and again at restore. Keyed on the ACTOR, not on a config: two runs of one
+// wrapper bind two Charts under the same slot. Kept here, beside the vocabulary, so this module
+// stays a leaf: open-body.ts writes it, and `invokingMachine` reads it.
+const boundMachines = new WeakMap<AnyActorRef, AnyStateMachine>();
+
+/** Record the Machine an Open body's actor runs. jr2-internal: the Open body's logic calls it. */
+export function attachBoundMachine(actor: AnyActorRef, machine: AnyStateMachine): void {
+  boundMachines.set(actor, machine);
+}
+
+/** The Machine an Open body's actor runs, or undefined for any other actor. */
+export function boundMachineFor(actor: AnyActorRef): AnyStateMachine | undefined {
+  return boundMachines.get(actor);
 }
 
 // The declared run input (ADR-0033): the one piece of a machine's vocabulary the event defs

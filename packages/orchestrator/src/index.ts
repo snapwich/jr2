@@ -21,6 +21,13 @@ export type { EffectBinding, OpenEffect, OpenEffectPart } from "./open-effect.ts
 export { openPartsText } from "./open-effect.ts";
 export * from "./effector-wire.ts";
 export * from "./pick.ts";
+// The Chart (ADR-0070): its grammar (`chartSchema`, which a Chart wrapper's door and a planner's pick
+// import), the door that admits one, and the resolver of its references.
+export * from "./chart.ts";
+// The Open body a Chart binds (`openBody`, the slot constructor a Chart wrapper places in `actors`)
+// and the named Charts of an Instance: Chart files and runtime Charts (ADR-0070).
+export * from "./open-body.ts";
+export * from "./charts.ts";
 export * from "./parts.ts";
 export * from "./size.ts";
 export * from "./customize.ts";

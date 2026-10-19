@@ -24,6 +24,43 @@ export type ObservedRun = {
   status: string;
   value: unknown;
   children: Array<Record<string, unknown>>;
+  /** The run binds at least one Chart (ADR-0070): its Machine is the Chart wrapper's with each bound
+   *  Open body's Chart compiled in, served per run. Absent when it binds none. */
+  bound?: true;
+  /** The hashes of the Charts the run binds now, distinct and sorted. A run can bind a second Chart
+   *  in its life, so these, with the run id, key its doc. Absent from an older Orchestrator. */
+  chartHashes?: string[];
+};
+
+/** Where a Workflow came from (ADR-0070): a Machine or a Chart file in the Assembly, or a runtime
+ *  Chart put on the Instance. */
+export type WorkflowOrigin = "machine" | "file" | "runtime";
+
+/** One entry of `GET /workflows` (ADR-0070) — mirrors `WorkflowListing` in run-host.ts. A Chart
+ *  wrapper's named Charts are inside its entry, not beside it. */
+export type WorkflowListing = {
+  name: string;
+  origin: WorkflowOrigin;
+  wrapper?: {
+    body: string;
+    oneShot: boolean;
+    charts: Array<{ name: string; origin: "file" | "runtime"; unrunnable?: string }>;
+  };
+  unrunnable?: string;
+};
+
+/** One row of the fleet rail: a Workflow, or a named Chart indented under its Chart wrapper. */
+export type FleetEntry = {
+  name: string;
+  origin: WorkflowOrigin;
+  /** 0 for a Workflow, 1 for a Chart under its wrapper. */
+  depth: 0 | 1;
+  /** A Chart wrapper's Open body slot, and whether its door takes a Chart one-shot. */
+  wrapper?: { body: string; oneShot: boolean };
+  unrunnable?: string;
+  /** A runtime Chart of the same name that this Chart file shadows (ADR-0070): one row per name,
+   *  so the rail keys stay distinct; the shadowed Chart is unrunnable, and this says why. */
+  shadows?: { origin: WorkflowOrigin; unrunnable?: string };
 };
 
 /** One open gate as `GET /runs/:id` reports it — mirrors `GateView` in run-host.ts. */
@@ -54,7 +91,7 @@ export type Frame =
   | { kind: "gone"; runId: string }
   | { kind: "emit"; runId: string; type: string }
   | { kind: "connection"; state: Store["connection"] }
-  | { kind: "workflows"; workflows: string[] }
+  | { kind: "workflows"; workflows: ReadonlyArray<WorkflowListing | string> }
   | { kind: "select"; workflow: string | null }
   | { kind: "selectRun"; runId: string | null }
   | { kind: "selectNode"; nodeId: string | null }
@@ -76,7 +113,10 @@ export type Frame =
  * `emits`    newest-first, across the selected workflow's runs — each tagged with its run.
  * `connection` the socket's state, owned by the page, never by a frame off the wire.
  * `workflow` the selection the ADDRESS carries (`/workflows/:name`); null at `/`.
- * `workflows` the registered names (`GET /workflows`) — what the fleet rail lists.
+ * `workflows` every registered name (`GET /workflows`), Machines and named Charts alike — what the
+ *            fleet polls and selects. A Chart's name is `<wrapper>/<name>` (ADR-0070).
+ * `listing`  the same answer with its structure: each Workflow's origin, a Chart wrapper's Charts
+ *            inside its entry — what the fleet rail draws ({@link fleetEntries}).
  * `fleet`    REST snapshots per workflow (`GET /workflows/:name/runs`), for the workflows that do
  *            NOT hold the feed. Never more than one EventSource — the rest of the fleet is polled.
  * `expanded` which workflows the rail shows runs for (the reader's folding, plus auto-expand on
@@ -106,6 +146,7 @@ export type Store = {
   connection: "connecting" | "live" | "retrying";
   workflow: string | null;
   workflows: string[];
+  listing: WorkflowListing[];
   fleet: Map<string, ObservedRun[]>;
   expanded: Set<string>;
   token: TokenState;
@@ -133,6 +174,7 @@ export function emptyStore(): Store {
     connection: "connecting",
     workflow: null,
     workflows: [],
+    listing: [],
     fleet: new Map(),
     expanded: new Set(),
     token: "none",
@@ -184,8 +226,14 @@ export function applyFrame(store: Store, frame: Frame): Store {
     case "connection":
       return { ...store, connection: frame.state };
 
-    case "workflows":
-      return { ...store, workflows: frame.workflows };
+    case "workflows": {
+      // Replaced wholesale. An Orchestrator older than ADR-0070 answers bare names: each reads as
+      // a Machine, so the rail has one shape to draw.
+      const listing = frame.workflows.map(
+        (w): WorkflowListing => (typeof w === "string" ? { name: w, origin: "machine" } : w),
+      );
+      return { ...store, listing, workflows: fleetEntries(listing).map((e) => e.name) };
+    }
 
     case "select": {
       // The address moved. The feed's state belongs to the OLD selection — the new feed's opening
@@ -349,6 +397,71 @@ export function runList(store: Store): Array<{ run: ObservedRun; settled: boolea
 export function fleetRuns(store: Store, workflow: string): Array<{ run: ObservedRun; settled: boolean }> {
   if (workflow === store.workflow) return runList(store);
   return (store.fleet.get(workflow) ?? []).map((run) => ({ run, settled: false }));
+}
+
+/**
+ * The fleet rail's rows (ADR-0070): each Workflow in the listing's order, a Chart wrapper's named
+ * Charts indented under it as `<wrapper>/<name>`. A Chart the listing also gives at the top level
+ * is drawn once, under its wrapper; one whose wrapper the listing does not give stays at the top.
+ */
+export function fleetEntries(listing: readonly WorkflowListing[]): FleetEntry[] {
+  const full = (wrapper: string, name: string): string => (name.includes("/") ? name : `${wrapper}/${name}`);
+  const nested = new Set<string>();
+  for (const w of listing) for (const c of w.wrapper?.charts ?? []) nested.add(full(w.name, c.name));
+  const rows: FleetEntry[] = [];
+  for (const w of listing) {
+    if (w.origin !== "machine" && nested.has(w.name)) continue;
+    rows.push({
+      name: w.name,
+      origin: w.origin,
+      depth: 0,
+      ...(w.wrapper ? { wrapper: { body: w.wrapper.body, oneShot: w.wrapper.oneShot } } : {}),
+      ...(w.unrunnable ? { unrunnable: w.unrunnable } : {}),
+    });
+    for (const c of w.wrapper?.charts ?? []) {
+      const name = full(w.name, c.name);
+      // A Chart file and a runtime Chart of one name: the listing gives both, the file wins
+      // (ADR-0070). One row per name, the shadowed Chart a note on it, so no two rows share a key.
+      const twin = rows.find((r) => r.depth === 1 && r.name === name);
+      if (twin) {
+        const fileFirst = twin.origin === "file" || c.origin !== "file";
+        const shadowed = fileFirst ? c : { origin: twin.origin, unrunnable: twin.unrunnable };
+        if (!fileFirst) {
+          twin.origin = c.origin;
+          if (c.unrunnable) twin.unrunnable = c.unrunnable;
+          else delete twin.unrunnable;
+        }
+        twin.shadows = { origin: shadowed.origin, ...(shadowed.unrunnable ? { unrunnable: shadowed.unrunnable } : {}) };
+        continue;
+      }
+      rows.push({
+        name,
+        origin: c.origin,
+        depth: 1,
+        ...(c.unrunnable ? { unrunnable: c.unrunnable } : {}),
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Which Machine doc the center pane draws (ADR-0070), as a cache key and the route that serves it.
+ * A run that binds a Chart draws its own Machine, the Chart compiled into the Open body, so its doc
+ * is per run id; every other selection draws the Workflow's Machine, shared by all its runs. The
+ * Workflow name rides the route as one encoded segment (`<wrapper>%2F<name>` for a named Chart).
+ */
+export function machineDocSource(
+  workflow: string,
+  run: Pick<ObservedRun, "runId" | "bound" | "chartHashes"> | null,
+): { key: string; path: string } {
+  const base = `/workflows/${encodeURIComponent(workflow)}`;
+  if (run?.bound === true) {
+    // The run id and the Charts it binds now: a second Chart in the run's life is a new doc.
+    const charts = run.chartHashes?.length ? `:${run.chartHashes.join(",")}` : "";
+    return { key: `run:${run.runId}${charts}`, path: `${base}/runs/${encodeURIComponent(run.runId)}/machine` };
+  }
+  return { key: `workflow:${workflow}`, path: `${base}/machine` };
 }
 
 /** The inbox as the Attention tab draws it: every card, or the selection's slice. The inbox itself

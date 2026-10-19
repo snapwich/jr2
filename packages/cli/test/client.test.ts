@@ -10,7 +10,10 @@ import { mkHarness } from "./_fixtures.ts";
 
 test("workflows() and list() report registered + live runs", async () => {
   const { client } = await mkHarness();
-  assert.deepEqual((await client.workflows()).sort(), ["feed", "gated", "loop"]);
+  // Each a Machine (ADR-0070): the listing names its origin, whichever shape the server answers.
+  const listing = await client.workflows();
+  assert.deepEqual(listing.map((w) => w.name).sort(), ["feed", "gated", "loop"]);
+  assert.ok(listing.every((w) => w.origin === "machine"));
 
   const { runId } = await client.start("loop");
   const list = await client.list();

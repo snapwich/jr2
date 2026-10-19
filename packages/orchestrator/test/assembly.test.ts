@@ -18,7 +18,16 @@ import { assemblyHash } from "../src/content-hash.ts";
 import { startInstance, type RunningInstance } from "../src/instance.ts";
 import { serverMain } from "../src/server.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
-import { admitTree, FIXTURE_ASSEMBLY, scratchInstance, stageTree } from "./_assembly.ts";
+import {
+  admitTree,
+  chartedSrc,
+  FIXTURE_ASSEMBLY,
+  plainSrc,
+  publishTree,
+  reviewLoop,
+  scratchInstance,
+  stageTree,
+} from "./_assembly.ts";
 
 const KEY = Buffer.alloc(32, 5);
 const XSTATE = JSON.stringify(import.meta.resolve("xstate"));
@@ -91,7 +100,10 @@ function put(
 const json = async <T = Record<string, unknown>>(res: Response | Promise<Response>): Promise<T> =>
   (await (await res).json()) as T;
 
-const workflowsOf = (inst: RunningInstance) => json<string[]>(fetch(`${inst.url}/workflows`));
+/** The names `GET /workflows` lists (ADR-0070: each entry is a listing; the names are what these
+ * tests read). */
+const workflowsOf = async (inst: RunningInstance): Promise<string[]> =>
+  (await json<Array<{ name: string }>>(fetch(`${inst.url}/workflows`))).map((w) => w.name);
 
 /**
  * A body that sends its first block and then stays open until `end()`. A door that answers while
@@ -559,5 +571,192 @@ test("an `unchanged` answer whose held read fails is still 200, naming the curre
     assert.ok(logged.mock.calls.some((c) => String(c.arguments[0]).includes("SQLITE_BUSY")));
   } finally {
     await inst.close();
+  }
+});
+
+// ---- Chart files and named Charts at the door (ADR-0070) ----------------------------------------
+
+/** An empty instance under this package, booted. */
+async function bootScratch(): Promise<{ inst: RunningInstance; dir: string }> {
+  const dir = await scratchInstance("asm-charts");
+  return { inst: await boot(dir), dir };
+}
+
+type ChartListing = Array<{
+  name: string;
+  origin: string;
+  unrunnable?: string;
+  wrapper?: { charts: Array<{ name: string; origin: string; unrunnable?: string }> };
+}>;
+
+test("a Chart file is published with its Assembly, listed inside its wrapper as `file`, and named in the answer", async () => {
+  const { inst, dir } = await bootScratch();
+  try {
+    const text = JSON.stringify(await reviewLoop());
+    const answer = await admitTree(inst, dir, {
+      "workflows/charted.ts": chartedSrc(),
+      "workflows/charted/sample.chart.json": text,
+    });
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.deepEqual(answer.body.charts, undefined, "no named Chart is unrunnable, so the answer adds nothing");
+    assert.ok((answer.body.workflows as string[]).includes("charted/sample"));
+    const listing = await json<ChartListing>(fetch(`${inst.url}/workflows`));
+    assert.deepEqual(
+      listing.find((w) => w.name === "charted")?.wrapper?.charts.map((c) => [c.name, c.origin]),
+      [["sample", "file"]],
+    );
+    assert.deepEqual(inst.charts, { files: 1, runtime: 0, unrunnable: [] });
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Chart file under a Workflow that is no Chart wrapper refuses the publish, naming the file", async () => {
+  const { inst, dir } = await bootScratch();
+  try {
+    const answer = await admitTree(inst, dir, {
+      "workflows/plain.ts": plainSrc("plain"),
+      "workflows/plain/loop.chart.json": JSON.stringify(await reviewLoop()),
+    });
+    assert.equal(answer.status, 422);
+    const report = answer.body.report as string[];
+    assert.equal(report.length, 1, report.join("\n"));
+    assert.match(report[0]!, /^workflows\/plain\/loop\.chart\.json: workflow "plain" is no Chart wrapper/);
+    assert.equal(inst.assembly, null, "nothing landed");
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a publish that stops lending a slot refuses a Chart file that uses it, and marks a runtime Chart unrunnable, kept", async () => {
+  const { inst, dir } = await bootScratch();
+  try {
+    const text = await reviewLoop();
+    await publishTree(inst, dir, { "workflows/charted.ts": chartedSrc() });
+    const put = await fetch(`${inst.url}/workflows/charted/charts/loop`, {
+      method: "PUT",
+      body: JSON.stringify(text),
+      headers: { authorization: `Bearer ${inst.instanceToken}` },
+    });
+    assert.equal(put.status, 201, await put.clone().text());
+
+    // The Chart file is the Instance's own: it refuses the publish.
+    const refused = await admitTree(inst, dir, {
+      "workflows/charted.ts": chartedSrc({ lendCoder: false }),
+      "workflows/charted/sample.chart.json": JSON.stringify(text),
+    });
+    assert.equal(refused.status, 422);
+    const report = refused.body.report as string[];
+    assert.ok(report.length >= 1);
+    assert.ok(
+      report.every((l) => l.startsWith("workflows/charted/sample.chart.json: Chart refused: ")),
+      report.join("\n"),
+    );
+    assert.match(report.join("\n"), /coder/);
+
+    // With the file gone, the publish lands; the runtime Chart is someone else's, so it is marked.
+    const landed = await admitTree(inst, dir, { "workflows/charted.ts": chartedSrc({ lendCoder: false }) });
+    assert.equal(landed.status, 200, JSON.stringify(landed.body));
+    const charts = landed.body.charts as { unrunnable: Array<{ name: string; reason: string }> };
+    assert.equal(charts.unrunnable.length, 1);
+    assert.equal(charts.unrunnable[0]!.name, "charted/loop");
+    assert.match(charts.unrunnable[0]!.reason, /coder/);
+    assert.ok(existsSync(join(dir, ".jr2", "charts", "charted", "loop.chart.json")), "never deleted");
+    const listing = await json<ChartListing>(fetch(`${inst.url}/workflows`));
+    assert.match(
+      listing.find((w) => w.name === "charted")?.wrapper?.charts.find((c) => c.name === "loop")?.unrunnable ?? "",
+      /coder/,
+    );
+    assert.ok(!inst.host.workflows().includes("charted/loop"), "no run starts it");
+
+    // The wrapper lends `coder` again: the Chart runs again, from the volume.
+    const back = await admitTree(inst, dir, { "workflows/charted.ts": chartedSrc() });
+    assert.equal(back.status, 200);
+    assert.equal(back.body.charts, undefined);
+    assert.ok(inst.host.workflows().includes("charted/loop"));
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a publish's own answer names the Charts it left unrunnable, though a second publish starts meanwhile", async () => {
+  const dir = await scratchInstance("asm-charts");
+  // A second publish that starts inside the first one's `activate`, before its answer is built.
+  let second: Promise<unknown> | undefined;
+  let armed = false;
+  const inst: RunningInstance = await startInstance({
+    dir,
+    store: new SqliteSnapshotStore(":memory:"),
+    signingKey: KEY,
+    onPublish: () => {
+      if (!armed) return;
+      armed = false;
+      // Refused at its Kit version, before it reads the staging directory: it needs none.
+      second = inst.admit(join(dir, "no-staging"), { hash: "0".repeat(12), kitVersion: "0.0.0-other" });
+    },
+  });
+  try {
+    await publishTree(inst, dir, { "workflows/charted.ts": chartedSrc() });
+    const put = await fetch(`${inst.url}/workflows/charted/charts/loop`, {
+      method: "PUT",
+      body: JSON.stringify(await reviewLoop()),
+      headers: { authorization: `Bearer ${inst.instanceToken}` },
+    });
+    assert.equal(put.status, 201);
+    // The runtime Chart is no part of the Assembly: GET /assembly names the Assembly's own.
+    const view = await json<{ current: { workflows: string[] } }>(fetch(`${inst.url}/assembly`));
+    assert.deepEqual(view.current.workflows, ["charted"]);
+
+    armed = true;
+    const answer = await admitTree(inst, dir, { "workflows/charted.ts": chartedSrc({ lendCoder: false }) });
+    assert.equal(((await second) as { status: number }).status, 409, "the second publish ran, and was refused");
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    const charts = answer.body.charts as { unrunnable: Array<{ name: string }> } | undefined;
+    assert.deepEqual(
+      charts?.unrunnable.map((u) => u.name),
+      ["charted/loop"],
+      "the first publish's answer keeps its own report",
+    );
+    assert.deepEqual(answer.body.workflows, ["charted"], "the answer names the Assembly's own Workflows");
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the announce line names the named Charts when any exists: files, runtime, and the unrunnable ones", async () => {
+  const dir = await scratchInstance("asm-announce");
+  const first = await boot(dir);
+  try {
+    await publishTree(first, dir, {
+      "workflows/charted.ts": chartedSrc(),
+      "workflows/charted/sample.chart.json": JSON.stringify(await reviewLoop()),
+    });
+  } finally {
+    await first.close();
+  }
+  // A runtime Chart left on the volume whose wrapper the Assembly does not hold.
+  await mkdir(join(dir, ".jr2", "charts", "gone"), { recursive: true });
+  await writeFile(join(dir, ".jr2", "charts", "gone", "loop.chart.json"), JSON.stringify(await reviewLoop()));
+  const lines: string[] = [];
+  const inst = await serverMain({
+    dir,
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_SIGNING_KEY: KEY.toString("base64") },
+    announce: (line) => lines.push(line),
+  });
+  try {
+    const line = JSON.parse(lines[0]!) as { charts?: { files: number; runtime: number; unrunnable: unknown[] } };
+    assert.equal(line.charts?.files, 1);
+    assert.equal(line.charts?.runtime, 1);
+    assert.deepEqual(
+      (line.charts?.unrunnable as Array<{ name: string }>).map((u) => u.name),
+      ["gone/loop"],
+    );
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });

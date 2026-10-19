@@ -12,7 +12,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { allowedPicksText, readMenu, receiptProse, type DeliveryReceipt, type Surface } from "../src/menu.ts";
+import {
+  allowedPicksText,
+  briefingsOf,
+  readMenu,
+  receiptProse,
+  type DeliveryReceipt,
+  type Surface,
+} from "../src/menu.ts";
 
 const STAND_IN = "jr2-held-JR2_SANDBOX_TOKEN";
 
@@ -88,6 +95,20 @@ test("the surface becomes the Menu: the bare name, sanitized, the event's schema
   // The iid is ONE path segment on the wire, and the bearer is the Stand-in — never a token.
   assert.equal(calls[0]!.url, "http://127.0.0.1:8081/agents/run-1%2Freviewer/surface");
   assert.equal(calls[0]!.headers.authorization, `Bearer ${STAND_IN}`);
+});
+
+test("the Orchestrator's mark on a Chart pick rides the item, for the Turn part alone (ADR-0070)", async () => {
+  const chartPick = {
+    name: "run_chart",
+    input: { type: "object", properties: { chart: { type: "object" } } },
+    semantics: "ack",
+    briefing: "A Chart is a workflow written as data.",
+  };
+  const { fetch } = fakeFetch(() => Response.json({ ...SURFACE, menu: [...(SURFACE.menu ?? []), chartPick] }));
+  const menu = await menuOf(opts(fetch), "run-1/reviewer");
+  assert.equal(menu[0]!.briefing, undefined);
+  assert.equal(menu[2]!.briefing, "A Chart is a workflow written as data.");
+  assert.deepEqual([...briefingsOf(menu)], [["run_chart", "A Chart is a workflow written as data."]]);
 });
 
 test("a pick is one delivery with the Stand-in, and the receipt comes back as prose", async () => {

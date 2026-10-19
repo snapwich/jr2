@@ -149,7 +149,8 @@ Then("the Orchestrator still serves the Assembly it served before", async functi
   const prior = before.get(this);
   const view = await getJson<AssemblyView>(this, "/assembly");
   assert.equal(view.current?.hash, prior, "the refusal left the old Assembly current");
-  const workflows = await getJson<string[]>(this, "/workflows");
+  // Each Workflow is an entry with its origin (ADR-0070); the names are what this reads.
+  const workflows = (await getJson<Array<{ name: string }>>(this, "/workflows")).map((w) => w.name);
   assert.ok(workflows.includes("ping") && !workflows.includes("broken"), JSON.stringify(workflows));
 });
 

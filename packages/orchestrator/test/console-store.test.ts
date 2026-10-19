@@ -14,8 +14,11 @@ import {
   emptyStore,
   applyFrame,
   docSeats,
+  fleetEntries,
   fleetRuns,
   gateCount,
+  machineDocSource,
+  selectedRun,
   selectedRunGates,
   selectedRunHeld,
   selectedRunWaiting,
@@ -25,6 +28,7 @@ import {
   type GateCard,
   type WaitingLine,
   type SeatedBody,
+  type WorkflowListing,
 } from "../console/store.ts";
 
 const run = (runId: string, status = "active", workflow = "wf") => ({
@@ -569,4 +573,145 @@ test("docSeats reads the root's seats and warnings, then each child Machine's, d
 test("docSeats is empty with no doc, and for a recursive child (no body) or a Machine not built by jr2Setup", () => {
   assert.deepEqual(docSeats(null), { seats: [], warnings: [] });
   assert.deepEqual(docSeats({ root: { states: [], children: [{}] } }), { seats: [], warnings: [] });
+});
+
+// ---- Charts (ADR-0070) --------------------------------------------------------------------------
+// `GET /workflows` lists each Workflow with its origin, a Chart wrapper's named Charts inside its
+// entry; the rail draws them indented under the wrapper. A run that binds a Chart draws its own
+// Machine, so the pane's doc is per run id for it and per Workflow for every other run.
+
+const LISTING: WorkflowListing[] = [
+  { name: "ping", origin: "machine" },
+  {
+    name: "charted",
+    origin: "machine",
+    wrapper: {
+      body: "body",
+      oneShot: true,
+      charts: [
+        { name: "sample", origin: "file" },
+        { name: "loop", origin: "runtime", unrunnable: 'states.draft.invoke.src: "coder" is not lent' },
+      ],
+    },
+  },
+];
+
+test("the listing's names are every Workflow and every named Chart, as `<wrapper>/<name>`", () => {
+  const store = fold({ kind: "workflows", workflows: LISTING });
+  assert.deepEqual(store.workflows, ["ping", "charted", "charted/sample", "charted/loop"]);
+  assert.deepEqual(store.listing, LISTING);
+});
+
+test("a wrapper's Charts are rows indented under it, with their origin and why one is unrunnable", () => {
+  assert.deepEqual(fleetEntries(LISTING), [
+    { name: "ping", origin: "machine", depth: 0 },
+    { name: "charted", origin: "machine", depth: 0, wrapper: { body: "body", oneShot: true } },
+    { name: "charted/sample", origin: "file", depth: 1 },
+    {
+      name: "charted/loop",
+      origin: "runtime",
+      depth: 1,
+      unrunnable: 'states.draft.invoke.src: "coder" is not lent',
+    },
+  ]);
+});
+
+test("a Chart the listing also gives at the top level is one row, under its wrapper; an orphan stays on top", () => {
+  const rows = fleetEntries([
+    ...LISTING,
+    { name: "charted/sample", origin: "file" },
+    { name: "gone/orphan", origin: "runtime", unrunnable: 'no Workflow "gone"' },
+  ]);
+  assert.equal(rows.filter((r) => r.name === "charted/sample").length, 1);
+  assert.deepEqual(rows.at(-1), {
+    name: "gone/orphan",
+    origin: "runtime",
+    depth: 0,
+    unrunnable: 'no Workflow "gone"',
+  });
+});
+
+test("a listing of bare names (an Orchestrator older than ADR-0070) reads as Machines", () => {
+  const store = fold({ kind: "workflows", workflows: ["a", "b"] });
+  assert.deepEqual(fleetEntries(store.listing), [
+    { name: "a", origin: "machine", depth: 0 },
+    { name: "b", origin: "machine", depth: 0 },
+  ]);
+});
+
+test("a later listing replaces the earlier wholesale: a deleted Chart leaves the rail", () => {
+  const store = fold(
+    { kind: "workflows", workflows: LISTING },
+    { kind: "workflows", workflows: [{ ...LISTING[1]!, wrapper: { body: "body", oneShot: true, charts: [] } }] },
+  );
+  assert.deepEqual(store.workflows, ["charted"]);
+});
+
+test("a bound run draws its own Machine, per run id; any other run draws the Workflow's", () => {
+  assert.deepEqual(machineDocSource("charted", { runId: "r1", bound: true }), {
+    key: "run:r1",
+    path: "/workflows/charted/runs/r1/machine",
+  });
+  assert.deepEqual(machineDocSource("charted", { runId: "r2" }), {
+    key: "workflow:charted",
+    path: "/workflows/charted/machine",
+  });
+  assert.deepEqual(machineDocSource("charted", null), machineDocSource("charted", { runId: "r3" }));
+});
+
+test("a named Chart's name rides the doc route as one encoded segment", () => {
+  assert.equal(machineDocSource("charted/loop", null).path, "/workflows/charted%2Floop/machine");
+  assert.equal(
+    machineDocSource("charted/loop", { runId: "r1", bound: true }).path,
+    "/workflows/charted%2Floop/runs/r1/machine",
+  );
+});
+
+test("the doc choice follows the selected run's observation: a status that says `bound` moves it", () => {
+  let store = fold({ kind: "select", workflow: "charted" }, { kind: "runs", runs: [run("a", "active", "charted")] });
+  assert.equal(machineDocSource("charted", selectedRun(store)).key, "workflow:charted");
+  store = applyFrame(store, { kind: "status", status: { ...run("a", "active", "charted"), bound: true } });
+  assert.equal(machineDocSource("charted", selectedRun(store)).key, "run:a");
+});
+
+test("a Chart file that shadows a runtime Chart of its name is one row, the runtime Chart a note on it", () => {
+  const reason = "the Assembly's Chart file holds this name";
+  for (const charts of [
+    [
+      { name: "sample", origin: "file" as const },
+      { name: "sample", origin: "runtime" as const, unrunnable: reason },
+    ],
+    [
+      { name: "sample", origin: "runtime" as const, unrunnable: reason },
+      { name: "sample", origin: "file" as const },
+    ],
+  ]) {
+    const listing: WorkflowListing[] = [
+      { name: "charted", origin: "machine", wrapper: { body: "body", oneShot: true, charts } },
+    ];
+    assert.deepEqual(fleetEntries(listing), [
+      { name: "charted", origin: "machine", depth: 0, wrapper: { body: "body", oneShot: true } },
+      { name: "charted/sample", origin: "file", depth: 1, shadows: { origin: "runtime", unrunnable: reason } },
+    ]);
+    assert.deepEqual(fold({ kind: "workflows", workflows: listing }).workflows, ["charted", "charted/sample"]);
+  }
+});
+
+test("a run that binds a second Chart in its life draws a second doc: the key holds the Charts' hashes", () => {
+  const first = machineDocSource("planner", { runId: "r1", bound: true, chartHashes: ["aaaaaaaaaaaa"] });
+  const second = machineDocSource("planner", { runId: "r1", bound: true, chartHashes: ["bbbbbbbbbbbb"] });
+  assert.notEqual(first.key, second.key);
+  assert.equal(first.path, second.path, "one route serves the doc of what the run binds now");
+  let store = fold({ kind: "select", workflow: "planner" }, { kind: "runs", runs: [run("a", "active", "planner")] });
+  store = applyFrame(store, {
+    kind: "status",
+    status: { ...run("a", "active", "planner"), bound: true, chartHashes: ["aaaaaaaaaaaa"] },
+  });
+  const a = machineDocSource("planner", selectedRun(store)).key;
+  store = applyFrame(store, { kind: "status", status: run("a", "active", "planner") });
+  store = applyFrame(store, {
+    kind: "status",
+    status: { ...run("a", "active", "planner"), bound: true, chartHashes: ["bbbbbbbbbbbb"] },
+  });
+  assert.notEqual(machineDocSource("planner", selectedRun(store)).key, a);
 });

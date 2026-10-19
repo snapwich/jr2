@@ -1,0 +1,7 @@
+{
+  "initial": "ping",
+  "states": {
+    "ping": { "always": "pong" },
+    "pong": { "always": "ping" }
+  }
+}

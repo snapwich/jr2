@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { harnessToken } from "@jr2/orchestrator";
 import {
+  answersIn,
   askAfter,
   follow,
   harnessRestarts,
@@ -37,6 +38,7 @@ import {
   type Said,
   type StateNodeLike,
 } from "../lib/model-said.ts";
+import { readChartRefusal } from "../lib/model-chart.ts";
 import { FINISHED } from "../lib/model-finished.ts";
 import { bodyIn, ended, killedInTheFirstTurn, type RunChild } from "../lib/model-status.ts";
 import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
@@ -746,6 +748,29 @@ const chainAnswer: Driver = async (world, input) => {
   };
 };
 
+/**
+ * chart-refusal (ADR-0070): the planner's first Chart names `linter`, which the Open body does not
+ * lend, and the door's refusal is the pick's answer. The measurement is the NEXT `run_chart`: the door
+ * admits it. The Machine's record says each door verdict in order (`outcomes`); the printed
+ * conversation, with the answers the planner read, places a pick the Menu refused on the grammar
+ * before or after the door's refusal (`readChartRefusal`). A trial whose first Chart never met a
+ * refusal at the door is void.
+ */
+const chartRefusal: Driver = async (world, input) => {
+  const runId = await startRun(world, "chart-refusal", input);
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  const outcomes = ((last.context as { outcomes?: string[] }).outcomes ?? []).map(String);
+  const log = await kubectl(world, ["logs", `statefulset/${INSTANCE_HARNESS}`, "-c", "harness", "--tail=-1"]);
+  const reading = readChartRefusal(outcomes, answersIn(log, input.marker));
+  return {
+    runId,
+    measured: reading.measured,
+    finished: FINISHED["chart-refusal"]!(last),
+    ...(reading.void === undefined ? {} : { void: true }),
+    note: `${reading.void ? `${reading.void}; ` : ""}${reading.note}, ended ${ended(last)}`,
+  };
+};
+
 /** The cut-pick workflow's Menu (`cut-pick.ts`), and how jr2's re-admission prompt opens (actor.ts). */
 const AUDIT_MENU = new Set(["run_audit", "file_report"]);
 const READMITTED = "Your previous turn was cut";
@@ -967,6 +992,7 @@ const DRIVERS: Record<string, Driver> = {
   "continue-after-signed-push": continueAfterSignedPush,
   "allowed-after-route": allowedAfterRoute,
   "unknown-outcome": unknownOutcome,
+  "chart-refusal": chartRefusal,
 };
 
 /** The Menu-only claims read one shared pod log, so their trials run one at a time. */
@@ -979,6 +1005,7 @@ const SERIAL = new Set([
   "wake",
   "chain-answer",
   "cut-pick",
+  "chart-refusal",
 ]);
 
 /** The claims whose trials push to the seed's push remote: their evidence logs what it holds. */
@@ -1160,6 +1187,13 @@ Then(
   "the first pick after the checks answered was the one their last result called for in at least {int} trials",
   function (this: E2EWorld, floor: number): void {
     atLeast(claimOf(this), floor, "the pick after the answer followed its last link", (t) => t.measured);
+  },
+);
+
+Then(
+  "the pick after the door's refusal admitted in at least {int} trials",
+  function (this: E2EWorld, floor: number): void {
+    atLeast(claimOf(this), floor, "the pick after the refusal admitted", (t) => t.measured);
   },
 );
 

@@ -118,6 +118,8 @@ export type TurnFacts = {
   allowed: string[];
   toolName?: (name: string) => string;
   notices?: Notice[];
+  /** The Menu's pick briefings by event name (`briefingsOf`): said for each Allowed pick that has one. */
+  briefings?: ReadonlyMap<string, string>;
 };
 
 /** The Turn part: a delimited block that follows the Frame's prompt. The Allowed picks close it. */
@@ -126,8 +128,26 @@ export function turnPart(facts: TurnFacts): string {
   // Only Working tools consume a directory; a Menu-only Agent's `/work` default names nothing.
   if (facts.workspace !== "none") lines.push(`Working directory: ${facts.cwd}`);
   for (const notice of facts.notices ?? []) lines.push(noticeText(notice, facts.toolName));
+  lines.push(...pickBriefings(facts.allowed, facts.briefings, facts.toolName));
   lines.push(allowedPicksText(facts.allowed, facts.toolName));
   return `<jr2-turn>\n${lines.join("\n")}\n</jr2-turn>`;
+}
+
+/**
+ * The briefing of each Allowed pick that has one (a Chart pick, ADR-0070), right before the Allowed
+ * picks: jr2's text on the pick's parameter, paid only on a Turn that may make that pick. The tools
+ * block never carries it, so it stays the same bytes on every Turn (ADR-0029).
+ */
+export function pickBriefings(
+  allowed: readonly string[],
+  briefings: ReadonlyMap<string, string> | undefined,
+  toolName: (name: string) => string = (name) => name,
+): string[] {
+  if (!briefings) return [];
+  return allowed.flatMap((event) => {
+    const text = briefings.get(event);
+    return text === undefined ? [] : [`\`${toolName(sanitizeToolNamePart(event))}\` takes a Chart. ${text}`];
+  });
 }
 
 /**
@@ -136,11 +156,13 @@ export function turnPart(facts: TurnFacts): string {
  * no cause — the Harness cannot tell a Gate's answer from a pick whose answer was lost — and it is
  * delimited as the Turn part is, so "the newest Allowed now holds" stays one rule.
  */
-export function restatedTurnPart(allowed: string[], toolName?: (name: string) => string): string {
-  return (
-    "<jr2-turn>\nThe workflow's state changed since you last read the Allowed picks. " +
-    `${allowedPicksText(allowed, toolName)}\n</jr2-turn>`
-  );
+export function restatedTurnPart(
+  allowed: string[],
+  toolName?: (name: string) => string,
+  briefings?: ReadonlyMap<string, string>,
+): string {
+  const lines = [...pickBriefings(allowed, briefings, toolName), allowedPicksText(allowed, toolName)];
+  return `<jr2-turn>\nThe workflow's state changed since you last read the Allowed picks. ${lines.join("\n")}\n</jr2-turn>`;
 }
 
 /** The Frame's prompt with the Turn part after it — the one user message a Turn sends. */
