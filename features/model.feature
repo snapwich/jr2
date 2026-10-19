@@ -213,9 +213,10 @@ Feature: a real model drives the kit
     data. The `chart-refusal` workflow's planner is asked for a Chart that runs "the linter" and
     then the summarizer, and is told no slot name; its Open body lends `summarizer` alone. The
     first Chart is expected to name `linter`, and the next `run_chart` is the measurement: the door
-    admits it. A trial whose first Chart admits saw no refusal, and is void. No run has measured
-    this claim yet: the floor, 7 of 10, is set ahead of one, and the first run that is read sets
-    the baseline.
+    admits it. A trial whose first Chart admits saw no refusal, and is void. The floor, 7 of 10, was
+    set ahead of a measured run; the `off` cell cleared it on 2026-10-19 and set its baseline. A
+    thinking-on cell was measured once and not kept: 5 of 10, the same misses, a third more wall
+    time (ADR-0070).
 
     Scenario: after the door refuses its Chart, the planner's next Chart admits
       Given the model instance is serving

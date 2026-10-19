@@ -289,6 +289,10 @@ their own maintainers, and the escapes shipped in systems that used them were in
   with the reading that the gain from 4 is the instrument's own variance across ten trials. A parse of the JSON-text
   argument was tried in that run and measured inert, since every such string was malformed
   ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md), rejected). The misses of
-  the passing run were a Chart without `events`, a state `output` beside the Chart's, and one malformed string. What the
-  next Chart gets wrong is in the trial evidence.
+  the passing run were a Chart without `events`, a state `output` beside the Chart's, and one malformed string. A
+  thinking-on cell, run once to ask whether the misses are knowledge or care: 5 of 10 with three void trials (the first
+  Chart admitted more often), the same kinds of miss (events declared and handled by no state, `gate` named though no
+  grammar offered it), 8% longer per trial and a third more wall time for the voids. Not kept: it does not clear the
+  floor, and it answers the question: the misses are knowledge. What the next Chart gets wrong is in the trial evidence;
+  the next lever named is a worked example in the narrowed grammar.
 - Deferred, named: a spend ceiling; a CEL-class reference kind; `publishChart`.
