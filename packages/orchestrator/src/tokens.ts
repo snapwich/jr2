@@ -3,12 +3,19 @@
 // a per-pod NetworkPolicy cannot distinguish its packets from the Custodian's. Only authentication
 // closes this, and only the token bounds what a caller may DO (as opposed to where it may talk).
 //
-// Two principals, and the asymmetry between them is the whole design:
+// Three principals. The asymmetry between the first two is the whole design; the third is a door
+// key, not a seat:
 //
 //   Instance token  the human/CLI credential. Full trust: gates, run control, agent surfaces.
 //                   From the instance Secret (`JR2_INSTANCE_TOKEN`); minted per boot when absent,
 //                   announced once on stdout (fixtures capture it). An Agent never has it — it
 //                   never enters a Sandbox.
+//
+//   Publish token   `jr2 up`'s credential for `PUT /assembly` alone (ADR-0069). A publish imports
+//                   code into the process that holds the ServiceAccount, so it must cost what an
+//                   image roll cost: cluster write access. From the instance Secret
+//                   (`JR2_PUBLISH_TOKEN`), read by `jr2 up` through the kube API only. Every other
+//                   route answers it 403: it is a known token, but not one that route accepts.
 //
 //   Sandbox token   the Custodian's credential. Authorizes exactly: deliver to `kind: "agent"`
 //                   registrations whose Sandbox is THIS one. Never a Gate (a compromised Agent
@@ -43,6 +50,9 @@ import { join } from "node:path";
 export type Principal =
   /** The instance's own operator: the CLI, a human, a webhook translator holding the token. */
   | { kind: "instance" }
+  /** `jr2 up`, publishing an Assembly (ADR-0069). Only `PUT /assembly` accepts it: it is not an
+   * Instance principal, so it reads no run and starts none. */
+  | { kind: "publisher" }
   /** One Sandbox's Custodian, speaking for the Agent in that pod — and for no one else. */
   | { kind: "sandbox"; sandbox: string };
 
@@ -89,7 +99,8 @@ export function effectorKey(key: Buffer, placement: string): string {
   return sign(key, `effector:${placement}`);
 }
 
-/** Mint the per-boot Instance token (opaque and random — it names nothing, it just IS the trust). */
+/** Mint the per-boot Instance token (opaque and random — it names nothing, it just IS the trust).
+ * The publish token is minted the same way when the Secret supplies none (ADR-0069). */
 export function mintInstanceToken(): string {
   return randomBytes(32).toString("base64url");
 }
@@ -121,10 +132,16 @@ export async function loadSigningKey(dir: string): Promise<Buffer> {
  * A token we did not mint resolves to nothing, and the caller is refused — there is no anonymous
  * principal, and no route decides for itself whether it needs one.
  */
-export function createAuthenticator(opts: { instanceToken: string; signingKey: Buffer }): Authenticator {
+export function createAuthenticator(opts: {
+  instanceToken: string;
+  signingKey: Buffer;
+  /** The publish token (ADR-0069). Absent → no bearer resolves to the publisher. */
+  publishToken?: string;
+}): Authenticator {
   return (bearer) => {
     if (!bearer) return undefined;
     if (constantTimeEqual(bearer, opts.instanceToken)) return { kind: "instance" };
+    if (opts.publishToken !== undefined && constantTimeEqual(bearer, opts.publishToken)) return { kind: "publisher" };
     const cut = bearer.lastIndexOf(".");
     if (cut <= 0) return undefined;
     const sandbox = bearer.slice(0, cut);
@@ -143,6 +160,7 @@ export function createAuthenticator(opts: { instanceToken: string; signingKey: B
  */
 export function mayDeliverToAgent(principal: Principal, registrationSandbox: string | undefined): boolean {
   if (principal.kind === "instance") return true;
+  if (principal.kind !== "sandbox") return false;
   return registrationSandbox !== undefined && registrationSandbox === principal.sandbox;
 }
 
@@ -150,10 +168,11 @@ export function mayDeliverToAgent(principal: Principal, registrationSandbox: str
  * May this principal ask for a fetch on this Sandbox (ADR-0053)? A Sandbox token may ask for its
  * OWN pod and no other — the scope is the caches that pod mounts, and the route refuses a Repo it
  * does not. The Instance token may, on the same grounds it may deliver to any agent surface: it is
- * the operator. Nothing else can hold either, so there is no third case.
+ * the operator. The publish token may not: it opens the publish door and no other (ADR-0069).
  */
 export function mayAskForSandbox(principal: Principal, sandbox: string): boolean {
   if (principal.kind === "instance") return true;
+  if (principal.kind !== "sandbox") return false;
   return principal.sandbox === sandbox;
 }
 

@@ -4,7 +4,7 @@
 // here, on the manifests themselves, socket-free.
 //
 // It matters because these are PROD dependencies of every instance: whatever they pack is unpacked
-// by the bundle's frozen install and baked into the instance image (ADR-0038).
+// by the bundle's frozen install and published in the Assembly (ADR-0069).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

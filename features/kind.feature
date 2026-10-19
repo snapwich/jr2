@@ -19,10 +19,12 @@ Feature: a workspace() run drives a real Sandbox on kind
     just e2e-kind-up      # a VANILLA kind cluster; nothing is built or loaded here
     just e2e-kind
   Bring-up is the product's own path (ADR-0010/0019/0038): each scenario runs `jr2 up` into a fresh
-  namespace of the shared cluster, and that converge builds and loads every image it builds —
-  Harness, operator, the instance, and the instance's own images (`images/default`, and
-  `images/user` for the one workflow that seats a human). The one image it deploys and never builds,
-  the Custodian's pinned Envoy, a node pulls itself. Nothing is instance-bound to the cluster itself.
+  namespace of the shared cluster, and that converge builds and loads every image it builds — the
+  Kit images (Harness, operator, Orchestrator) and the instance's own Sandbox Images
+  (`images/default`, and `images/user` for the one workflow that seats a human) — then publishes the
+  instance's Assembly to the running Orchestrator (ADR-0069). The one image it deploys and never
+  builds, the Custodian's pinned Envoy, a node pulls itself. Nothing is instance-bound to the
+  cluster itself.
 
   Rule: the wrapper provisions a real Sandbox, attaches the worktree, and destroys it on final
 

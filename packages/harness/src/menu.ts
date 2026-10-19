@@ -67,7 +67,8 @@ export type SurfaceEvent = {
 /**
  * `GET /agents/:iid/surface` — the Menu and the Turn's Allowed picks (ADR-0029). An older
  * Orchestrator sends neither, only `accepts` — its per-Turn narrowed list (ADR-0027's skew: the
- * Harness is a stock image, the Orchestrator the instance image). That list is read as both the
+ * Harness and the Orchestrator are separate Kit images in separate pods, which roll at different
+ * times). That list is read as both the
  * tools and the Allowed picks, which is what it was.
  */
 export type Surface = {
@@ -95,7 +96,8 @@ export type DeliveryReceipt = {
   delivered: boolean;
   event: string;
   /** Optional on the wire, and read fail-open (absent ≠ rejected): the Harness ships as a stock
-   * image and the Orchestrator as the instance image, so the two CAN skew. */
+   * image and the Orchestrator as another, in separate pods that roll at different times, so the
+   * two CAN skew. */
   moved?: boolean;
   turnComplete: boolean;
   deliveryId: string;

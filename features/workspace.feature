@@ -1,14 +1,14 @@
 Feature: workspace() runs need the instance's cluster
-  ADR-0012: workspaces are ALWAYS real Sandboxes — there is no stubbed workspace mode. Whether an
-  instance has a data plane at all is read off its registered Machines (ADR-0051): a Machine that
-  composes a Sandbox needs one, and nothing else does. A host-booted process outside any cluster
-  has none either way, so a workspace() run there must fail loudly and pointedly (a durable fault
-  on the run, naming the fix), never hang. The happy path (a real Sandbox on kind) is the @kind
-  tier.
+  ADR-0012: workspaces are ALWAYS real Sandboxes — there is no stubbed workspace mode. A deployed
+  Orchestrator always wires its data plane, because a publish can bring the first workspace()
+  (ADR-0069); `jr2 up` still decides from its walk whether to DEPLOY the operator and the cache
+  agent (ADR-0051). A host-booted process outside any cluster has no data plane, so a workspace()
+  run there must fail loudly and pointedly (a durable fault on the run, naming the fix), never
+  hang. The happy path (a real Sandbox on kind) is the @kind tier.
 
-  Rule: the data plane exists exactly when a registered Machine composes a Sandbox
+  Rule: the data plane exists exactly when the Orchestrator runs in a cluster
 
-    Scenario: an instance whose Machines compose no Sandbox reports no data plane
+    Scenario: a host-booted instance reports no data plane
       Given a fresh instance
       And the orchestrator is serving
       When I ask for the instance's status

@@ -253,14 +253,18 @@ async function waitSettled(world: E2EWorld): Promise<WsStatus> {
 
 // --- given ---------------------------------------------------------------------------------------
 
-// 10 min: the FIRST converge of a session builds the instance image (pnpm deploy + docker);
-// later scenarios hit the content-hash skip and the docker cache.
+// 10 min: the FIRST converge of a session builds the Kit images (docker) and every converge stages
+// and publishes the Assembly (pnpm deploy, then `PUT /assembly`, ADR-0069); later scenarios hit the
+// content-hash skip and the docker cache for the images, and each fresh namespace takes its own
+// publish.
 Given("the kind instance is serving", { timeout: 600_000 }, async function (this: E2EWorld): Promise<void> {
   // The Repo the workflows bind must be reachable from the cluster before the Orchestrator boots
   // and the cache agent clones it (ADR-0051) — served in-cluster, once per suite (seed.ts).
   await ensureSeed();
   // The product's own path (ADR-0010/0019): converge the scenario's fresh namespace with `jr2 up`.
-  // The workflows (incl. `sandboxed`) are committed in the kind instance and baked into its image.
+  // The workflows (incl. `sandboxed`) are committed in the kind instance and ride its Assembly,
+  // which `jr2 up` publishes to the Orchestrator Kit image after every other layer (ADR-0069). A
+  // restart boots from the Assembly's `current` pointer on the state volume.
   const r = await this.runCli(["up", "--yes"]);
   assert.equal(r.code, 0, `jr2 up failed: ${r.stderr}`);
 });

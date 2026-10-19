@@ -3,11 +3,14 @@
 // slice-1/2/3 pieces into one process:
 //
 //   1. open the durable snapshot store (sqlite at `<dir>/.jr2/state.db` by default — ADR-0009);
-//   2. filename-discover `workflows/*.ts` (workflow name = filename, mirroring flue's
+//   2. filename-discover `workflows/*.ts` in the CURRENT ASSEMBLY's root (ADR-0069: the published
+//      tree under `<dir>/.jr2/assemblies/<hash>`; none before the first publish), each def stamped
+//      with that Assembly's hash (workflow name = filename, mirroring flue's
 //      `agents/<name>.ts`; module contract, ADR-0011 revised by ADR-0015: `export const machine`
 //      — the vocabulary rides the machine object via jr2Setup); register on the RunHost;
-//   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007),
-//      then sweep finished runs older than a week, and again every hour (ADR-0065);
+//   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007) —
+//      at boot when there is a current Assembly, else at the first publish — then sweep finished
+//      runs older than a week, and again every hour (ADR-0065);
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
 // The one design point worth stating (ADR-0011 static-import doctrine): a workflow module is
@@ -17,6 +20,18 @@
 // remains a seam for tests, not a wiring obligation.
 
 import { mkdir, readdir, stat } from "node:fs/promises";
+import type { JR2Config } from "./config.ts";
+import { loadConfig } from "./config.ts";
+import {
+  assemblyDoor,
+  removeStaging,
+  resolveAssembly,
+  type AssemblyDoor,
+  type CurrentAssembly,
+  type ResolvedAssembly,
+} from "./assembly.ts";
+import { assemblyRefusals, type LoadedWorkflow } from "./assembly-checks.ts";
+import type { ImageRefs } from "./images.ts";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
@@ -35,8 +50,33 @@ import type { SandboxPort } from "./workspace.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
 
 export type InstanceOptions = {
-  /** The instance folder (holds `workflows/`, and `.jr2/state.db` unless `store` is supplied). */
+  /** The instance folder: the state volume `.jr2/` (its `state.db` unless `store` is supplied, and
+   * its published Assemblies). Nothing else in it is read: the Workflows are the current
+   * Assembly's (ADR-0069). */
   dir: string;
+  /** Which Assembly to load (ADR-0069). Default: `resolveAssembly(dir)`. The entrypoint resolves
+   * it first, because it reads the config from the same root before it builds the ports. */
+  assembly?: ResolvedAssembly;
+  /** The publish token (ADR-0069): the one credential `PUT /assembly` accepts. Deployed, from the
+   * instance Secret (`JR2_PUBLISH_TOKEN`). Default: minted per boot. */
+  publishToken?: string;
+  /** The image map, read when the door checks a publish (ADR-0069). Present only when deployed;
+   * absent, the door does not check `file:` image contexts. */
+  imageMap?: () => Promise<ImageRefs>;
+  /** The digests of the mounted ConfigMaps, which `GET /assembly` reports (ADR-0069). Present only
+   * when deployed. */
+  mounts?: () => Promise<Record<string, string>>;
+  /** Called after a publish has landed and the Workflows swapped, before a deferred restore: the
+   * new current Assembly, its config and its Machines, which the entrypoint swaps into the ports
+   * (ADR-0069). Synchronous, so the swap cannot half-apply. */
+  onPublish?: (published: {
+    current: CurrentAssembly;
+    config: JR2Config | undefined;
+    workflows: LoadedWorkflow[];
+  }) => void;
+  /** Called with what a restore deferred to the first publish did (ADR-0030, ADR-0069): the boot
+   * had no current Assembly, so the runs it found waited for one. */
+  onRestore?: (restored: RestoreOutcome & { assembly: string }) => void;
   /** Listen port. Default 0 → an ephemeral port (read back from the running instance's `url`). */
   port?: number;
   /** Listen hostname. Default `127.0.0.1`. */
@@ -46,8 +86,8 @@ export type InstanceOptions = {
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
   /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller — wired
-   * when a registered Machine composes a Sandbox and the process is deployed (ADR-0051); absent =
-   * an instance without a data plane, whose `workspace()` runs fault pointedly. */
+   * whenever the process is deployed (ADR-0069); absent = an instance without a data plane, whose
+   * `workspace()` runs fault pointedly. */
   sandbox?: SandboxPort;
   /** Whether the instance has a data plane (ADR-0051) — what `GET /repos` reports beside the
    * Repos, so `jr2 status` can say "no Workspace runs here" instead of listing nothing. */
@@ -79,8 +119,8 @@ export type InstanceOptions = {
   instanceToken?: string;
 };
 
-/** What changed on a `reload()` — the diff against the previously-registered set. */
-export type ReloadResult = { added: string[]; updated: string[]; removed: string[]; workflows: string[] };
+/** What one restore did with the runs it found persisted (ADR-0007, ADR-0030). */
+export type RestoreOutcome = { reattached: string[]; lost: string[]; drifted: string[]; failed: string[] };
 
 export type RunningInstance = {
   host: RunHost;
@@ -93,19 +133,33 @@ export type RunningInstance = {
    * Sandbox tokens must never rotate per boot either way (see `loadSigningKey`).
    */
   instanceToken: string;
-  /** Names of the workflows discovered + registered from `<dir>/workflows`. */
+  /** The publish token this boot accepts on `PUT /assembly` (ADR-0069). Fixtures read it here. */
+  publishToken: string;
+  /** The Assembly this process serves now (ADR-0069); `null` while it holds none. A publish
+   * replaces it. */
+  readonly assembly: CurrentAssembly | null;
+  /** Why the boot found no current Assembly where the volume named one. */
+  assemblyError?: string;
+  /** Names of the workflows discovered + registered from the Assembly's `workflows/` at boot. */
   workflows: string[];
   /** What this boot did with the runs it found persisted (ADR-0007, ADR-0030) — resumed, given up
    * on, refused because their Machine changed shape, or errored (left for the next boot to retry).
-   * The entrypoint announces everything but the resumed ones. */
-  restored: { reattached: string[]; lost: string[]; drifted: string[]; failed: string[] };
+   * The entrypoint announces everything but the resumed ones. Empty when the boot had no current
+   * Assembly: those runs are `waiting`. */
+  restored: RestoreOutcome;
   /**
-   * Re-discover `<dir>/workflows` and re-register every file, replacing changed definitions and
-   * dropping deleted ones. A dev/test-only affordance — the deployed entrypoint ships workflows
-   * baked into its image and never reloads. In-flight runs keep the
-   * definition they started on; only the next `start` sees new code (ADR-0009).
+   * The live runs a boot with no current Assembly left untouched (ADR-0069): no Workflow could
+   * resolve them, and a verdict from an empty registry would be a lie. The first publish restores
+   * them. Empty when the boot had a current Assembly.
    */
-  reload: () => Promise<ReloadResult>;
+  waiting: string[];
+  /**
+   * The door's checks 4 to 6 over a staging directory that holds an unpacked `tree/` (ADR-0069):
+   * the hash, the import and the walk, the landing, the swap. What a publish calls after the
+   * unpack; a test calls it on a copied tree. In-flight runs keep the definition they started on;
+   * only the next `start` sees the new code (ADR-0009).
+   */
+  admit: AssemblyDoor["admit"];
   /** Stop the HTTP server and close the store. */
   close: () => Promise<void>;
 };
@@ -136,7 +190,14 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // Custodians still hold tokens this key signed, and their Harnesses still check bearers it derived.
   // The Instance token is per-boot; the key is not. Both are served under in step 4 below.
   const instanceToken = opts.instanceToken ?? mintInstanceToken();
+  const publishToken = opts.publishToken ?? mintInstanceToken();
   const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));
+
+  // Which Assembly this boot serves (ADR-0069). A publish that crashed before its pointer flip
+  // left a `.staging-*`: it is not an Assembly, so it is removed and never read.
+  await removeStaging(opts.dir);
+  const resolved = opts.assembly ?? (await resolveAssembly(opts.dir));
+  let current = resolved.current;
 
   const host = new RunHost({
     store,
@@ -165,32 +226,46 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       console.error(`restore failed for run ${runId}: ${err instanceof Error ? err.message : err}`),
   });
 
-  // Bump per reload so `import()` re-reads a changed file rather than serving the ESM module cache.
-  let importGen = 0;
-  const registerFile = async (name: string, file: string): Promise<void> => {
-    const machine = await importMachine(name, file, importGen);
-    host.register({
-      name,
-      machine,
-      // Nothing to inject (ADR-0011): the module imports its own actors; live clients are built
-      // per-invocation from input. `provide` stays a test seam on WorkflowDef, unused here.
-      provide: () => ({}),
-    });
+  /** Swap the registry to `loaded` and make `next` current, in one synchronous step: nothing in it
+   * awaits, so no request sees half of one Assembly and half of another (ADR-0069). */
+  const swap = (loaded: LoadedWorkflow[], next: CurrentAssembly): void => {
+    const names = new Set(loaded.map((w) => w.name));
+    for (const { name, machine } of loaded) {
+      host.register({
+        name,
+        machine,
+        // Nothing to inject (ADR-0011): the module imports its own actors; live clients are built
+        // per-invocation from input. `provide` stays a test seam on WorkflowDef, unused here.
+        provide: () => ({}),
+        // The Assembly the file came from (ADR-0069): every save of a run started from it names it.
+        assembly: next.hash,
+      });
+    }
+    for (const name of host.workflows()) if (!names.has(name)) host.unregister(name);
+    current = next;
   };
 
-  // 2. Filename discovery: every `workflows/<name>.ts` exports its Machine + event manifest by name.
-  for (const { name, file } of await discoverWorkflows(opts.dir)) await registerFile(name, file);
+  // 2. Filename discovery: every `workflows/<name>.ts` of the current Assembly exports its Machine
+  // by name. No current Assembly → no Workflows, and the process still serves (ADR-0048).
+  if (current) swap(await loadWorkflows(current.root), current);
 
   // 3. Resume in-flight runs persisted by a prior process (ADR-0007). The outcome is reported, not
   // swallowed (ADR-0030): a boot that declined to resume runs must say so, or "drifted" is only
   // discoverable by asking after a specific run id nobody knows to ask about.
-  const restored = await host.restore();
+  //
+  // Only when there is a current Assembly. With none (the Kit bump window of ADR-0069, volume
+  // loss, a pointer to a tree that is gone), every name resolves to nothing, and a restore would
+  // write `lost` on every live run. The rows wait, untouched, and the first publish restores them.
+  let restorePending = current === null;
+  const empty: RestoreOutcome = { reattached: [], lost: [], drifted: [], failed: [] };
+  const restored = current ? await host.restore() : empty;
+  const waiting = current ? [] : (await store.live()).map((row) => row.runId);
 
   // Right after restore, not before: restore reads live rows only, and a row it marks `lost` or
   // `drifted` here is written now, so its week starts now (ADR-0065). A sweep is housekeeping,
   // never a reason to stay up — nor to fail a boot that has already resumed runs: a failed sweep,
   // at boot or on the hour, is logged, and the next hour sweeps again. The timer holds no process
-  // alive.
+  // alive. A sweep deletes finished rows only, so it never takes a waiting run.
   const sweep = () =>
     store
       .sweep(new Date(Date.now() - RETAIN_MS))
@@ -199,11 +274,57 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   const sweeper = setInterval(() => void sweep(), SWEEP_EVERY_MS);
   sweeper.unref();
 
-  // 4. Serve, authenticated (ADR-0013) — the token and key resolved above.
-  const auth = createAuthenticator({ instanceToken, signingKey });
+  // The publish door (ADR-0069). Its walk imports the tree at `assemblies/<hash>`, where it stays:
+  // the config, every Workflow, then the refusals this process can see. The swap reuses what the
+  // walk imported, so nothing is imported after the pointer flips.
+  const door = assemblyDoor({
+    dir: opts.dir,
+    current: () => current,
+    workflows: () => host.workflows(),
+    holds: () => host.assemblyHolds(),
+    load: async (root) => {
+      const config = await loadConfig(root);
+      const workflows = await loadWorkflows(root);
+      const refusals = await assemblyRefusals({
+        config,
+        workflows,
+        ...(opts.imageMap ? { images: opts.imageMap } : {}),
+        root,
+      });
+      return {
+        refusals,
+        workflows: workflows.map((w) => w.name),
+        activate: async (next) => {
+          swap(workflows, next);
+          opts.onPublish?.({ current: next, config, workflows });
+          // The restore a boot with no current Assembly deferred: the ports now read this
+          // Assembly's config, so a re-attached run provisions under it.
+          if (!restorePending) return;
+          try {
+            const outcome = await host.restore();
+            restorePending = false;
+            opts.onRestore?.({ assembly: next.hash, ...outcome });
+          } catch (err) {
+            // Left pending: the next publish, or the next boot, tries again. The publish itself
+            // landed, so it is not refused for this.
+            console.error(`restore after publish failed: ${err instanceof Error ? err.message : err}`);
+          }
+        },
+      };
+    },
+  });
+
+  // 4. Serve, authenticated (ADR-0013) — the tokens and key resolved above.
+  const auth = createAuthenticator({ instanceToken, signingKey, publishToken });
   // The Repos are read PER REQUEST, never snapshotted here: a cache the agent cloned minutes
   // after boot must show as present the next time anyone asks (ADR-0048/0051).
-  const app = createApp(host, auth, { dataPlane: opts.dataPlane, repos: opts.repos, fetchRepo: opts.fetchRepo });
+  const app = createApp(host, auth, {
+    dataPlane: opts.dataPlane,
+    repos: opts.repos,
+    fetchRepo: opts.fetchRepo,
+    assembly: door,
+    ...(opts.mounts ? { mounts: opts.mounts } : {}),
+  });
   const server = serve({ fetch: app.fetch, port: opts.port ?? 0, hostname });
   const port = await new Promise<number>((resolve) => {
     server.once("listening", () => resolve((server.address() as AddressInfo).port));
@@ -213,20 +334,15 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     host,
     url: `http://${hostname}:${port}`,
     instanceToken,
+    publishToken,
+    get assembly() {
+      return current;
+    },
+    ...(resolved.error !== undefined ? { assemblyError: resolved.error } : {}),
     workflows: host.workflows(),
     restored,
-    reload: async () => {
-      importGen++;
-      const before = new Set(host.workflows());
-      const found = await discoverWorkflows(opts.dir);
-      const foundNames = new Set(found.map((f) => f.name));
-      for (const { name, file } of found) await registerFile(name, file);
-      const removed: string[] = [];
-      for (const name of before) if (!foundNames.has(name)) (host.unregister(name), removed.push(name));
-      const added = [...foundNames].filter((n) => !before.has(n));
-      const updated = [...foundNames].filter((n) => before.has(n));
-      return { added, updated, removed, workflows: host.workflows() };
-    },
+    waiting,
+    admit: door.admit,
     close: async () => {
       // Before `server.close()`, not after: it waits for in-flight requests, and an observation
       // feed is in-flight until its watcher goes away. `host.close()` is what makes them go away.
@@ -247,10 +363,10 @@ async function discoverWorkflows(dir: string): Promise<Array<{ name: string; fil
 }
 
 /** Import one workflow module and take its Machine — the module contract (ADR-0011/0015):
- * `export const machine`. `gen` cache-busts a reload; 0 imports the module URL untouched. */
-async function importMachine(name: string, file: string, gen = 0): Promise<AnyStateMachine> {
-  const href = pathToFileURL(file).href + (gen ? `?v=${gen}` : "");
-  const mod: { machine?: unknown } = await import(href);
+ * `export const machine`. A published Assembly is a new directory, so its files are new URLs:
+ * the ESM module cache never serves an older Assembly's module, and needs no bust (ADR-0069). */
+async function importMachine(name: string, file: string): Promise<AnyStateMachine> {
+  const mod: { machine?: unknown } = await import(pathToFileURL(file).href);
   const machine = mod.machine as AnyStateMachine | undefined;
   if (!machine) {
     throw new Error(

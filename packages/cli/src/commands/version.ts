@@ -7,7 +7,8 @@
 // The one Instance verb that reads the Instance without asserting it: a Kit mismatch is a LINE here,
 // never the ADR-0056 refusal, because this is the verb you reach for when that refusal fires. Every
 // probe is best-effort and every answer is a report — exit 0 whatever it finds. Nothing here
-// computes what `jr2 up` computes: no bundle staging, no local content hash.
+// computes what `jr2 up` computes: no Assembly staging, no local hash. The deployed hash is the
+// current Assembly's, as the Orchestrator reports it on `/healthz` (ADR-0069).
 //
 // A REPORT verb, not a result verb: the human table goes to stdout, `--json` swaps in the one object.
 
@@ -16,7 +17,7 @@ import { parseArgs } from "node:util";
 import { IMAGES_CONFIGMAP, IMAGES_KEY, INSTANCE_SECRET, loadConfig, type ImageRefs } from "@jr2/orchestrator";
 import { detectKitCheckout, KIT_IMAGE_HOME } from "../build.ts";
 import type { InstanceIdentity } from "../client.ts";
-import { compareVersions, LABEL_HASH, LABEL_VERSION, OPERATOR_DEPLOYMENT, OPERATOR_NAMESPACE } from "../deploy.ts";
+import { compareVersions, LABEL_VERSION, OPERATOR_DEPLOYMENT, OPERATOR_NAMESPACE } from "../deploy.ts";
 import { handedOffFrom } from "../handoff.ts";
 import { TARGET_ARGS, targetOptions, type TargetOptions } from "../instance.ts";
 import { checkKitVersion, CLI_ROOT, CLI_VERSION } from "../kit-version.ts";
@@ -28,7 +29,7 @@ import { findRoot } from "../root.ts";
 export type Copy = { version: string; path: string };
 
 /** The image map as `jr2 up` wrote it and pods read it (ADR-0038). */
-type Images = Partial<ImageRefs & { operator?: string }>;
+type Images = Partial<ImageRefs & { operator?: string; orchestrator?: string }>;
 
 /** The comparison between the local kit line and the orchestrator line — the verdict the two
  * halves exist to produce. `unknown` when either side is missing. */
@@ -72,9 +73,10 @@ export type VersionReport = {
   skew?: Skew;
 };
 
-/** What the pod answers on `/healthz`, plus what the Deployment records — two facts, because a
- * rollout that has not landed leaves them disagreeing. Or why neither could be read. */
-type Orchestrator = { version?: string; hash?: string; deploymentHash?: string; image?: string } | { error: string };
+/** What the pod answers on `/healthz` — its Kit version and the hash of its current Assembly
+ * (ADR-0069), absent while it holds none — plus the image the Deployment runs. Or why neither
+ * could be read. */
+type Orchestrator = { version?: string; hash?: string; image?: string } | { error: string };
 
 export async function version(args: string[], io: Io): Promise<number> {
   const { values } = parseArgs({
@@ -191,7 +193,7 @@ async function probeCluster(io: Io, opts: TargetOptions, namespace: string): Pro
   }
 
   const orch = await admin.getJson({ kind: "deployment", name: ORCHESTRATOR_SERVICE, namespace, ...ctx });
-  const recorded = { deploymentHash: orch?.metadata.labels?.[LABEL_HASH], image: firstImage(orch) };
+  const recorded = { image: firstImage(orch) };
   let fwd: { url: string; close: () => void } | undefined;
   try {
     fwd = await kube.portForward({ namespace, service: ORCHESTRATOR_SERVICE, port: ORCHESTRATOR_PORT, ...ctx });
@@ -289,10 +291,9 @@ function deployedRows(d: NonNullable<VersionReport["deployed"]>, r: VersionRepor
   else if ("error" in o) rows.push(["orchestrator", o.error]);
   else {
     const parts = [o.version ?? "(no version reported)"];
-    if (o.hash) parts.push(`hash ${o.hash}`);
-    if (o.deploymentHash && o.hash && o.deploymentHash !== o.hash) {
-      parts.push(`(rollout incomplete: deployment records ${o.deploymentHash})`);
-    }
+    // The current Assembly (ADR-0069). None is a state the Orchestrator serves in: volume loss, or
+    // a Kit image rolled before its first publish.
+    parts.push(o.hash ? `assembly ${o.hash}` : "no Assembly — `jr2 up` publishes");
     if (o.image) parts.push(o.image);
     rows.push(["orchestrator", parts.join("  ")]);
   }
@@ -323,7 +324,11 @@ function skewSentence(r: VersionReport): string | undefined {
       );
     case "same":
       return r.instance?.mode === "checkout"
-        ? "same version; checkout builds are content-addressed — compare the hash against `jr2 up`'s line"
+        ? // A kit source edit moves the Kit image's ref and not the Assembly hash: the Assembly
+          // strips the Kit closure (ADR-0069). So the image is what shows kit skew here.
+          "same version; checkout builds are content-addressed — compare the orchestrator image against " +
+            "`jr2 up`'s `orchestrator image:` line for the kit, and the assembly hash against its `assembly:` " +
+            "line for the Instance"
         : undefined;
     default:
       return undefined;

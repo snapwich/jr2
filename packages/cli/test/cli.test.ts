@@ -337,16 +337,30 @@ test("`jr2 status` with no run reports the data plane and every Repo, failing no
   assert.equal(err(), "→ http://test\n", "stderr carries the target line and nothing of the table");
 
   // `--json`: the object, nothing else.
+  // The current Assembly rides the same report (ADR-0069), read off the open `GET /assembly`.
+  const view = {
+    kitVersion: "0.3.0",
+    current: { hash: "a1b2c3d4e5f6", kitVersion: "0.3.0", workflows: ["ping"], source: "published" },
+    held: [{ hash: "a1b2c3d4e5f6", kitVersion: "0.3.0", runs: ["r1", "r2"] }],
+  };
   const json = mkIo({
     env: { JR2_URL: "http://test" },
-    fetch: () => Promise.resolve(Response.json({ dataPlane: true, repos })),
+    fetch: (url) =>
+      Promise.resolve(Response.json(String(url).endsWith("/assembly") ? view : { dataPlane: true, repos })),
   });
   assert.equal(await main(["status", "--json"], json.io), 0);
   assert.deepEqual(
     JSON.parse(json.out().trim()),
-    { dataPlane: true, repos },
-    "the switch and the Repos, as one object",
+    { assembly: view, dataPlane: true, repos },
+    "the Assembly, the switch and the Repos, as one object",
   );
+  const table = mkIo({
+    env: { JR2_URL: "http://test" },
+    fetch: (url) =>
+      Promise.resolve(Response.json(String(url).endsWith("/assembly") ? view : { dataPlane: true, repos })),
+  });
+  assert.equal(await main(["status"], table.io), 0);
+  assert.match(table.out(), /^assembly: a1b2c3d4e5f6 \(kit v0\.3\.0\), 2 live runs hold it$/m);
   assert.equal(json.err(), "→ http://test\n");
 
   // Freshness degrades, absence does not (ADR-0004/0051): a fetch that fails on a WARM cache is
@@ -367,7 +381,8 @@ test("`jr2 status` with no run reports the data plane and every Repo, failing no
     fetch: () => Promise.resolve(Response.json({ dataPlane: false, repos: [] })),
   });
   assert.equal(await main(["status"], none.io), 0);
-  assert.match(none.out(), /no data plane \(no registered Machine composes a Sandbox\)/);
+  assert.match(none.out(), /^data plane: none — this Orchestrator runs outside a cluster/m);
+  assert.match(none.out(), /^assembly: none — `jr2 up` publishes$/m, "no current Assembly is a line too");
 });
 
 test("`jr2 version` is a report verb: a table on stdout, `--json` the object, exit 0 either way", async () => {

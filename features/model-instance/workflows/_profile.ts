@@ -1,6 +1,6 @@
 // The endpoint profile the @model tier runs against (ADR-0066), read from `model-endpoint.json`
 // at the instance root — a file the fixture MATERIALIZES from `features/model-endpoints/<name>.json`
-// before every converge (World.setupModel), gitignored, and shipped in the instance image by the
+// before every converge (World.setupModel), gitignored, and shipped in the Assembly by the
 // package's `files:` list. Read here, at load, rather than from env: an env read in a definition
 // is `undefined` in the pod (the kind config says why), and the in-cluster Orchestrator must see
 // exactly the values the host's `jr2 up` did.

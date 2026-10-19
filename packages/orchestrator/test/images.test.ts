@@ -2,7 +2,7 @@
 // consults. Three claims worth pinning here rather than at the port — the NESTING (a user image may
 // legitimately be called "harness"), the refusal to fall back onto a published tag when the map is
 // missing (ADR-0027/0038's "no eject hatch" made mechanical rather than merely stated), and the
-// CONTENT DIGEST that lets the host at `jr2 up` and the baked Orchestrator name the same context
+// CONTENT DIGEST that lets the host at `jr2 up` and the Orchestrator name the same context
 // without a path table.
 
 import { test } from "node:test";
@@ -105,7 +105,7 @@ test("the two origins are told apart by SHAPE alone: a `file:` URL is a context,
 });
 
 test("imageContextDigest: the whole directory, no exclusions — and the SAME digest from another path", async () => {
-  // The claim ADR-0049 rides on: the host at `jr2 up` and the baked Orchestrator hash the same tree
+  // The claim ADR-0049 rides on: the host at `jr2 up` and the Orchestrator hash the same tree
   // at two different absolute paths and must agree, or the digest key finds nothing.
   const files = { Dockerfile: "FROM node:24-slim\n", "dist/b.txt": "b", "node_modules/x/i.js": "x" };
   const a = await mkContext(files);
@@ -209,14 +209,14 @@ test("a context the last converge did not build fails at provision, naming `jr2 
   );
 });
 
-test("a context the Orchestrator's bundle does not hold names the path, not a cluster fault", async () => {
+test("a context the current Assembly does not hold names the path, not a cluster fault", async () => {
   // A packaging bug, not a converge one: a `file:` image must travel WITH its module.
   await assert.rejects(
     () => resolveSandboxImage(refs(), pathToFileURL(join(tmpdir(), "jr2-no-such-context")).href),
     (err: Error) => {
       assert.match(err.message, /cannot be read/);
       assert.match(err.message, /jr2-no-such-context/);
-      assert.match(err.message, /node_modules/, "names where it must have travelled to");
+      assert.match(err.message, /the current Assembly/, "names where it must have travelled to");
       return true;
     },
   );

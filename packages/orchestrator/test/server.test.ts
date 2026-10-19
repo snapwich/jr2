@@ -1,4 +1,4 @@
-// Server-entrypoint tests (ADR-0019/0010): the process the instance image runs, and the e2e tier's
+// Server-entrypoint tests (ADR-0019/0010): the process the Orchestrator Kit image runs, and the e2e tier's
 // per-scenario fixture. `serverMain` is the testable core — the `bin/server.ts` shebang only wires
 // process env/cwd/signals onto it. Driven in-process on an ephemeral port, like instance.test.ts.
 
@@ -12,29 +12,54 @@ import { serverMain } from "../src/server.ts";
 import { repoIdentity } from "../src/repo-identity.ts";
 import { kubeClient } from "../src/kube-client.ts";
 import { fakeKube, type FakeCall, type FakeKube } from "./_fake-kube.ts";
+import { packAssembly } from "../src/assembly-tar.ts";
+import { KIT_VERSION } from "../src/config.ts";
+import { assemblyHash } from "../src/content-hash.ts";
+import { EMPTY_HELD, workspaceHeldPod } from "../src/held-secrets.ts";
+import { kubeRepos } from "../src/repos.ts";
+import { kubeSandbox } from "../src/sandbox-kube.ts";
+import { watchSandboxes } from "../src/sandbox-watch.ts";
+import { FIXTURE_ASSEMBLY, publishTree, scratchInstance } from "./_assembly.ts";
 
-// The same fixture instance folder instance.test.ts serves (holds `workflows/echo.ts`).
-const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
 const KEY_B64 = Buffer.alloc(32, 7).toString("base64");
 
-test("boots the instance from env and announces its address as one JSON line", async () => {
-  const lines: string[] = [];
-  const inst = await serverMain({
-    dir: fixtureDir,
-    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64 },
-    announce: (line) => lines.push(line),
+/** `serverMain` on `dir`, with the env every test here shares plus `env`. */
+function boot(
+  dir: string,
+  env: Record<string, string> = {},
+  more: { announce?: (line: string) => void; kube?: ReturnType<typeof kubeClient> } = {},
+) {
+  return serverMain({
+    dir,
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, ...env },
+    announce: more.announce ?? (() => {}),
+    ...(more.kube ? { kube: more.kube } : {}),
   });
+}
+
+test("boots the instance from env and announces its address and its current Assembly as one JSON line", async () => {
+  // The Workflows come through the door (ADR-0069): the first boot has none, a publish brings
+  // `echo`, and the next boot serves it from `current`.
+  const dir = await scratchInstance("server");
+  const first = await boot(dir);
+  const hash = await publishTree(first, dir, FIXTURE_ASSEMBLY);
+  await first.close();
+
+  const lines: string[] = [];
+  const inst = await boot(dir, {}, { announce: (line) => lines.push(line) });
   try {
     // The announcement is the fixture's (and an operator's) discovery seam: parseable, first line.
-    const parsed = JSON.parse(lines[0]!) as { url: string; workflows: string[] };
+    const parsed = JSON.parse(lines[0]!) as { url: string; workflows: string[]; assembly: string };
     assert.equal(parsed.url, inst.url);
     assert.deepEqual(parsed.workflows, ["echo"]);
+    assert.equal(parsed.assembly, hash);
 
     // It serves, authenticated with the supplied token (the deployed Secret's credential).
     const res = await fetch(`${inst.url}/runs`, { headers: { authorization: "Bearer tok" } });
     assert.equal(res.status, 200);
   } finally {
     await inst.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -54,11 +79,11 @@ test("JR2_SIGNING_KEY from env keeps the key out of the pod filesystem", async (
   }
 });
 
-/** An instance folder whose one workflow is a `workspace()` — a registered Machine that composes
- * a Sandbox, which is the data-plane switch (ADR-0051). The body is trivial and no run needs to
- * reach a cluster: what the boot decides off this Machine is the claim. Imported by absolute path,
- * like the bootstrap fixture: a temp folder resolves no bare `@jr2/orchestrator`. */
-async function mkWorkspaceInstance(): Promise<string> {
+/** An Assembly tree whose one workflow is a `workspace()` — a registered Machine that composes
+ * a Sandbox (ADR-0051). The body is trivial and no run needs to reach a cluster: what the process
+ * decides off this Machine is the claim. Imported by absolute path: a temp folder resolves no bare
+ * `@jr2/orchestrator`. */
+async function mkWorkspaceAssembly(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "jr2-server-ws-"));
   await writeFile(join(dir, "jr2.config.ts"), `export default { name: "ws" };\n`);
   await mkdir(join(dir, "workflows"), { recursive: true });
@@ -92,25 +117,33 @@ async function until(api: FakeKube, want: (call: FakeCall) => boolean): Promise<
   throw new Error("the boot never made the call");
 }
 
-/** The announce lines after the first — the boot's Repo lines arrive after serving. */
+/** Boot an empty deployed instance on `kube`, then publish `src` (ADR-0069): the Repo pass and the
+ * Sandbox watch follow the publish. */
+async function bootPublished(
+  src: string,
+  kube: ReturnType<typeof kubeClient>,
+  announce: (line: string) => void = () => {},
+  env: Record<string, string> = { JR2_NAMESPACE: "ws" },
+) {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-server-inst-"));
+  const inst = await boot(dir, env, { announce, kube });
+  await publishTree(inst, dir, src);
+  return { inst, dir };
+}
+
+/** The announce lines after the first — the Repo lines arrive after serving. */
 async function announcedRepos(lines: string[], count: number): Promise<Array<Record<string, unknown>>> {
   for (let i = 0; i < 200 && lines.length < 1 + count; i++) await new Promise((r) => setTimeout(r, 10));
   return lines.slice(1).map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
-test("a registered Machine composing a Sandbox + JR2_NAMESPACE → the data plane is wired (ADR-0051)", async () => {
-  // The switch is read off the WALK, not off config: nothing in jr2.config.ts says "this instance
-  // has Workspaces". Deployed (JR2_NAMESPACE set), the cluster backend is built and the instance
-  // reports a data plane. The blast pattern ADR-0038 chose still holds: no image map is mounted
-  // here, and the boot serves anyway — only a provision would fail.
-  const dir = await mkWorkspaceInstance();
+test("a published Machine composing a Sandbox + JR2_NAMESPACE → the data plane serves it (ADR-0051)", async () => {
+  // Deployed (JR2_NAMESPACE set), the cluster backend is built and the instance reports a data
+  // plane. The blast pattern ADR-0038 chose still holds: no image map is mounted here, and the
+  // process serves anyway — only a provision would fail.
+  const src = await mkWorkspaceAssembly();
   const { api, kube } = fakeCluster();
-  const inst = await serverMain({
-    dir,
-    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "ws" },
-    announce: () => {},
-    kube,
-  });
+  const { inst, dir } = await bootPublished(src, kube);
   try {
     const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean; repos: unknown[] };
     assert.equal(repos.dataPlane, true);
@@ -123,7 +156,7 @@ test("a registered Machine composing a Sandbox + JR2_NAMESPACE → the data plan
       ),
       "GET /repos asked the namespace's Repo resources",
     );
-    // The one watch is up from boot (ADR-0063): its first list is the restore reconcile.
+    // The one watch is up once the Assembly composes a Sandbox (ADR-0063).
     await until(api, (c) => c.target === "sandboxes" && c.query.watch === "true" && c.namespace === "ws");
     // And the pod's route out is wired to the same cluster (ADR-0053): the ask reads the Sandbox
     // first, to see whether the pod mounts the Repo at all. There is none, so it is refused —
@@ -140,7 +173,7 @@ test("a registered Machine composing a Sandbox + JR2_NAMESPACE → the data plan
     );
   } finally {
     await inst.close();
-    await rm(dir, { recursive: true, force: true });
+    for (const d of [dir, src]) await rm(d, { recursive: true, force: true });
   }
 });
 
@@ -148,15 +181,10 @@ test("the boot creates one bound Repo resource per identity its Machines bind, a
   // "The Orchestrator creates Repo CRs; it does not sync them": statically known repositories are
   // known (probed) before a run can ask. After serving, never awaited — one line per Repo in ADR-0048's
   // shape, so a human tailing pod logs sees what the cluster was told.
-  const dir = await mkWorkspaceInstance();
+  const src = await mkWorkspaceAssembly();
   const lines: string[] = [];
   const { api, kube } = fakeCluster();
-  const inst = await serverMain({
-    dir,
-    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "ws" },
-    announce: (line) => lines.push(line),
-    kube,
-  });
+  const { inst, dir } = await bootPublished(src, kube, (line) => lines.push(line));
   try {
     const { key, identity } = repoIdentity("https://example.test/app.git");
     assert.deepEqual(await announcedRepos(lines, 1), [{ repo: key, url: "https://example.test/app.git", bound: true }]);
@@ -172,7 +200,7 @@ test("the boot creates one bound Repo resource per identity its Machines bind, a
     assert.equal(identity, "example.test/app");
   } finally {
     await inst.close();
-    await rm(dir, { recursive: true, force: true });
+    for (const d of [dir, src]) await rm(d, { recursive: true, force: true });
   }
 });
 
@@ -180,17 +208,12 @@ test("a boot finding its bound Repo already there RESTATES the Machine's spec �
   // A redeploy: the resource stands from the last boot. The boot binds — one merge patch carrying
   // the walk's url — where a provision would only move the clock; so a url or credential moved in
   // jr2.config.ts reaches the cache at the next `jr2 up`, and never from a run.
-  const dir = await mkWorkspaceInstance();
+  const src = await mkWorkspaceAssembly();
   const lines: string[] = [];
   const { api, kube } = fakeCluster();
   const { key } = repoIdentity("https://example.test/app.git");
   api.seed("repos", { metadata: { name: key }, spec: { url: "https://old.example/app.git" } } as never);
-  const inst = await serverMain({
-    dir,
-    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "ws" },
-    announce: (line) => lines.push(line),
-    kube,
-  });
+  const { inst, dir } = await bootPublished(src, kube, (line) => lines.push(line));
   try {
     assert.deepEqual(await announcedRepos(lines, 1), [{ repo: key, url: "https://example.test/app.git", bound: true }]);
     const patch = api.calls.find((c) => c.method === "PATCH" && c.target === `repos/${key}`);
@@ -200,12 +223,12 @@ test("a boot finding its bound Repo already there RESTATES the Machine's spec �
     assert.deepEqual(body.metadata?.labels, { "jr2.dev/bound": "true" });
   } finally {
     await inst.close();
-    await rm(dir, { recursive: true, force: true });
+    for (const d of [dir, src]) await rm(d, { recursive: true, force: true });
   }
 });
 
 test("a Repo the cluster refuses is announced as an error, and the process serves regardless (ADR-0048)", async () => {
-  const dir = await mkWorkspaceInstance();
+  const src = await mkWorkspaceAssembly();
   const lines: string[] = [];
   const { api, kube } = fakeCluster();
   api.refuse((c) =>
@@ -213,12 +236,7 @@ test("a Repo the cluster refuses is announced as an error, and the process serve
       ? api.status(403, "Forbidden", "repos.core.jr2.dev is forbidden")
       : undefined,
   );
-  const inst = await serverMain({
-    dir,
-    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "ws" },
-    announce: (line) => lines.push(line),
-    kube,
-  });
+  const { inst, dir } = await bootPublished(src, kube, (line) => lines.push(line));
   try {
     const [line] = await announcedRepos(lines, 1);
     assert.equal(line!.repo, repoIdentity("https://example.test/app.git").key);
@@ -229,20 +247,18 @@ test("a Repo the cluster refuses is announced as an error, and the process serve
     assert.equal(repos.dataPlane, true);
   } finally {
     await inst.close();
-    await rm(dir, { recursive: true, force: true });
+    for (const d of [dir, src]) await rm(d, { recursive: true, force: true });
   }
 });
 
 test("the same Machine with NO namespace → no port, and a workspace() run faults 'no Sandbox backend'", async () => {
   // A Workspace is always a real Sandbox (ADR-0012): a host-booted process has no cluster to drive,
   // so the switch stays off and the run says exactly why — durably, on the run, naming `jr2 up`.
-  const dir = await mkWorkspaceInstance();
-  const inst = await serverMain({
-    dir,
-    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64 },
-    announce: () => {},
-  });
+  const src = await mkWorkspaceAssembly();
+  const dir = await mkdtemp(join(tmpdir(), "jr2-server-inst-"));
+  const inst = await boot(dir);
   try {
+    await publishTree(inst, dir, src);
     const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean };
     assert.equal(repos.dataPlane, false);
     const started = (await (
@@ -263,46 +279,76 @@ test("the same Machine with NO namespace → no port, and a workspace() run faul
     assert.match(final?.fault ?? "", /`jr2 up`/);
   } finally {
     await inst.close();
+    for (const d of [dir, src]) await rm(d, { recursive: true, force: true });
+  }
+});
+
+test("deployed, the data plane is wired even when no registered Machine composes a Sandbox (ADR-0069)", async () => {
+  // A publish can bring the first `workspace()`, so the boot no longer decides from the walk.
+  // Wiring a client is free: nothing is dialed for Sandboxes until a port first asks, and the
+  // Sandbox watch stays unstarted on a cluster that may have no operator.
+  const { api, kube } = fakeCluster();
+  const dir = await scratchInstance("server");
+  const inst = await boot(dir, { JR2_NAMESPACE: "echo" }, { kube });
+  try {
+    await publishTree(inst, dir, FIXTURE_ASSEMBLY);
+    const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean; repos: unknown[] };
+    assert.equal(repos.dataPlane, true);
+    assert.ok(
+      api.calls.some(
+        (c) => c.method === "GET" && c.target === "repos" && c.namespace === "echo" && !c.query.labelSelector,
+      ),
+      "GET /repos read the namespace's Repo resources through",
+    );
+    assert.deepEqual(
+      api.calls.filter((c) => c.target === "sandboxes"),
+      [],
+      "no Sandbox watch on a process whose Assembly composes no Sandbox",
+    );
+  } finally {
+    await inst.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("no registered Machine composes a Sandbox → no data plane, even deployed", async () => {
+test("deployed on a cluster with no Repo kind, GET /repos answers no Repos, not a 500 (ADR-0069)", async () => {
+  // The data plane is wired on every deployed boot, so `GET /repos` asks the cluster even where
+  // `operator.manage: false` left no operator, and `jr2 status` reads it.
   const { api, kube } = fakeCluster();
-  const inst = await serverMain({
-    dir: fixtureDir,
-    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "echo" },
-    announce: () => {},
-    kube,
-  });
+  api.refuse((c) =>
+    c.target === "repos" ? api.status(404, "NotFound", "the server could not find the requested resource") : undefined,
+  );
+  const dir = await mkdtemp(join(tmpdir(), "jr2-server-inst-"));
+  const inst = await boot(dir, { JR2_NAMESPACE: "echo" }, { kube });
   try {
-    const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean; repos: unknown[] };
-    assert.deepEqual(repos, { dataPlane: false, repos: [] });
-    // …and `GET /repos` answered that WITHOUT reading the cluster: no data plane, no read-through —
-    // and no Sandbox watch either, since nothing here composes a Sandbox.
-    assert.deepEqual(
-      api.calls.filter((c) => c.method === "GET" && c.query.labelSelector !== "jr2.dev/bound=true"),
-      [],
-    );
+    const res = await fetch(`${inst.url}/repos`, authed);
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.deepEqual(await res.json(), { dataPlane: true, repos: [] });
   } finally {
     await inst.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
 test("an Instance that stopped composing a Sandbox unlabels the Repos its last deploy bound (ADR-0051)", async () => {
   // The last `workspace()` dropped from the Machines: nothing binds the Repos the previous deploys
   // labeled, and no cache agent is converged for them any more (`jr2 up` deletes the DaemonSet).
-  // The boot still reconciles, because the bound label is `jr2 gc`'s only "keep this" — left on,
-  // the resources are uncollectable forever and nothing ever evicts the node caches behind them.
+  // The publish still reconciles, because the bound label is `jr2 gc`'s only "keep this" — left
+  // on, the resources are uncollectable forever and nothing ever evicts the node caches behind them.
   const { api, kube } = fakeCluster();
   api.seed("repos", { metadata: { name: "app-11111111", labels: { "jr2.dev/bound": "true" } } });
-  const inst = await serverMain({
-    dir: fixtureDir,
-    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "echo" },
-    announce: () => {},
-    kube,
-  });
+  const dir = await scratchInstance("server");
+  const inst = await boot(dir, { JR2_NAMESPACE: "echo" }, { kube });
   try {
+    // A boot with no current Assembly runs no Repo pass: an empty walk there is "unknown", and an
+    // unlabel would let `jr2 gc` evict every Repo until the publish.
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(
+      api.calls.filter((c) => c.target.startsWith("repos")),
+      [],
+      "no Repo pass before the first publish",
+    );
+    await publishTree(inst, dir, FIXTURE_ASSEMBLY);
     const unlabel = await until(api, (c) => c.method === "PATCH");
     assert.equal(unlabel.target, "repos/app-11111111");
     assert.deepEqual(
@@ -319,5 +365,180 @@ test("an Instance that stopped composing a Sandbox unlabels the Repos its last d
     assert.equal(api.calls.filter((c) => c.method === "PATCH").length, 1);
   } finally {
     await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Repo passes run in series: a publish's pass never finishes before the boot's (ADR-0051, ADR-0069)", async () => {
+  // A boot pass for Assembly A, held up at the cluster, then a publish of B that binds no Repo.
+  // Run side by side, A's late reconcile would restate what B stopped binding. In series, B's
+  // reconcile runs last and has the last word.
+  const src = await mkWorkspaceAssembly();
+  const dir = await mkdtemp(join(tmpdir(), "jr2-server-inst-"));
+  {
+    const first = await boot(dir);
+    await publishTree(first, dir, src);
+    await first.close();
+  }
+  const { api, kube } = fakeCluster();
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const realFetch = api.fetch;
+  let holding = true;
+  const slow: typeof api.fetch = async (input, init) => {
+    if (holding && String(input).includes("/repos")) await held;
+    return realFetch(input, init);
+  };
+  const slowKube = kubeClient({ baseUrl: "https://kube.test", fetch: slow, token: async () => api.token });
+  const lines: string[] = [];
+  const inst = await boot(dir, { JR2_NAMESPACE: "ws" }, { kube: slowKube, announce: (l) => lines.push(l) });
+  try {
+    const empty = await mkdtemp(join(tmpdir(), "jr2-server-empty-"));
+    await writeFile(join(empty, "jr2.config.ts"), `export default { name: "ws" };\n`);
+    await publishTree(inst, dir, empty);
+    holding = false;
+    release();
+    // The last reconcile is B's: it keeps nothing, so the boot's bound Repo is unlabeled last.
+    const { key } = repoIdentity("https://example.test/app.git");
+    const unlabel = await until(api, (c) => c.method === "PATCH" && c.target === `repos/${key}` && !c.body?.spec);
+    const bind = api.calls.find((c) => c.method === "POST" && c.target === "repos");
+    assert.ok(bind, "the boot's pass bound the Repo");
+    assert.ok(api.calls.indexOf(bind!) < api.calls.indexOf(unlabel), "the publish's pass ran after the boot's");
+    await rm(empty, { recursive: true, force: true });
+  } finally {
+    release();
+    await inst.close();
+    for (const d of [dir, src]) await rm(d, { recursive: true, force: true });
+  }
+});
+
+test("a provision on a cluster with no operator fails naming the fix, at the first Repo write (ADR-0069)", async () => {
+  // The data plane is always wired, but the operator serves the Repo and Sandbox kinds. With no
+  // operator, the API server answers 404 on the first create of either, and a Workspace that names
+  // a Repo reaches the Repo create first. The real Repo port is used, so this is that write.
+  const { api, kube } = fakeCluster();
+  const missing = () => api.status(404, "NotFound", "the server could not find the requested resource");
+  api.refuse((c) =>
+    (c.method === "POST" && c.target === "repos") ||
+    (c.target.startsWith("sandboxes/") && c.contentType === "application/apply-patch+yaml")
+      ? missing()
+      : undefined,
+  );
+  const scratch = await mkdtemp(join(tmpdir(), "jr2-server-noop-"));
+  const imagesPath = join(scratch, "images.json");
+  await writeFile(imagesPath, JSON.stringify({ harness: "jr2-harness:h", custodian: "envoy:c", sandbox: {} }));
+  await writeFile(
+    join(scratch, `held-${workspaceHeldPod({ workflow: "w", route: [] })}.json`),
+    JSON.stringify(EMPTY_HELD),
+  );
+  const watch = watchSandboxes(kube, { namespace: "ws", backoffMs: 5, log: () => {} });
+  const repos = kubeRepos({
+    namespace: "ws",
+    credentials: () => [],
+    cloneSecrets: async () => new Set(),
+    client: kube,
+  });
+  const port = kubeSandbox({
+    watch,
+    imagesPath,
+    heldDir: scratch,
+    signingKey: Buffer.from("k"),
+    namespace: "ws",
+    client: kube,
+    repos,
+  });
+  const req = (repos: unknown[]) => ({ name: "sb-1", runId: "run-1", workflow: "w", route: [], repos }) as never;
+  const pointed =
+    /no operator on this cluster — install it, or remove `operator\.manage: false` so `jr2 up` deploys it/;
+  try {
+    await assert.rejects(
+      port.place(req([{ slot: "app", url: "https://example.test/app.git", perRun: false }]), { onWait: () => {} }),
+      (err: Error) => {
+        assert.match(err.message, pointed);
+        assert.match(err.message, /the Repo kind/);
+        return true;
+      },
+    );
+    // A Workspace with no Repo reaches the Sandbox create, and says the same.
+    await assert.rejects(port.place(req([]), { onWait: () => {} }), (err: Error) => {
+      assert.match(err.message, pointed);
+      assert.match(err.message, /the Sandbox kind/);
+      return true;
+    });
+  } finally {
+    watch.stop();
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+/** An Assembly whose one Workflow binds its Repo Slot PER RUN, so the provision checks the url
+ * against `git.credentials`, the fence (ADR-0051). `credentials` goes into its `jr2.config.ts`. */
+async function mkFencedAssembly(credentials: Array<{ match: string }>): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-server-fence-"));
+  await writeFile(
+    join(dir, "jr2.config.ts"),
+    `export default ${JSON.stringify({ name: "ws", git: { credentials } })};\n`,
+  );
+  await mkdir(join(dir, "workflows"), { recursive: true });
+  const src = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "index.ts")).href;
+  await writeFile(
+    join(dir, "workflows", "ws.ts"),
+    `import { setup } from ${JSON.stringify(import.meta.resolve("xstate"))};\n` +
+      `import { workspace } from ${JSON.stringify(src)};\n` +
+      `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: () => "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  return dir;
+}
+
+/** Start a `ws` run and wait for its fault. */
+async function faultOf(url: string): Promise<string> {
+  const started = (await (
+    await fetch(`${url}/workflows/ws/runs`, {
+      method: "POST",
+      headers: { ...authed.headers, "content-type": "application/json" },
+      body: "{}",
+    })
+  ).json()) as { runId: string };
+  let final: { status: string; fault?: string } | undefined;
+  for (let i = 0; i < 300 && final?.status !== "error"; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+    final = (await (await fetch(`${url}/runs/${started.runId}`, authed)).json()) as typeof final;
+  }
+  assert.equal(final?.status, "error");
+  return final?.fault ?? "";
+}
+
+test("after a publish, a provision reads the NEW Assembly's config: the fence moves (ADR-0069)", async () => {
+  // Publish an Assembly whose config admits no per-run url: the provision refuses it at the fence.
+  // Publish an Assembly whose config admits it: the next provision passes the fence and fails
+  // later, at the image map no test mounts. The ports read the config through a getter, so no
+  // port was rebuilt and no pod rolled. The second publish crosses the HTTP door, as `jr2 up` does.
+  const fenced = await mkFencedAssembly([]);
+  const { kube } = fakeCluster();
+  const { inst, dir } = await bootPublished(fenced, kube, () => {}, { JR2_NAMESPACE: "ws", JR2_PUBLISH_TOKEN: "pub" });
+  const next = await mkFencedAssembly([{ match: "example.test/" }]);
+  try {
+    assert.equal(inst.publishToken, "pub");
+    assert.match(await faultOf(inst.url), /refuses the per-run repo/);
+
+    const res = await fetch(`${inst.url}/assembly`, {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer pub",
+        "content-type": "application/x-tar",
+        "jr2-kit-version": KIT_VERSION,
+        "jr2-assembly-hash": await assemblyHash(next),
+      },
+      body: new Uint8Array(await packAssembly(next)),
+    });
+    assert.equal(res.status, 200, await res.clone().text());
+
+    const fault = await faultOf(inst.url);
+    assert.doesNotMatch(fault, /refuses the per-run repo/);
+    assert.match(fault, /no image map/);
+  } finally {
+    await inst.close();
+    for (const d of [dir, fenced, next]) await rm(d, { recursive: true, force: true });
   }
 });

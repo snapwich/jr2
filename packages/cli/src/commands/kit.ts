@@ -33,9 +33,9 @@ const exec = promisify(execFile);
 
 const USAGE = `usage: jr2 kit push <registry>
 
-  mirror the v${KIT_VERSION} kit images (harness, operator) from their canonical home, and the
-  Custodian's pinned Envoy from its own, into <registry>, for a cluster whose \`kitRegistry\`
-  names it (ADR-0044, ADR-0059)`;
+  mirror the v${KIT_VERSION} kit images (harness, operator, orchestrator) from their canonical
+  home, and the Custodian's pinned Envoy from its own, into <registry>, for a cluster whose
+  \`kitRegistry\` names it (ADR-0044, ADR-0059, ADR-0069)`;
 
 /** Run one `docker` invocation, rejecting on a non-zero exit. The seam this command is tested
  * through: the claims are which argv each ref produces and what a failure means, and both are

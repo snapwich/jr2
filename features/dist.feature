@@ -8,9 +8,10 @@ Feature: the kit, as a user installs it
   Only the REGISTRIES are local — the same rule ADR-0038 applies to the model provider — and there are
   two of them, because the product touches two (ADR-0044): npm, and the home its Kit images are pulled
   from. The publish, the `npm pack`, the `files:` list, the inter-package resolution, the exact-version
-  pin `jr2 init` writes, the frozen install the image bundle runs from the lockfile, the published Kit
-  image tags an installed kit deploys instead of building, and the node PULL that fetches them are all
-  the real machinery. A failure here is a release bug, in the literal sense: it is what the first user
+  pin `jr2 init` writes, the frozen install the Assembly is staged from, the strip of the Kit closure,
+  the publish to the running Orchestrator (`PUT /assembly`, ADR-0069), the published Kit image tags an
+  installed kit deploys instead of building, and the node PULL that fetches them are all the real
+  machinery. A failure here is a release bug, in the literal sense: it is what the first user
   would have hit.
 
   Opt-in (`@dist`, excluded from the default suite) because it needs infrastructure and a network on
@@ -24,18 +25,19 @@ Feature: the kit, as a user installs it
   Rule: a globally installed CLI converges a standalone instance
     ADR-0009's product claim, and the one this tier exists to prove. Each package manager is its own
     scenario because the manager is not incidental: it decides the lockfile, and the lockfile decides
-    which frozen install `jr2 up` runs inside the bundle (ADR-0043). npm and pnpm here; bun rides the
-    dispatch's unit coverage until this tier needs it.
+    which frozen install `jr2 up` runs to stage the Assembly (ADR-0043, ADR-0069). npm and pnpm here;
+    bun rides the dispatch's unit coverage until this tier needs it.
 
     Both scenarios also close ADR-0044's claim, since both converge anyway: an installed kit builds
-    no Kit image, so the three it deploys must arrive by pull from `kitRegistry` — the key a
-    self-hosted, air-gapped, or mirror-only cluster sets, and the key this cluster sets at the local
-    registry standing in for the canonical home.
+    no Kit image, so every one it deploys, the Orchestrator's own included (ADR-0069), must arrive by
+    pull from `kitRegistry` — the key a self-hosted, air-gapped, or mirror-only cluster sets, and the
+    key this cluster sets at the local registry standing in for the canonical home.
 
     Scenario: an npm instance in a temp dir converges and runs
       Given a standalone instance scaffolded by the installed jr2
       When I install its dependencies with "npm"
-      # `npm ci --omit=dev` in the staged bundle, from the lockfile npm just wrote.
+      # `npm ci --omit=dev` in the staged copy, from the lockfile npm just wrote; the stripped tree
+      # is the Assembly `jr2 up` publishes.
       And I converge it onto the cluster
       # ADR-0056 as amended, from the only tier with a real global and a real local: the global on
       # PATH handed off to the Instance's own @jr2/cli, and the report names both — plus the
@@ -45,6 +47,10 @@ Feature: the kit, as a user installs it
       Then stdout is the terminal status with reply "pong: dist"
       And the command exits 0
       And the cluster pulled its Kit images from the local registry
+      # The door, from the installed kit (ADR-0069): the strip left no Kit package in the Assembly,
+      # and a publish at another Kit version is refused with the published Assembly still current.
+      And the published Assembly carries no copy of a Kit package
+      And the Orchestrator refuses a publish at another Kit version, naming both numbers
       # The other end of the loop, from the same installed binary: `jr2 down` takes the namespace
       # and everything `jr2 up` converged into it (ADR-0019) — the one verb this tier had never run.
       When I take the instance down

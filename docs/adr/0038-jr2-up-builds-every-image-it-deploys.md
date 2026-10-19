@@ -120,10 +120,12 @@ build-it-yourself-first image on top of that.
   silently; the second rebuilds every image on any edit anywhere. Per-image directory hashing sits between them and errs
   toward rebuilding.
 - **pnpm's hoisted node linker** (`deploy --node-linker=hoisted`), which emits no absolute path at all and so needs no
-  seal. Verified to work and to leave the artifact all but identical (60 MB vs 62 MB, 3998 vs 4029 files). Rejected on
-  exposure, not on merit: `pnpm deploy` calls itself experimental and jr2 already pins `--legacy`, so a third deviation
-  — one that changes the `node_modules` layout of every deployed image on every cluster — buys nothing the seal does
-  not. The seal changes no pnpm behavior; it corrects strings pnpm wrote for a directory the image never sees.
+  seal. Verified to work and to leave the artifact all but identical (60 MB vs 62 MB, 3998 vs 4029 files). Rejected at
+  first on exposure, not on merit: `pnpm deploy` calls itself experimental and jr2 already pinned `--legacy`, so a third
+  deviation that changes the `node_modules` layout bought nothing the seal did not. Adopted with
+  [ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): the Assembly must be flat
+  so the Kit closure strips as top-level entries and no pnpm store name reaches the archive, so both bundle paths
+  install hoisted now. The seal keeps its deletions; it rewrites nothing.
 - **A `.dockerignore` derived from the exclude set.** Rejected: it deletes the shims, and pnpm's shims `exec` through a
   relative `$basedir` — they WORK in the container. An Instance whose dependency ships a CLI would lose it. The four
   varying files are content the image should keep, holding a path that is simply wrong.
@@ -157,10 +159,10 @@ build-it-yourself-first image on top of that.
   ADR-0039's sweep then collected. That was garbage produced by the builder on every run, not by iteration, and the
   collector was doing work that should never have existed. The same rule now keeps a no-op converge from publishing an
   Assembly: an unchanged tree has an unchanged hash, and the Orchestrator already holds it.
-- **`jr2 up` leans on `pnpm deploy`, which pnpm still labels experimental**, at `--legacy`. The seal does not deepen
-  that exposure — no flag changes — but the assumption that staging is otherwise deterministic is now held by a test
-  that stages one Instance into two directories and compares hashes, rather than by trust. A pnpm upgrade that bakes a
-  path somewhere new fails that test instead of silently shipping two images under one tag. (**Amended by
+- **`jr2 up` leans on `pnpm deploy`, which pnpm still labels experimental**, at `--legacy` and hoisted. The seal does
+  not deepen that exposure, but the assumption that staging is otherwise deterministic is now held by a test that stages
+  one Instance into two directories and compares hashes, rather than by trust. A pnpm upgrade that bakes a path
+  somewhere new fails that test instead of silently shipping two images under one tag. (**Amended by
   [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: only a workspace-member
   instance leans on it. A standalone instance invokes whichever package manager wrote its lockfile, and `pnpm deploy` is
   never reached.)

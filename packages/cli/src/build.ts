@@ -1,16 +1,17 @@
-// The image build seam (ADR-0019/0038): `jr2 up` builds EVERY image it deploys. There are three
-// kinds — the instance's own (engine + this instance's workflows baked, ADR-0008), the instance's
-// Sandbox Images (the `file:` docker contexts its Machines carry, ADR-0037/0049), and — only when the
-// CLI is running out of
-// a kit CHECKOUT — the Harness and operator images. Installed from npm those kit sources do not
-// resolve, so a real instance takes the published-`<kitversion>` path and never needs docker for
-// them. The checkout IS the signal: no flag, no config key, no env. One image is deployed and never
-// built, in either world: the Custodian's, upstream Envoy pinned by digest (ADR-0038, ADR-0059).
+// The image build seam (ADR-0019/0038): `jr2 up` builds EVERY image it deploys. There are two
+// kinds — the Instance's Sandbox Images (the `file:` docker contexts its Machines carry,
+// ADR-0037/0049), and — only when the CLI is running out of a kit CHECKOUT — the Kit images: the
+// Harness, the operator and the Orchestrator (ADR-0069). An Instance produces no image of its own:
+// its Workflows ride the Assembly `jr2 up` publishes (assembly.ts). Installed from npm the kit
+// sources do not resolve, so a real instance takes the published-`<kitversion>` path and never
+// needs docker for them. The checkout IS the signal: no flag, no config key, no env. One image is
+// deployed and never built, in either world: the Custodian's, upstream Envoy pinned by digest
+// (ADR-0038, ADR-0059).
 //
 // Every tag is a content address of its own inputs. That is what makes `imagePullPolicy:
 // IfNotPresent` correct rather than lucky (a unique tag per content means "present" implies
 // "current"), what lets a converge skip exactly what has not moved, and what makes the tag-equality
-// check in `verifyRunningImage` sound for every layer instead of only the instance's.
+// check in `verifyRunningImage` sound for every layer.
 //
 // A Sandbox Image is ONE `docker build` of the user's own Dockerfile straight to its content tag
 // (ADR-0037): no kit-owned second stage, no intermediate tag, and the resolved harness ref is NOT
@@ -22,7 +23,7 @@
 //
 // Content addressing also MAKES garbage — ten Dockerfile iterations leave ten full images — so the
 // same seam owns the collector (ADR-0039). Two facts shape it: every image jr2 builds is STAMPED
-// (`jr2.dev/kind`, plus `jr2.dev/instance` on the instance-owned kinds) at build time, so ownership is
+// (`jr2.dev/kind`, plus `jr2.dev/instance` on a Sandbox Image) at build time, so ownership is
 // read off the image instead of parsed out of its name; and an image is garbage iff no live root
 // names its ref. The reachability part — assembling the keep set from the cluster — belongs to the
 // commands layer; what lives here is the part that touches images: the two stores' physics, the pure
@@ -31,19 +32,17 @@
 // `BuildPort` is what the converge logic drives (tests fake it); `pnpmDockerBuild` is the real one:
 // pnpm + docker + kind + crictl subprocesses.
 
-import { createHash } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { cp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { KIT_VERSION } from "@jr2/orchestrator";
+import { contentHash, KIT_VERSION } from "@jr2/orchestrator";
 import { LABEL_INSTANCE } from "./deploy.ts";
 
 const exec = promisify(execFile);
 
-/** One `docker build`. Exactly one of `dockerfile`/`dockerfileContent` may be set. */
+/** One `docker build`. */
 export type BuildRequest = {
   /** The tag to build — always a content address of (inputs × platform set), ADR-0038/0045. */
   tag: string;
@@ -58,16 +57,11 @@ export type BuildRequest = {
   /** `-f <path>`: a Dockerfile COMMITTED in the repo, whose context is somewhere else (the kit
    * images build from the kit root; a Sandbox Image's own Dockerfile is its context's default). */
   dockerfile?: string;
-  /** `-f -`: a Dockerfile jr2 GENERATES (the instance image — the only one left, now that a Sandbox
-   * Image is the user's file alone). Fed on stdin rather than written into the context, so a
-   * generated file can never be mistaken for a user's own and can never perturb the content hash
-   * of the directory it is built from. */
-  dockerfileContent?: string;
   /** `--label k=v`: who built this image (ADR-0039). Stamped at BUILD time, never written into a
    * Dockerfile — the user's file keeps zero jr2 knowledge (ADR-0037) and the committed kit
    * Dockerfiles stay plain. The labels ride the image config through `kind load` into containerd,
    * so both stores can read provenance back, and the sweep touches labeled images and nothing
-   * else. Use {@link kitImageLabels}/{@link instanceImageLabels}/{@link sandboxImageLabels}: an
+   * else. Use {@link kitImageLabels}/{@link sandboxImageLabels}: an
    * unstamped build is an image no sweep can ever collect. */
   labels?: Record<string, string>;
 };
@@ -128,15 +122,6 @@ export type BuildPort = {
 };
 
 /**
- * Nothing is excluded from a BUNDLE hash (ADR-0038). The old exclude set named `.modules.yaml` and
- * `.bin` — exactly the entries that varied between two stagings — so the tag stood still while the
- * bytes moved, and the mechanism that should have exposed the drift was the one hiding it. The
- * bundle is SEALED instead (`sealInstanceBundle`), and the empty default is what guards the seal:
- * with nothing excluded, a bundle that ever varies again re-tags on every converge, in the open,
- * where a rebuild-and-reload every single time is impossible to miss.
- */
-
-/**
  * Exclude sets for hashing KIT source directories — one per build CONTEXT, because an exclusion is
  * only sound when the `.dockerignore` governing that context really drops the entry. Excluding
  * anything context-visible under-hashes: an edit there changes the image at an unchanged tag, the
@@ -150,7 +135,7 @@ export type BuildPort = {
  * context and carries no `.dockerignore`, so docker copies `dist/` and `node_modules/` straight in.
  */
 
-/** For walks under `packages/*` (the Harness): its context is the KIT ROOT, so the root
+/** For walks under `packages/*` (the Harness, the Orchestrator): their context is the KIT ROOT, so the root
  * `.dockerignore` governs, and the only entries it drops at any depth are `**\/node_modules` and
  * `**\/dist` (plus `*.log`/`.env` globs `contentHash`'s name-set cannot express — hashing a stray
  * one of those over-hashes, which is allowed). A `packages/harness/bin/` would be context-VISIBLE,
@@ -164,56 +149,9 @@ const KIT_PACKAGE_EXCLUDE = new Set(["node_modules", "dist"]);
  * rest of the non-go tree (Makefile, config/, hack/) stays hashed: over-hash, the cheap side. */
 const KIT_OPERATOR_EXCLUDE = new Set(["bin", "testbin", "cover.out"]);
 
-/**
- * A short content hash over `paths` (files and/or directories, sorted walk), salted with `salt`.
- * Symlinks are skipped rather than followed: in a pnpm bundle `node_modules/<pkg>` links into the
- * virtual store, whose real files the walk already visits — following would hash the same bytes
- * twice. Each path contributes its entries under its own index prefix, so two directories that
- * happen to hold the same relative filenames stay distinguishable.
- */
-export async function contentHash(paths: string[], salt: string, exclude: Set<string> = new Set()): Promise<string> {
-  const h = createHash("sha256");
-  h.update(`salt:${salt}\n`);
-  const walk = async (root: string, d: string, index: number): Promise<void> => {
-    const entries = (await readdir(d, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
-    for (const e of entries) {
-      if (exclude.has(e.name)) continue;
-      const p = join(d, e.name);
-      if (e.isDirectory()) await walk(root, p, index);
-      else if (e.isFile()) {
-        h.update(`${index}:${relative(root, p)}\n`);
-        h.update(await readFile(p));
-      }
-    }
-  };
-  for (const [index, p] of paths.entries()) {
-    const st = await stat(p);
-    if (st.isDirectory()) await walk(p, p, index);
-    else {
-      h.update(`${index}:${basename(p)}\n`);
-      h.update(await readFile(p));
-    }
-  }
-  return h.digest("hex").slice(0, 12);
-}
-
-/** The Dockerfile every instance image is built from — generated, never
- * user-authored (ADR-0019). No git and no ssh client: the Orchestrator clones nothing (ADR-0051) —
- * the cache agent on each node does, reading the credential Secret a Repo's `secretRef` names
- * (ADR-0047), and the attach's git runs in the Sandbox pod's Harness, on its own `POST /attach`
- * (ADR-0063). No kubectl: the Orchestrator talks to the API server with its own client on built-in
- * `fetch`, trusting the ServiceAccount's CA through NODE_EXTRA_CA_CERTS (ADR-0063, deploy.ts).
- * tsx: in the bundle the kit's `.ts` sources live under node_modules (materialized, not
- * workspace-linked), where Node's own type stripping refuses to run — so the image runs the
- * entrypoint through tsx. An image-runtime detail only; the repo stays zero-build. */
-export const INSTANCE_DOCKERFILE = `FROM node:24-slim
-RUN npm install -g --no-audit --no-fund tsx@4
-WORKDIR /instance
-COPY . .
-ENV NODE_ENV=production
-EXPOSE 4000
-CMD ["tsx", "node_modules/@jr2/orchestrator/bin/server.ts"]
-`;
+// `contentHash` lives in `@jr2/orchestrator` (ADR-0069): the door recomputes an Assembly's hash
+// with the same function. Re-exported so every CLI caller keeps its import.
+export { contentHash } from "@jr2/orchestrator";
 
 // --- ownership: who built this image (ADR-0039) ------------------------------------------------
 
@@ -226,22 +164,16 @@ CMD ["tsx", "node_modules/@jr2/orchestrator/bin/server.ts"]
  */
 export const LABEL_IMAGE_KIND = "jr2.dev/kind";
 
-/** The three kinds ADR-0038 builds, and the whole value domain of {@link LABEL_IMAGE_KIND}. */
-export type ImageKind = "instance" | "sandbox" | "kit";
+/** The two kinds jr2 builds, and the whole value domain of {@link LABEL_IMAGE_KIND}. The
+ * per-Instance image retired with ADR-0069: an Instance publishes an Assembly instead. */
+export type ImageKind = "sandbox" | "kit";
 
-/** The kit's own images (Harness, operator). No instance label: every instance on the
+/** The kit's own images (Harness, operator, Orchestrator). No instance label: every instance on the
  * cluster shares one copy, and "kit images are never swept" is not a rule any more — a kit ref is
  * kept because some instance's map or pod names it, and collects with everything else when the
  * last instance leaves (ADR-0039). */
 export function kitImageLabels(): Record<string, string> {
   return { [LABEL_IMAGE_KIND]: "kit" };
-}
-
-/** The instance's own image (engine + workflows baked). `jr2.dev/instance` is the SAME key the
- * Namespace and the rest of the converged objects wear (deploy.ts) — deliberately one word for one
- * owner, whether it labels a Kubernetes object or an image config. */
-export function instanceImageLabels(instance: string): Record<string, string> {
-  return { [LABEL_IMAGE_KIND]: "instance", [LABEL_INSTANCE]: instance };
 }
 
 /** A Sandbox Image — the user's Dockerfile, built once, straight to its content tag (ADR-0037).
@@ -260,7 +192,7 @@ export function sandboxImageLabels(instance: string): Record<string, string> {
  * same list: two hand-kept copies desynchronize silently, so `test/kit-push.test.ts` reads the
  * script's default and fails the gate when they drift.
  *
- * An arch outside this set is never built for. An instance image for `s390x` is dead weight: no Kit
+ * An arch outside this set is never built for. A Sandbox Image for `s390x` is dead weight: no Kit
  * image could sit beside it in the pod, so the Sandbox would fail at the Harness instead of at
  * the image nobody published.
  */
@@ -368,8 +300,9 @@ export async function assertEmulation(port: BuildPort, platforms: readonly strin
 
 // --- the kit images (ADR-0038) --------------------------------------------------------------
 
-/** The two images the KIT owns and builds. An instance deploys them but never authors them. */
-export type KitImageName = "harness" | "operator";
+/** The images the KIT owns and builds. An Instance deploys them but never authors them. The
+ * Orchestrator joined them in ADR-0069: an Instance publishes an Assembly, and builds no image. */
+export type KitImageName = "harness" | "operator" | "orchestrator";
 export type KitImageRefs = Record<KitImageName, string>;
 
 type KitImage = {
@@ -431,6 +364,20 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     sources: ["operator"],
     exclude: KIT_OPERATOR_EXCLUDE,
   },
+  orchestrator: {
+    repo: "jr2-orchestrator",
+    dockerfile: "deploy/orchestrator/Dockerfile",
+    context: ".",
+    // `@jr2/orchestrator` and every kit package it depends on, which the Dockerfile packs into the
+    // image (ADR-0069). `packages/agent-protocol` is a runtime dependency, so an edit there changes
+    // the image and must move its tag. The third-party closure (xstate, zod, hono, …) comes from
+    // the registry, each package forced to the version `deploy/orchestrator/closure.json` pins, so
+    // the tag addresses it through that file. closure.json equals pnpm-lock.yaml's closure, and
+    // this list equals the Orchestrator's `workspace:` dependencies, both asserted in
+    // test/orchestrator-image.test.ts.
+    sources: ["packages/orchestrator", "packages/agent-protocol", "deploy/orchestrator"],
+    exclude: KIT_PACKAGE_EXCLUDE,
+  },
 };
 
 /**
@@ -461,6 +408,7 @@ export function publishedKitRefs(kitRegistry?: string): KitImageRefs {
   return {
     harness: `${home}/jr2-harness:${KIT_VERSION}`,
     operator: `${home}/jr2-operator:${KIT_VERSION}`,
+    orchestrator: `${home}/jr2-orchestrator:${KIT_VERSION}`,
   };
 }
 
@@ -913,7 +861,7 @@ export type InstallCommand = { command: string; args: string[] };
  * lockfile with it. jr2 itself depends on no package manager.
  *
  * pnpm gets `node-linker=hoisted` so the bundle is flat REAL files whichever PM wrote it: one
- * image shape to seal, hash, and resolve from, instead of one per manager.
+ * Assembly shape to strip, seal, hash, and resolve from, instead of one per manager (ADR-0069).
  *
  * bun's two spellings are ONE row — `bun.lockb` is the binary format `bun.lock` replaced — so an
  * instance holding both is mid-migration, not ambiguous: one manager, one command, bun's own
@@ -981,9 +929,9 @@ export async function lockfileInstall(instanceDir: string): Promise<InstallComma
  * content; `.env`/`.env.*` and `.npmrc` because those are the two files a user keeps credentials
  * in — `jr2 init` writes `.env` into the scaffold's `.gitignore` saying exactly that, and `jr2 up`
  * reads it HOST-side into the Secrets it writes for the pods that spend each value, never into
- * the Orchestrator's (ADR-0019, ADR-0068). Copied, they would bake a
- * credential into an image layer AND into the content address that names it, so rotating a key
- * would re-tag and roll the Orchestrator. The workspace branch already drops both: `pnpm deploy`
+ * the Orchestrator's (ADR-0019, ADR-0068). Copied, they would put a
+ * credential into the Assembly AND into the content address that names it, so rotating a key
+ * would publish a new Assembly (ADR-0069). The workspace branch already drops both: `pnpm deploy`
  * filters through npm-packlist. A registry the frozen install needs reaches it the way a
  * deployment-varying value should — the environment (`npm_config_registry`) or the user-level
  * npmrc — neither of which is image content.
@@ -1016,7 +964,7 @@ const execCommand: RunCommand = async (command, args, cwd) => {
  *    workspace above it says nothing about how it installs.
  * 2. A `pnpm-workspace.yaml` above it. A workspace member carries no lockfile of its own — the
  *    workspace root holds it — so it is the ABSENCE of one that sends the instance to `pnpm deploy
- *    --legacy`, unchanged. pnpm is a contributor prerequisite, like go for the operator, never a
+ *    --legacy`, hoisted like the lockfile path. pnpm is a contributor prerequisite, like go for the operator, never a
  *    product dependency.
  * 3. Neither: {@link lockfileInstall}'s named refusal.
  *
@@ -1025,7 +973,7 @@ const execCommand: RunCommand = async (command, args, cwd) => {
  * the user's own monorepo. Asking "is there a workspace file above me" FIRST — the previous rule —
  * answered a question about an ancestor, and sent shape (1) down `pnpm deploy`, which pnpm answers
  * for a non-member with "No projects matched the filters" and exit 0: no bundle, and the failure
- * surfaced later as an ENOENT from the seal. That silent success is why the deploy branch checks
+ * surfaced later as an ENOENT from the staging. That silent success is why the deploy branch checks
  * that the bundle exists, and names the shape when it does not.
  */
 export async function bundleInstance(
@@ -1038,7 +986,14 @@ export async function bundleInstance(
     const pkg = JSON.parse(await readFile(join(instanceDir, "package.json"), "utf8")) as { name?: string };
     if (!pkg.name) throw new Error(`${instanceDir}/package.json has no "name" — needed to bundle the instance`);
     // --legacy: materialize (copy) workspace deps into the bundle rather than linking them.
-    await run("pnpm", ["--filter", pkg.name, "--prod", "deploy", "--legacy", outDir], instanceDir);
+    // node-linker=hoisted, as on the lockfile path: a flat `node_modules` of real directories. The
+    // Assembly codec is ustar, which cannot hold pnpm's long store entry names, and a flat tree is
+    // also what lets the Kit closure strip be a top-level delete (ADR-0069).
+    await run(
+      "pnpm",
+      ["--filter", pkg.name, "--prod", "deploy", "--legacy", "--config.node-linker=hoisted", outDir],
+      instanceDir,
+    );
     // pnpm exits 0 — "No projects matched the filters" — for a `--filter` that names no member.
     if (!(await exists(outDir))) {
       throw new Error(
@@ -1051,8 +1006,11 @@ export async function bundleInstance(
   }
   // Asked before the copy: an instance with no lockfile must fail on the cheap half.
   const { command, args } = await lockfileInstall(instanceDir);
+  // `verbatimSymlinks`: a relative link inside the Instance stays relative. Without it, `cp` writes
+  // an absolute link back to the source folder, which the seal refuses (ADR-0069).
   await cp(instanceDir, outDir, {
     recursive: true,
+    verbatimSymlinks: true,
     filter: (src) => src === instanceDir || !excludedFromStage(basename(src)),
   });
   await run(command, args, outDir);
@@ -1128,7 +1086,7 @@ export const pnpmDockerBuild: BuildPort = {
    * index to the platforms asked for — attestation manifests ride an index as extra
    * `unknown/unknown` entries, read by nothing here.
    */
-  async build({ tag, platforms, context, dockerfile, dockerfileContent, labels }) {
+  async build({ tag, platforms, context, dockerfile, labels }) {
     const args =
       platforms.length > 1
         ? ["buildx", "build", "--builder", await ensureMultiArchBuilder(), "--provenance=false", "--push"]
@@ -1136,10 +1094,8 @@ export const pnpmDockerBuild: BuildPort = {
     args.push("--platform", platforms.join(","), "-t", tag);
     for (const [k, v] of Object.entries(labels ?? {})) args.push("--label", `${k}=${v}`);
     if (dockerfile) args.push("-f", dockerfile);
-    if (dockerfileContent) args.push("-f", "-");
     args.push(context);
-    if (dockerfileContent) await execStdin(["docker", ...args], dockerfileContent);
-    else await exec("docker", args, BIG);
+    await exec("docker", args, BIG);
   },
 
   async imageFiles(image, platforms, paths) {
@@ -1463,173 +1419,4 @@ export async function crictlLabels(
     );
   }
   return out;
-}
-
-/** Run a command with a string on stdin (`docker build -f -`). */
-async function execStdin(argv: string[], stdin: string): Promise<void> {
-  await new Promise<void>((ok, fail) => {
-    const child = spawn(argv[0]!, argv.slice(1), { stdio: ["pipe", "inherit", "inherit"] });
-    child.on("error", fail);
-    child.on("close", (code) => (code === 0 ? ok() : fail(new Error(`${argv.join(" ")} exited ${code}`))));
-    child.stdin.end(stdin);
-  });
-}
-
-/** Where the bundle really lives: the `WORKDIR` of {@link INSTANCE_DOCKERFILE}, which `COPY . .`
- * puts it at. The one path a staged bundle is allowed to name itself by. */
-const BUNDLE_WORKDIR = "/instance";
-
-/** Fatal on purpose — a lenient decode would replace the bytes it could not read (see the seal). */
-const UTF8 = new TextDecoder("utf8", { fatal: true });
-
-/**
- * Every substitution the seal makes, longest needle first. A `.bin` shim's `NODE_PATH` is a CHAIN —
- * the bundle's own `node_modules`, then the `node_modules` of each directory above it, up to the
- * root — and `pnpm deploy` writes the staging path into it in BOTH spellings it knows: the one
- * `mkdtemp` returned, and the one `realpath` resolves it to. The two coincide only where the temp
- * root is a real directory, so anchoring on the returned spelling alone is correct on Linux and
- * wrong on macOS, where `os.tmpdir()` is `/var/folders/…` and `/var` is a symlink to `/private/var`.
- * There the resolved spelling keeps the random `mkdtemp` component, the bundle stays a different
- * artifact every converge, and the tag it is addressed by never notices.
- *
- * The rungs ABOVE the bundle are the same failure one level up — macOS puts a per-boot random
- * segment there (`/var/folders/<xy>/<random>`) — so each is rewritten to the root's, which is
- * where `/instance`'s ancestors actually are. They are matched as `<ancestor>/node_modules` and
- * never as a bare directory: replacing every occurrence of `/tmp` would rewrite that string
- * wherever some dependency's own source happens to hold it.
- */
-async function bundleRewrites(dir: string): Promise<Array<[string, string]>> {
-  const spellings = new Set([dir, await realpath(dir)]);
-  const rewrites: Array<[string, string]> = [];
-  for (const form of spellings) {
-    rewrites.push([form, BUNDLE_WORKDIR]);
-    for (let up = dirname(form); up !== dirname(up); up = dirname(up)) {
-      rewrites.push([`${up}/node_modules`, "/node_modules"]);
-    }
-  }
-  return rewrites.sort(([a], [b]) => b.length - a.length);
-}
-
-/**
- * Seal the staged bundle (ADR-0038): after this, its bytes are a function of its inputs alone.
- * `pnpm deploy` writes the scratch directory into every `.bin` shim's `NODE_PATH`, and that
- * directory is a fresh `mkdtemp` per converge — so the same sources staged twice are two different
- * images under one content-addressed tag, which is "present implies current" broken for the one
- * image every Instance runs. The rewrite targets `/instance` rather than any stable placeholder
- * because that is where the image holds the bundle: the shims go from WRONG to CORRECT, and
- * determinism falls out of fixing them. What gets rewritten, and why it is more than one string,
- * is {@link bundleRewrites}.
- *
- * A file that holds the path but does not decode as UTF-8 stops the converge, named. `/instance` is
- * SHORTER than the scratch path, so rewriting inside a binary slides every offset after it — that
- * ships an Orchestrator image whose executable fails in the cluster, where nothing can attribute
- * it, instead of a converge that failed on the machine that built it.
- */
-async function sealInstanceBundle(dir: string): Promise<void> {
-  const rewrites = await bundleRewrites(dir);
-  const needles = rewrites.map(([from]) => Buffer.from(from));
-  const walk = async (d: string): Promise<void> => {
-    for (const e of await readdir(d, { withFileTypes: true })) {
-      const p = join(d, e.name);
-      // A symlink's CONTENT is its target, and `contentHash` skips symlinks too — so a link naming
-      // the staging path would be neither sealed nor addressed: the bundle would vary at a tag that
-      // never moved, which is the one failure this seal exists to make impossible, arriving
-      // silently. pnpm writes relative targets (a real bundle: 276 links, none absolute), so this
-      // throws rather than rewriting — nothing is known about what such a link would mean.
-      if (e.isSymbolicLink()) {
-        const target = await readlink(p);
-        if (rewrites.some(([from]) => target.includes(from))) {
-          throw new Error(
-            `cannot seal the instance bundle: the symlink ${relative(dir, p)} points at the staging path ` +
-              `("${target}"), which would leave the bundle naming a directory the image does not have`,
-          );
-        }
-        continue;
-      }
-      // Directories and files below are reached through `Dirent`, which is lstat-based, so the walk
-      // cannot follow a link out of the bundle.
-      if (e.isDirectory()) await walk(p);
-      else if (e.isFile()) {
-        const bytes = await readFile(p);
-        if (!needles.some((needle) => bytes.includes(needle))) continue;
-        let text: string;
-        try {
-          text = UTF8.decode(bytes);
-        } catch {
-          throw new Error(
-            `cannot seal the instance bundle: ${relative(dir, p)} holds the staging path but is not valid UTF-8 — ` +
-              `"${BUNDLE_WORKDIR}" is shorter than "${dir}", so rewriting it would corrupt every offset after it`,
-          );
-        }
-        for (const [from, to] of rewrites) text = text.replaceAll(from, to);
-        await writeFile(p, text);
-      }
-    }
-  };
-  await walk(dir);
-}
-
-/** A materialized instance bundle: the exact bytes the image is built FROM, and their address. */
-export type StagedBundle = {
-  /** The bundle directory — the build context. */
-  dir: string;
-  /** Content address of `dir` (+ the Dockerfile that bakes it): the image tag, and the staleness key. */
-  hash: string;
-  /** Remove the scratch dir. Always call it; the bundle is a few thousand files. */
-  dispose(): Promise<void>;
-};
-
-/**
- * Materialize the bundle and address it by content (ADR-0019 — the deployed image must be derivable
- * from what `up` can see). The bundle, not the instance folder, is the thing hashed: `pnpm deploy`
- * resolves the kit into it, so a kit edit in a workspace checkout and a kit upgrade from the
- * registry both move the hash, by the same rule and with no knowledge of which world it is in.
- * Hashing the instance folder instead missed kit sources entirely, which is how `jr2 up` came to
- * skip builds it needed and report convergence on code it had not deployed.
- *
- * The bundle is SEALED before it is hashed, and NOTHING is excluded from that hash (ADR-0038): a
- * bundle that named its own scratch dir made one tag address many images, and the exclude set that
- * used to paper over it hid exactly the drift it was supposed to expose. With an empty exclude set
- * the failure inverts — anything that ever varies again re-tags on every converge, in the open.
- *
- * `images/` rides along with the rest, and MUST (ADR-0049). A Machine names a Sandbox Image context
- * by `file:` URL — `import.meta.resolve("../images/default")` — and the DEPLOYED Orchestrator reads
- * that folder back: it recomputes the context digest at provision to look up the ref `jr2 up`
- * published under it, which is what lets the two sides agree with no path table between them.
- * Dropping the folder here (it used to be dropped, as host-side-only) converged green and then
- * failed every provision of such a Machine on an ENOENT the converge could never see. So the
- * scaffolded Dockerfile is instance-image content: editing it re-tags the instance and rolls the
- * Orchestrator. ADR-0038's map still buys what it was taken for — the resolved REF stays out of the
- * pod template, so a rebuilt Sandbox Image alone rolls nothing.
- *
- * Staging precedes the staleness decision, so `pnpm deploy` (~1s) runs even on the skip path; the
- * docker build it guards is the expensive half. The Dockerfile salts the hash — it is image content
- * that never lands in the context (it rides `docker build -f -`).
- */
-export async function stageInstanceBundle(port: BuildPort, instanceDir: string): Promise<StagedBundle> {
-  const scratch = await mkdtemp(join(tmpdir(), "jr2-image-"));
-  const dir = join(scratch, "bundle");
-  try {
-    await port.bundle(instanceDir, dir);
-    // pnpm leaves two files that are nothing but a record of where and when this staging happened
-    // — `.modules.yaml` (a `prunedAt` stamp and the scratch paths, written by `pnpm deploy`) and
-    // `.pnpm-workspace-state.json` (a `lastValidatedTimestamp`, written by `pnpm install`) — and
-    // the image reads neither. Both go — they are the one exception to "nothing is excluded",
-    // earned because they are a record OF the staging rather than content of it: the timestamp
-    // alone re-addressed every pnpm bundle on every converge, which is a pod-template change on a
-    // no-op `up`. The rest of the where-and-when — the shims' baked `NODE_PATH` — the seal
-    // corrects.
-    for (const record of [".modules.yaml", ".pnpm-workspace-state.json"]) {
-      await rm(join(dir, "node_modules", record), { force: true });
-    }
-    await sealInstanceBundle(dir);
-    return {
-      dir,
-      hash: await contentHash([dir], INSTANCE_DOCKERFILE),
-      dispose: () => rm(scratch, { recursive: true, force: true }),
-    };
-  } catch (err) {
-    await rm(scratch, { recursive: true, force: true });
-    throw err;
-  }
 }

@@ -78,7 +78,6 @@ export {
 
 export const LABEL_INSTANCE = "jr2.dev/instance";
 export const LABEL_VERSION = "jr2.dev/version";
-export const LABEL_HASH = "jr2.dev/content-hash";
 
 /** The converged name→ref image map, stamped on the Orchestrator Deployment's OWN metadata so the
  * next `jr2 up` can diff it and spend no docker on what has not moved (ADR-0038). An ANNOTATION, not
@@ -268,9 +267,11 @@ export const holdsAny = (held: HeldObjects): boolean => held.pods.some((p) => p.
 export function instanceObjects(opts: {
   name: string;
   namespace: string;
+  /** The Orchestrator Kit image's ref (ADR-0069). The Deployment carries no content hash: the
+   * Assembly's hash is an Orchestrator fact, read from `GET /assembly`. */
   image: string;
-  hash: string;
-  /** Secret data (token, signing key, harness env literals) — written stringData, kube encodes. */
+  /** Secret data (the Instance token, the publish token, the signing key) — written stringData,
+   * kube encodes. The Orchestrator reads it through `envFrom`. */
   secretData: Record<string, string>;
   /** The HARNESS containers' literal `harness.env` values — a SEPARATE Secret from `secretData` by
    * doctrine (ADR-0013): Agent code executes where this lands, so the Instance token and signing
@@ -492,7 +493,7 @@ export function instanceObjects(opts: {
       apiVersion: "apps/v1",
       kind: "Deployment",
       metadata: {
-        ...meta(ORCHESTRATOR_SERVICE, { [LABEL_HASH]: opts.hash, [LABEL_VERSION]: KIT_VERSION }),
+        ...meta(ORCHESTRATOR_SERVICE, { [LABEL_VERSION]: KIT_VERSION }),
         // The converged image map, on the DEPLOYMENT'S OWN metadata and never on
         // `spec.template.metadata` (ADR-0038). On the pod template it would be part of the pod
         // spec, so every re-resolved ref would roll the Orchestrator — the exact cost the
@@ -505,7 +506,13 @@ export function instanceObjects(opts: {
         strategy: { type: "Recreate" }, // two writers may never overlap on the PVC
         selector: { matchLabels: { app: ORCHESTRATOR_SERVICE } },
         template: {
-          metadata: { labels: { ...labels, app: ORCHESTRATOR_SERVICE } },
+          metadata: {
+            labels: { ...labels, app: ORCHESTRATOR_SERVICE },
+            // The Instance Secret reaches the process through `envFrom`, which a running pod reads
+            // once. A minted replacement for a lost Secret (a new publish token above all,
+            // ADR-0069) must roll the pod, or every publish after it is refused with 401.
+            annotations: { [ANNOTATION_SECRET_DIGEST]: instanceSecretDigest(opts.secretData) },
+          },
           spec: {
             serviceAccountName: ORCHESTRATOR_SA,
             // Control tier (ADR-0060): small, fixed, needed by every Sandbox. No disruption opt-out:
@@ -521,10 +528,6 @@ export function instanceObjects(opts: {
                 env: [
                   // The entrypoint derives its own Service DNS + Sandbox namespace from these.
                   { name: "JR2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
-                  // What `/healthz` reports as this instance's identity. The same content address
-                  // the image tag carries (ADR-0019), in-process so a CLI can ask over HTTP
-                  // instead of needing kube access to read the Deployment's labels.
-                  { name: "JR2_CONTENT_HASH", value: opts.hash },
                   // The API server's trust (ADR-0063): the Orchestrator's own Kubernetes client is
                   // built-in `fetch`, which trusts the ServiceAccount's CA through this and nothing
                   // else — no TLS code, no dependency.
@@ -1057,6 +1060,22 @@ export function instanceHarnessObjects(opts: {
   ];
 
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/** The Orchestrator's pod template digest of the Instance Secret: it rolls the pod when a value
+ * the process reads through `envFrom` changes (ADR-0069). */
+export const ANNOTATION_SECRET_DIGEST = "jr2.dev/secret-digest";
+
+/** A keyed digest of the Instance Secret's data, in key order. Keyed with the signing key it
+ * holds, so the annotation reveals nothing about a token. */
+export function instanceSecretDigest(secretData: Record<string, string>): string {
+  const mac = createHmac("sha256", Buffer.from(secretData.JR2_SIGNING_KEY ?? "", "base64"));
+  mac.update("jr2-instance-secret\n");
+  for (const key of Object.keys(secretData).sort()) {
+    const value = Buffer.from(secretData[key]!, "utf8");
+    mac.update(`${key}\n${value.length}:`).update(value);
+  }
+  return mac.digest("base64url");
 }
 
 /** The Instance Effector's pod template digest (ADR-0068): an HMAC over every secret input, so an

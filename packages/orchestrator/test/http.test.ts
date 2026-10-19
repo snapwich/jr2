@@ -35,12 +35,18 @@ test("GET /healthz reports up AND what this instance is — the CLI's only skew 
   const body = (await health.json()) as { ok: boolean; version?: string; hash?: string };
   assert.equal(body.ok, true);
   assert.equal(body.version, KIT_VERSION);
-  // No image to be addressed by (this is the `jr2 dev` shape), so no hash — and that is not an error.
+  // No publish door here, so no current Assembly to report (ADR-0069) — and that is not an error.
   assert.equal(body.hash, undefined);
 
   const ready = await app.request("/readyz");
   assert.equal(ready.status, 200);
   assert.deepEqual(await ready.json(), { ready: true });
+});
+
+test("an app with no publish door: GET /assembly reports none, PUT /assembly is 404 (ADR-0069)", async () => {
+  const { app } = await mkApp();
+  assert.deepEqual(await (await app.request("/assembly")).json(), { kitVersion: KIT_VERSION, current: null, held: [] });
+  assert.equal((await app.request("/assembly", { method: "PUT" })).status, 404);
 });
 
 test("GET /workflows lists registered workflows", async () => {

@@ -6,8 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, readlink, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIT_VERSION } from "@jr2/orchestrator";
@@ -16,7 +15,6 @@ import {
   buildSandboxImage,
   bundleInstance,
   choosePlatforms,
-  contentHash,
   crictlLabels,
   detectKitCheckout,
   formatBytes,
@@ -31,7 +29,6 @@ import {
   platformSuffix,
   publishedKitRefs,
   sandboxImageTag,
-  stageInstanceBundle,
   sweepHost,
   sweepNodes,
   KIT_IMAGE_HOME,
@@ -65,37 +62,10 @@ function nullPort(): BuildPort {
  * is what every test here builds for unless it is about the multi-arch branch itself. */
 const AMD64: readonly string[] = ["linux/amd64"];
 
-/** A port that materializes `files(out)` — what `pnpm deploy` would have written into the bundle.
- * `out` is the real scratch dir `stageInstanceBundle` chose, so a fake can bake it into the bundle
- * exactly as pnpm does, and the seal that follows is the real one. */
-function stagingPort(files: (out: string) => Record<string, string | Uint8Array>): BuildPort {
-  return {
-    ...nullPort(),
-    bundle: async (_dir, out) => {
-      // `pnpm deploy` creates its target; a fake that resolves `out` must be able to see it too.
-      await mkdir(out, { recursive: true });
-      for (const [rel, content] of Object.entries(files(out))) {
-        await mkdir(join(out, dirname(rel)), { recursive: true });
-        await writeFile(join(out, rel), content);
-      }
-    },
-  };
-}
-
 /** One image as a store reports it. Defaults are the interesting case: jr2 built it, and it holds
  * bytes worth reclaiming. */
 function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
   return { tags: [], bytes: 0, labeled: true, ...over };
-}
-
-async function hashOf(port: BuildPort): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "jr2-build-"));
-  const staged = await stageInstanceBundle(port, root);
-  try {
-    return staged.hash;
-  } finally {
-    await staged.dispose();
-  }
 }
 
 /** Write `files` (relative path → content) under a fresh temp dir and return it. */
@@ -109,8 +79,9 @@ async function mkTree(files: Record<string, string>, prefix = "jr2-tree-"): Prom
 }
 
 /** A kit checkout as `detectKitCheckout`/`kitImageRefs` see one: both markers plus the sources
- * each kit image is hashed over. `harnessSrc` varies so a kit edit can be simulated. */
-function kitFiles(harnessSrc: string): Record<string, string> {
+ * each kit image is hashed over. `harnessSrc` and `protocolSrc` vary so a kit edit can be
+ * simulated. */
+function kitFiles(harnessSrc: string, protocolSrc = "export const v = 1;\n"): Record<string, string> {
   return {
     "deploy/harness/Dockerfile": "FROM node:24-slim\n",
     "operator/Dockerfile": "FROM golang:1.23\n",
@@ -127,176 +98,16 @@ function kitFiles(harnessSrc: string): Record<string, string> {
     "effector/internal/wire/wire.go": "package wire\n",
     "packages/harness/package.json": `{"name":"@jr2/harness"}`,
     "packages/harness/src/main.ts": harnessSrc,
+    // The Orchestrator Kit image (ADR-0069): its package, the kit package it depends on, and its
+    // Dockerfile's directory.
+    "deploy/orchestrator/Dockerfile": "FROM node:24-slim\n",
+    "deploy/orchestrator/closure.json": `{"zod":"4.4.3"}`,
+    "packages/orchestrator/package.json": `{"name":"@jr2/orchestrator"}`,
+    "packages/orchestrator/src/index.ts": "export {};\n",
+    "packages/agent-protocol/package.json": `{"name":"@jr2/agent-protocol"}`,
+    "packages/agent-protocol/src/index.ts": protocolSrc,
   };
 }
-
-/** What `pnpm deploy --legacy` writes that names where and when it staged. MEASURED, not imagined —
- * a shim's `NODE_PATH` is a CHAIN, and it holds the staging path in two spellings plus the
- * `node_modules` of every directory above it:
- *
- *   <realpath(out)>/node_modules/.pnpm/<pkg>/node_modules   ← the resolved form, always present
- *   <out>/node_modules/.pnpm/node_modules                   ← the form `mkdtemp` returned
- *   <dirname(realpath(out))>/node_modules                   ← one ancestor rung, and so on to `/`
- *
- * The two spellings coincide only where the temp root is a real directory. They diverge on macOS,
- * where `os.tmpdir()` is `/var/folders/…` and `/var` is a symlink to `/private/var` — so a seal
- * that knows only the returned form leaves the random `mkdtemp` component behind in the resolved
- * one. The ancestor rungs carry it too: on macOS the per-boot `/var/folders/<xy>/<random>` sits
- * ABOVE the bundle. `.modules.yaml` and `.pnpm-workspace-state.json` are nothing but records of
- * where and when — the second one written by `pnpm install` (the standalone branch, ADR-0043)
- * rather than by `pnpm deploy`, and carrying a millisecond stamp, so two identical installs from
- * one lockfile differ by it alone. */
-function pnpmStagingPort(stamp: string): BuildPort {
-  return stagingPort((out) => {
-    const real = realpathSync(out);
-    const chain = (pkg: string): string =>
-      `${real}/node_modules/.pnpm/${pkg}/node_modules:${out}/node_modules/.pnpm/node_modules:${dirname(real)}/node_modules:/node_modules`;
-    return {
-      "package.json": `{"name":"inst"}`,
-      "node_modules/.modules.yaml": `prunedAt: Mon, 20 Jul 2026 00:04:${stamp} GMT\nvirtualStoreDir: ${out}/node_modules/.pnpm\n`,
-      "node_modules/.pnpm-workspace-state.json": `{"lastValidatedTimestamp":17881413000${stamp}}`,
-      "node_modules/.bin/tsx": `export NODE_PATH="${chain("tsx@4")}"\nexec node "$basedir/../tsx/dist/cli.mjs" "$@"\n`,
-      "node_modules/.bin/which": `export NODE_PATH="${chain("which@4")}"\n`,
-      "node_modules/.pnpm/tsx@4/node_modules/tsx/dist/cli.mjs": "export const cli = 1;\n",
-    };
-  });
-}
-
-/** Run `body` with `os.tmpdir()` pointed at a SYMLINK to a real directory — the macOS shape, which
- * is where the returned and resolved spellings of a staging path diverge. Restores `TMPDIR`. */
-async function withSymlinkedTmpdir(body: (root: string) => Promise<void>): Promise<void> {
-  const base = await mkdtemp(join(tmpdir(), "jr2-symtmp-"));
-  const real = join(base, "real");
-  const link = join(base, "link");
-  await mkdir(real);
-  await symlink(real, link);
-  const saved = process.env.TMPDIR;
-  process.env.TMPDIR = link;
-  try {
-    await body(base);
-  } finally {
-    if (saved === undefined) delete process.env.TMPDIR;
-    else process.env.TMPDIR = saved;
-    await rm(base, { recursive: true, force: true });
-  }
-}
-
-/** Stage one Instance twice. Each call gets its own scratch dir, so the pair IS the experiment;
- * both bundles stay on disk until the caller disposes them, because the claim is about bytes. */
-async function stageTwice(port: BuildPort, other = port) {
-  const root = await mkdtemp(join(tmpdir(), "jr2-build-"));
-  const a = await stageInstanceBundle(port, root);
-  const b = await stageInstanceBundle(other, root);
-  return { a, b, dispose: () => Promise.all([a.dispose(), b.dispose()]) };
-}
-
-/** Every byte of a bundle, nothing excluded — the property the image tag is supposed to have. */
-const bundleBytes = (dir: string) => contentHash([dir], "bundle-bytes", new Set());
-
-test("one Instance staged twice is byte-identical: the bundle records neither where nor when it was staged", async () => {
-  // ADR-0038. The tag addresses the materialized bundle, so anything in it that names its own
-  // scratch dir — or the minute it was written — makes one tag name many images, and "present
-  // implies current" stops being true for the one image every Instance runs. The seal answers both
-  // BEFORE the hash: the staging path is rewritten to /instance, the WORKDIR the image holds the
-  // bundle at, so the shims go from WRONG to CORRECT rather than merely stable; `.modules.yaml` is
-  // deleted. Excluding those entries instead named exactly the files that varied, so the tag stood
-  // still while the bytes moved — the mechanism that should have exposed the drift was hiding it.
-  const { a, b, dispose } = await stageTwice(pnpmStagingPort("14"), pnpmStagingPort("15"));
-  try {
-    assert.equal(await bundleBytes(a.dir), await bundleBytes(b.dir), "two stagings, one set of bytes");
-    assert.equal(a.hash, b.hash, "…and therefore one address");
-
-    // Correct, not merely stable: this is the path the shim resolves against inside the container.
-    // Every rung of the chain lands somewhere real — the bundle's own entries at /instance, the
-    // rungs above it at the root, which is where /instance's ancestors are.
-    assert.equal(
-      await readFile(join(a.dir, "node_modules", ".bin", "tsx"), "utf8"),
-      `export NODE_PATH="/instance/node_modules/.pnpm/tsx@4/node_modules:/instance/node_modules/.pnpm/node_modules:` +
-        `/node_modules:/node_modules"\nexec node "$basedir/../tsx/dist/cli.mjs" "$@"\n`,
-    );
-    await assert.rejects(stat(join(a.dir, "node_modules", ".modules.yaml")), "a record of where and when, deleted");
-    await assert.rejects(
-      stat(join(a.dir, "node_modules", ".pnpm-workspace-state.json")),
-      "…and so is the install's own timestamp",
-    );
-  } finally {
-    await dispose();
-  }
-});
-
-test("the seal holds where the temp root is a symlink — the macOS shape", async () => {
-  // `os.tmpdir()` is `/var/folders/…` on macOS and `/var` is a symlink to `/private/var`, so pnpm
-  // bakes the RESOLVED spelling of a path `mkdtemp` handed back unresolved. A seal anchored on the
-  // returned spelling alone rewrites some entries and leaves the random component in the rest —
-  // green on Linux, and on a Mac every converge re-tags and re-loads the whole instance image while
-  // the shims keep naming a directory the container does not have. The ancestor rungs are the same
-  // failure one level up: on macOS they carry a per-boot random segment of their own.
-  await withSymlinkedTmpdir(async (root) => {
-    const { a, b, dispose } = await stageTwice(pnpmStagingPort("14"), pnpmStagingPort("15"));
-    try {
-      assert.equal(await bundleBytes(a.dir), await bundleBytes(b.dir), "two stagings, one set of bytes");
-      assert.equal(a.hash, b.hash, "…and therefore one address");
-      const shim = await readFile(join(a.dir, "node_modules", ".bin", "tsx"), "utf8");
-      assert.ok(!shim.includes(root), `the shim still names the staging root:\n${shim}`);
-      assert.ok(!shim.includes(realpathSync(root)), `the shim still names the RESOLVED staging root:\n${shim}`);
-    } finally {
-      await dispose();
-    }
-  });
-});
-
-test("a non-UTF-8 file holding the staging path is a loud failure, never a blind rewrite", async () => {
-  // /instance is SHORTER than the scratch path, so rewriting bytes inside a binary slides every
-  // offset after it and ships an executable that segfaults in a Sandbox instead of a build that
-  // failed on a laptop. jr2 does not know how to seal such a file, and says so, naming it.
-  const port = stagingPort((out) => ({
-    "package.json": `{"name":"inst"}`,
-    "node_modules/.pnpm/esbuild@0/node_modules/esbuild/bin/esbuild": Buffer.concat([
-      Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0xc3, 0x28]),
-      Buffer.from(`${out}/node_modules\0`),
-    ]),
-  }));
-
-  await assert.rejects(
-    stageInstanceBundle(port, await mkdtemp(join(tmpdir(), "jr2-build-"))),
-    /esbuild\/bin\/esbuild.*not valid UTF-8/s,
-  );
-});
-
-test("a symlink pointing at the staging path is a loud failure — its target is content nothing else sees", async () => {
-  // `contentHash` skips symlinks, and so does the seal's rewrite, so a link naming the scratch dir
-  // would be neither sealed nor addressed: the bundle varies at a tag that never moves, which is
-  // exactly the failure the seal exists to make impossible, arriving with no symptom. pnpm writes
-  // relative targets (a real bundle: 276 links, none absolute), so this is a guard, not a path jr2
-  // knows how to repair.
-  const port: BuildPort = {
-    ...nullPort(),
-    bundle: async (_dir, out) => {
-      await mkdir(join(out, "node_modules", ".pnpm"), { recursive: true });
-      await writeFile(join(out, "package.json"), `{"name":"inst"}`);
-      await symlink(`${out}/node_modules/.pnpm/which@4`, join(out, "node_modules", "which"));
-    },
-  };
-
-  await assert.rejects(
-    stageInstanceBundle(port, await mkdtemp(join(tmpdir(), "jr2-build-"))),
-    /symlink node_modules\/which points at the staging path/,
-  );
-});
-
-test("the bundle hash tracks the kit — a dependency's sources are image content", async () => {
-  // The staleness defect this closes: the hash walked the instance folder, where the kit appears
-  // only as a version range. In the bundle it is materialized source, and it is what runs.
-  const kit = (body: string) =>
-    stagingPort(() => ({
-      "package.json": `{"name":"inst"}`,
-      "node_modules/.pnpm/@jr2+orchestrator/node_modules/@jr2/orchestrator/src/lease.ts": body,
-    }));
-
-  const before = await hashOf(kit("export const renew = () => 1;\n"));
-  assert.notEqual(await hashOf(kit("export const renew = () => 2;\n")), before);
-  assert.equal(await hashOf(kit("export const renew = () => 1;\n")), before);
-});
 
 test("installed from npm, the Kit images resolve to the published <kitversion> tags at the canonical home", () => {
   // These were `jr2.config.ts`'s `images` defaults; the block is gone (ADR-0038), so they live here
@@ -306,6 +117,7 @@ test("installed from npm, the Kit images resolve to the published <kitversion> t
   assert.deepEqual(publishedKitRefs(), {
     harness: `${KIT_IMAGE_HOME}/jr2-harness:${KIT_VERSION}`,
     operator: `${KIT_IMAGE_HOME}/jr2-operator:${KIT_VERSION}`,
+    orchestrator: `${KIT_IMAGE_HOME}/jr2-orchestrator:${KIT_VERSION}`,
   });
   assert.equal(KIT_IMAGE_HOME, "ghcr.io/snapwich");
 });
@@ -316,6 +128,7 @@ test("kitRegistry re-homes the published refs — the same tags, a self-hosted m
   assert.deepEqual(publishedKitRefs("zot.example.test"), {
     harness: `zot.example.test/jr2-harness:${KIT_VERSION}`,
     operator: `zot.example.test/jr2-operator:${KIT_VERSION}`,
+    orchestrator: `zot.example.test/jr2-orchestrator:${KIT_VERSION}`,
   });
   // The version is the CLI's own either way: re-homing says where the tags live, not which ones.
   assert.ok(Object.values(publishedKitRefs("localhost:5000/jr2")).every((r) => r.endsWith(`:${KIT_VERSION}`)));
@@ -357,6 +170,7 @@ test("a CLI installed under node_modules is never a checkout, even inside one", 
 test("each kit image addresses its own sources and platform set; the registry prefixes a built ref", async () => {
   const kit = await mkTree(kitFiles("export const x = 1;\n"));
   const refs = await kitImageRefs(kit, { platforms: AMD64 });
+  assert.deepEqual(Object.keys(refs).sort(), ["harness", "operator", "orchestrator"], "every Kit image has a ref");
   for (const [name, ref] of Object.entries(refs)) {
     // `<hash>-<arch>` (ADR-0045): the bytes are a function of (inputs × platform), so the address
     // says which — a tag that named only the inputs delivered an amd64 image to an arm64 cluster.
@@ -371,8 +185,8 @@ test("each kit image addresses its own sources and platform set; the registry pr
   const pushed = await kitImageRefs(kit, { platforms: AMD64, registry: "reg.example.com/jr2" });
   assert.equal(pushed.harness, `reg.example.com/jr2/${refs.harness}`);
 
-  // The build is the committed Dockerfile against its own context — the harness builds from
-  // the kit ROOT (the packages ship as source), the operator from `operator/`.
+  // The build is the committed Dockerfile against its own context — the harness and the
+  // Orchestrator build from the kit ROOT (the packages ship as source), the operator from `operator/`.
   assert.deepEqual(kitImageBuild(kit, "harness", refs.harness, AMD64), {
     tag: refs.harness,
     // Explicit on every build (ADR-0045): the daemon default and DOCKER_DEFAULT_PLATFORM steer
@@ -384,6 +198,42 @@ test("each kit image addresses its own sources and platform set; the registry pr
     labels: { "jr2.dev/kind": "kit" },
   });
   assert.equal(kitImageBuild(kit, "operator", refs.operator, AMD64).context, join(kit, "operator"));
+  assert.deepEqual(kitImageBuild(kit, "orchestrator", refs.orchestrator, AMD64), {
+    tag: refs.orchestrator,
+    platforms: AMD64,
+    context: kit,
+    dockerfile: join(kit, "deploy", "orchestrator", "Dockerfile"),
+    labels: { "jr2.dev/kind": "kit" },
+  });
+});
+
+test("an agent-protocol edit moves the Orchestrator ref and no other Kit ref (ADR-0069)", async () => {
+  // The Orchestrator image packs `@jr2/agent-protocol` beside `@jr2/orchestrator`, so an edit there
+  // changes the image's bytes. A hash that skipped it would ship the old wire at an unchanged tag.
+  const before = await kitImageRefs(await mkTree(kitFiles("export const x = 1;\n")), { platforms: AMD64 });
+  const after = await kitImageRefs(await mkTree(kitFiles("export const x = 1;\n", "export const v = 2;\n")), {
+    platforms: AMD64,
+  });
+  assert.notEqual(after.orchestrator, before.orchestrator, "the Orchestrator ref moves with agent-protocol");
+  assert.equal(after.harness, before.harness, "…and the Harness's does not");
+  assert.equal(after.operator, before.operator, "…nor the operator's");
+});
+
+test("an edit to the Orchestrator's own package, its Dockerfile or its closure pin moves only its ref", async () => {
+  // Each of the three sources is image content. A hash that skipped one would let `jr2 up` report
+  // convergence onto the old Orchestrator (ADR-0038's silent stale image).
+  const base = kitFiles("export const x = 1;\n");
+  const before = await kitImageRefs(await mkTree(base), { platforms: AMD64 });
+  for (const [path, text] of [
+    ["packages/orchestrator/src/index.ts", "export const y = 1;\n"],
+    ["deploy/orchestrator/Dockerfile", "FROM node:24-slim\nEXPOSE 4000\n"],
+    ["deploy/orchestrator/closure.json", `{"zod":"4.4.4"}`],
+  ] as const) {
+    const after = await kitImageRefs(await mkTree({ ...base, [path]: text }), { platforms: AMD64 });
+    assert.notEqual(after.orchestrator, before.orchestrator, `an edit to ${path} moves the Orchestrator ref`);
+    assert.equal(after.harness, before.harness, `…an edit to ${path} does not move the Harness's`);
+    assert.equal(after.operator, before.operator, `…nor the operator's`);
+  }
 });
 
 test("kit hashes exclude only what each context's OWN .dockerignore drops", async () => {
@@ -423,6 +273,7 @@ test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", a
   const after = await kitImageRefs(await mkTree(kitFiles("export const x = 2;\n")), { platforms: AMD64 });
   assert.notEqual(after.harness, before.harness, "the harness ref moves with its sources");
   assert.equal(after.operator, before.operator, "…and only its own — the operator is untouched");
+  assert.equal(after.orchestrator, before.orchestrator, "…and the Orchestrator is untouched");
 
   const image = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y cargo\n" }, "jr2-image-");
   assert.equal(
@@ -433,40 +284,6 @@ test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", a
 
   const edited = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y rustc\n" }, "jr2-image-");
   assert.notEqual(await imageContextDigest(edited), await imageContextDigest(image), "a Dockerfile edit moves it");
-});
-
-test("`images/` rides the instance bundle, because the deployed Orchestrator reads that folder back", async () => {
-  // A Machine names its Sandbox Image context by `file:` URL, and the pod resolves it by computing
-  // the context digest AGAIN off its own copy of the folder (ADR-0049) — no path table on either
-  // side. So a context under `images/default` that a `workspace()` names by URL must be in the
-  // bundle: dropping it converged green and failed every provision on an ENOENT. The consequence is
-  // accepted, not worked around — the folder is instance-image content, so editing the Dockerfile
-  // moves the INSTANCE tag and rolls the Orchestrator. ADR-0038's ConfigMap still earns its keep:
-  // it keeps the resolved REF off the pod template, so a rebuilt Sandbox Image alone rolls nothing.
-  const port = (dockerfile: string) =>
-    stagingPort(() => ({
-      "package.json": `{"name":"inst"}`,
-      "workflows/build.ts": "export const machine = 1;\n",
-      "images/default/Dockerfile": dockerfile,
-    }));
-
-  assert.notEqual(
-    await hashOf(port("FROM node:24-slim\nRUN apt-get install -y cargo\n")),
-    await hashOf(port("FROM node:24-slim\n")),
-    "editing images/default/Dockerfile moves the instance image's address — the folder is content",
-  );
-
-  const scratchRoot = await mkdtemp(join(tmpdir(), "jr2-build-"));
-  const staged = await stageInstanceBundle(port("FROM node:24-slim\n"), scratchRoot);
-  try {
-    assert.ok(
-      await stat(join(staged.dir, "images", "default", "Dockerfile")),
-      "the staged bundle carries the context the pod will digest",
-    );
-    assert.ok(await stat(join(staged.dir, "workflows")), "…beside the modules that name it");
-  } finally {
-    await staged.dispose();
-  }
 });
 
 // --- the platform set (ADR-0045) ---------------------------------------------------------------
@@ -588,7 +405,6 @@ test("a Sandbox Image is ONE build to its content tag: no intermediate name, no 
   await buildSandboxImage(port, { dir: "/tmp/images/default", tag, instance: "inst", platforms: AMD64 });
 
   assert.equal(requests.length, 1, `one docker build (got: ${requests.map((r) => r.tag).join(", ")})`);
-  assert.equal(requests[0]!.dockerfileContent, undefined, "the user's own Dockerfile, never a generated one");
   assert.equal(requests[0]!.dockerfile, undefined, "…found where docker looks by default, in its own context");
   // Stamped on the command line — ownership is read off the image, never parsed out of its name
   // (ADR-0039), and the user's Dockerfile keeps zero jr2 knowledge.
@@ -905,7 +721,7 @@ function deployingRun(): { calls: Array<{ command: string; args: string[]; cwd: 
   };
 }
 
-/** A scratch `outDir` that does NOT exist yet — the shape `stageInstanceBundle` hands the port. */
+/** A scratch `outDir` that does NOT exist yet — the shape the Assembly's staging hands the port. */
 async function bundleOut(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "jr2-bundle-")), "bundle");
 }
@@ -967,6 +783,20 @@ test("a standalone instance is staged from its committed bytes, never from its n
   assert.equal(await readFile(join(out, "workflows", "feature.ts"), "utf8"), "export const machine = 1;\n");
 });
 
+test("a relative symlink in a standalone instance stays relative in the bundle", async () => {
+  // Without `verbatimSymlinks`, `cp` writes an absolute link back to the source folder, and the
+  // seal refuses it as a link out of the Assembly (ADR-0069).
+  const instance = await mkTree(
+    { "package.json": `{"name":"inst"}`, "package-lock.json": "lock\n", "shared/a.ts": "export {};\n" },
+    "jr2-instance-",
+  );
+  await mkdir(join(instance, "workflows"), { recursive: true });
+  await symlink("../shared", join(instance, "workflows", "lib"));
+  const out = await bundleOut();
+  await bundleInstance(instance, out, recordingRun().run);
+  assert.equal(await readlink(join(out, "workflows", "lib")), "../shared");
+});
+
 test("the instance's own shape decides the bundle, not the CLI's provenance", async () => {
   // Keyed on the INSTANCE's own lockfile, then on a `pnpm-workspace.yaml` above it — never on
   // `detectKitCheckout()`: a checkout CLI can legitimately drive a standalone instance (a
@@ -996,7 +826,11 @@ test("the instance's own shape decides the bundle, not the CLI's provenance", as
   const member_ = deployingRun();
   await bundleInstance(member, out, member_.run);
   assert.deepEqual(member_.calls, [
-    { command: "pnpm", args: ["--filter", "default", "--prod", "deploy", "--legacy", out], cwd: member },
+    {
+      command: "pnpm",
+      args: ["--filter", "default", "--prod", "deploy", "--legacy", "--config.node-linker=hoisted", out],
+      cwd: member,
+    },
   ]);
 
   // A standalone instance committed INSIDE the workspace — under its `pnpm-workspace.yaml`, and
@@ -1072,24 +906,4 @@ test("no lockfile, two package managers, and yarn are each a named refusal", asy
   const out = await bundleOut();
   await assert.rejects(bundleInstance(none, out, recordingRun().run));
   await assert.rejects(stat(out), "nothing was staged");
-});
-
-test("the seal leaves an npm-shaped bundle alone — its shims name no absolute path", async () => {
-  // The seal exists for `pnpm deploy`, which bakes the scratch directory into every `.bin` shim's
-  // NODE_PATH (ADR-0038). npm and bun write `$basedir`-relative shims, so the rewrite finds
-  // nothing — and the standalone bundle is already a function of its inputs. Asserted rather than
-  // assumed: the same hash twice is what makes `IfNotPresent` correct for the instance image.
-  const npmBundle = stagingPort(() => ({
-    "package.json": `{"name":"inst"}`,
-    "package-lock.json": `{"lockfileVersion":3}`,
-    "node_modules/.bin/tsx": `#!/bin/sh\nbasedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")\nexec node "$basedir/../tsx/dist/cli.mjs" "$@"\n`,
-    "node_modules/tsx/dist/cli.mjs": "export const cli = 1;\n",
-  }));
-  const { a, b, dispose } = await stageTwice(npmBundle);
-  try {
-    assert.equal(a.hash, b.hash, "two stagings, one address");
-    assert.match(await readFile(join(a.dir, "node_modules", ".bin", "tsx"), "utf8"), /\$basedir/);
-  } finally {
-    await dispose();
-  }
 });

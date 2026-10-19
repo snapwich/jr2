@@ -88,6 +88,13 @@ export type WorkflowDef = {
   machine: AnyStateMachine;
   /** Build this run's live providers. A test seam (ADR-0015): discovery injects nothing. */
   provide: (ctx: { instanceId: string }) => RunProviders;
+  /**
+   * The hash of the Assembly this Machine came from (ADR-0069), set at register. A run holds the
+   * Assembly it started under, so every save of the run stamps this hash. Absent only for a def
+   * that no Assembly loaded: an in-process test host. Such a host stamps nothing and checks
+   * nothing on restore.
+   */
+  assembly?: string;
 };
 
 /** The serializable identity of a run — what reconcile sees and what restore rebuilds from. */
@@ -342,6 +349,9 @@ export type RunStatus = RunRecord & {
    * route could read it.
    */
   reason?: string;
+  /** The hash of the Assembly the run started under (ADR-0069). Absent for a run no Assembly
+   * started. */
+  assembly?: string;
 };
 
 /**
@@ -682,6 +692,10 @@ type RunBlob = {
    * Absent means written before the stamp existed, which restore treats as drift — the point is to
    * never interpret a snapshot whose Machine cannot be vouched for. */
   machine?: string;
+  /** The hash of the Assembly the run started under (ADR-0069), stamped on every save. A blob
+   * without one cannot be vouched for, so restore treats it as drift, as it treats a blob with no
+   * `machine` stamp. */
+  assembly?: string;
   snapshot: unknown;
   agents?: Record<string, AgentAdmission>;
   /**
@@ -868,6 +882,18 @@ export class RunHost {
     return [...this.workflowDefs.keys()];
   }
 
+  /** The live runs by the hash of the Assembly each started under (ADR-0069): what holds an
+   * Assembly. A run from a def with no Assembly holds none. */
+  assemblyHolds(): Map<string, string[]> {
+    const holds = new Map<string, string[]>();
+    for (const [runId, run] of this.runs) {
+      const hash = run.def.assembly;
+      if (hash === undefined) continue;
+      holds.set(hash, [...(holds.get(hash) ?? []), runId]);
+    }
+    return holds;
+  }
+
   /** The registered template Machine's serialized structure (`GET /workflows/:name/machine`). */
   machine(name: string): MachineDoc | undefined {
     const def = this.workflowDefs.get(name);
@@ -949,9 +975,30 @@ export class RunHost {
     for (const stored of await this.store.live()) {
       const blob = stored.snapshot as RunBlob | null;
       const def = blob ? this.workflowDefs.get(blob.workflow) : undefined;
+      // A stamped blob whose Workflow the current Assembly does not hold is drift, not loss
+      // (ADR-0069): the snapshot is intact, and only this process cannot read it. `markDrifted`
+      // keeps the snapshot, so `jr2 status` still shows the run. Step 2 restores it inside the
+      // Assembly it names.
+      if (blob && !def && blob.assembly !== undefined) {
+        await this.store.markDrifted(
+          stored.runId,
+          `workflow "${blob.workflow}" saved under Assembly ${blob.assembly}, which the current Assembly does not hold`,
+        );
+        drifted.push(stored.runId);
+        continue;
+      }
       if (!blob || !def) {
         await this.store.markLost(stored.runId, blob ? `no workflow "${blob.workflow}"` : "empty snapshot");
         lost.push(stored.runId);
+        continue;
+      }
+
+      // A blob that names no Assembly cannot be vouched for (ADR-0069): greenfield, no migration.
+      // Step 1 resolves a stamped blob's Workflow in the current Assembly and checks its
+      // fingerprint below, as before. A host whose defs came from no Assembly checks nothing here.
+      if (def.assembly !== undefined && blob.assembly === undefined) {
+        await this.store.markDrifted(stored.runId, `workflow "${blob.workflow}": saved under no Assembly`);
+        drifted.push(stored.runId);
         continue;
       }
 
@@ -987,7 +1034,10 @@ export class RunHost {
           this.assemble(def, blob.instanceId),
           { snapshot: hydrated as never },
           record,
-          def,
+          // The run keeps the Assembly it started under (ADR-0069), so the stamp of every later
+          // save names it, not the Assembly whose Machine restored it. Step 1 restores into the
+          // current Assembly after the fingerprint check; step 2 restores inside the one named here.
+          blob.assembly !== undefined ? { ...def, assembly: blob.assembly } : def,
           agents,
           // The burned conversations come back with the admissions (ADR-0057): a restored run's
           // next `continue` must land where this run's last one did, not on a dead conversation.
@@ -1722,6 +1772,7 @@ export class RunHost {
       held: status === "active" ? heldOf(blob.holds ?? []) : [],
       fault: blob.fault,
       reason: stored.reason,
+      ...(blob.assembly !== undefined ? { assembly: blob.assembly } : {}),
     };
   }
 
@@ -1928,6 +1979,7 @@ export class RunHost {
       waiting: runWaiting(snap, run.actor.logic),
       held: heldOf(run.holds.values()),
       fault: run.fault,
+      ...(run.def.assembly !== undefined ? { assembly: run.def.assembly } : {}),
     };
   }
 
@@ -2315,6 +2367,10 @@ export class RunHost {
       // Stamped on every save, off the registered TEMPLATE (never the per-run `.provide()` result —
       // providers do not change shape, and `fingerprintOf` memoizes per machine object). ADR-0030.
       machine: fingerprintOf(run.def.machine),
+      // The Assembly the run started under (ADR-0069): the def it was spawned with, never the
+      // current one, so a publish mid-run does not restamp it, and a restore spawns it with the
+      // hash its blob named.
+      ...(run.def.assembly !== undefined ? { assembly: run.def.assembly } : {}),
       snapshot: serialized,
       agents: run.agents,
       epochs: run.epochs,

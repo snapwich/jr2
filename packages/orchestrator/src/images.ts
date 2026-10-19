@@ -10,8 +10,8 @@
 //
 // A user image's key is its build context's CONTENT DIGEST (ADR-0049). That is what lets the two
 // sides agree without a path table: a Machine names its context as a `file:` URL, whose absolute
-// path differs between the host at `jr2 up` and the baked Orchestrator, while the FOLDER is the same
-// folder — the instance's `node_modules` holds the very tree the converge hashed. Digest in, digest
+// path differs between the host at `jr2 up` and the Orchestrator Kit image, while the FOLDER is the
+// same folder — the published Assembly's `node_modules` holds the very tree the converge hashed. Digest in, digest
 // out, no dirname registry in between.
 //
 // There is NO cache and NO memo for the map itself. The whole reason it arrives as a mounted
@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { byteOrder } from "./content-hash.ts";
 
 /**
  * Every image ref one converge resolved. `harness` is the kit's own (built from a kit checkout, or
@@ -143,7 +144,8 @@ export function isImageContext(image: string): boolean {
  * nothing else (ADR-0037/0038).
  *
  * It lives HERE, not in the CLI's build module, because BOTH sides compute it: `jr2 up` keys the
- * map it publishes by this digest, and the baked Orchestrator computes it again at provision to
+ * map it publishes by this digest, and the Orchestrator computes it again at provision, over the
+ * published Assembly, to
  * look the ref up. One implementation is what makes "the host and the pod agree without a path
  * table" true rather than hopeful (ADR-0049).
  *
@@ -156,12 +158,11 @@ export function isImageContext(image: string): boolean {
 export async function imageContextDigest(dir: string): Promise<string> {
   const h = createHash("sha256");
   // A domain separator, and the whole of it: a Sandbox Image's build is `docker build` of the
-  // user's own directory with no generated text anywhere in it, so — unlike the instance image,
-  // whose generated Dockerfile is image content the context never holds — there is nothing to salt
-  // WITH. The constant only keeps this hash's domain apart from the bundle's.
+  // user's own directory with no generated text anywhere in it, so there is nothing to salt WITH.
+  // The constant only keeps this hash's domain apart from the Assembly's.
   h.update("salt:sandbox\n");
   const walk = async (root: string, d: string): Promise<void> => {
-    const entries = (await readdir(d, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+    const entries = (await readdir(d, { withFileTypes: true })).sort((a, b) => byteOrder(a.name, b.name));
     for (const e of entries) {
       const p = join(d, e.name);
       if (e.isDirectory()) await walk(root, p);
@@ -182,7 +183,7 @@ export async function imageContextDigest(dir: string): Promise<string> {
  * own key and is never looked up. Absent is the reserved `default` key — ADR-0037's middle leg.
  *
  * A context whose folder is unreadable fails HERE, before a Secret or a CR exists, naming the path:
- * in a deployed Orchestrator that means the module shipped a context the instance bundle does not
+ * in a deployed Orchestrator that means the module shipped a context the current Assembly does not
  * hold, which is a packaging bug and not a cluster one.
  */
 async function imageKey(image: string): Promise<string> {
@@ -194,7 +195,7 @@ async function imageKey(image: string): Promise<string> {
     throw new Error(
       `the Sandbox Image context ${image} cannot be read (${(err as NodeJS.ErrnoException).code ?? "read failed"}) — ` +
         "a `file:` image names a docker context the Machine's own module ships (ADR-0037), so it must travel " +
-        `with the module: check that ${dir} exists in the instance's node_modules.`,
+        `with the module: check that ${dir} exists in the current Assembly.`,
     );
   }
 }

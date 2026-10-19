@@ -17,6 +17,10 @@
 //   GET  /agents/:iid/deliveries/:id   long-poll an outstanding pick's answer    [Sandbox token]
 //   POST /sandboxes/:name/fetch        ask the node cache to fetch one Repo      [Sandbox token]
 //
+//   # `jr2 up`, and nothing else (ADR-0069)
+//   PUT  /assembly                     publish the next Assembly                 [publish token]
+//   GET  /assembly                     the current Assembly and the held ones    [open]
+//
 // The token is not decoration: an Agent has code execution in its Harness container and shares the
 // pod's network namespace, so it can reach these routes. A Sandbox token may deliver ONLY to an
 // agent surface recorded against its own Sandbox — never to a Gate. That is what stops an Agent
@@ -48,6 +52,7 @@ import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
 import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
 import { observe, type RunFeedEvent, type RunHost, type RunStatus, type WorkflowFeedEvent } from "./run-host.ts";
 import { KIT_VERSION } from "./config.ts";
+import type { AssemblyDoor } from "./assembly.ts";
 
 /** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
  * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery: `deferred`
@@ -79,6 +84,10 @@ async function readJson(text: Promise<string>): Promise<Record<string, unknown>>
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/** Why the publish token is refused everywhere but `PUT /assembly` (ADR-0069): it is not an
+ * Instance principal, so it reads no run, starts none, and speaks for no Agent. */
+const PUBLISHER_ONLY = "the publish token publishes an Assembly (PUT /assembly) and does nothing else";
 
 /** The app's context: `authenticated` resolves the bearer to a `principal` the routes read back. */
 type JR2Env = { Variables: { principal: Principal } };
@@ -351,11 +360,24 @@ export type CreateAppOptions = {
   /** Ping interval for the SSE feeds. Tests shorten it; nothing in production sets it. */
   pingMs?: number;
   /**
-   * Whether this instance has a data plane at all (ADR-0051): a registered Machine composes a
-   * Sandbox AND the process is deployed in a cluster. `false` is an answer — "this instance runs
-   * no Workspace" — and `jr2 status` says so rather than listing nothing.
+   * Whether this instance has a data plane at all (ADR-0051, ADR-0069): the process is deployed in
+   * a cluster, so it wires its kube client whatever the current Assembly composes. `false` is an
+   * answer — "this instance runs no Workspace" — and `jr2 status` says so rather than listing
+   * nothing.
    */
   dataPlane?: boolean;
+  /**
+   * The publish door and the current Assembly (ADR-0069). Absent for the in-process tests that
+   * build an app straight over a host: `GET /assembly` then answers no current Assembly, and
+   * `PUT /assembly` answers 404.
+   */
+  assembly?: AssemblyDoor;
+  /**
+   * The digests of the ConfigMaps this process reads through a mount (ADR-0069), as
+   * `readMountDigests` reads them. `GET /assembly` reports them, so `jr2 up` can wait for the
+   * kubelet before it publishes. Absent when not deployed: nothing is mounted.
+   */
+  mounts?: () => Promise<Record<string, string>>;
   /**
    * The Repo resources as the cluster currently reports them (ADR-0051), read per request off the
    * port — a cache the agent cloned minutes after boot reads as present the next time anyone asks.
@@ -393,6 +415,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
     const principal = auth(bearerOf(c));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
+    if (principal.kind === "publisher") return c.json({ error: PUBLISHER_ONLY }, 403);
     c.set("principal", principal);
     return next();
   };
@@ -411,6 +434,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
     const principal = auth(bearerOf(c));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
+    if (principal.kind === "publisher") return c.json({ error: PUBLISHER_ONLY }, 403);
     if (principal.kind !== "instance") {
       return c.json({ error: "run state and control need the Instance token — a Sandbox token has neither" }, 403);
     }
@@ -422,9 +446,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // readiness probe's target and because identity is not run state — it is the same class of thing
   // as the route table, which is public by being served. The CLI probes it to explain a failure it
   // could otherwise only report as a bare status code (version skew reads as a nonsense 404).
-  // `hash` is the image's content address (ADR-0019), absent for a host-booted fixture process,
-  // which has no image to be addressed.
-  app.get("/healthz", (c) => c.json({ ok: true, version: KIT_VERSION, hash: process.env.JR2_CONTENT_HASH }));
+  // `hash` is the current Assembly's (ADR-0069), absent while the process holds none.
+  app.get("/healthz", (c) => c.json({ ok: true, version: KIT_VERSION, hash: opts.assembly?.current()?.hash }));
   app.get("/readyz", (c) => c.json({ ready: true }));
 
   // Structure, not state: the workflow listing, a template's Machine, and the Console shell are
@@ -432,6 +455,43 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // loads before any token is entered (ADR-0032). Everything that reads or moves a run is guarded
   // below.
   app.get("/workflows", (c) => c.json(host.workflows()));
+
+  // The current Assembly and the ones live runs hold (ADR-0069). Open like `/workflows`: a hash
+  // and a Kit version are identity, the class of thing `/healthz` already serves.
+  // `mounts` is what this process reads from its mounted ConfigMaps, so a publish can wait until
+  // the kubelet has delivered the data the converge wrote.
+  app.get("/assembly", async (c) => {
+    const view = opts.assembly ? opts.assembly.view() : { kitVersion: KIT_VERSION, current: null, held: [] };
+    return c.json(opts.mounts ? { ...view, mounts: await opts.mounts() } : view);
+  });
+
+  // The publish door (ADR-0069): the publish token ALONE. Publishing imports code into the process
+  // that holds the ServiceAccount, so the Instance token, which starts runs and answers Gates, is
+  // refused here by name. The checks after authentication are the door's (assembly.ts), each with
+  // its own status, and the old Assembly stays current through every refusal.
+  app.put("/assembly", async (c) => {
+    if (auth) {
+      const principal = auth(bearerOf(c));
+      if (!principal) return c.json({ error: "unauthorized" }, 401);
+      if (principal.kind !== "publisher") {
+        return c.json(
+          {
+            error:
+              "publishing an Assembly needs the publish token (JR2_PUBLISH_TOKEN in the instance Secret), which " +
+              "`jr2 up` reads through the kube API — the Instance token does not publish (ADR-0069)",
+          },
+          403,
+        );
+      }
+    }
+    if (!opts.assembly) return c.json({ error: "this instance has no publish door" }, 404);
+    const answer = await opts.assembly.publish({
+      kitVersion: c.req.header("jr2-kit-version"),
+      hash: c.req.header("jr2-assembly-hash"),
+      body: c.req.raw.body,
+    });
+    return c.json(answer.body, answer.status);
+  });
 
   // The two PAGE addresses (ADR-0032): `/` and `/workflows/:name` negotiate. A browser navigation
   // (`Accept` prefers text/html) gets the one Console shell — the path carries the selection, the

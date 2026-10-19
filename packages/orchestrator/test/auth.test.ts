@@ -20,7 +20,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
-import { createAuthenticator, mintInstanceToken, sandboxToken } from "../src/tokens.ts";
+import {
+  createAuthenticator,
+  mayAskForSandbox,
+  mayDeliverToAgent,
+  mintInstanceToken,
+  sandboxToken,
+} from "../src/tokens.ts";
 import { standIn } from "../src/held-secrets.ts";
 import { admittedIid, codingDef, gatedDef, mkStore, MockFlueClient } from "./_fixtures.ts";
 
@@ -277,4 +283,27 @@ test("the Stand-in the Harness holds opens nothing: every route refuses it, and 
   );
   assert.equal(host.status(run.runId)?.status, "active", "the Agent's own run did not move");
   assert.equal(host.status(gated.runId)?.value, "review", "and no gate moved");
+});
+
+test("the publish token resolves to the publisher, which delivers to nothing (ADR-0069)", async () => {
+  const publishToken = mintInstanceToken();
+  const auth = createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY, publishToken });
+  assert.deepEqual(auth(publishToken), { kind: "publisher" });
+  assert.deepEqual(auth(INSTANCE_TOKEN), { kind: "instance" });
+  // Without one configured, no bearer is the publisher.
+  assert.equal(createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY })(publishToken), undefined);
+  assert.equal(mayDeliverToAgent({ kind: "publisher" }, "ws-1"), false);
+  assert.equal(mayAskForSandbox({ kind: "publisher" }, "ws-1"), false);
+
+  // On the routes: the agent surface and a Gate refuse it as they refuse an Instance-only route.
+  const host = new RunHost({ store: await mkStore() });
+  const clients = new Map<string, MockFlueClient>();
+  host.register(codingDef(clients));
+  host.register(gatedDef());
+  const app = createApp(host, auth);
+  const run = await host.start("coding", { sandbox: "ws-1" });
+  const surface = `/agents/${encodeURIComponent(await admittedIid(clients.get(run.instanceId)!))}/surface`;
+  assert.equal((await app.request(surface, get(publishToken))).status, 403);
+  assert.equal((await app.request(`/runs/${run.runId}`, get(publishToken))).status, 403);
+  assert.equal((await app.request("/workflows/coding/runs", post({}, publishToken))).status, 403);
 });

@@ -11,11 +11,17 @@
 
 import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@jr2/orchestrator";
+import {
+  IMAGES_CONFIGMAP,
+  IMAGES_KEY,
+  INSTANCE_SECRET,
+  ORCHESTRATOR_PORT,
+  ORCHESTRATOR_SERVICE,
+} from "@jr2/orchestrator";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -58,8 +64,8 @@ Given("a standalone instance scaffolded by the installed jr2", async function (t
  * them). No `git` block: these scenarios run `ping`, which touches no Workspace at all.
  *
  * `.env` reaches the CLI and stops there. It is one of the credential files a bundle stage drops
- * (ADR-0043), so nothing about the mirror is baked into the instance image — and nothing needs to
- * be: `kitRegistry` is answered at converge time, when the pod spec's image refs are composed.
+ * (ADR-0043), so nothing about the mirror rides the Assembly — and nothing needs to be:
+ * `kitRegistry` is answered at converge time, when the pod spec's image refs are composed.
  *
  * The import names `@jr2/orchestrator` by BARE specifier, so this tier is where it meets a
  * genuinely npm-installed kit — both when Node type-strips this file and when `jr2 up`'s gate
@@ -110,16 +116,126 @@ When("I install its dependencies with {string}", async function (this: E2EWorld,
  */
 const CACHE_SETTING: Record<string, string> = { npm: "npm_config_cache", pnpm: "npm_config_cache_dir" };
 
-// The converge, in installed mode: no kit sources resolve, so the Harness and operator
-// come from the published `<kitRegistry>/jr2-<x>:<kitversion>` tags the suite fixture PUSHED, pulled
-// by the nodes themselves (ADR-0038/0044), and the instance image is bundled from the lockfile
-// above — built here, and still delivered by `kind load`, because this converge is the one that
-// builds it.
+// The converge, in installed mode: no kit sources resolve, so the Harness, the operator and the
+// Orchestrator come from the published `<kitRegistry>/jr2-<x>:<kitversion>` tags the suite fixture
+// PUSHED, pulled by the nodes themselves (ADR-0038/0044/0069). Nothing is built: the Instance's
+// Workflows are staged from the lockfile above as an Assembly and published to the running
+// Orchestrator through `PUT /assembly` (ADR-0069) — the strip of the Kit closure, the Kit version
+// check at the door and the atomic publish all execute here, against the installed kit.
 When("I converge it onto the cluster", { timeout: 900_000 }, async function (this: E2EWorld): Promise<void> {
   const r = await this.runCli(["up", "--yes"]);
   assert.equal(r.code, 0, `jr2 up failed: ${r.stderr}`);
-  assert.match(r.stderr, /images: installed kit/, "the installed CLI took installed mode, not checkout mode");
+  assert.match(
+    r.stderr,
+    /images: installed kit — the published v\S+ Harness, operator and Orchestrator/,
+    "the installed CLI took installed mode, not checkout mode",
+  );
+  const staged = /assembly: ([0-9a-f]{12}) \(kit v/.exec(r.stderr)?.[1];
+  assert.ok(staged, `jr2 up staged an Assembly:\n${r.stderr}`);
+  assert.match(
+    r.stderr,
+    new RegExp(`assembly: ${staged} is current — workflows: .*\\bping\\b`),
+    "a fresh namespace has no current Assembly, so the converge published one, and it registers ping",
+  );
+  this.assemblyHash = staged;
 });
+
+/**
+ * The door's Kit version refusal (ADR-0069), against the Orchestrator the installed kit deployed.
+ * The publish token is read the way `jr2 up` reads it, through the kube API; the PUT names another
+ * Kit version, so the door answers 409 before it reads the body, names both numbers, and the
+ * Assembly the converge published stays current.
+ */
+Then(
+  "the Orchestrator refuses a publish at another Kit version, naming both numbers",
+  { timeout: 60_000 },
+  async function (this: E2EWorld): Promise<void> {
+    assert.ok(this.assemblyHash, "a converge published an Assembly first");
+    const token = Buffer.from(
+      await kubectlOut([
+        "--namespace",
+        this.namespace!,
+        "get",
+        "secret",
+        INSTANCE_SECRET,
+        "-o",
+        "jsonpath={.data.JR2_PUBLISH_TOKEN}",
+      ]),
+      "base64",
+    ).toString("utf8");
+    assert.ok(token, "the Instance Secret holds the publish token");
+    await withServiceForward(this.namespace!, async (base) => {
+      const before = (await (await fetch(`${base}/assembly`)).json()) as { kitVersion: string };
+      const other = "0.0.0-not-this-kit";
+      const res = await fetch(`${base}/assembly`, {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/x-tar",
+          "jr2-kit-version": other,
+          "jr2-assembly-hash": "000000000000",
+        },
+        body: new Uint8Array(0),
+      });
+      assert.equal(res.status, 409);
+      const body = (await res.json()) as { error?: string };
+      assert.match(body.error ?? "", new RegExp(`${other.replace(/\./g, "\\.")}[\\s\\S]*${before.kitVersion}`));
+      const after = (await (await fetch(`${base}/assembly`)).json()) as { current?: { hash?: string } | null };
+      assert.equal(after.current?.hash, this.assemblyHash, "the published Assembly is still current");
+    });
+  },
+);
+
+/**
+ * The strip of the Kit closure (ADR-0069), seen on the Orchestrator's own volume: the published
+ * Assembly holds no copy of a package the Kit image ships, so each resolves from the image. `ping`
+ * uses no Menu, so a second copy of xstate would not show in its reply; this reads the tree.
+ */
+Then(
+  "the published Assembly carries no copy of a Kit package",
+  { timeout: 60_000 },
+  async function (this: E2EWorld): Promise<void> {
+    assert.ok(this.assemblyHash, "a converge published an Assembly first");
+    const modules = `/instance/.jr2/assemblies/${this.assemblyHash}/node_modules`;
+    const kit = ["@jr2/orchestrator", "@jr2/agent-protocol", "xstate", "zod", "hono"];
+    const found = await kubectlOut([
+      "--namespace",
+      this.namespace!,
+      "exec",
+      `deployment/${ORCHESTRATOR_SERVICE}`,
+      "--",
+      "node",
+      "-e",
+      `const fs=require("fs");console.log(JSON.stringify(${JSON.stringify(kit)}.filter(n=>fs.existsSync(${JSON.stringify(modules)}+"/"+n))))`,
+    ]);
+    assert.deepEqual(JSON.parse(found), [], `the Assembly carries Kit packages under ${modules}`);
+  },
+);
+
+/** Port-forward the Orchestrator Service, as `jr2 up` reaches its door, for one callback. */
+async function withServiceForward(namespace: string, fn: (base: string) => Promise<void>): Promise<void> {
+  const child = spawn("kubectl", [
+    "--namespace",
+    namespace,
+    "port-forward",
+    `service/${ORCHESTRATOR_SERVICE}`,
+    `:${ORCHESTRATOR_PORT}`,
+  ]);
+  try {
+    const port = await new Promise<string>((resolve, reject) => {
+      let out = "";
+      child.stdout.on("data", (d: Buffer) => {
+        out += d.toString();
+        const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out);
+        if (m) resolve(m[1]!);
+      });
+      child.on("close", (code) => reject(new Error(`port-forward service/${ORCHESTRATOR_SERVICE} exited (${code})`)));
+    });
+    await fn(`http://127.0.0.1:${port}`);
+  } finally {
+    child.kill();
+  }
+}
 
 /**
  * `jr2 version --json` from the installed global, inside the Instance it just converged. Three
@@ -163,7 +279,12 @@ When(
       report.cli.version,
       report.deployed?.orchestrator?.error ?? "the deployed orchestrator answers the CLI's number",
     );
-    assert.ok(report.deployed?.orchestrator?.hash, "a deployed image has a content hash to report");
+    // `/healthz.hash` is the current Assembly's (ADR-0069): the one this converge published.
+    assert.equal(
+      report.deployed?.orchestrator?.hash,
+      this.assemblyHash,
+      "the Orchestrator serves the published Assembly",
+    );
     assert.equal(report.skew, "same");
   },
 );
@@ -193,8 +314,9 @@ Then("the instance's namespace is gone", async function (this: E2EWorld): Promis
  * Two halves, because one of them alone would prove less than it looks. The refs say the CLI
  * re-homed the published tags onto `kitRegistry` (the Harness and the Custodian have no pod in a
  * `ping` scenario — the instance's own image map is where they are nameable at all); the RUNNING
- * operator pod says a node resolved that address, pulled the bytes and unpacked them, which is the
- * exact leg `kind load` at the published names used to skip.
+ * operator and Orchestrator pods say a node resolved that address, pulled the bytes and unpacked
+ * them, which is the exact leg `kind load` at the published names used to skip. The Orchestrator
+ * is a Kit image since ADR-0069, so an installed kit pulls it like the others.
  *
  * Spelled the way a user's `kubectl` would (ADR-0010), namespace and selector included — they are
  * `OPERATOR_NAMESPACE`/`OPERATOR_SELECTOR` in packages/cli/src/deploy.ts, and a black-box step is
@@ -222,35 +344,57 @@ Then("the cluster pulled its Kit images from the local registry", async function
     `the custodian ref is ${refs.custodian} — a mirror re-homes it as ${kitRegistry}/envoy:<tag>@<digest>`,
   );
 
-  // The operator's declared image first: a pod could otherwise be a survivor of some earlier
-  // converge, and "something running out of the mirror" is not the claim.
+  await pulledFromRegistry(kitRegistry, {
+    what: "operator",
+    namespace: "jr2-system",
+    deployment: "jr2-controller-manager",
+    selector: "control-plane=controller-manager",
+    repo: "jr2-operator",
+  });
+  await pulledFromRegistry(kitRegistry, {
+    what: "Orchestrator",
+    namespace: this.namespace,
+    deployment: "jr2-orchestrator",
+    selector: "app=jr2-orchestrator",
+    repo: "jr2-orchestrator",
+  });
+});
+
+/**
+ * One Kit image's pull, proved on its Deployment and a pod. The declared image first: a pod could
+ * otherwise be a survivor of some earlier converge, and "something running out of the mirror" is
+ * not the claim. Then a pod actually RUNNING it. `Running` is the whole assertion: the kubelet
+ * reaches that phase only after containerd resolved `localhost:<port>/…` through the node's
+ * hosts.toml, pulled the manifest and unpacked the layers. A rollout leaves the previous pod
+ * terminating, so this asks whether ANY running pod carries the declared ref rather than that
+ * every one does.
+ */
+async function pulledFromRegistry(
+  kitRegistry: string,
+  opts: { what: string; namespace: string; deployment: string; selector: string; repo: string },
+): Promise<void> {
   const declared = (
     await kubectlOut([
       "--namespace",
-      "jr2-system",
+      opts.namespace,
       "get",
       "deployment",
-      "jr2-controller-manager",
+      opts.deployment,
       "-o",
       "jsonpath={.spec.template.spec.containers[0].image}",
     ])
   ).trim();
   assert.ok(
-    declared.startsWith(`${kitRegistry}/jr2-operator:`),
-    `the operator Deployment declares ${declared}, not a ${kitRegistry} ref`,
+    declared.startsWith(`${kitRegistry}/${opts.repo}:`),
+    `the ${opts.what} Deployment declares ${declared}, not a ${kitRegistry} ref`,
   );
-
-  // Then a pod actually RUNNING it. `Running` is the whole assertion: the kubelet reaches that
-  // phase only after containerd resolved `localhost:<port>/…` through the node's hosts.toml, pulled
-  // the manifest and unpacked the layers. A rollout leaves the previous pod terminating, so this
-  // asks whether ANY running pod carries the declared ref rather than that every one does.
   const pods = await kubectlOut([
     "--namespace",
-    "jr2-system",
+    opts.namespace,
     "get",
     "pods",
     "-l",
-    "control-plane=controller-manager",
+    opts.selector,
     "-o",
     `jsonpath={range .items[*]}{.status.phase}{"\\t"}{.spec.containers[*].image}{"\\n"}{end}`,
   ]);
@@ -261,9 +405,9 @@ Then("the cluster pulled its Kit images from the local registry", async function
     .map(([, image]) => image ?? "");
   assert.ok(
     running.includes(declared),
-    `no operator pod is running ${declared} — the node never pulled it. Pods:\n${pods}`,
+    `no ${opts.what} pod is running ${declared} — the node never pulled it. Pods:\n${pods}`,
   );
-});
+}
 
 /** kubectl, verbatim, for the claims that reach past the instance's own namespace. */
 async function kubectlOut(args: string[]): Promise<string> {

@@ -1,7 +1,8 @@
 // The Cucumber World for the jr2 e2e suite: one per scenario (so scenarios are fully isolated and the
 // suite is `--parallel`-safe). It owns a fresh temp INSTANCE folder, drives the REAL `jr2` binary as a
-// child process against it, and — when serving — the REAL server entrypoint the instance image runs
-// (ADR-0010/0019: no host dev mode; the fixture boots exactly the deployed process, on the host).
+// child process against it, and — when serving — the REAL server entrypoint the Orchestrator Kit
+// image runs (ADR-0010/0019/0069: no host dev mode; the fixture boots exactly the deployed process,
+// on the host, and publishes the instance's Assembly through the same door `jr2 up` does).
 //
 // Black-box by design (ADR-0010): steps assert only on what a user's shell sees — captured stdout
 // (the one machine-readable result), stderr (human activity), and the process exit code. The `jr2`
@@ -15,7 +16,8 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, copyFile, link, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, copyFile, link, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -23,7 +25,14 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { setWorldConstructor } from "@cucumber/cucumber";
 import { issueCa, issueLeaf, type Pem } from "@jr2/cli";
-import { startStubHarness, type Admission, type RunningStubHarness } from "@jr2/orchestrator";
+import {
+  assemblyHash,
+  KIT_VERSION,
+  packAssembly,
+  startStubHarness,
+  type Admission,
+  type RunningStubHarness,
+} from "@jr2/orchestrator";
 import type { Browser, Page } from "playwright";
 import { startFakeProvider, type FakeProvider } from "./fake-provider.ts";
 import type { InstalledKit } from "./dist-kit.ts";
@@ -31,7 +40,8 @@ import type { InstalledKit } from "./dist-kit.ts";
 /** The `jr2` bin (the `.js` shim that type-erases the kit's `.ts` sources), resolved from this
  * file's location. */
 const BIN = fileURLToPath(new URL("../../packages/cli/bin/jr2.js", import.meta.url));
-/** The instance image's server entrypoint (ADR-0019) — the per-scenario orchestrator fixture. */
+/** The Orchestrator Kit image's server entrypoint (ADR-0019, ADR-0069) — the per-scenario
+ * orchestrator fixture. */
 const SERVER_BIN = fileURLToPath(new URL("../../packages/orchestrator/bin/server.ts", import.meta.url));
 /** Base for per-scenario temp instances; gitignored. */
 const TMP_BASE = fileURLToPath(new URL("../.tmp/", import.meta.url));
@@ -76,9 +86,22 @@ export type ServerInfo = { url: string; token: string };
 export type Announcement = {
   url?: string;
   workflows?: string[];
+  /** The current Assembly's hash (ADR-0069); `null` before the first publish. */
+  assembly?: string | null;
   lost?: string[];
   drifted?: string[];
   failed?: string[];
+};
+
+/** What the door answered one `world.publish()` (ADR-0069): the status, the hash the fixture
+ * sent, and the body. */
+export type PublishAnswer = {
+  status: number;
+  hash: string;
+  body: { hash?: string; workflows?: string[]; unchanged?: boolean; error?: string; report?: string[] } & Record<
+    string,
+    unknown
+  >;
 };
 
 export class E2EWorld {
@@ -88,6 +111,8 @@ export class E2EWorld {
   private serverProc?: ChildProcess;
   /** The last boot's announce line, whole (ADR-0030 reports unresumed runs on it). */
   announced?: Announcement;
+  /** The door's answer to the last `publish()` (ADR-0069). */
+  published?: PublishAnswer;
   /** The serving orchestrator's address + Instance token, once serving. */
   server?: ServerInfo;
   /** The in-process stub Harness (ADR-0011), started on demand; its url is run input. */
@@ -140,6 +165,8 @@ export class E2EWorld {
    * `runCli` spawn the `jr2` on PATH instead of this checkout's `bin/jr2.js` — that swap IS the tier,
    * since a checkout binary would take checkout mode and never execute the branch under test. */
   dist?: InstalledKit;
+  /** @dist: the Assembly hash the last `jr2 up` staged and published (ADR-0069). */
+  assemblyHash?: string;
   /** @kind: the scripted MODEL this scenario's pods talk to (ADR-0038). The pod runs the stock
    * Harness, so this is the only fake left in the tier — see `fake-provider.ts`. */
   provider?: FakeProvider;
@@ -163,6 +190,9 @@ export class E2EWorld {
   /** Extra env for the `jr2` binary — @kind publishes the fake provider's address here, because a
    * deployment-varying endpoint rides env and never a committed literal (ADR-0019). */
   private extraEnv: Record<string, string> = {};
+  /** The publish token this scenario's server boots with (ADR-0069): what `PUT /assembly` alone
+   * accepts. The fixture plays `jr2 up`, which reads it from the instance Secret. */
+  readonly publishToken = randomBytes(16).toString("hex");
   /** The Instance token this scenario's server boots with (the fixture plays `jr2 up`'s Secret). */
   private readonly token = randomBytes(16).toString("hex");
 
@@ -179,8 +209,8 @@ export class E2EWorld {
    *
    * Also starts this scenario's scripted MODEL (ADR-0038) and publishes its address to the `jr2`
    * binary. HOST-SIDE, on an ephemeral port, so `--parallel` stays safe and the tier needs neither
-   * an image nor a manifest for it. The instance image's content hash is unaffected: the config
-   * file is byte-identical run to run, and the varying URL materializes into the agents ConfigMap.
+   * an image nor a manifest for it. The Assembly's hash is unaffected: the config file is
+   * byte-identical run to run, and the varying URL materializes into the agents ConfigMap.
    */
   async setupKind(): Promise<void> {
     this.namespace = `jr2e2e-${randomBytes(3).toString("hex")}`;
@@ -209,8 +239,8 @@ export class E2EWorld {
    * @model (ADR-0066): the kind instance's shape, a real endpoint behind the Custodian. The
    * selected profile is COPIED into the instance folder as `model-endpoint.json` — a file, not
    * env, because the instance's config and definitions are evaluated in the pod too, where env
-   * set here is not (the kind config says so of its own `apiKey`). The copy changes the instance
-   * image's content hash only when the profile does. The key alone stays on env, as a Held secret
+   * set here is not (the kind config says so of its own `apiKey`). The copy changes the Assembly's
+   * hash only when the profile does (ADR-0069). The key alone stays on env, as a Held secret
    * (ADR-0059) the config reads at `jr2 up` and the Custodian alone receives.
    *
    * No scripted provider, no CA of the tier's own, no echo: what `@kind` fakes, this tier has.
@@ -243,8 +273,8 @@ export class E2EWorld {
    * would bundle with `pnpm deploy`; the lockfile install this proves would never run.
    *
    * The name is minted lowercase here rather than taken from `mkdtemp`, whose suffix may carry
-   * uppercase: it becomes the instance's identity, its namespace, AND the repository half of the
-   * instance image's tag — and a docker repository may not be mixed case.
+   * uppercase: it becomes the instance's identity, its namespace, AND the repository half of every
+   * Sandbox Image tag — and a docker repository may not be mixed case.
    */
   async setupDist(kit: InstalledKit): Promise<void> {
     const name = `jr2dist-${randomBytes(4).toString("hex")}`;
@@ -278,10 +308,11 @@ export class E2EWorld {
     }
   }
 
-  /** Restart the orchestrator against the same instance — the restore path (ADR-0007/0012). */
+  /** Restart the orchestrator against the same instance — the restore path (ADR-0007/0012). It
+   * publishes nothing: `current` persists under `.jr2`, and the boot serves it (ADR-0069). */
   async restartServer(): Promise<void> {
     await this.stopServer();
-    await this.startServer();
+    await this.bootServer();
   }
 
   /** The Instance token as a bearer header — what the CLI sends after resolving its target. */
@@ -386,20 +417,66 @@ export class E2EWorld {
     );
   }
 
-  /** Boot the server entrypoint (the deployed process, ADR-0019) and wait for its announce line.
-   * Host-only — @kind never calls this; its orchestrator runs in-cluster, deployed by `jr2 up`. */
+  /** Boot the server entrypoint (the deployed process, ADR-0019), wait for its announce line, and
+   * publish the instance's Assembly (ADR-0069). Host-only — @kind never calls this; its
+   * orchestrator runs in-cluster, deployed by `jr2 up`. */
   async startServer(): Promise<void> {
+    await this.bootServer();
+    await this.publish();
+  }
+
+  /**
+   * Publish the instance's Assembly through the door, as `jr2 up` does (ADR-0069): `workflows/`,
+   * `jr2.config.ts` and `images/`, packed by the Assembly codec and named by the Assembly hash,
+   * with the publish token. No `node_modules`: the published tree lands under `.jr2/assemblies/`
+   * in this folder, so a bare name resolves from the suite's own `node_modules`, the way an
+   * Assembly resolves from the Kit image. A step that edits a workflow after boot calls this again.
+   * Returns the door's answer; a refusal throws unless `expectRefusal` is set.
+   */
+  async publish(opts: { expectRefusal?: boolean; token?: string; kitVersion?: string } = {}): Promise<PublishAnswer> {
+    assert.ok(this.server, "the orchestrator is serving");
+    const staging = await mkdtemp(join(tmpdir(), "jr2-e2e-assembly-"));
+    try {
+      for (const name of ["workflows", "jr2.config.ts", "images"]) {
+        if (existsSync(join(this.dir, name))) await cp(join(this.dir, name), join(staging, name), { recursive: true });
+      }
+      const hash = await assemblyHash(staging);
+      const res = await fetch(`${this.server.url}/assembly`, {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${opts.token ?? this.publishToken}`,
+          "content-type": "application/x-tar",
+          "jr2-kit-version": opts.kitVersion ?? KIT_VERSION,
+          "jr2-assembly-hash": hash,
+        },
+        body: new Uint8Array(await packAssembly(staging)),
+      });
+      const answer: PublishAnswer = { status: res.status, hash, body: (await res.json()) as PublishAnswer["body"] };
+      if (!opts.expectRefusal) {
+        assert.equal(res.status, 200, `the fixture's publish was refused: ${JSON.stringify(answer.body)}`);
+      }
+      this.published = answer;
+      return answer;
+    } finally {
+      await rm(staging, { recursive: true, force: true });
+    }
+  }
+
+  /** Boot the server entrypoint and wait for its announce line, publishing nothing: a restart
+   * boots from `current` (ADR-0069). */
+  async bootServer(): Promise<void> {
     const proc = spawn(process.execPath, [SERVER_BIN], {
       cwd: this.dir,
       env: {
         // Sealed like the CLI's, and for a sharper reason: the entrypoint's data-plane switch is
-        // `composesSandbox && JR2_NAMESPACE !== undefined` (`server.ts`), so one exported variable
-        // would turn `features/workspace.feature`'s "faults pointedly, having no cluster" into a
-        // real Sandbox provisioned on whatever cluster the developer was pointed at.
+        // `JR2_NAMESPACE !== undefined` (`server.ts`, ADR-0069), so one exported variable would
+        // turn `features/workspace.feature`'s "faults pointedly, having no cluster" into a real
+        // Sandbox provisioned on whatever cluster the developer was pointed at.
         ...this.sealedEnv(),
         PORT: "0",
         HOST: "127.0.0.1",
         JR2_INSTANCE_TOKEN: this.token,
+        JR2_PUBLISH_TOKEN: this.publishToken,
       },
     });
     this.serverProc = proc;

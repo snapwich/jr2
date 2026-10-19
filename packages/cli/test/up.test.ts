@@ -5,13 +5,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes, X509Certificate } from "node:crypto";
 import {
   CUSTODIAN_PROGRAM,
+  configMapDigest,
+  MOUNTED_CONFIGMAPS,
   custodianRef,
   effectorKey,
   gitPushSecretName,
@@ -24,7 +26,7 @@ import {
   type HeldManifest,
 } from "@jr2/orchestrator";
 import { linkKit } from "./_kit.ts";
-import { heldDigest, up } from "../src/commands/up.ts";
+import { heldDigest, MAP_PROPAGATION, up } from "../src/commands/up.ts";
 import { instanceObjects, type HeldObjects } from "../src/deploy.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
@@ -203,13 +205,13 @@ class FakeCluster implements KubeAdmin {
 }
 
 /** A build port that records instead of building. `files` is what `pnpm deploy` would have
- * materialized into the bundle — including, in the real thing, the kit's own sources under
- * `node_modules/.pnpm` (the resolved dependency, workspace-linked or registry-fetched alike).
+ * materialized into the bundle — the Assembly before its strip (ADR-0069). The default carries the
+ * one thing staging requires: the Instance's `@jr2/orchestrator`, at this CLI's Kit version.
  *
  * Every verb records distinguishably, because ADR-0038's layers differ in exactly HOW they build:
- * a kit image is `-f <committed Dockerfile>` against another context, the instance image is a
- * generated Dockerfile on stdin, and a Sandbox Image is its own directory and nothing else. The tag
- * alone is recorded on the `build ` line so the address stays extractable from it. */
+ * a kit image is `-f <committed Dockerfile>` against another context, and a Sandbox Image is its
+ * own directory and nothing else. The tag alone is recorded on the `build ` line so the address
+ * stays extractable from it. */
 function fakeBuild(
   record: string[],
   opts: {
@@ -232,16 +234,19 @@ function fakeBuild(
     buildable?: string[];
   } = {},
 ): BuildPort {
-  const files = opts.files ?? { "package.json": "{}" };
+  const files = opts.files ?? STAGED_FILES;
   return {
-    bundle: async (_dir, out) => {
+    bundle: async (dir, out) => {
       record.push("bundle");
+      // The Instance's own files ride the bundle, as a real install keeps them: the staged
+      // Workflows must be the ones the walk loaded (ADR-0069).
+      await cp(join(dir, "workflows"), join(out, "workflows"), { recursive: true }).catch(() => {});
       for (const [rel, content] of Object.entries(files)) {
         await mkdir(join(out, dirname(rel)), { recursive: true });
         await writeFile(join(out, rel), content);
       }
     },
-    build: async ({ tag, platforms, context, dockerfile, dockerfileContent, labels }) => {
+    build: async ({ tag, platforms, context, dockerfile, labels }) => {
       record.push(`build ${tag}`);
       // Explicit on every build (ADR-0045), recorded on its own line so the platform set stays
       // assertable without disturbing the tag-shaped assertions above it.
@@ -250,7 +255,6 @@ function fakeBuild(
       // no sweep can ever collect, which is invisible in every other assertion here.
       record.push(`stamp ${tag} ${JSON.stringify(labels ?? null)}`);
       if (dockerfile) record.push(`build-with -f ${dockerfile} ctx ${context}`);
-      else if (dockerfileContent) record.push(`build-with stdin ${tag}`);
       else record.push(`build-with context-default ${tag}`);
     },
     imageUser: async (image, platforms) => {
@@ -282,6 +286,74 @@ function fakeBuild(
     nodeImages: async (cluster) => [{ node: `${cluster}-control-plane`, images: opts.nodeImages ?? [] }],
     removeNodeImage: async (_cluster, node, id) => void record.push(`rmi-node ${node} ${id}`),
   };
+}
+
+/** What a bundle holds by default: the Instance and its `@jr2/orchestrator`, which staging reads
+ * the Kit version from and then strips (ADR-0069). */
+const STAGED_FILES: Record<string, string> = {
+  "package.json": "{}",
+  "node_modules/@jr2/orchestrator/package.json": JSON.stringify({ name: "@jr2/orchestrator", version: KIT_VERSION }),
+};
+
+/**
+ * The running Orchestrator as `jr2 up` reaches it after the rollout (ADR-0069): a port-forward
+ * (the `KubePort`) and the two `/assembly` verbs over it (the `fetch`). It keeps a current
+ * Assembly, so a second converge in the same world sees the first one's publish. `refuse` scripts
+ * the door's answer to the next PUTs.
+ */
+class FakeOrchestrator {
+  current: { hash: string; kitVersion: string } | null = null;
+  requests: Array<{ method: string; url: string; headers: Record<string, string>; bytes: number }> = [];
+  forwards: string[] = [];
+  closed = 0;
+  refuse: Array<{ status: number; body: Record<string, unknown> }> = [];
+  /** What `GET /assembly` reports as the mounted ConfigMap digests, by GET number (0-based).
+   * Unset: no `mounts`, as an Orchestrator that is not deployed answers. */
+  mounts?: (n: number) => Record<string, string> | undefined;
+  gets = 0;
+
+  kube = {
+    currentContext: async () => "kind-test",
+    readSecret: async () => undefined,
+    portForward: async (opts: { namespace: string; service: string; port: number }) => {
+      this.forwards.push(`${opts.namespace}/${opts.service}:${opts.port}`);
+      return { url: "http://orchestrator.test", close: () => void this.closed++ };
+    },
+  };
+
+  fetch = async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = init?.method ?? "GET";
+    const headers = Object.fromEntries(new Headers(init?.headers).entries());
+    const body = init?.body as Uint8Array | undefined;
+    this.requests.push({ method, url, headers, bytes: body?.byteLength ?? 0 });
+    if (url !== "http://orchestrator.test/assembly") return Response.json({ error: "not found" }, { status: 404 });
+    if (method === "GET") {
+      const mounts = this.mounts?.(this.gets++);
+      return Response.json({
+        kitVersion: KIT_VERSION,
+        current: this.current && { ...this.current, workflows: [] },
+        held: [],
+        ...(mounts ? { mounts } : {}),
+      });
+    }
+    const refusal = this.refuse.shift();
+    if (refusal) return Response.json(refusal.body, { status: refusal.status });
+    const hash = headers["jr2-assembly-hash"]!;
+    const unchanged = this.current?.hash === hash;
+    this.current = { hash, kitVersion: headers["jr2-kit-version"]! };
+    return Response.json({
+      hash,
+      kitVersion: KIT_VERSION,
+      workflows: ["work"],
+      held: [],
+      ...(unchanged ? { unchanged } : {}),
+    });
+  };
+
+  /** The PUTs the door received. */
+  get puts() {
+    return this.requests.filter((r) => r.method === "PUT");
+  }
 }
 
 /** One image as a store reports it — jr2-built and worth reclaiming unless the test says otherwise. */
@@ -419,6 +491,11 @@ async function mkKit(): Promise<string> {
     "effector/cmd/effector/main.go": "package main\n",
     "effector/internal/wire/wire.go": "package wire\n",
     "packages/harness/package.json": `{"name":"@jr2/harness"}`,
+    // The Orchestrator Kit image (ADR-0069): its Dockerfile, its package and the kit package it
+    // depends on.
+    "deploy/orchestrator/Dockerfile": "FROM node:24-slim\n",
+    "packages/orchestrator/package.json": `{"name":"@jr2/orchestrator"}`,
+    "packages/agent-protocol/package.json": `{"name":"@jr2/agent-protocol"}`,
   };
   for (const [rel, content] of Object.entries(files)) {
     await mkdir(join(kit, dirname(rel)), { recursive: true });
@@ -427,7 +504,15 @@ async function mkKit(): Promise<string> {
   return kit;
 }
 
-type World = { io: Io; kube: FakeCluster; built: string[]; err: string[]; confirms: string[]; choices: string[][] };
+type World = {
+  io: Io;
+  kube: FakeCluster;
+  orchestrator: FakeOrchestrator;
+  built: string[];
+  err: string[];
+  confirms: string[];
+  choices: string[][];
+};
 
 /** The gate's answer for a world that is not about the gate (ADR-0050). Every converge runs the
  * Instance's own `tsc` first; these fixtures are folders in the temp dir with no `node_modules`, so
@@ -459,6 +544,7 @@ function mkWorld(
   } = {},
 ): World {
   const kube = new FakeCluster();
+  const orchestrator = new FakeOrchestrator();
   const built: string[] = [];
   const err: string[] = [];
   const confirms: string[] = [];
@@ -470,6 +556,8 @@ function mkWorld(
     cwd: root,
     kitDir: over.kitDir ?? root,
     kubeAdmin: kube,
+    kube: orchestrator.kube,
+    fetch: orchestrator.fetch,
     typecheck: over.typecheck ?? TYPECHECK_OK,
     build: fakeBuild(built, {
       files: over.bundleFiles,
@@ -489,7 +577,14 @@ function mkWorld(
       return typeof over.choose === "function" ? over.choose(options) : over.choose;
     },
   };
-  return { io, kube, built, err, confirms, choices };
+  return { io, kube, orchestrator, built, err, confirms, choices };
+}
+
+/** The Orchestrator Deployment this converge applied. */
+function deploymentOf(w: World): Record<string, any> {
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  return items.find((i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator")!;
 }
 
 /** The `jr2-images` map this converge applied — the ConfigMap the Orchestrator reads per provision
@@ -536,7 +631,7 @@ test("up refuses a cluster that drops pod-level resources, naming the version (A
   assert.match(said, /refusing: .*kind-test.*drops pod-level resources/);
   assert.match(said, /v1\.35\.0/, "the version the server reported");
   assert.match(said, /PodLevelResources/, "and the gate the owner turned off");
-  assert.deepEqual(off.built, [], "nothing built");
+  assert.deepEqual(off.built, ["bundle"], "the Assembly was staged (ADR-0069); nothing was built");
   const probe = JSON.parse(off.kube.dryRuns[0]!);
   assert.equal(probe.kind, "Pod");
   assert.ok(probe.spec.resources?.limits?.memory, "the probe states pod-level limits");
@@ -566,7 +661,7 @@ test("up refuses a cluster whose API server does not answer the version read, na
   assert.match(said, /refusing: cannot reach the API server of kind-test \(no answer after 10s\)/);
   assert.match(said, /Nothing was applied/);
   assert.deepEqual(dead.kube.applied, []);
-  assert.deepEqual(dead.built, []);
+  assert.deepEqual(dead.built, ["bundle"], "staged before any cluster spend, and nothing built");
 });
 
 test("up refuses a cluster below the Kubernetes floor, naming what it found (ADR-0037)", async () => {
@@ -584,7 +679,7 @@ test("up refuses a cluster below the Kubernetes floor, naming what it found (ADR
   assert.match(said, /1\.35/, "and the floor");
   assert.match(said, /kind-test/, "on which context — the one fact the user can change");
   assert.deepEqual(old.kube.applied, [], "not even the namespace");
-  assert.deepEqual(old.built, []);
+  assert.deepEqual(old.built, ["bundle"], "staged before any cluster spend, and nothing built");
   assert.deepEqual(old.confirms, [], "no first-contact ask for a cluster that cannot host it");
 
   const current = mkWorld(root);
@@ -667,7 +762,7 @@ test("a rollout that times out carries the pods' evidence, not just kubectl's ve
   w.kube.failedPods["app=jr2-orchestrator"] = [
     {
       metadata: { name: "jr2-orchestrator-77d-abc" },
-      spec: { nodeName: "kind-worker", containers: [{ name: "orchestrator", image: "jr2-instance-myinst:abc-amd64" }] },
+      spec: { nodeName: "kind-worker", containers: [{ name: "orchestrator", image: "jr2-orchestrator:abc-amd64" }] },
       status: {
         phase: "Pending",
         containerStatuses: [
@@ -712,14 +807,14 @@ test("operator: manage:false skips the layer — and the image build with it", a
 
 // --- kit images (ADR-0038): built from source in a checkout, published when installed -----------
 
-test("a kit checkout builds the Harness and operator; installed from npm builds none; the Custodian is never built", async () => {
+test("a kit checkout builds the Harness, operator and Orchestrator; installed from npm builds none; the Custodian is never built", async () => {
   const kit = await mkKit();
   const root = await mkInstance(`export default { name: "myinst" };\n`);
 
   const checkout = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], checkout.io), 0);
   assert.match(checkout.err.join("\n"), /kit checkout/, "the mode is narrated once, not inferred");
-  for (const repo of ["jr2-harness", "jr2-operator"]) {
+  for (const repo of ["jr2-harness", "jr2-operator", "jr2-orchestrator"]) {
     const built = checkout.built.find((b) => b.startsWith(`build ${repo}:`))!;
     assert.ok(built, `${repo} is built (got: ${checkout.built.join(", ")})`);
     const ref = built.slice("build ".length);
@@ -728,7 +823,7 @@ test("a kit checkout builds the Harness and operator; installed from npm builds 
       new RegExp(`^${repo}:[0-9a-f]{12}-amd64$`),
       "…at a content address of (inputs × platform), never a moving tag",
     );
-    // The SAME transport branch the instance image uses — one story, no per-layer drift.
+    // The SAME transport branch every image uses — one story, no per-layer drift.
     assert.ok(checkout.built.includes(`kind-load ${ref} → test`), `${repo} is delivered by kind load`);
     assert.ok(
       checkout.built.some((b) => b.startsWith(`build-with -f ${kit}/`)),
@@ -740,13 +835,15 @@ test("a kit checkout builds the Harness and operator; installed from npm builds 
   assert.equal(await up(["--yes"], installed.io), 0);
   assert.match(installed.err.join("\n"), /installed kit/);
   assert.ok(
-    !installed.built.some((b) => /^build jr2-(harness|operator):/.test(b)),
+    !installed.built.some((b) => /^build /.test(b)),
     `installed from npm, kit images are pulled, never built (got: ${installed.built.join(", ")})`,
   );
   // The published <kitversion> refs are what the map names, and what the Instance Harness runs —
   // at the canonical home, because a bare tag is `docker.io/library/` and nothing is there
   // (ADR-0044).
   assert.equal(imagesOf(installed).harness, `ghcr.io/snapwich/jr2-harness:${KIT_VERSION}`);
+  assert.equal(imagesOf(installed).orchestrator, `ghcr.io/snapwich/jr2-orchestrator:${KIT_VERSION}`);
+  assert.match(installed.err.join("\n"), /the published v\S+ Harness, operator and Orchestrator, pulled from ghcr\.io/);
   // The Custodian's image is deployed and never built, in either world (ADR-0038, ADR-0059): the
   // pinned upstream Envoy, by digest.
   for (const world of [checkout, installed]) {
@@ -766,13 +863,23 @@ test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come 
   assert.equal(images.harness, `zot.example.test/jr2-harness:${KIT_VERSION}`);
   assert.equal(images.custodian, custodianRef("zot.example.test"));
   assert.equal(images.operator, `zot.example.test/jr2-operator:${KIT_VERSION}`);
+  assert.equal(
+    images.orchestrator,
+    `zot.example.test/jr2-orchestrator:${KIT_VERSION}`,
+    "the Orchestrator too (ADR-0069)",
+  );
+  assert.equal(
+    deploymentOf(w).spec.template.spec.containers[0].image,
+    images.orchestrator,
+    "and the Deployment runs it",
+  );
   assert.match(w.err.join("\n"), /zot\.example\.test/, "the mirror is narrated, never silently used");
   assert.ok(
     !w.built.some((b) => /^(build|push) (zot|ghcr)/.test(b)),
     `a published Kit image is pulled, never built or mirrored by a converge (got: ${w.built.join(", ")})`,
   );
   // `registry` answers a different question — where THIS converge's builds go (ADR-0044) — so it
-  // must not re-home the published three, and `kitRegistry` must not re-home the instance image.
+  // must not re-home the published Kit images. With no `workspace()` there is no build at all.
   const both = await mkInstance(
     `export default { name: "b", registry: "reg.example.com/jr2", kitRegistry: "zot.example.test" };\n`,
     "b",
@@ -780,10 +887,8 @@ test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come 
   const w2 = mkWorld(both);
   assert.equal(await up(["--yes"], w2.io), 0);
   assert.equal(imagesOf(w2).harness, `zot.example.test/jr2-harness:${KIT_VERSION}`);
-  assert.ok(
-    w2.built.some((b) => b.startsWith("push reg.example.com/jr2/jr2-instance-b:")),
-    `the instance image still goes to registry (got: ${w2.built.join(", ")})`,
-  );
+  assert.equal(imagesOf(w2).orchestrator, `zot.example.test/jr2-orchestrator:${KIT_VERSION}`);
+  assert.deepEqual(w2.built, ["bundle"], "nothing is pushed: an installed Instance builds no image (ADR-0069)");
 
   const home = mkWorld(await mkInstance(`export default { name: "h" };\n`, "h"));
   assert.equal(await up(["--yes"], home.io), 0);
@@ -795,7 +900,7 @@ test("a registry pushes every layer; a non-kind context without one fails BEFORE
   const pushRoot = await mkInstance(`export default { name: "r", registry: "reg.example.com/jr2" };\n`, "r");
   const w = mkWorld(pushRoot, { kitDir: kit });
   assert.equal(await up(["--yes"], w.io), 0);
-  for (const repo of ["jr2-harness", "jr2-operator", "jr2-instance-r"]) {
+  for (const repo of ["jr2-harness", "jr2-operator", "jr2-orchestrator"]) {
     assert.ok(
       w.built.some((b) => b.startsWith(`push reg.example.com/jr2/${repo}:`)),
       `${repo} is pushed (got: ${w.built.join(", ")})`,
@@ -807,7 +912,7 @@ test("a registry pushes every layer; a non-kind context without one fails BEFORE
   const w2 = mkWorld(bareRoot, { kitDir: kit });
   w2.kube.ctx = "gke-prod";
   await assert.rejects(() => up(["--yes"], w2.io), /not a kind cluster and no `registry`/);
-  assert.deepEqual(w2.built, [], "a converge that can deliver nothing spends no docker discovering it");
+  assert.deepEqual(w2.built, ["bundle"], "a converge that can deliver nothing spends no docker discovering it");
 });
 
 test("the Deployment's image annotation makes a second converge spend zero docker; --force overrides it", async () => {
@@ -828,10 +933,10 @@ test("the Deployment's image annotation makes a second converge spend zero docke
     (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
   )!;
   assert.equal(deployment.metadata.annotations["jr2.dev/images"], JSON.stringify(images, null, 2));
-  assert.equal(
-    deployment.spec.template.metadata.annotations,
-    undefined,
-    "never on the pod template — that would roll every run",
+  assert.deepEqual(
+    Object.keys(deployment.spec.template.metadata.annotations),
+    ["jr2.dev/secret-digest"],
+    "never on the pod template — that would roll every run; only the Instance Secret's digest is there",
   );
   assert.ok(
     !JSON.stringify(deployment.spec.template.spec.containers[0].env).includes("IMAGE"),
@@ -839,16 +944,18 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   );
 
   const again = mkWorld(root, { kitDir: kit });
+  // The same Orchestrator, already serving the Assembly the first converge published (ADR-0069).
+  again.orchestrator.current = first.orchestrator.current;
   again.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
   again.kube.set("myinst", "deployment", "jr2-orchestrator", {
     metadata: {
       name: "jr2-orchestrator",
-      labels: { "jr2.dev/content-hash": deployment.metadata.labels["jr2.dev/content-hash"] },
       annotations: { "jr2.dev/images": JSON.stringify(images, null, 2) },
     },
   });
   assert.equal(await up([], again.io), 0);
   assert.deepEqual(again.built, ["bundle"], "staged to hash, and nothing else was spent");
+  assert.deepEqual(again.orchestrator.puts, [], "…and nothing was published: the Assembly is current");
   assert.deepEqual(imagesOf(again), images, "…and the map re-converges to the same refs");
 
   const forced = mkWorld(root, { kitDir: kit });
@@ -858,12 +965,11 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   forced.kube.set("myinst", "deployment", "jr2-orchestrator", {
     metadata: {
       name: "jr2-orchestrator",
-      labels: { "jr2.dev/content-hash": deployment.metadata.labels["jr2.dev/content-hash"] },
       annotations: { "jr2.dev/images": JSON.stringify(images, null, 2) },
     },
   });
   assert.equal(await up(["--force"], forced.io), 0);
-  for (const ref of [images.harness, images.operator, images.sandbox.default]) {
+  for (const ref of [images.harness, images.operator, images.orchestrator, images.sandbox.default]) {
     assert.ok(forced.built.includes(`build ${ref}`), `--force rebuilds ${ref} (got: ${forced.built.join(", ")})`);
   }
 
@@ -877,7 +983,6 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   stale.kube.set("myinst", "deployment", "jr2-orchestrator", {
     metadata: {
       name: "jr2-orchestrator",
-      labels: { "jr2.dev/content-hash": deployment.metadata.labels["jr2.dev/content-hash"] },
       annotations: { "jr2.dev/images": JSON.stringify(partial, null, 2) },
     },
   });
@@ -895,8 +1000,7 @@ test("a silent record consults the host daemon: host-built refs skip their build
   const first = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], first.io), 0);
   const images = imagesOf(first);
-  const instanceTag = first.built.find((b) => b.startsWith("build jr2-instance-myinst:"))!.slice("build ".length);
-  const refs = [images.harness, images.operator, images.sandbox.default, instanceTag] as string[];
+  const refs = [images.harness, images.operator, images.orchestrator, images.sandbox.default] as string[];
 
   // A fresh namespace: no Deployment, no annotation — the record is silent. But the host daemon
   // still holds every ref this converge resolves, labeled, at the exact content-addressed tags:
@@ -975,7 +1079,7 @@ test("a node arch the kit publishes nothing for is skipped; no supported arch at
     { metadata: { name: "z" }, status: { nodeInfo: { architecture: "s390x" } } },
   ];
   assert.equal(await up(["--yes"], mixed.io), 0);
-  // Reported and skipped, never built for: no Kit image could sit beside an s390x instance image in
+  // Reported and skipped, never built for: no Kit image could sit beside an s390x Sandbox Image in
   // the pod, so building one would be dead weight discovered at provision.
   assert.match(mixed.err.join("\n"), /skipping node arch s390x/);
   assert.ok(
@@ -986,7 +1090,7 @@ test("a node arch the kit publishes nothing for is skipped; no supported arch at
   const nowhere = mkWorld(root);
   nowhere.kube.nodes = [{ metadata: { name: "z" }, status: { nodeInfo: { architecture: "s390x" } } }];
   await assert.rejects(() => up(["--yes"], nowhere.io), /s390x[\s\S]*`platforms`/);
-  assert.deepEqual(nowhere.built, [], "and nothing was spent finding out");
+  assert.deepEqual(nowhere.built, ["bundle"], "and nothing was built finding out");
 });
 
 test("`platforms` overrides the cluster absolutely, and an unpublished entry is refused by name", async () => {
@@ -1021,8 +1125,8 @@ test("`platforms` overrides the cluster absolutely, and an unpublished entry is 
 test("a `file:` context the Machine carries is built and keyed by its content DIGEST (ADR-0049)", async () => {
   // The walk is what makes this image exist at all: nothing scans a folder, so a context is found
   // only because a registered Machine names it. The map key is the digest — not a dirname, not a
-  // path — which is exactly what lets the baked Orchestrator resolve the same `file:` URL from its
-  // own node_modules without either side holding a table.
+  // path — which is exactly what lets the Orchestrator resolve the same `file:` URL from the
+  // published Assembly's node_modules without either side holding a table.
   const kit = await mkKit();
   const root = await withCarriedImage(
     await withImage(await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)), "default"),
@@ -1108,20 +1212,23 @@ test("a mixed-arch cluster with nowhere to push fails before any build", async (
     { metadata: { name: "b" }, status: { nodeInfo: { architecture: "arm64" } } },
   ];
   await assert.rejects(() => up(["--yes"], w.io), /buildx delivers by PUSHING[\s\S]*`registry`/);
-  assert.deepEqual(w.built, []);
+  assert.deepEqual(w.built, ["bundle"], "staged, and nothing built");
 });
 
 test("a foreign-arch build is preflighted for binfmt — once, before any build is spent", async () => {
   // Without qemu the foreign `RUN` step dies minutes in with `exec format error`, the same symptom
   // ADR-0045 exists to delete. So emulation is proved first, and the error is a command to run.
+  // A kit checkout, so there is a build to spend: an installed Instance with no `workspace()`
+  // builds nothing at all (ADR-0069).
+  const kit = await mkKit();
   const root = await mkInstance(`export default { name: "f", platforms: ["linux/arm64"] };\n`, "f");
-  const w = mkWorld(root, { buildable: ["linux/amd64"] });
+  const w = mkWorld(root, { buildable: ["linux/amd64"], kitDir: kit });
   await assert.rejects(() => up(["--yes"], w.io), /tonistiigi\/binfmt --install arm64/);
   assert.ok(!w.built.some((b) => b.startsWith("build ")), `no build was spent (got: ${w.built.join(", ")})`);
 
   // Paid once, and only when a build is really about to happen: a steady-state converge still
   // spends no docker at all (the annotation test asserts the whole record is `["bundle"]`).
-  const ok = mkWorld(root);
+  const ok = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], ok.io), 0);
   assert.equal(ok.built.filter((b) => b === "buildable-check").length, 1);
   assert.ok(ok.built.indexOf("buildable-check") < ok.built.findIndex((b) => b.startsWith("build ")));
@@ -1276,7 +1383,7 @@ test("an OPEN Agent is refused the same way, with the `agents` line that binds t
 test("an Effect's OPEN url or argv is refused the same way, with the `effects` line that binds it (ADR-0054)", async () => {
   // A packaged Machine cannot know the host its http Effect calls or the program its command runs;
   // until a composer binds it there is no host to fence and no argv to run, so the walk refuses it
-  // before anything is built — both parts in one listing pass, the first named.
+  // before anything is built — both parts in one listing pass, each on its own line.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   await writeFile(
     join(root, "workflows", "packaged.ts"),
@@ -1296,6 +1403,9 @@ test("an Effect's OPEN url or argv is refused the same way, with the `effects` l
     err,
     /export const machine = customize\(<import>, \{ effects: \{ notify: \{ url: "https:\/\/<host>\/<path>" \} \} \}\)/,
   );
+  // Every Open part is listed, not only the first (ADR-0069: the door returns the same lines).
+  assert.match(err, /refusing: workflow "packaged" leaves the argv of Effect "deploy" open/);
+  assert.equal((err.match(/^refusing: workflow "packaged" leaves/gm) ?? []).length, 2, "one line per Open part");
   assert.match(err, /ADR-0054/);
   assert.deepEqual(w.kube.applied, [], "not even the namespace");
   assert.deepEqual(w.built, [], "no bundle, no image build");
@@ -1403,7 +1513,10 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   );
   const w = mkWorld(root, { env: { GH_TOKEN: "gh-secret", JR2_GIT_TOKEN: "wild-secret", STRAY: "no" } });
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.match(w.err.join("\n"), /repos: 1 bound Repo\(s\) — the Orchestrator creates their Repo resources at boot/);
+  assert.match(
+    w.err.join("\n"),
+    /repos: 1 bound Repo\(s\) — the Orchestrator creates their Repo resources at boot and at each publish/,
+  );
   assert.match(w.err.join("\n"), /cache agent clones on first need/);
 
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
@@ -1412,11 +1525,11 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   for (const name of ["GH_TOKEN", "JR2_GIT_TOKEN", "GL_TOKEN", "STRAY"]) {
     assert.ok(!(name in instance.stringData), `${name} is not in the Orchestrator's Secret`);
   }
-  // What it does hold is jr2's own, as ADR-0068 names it: the signing key, the Instance token, the
-  // Instance Harness's token — and nothing else.
+  // What it does hold is jr2's own, as ADR-0068 and ADR-0069 name it: the signing key, the
+  // Instance token, the publish token, the Instance Harness's token — and nothing else.
   assert.deepEqual(
     Object.keys(instance.stringData).sort(),
-    ["JR2_INSTANCE_HARNESS_TOKEN", "JR2_INSTANCE_TOKEN", "JR2_SIGNING_KEY"],
+    ["JR2_INSTANCE_HARNESS_TOKEN", "JR2_INSTANCE_TOKEN", "JR2_PUBLISH_TOKEN", "JR2_SIGNING_KEY"],
     "the Orchestrator's Secret holds jr2's own keys alone",
   );
   assert.ok(
@@ -1441,7 +1554,7 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   assert.deepEqual(orchSecrets, ["jr2-instance"], "the Orchestrator's env reads the instance Secret alone");
   // The Orchestrator neither clones nor holds a key: its one claim is its state, its mounts are
   // state, the image map and the held-secret manifest (names and hosts, never a value — ADR-0059),
-  // and its env is its namespace and content hash — the credential rides the Secret above and is
+  // and its env is its namespace — the credential rides the Secret above and is
   // read only by the cache agent. The one addition is the API server's trust, for its own client
   // (ADR-0063).
   assert.deepEqual(
@@ -1456,7 +1569,7 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   );
   assert.deepEqual(
     podSpec.containers[0].env.map((e: { name: string }) => e.name),
-    ["JR2_NAMESPACE", "JR2_CONTENT_HASH", "NODE_EXTRA_CA_CERTS"],
+    ["JR2_NAMESPACE", "NODE_EXTRA_CA_CERTS"],
   );
   // Built-in `fetch` trusts the API server through the ServiceAccount's own CA (ADR-0063).
   assert.equal(
@@ -1731,73 +1844,357 @@ test("live workspaces on an older image are reported, and nothing re-images them
   assert.match(noCrd.err.join("\n"), /workspaces: could not be listed/);
 });
 
-test("image: fresh hash skips the build; stale hash builds and kind-loads (no registry, kind context)", async () => {
+// --- the Assembly (ADR-0069): staged early, published last ----------------------------------------
+
+/** The hash `jr2 up` staged, off its own narration. */
+function stagedHash(w: World): string {
+  const hash = /assembly: ([0-9a-f]{12}) \(kit v/.exec(w.err.join("\n"))?.[1];
+  assert.ok(hash, `jr2 up narrated the staged Assembly:\n${w.err.join("\n")}`);
+  return hash;
+}
+
+test("the Deployment runs the Orchestrator Kit image and carries no content hash (ADR-0069)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const stale = mkWorld(root);
-  assert.equal(await up(["--yes"], stale.io), 0);
-  assert.ok(stale.built.some((b) => b.startsWith("build jr2-instance-myinst:")));
-  assert.ok(
-    stale.built.some((b) => b.includes("kind-load") && b.includes("→ test")),
-    `delivered by kind load onto the context's cluster (got: ${stale.built.join(", ")})`,
-  );
-
-  // Second run against a Deployment already stamped with the same hash: the whole layer skips.
-  const tag = stale.built.find((b) => b.startsWith("build "))!.slice("build ".length);
-  const hash = tag.split(":")[1]!;
-  const fresh = mkWorld(root);
-  fresh.kube.set("myinst", "deployment", "jr2-orchestrator", {
-    metadata: { name: "jr2-orchestrator", labels: { "jr2.dev/content-hash": hash } },
-  });
-  fresh.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
-  assert.equal(await up([], fresh.io), 0);
-  // The bundle is still staged — it is how the hash is computed at all — but the expensive half
-  // (docker build + delivery) is what the staleness check buys.
-  assert.deepEqual(fresh.built, ["bundle"], "staged to hash, but neither built nor loaded");
-
-  // --force spends the build anyway, against the very same hash.
-  const forced = mkWorld(root);
-  forced.kube.set("myinst", "deployment", "jr2-orchestrator", {
-    metadata: { name: "jr2-orchestrator", labels: { "jr2.dev/content-hash": hash } },
-  });
-  forced.kube.set("", "namespace", "myinst", {
-    metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } },
-  });
-  assert.equal(await up(["--force"], forced.io), 0);
-  assert.ok(forced.built.includes(`build ${tag}`), `--force rebuilds (got: ${forced.built.join(", ")})`);
-});
-
-test("the image tag addresses the BUNDLE — a kit change the instance folder never saw moves it", async () => {
-  // The staleness defect: the hash walked the instance folder, so kit sources (a resolved
-  // dependency, materialized into the bundle) were not inputs. Editing the orchestrator left the
-  // tag unmoved → identical pod template → no rollout → `up` deployed nothing and said converged.
-  // Hashing the bundle makes the tag a content address of what actually goes into the image,
-  // identically in a workspace checkout and against a published kit.
-  const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const kitFile = "node_modules/.pnpm/@jr2+orchestrator/node_modules/@jr2/orchestrator/src/lease.ts";
-
-  const tagWith = async (kit: string): Promise<string> => {
-    const w = mkWorld(root, { bundleFiles: { "package.json": "{}", [kitFile]: kit } });
-    assert.equal(await up(["--yes"], w.io), 0);
-    return w.built.find((b) => b.startsWith("build "))!.slice("build ".length);
-  };
-
-  const before = await tagWith("export const renew = () => 1;\n");
-  const after = await tagWith("export const renew = () => 2;\n");
-  assert.notEqual(after, before, "a kit source edit must move the tag");
-  assert.equal(await tagWith("export const renew = () => 1;\n"), before, "…and equal content must not");
-});
-
-test("image: a registry pushes instead of kind-loading; a non-kind context without one fails loudly", async () => {
-  const pushRoot = await mkInstance(`export default { name: "p", registry: "reg.example.com/jr2" };\n`, "p");
-  const w = mkWorld(pushRoot);
+  const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.ok(w.built.some((b) => b.startsWith("push reg.example.com/jr2/jr2-instance-p:")));
-  assert.ok(!w.built.some((b) => b.includes("kind-load")));
+  const deployment = deploymentOf(w);
+  const container = deployment.spec.template.spec.containers[0];
+  assert.equal(container.image, `ghcr.io/snapwich/jr2-orchestrator:${KIT_VERSION}`, "the published Kit ref");
+  assert.deepEqual(
+    Object.keys(deployment.metadata.labels).sort(),
+    ["app.kubernetes.io/managed-by", "jr2.dev/instance", "jr2.dev/version"],
+    "no content-hash label: the Assembly hash is an Orchestrator fact",
+  );
+  assert.ok(!container.env.some((e: { name: string }) => e.name === "JR2_CONTENT_HASH"), "and no content-hash env");
+  const record = JSON.parse(deployment.metadata.annotations["jr2.dev/images"]);
+  assert.equal(record.orchestrator, container.image, "the images record carries the Orchestrator's ref");
+  assert.equal(imagesOf(w).orchestrator, container.image);
 
-  const bareRoot = await mkInstance(`export default { name: "q" };\n`, "q");
-  const w2 = mkWorld(bareRoot);
-  w2.kube.ctx = "gke-prod";
-  await assert.rejects(() => up(["--yes"], w2.io), /not a kind cluster and no `registry`/);
+  // ADR-0069's main consequence: another Assembly is a publish, not a pod-template change. A
+  // Workflow edit and an Instance dependency move the hash and leave the template as it was.
+  await writeFile(
+    join(root, "workflows", "note.ts"),
+    `import { jr2Setup } from ${JSON.stringify(KIT_SRC)};\n` +
+      `export const machine = jr2Setup({ events: [] }).createMachine({ id: "note", initial: "idle", states: { idle: {} } });\n`,
+  );
+  const next = mkWorld(root, { bundleFiles: { ...STAGED_FILES, "node_modules/dep/index.js": "export {};\n" } });
+  next.orchestrator.current = { hash: stagedHash(w), kitVersion: KIT_VERSION };
+  // The Instance Secret the first converge wrote, kept: a minted one would roll the pod by design.
+  const kept = (
+    JSON.parse(w.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as {
+      items: Array<Record<string, any>>;
+    }
+  ).items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
+  next.kube.set("myinst", "secret", "jr2-instance", {
+    metadata: { name: "jr2-instance" },
+    data: Object.fromEntries(
+      Object.entries(kept.stringData as Record<string, string>).map(([k, v]) => [k, Buffer.from(v).toString("base64")]),
+    ),
+  });
+  const code = await up(["--yes"], next.io);
+  assert.notEqual(stagedHash(next), stagedHash(w), "another Assembly");
+  assert.equal(code, 0, next.err.join("\n"));
+  assert.equal(next.orchestrator.puts.length, 1, "published");
+  assert.deepEqual(deploymentOf(next).spec.template, deployment.spec.template, "the pod template did not move");
+});
+
+test("the publish token is minted into the Instance Secret and read back from it, never from the environment", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  // A token in the environment is no way in (ADR-0069): an ingress-exposed Instance exposes no
+  // publish door.
+  const env = { JR2_PUBLISH_TOKEN: "from-env", JR2_TOKEN: "from-env", JR2_URL: "http://elsewhere.test" };
+  const first = mkWorld(root, { env });
+  assert.equal(await up(["--yes"], first.io), 0);
+  const list = first.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const secret = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
+  )!;
+  const minted = secret.stringData.JR2_PUBLISH_TOKEN as string;
+  assert.match(minted, /^[0-9a-f]{48}$/, "minted on first converge");
+  assert.notEqual(minted, secret.stringData.JR2_INSTANCE_TOKEN, "it is not the Instance token");
+  assert.equal(first.orchestrator.puts.length, 1);
+  assert.equal(first.orchestrator.puts[0]!.headers.authorization, `Bearer ${minted}`);
+  assert.deepEqual(first.orchestrator.forwards, ["myinst/jr2-orchestrator:4000"], "over a port-forward, never JR2_URL");
+
+  // A kept one is read back from the Secret the converge read, and published with.
+  const kept = mkWorld(root, { env });
+  kept.kube.set("myinst", "secret", "jr2-instance", {
+    metadata: { name: "jr2-instance" },
+    data: { JR2_PUBLISH_TOKEN: Buffer.from("pub-kept").toString("base64") },
+  });
+  assert.equal(await up(["--yes"], kept.io), 0);
+  const keptList = kept.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const keptSecret = (JSON.parse(keptList) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
+  )!;
+  assert.equal(keptSecret.stringData.JR2_PUBLISH_TOKEN, "pub-kept", "the token persists across converges");
+  assert.equal(kept.orchestrator.puts[0]!.headers.authorization, "Bearer pub-kept");
+
+  // A changed token rolls the Orchestrator: `envFrom` is read once per pod, so the pod template
+  // carries a keyed digest of the Secret, and the digest reveals no token.
+  const digestOf = (l: string): string => {
+    const deployment = (JSON.parse(l) as { items: Array<Record<string, any>> }).items.find(
+      (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
+    )!;
+    return deployment.spec.template.metadata.annotations["jr2.dev/secret-digest"] as string;
+  };
+  assert.ok(digestOf(list), "the pod template carries the Secret's digest");
+  assert.notEqual(digestOf(keptList), digestOf(list), "another publish token is another pod template");
+  assert.ok(!digestOf(list).includes(minted) && !keptList.includes(`secret-digest":"pub-kept`));
+  const again = mkWorld(root, { env });
+  again.kube.set("myinst", "secret", "jr2-instance", {
+    metadata: { name: "jr2-instance" },
+    data: Object.fromEntries(
+      Object.entries(keptSecret.stringData as Record<string, string>).map(([k, v]) => [
+        k,
+        Buffer.from(v).toString("base64"),
+      ]),
+    ),
+  });
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.equal(
+    digestOf(again.kube.applied.find((m) => m.includes(`"kind":"List"`))!),
+    digestOf(keptList),
+    "the same Secret is the same pod template: a steady converge rolls nothing",
+  );
+});
+
+test("GET /assembly first: the current Assembly is not published again; another is PUT with its headers", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", { coder: { model: "openai/gpt-x" } });
+  const first = mkWorld(root);
+  assert.equal(await up(["--yes"], first.io), 0);
+  const hash = stagedHash(first);
+  assert.deepEqual(
+    first.orchestrator.requests.map((r) => r.method),
+    ["GET", "PUT"],
+    "a fresh namespace holds no current Assembly, so the converge publishes",
+  );
+  const put = first.orchestrator.puts[0]!;
+  assert.equal(put.headers["content-type"], "application/x-tar");
+  assert.equal(put.headers["jr2-kit-version"], KIT_VERSION);
+  assert.equal(put.headers["jr2-assembly-hash"], hash);
+  assert.ok(put.bytes > 0 && put.bytes % 512 === 0, `one ustar archive (got ${put.bytes} bytes)`);
+  assert.equal(first.orchestrator.closed, 1, "the port-forward lives only as long as the publish");
+  const said = first.err.join("\n");
+  assert.match(said, new RegExp(`assembly: ${hash} is current — workflows: work`), "the door's workflows are printed");
+  assert.ok(
+    said.indexOf("assembly: publishing") > said.indexOf("instance effector:"),
+    "published after every other layer",
+  );
+  assert.ok(said.indexOf("assembly: staging") < said.indexOf("kubernetes:"), "staged before any cluster read");
+
+  const again = mkWorld(root);
+  again.orchestrator.current = { hash, kitVersion: KIT_VERSION };
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.deepEqual(again.orchestrator.puts, [], "the hashes agree: nothing is sent");
+  assert.match(again.err.join("\n"), new RegExp(`assembly: ${hash} \\(current — publish skipped\\)`));
+
+  // Another Kit version under the same hash is not current: the door decides.
+  const other = mkWorld(root);
+  other.orchestrator.current = { hash, kitVersion: "0.0.1" };
+  assert.equal(await up(["--yes"], other.io), 0);
+  assert.equal(other.orchestrator.puts.length, 1);
+
+  // --force publishes even when they agree; the door answers `unchanged`.
+  const forced = mkWorld(root);
+  forced.orchestrator.current = { hash, kitVersion: KIT_VERSION };
+  assert.equal(await up(["--yes", "--force"], forced.io), 0);
+  assert.equal(forced.orchestrator.puts.length, 1);
+  assert.match(forced.err.join("\n"), /is current \(unchanged\)/);
+});
+
+test("a refused publish prints the door's report and fails the converge before the sweep", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const stale = image({ id: "sha256:old", tags: ["jr2-sandbox-myinst-default:0ld"], bytes: 1 });
+  const w = mkWorld(root, { hostImages: [stale] });
+  w.orchestrator.current = { hash: "0123456789ab", kitVersion: KIT_VERSION };
+  w.orchestrator.refuse.push({
+    status: 422,
+    body: { error: "refused", report: ['workflow "work" leaves Agent "coder" open', "a second line"] },
+  });
+  assert.equal(await up(["--yes"], w.io), 1);
+  const said = w.err.join("\n");
+  assert.match(
+    said,
+    /refusing: the Orchestrator refused Assembly [0-9a-f]{12} \(HTTP 422\): refused — the previous Assembly is still current/,
+  );
+  assert.match(said, /^ {2}workflow "work" leaves Agent "coder" open$/m, "each report line is printed");
+  assert.match(said, /^ {2}a second line$/m);
+  assert.doesNotMatch(said, /converged —/, "the converge does not claim success");
+  assert.deepEqual(
+    w.built.filter((b) => b.startsWith("rmi-")),
+    [],
+    "and sweeps nothing",
+  );
+  assert.deepEqual(w.orchestrator.current, { hash: "0123456789ab", kitVersion: KIT_VERSION });
+
+  const version = mkWorld(root);
+  version.orchestrator.refuse.push({
+    status: 409,
+    body: { error: "the Assembly names Kit version 9.9.9; this Orchestrator is 0.3.0", kitVersion: {} },
+  });
+  assert.equal(await up(["--yes"], version.io), 1);
+  assert.match(version.err.join("\n"), /HTTP 409\): the Assembly names Kit version 9\.9\.9/);
+});
+
+test("a publish waits until the Orchestrator reads the mounted ConfigMaps this converge applied (ADR-0069)", async () => {
+  // A publish rolls no pod, so `jr2-images` and `jr2-held` reach the process on the kubelet's
+  // period. The PUT waits for the digests `GET /assembly` reports to be the applied ones.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const applied = (w: World): Record<string, string> => {
+    const list = JSON.parse(w.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as {
+      items: Array<{ kind: string; metadata: { name: string }; data?: Record<string, string> }>;
+    };
+    return Object.fromEntries(
+      list.items
+        .filter((i) => i.kind === "ConfigMap" && i.metadata.name in MOUNTED_CONFIGMAPS)
+        .map((i) => [i.metadata.name, configMapDigest(i.data ?? {})]),
+    );
+  };
+  const saved = { ...MAP_PROPAGATION };
+  MAP_PROPAGATION.stepMs = 1;
+  try {
+    const w = mkWorld(root);
+    // The first two reads see the old held manifests; the third sees this converge's.
+    w.orchestrator.mounts = (n) => (n < 2 ? { ...applied(w), "jr2-held": "0ld" } : applied(w));
+    assert.equal(await up(["--yes"], w.io), 0);
+    assert.deepEqual(
+      w.orchestrator.requests.map((r) => r.method),
+      ["GET", "GET", "GET", "PUT"],
+      "the PUT waits for the mount",
+    );
+    assert.match(w.err.join("\n"), /waiting for the kubelet to deliver jr2-held/);
+    assert.deepEqual(Object.keys(applied(w)).sort(), ["jr2-held", "jr2-images"]);
+
+    // A mount that never refreshes refuses the converge, and nothing is sent.
+    MAP_PROPAGATION.budgetMs = 5;
+    const never = mkWorld(root);
+    never.orchestrator.mounts = () => ({ "jr2-images": "0ld", "jr2-held": "0ld" });
+    assert.equal(await up(["--yes"], never.io), 1);
+    assert.deepEqual(never.orchestrator.puts, []);
+    assert.match(never.err.join("\n"), /still reads an older jr2-images, jr2-held from its mount/);
+  } finally {
+    Object.assign(MAP_PROPAGATION, saved);
+  }
+});
+
+test("a door refusal for a `file:` digest is final: no retry, one PUT", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  w.orchestrator.refuse.push({
+    status: 422,
+    body: {
+      error: "refused",
+      report: ["the Sandbox Image context file:///x (digest abc) is not in the image map — …"],
+    },
+  });
+  assert.equal(await up(["--yes"], w.io), 1);
+  assert.equal(w.orchestrator.puts.length, 1);
+  assert.match(w.err.join("\n"), /digest abc\) is not in the image map/);
+});
+
+test("the Assembly is staged before any cluster spend: a second copy of a Kit package refuses with nothing applied", async () => {
+  // ADR-0054's silent-empty-Menus failure, refused at staging (ADR-0069): the Orchestrator's image
+  // ships xstate, so an Assembly that carries a second copy is refused, naming who nests it.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const pkg = (name: string, version: string, dependencies: Record<string, string> = {}) =>
+    JSON.stringify({ name, version, dependencies });
+  const w = mkWorld(root, {
+    bundleFiles: {
+      "package.json": "{}",
+      "node_modules/@jr2/orchestrator/package.json": pkg("@jr2/orchestrator", KIT_VERSION, { xstate: "^5" }),
+      "node_modules/xstate/package.json": pkg("xstate", "5.0.0"),
+      "node_modules/helper/package.json": pkg("helper", "1.0.0", { xstate: "^4" }),
+      "node_modules/helper/node_modules/xstate/package.json": pkg("xstate", "4.0.0"),
+    },
+  });
+  await assert.rejects(() => up(["--yes"], w.io), /second copy of a Kit package[\s\S]*helper/);
+  assert.deepEqual(w.kube.applied, [], "not even the namespace");
+  assert.equal(w.kube.versionReads, 0, "the cluster was never asked");
+});
+
+test("a staged Assembly that lacks a Workflow the walk loaded refuses before any cluster spend (ADR-0069)", async () => {
+  // The walk loads the Instance folder; the door loads the Assembly. A Workflow the install did
+  // not keep (a `files:` list that leaves it out) would publish without it, and `jr2 run` would
+  // name it unknown after `converged`.
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", { coder: { model: "openai/gpt-x" } });
+  const w = mkWorld(root);
+  const bundle = w.io.build!.bundle;
+  w.io.build = {
+    ...w.io.build!,
+    bundle: async (dir, out) => {
+      await bundle(dir, out);
+      await rm(join(out, "workflows", "work.ts"));
+    },
+  };
+  assert.equal(await up(["--yes"], w.io), 1);
+  assert.match(
+    w.err.join("\n"),
+    /refusing: the staged Assembly does not hold[^\n]*absent from the Assembly: workflows\/work\.ts[^\n]*`files:`/,
+  );
+  assert.deepEqual(w.kube.applied, [], "nothing applied");
+
+  const extra = mkWorld(root, { bundleFiles: { ...STAGED_FILES, "workflows/stray.ts": "export {};\n" } });
+  assert.equal(await up(["--yes"], extra.io), 1);
+  assert.match(extra.err.join("\n"), /only in the Assembly: workflows\/stray\.ts/);
+});
+
+test("the Assembly hash addresses the stripped tree: an Instance dependency moves it, a Kit source does not", async () => {
+  // The Kit closure is stripped (ADR-0069): its sources are the Orchestrator Kit image's content,
+  // and an edit there moves that image's ref. An Instance dependency rides the Assembly.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const hashWith = async (kit: string, dep: string): Promise<string> => {
+    const w = mkWorld(root, {
+      bundleFiles: {
+        ...STAGED_FILES,
+        "node_modules/@jr2/orchestrator/src/lease.ts": kit,
+        "node_modules/@jr2/machines/src/coder.ts": dep,
+      },
+    });
+    assert.equal(await up(["--yes"], w.io), 0);
+    return stagedHash(w);
+  };
+  const before = await hashWith("export const renew = () => 1;\n", "export const a = 1;\n");
+  assert.equal(
+    await hashWith("export const renew = () => 2;\n", "export const a = 1;\n"),
+    before,
+    "a Kit edit is not Assembly content",
+  );
+  assert.notEqual(
+    await hashWith("export const renew = () => 1;\n", "export const a = 2;\n"),
+    before,
+    "an Instance dependency is",
+  );
+});
+
+test("an installed Instance with no workspace() needs no docker and no registry (ADR-0069)", async () => {
+  // `npm i -g @jr2/cli && jr2 init && jr2 up`: the Kit images are published refs, the Workflows
+  // ride the Assembly, and nothing is built. So a build port whose docker methods throw converges,
+  // even on a cluster that is not kind and names no `registry`.
+  const root = await mkInstance(`export default { name: "nodock" };\n`, "nodock", { coder: { model: "openai/gpt-x" } });
+  const w = mkWorld(root);
+  const called: string[] = [];
+  const docker = (verb: string) => async (): Promise<never> => {
+    called.push(verb);
+    throw new Error(`docker ${verb} was called`);
+  };
+  w.io.build = {
+    ...w.io.build!,
+    build: docker("build"),
+    push: docker("push"),
+    kindLoad: docker("kind load"),
+    hostImages: docker("image ls"),
+    imageUser: docker("inspect"),
+    imageFiles: docker("create"),
+    buildablePlatforms: docker("buildx"),
+  };
+  w.kube.ctx = "gke-prod";
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(w.orchestrator.puts.length, 1, "the Assembly was published");
+  // The sweep's host listing is the one docker read, and it already degrades to a warning. A call
+  // anywhere else that a caller caught would still show here.
+  assert.match(w.err.join("\n"), /images: sweep skipped \(docker image ls was called\)/);
+  assert.deepEqual(called, ["image ls"], "no docker call but the sweep's listing");
 });
 
 test("secret: token + signing key persist across re-runs; harness.env literals materialize", async () => {
@@ -2041,7 +2438,7 @@ test("converged is claimed only of a pod observed carrying the intended image", 
 
   await assert.rejects(
     () => up(["--yes"], drifted.io),
-    /running pod carries jr2-instance-myinst:0ldc0ntent.*expected jr2-instance-myinst:/s,
+    /running pod carries jr2-instance-myinst:0ldc0ntent.*expected ghcr\.io\/snapwich\/jr2-orchestrator:/s,
     "the drift is named in both directions, so the fix is obvious",
   );
 
@@ -2659,8 +3056,8 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
 
 test("every layer jr2 builds is stamped with who owns it", async () => {
   // Ownership is a label, never a name (ADR-0039) — so an unstamped build is not a cosmetic miss,
-  // it is an image no sweep can ever collect. The kit's three, the instance's own, and the two
-  // Sandbox Image builds all pass through here.
+  // it is an image no sweep can ever collect. The kit's three and the Sandbox Image builds all
+  // pass through here; an Instance has no image of its own any more (ADR-0069).
   const kit = await mkKit();
   const root = await withImage(
     await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)),
@@ -2679,12 +3076,11 @@ test("every layer jr2 builds is stamped with who owns it", async () => {
       }),
   );
   const kind = (ref: string): unknown => JSON.parse(stamps.get(ref) ?? "null");
-  for (const repo of ["jr2-harness", "jr2-operator"]) {
+  for (const repo of ["jr2-harness", "jr2-operator", "jr2-orchestrator"]) {
     const ref = [...stamps.keys()].find((r) => r.startsWith(`${repo}:`))!;
     assert.deepEqual(kind(ref), { "jr2.dev/kind": "kit" }, `${repo} is stamped as the kit's`);
   }
-  const instanceRef = [...stamps.keys()].find((r) => r.startsWith("jr2-instance-myinst:"))!;
-  assert.deepEqual(kind(instanceRef), { "jr2.dev/kind": "instance", "jr2.dev/instance": "myinst" });
+  assert.ok(![...stamps.keys()].some((r) => r.startsWith("jr2-instance-")), "no per-Instance image is built");
   const sandboxRef = [...stamps.keys()].find((r) => r.startsWith("jr2-sandbox-myinst-default:"))!;
   assert.deepEqual(kind(sandboxRef), { "jr2.dev/kind": "sandbox", "jr2.dev/instance": "myinst" });
 });
@@ -2699,11 +3095,11 @@ test("a converge that succeeded sweeps the generation it replaced, and keeps wha
   const w = mkWorld(root, { hostImages: [stale, foreign] });
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const fresh = w.built.find((b) => b.startsWith("build jr2-instance-myinst:"))!.slice("build ".length);
+  // A per-Instance image a kit before ADR-0069 built is labeled and named by no root: garbage.
   assert.deepEqual(
     w.built.filter((b) => b.startsWith("rmi-host ")),
     ["rmi-host jr2-instance-myinst:0ldc0ntent"],
-    `only the replaced generation goes — never ${fresh}, and never an image jr2 did not build`,
+    `only the unreachable image goes — never ${imagesOf(w).orchestrator}, and never an image jr2 did not build`,
   );
   assert.match(w.err.join("\n"), /swept 1 image\(s\) \(2\.1 GB\)/, "bytes, because disk is what the user feels");
 });
@@ -3011,9 +3407,9 @@ test("jr2's own pods are kit-sized: memory request = limit, a cpu request, no cp
     requests: { cpu: "500m", memory: "1Gi" },
     limits: { memory: "1Gi" },
   });
-  assert.equal(
-    objects.get("Deployment/jr2-orchestrator")!.spec.template.metadata.annotations,
-    undefined,
+  assert.deepEqual(
+    Object.keys(objects.get("Deployment/jr2-orchestrator")!.spec.template.metadata.annotations),
+    ["jr2.dev/secret-digest"],
     "a restarted Orchestrator re-attaches — no disruption opt-out",
   );
   const cache = objects.get("DaemonSet/jr2-repo-cache")!.spec.template.spec;
@@ -3462,7 +3858,6 @@ test("jr2-held grows by one manifest per Workspace and holds the program once �
         name: "myinst",
         namespace: "myinst",
         image: "jr2-orchestrator:o",
-        hash: "h",
         secretData: {},
         harnessEnvData: {},
         held: heldOf(n),
@@ -3499,7 +3894,6 @@ test("a Workspace's Sandbox Effector: its manifest rides jr2-held with names onl
       name: "myinst",
       namespace: "myinst",
       image: "jr2-orchestrator:o",
-      hash: "h",
       secretData: {},
       harnessEnvData: {},
       held: { pods: [], leaves: {} },

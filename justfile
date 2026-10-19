@@ -49,6 +49,12 @@ harness-image:
     docker build -f deploy/harness/Dockerfile -t jr2-harness:local .
     kind load docker-image jr2-harness:local --name {{ cluster }}
 
+# ADR-0069: the Orchestrator is a Kit image too. It holds no Instance: `jr2 up` publishes the Assembly.
+# build the Orchestrator Kit image and load it into kind
+orchestrator-image:
+    docker build -f deploy/orchestrator/Dockerfile -t jr2-orchestrator:local .
+    kind load docker-image jr2-orchestrator:local --name {{ cluster }}
+
 # --- the Custodian suite (ADR-0059; requires docker) ---
 #
 # The Custodian's claims that only real sockets can check, against the REAL engine: the pinned Envoy
@@ -63,7 +69,7 @@ custodian-test:
 # --- kind e2e tier (ADR-0010; requires docker + kind) ---
 
 # A VANILLA cluster, and nothing else (ADR-0038): `jr2 up` from this checkout builds and `kind load`s
-# every image it deploys — Harness, operator, instance, and the instance's Sandbox Images. The one
+# every image it deploys — Harness, operator, Orchestrator, and the Instance's Sandbox Images. The one
 # image it deploys and never builds — the Custodian's pinned Envoy (ADR-0059) — a kind node pulls
 # from its registry itself, so the cluster needs network to docker.io (or a `kitRegistry` mirror).
 # Pre-loading a `:local` tag here would be exactly the invisible-stale-image bug that deletes.
@@ -83,7 +89,7 @@ e2e-kind:
 
 # A COLD host builds every image the tier deploys four times over: the tier runs four workers, and
 # the first scenario of each converges its own namespace from nothing — Harness, operator,
-# instance, Sandbox Image — with no cross-process lock on a build, so four identical cold builds
+# Orchestrator, Sandbox Image — with no cross-process lock on a build, so four identical cold builds
 # contend for the same cores and the first step of all four scenarios can pass its 10 minute bound
 # (measured on a 4-core hosted runner: every worker's first scenario timed out, everything after
 # passed on the warm cache). A maintainer's box is warm from the last run; a runner never is. So
@@ -123,7 +129,7 @@ operator-image:
 # default because a mirror (`jr2 kit push`) copies whatever it finds, deficiencies included; a caller
 # who knows its target's architecture passes one platform and skips qemu.
 
-# build the two Kit images multi-arch and push them at their published names
+# build the Kit images multi-arch and push them at their published names
 kit-push registry platforms="linux/amd64,linux/arm64":
     scripts/kit-push.sh {{ registry }} {{ platforms }}
 

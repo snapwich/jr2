@@ -103,7 +103,7 @@ Feature: Agents and gates drive a run from outside
 
   Rule: a run is not resumed into a Machine that changed shape underneath it
     ADR-0030. A run is matched to its workflow by NAME, and the state outlives the image that wrote
-    it — so a run parked when the orchestrator went down meets whatever the next deploy baked in.
+    it — so a run parked when the orchestrator went down meets whatever the next Assembly holds.
     The snapshot names the Machine that wrote it; a mismatch is refused, kept, and announced. It is
     refused rather than merely warned about because xstate does not validate a restored state value:
     resumed into a chart missing that state, the run would simply carry on from nowhere.

@@ -118,6 +118,7 @@ import {
   SANDBOXES,
   SECRETS,
   SERVICES,
+  isNotFound,
   kubeClient,
   type KubeClient,
   type KubeObject,
@@ -485,15 +486,29 @@ export type KubeSandboxOptions = {
   harnessFetch?: typeof fetch;
   /** How long an attach re-sends a request that never reached the Harness. Default 90s. */
   attachWindowMs?: number;
+  /**
+   * The config-derived options, read on every use instead of the static ones above (ADR-0069). The
+   * config that applies is always the current Assembly's, and a publish swaps it without a new
+   * port. So the fence, the Harness env, the CA bundle, the placement, the default Size and the
+   * PriorityClass that a provision reads are the ones current when it runs.
+   */
+  settings?: () => KubeSandboxSettings;
 };
 
+/** The options of {@link KubeSandboxOptions} that come from the Instance's config. */
+export type KubeSandboxSettings = Pick<
+  KubeSandboxOptions,
+  "credentials" | "env" | "envFrom" | "caBundle" | "placement" | "defaultSize" | "priorityClassName"
+>;
+
 export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
+  // The config-derived options, read per use (ADR-0069): `cfg().credentials`, never a copy.
+  const cfg = (): KubeSandboxSettings => (opts.settings ? opts.settings() : opts);
   const ns = opts.namespace ?? "default";
   const imagesPath = opts.imagesPath ?? join(IMAGES_MOUNT, IMAGES_KEY);
   const heldDir = opts.heldDir ?? HELD_MOUNT;
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const repoTimeoutMs = opts.repoTimeoutMs ?? 25 * 60_000;
-  const credentials = opts.credentials ?? [];
   const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
   const harnessFetch = opts.harnessFetch ?? fetch;
   const attachWindowMs = opts.attachWindowMs ?? ATTACH_WINDOW_MS;
@@ -603,9 +618,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         secretVolume: "effector-secrets",
         keyVolume: "effector-own",
         scratchVolume: "effector-scratch",
-        ...(opts.caBundle ? { caVolume: "effector-ca" } : {}),
+        ...(cfg().caBundle ? { caVolume: "effector-ca" } : {}),
       }),
-      volumes: sandboxEffectorVolumes({ sandbox: req.name, manifest, caBundle: opts.caBundle === true }),
+      volumes: sandboxEffectorVolumes({ sandbox: req.name, manifest, caBundle: cfg().caBundle === true }),
     };
   };
 
@@ -621,7 +636,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const harnessEnv = (name: string, custodian: CustodianComposition, hints: HarnessEnvVar[]): HarnessEnvVar[] => {
     if (!opts.signingKey) throw new Error("kubeSandbox: a Harness needs a signingKey to check its bearer");
     return [
-      ...(opts.env ?? []),
+      ...(cfg().env ?? []),
       ...custodian.harnessEnv,
       // The CPU hints (ADR-0060) are mechanism: they say what the Size gives, so they win over a
       // `harness.env` entry of the same name.
@@ -734,6 +749,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     effectorManifest?: SandboxEffectorManifest,
     gitCredentials: readonly string[] = [],
   ) => {
+    const placement = cfg().placement;
     const seat = await seatFor(refs, req.image);
     const keys = repos.map((r) => r.key);
     const effector = effectorManifest ? await effectorFor(req, refs, keys, seat, effectorManifest) : undefined;
@@ -766,11 +782,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // nothing, and the pod lands wherever an ordinary pod lands. The operator's own soft
         // affinity toward nodes holding this Sandbox's caches sits beside these untouched: a
         // preference never conflicts with a requirement.
-        ...(opts.placement?.nodeSelector ? { nodeSelector: opts.placement.nodeSelector } : {}),
-        ...(opts.placement?.tolerations?.length ? { tolerations: opts.placement.tolerations } : {}),
+        ...(placement?.nodeSelector ? { nodeSelector: placement.nodeSelector } : {}),
+        ...(placement?.tolerations?.length ? { tolerations: placement.tolerations } : {}),
         // Priority (ADR-0060): a pod of ordinary priority cannot preempt a live Workspace, and a
         // waiting Sandbox evicts nobody (the class's preemptionPolicy is Never).
-        priorityClassName: opts.priorityClassName ?? PRIORITY_CLASS_SANDBOX,
+        priorityClassName: cfg().priorityClassName ?? PRIORITY_CLASS_SANDBOX,
         // The Size (ADR-0060). `resources` is the HARNESS container's (the operator's contract):
         // the rest of the Size after the Custodian and the User Container, requests = limits, plus
         // the `/work` disk as an ephemeral-storage request with no limit. `podResources` is the
@@ -794,7 +810,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // `HOME`) come FIRST, so the instance's `harness.env` can still override them the way it
         // overrides anything the image set.
         env: [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv())],
-        ...(opts.envFrom?.length ? { envFrom: opts.envFrom } : {}),
+        ...(cfg().envFrom?.length ? { envFrom: cfg().envFrom } : {}),
         // What the AGENT gets: an address on its own loopback and a Stand-in for every credential,
         // and no credential anywhere. The Custodian beside it holds them (ADR-0013, ADR-0059).
         sidecars,
@@ -1007,8 +1023,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     const byKey = new Map<string, FencedRepo>();
     for (const repo of repos) {
       const { identity, key } = repoIdentity(repo.url);
-      if (repo.perRun && !matchCredential(identity, credentials)) {
-        const entries = credentials.map((c) => c.match).join(", ") || "none";
+      if (repo.perRun && !matchCredential(identity, cfg().credentials ?? [])) {
+        const entries = (cfg().credentials ?? []).map((c) => c.match).join(", ") || "none";
         throw new Error(
           `Sandbox "${name}" refuses the per-run repo ${repo.url} for slot "${repo.slot}": no git.credentials ` +
             `entry matches "${identity}" (entries: ${entries}). A per-run url can spend the cluster's credential ` +
@@ -1048,7 +1064,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         );
       }
       const at = `Sandbox "${name}" refuses the push of Repo Slot "${slot}" (${repo.url})`;
-      const out = placedPushRefusal({ at, url: repo.url, sign, squash: squash === true }, credentials, manifest);
+      const out = placedPushRefusal(
+        { at, url: repo.url, sign, squash: squash === true },
+        cfg().credentials ?? [],
+        manifest,
+      );
       if ("refusal" in out) throw new Error(out.refusal);
       if (!names.includes(out.entry.secret)) names.push(out.entry.secret);
     }
@@ -1185,7 +1205,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // same refusal at the converge; this one covers a Machine it never walked.
       let split: SizeSplit;
       try {
-        split = splitSize(resolveSize(req.resources, opts.defaultSize), req.userResources);
+        split = splitSize(resolveSize(req.resources, cfg().defaultSize), req.userResources);
       } catch (err) {
         throw new Error(`Sandbox "${req.name}" cannot be provisioned: ${(err as Error).message}`);
       }
@@ -1214,7 +1234,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         config: sandboxCustodianConfigMap(req.name),
         token: { secret: secretName(req.name), key: "JR2_SANDBOX_TOKEN" },
         sandbox: req.name,
-        caBundle: opts.caBundle === true,
+        caBundle: cfg().caBundle === true,
         resources: split.custodian,
       });
       // The Sandbox Effector (ADR-0068): present when `jr2 up` placed an Effect of this Workspace
@@ -1233,14 +1253,14 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // `repoCloneError` names reaches the cache at the next run. After the image resolution, so
       // a refused image still costs nothing; before the CR and its token Secret, so neither exists
       // for a Sandbox whose Repo could not be recorded.
-      for (const repo of repos) await opts.repos.ensure(repo);
+      for (const repo of repos) await opts.repos.ensure(repo).catch(noOperator(req.name, "Repo"));
 
       // The watch is started before the write (on first use), and it is level-based: whatever it
       // holds when the wait below subscribes is the first thing judged, so no event about this
       // Sandbox can fall between the write and the wait. Not awaited: an API server that cannot
       // be reached fails the apply below at once, rather than hanging on a list.
       sandboxes();
-      const applied = await kube().apply(SANDBOXES, ns, cr);
+      const applied = await kube().apply(SANDBOXES, ns, cr).catch(noOperator(req.name, "Sandbox"));
       // After the CR: its uid owns both, so they go when it goes.
       await applyTokenSecret(req.name, applied);
       await applyCustodianConfig(req.name, applied, manifest);
@@ -1654,3 +1674,21 @@ function staleSlots(
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * The refusal of a provision on a cluster with no operator (ADR-0069). The data plane is always
+ * wired, but the Repo and Sandbox kinds are the operator's to install: with none, the API server
+ * answers 404 on the first create of either, so the first Repo write fails before the Sandbox CR
+ * does. `jr2 up` deploys the operator on every converge unless `operator.manage: false`, so that
+ * setting is the one way to reach this, and the fix names it. Any other error passes through.
+ */
+function noOperator(sandbox: string, kind: "Repo" | "Sandbox"): (err: unknown) => never {
+  return (err) => {
+    if (!isNotFound(err)) throw err;
+    throw new Error(
+      `Sandbox "${sandbox}" cannot be provisioned: no operator on this cluster — install it, or remove ` +
+        `\`operator.manage: false\` so \`jr2 up\` deploys it (the API server does not serve the ${kind} kind: ` +
+        `${(err as Error).message})`,
+    );
+  };
+}

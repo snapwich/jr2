@@ -98,8 +98,10 @@ export interface RepoResources {
 export type KubeReposOptions = {
   /** The instance's namespace — the Repo resources live beside the Sandboxes that name them. */
   namespace: string;
-  /** The instance's `git.credentials`, matched by prefix on the identity (config.ts). */
-  credentials: readonly GitCredential[];
+  /** The instance's `git.credentials`, matched by prefix on the identity (config.ts). A function
+   * is read on every call: the config that applies is the current Assembly's, and a publish
+   * swaps it without a new port (ADR-0069). */
+  credentials: readonly GitCredential[] | (() => readonly GitCredential[]);
   /** The clone Secrets `jr2 up` wrote (deployed: `git-clone.json` in `jr2-held`), by name. A token
    * entry whose Secret is not among them — its variable was unset at `jr2 up` — gives the resource
    * no `secretRef`, and the clone is anonymous. Default: none. */
@@ -127,7 +129,10 @@ export function kubeRepos(opts: KubeReposOptions): RepoResources {
    * show git's refusal if the host wanted one.
    */
   const secretRefFor = async (url: string, identity: string): Promise<{ name: string } | undefined> => {
-    const cred = credentialSecretFor(url, matchCredential(identity, opts.credentials));
+    const cred = credentialSecretFor(
+      url,
+      matchCredential(identity, typeof opts.credentials === "function" ? opts.credentials() : opts.credentials),
+    );
     if (cred === undefined) return undefined;
     if (cred.kind === "ssh") return { name: cred.secret };
     const written = (await opts.cloneSecrets?.()) ?? new Set<string>();
@@ -248,7 +253,16 @@ export function kubeRepos(opts: KubeReposOptions): RepoResources {
     },
 
     async list() {
-      const { items } = await kube().list<RepoItem>(REPOS, ns);
+      let items: RepoItem[];
+      try {
+        ({ items } = await kube().list<RepoItem>(REPOS, ns));
+      } catch (err) {
+        // The data plane is wired on every deployed boot (ADR-0069), so `GET /repos` asks here on
+        // a cluster with no operator too. No Repo type holds no Repos: an empty list, the same
+        // answer `reconcileBound` gives. Any other refusal still throws.
+        if (!isMissingResourceType(err)) throw err;
+        return [];
+      }
       return items.map(repoStatusOf);
     },
   };

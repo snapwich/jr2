@@ -1,13 +1,19 @@
-// The deployed orchestrator's entrypoint (ADR-0019): the process the instance image runs — and, by
-// the same token, the e2e tier's per-scenario fixture (ADR-0010 boots exactly this process on the
-// host). Configuration is env, kube-style; the instance folder is the process cwd (the image bakes
-// engine + `workflows/` there, ADR-0008). No dev.json, no hot-reload, no stub Harness: those were
-// host-dev affordances, and there is no host dev mode.
+// The deployed orchestrator's entrypoint (ADR-0019): the process the Orchestrator Kit image runs
+// — and, by the same token, the e2e tier's per-scenario fixture (ADR-0010 boots exactly this
+// process on the host). Configuration is env, kube-style; the instance folder is the process cwd.
+// The Kit image holds the engine there and nothing of any Instance (ADR-0069): the Workflows and
+// `jr2.config.ts` are the CURRENT ASSEMBLY's, which `jr2 up` publishes onto the state volume
+// (assembly.ts). The folder the process starts in is never loaded: a host-booted fixture publishes
+// through the same door. No dev.json, no stub Harness: those were host-dev affordances, and there
+// is no host dev mode.
 //
 //   PORT               listen port (default 4000 — what the Service targets)
 //   HOST               listen hostname (default 0.0.0.0: pods must be reachable off-loopback)
 //   JR2_INSTANCE_TOKEN  the Instance credential (ADR-0013), from the instance's Secret; minted
 //                      per boot when absent (then only the announce line knows it — fixtures set it)
+//   JR2_PUBLISH_TOKEN   the publish credential (ADR-0069): `PUT /assembly` alone accepts it. From
+//                      the same Secret; minted per boot when absent, so no host-booted process has
+//                      a publish door anyone outside it can open.
 //   JR2_SIGNING_KEY     base64 key Sandbox tokens are signed with; from the Secret so live Sandboxes
 //                      survive a pod restart. Absent → minted into `<dir>/.jr2/secret` (dev-grade).
 //   JR2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
@@ -16,17 +22,25 @@
 // No git token reaches this process (ADR-0068): `jr2 up` writes each entry's clone Secret, and
 // the Repo port names it from `git-clone.json` in the `jr2-held` mount.
 //
-// The first stdout line is one JSON object `{ url, workflows }` — the discovery seam a fixture (or
-// a human tailing pod logs) parses instead of racing the socket. Deployed with a data plane, the
-// boot then creates one `Repo` resource per identity its Machines bind (ADR-0051) and announces
-// each as `{ repo, url, bound: true }` — or `{ repo, error }` — one line apiece, after serving:
-// a Repo the cluster refuses is a degraded Repo (ADR-0048), never a boot that did not happen.
-// Deployed WITHOUT one, the same pass still runs and binds nothing, which unlabels every Repo a
-// previous deploy bound — an Instance that drops its last `workspace()` leaves `jr2 gc` able to
-// collect what it stopped using.
+// The first stdout line is one JSON object `{ url, workflows, assembly, kitVersion }` — the
+// discovery seam a fixture (or a human tailing pod logs) parses instead of racing the socket.
+// `assembly` is the current Assembly's hash, or `null` with `assemblyError` saying why when the
+// volume named one this process cannot load. A boot with no current Assembly also names the live
+// runs it left `waiting` for the first publish, which restores them and announces what it did as
+// one more line, `{ assembly, lost?, drifted?, failed? }`, when any run was not resumed.
+// Deployed, the boot then creates one `Repo` resource per identity its Machines bind (ADR-0051)
+// and announces each as `{ repo, url, bound: true }` — or `{ repo, error }` — one line apiece,
+// after serving: a Repo the cluster refuses is a degraded Repo (ADR-0048), never a boot that did
+// not happen. An Assembly that binds none still runs the same pass and binds nothing, which
+// unlabels every Repo a previous deploy bound — an Instance that drops its last `workspace()`
+// leaves `jr2 gc` able to collect what it stopped using. Each publish runs the pass again. With no
+// current Assembly there is no pass: nothing says what is bound, and the next publish decides.
 
 import { join } from "node:path";
-import { loadConfig } from "./config.ts";
+import { resolveAssembly, type ResolvedAssembly } from "./assembly.ts";
+import { KIT_VERSION, loadConfig, type JR2Config } from "./config.ts";
+import { readImageRefs } from "./images.ts";
+import { readMountDigests } from "./mount-digest.ts";
 import { GIT_CLONE_MANIFEST_KEY, readGitCloneManifest } from "./git-clone.ts";
 import { loadWorkflows, startInstance, type RunningInstance } from "./instance.ts";
 import {
@@ -47,12 +61,13 @@ import { kubeRepoFetches, type RepoFetches } from "./repo-fetch.ts";
 import { kubeRepos, type RepoResources } from "./repos.ts";
 import { SANDBOX_EFFECTOR_PORT, kubeSandbox } from "./sandbox-kube.ts";
 import { sandboxEffectorService } from "./sandbox-effector.ts";
-import { watchSandboxes } from "./sandbox-watch.ts";
+import { watchSandboxes, type SandboxWatch } from "./sandbox-watch.ts";
 import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 
 export type ServerMainOptions = {
-  /** The instance folder (deployed: the image's WORKDIR; fixtures: a temp instance). */
+  /** The instance folder (deployed: the image's WORKDIR, with the state volume at `.jr2`;
+   * fixtures: a temp instance, whose `.jr2` receives what the fixture publishes). */
   dir: string;
   /** The environment to read the contract above from (deployed: `process.env`). */
   env: Record<string, string | undefined>;
@@ -66,7 +81,6 @@ export type ServerMainOptions = {
 /** Boot the instance the env describes; resolves once serving (the caller owns signals/exit). */
 export async function serverMain(opts: ServerMainOptions): Promise<RunningInstance> {
   const { env } = opts;
-  const config = await loadConfig(opts.dir);
   const port = env.PORT !== undefined ? Number(env.PORT) : 4000;
   const signingKey =
     env.JR2_SIGNING_KEY !== undefined ? Buffer.from(env.JR2_SIGNING_KEY, "base64") : await loadSigningKey(opts.dir);
@@ -78,26 +92,41 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
 
   // From the instance Secret when deployed; per-boot for a host-booted fixture.
   const instanceToken = env.JR2_INSTANCE_TOKEN ?? mintInstanceToken();
+  const publishToken = env.JR2_PUBLISH_TOKEN ?? mintInstanceToken();
 
-  // The data-plane switch (ADR-0012/0031/0051): a registered Machine COMPOSES a Sandbox — read off
-  // the same walk `jr2 up` makes — and this process is deployed in a cluster → wire the
-  // cluster's Sandbox backend. Otherwise an instance without a data plane (workspace() invocations fault
-  // pointedly). The walk loads the same modules `startInstance` registers below; Node's module
-  // cache makes them one import.
-  const carried = partsOf((await loadWorkflows(opts.dir)).map((w) => w.machine));
-  const dataPlane = carried.composesSandbox && namespace !== undefined;
+  // The current Assembly (ADR-0069), and its config and Workflows read from its ROOT, never from
+  // the folder directly. A published Assembly that does not load (a Kit bump that broke an import,
+  // say) is no current Assembly: the process serves and says why (ADR-0048).
+  let resolved: ResolvedAssembly = await resolveAssembly(opts.dir);
+  // The config that applies is ALWAYS the current Assembly's (ADR-0069): the ports read it through
+  // this binding, and a publish replaces it.
+  let config: JR2Config | undefined;
+  let carried = partsOf([]);
+  if (resolved.current) {
+    const current = resolved.current;
+    try {
+      config = await loadConfig(current.root);
+      carried = partsOf((await loadWorkflows(current.root)).map((w) => w.machine));
+    } catch (err) {
+      config = undefined;
+      resolved = {
+        current: null,
+        error: `the current Assembly ${current.hash} does not load: ${err instanceof Error ? err.message : err}`,
+      };
+    }
+  }
+
+  // The data plane is ALWAYS wired when deployed (ADR-0069): a publish can bring the first
+  // `workspace()`, and wiring a client is free. `jr2 up` still decides from its host-side walk
+  // whether to DEPLOY the operator; a provision on a cluster with none fails naming `jr2 up`
+  // (sandbox-kube.ts). A host-booted process has no cluster: its `workspace()` runs fault pointedly.
+  const dataPlane = namespace !== undefined;
   let sandbox: SandboxPort | undefined;
   let repos: RepoResources | undefined;
   let fetches: RepoFetches | undefined;
-  let stopWatch: (() => void) | undefined;
-  // The Repo port hangs off DEPLOYED, not off the data plane: this boot's reconcile is the only
-  // writer that ever REMOVES `jr2.dev/bound` (repos.ts), and an Instance that drops its last
-  // `workspace()` still owns the Repos its earlier deploys bound. So the port is built whenever
-  // there is a cluster to drive, and the walk — now naming nothing — unlabels every one of them,
-  // which is what puts them on `jr2 gc`'s clock. Gate it on the data plane instead and they stay
-  // bound forever: uncollectable resources, with their node caches behind them.
+  let watch: LazyWatch | undefined;
   if (namespace !== undefined) {
-    const credentials = config?.git?.credentials ?? [];
+    const credentials = () => config?.git?.credentials ?? [];
     // ONE client for the process (ADR-0063): one write cap over every port that writes, and the
     // token read fresh on every request. Nothing is dialed until a port first asks.
     const client = opts.kube ?? kubeClient({ env });
@@ -105,34 +134,33 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // on every node that needs them. The port resolves `git.credentials` into each resource's
     // `secretRef` and only names the Secret: `jr2 up` wrote each token's clone Secret and listed
     // them in `git-clone.json`, read here per call so a converge reaches the next attach (ADR-0068).
+    // This port is also what unlabels the Repos an earlier deploy bound, so it hangs off DEPLOYED.
     repos = kubeRepos({
       namespace,
       credentials,
       cloneSecrets: async () => new Set((await readGitCloneManifest(join(HELD_MOUNT, GIT_CLONE_MANIFEST_KEY))).secrets),
       client,
     });
-    if (dataPlane) {
-      // The one watch (ADR-0063): every Sandbox of this Instance, shared by the provision, the
-      // lease and the fetch ask. Started here, at boot, because its first list IS the restore
-      // reconcile (ADR-0012) — every restored lease is waiting on it.
-      const watch = watchSandboxes(client, { namespace });
-      stopWatch = () => watch.stop();
-      // The ask a pod makes when something inside it fetches (ADR-0053): it marks the Sandbox CR
-      // and waits on the same watch the provision waits on. Gated on the DATA PLANE, unlike the
-      // Repo port above — there is nothing to ask for where no Sandbox is ever composed, and the
-      // only caller is a pod that would have to exist to call it.
-      fetches = kubeRepoFetches({ namespace, client, watch });
-      sandbox = kubeSandbox({
+    // The one watch (ADR-0063): every Sandbox of this Instance, shared by the provision, the lease
+    // and the fetch ask. Lazy, because a cluster where `jr2 up` deployed no operator serves no
+    // Sandbox kind, and a watch on it would only log. It starts at boot when the current Assembly
+    // composes a Sandbox: its first list IS the restore reconcile (ADR-0012).
+    watch = lazyWatch(() => watchSandboxes(client, { namespace }));
+    if (carried.composesSandbox) watch.start();
+    // The ask a pod makes when something inside it fetches (ADR-0053): it marks the Sandbox CR and
+    // waits on the same watch the provision waits on.
+    fetches = kubeRepoFetches({ namespace, client, watch });
+    sandbox = kubeSandbox({
+      // Named here the same way HARNESS_CONFIGMAP is: a jr2-owned mount path, deliberately NOT an
+      // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
+      // buys: the map is read per provision, so an instance whose `jr2-images` ConfigMap is not yet
+      // mounted still BOOTS and serves — only a provision fails, pointing at `jr2 up`. That is the
+      // correct blast pattern, and the stale-read window is one kubelet propagation.
+      imagesPath: join(IMAGES_MOUNT, IMAGES_KEY),
+      // What comes from the config, read per provision off the current Assembly's (ADR-0069).
+      settings: () => ({
         // The fence (ADR-0051): a per-run url must match one of these, or the provision refuses it.
-        credentials,
-        // Where a provision records the Repos it names, before the CR names them.
-        repos,
-        // Named here the same way HARNESS_CONFIGMAP is: a jr2-owned mount path, deliberately NOT an
-        // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
-        // buys: the map is read per provision, so an instance whose `jr2-images` ConfigMap is not yet
-        // mounted still BOOTS and serves — only a provision fails, pointing at `jr2 up`. That is the
-        // correct blast pattern, and the stale-read window is one kubelet propagation.
-        imagesPath: join(IMAGES_MOUNT, IMAGES_KEY),
+        credentials: credentials(),
         // The Harness containers' env (ADR-0018): what this instance can REACH (the custom provider
         // — no Agents, they ride each Turn since ADR-0049), then the instance's own valueFrom
         // entries (literal values already live in the jr2-harness-env Secret below).
@@ -152,22 +180,61 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
         // The Size of a Workspace that states none (ADR-0060), and the class its pod runs under.
         ...(config?.sandbox?.resources ? { defaultSize: config.sandbox.resources } : {}),
         ...(config?.priorityClasses?.sandbox ? { priorityClassName: config.priorityClasses.sandbox } : {}),
-        signingKey,
-        namespace,
-        client,
-        watch,
-      });
-    }
+      }),
+      // Where a provision records the Repos it names, before the CR names them.
+      repos,
+      signingKey,
+      namespace,
+      client,
+      watch,
+    });
   }
+
+  // The Repo passes run one after another on one chain, so the newest pass always finishes last:
+  // a slow boot pass can never reconcile after a publish has bound other Repos.
+  let passes: Promise<void> = Promise.resolve();
+  const repoPass = (port: RepoResources, bound: CarriedRepo[]): void => {
+    passes = passes.then(() => ensureBound(port, bound, opts.announce));
+  };
 
   const inst = await startInstance({
     dir: opts.dir,
+    assembly: resolved,
     port,
     hostname: env.HOST ?? "0.0.0.0",
     instanceToken,
+    publishToken,
     signingKey,
     sandbox,
     dataPlane,
+    // The door reads the same image map a provision reads (ADR-0069): a `file:` context whose
+    // digest it lacks is refused at the publish rather than at the first provision.
+    ...(dataPlane
+      ? { imageMap: () => readImageRefs(join(IMAGES_MOUNT, IMAGES_KEY)), mounts: () => readMountDigests() }
+      : {}),
+    // A publish landed (ADR-0069): its config is the one that applies from now on, and its
+    // Machines may bind other Repos, so the Repo pass runs again. Synchronous: the walk is over
+    // the Machines the door already imported.
+    onPublish: ({ config: next, workflows }) => {
+      config = next;
+      carried = partsOf(workflows.map((w) => w.machine));
+      if (carried.composesSandbox) watch?.start();
+      if (repos) repoPass(repos, carried.repos);
+    },
+    // The runs a boot with no current Assembly left waiting, restored at the first publish. Only
+    // what was not resumed is a line, as on the boot's own announce line (ADR-0030).
+    onRestore: ({ assembly, lost, drifted, failed }) => {
+      if (lost.length || drifted.length || failed.length) {
+        opts.announce(
+          JSON.stringify({
+            assembly,
+            ...(lost.length ? { lost } : {}),
+            ...(drifted.length ? { drifted } : {}),
+            ...(failed.length ? { failed } : {}),
+          }),
+        );
+      }
+    },
     // Read per request, never snapshotted: the Repos as the cluster reports them right now. An
     // instance without a data plane reports none — `GET /repos` answers `{ dataPlane: false,
     // repos: [] }` (http.ts), and what its dropped Machines left behind is `jr2 gc`'s to name.
@@ -193,10 +260,10 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       : {}),
   });
   // The watch ends with the instance: its stream is the one thing here that never settles alone.
-  if (stopWatch) {
+  if (watch) {
     const close = inst.close;
     inst.close = async () => {
-      stopWatch!();
+      watch!.stop();
       await close();
     };
   }
@@ -208,6 +275,11 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     JSON.stringify({
       url: inst.url,
       workflows: inst.workflows,
+      // Which Assembly this process serves (ADR-0069), and the Kit version it accepts at the door.
+      assembly: inst.assembly?.hash ?? null,
+      kitVersion: KIT_VERSION,
+      ...(inst.assemblyError !== undefined ? { assemblyError: inst.assemblyError } : {}),
+      ...(inst.waiting.length ? { waiting: inst.waiting } : {}),
       ...(lost.length ? { lost } : {}),
       ...(drifted.length ? { drifted } : {}),
       ...(failed.length ? { failed } : {}),
@@ -217,9 +289,31 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // the cluster — a run whose Repo the boot could not record still finds its provision ensuring
   // it again — and a refusal is one announced line per Repo, in ADR-0048's shape. A deployed
   // instance that binds nothing still runs this: the walk names no Repo, so the reconcile is the
-  // whole of it, and every resource an earlier deploy bound becomes evictable.
-  if (repos) void ensureBound(repos, carried.repos, opts.announce);
+  // whole of it, and every resource an earlier deploy bound becomes evictable. A boot with no
+  // current Assembly does not: an empty walk there means "unknown", not "binds nothing", and
+  // unlabeling every Repo would let `jr2 gc` evict them until the publish.
+  if (repos && inst.assembly) repoPass(repos, carried.repos);
   return inst;
+}
+
+/** The one Sandbox watch, started on first use or by {@link LazyWatch.start}. */
+type LazyWatch = SandboxWatch & { start(): void };
+
+/**
+ * A watch that starts on its first use (ADR-0063, ADR-0069). The data plane is wired on every
+ * deployed boot, but a cluster with no operator serves no Sandbox kind: a watch started there
+ * would only log its retries. Every method but `stop` starts it.
+ */
+function lazyWatch(begin: () => SandboxWatch): LazyWatch {
+  let inner: SandboxWatch | undefined;
+  const live = () => (inner ??= begin());
+  return {
+    start: () => void live(),
+    synced: () => live().synced(),
+    get: (name) => live().get(name),
+    subscribe: (name, listener) => live().subscribe(name, listener),
+    stop: () => inner?.stop(),
+  };
 }
 
 /**

@@ -103,9 +103,11 @@ projects matched the filters" and **exit 0**: no bundle, and the failure surface
 lockfile is asked first because a member never has one and a standalone instance always does; and the deploy branch now
 checks the bundle exists, naming both ways out (join the workspace, or commit a lockfile) when it does not.
 
-- **Workspace member**: unchanged `pnpm deploy --legacy`. Its job — materializing workspace symlinks — only exists in a
-  workspace. pnpm is a **contributor prerequisite** (like go for the operator), and in the one installed-mode shape that
-  reaches this branch it is a prerequisite the user already met: they wrote the `pnpm-workspace.yaml` that selects it.
+- **Workspace member**: `pnpm deploy --legacy`, hoisted (`node-linker=hoisted`) like the standalone path, so the
+  Assembly of [ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md) is one flat
+  tree whichever path staged it. Its job — materializing workspace symlinks — only exists in a workspace. pnpm is a
+  **contributor prerequisite** (like go for the operator), and in the one installed-mode shape that reaches this branch
+  it is a prerequisite the user already met: they wrote the `pnpm-workspace.yaml` that selects it.
 - **Standalone**: stage a copy of the instance (minus `node_modules/`, `.jr2/`, `.git/`, and the credential files
   `.env*`/`.npmrc` — `jr2 up` reads `.env` host-side into the Secrets it writes for the pods that spend each value,
   ADR-0019 and ADR-0068, so a copy would bake a key into an image layer and into the tag addressing it) and run a

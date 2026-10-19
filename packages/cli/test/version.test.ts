@@ -191,11 +191,12 @@ test("--url / JR2_URL: the orchestrator line from /healthz alone, and the skew v
     const old = mkIo({
       cwd: root,
       kitDir: root,
-      fetch: () => Promise.resolve(Response.json({ ok: true, version: "0.0.1", hash: "abc-arm64" })),
+      fetch: () => Promise.resolve(Response.json({ ok: true, version: "0.0.1", hash: "abc123def456" })),
     });
     const r3 = await versionReport(old.io, { url: "http://old" }, { local: false });
     assert.equal(r3.skew, "behind");
-    assert.match(render(r3), /^orchestrator:\s+0\.0\.1\s+hash abc-arm64$/m);
+    // `/healthz.hash` is the current Assembly's (ADR-0069).
+    assert.match(render(r3), /^orchestrator:\s+0\.0\.1\s+assembly abc123def456$/m);
     assert.match(
       render(r3),
       new RegExp(
@@ -212,6 +213,11 @@ test("--url / JR2_URL: the orchestrator line from /healthz alone, and the skew v
     });
     const r4 = await versionReport(newer.io, { url: "http://new" }, { local: false });
     assert.equal(r4.skew, "ahead");
+    assert.match(
+      render(r4),
+      /^orchestrator:\s+99\.0\.0\s+no Assembly — `jr2 up` publishes$/m,
+      "a Kit image before its first publish",
+    );
     assert.match(render(r4), /would roll the orchestrator back; the operator is never downgraded/);
 
     // Unreachable: the reason is the line, and exit stays 0.
@@ -247,11 +253,11 @@ test("the kube path: not deployed, unreachable, and deployed — each a line, th
 
     const live = fakeCluster({
       deployed: true,
-      healthz: { ok: true, version: "0.0.1", hash: "h1-arm64" },
+      healthz: { ok: true, version: "0.0.1", hash: "a1b2c3d4e5f6" },
       objects: {
         "proj/deployment/jr2-orchestrator": {
-          metadata: { name: "jr2-orchestrator", labels: { "jr2.dev/content-hash": "h2-arm64" } },
-          spec: { template: { spec: { containers: [{ image: "jr2-instance-proj:h2-arm64" }] } } },
+          metadata: { name: "jr2-orchestrator", labels: { "jr2.dev/version": "0.0.1" } },
+          spec: { template: { spec: { containers: [{ image: "ghcr.io/snapwich/jr2-orchestrator:0.0.1" }] } } },
         },
         "jr2-system/deployment/jr2-controller-manager": {
           metadata: { name: "jr2-controller-manager", labels: { "jr2.dev/version": "0.0.2" } },
@@ -275,8 +281,8 @@ test("the kube path: not deployed, unreachable, and deployed — each a line, th
     const table = l.out();
     assert.match(
       table,
-      /^orchestrator:\s+0\.0\.1\s+hash h1-arm64\s+\(rollout incomplete: deployment records h2-arm64\)\s+jr2-instance-proj:h2-arm64$/m,
-      "the pod's own account first; the Deployment's disagreeing record is flagged",
+      /^orchestrator:\s+0\.0\.1\s+assembly a1b2c3d4e5f6\s+ghcr\.io\/snapwich\/jr2-orchestrator:0\.0\.1$/m,
+      "the pod's own account — its Kit version and current Assembly — then the Kit image it runs (ADR-0069)",
     );
     assert.match(table, /^operator:\s+0\.0\.2\s+ghcr\.io\/snapwich\/jr2-operator:0\.0\.2$/m);
     assert.match(table, /^harness:\s+ghcr\.io\/snapwich\/jr2-harness:0\.0\.1$/m);
@@ -288,14 +294,14 @@ test("the kube path: not deployed, unreachable, and deployed — each a line, th
   }
 });
 
-test("checkout mode says so, and a same-version verdict there points at the hash", async () => {
+test("checkout mode says so, and a same-version verdict there points at the assembly hash", async () => {
   const root = await mkInstance();
   try {
     await linkKit(root);
     // `kitDir` unset → detection walks up from the CLI's own module, which IS this checkout.
     const { io } = mkIo({
       cwd: root,
-      fetch: () => Promise.resolve(Response.json({ ok: true, version: CLI_VERSION, hash: "abc-arm64" })),
+      fetch: () => Promise.resolve(Response.json({ ok: true, version: CLI_VERSION, hash: "abc123def456" })),
     });
     const r = await versionReport(io, { url: "http://test" }, { local: false });
     assert.equal(r.instance?.mode, "checkout");
@@ -303,7 +309,10 @@ test("checkout mode says so, and a same-version verdict there points at the hash
     assert.equal(r.instance?.kitRegistry, undefined, "a checkout builds; it pulls from nowhere");
     assert.equal(r.skew, "same");
     assert.match(render(r), /^instance:.*\(kit checkout at \S+\)$/m);
-    assert.match(render(r), /^skew:\s+same version; checkout builds are content-addressed/m);
+    assert.match(
+      render(r),
+      /^skew:\s+same version; checkout builds are content-addressed — compare the orchestrator image against `jr2 up`'s `orchestrator image:` line for the kit, and the assembly hash/m,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

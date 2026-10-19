@@ -5,9 +5,9 @@
 // loader to erase types the same way Node would, then hands over to the `.ts` sources.
 //
 // One entry for both worlds, deliberately: a checkout-only `.ts` bin plus an installed-only `.js`
-// bin would mean the binary users run is not the binary the checkout's tiers run. The image
-// bundle solves the same problem with `tsx` (see INSTANCE_DOCKERFILE) because there the entry is
-// the orchestrator's, not this one.
+// bin would mean the binary users run is not the binary the checkout's tiers run. The
+// Orchestrator Kit image solves the same problem with `tsx` (see deploy/orchestrator/Dockerfile)
+// because there the entry is the orchestrator's, not this one.
 //
 // After the hook, the launcher's one decision (ADR-0056): inside an Instance that resolves its own
 // `@jr2/cli` to a different copy, hand off — run THAT copy's binary with the same argv and stdio

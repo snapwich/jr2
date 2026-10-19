@@ -136,15 +136,16 @@ When(
   },
 );
 
-// The redeploy, played honestly: the orchestrator goes away, the workflow's CODE changes under the
-// same name, and a new process comes up on the same store — exactly `jr2 up` after an edit, minus
-// the cluster (ADR-0030). Sequential on purpose; the store brooks one writer.
+// The redeploy, played honestly: the workflow's CODE changes under the same name, the fixture
+// publishes it while the run is parked (`jr2 up` after an edit, minus the cluster), and the
+// orchestrator restarts on the same store and volume. The live run keeps its def until the
+// restart; the restart boots from `current` and restores into the new Machine (ADR-0030, ADR-0069).
 When(
   "the {string} workflow is replaced with the {string} fixture and the orchestrator restarts",
   async function (this: E2EWorld, name: string, fixture: string): Promise<void> {
-    await this.stopServer();
     await this.installFixtureWorkflow(fixture, name);
-    await this.startServer();
+    await this.publish();
+    await this.restartServer();
   },
 );
 

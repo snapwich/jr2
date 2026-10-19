@@ -475,6 +475,81 @@ test("an unstamped snapshot is drift: never interpret one whose Machine cannot b
   assert.match((await store.load("run-old"))!.reason ?? "", /unstamped/);
 });
 
+// ---- The Assembly a run started under (ADR-0069) ----------------------------------------------
+
+test("every save stamps the Assembly the run started under, and a publish does not restamp it", async () => {
+  const store = await mkStore();
+  const host = new RunHost({ store });
+  host.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
+  const { runId } = await host.start("coding");
+  await tick();
+  await waitForStamp(store, runId);
+  assert.equal(((await store.load(runId))!.snapshot as { assembly?: string }).assembly, "aaaaaaaaaaaa");
+  assert.deepEqual([...host.assemblyHolds()], [["aaaaaaaaaaaa", [runId]]]);
+  assert.equal(host.status(runId)?.assembly, "aaaaaaaaaaaa");
+
+  // A publish re-registers the name from another Assembly; the live run keeps its own.
+  host.register({ ...codingDef(new Map()), assembly: "bbbbbbbbbbbb" });
+  await host.cancel(runId);
+  assert.equal(((await store.load(runId))!.snapshot as { assembly?: string }).assembly, "aaaaaaaaaaaa");
+});
+
+test("a blob that names no Assembly is drift: saved under no Assembly (ADR-0069)", async () => {
+  const store = await mkStore();
+  // Written by a host whose defs came from no Assembly: stamped with a Machine, not an Assembly.
+  const hostA = new RunHost({ store });
+  hostA.register(codingDef(new Map()));
+  const { runId } = await hostA.start("coding");
+  await tick();
+  await waitForStamp(store, runId);
+
+  const hostB = new RunHost({ store, reconcile: () => true });
+  hostB.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
+  const { drifted, reattached } = await hostB.restore();
+  assert.deepEqual(drifted, [runId]);
+  assert.deepEqual(reattached, []);
+  assert.match((await store.load(runId))!.reason ?? "", /saved under no Assembly/);
+});
+
+test("a blob stamped with an Assembly resolves in the current one and restores", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
+  const { runId } = await hostA.start("coding");
+  await tick();
+  await waitForStamp(store, runId);
+
+  // Step 1 resolves the Workflow name in the CURRENT Assembly and checks the fingerprint only.
+  const hostB = new RunHost({ store, reconcile: () => true });
+  hostB.register({ ...codingDef(new Map()), assembly: "bbbbbbbbbbbb" });
+  const { reattached, drifted } = await hostB.restore();
+  assert.deepEqual([reattached, drifted], [[runId], []]);
+  // The run keeps the Assembly it started under through the restore: its status and every later
+  // save name `aaaa…`, not the Assembly whose Machine restored it (step 2 restores inside it).
+  assert.equal(hostB.status(runId)?.assembly, "aaaaaaaaaaaa");
+  assert.deepEqual([...hostB.assemblyHolds()], [["aaaaaaaaaaaa", [runId]]]);
+  await hostB.cancel(runId);
+  assert.equal(((await store.load(runId))!.snapshot as { assembly?: string }).assembly, "aaaaaaaaaaaa");
+  await hostB.close();
+});
+
+test("a stamped blob whose Workflow the current Assembly lacks is drift, and keeps its snapshot (ADR-0069)", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register({ ...codingDef(new Map()), assembly: "aaaaaaaaaaaa" });
+  const { runId } = await hostA.start("coding");
+  await tick();
+  await waitForStamp(store, runId);
+
+  // The current Assembly holds no "coding": a lost verdict would null the snapshot.
+  const hostB = new RunHost({ store, reconcile: () => true });
+  const { drifted, lost } = await hostB.restore();
+  assert.deepEqual([drifted, lost], [[runId], []]);
+  const row = (await store.load(runId))!;
+  assert.match(row.reason ?? "", /saved under Assembly aaaaaaaaaaaa/);
+  assert.equal((row.snapshot as { assembly?: string } | null)?.assembly, "aaaaaaaaaaaa", "snapshot kept");
+});
+
 test("a run that throws on restore does not take the rest of the boot with it", async () => {
   const store = await mkStore();
   const hostA = new RunHost({ store });

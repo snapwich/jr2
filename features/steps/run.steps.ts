@@ -109,17 +109,17 @@ Then("the run appears in the runs list", function (this: E2EWorld): void {
   );
 });
 
-/** The data plane is read off the registered Machines (ADR-0051), not off config: an instance
- * none of whose Machines compose a Sandbox has none, and says so rather than listing zero Repos. */
+/** A deployed Orchestrator always wires its data plane (ADR-0069); a host-booted one has none, and
+ * says so rather than listing zero Repos. */
 Then("it reports no data plane", async function (this: E2EWorld): Promise<void> {
   assert.equal(this.last?.code, 0, `jr2 status failed: ${this.last?.stderr}`);
   const report = this.resultJson<{ dataPlane: boolean; repos: unknown[] }>();
-  assert.equal(report.dataPlane, false, "no registered Machine composes a Sandbox");
+  assert.equal(report.dataPlane, false, "a host-booted Orchestrator runs outside any cluster");
   assert.deepEqual(report.repos, [], "and there are no Repo resources to report");
   // And the table, the form without `--json`: the answer is spelled out, not left as an empty list.
   const table = await this.runCli(["status"]);
   assert.equal(table.code, 0, `jr2 status failed: ${table.stderr}`);
-  assert.match(table.stdout, /no data plane/, "the table says so in words");
+  assert.match(table.stdout, /^data plane: none — /m, "the table says so in words");
   assert.doesNotMatch(table.stdout, /^\{/, "a report verb prints no JSON without --json");
 });
 

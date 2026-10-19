@@ -186,7 +186,10 @@ decision: **what a Machine says about a repository, and what the cluster does wi
 - `workspace()`'s `repos` is required with at least one slot, or `open` whole — in which case the `customize` that names
   the map is held to the same rule; a Machine that composes no Sandbox has no repos to customize, and the data-plane
   switch ("does this Instance need Sandboxes") is "a registered Machine composes a Sandbox", read off the walk, not
-  "config has repos".
+  "config has repos". That switch decides what `jr2 up` DEPLOYS for Sandboxes, the cache agent and the Sandbox Images; a
+  deployed Orchestrator wires its kube client whatever its current Assembly composes, because a publish can bring the
+  first `workspace()` without a roll
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)).
 - Every slot gets a branch worktree cut at the run's branch, a reference checkout included. A slot has no read-only
   mode; that is a decision of its own if it is ever wanted.
 - The Console's start form loses the catalog dropdown: a per-run repository is a url field unless the Machine's door

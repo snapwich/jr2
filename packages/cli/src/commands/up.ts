@@ -1,12 +1,20 @@
 // `jr2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
-// typecheck → the Machine walk → the Kubernetes floor (ADR-0037) → ownership → image resolution →
-// operator → kit images → instance image → Sandbox Images → Secret (+ preflight of referenced
-// Secrets) → apply + rollout → the cache agent (ADR-0051: a DaemonSet converged when a registered
-// Machine composes a Sandbox, deleted when none does) → Instance Harness (ADR-0031: converged by
-// convention when a carried definition declares `workspace: "none"`, deleted when none does) → a
-// report of live workspaces still on an older image. The Orchestrator creates a Repo resource per
-// Repo the walk found bound, at boot, and the cache agent clones it onto a node on first need
+// typecheck → the Machine walk → staging the Assembly (ADR-0069) → the Kubernetes floor (ADR-0037)
+// → ownership → image resolution → operator → Kit images (the Harness, the Orchestrator) → Sandbox
+// Images → Secret (+ preflight of referenced Secrets) → apply + rollout → the cache agent
+// (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted when none
+// does) → Instance Harness (ADR-0031: converged by convention when a carried definition declares
+// `workspace: "none"`, deleted when none does) → Instance Effector → publishing the Assembly to the
+// running Orchestrator (ADR-0069) → a report of live workspaces still on an older image.
+//
+// The Assembly is staged EARLY and published LAST (ADR-0069). Early, so its refusals (a second copy
+// of a Kit package, a Kit version mismatch, a tree that names its staging path) come before any
+// cluster spend. Last, because the door's own checks are true only once the cluster work is done:
+// the image map holds every `file:` digest, the Secrets exist, and the Orchestrator runs the Kit
+// version the Assembly names. A Machine edit therefore rolls nothing: it is a new Assembly, not a
+// new pod template. The Orchestrator creates a Repo resource per
+// Repo the walk found bound, at boot and at each publish, and the cache agent clones it onto a node on first need
 // (ADR-0051); a configured custom provider is preflighted from inside the cluster. A bound ssh url
 // asks where its deploy key comes from (ADR-0047), and a converge that GENERATED one ends by saying
 // so — the key is dead until a human registers it.
@@ -24,11 +32,12 @@
 // `--platform` passed explicitly on every build. The cluster's schedulable nodes choose that set
 // (`platforms` in the config overrides absolutely), so the daemon default and
 // `DOCKER_DEFAULT_PLATFORM` steer nothing any more. In a kit CHECKOUT the built set includes the
-// Harness and the operator; installed from npm those sources do not resolve and the published
+// Harness, the operator and the Orchestrator (ADR-0069); installed from npm those sources do not resolve and the published
 // `<kitversion>` refs are used with no docker at all (they are multi-arch manifest lists, so they
 // take no suffix and never had this hole). There is no `images` config block and no env escape
 // hatch — nobody gets to point a real cluster at a hand-picked Harness (ADR-0027's no-eject-hatch,
-// enforced rather than stated).
+// enforced rather than stated). An installed Instance with no `workspace()` therefore needs no
+// docker at all: it builds nothing, and its Workflows ride the Assembly (ADR-0069).
 // The converged name→ref map is stamped on the Orchestrator Deployment and diffed on the next run,
 // so a steady-state converge spends directory walks and no docker. When that record is silent (a
 // fresh namespace), the host daemon's labeled listing answers the BUILD question instead
@@ -56,8 +65,6 @@ import {
   custodianRef,
   custodianScript,
   CUSTODIAN_PROGRAM,
-  customizeLine,
-  openPartsText,
   defaultImageContext,
   heldSecretsOf,
   HELD_CA_SECRET,
@@ -71,9 +78,12 @@ import {
   loadWorkflows,
   machineBodies,
   matchCredential,
+  openPartRefusals,
+  packAssembly,
+  configMapDigest,
+  MOUNTED_CONFIGMAPS,
   partsOf,
-  placedEffectsOf,
-  workspacePodsOf,
+  placementWalkOf,
   refuseEffectSecrets,
   LABEL_EFFECTOR_POD,
   LABEL_GIT_PUSH,
@@ -102,25 +112,21 @@ import {
   type HeldPodPlan,
   type ImageRefs,
   type JR2Config,
-  type PlacementWalk,
   type ResolvedSize,
 } from "@jr2/orchestrator";
+import { stageAssembly } from "../assembly.ts";
 import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
 import {
   assertEmulation,
   buildSandboxImage,
   choosePlatforms,
   detectKitCheckout,
-  instanceImageLabels,
   kitImageBuild,
   kitImageRefs,
   normalizeRef,
-  platformSuffix,
   pnpmDockerBuild,
   publishedKitRefs,
   sandboxImageTag,
-  stageInstanceBundle,
-  INSTANCE_DOCKERFILE,
   KIT_IMAGE_HOME,
   type BuildPort,
   type KitImageName,
@@ -142,7 +148,6 @@ import {
   INSTANCE_EFFECTOR,
   instanceObjects,
   KIT_VERSION,
-  LABEL_HASH,
   LABEL_INSTANCE,
   LABEL_VERSION,
   OPERATOR_DEPLOYMENT,
@@ -165,6 +170,7 @@ import {
   kubeFloorRefusal,
   podResourcesProbe,
   kubectlAdmin,
+  kubectlKube,
   rolloutFailure,
   KUBE_FLOOR,
   ORCHESTRATOR_SERVICE,
@@ -234,47 +240,15 @@ export async function up(args: string[], io: Io): Promise<number> {
   // The Machine is named by where it sits under the registered root — the slot chain a
   // `customize()` walks — and the fix line nests the same way, so it pastes into
   // `workflows/<name>.ts` with the imported Machine and the url filled in.
-  // The two kinds of Open part are refused in ONE listing, in walk order within each kind: a
-  // composer fixing a packaged Machine fixes both in the same edit, and a converge that refused
-  // the Repo Slot, then the Agent one run later, would cost them two rounds to learn one thing.
-  for (const w of workflows) {
-    const walked = partsOf([w.machine]);
-    const opened = [
-      ...walked.openSlots.map((o) => ({
-        ...o,
-        part: "repo" as const,
-        // An Open MAP names no slot — the composer does — so it is refused as "the Repo Slots".
-        what: o.slot === undefined ? "its Repo Slots" : `Repo Slot "${o.slot}"`,
-        adr: "ADR-0051",
-      })),
-      ...walked.openAgents.map((o) => ({ ...o, part: "agent" as const, what: `Agent "${o.slot}"`, adr: "ADR-0054" })),
-      // An Effect's Open url, argv or secret (ADR-0054): no host to fence, no program to run and no
-      // secret to place until bound — one binding object for an Effect with two.
-      ...walked.openEffects.map(({ parts, ...o }) => ({
-        ...o,
-        part: parts,
-        what: `the ${openPartsText(parts)} of Effect "${o.slot}"`,
-        adr: "ADR-0054",
-      })),
-    ];
-    for (const { slot, path, part, what, adr } of opened) {
-      if (path === undefined) {
-        activity(
-          io,
-          `refusing: workflow "${w.name}" leaves ${what} open on a Machine invoked inline — no ` +
-            "customize() reaches an actor without a slot key; declare that Machine under setup({ actors }) and " +
-            `bind it there  (ADR-0049, ${adr})`,
-        );
-        return 1;
-      }
-      const where = path.length ? ` (on the Machine composed as ${path.map((k) => `"${k}"`).join(" → ")})` : "";
-      activity(
-        io,
-        `refusing: workflow "${w.name}" leaves ${what} open${where} — bind it where the Machine is ` +
-          `registered: export const machine = ${customizeLine("<import>", path, slot, part)}  (${adr})`,
-      );
-      return 1;
-    }
+  // Every Open part is refused in ONE listing, in walk order within each kind: a composer fixing a
+  // packaged Machine fixes all of them in the same edit, and a converge that refused the Repo Slot,
+  // then the Agent one run later, would cost them two rounds to learn one thing. The listing is the
+  // door's own (ADR-0069): the Orchestrator refuses a publish with the same lines, so the host walk
+  // and the door's walk cannot drift.
+  const open = openPartRefusals(workflows);
+  if (open.length) {
+    for (const line of open) activity(io, `refusing: ${line}`);
+    return 1;
   }
   // What each registered Machine runs outside itself (ADR-0067, ADR-0068): every Effect slot, with
   // the plain data it carries — a command's argv, its timeout, the Repo Slot it runs in; an http
@@ -324,17 +298,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // What names each secret, read off the walk (ADR-0059, ADR-0068): every Effect, every Workspace's
   // pod — its `workspace()`'s `secrets` and the models of the Agents whose Turns run there — and the
   // models of the `"none"` Agents the Instance Harness hosts.
-  const menuOnlyModels = agents
-    .filter((a) => a.definition.workspace === "none" && typeof a.definition.model === "string")
-    .map((a) => a.definition.model as string);
-  const placementWalk: PlacementWalk = {
-    // Per route, not per Machine object: a Machine placed twice is checked where each copy runs (ADR-0068).
-    effects: workflows.flatMap((w) => placedEffectsOf(w.machine).map((effect) => ({ workflow: w.name, effect }))),
-    workspaces: workflows.flatMap((w) => workspacePodsOf(w.machine).map((pod) => ({ workflow: w.name, pod }))),
-    ...(agents.some((a) => a.definition.workspace === "none")
-      ? { instanceHarness: { models: [...new Set(menuOnlyModels)].sort() } }
-      : {}),
-  };
+  const placementWalk = placementWalkOf(workflows);
   refuseEffectSecrets(config, placementWalk);
   // Who may send what, per state (ADR-0015): the audience rule's answer for each registered
   // Machine and every Machine it composes, as its doc carries it — so an author reads who holds a
@@ -379,6 +343,47 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
   const agentNames = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
   activity(io, `agents: ${agentNames} (carried by ${workflows.length} workflow machine(s))`);
+
+  // --- the Assembly (ADR-0069): staged here, published last ---------------------------------------
+  // Staged BEFORE any cluster spend, so its refusals cost nothing: a second copy of a Kit package
+  // (ADR-0054's silent-empty-Menus failure), a Kit version other than this CLI's (ADR-0056), a tree
+  // that names its own staging path (ADR-0038). Packed at once and the scratch tree removed: the
+  // archive is what the door receives, and no later layer reads the tree.
+  const build = io.build ?? pnpmDockerBuild;
+  activity(io, "assembly: staging");
+  const staged = await stageAssembly(build, root);
+  let assembly: { hash: string; kitVersion: string; workflows: string[]; tar: Buffer };
+  try {
+    assembly = {
+      hash: staged.hash,
+      kitVersion: staged.kitVersion,
+      workflows: staged.workflows,
+      tar: await packAssembly(staged.dir),
+    };
+  } finally {
+    await staged.dispose();
+  }
+  // The walk above loaded the Instance folder; the door loads the Assembly (ADR-0069). The two must
+  // hold the same Workflows, or a Workflow the walk built and placed for is absent at the door, and
+  // `jr2 run` names it unknown after a converge that said it succeeded.
+  const walked = workflows.map((w) => w.name);
+  const absent = walked.filter((n) => !assembly.workflows.includes(n));
+  const extra = assembly.workflows.filter((n) => !walked.includes(n));
+  if (absent.length || extra.length) {
+    activity(
+      io,
+      `refusing: the staged Assembly does not hold the Workflows this folder holds (ADR-0069)` +
+        (absent.length ? `; absent from the Assembly: ${absent.map((n) => `workflows/${n}.ts`).join(", ")}` : "") +
+        (extra.length ? `; only in the Assembly: ${extra.map((n) => `workflows/${n}.ts`).join(", ")}` : "") +
+        ` — the Assembly holds what the Instance's install keeps; check the \`files:\` list in package.json`,
+    );
+    return 1;
+  }
+  activity(
+    io,
+    `assembly: ${assembly.hash} (kit v${assembly.kitVersion}; ${assembly.workflows.length} workflow(s): ` +
+      `${assembly.workflows.join(", ") || "(none)"})`,
+  );
 
   // --- the Kubernetes floor (ADR-0037) ----------------------------------------------------------
   // Every Sandbox mounts jr2's runtime as an `image` volume, and there is no fallback below the
@@ -446,7 +451,6 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
 
   // --- image resolution (ADR-0038): decide every ref BEFORE any layer spends a build -----------
-  const build = io.build ?? pnpmDockerBuild;
   const registry = config.registry;
   const cluster = kindCluster(context);
 
@@ -546,8 +550,8 @@ export async function up(args: string[], io: Io): Promise<number> {
   activity(
     io,
     kitRoot
-      ? `images: kit checkout at ${kitRoot} — building the Harness and operator from source`
-      : `images: installed kit — the published v${KIT_VERSION} Harness and operator, pulled from ` +
+      ? `images: kit checkout at ${kitRoot} — building the Harness, operator and Orchestrator from source`
+      : `images: installed kit — the published v${KIT_VERSION} Harness, operator and Orchestrator, pulled from ` +
           `${config.kitRegistry ? `${config.kitRegistry} (kitRegistry)` : KIT_IMAGE_HOME}`,
   );
   // The Custodian's image is deployed and never built, in either world (ADR-0038, ADR-0059): the
@@ -555,14 +559,20 @@ export async function up(args: string[], io: Io): Promise<number> {
   const custodianImage = custodianRef(config.kitRegistry);
   activity(io, `custodian image: ${custodianImage} (pinned, deployed — never built)`);
 
-  // Read the Orchestrator Deployment ONCE: it carries both convergence records — the instance
-  // image's content hash (a label) and the previous name→ref map (an annotation, ADR-0038).
+  // Read the Orchestrator Deployment ONCE: it carries the convergence record — the previous
+  // name→ref map (an annotation, ADR-0038), the Orchestrator's own Kit ref included (ADR-0069).
   const orch = await kube.getJson({ kind: "deployment", name: ORCHESTRATOR_SERVICE, namespace, ...ctx });
   const previous = previousImages(orch);
-  const converged: ConvergedImages = { harness: refs.harness, custodian: custodianImage, sandbox: {}, sandboxUser: {} };
+  const converged: ConvergedImages = {
+    harness: refs.harness,
+    custodian: custodianImage,
+    orchestrator: refs.orchestrator,
+    sandbox: {},
+    sandboxUser: {},
+  };
 
-  // ONE transport branch for every image (ADR-0038), so instance, kit, and Sandbox Images cannot
-  // drift into three delivery stories.
+  // ONE transport branch for every image (ADR-0038), so Kit images and Sandbox Images cannot
+  // drift into two delivery stories.
   const deliver = async (tag: string): Promise<void> => {
     // A multi-platform build already pushed (ADR-0045): `docker buildx build --push` IS the
     // delivery, and pushing again would push a tag the daemon never held. Sound at every call site
@@ -720,43 +730,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // at `/opt/jr2` in the Sandbox Image. It is not a hash input for a Sandbox Image — the runtime rides
   // the pod's volume, so a kit edit re-images future pods and re-tags nothing of the user's.
   await ensureKitImage("harness");
-
-  // --- instance image (content-addressed by the bundle) ------------------------------------------
-  // Stage first, THEN decide: the hash is over the materialized bundle — the actual image inputs,
-  // kit included — so the tag is a content address rather than a guess about what changed.
-  const staged = await stageInstanceBundle(build, root);
-  // The content address covers (inputs × platform set), ADR-0045 — so the platform rides the HASH
-  // this layer records, not just the tag composed from it. That is what keeps the staleness key and
-  // the tag one fact: a converge whose platform set moved must not read the recorded hash as fresh,
-  // skip the build, and then apply a tag nothing ever delivered.
-  const hash = `${staged.hash}${platformSuffix(platforms)}`;
-  const tag = registry ? `${registry}/jr2-instance-${name}:${hash}` : `jr2-instance-${name}:${hash}`;
-  try {
-    if (orch?.metadata.labels?.[LABEL_HASH] === hash && values.force !== true) {
-      // Safe to skip only because the rolled-out pod is verified against `tag` below: this decides
-      // whether to spend a docker build, not whether the cluster is already correct.
-      activity(io, `image: ${tag} (fresh — build skipped; --force to rebuild anyway)`);
-    } else {
-      assertDeliverable();
-      if (await hostBuilt(tag)) {
-        activity(io, `image: ${tag} (host-built — build skipped, delivering; --force to rebuild)`);
-        await deliver(tag);
-      } else {
-        activity(io, `image: building ${tag}${values.force === true ? " (--force)" : ""}`);
-        await ensureEmulation();
-        await build.build({
-          tag,
-          platforms,
-          context: staged.dir,
-          dockerfileContent: INSTANCE_DOCKERFILE,
-          labels: instanceImageLabels(name),
-        });
-        await deliver(tag);
-      }
-    }
-  } finally {
-    await staged.dispose();
-  }
+  // The Orchestrator is a Kit image too (ADR-0069): the engine and its closure, nothing of this
+  // Instance. A Machine edit moves the Assembly, never this ref, so it never rolls the pod.
+  await ensureKitImage("orchestrator");
 
   // --- Sandbox Images (ADR-0037/0049): the contexts the Machines carry, plus `images/default` -----
   // Gated on the data-plane switch (ADR-0012/0031/0051): an instance none of whose Machines
@@ -784,9 +760,9 @@ export async function up(args: string[], io: Io): Promise<number> {
             "beside the Machine's own module (ADR-0037/0049).",
         );
       });
-      // Every carried context is keyed by that digest, which is how the baked Orchestrator finds
-      // this ref again from the `file:` URL its own copy of the module carries — no path table on
-      // either side (ADR-0049). The TAG carries the digest either way, so a Machine that names
+      // Every carried context is keyed by that digest, which is how the Orchestrator finds this
+      // ref again from the `file:` URL the Assembly's copy of the module carries — no path table
+      // on either side (ADR-0049, ADR-0069). The TAG carries the digest either way, so a Machine that names
       // `images/default` by URL lands on the same tag as the reserved key: two records, one build
       // (the host-held check below spends nothing the second time).
       const key = image.reserved ?? digest;
@@ -797,7 +773,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       // as stale here and the image is re-inspected (the host skip below then spends no build).
       const remembered = previous?.sandboxUser?.[key];
       if (previous?.sandbox?.[key] === ref && remembered !== undefined && values.force !== true) {
-        // Unlike the instance image there is no rollout to verify a Sandbox Image against, so a
+        // Unlike a Kit image there is no rollout to verify a Sandbox Image against, so a
         // recorded-but-absent ref only shows up as ImagePullBackOff at the next provision —
         // `--force` rebuilds and re-delivers it. The seat is carried forward from the same record:
         // the tag is a content address, so the image the record names declares what it declared.
@@ -848,9 +824,15 @@ export async function up(args: string[], io: Io): Promise<number> {
   const keep = (key: string, mint: () => string): string =>
     secret?.data?.[key] ? Buffer.from(secret.data[key], "base64").toString("utf8") : mint();
   const instanceToken = keep("JR2_INSTANCE_TOKEN", () => randomBytes(24).toString("hex"));
+  // The publish token (ADR-0069): publishing an Assembly imports code into the process that holds
+  // the ServiceAccount, so it costs what deploying an image cost — cluster write access. It lives
+  // here beside the Instance token, and the publish below reads it from THIS Secret alone: no env
+  // var, flag or `--url` path can supply it, so an ingress-exposed Instance exposes no publish door.
+  const publishToken = keep("JR2_PUBLISH_TOKEN", () => randomBytes(24).toString("hex"));
   const signingKey = keep("JR2_SIGNING_KEY", () => randomBytes(32).toString("base64"));
   const secretData: Record<string, string> = {
     JR2_INSTANCE_TOKEN: instanceToken,
+    JR2_PUBLISH_TOKEN: publishToken,
     JR2_SIGNING_KEY: signingKey,
     // The Instance Harness Custodian's credential (ADR-0013/0031): a sandbox-style token signed
     // for the placement's name — it may deliver only to Turns hosted THERE (tokens.ts), so the
@@ -975,26 +957,23 @@ export async function up(args: string[], io: Io): Promise<number> {
   // carry every root certificate — past what client-side apply's annotation can hold.
   const trust = trustObject({ name, namespace, caBundle: caPem, bundles: held.bundles });
   if (trust) await kube.apply({ manifest: trust, serverSide: true, ...ctx });
-  activity(io, `orchestrator: applying (image ${tag})`);
-  await kube.apply({
-    manifest: instanceObjects({
-      name,
-      namespace,
-      image: tag,
-      hash,
-      secretData,
-      harnessEnvData,
-      harness: config.harness,
-      held: held.objects,
-      imageRefs: converged,
-      repoCache: carried.composesSandbox ? { image: operatorImage!, placement: config.sandbox } : undefined,
-      ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
-      sandboxEffectors: placements.sandbox,
-      gitPush,
-      gitClone,
-    }),
-    ...ctx,
+  activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
+  const instanceList = instanceObjects({
+    name,
+    namespace,
+    image: refs.orchestrator,
+    secretData,
+    harnessEnvData,
+    harness: config.harness,
+    held: held.objects,
+    imageRefs: converged,
+    repoCache: carried.composesSandbox ? { image: operatorImage!, placement: config.sandbox } : undefined,
+    ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
+    sandboxEffectors: placements.sandbox,
+    gitPush,
+    gitClone,
   });
+  await kube.apply({ manifest: instanceList, ...ctx });
   // An entry whose clone Secret this converge did not write loses it: a dropped entry, a token
   // unset, or nothing left that clones.
   const cloneSecrets = new Set(gitClone.map((s) => s.name));
@@ -1054,7 +1033,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     layer: "orchestrator",
     namespace,
     selector: `app=${ORCHESTRATOR_SERVICE}`,
-    image: tag,
+    image: refs.orchestrator,
     ...ctx,
   });
 
@@ -1084,8 +1063,8 @@ export async function up(args: string[], io: Io): Promise<number> {
     });
   } else {
     // The Repo resources are NOT deleted here: eviction is reachability plus age (ADR-0051), and
-    // the orchestrator this converge just rolled out binds nothing, so its boot unlabels every one
-    // of them (server.ts) and `jr2 gc` takes them at the TTL. The bare clones under
+    // the Assembly this converge publishes binds nothing, so the Orchestrator's Repo pass at that
+    // publish unlabels every one of them (server.ts, ADR-0069) and `jr2 gc` takes them at the TTL. The bare clones under
     // `/var/lib/jr2/<ns>/repos` outlive the agent that would evict them — inert, like the ones
     // `jr2 down` leaves (down.ts), and swept by the agent's own walk if a `workspace()` ever
     // returns here.
@@ -1206,8 +1185,23 @@ export async function up(args: string[], io: Io): Promise<number> {
     }
   }
 
+  // --- the Assembly (ADR-0069): published last of the layers, before the sweep -------------------
+  // After every layer, because the door's checks are true only once the cluster work is done: the
+  // image map names every `file:` digest, the Secrets exist, and the rollout above put the Kit
+  // version the Assembly names in front of the door. A refusal leaves the previous Assembly
+  // current, and the converge fails before the sweep, so nothing it still needs is collected.
+  const published = await publishAssembly(io, {
+    namespace,
+    ctx,
+    assembly,
+    token: publishToken,
+    force: values.force === true,
+    mounts: mountedDigests(instanceList),
+  });
+  if (!published) return 1;
+
   await reportOlderWorkspaces(io, kube, namespace, ctx, converged);
-  await sweepAfterConverge(io, { build, kube, context, ctx, converged, instanceImage: tag, previous });
+  await sweepAfterConverge(io, { build, kube, context, ctx, converged, previous });
   noteDeferred(io, carried.repos);
   activity(io, `converged — \`jr2 run <workflow>\` when ready`);
   // LAST, after the success line (ADR-0047): the converge succeeded and the Repos still cannot be
@@ -1218,7 +1212,7 @@ export async function up(args: string[], io: Io): Promise<number> {
 
 /**
  * Every image ref one converge resolved. The Orchestrator reads `harness`/`custodian`/`sandbox` from
- * the mounted map (`ImageRefs`); `operator` rides the same JSON because the record `jr2 up` diffs
+ * the mounted map (`ImageRefs`); `operator` and `orchestrator` ride the same JSON because the record `jr2 up` diffs
  * must cover every image it builds, and one map is what keeps the record it diffs and the map pods
  * read from ever disagreeing (ADR-0038).
  *
@@ -1232,7 +1226,7 @@ export async function up(args: string[], io: Io): Promise<number> {
  * never inspected, never in this map — so it runs as whatever its own `USER` says, and one that
  * would run as root fails the Harness container's `runAsNonRoot` at provision.
  */
-type ConvergedImages = ImageRefs & { operator?: string; sandboxUser: Record<string, string> };
+type ConvergedImages = ImageRefs & { operator?: string; orchestrator?: string; sandboxUser: Record<string, string> };
 
 /** The map the LAST converge recorded, off the Orchestrator Deployment's annotation. Anything
  * unreadable (absent, hand-edited, a foreign shape) reads as "no record", which costs a rebuild —
@@ -1250,9 +1244,151 @@ function previousImages(orch?: KubeObject): Partial<ConvergedImages> | undefined
 
 /** Every ref one image map names, flattened — the kit's own plus each Sandbox Image. */
 function mapRefs(map: Partial<ConvergedImages>): string[] {
-  return [map.harness, map.custodian, map.operator, ...Object.values(map.sandbox ?? {})].filter(
+  return [map.harness, map.custodian, map.operator, map.orchestrator, ...Object.values(map.sandbox ?? {})].filter(
     (ref): ref is string => typeof ref === "string",
   );
+}
+
+/** What `GET /assembly` answers (ADR-0069), read loosely: this is the CLI's view of the door.
+ * `mounts` is the digest of each ConfigMap the process reads through a mount. */
+type AssemblyView = { current?: { hash?: string; kitVersion?: string } | null; mounts?: Record<string, string> };
+
+/** The digest of each mounted ConfigMap's data in the List this converge applied (ADR-0069), by
+ * name: what the Orchestrator must read from its mounts before the publish. */
+function mountedDigests(list: string): Record<string, string> {
+  const items = (JSON.parse(list) as { items: Array<KubeObject & { data?: Record<string, string> }> }).items;
+  const out: Record<string, string> = {};
+  for (const item of items) {
+    if (item.kind === "ConfigMap" && item.metadata.name in MOUNTED_CONFIGMAPS) {
+      out[item.metadata.name] = configMapDigest(item.data ?? {});
+    }
+  }
+  return out;
+}
+
+/** What `PUT /assembly` answers, read loosely: the 200 body, or a refusal with its report. */
+type PublishBody = {
+  hash?: string;
+  workflows?: string[];
+  unchanged?: boolean;
+  error?: string;
+  report?: string[];
+  kitVersion?: unknown;
+};
+
+/**
+ * How long a publish waits for the Orchestrator to read the ConfigMaps this converge wrote
+ * (ADR-0038, ADR-0069). `jr2-images` and `jr2-held` are mounts, and the kubelet refreshes a mount
+ * on its own period (about a minute by default). A publish rolls no pod, so until the refresh the
+ * door's checks and the next provision read the previous data. The publish waits until the digests
+ * `GET /assembly` reports are the ones this converge applied. Exported so a test can shorten it.
+ */
+export const MAP_PROPAGATION = { budgetMs: 150_000, stepMs: 5_000 };
+
+/**
+ * Publish the staged Assembly to the running Orchestrator (ADR-0069), over a port-forward of its
+ * Service, as `resolveTarget` reaches it. `GET /assembly` first: when the current Assembly is this
+ * one, at this Kit version, nothing is sent, so a steady-state converge publishes nothing. Then
+ * `PUT /assembly` with the publish token from the Instance Secret — never from the environment.
+ * Before the PUT, it waits until the Orchestrator reads the mounted ConfigMaps this converge wrote.
+ * `--force` sends the PUT even when the hashes agree; the door answers `unchanged` and replaces
+ * nothing, because the hash names the bytes it already holds.
+ *
+ * Returns false after it has said why, when the door refused: the previous Assembly is still
+ * current, and the converge fails.
+ */
+async function publishAssembly(
+  io: Io,
+  opts: {
+    namespace: string;
+    ctx: { context?: string };
+    assembly: { hash: string; kitVersion: string; workflows: string[]; tar: Buffer };
+    token: string;
+    force: boolean;
+    /** The digest of each mounted ConfigMap this converge applied, by name. */
+    mounts: Record<string, string>;
+  },
+): Promise<boolean> {
+  const { namespace, ctx, assembly, token, force } = opts;
+  const fetchImpl = io.fetch ?? globalThis.fetch;
+  const fwd = await (io.kube ?? kubectlKube).portForward({
+    namespace,
+    service: ORCHESTRATOR_SERVICE,
+    port: ORCHESTRATOR_PORT,
+    ...ctx,
+  });
+  try {
+    const base = fwd.url.replace(/\/+$/, "");
+    const view = async (): Promise<AssemblyView> => {
+      const seen = await fetchImpl(`${base}/assembly`);
+      if (!seen.ok) throw new Error(`the Orchestrator answered GET /assembly with HTTP ${seen.status}`);
+      return (await seen.json()) as AssemblyView;
+    };
+    let seen = await view();
+    const current = seen.current ?? null;
+    if (!force && current?.hash === assembly.hash && current.kitVersion === assembly.kitVersion) {
+      activity(io, `assembly: ${assembly.hash} (current — publish skipped)`);
+      return true;
+    }
+    // The mounts first (ADR-0069): the door checks a `file:` digest against `jr2-images`, and a
+    // provision after the converge reads `jr2-held`. A process that reports no mounts is not
+    // deployed, and has nothing to wait for.
+    const stale = (v: AssemblyView): string[] =>
+      v.mounts ? Object.keys(opts.mounts).filter((name) => v.mounts![name] !== opts.mounts[name]) : [];
+    const deadline = Date.now() + MAP_PROPAGATION.budgetMs;
+    let said = false;
+    for (let names = stale(seen); names.length; names = stale(seen)) {
+      if (Date.now() >= deadline) {
+        activity(
+          io,
+          `refusing: after ${Math.round(MAP_PROPAGATION.budgetMs / 1000)}s the Orchestrator still reads an older ` +
+            `${names.join(", ")} from its mount — the kubelet has not refreshed it; nothing was published, and ` +
+            `the previous Assembly is still current. Run \`jr2 up\` again`,
+        );
+        return false;
+      }
+      if (!said) activity(io, `assembly: waiting for the kubelet to deliver ${names.join(", ")} to the Orchestrator`);
+      said = true;
+      await new Promise((ok) => setTimeout(ok, MAP_PROPAGATION.stepMs));
+      seen = await view();
+    }
+    activity(
+      io,
+      `assembly: publishing ${assembly.hash} (${current?.hash ? `current is ${current.hash}` : "no current Assembly"})` +
+        (force ? " (--force)" : ""),
+    );
+    const res = await fetchImpl(`${base}/assembly`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/x-tar",
+        "jr2-kit-version": assembly.kitVersion,
+        "jr2-assembly-hash": assembly.hash,
+      },
+      body: new Uint8Array(assembly.tar),
+    });
+    const body = (await res.json().catch(() => ({}))) as PublishBody;
+    if (res.ok) {
+      const names = body.workflows ?? assembly.workflows;
+      activity(
+        io,
+        `assembly: ${body.hash ?? assembly.hash} is current${body.unchanged ? " (unchanged)" : ""} — ` +
+          `workflows: ${names.join(", ") || "(none)"}`,
+      );
+      return true;
+    }
+    const report = body.report ?? [];
+    activity(
+      io,
+      `refusing: the Orchestrator refused Assembly ${assembly.hash} (HTTP ${res.status}): ` +
+        `${body.error ?? "no reason given"}` +
+        (res.status >= 500 ? "" : " — the previous Assembly is still current"),
+    );
+    for (const line of report) activity(io, `  ${line}`);
+    return false;
+  } finally {
+    fwd.close();
+  }
 }
 
 /**
@@ -1280,11 +1416,10 @@ async function sweepAfterConverge(
     context: string;
     ctx: { context?: string };
     converged: ConvergedImages;
-    instanceImage: string;
     previous?: Partial<ConvergedImages>;
   },
 ): Promise<void> {
-  const { build, kube, context, ctx, converged, instanceImage, previous } = opts;
+  const { build, kube, context, ctx, converged, previous } = opts;
   try {
     await sweepImages({
       io,
@@ -1292,9 +1427,9 @@ async function sweepAfterConverge(
       kube,
       context,
       ctx,
-      // The instance image rides `extraKeep` explicitly: it is the one ref this converge resolved
-      // that the image map does not carry (it is the Deployment's own, ADR-0038).
-      extraKeep: [instanceImage, ...mapRefs(converged)],
+      // The map carries every ref this converge resolved, the Orchestrator's own Kit ref included
+      // (ADR-0069), so it is the whole of what this converge adds to the keep set.
+      extraKeep: mapRefs(converged),
       grace: previous ? mapRefs(previous) : [],
     });
   } catch (err) {
@@ -1502,7 +1637,7 @@ async function awaitRollout(kube: KubeAdmin, target: RolloutTarget): Promise<voi
  * template never moved (stale image, no rollout) printed `converged` while running old code.
  *
  * Tag equality is the whole check, which is only sound because the tag IS the content address (see
- * `stageInstanceBundle`): on the `kind load` path a pod's `imageID` is containerd's manifest digest
+ * `kitImageRefs`): on the `kind load` path a pod's `imageID` is containerd's manifest digest
  * under a rewritten `import-<date>` repo, comparable to nothing the host holds.
  */
 async function verifyRunningImage(
@@ -2145,7 +2280,7 @@ function noteDeferred(io: Io, repos: CarriedRepo[]): void {
   if (repos.length) {
     activity(
       io,
-      `repos: ${repos.length} bound Repo(s) — the Orchestrator creates their Repo resources at boot; the cache ` +
+      `repos: ${repos.length} bound Repo(s) — the Orchestrator creates their Repo resources at boot and at each publish (ADR-0069); the cache ` +
         "agent clones on first need (`jr2 status` reports sync state)",
     );
   }

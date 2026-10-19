@@ -39,6 +39,14 @@ export * from "./actor.ts";
 export * from "./gate.ts";
 export * from "./workspace.ts";
 export * from "./images.ts";
+// The Assembly's content address and wire form (ADR-0069): `jr2 up` and the door share both.
+export * from "./content-hash.ts";
+export * from "./assembly-tar.ts";
+// The current Assembly and the publish door (ADR-0069), and the walk's refusal listing that
+// `jr2 up` and the door both run.
+export * from "./assembly.ts";
+export * from "./assembly-checks.ts";
+export * from "./mount-digest.ts";
 export * from "./model-keys.ts";
 export * from "./held-secrets.ts";
 export * from "./secret-placement.ts";

@@ -67,6 +67,7 @@ version="$(node -p "require('$root/packages/cli/package.json').version")"
 images=(
   "jr2-harness|deploy/harness/Dockerfile|."
   "jr2-operator|operator/Dockerfile|operator"
+  "jr2-orchestrator|deploy/orchestrator/Dockerfile|."
 )
 
 # A named docker-container builder, created once: the default `docker` driver cannot build more than
@@ -97,8 +98,10 @@ if [[ ",$platforms," != ",$native," ]]; then
   echo "  docker run --privileged --rm tonistiigi/binfmt --install all" >&2
 fi
 
+pushed=()
 for row in "${images[@]}"; do
   IFS='|' read -r repo dockerfile context <<<"$row"
+  pushed+=("$repo")
   tag="$registry/$repo:$version"
   echo "kit-push: $tag ($platforms)" >&2
   # `--label` on the command line, never in the committed Dockerfile: the ownership stamp is the
@@ -121,4 +124,7 @@ for row in "${images[@]}"; do
     "$root/$context"
 done
 
-echo "kit-push: pushed jr2-harness, jr2-operator at v$version to $registry" >&2
+(
+  IFS=,
+  echo "kit-push: pushed ${pushed[*]} at v$version to $registry" >&2
+)

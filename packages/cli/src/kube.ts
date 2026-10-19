@@ -52,8 +52,8 @@ export type KubePort = {
 const ctxArgs = (context?: string): string[] => (context ? ["--context", context] : []);
 
 /** The loosely-typed kube object shape the converge logic inspects: labels carry the instance's
- * identity and the instance image's content hash; annotations carry the converged image map, which
- * is too long for a label value (ADR-0038). */
+ * identity; annotations carry the converged image map, which is too long for a label value
+ * (ADR-0038). */
 export type KubeObject = {
   metadata: {
     name: string;

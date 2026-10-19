@@ -51,6 +51,7 @@ test("the mirror's ends are the home and the kitRegistry re-homing of it", () =>
   assert.deepEqual(targets, {
     harness: `reg.example.com/jr2-harness:${KIT_VERSION}`,
     operator: `reg.example.com/jr2-operator:${KIT_VERSION}`,
+    orchestrator: `reg.example.com/jr2-orchestrator:${KIT_VERSION}`,
   });
   assert.match(envoy.source, /^docker\.io\/envoyproxy\/envoy:distroless-v[\d.]+@sha256:[0-9a-f]{64}$/);
   assert.equal(envoy.target, envoy.source.replace("docker.io/envoyproxy/", "reg.example.com/"));
@@ -73,16 +74,17 @@ test("an absent tag is copied registry-to-registry, never pulled and pushed", as
     [
       ["buildx", "imagetools", "create", "-t", targets.harness, sources.harness],
       ["buildx", "imagetools", "create", "-t", targets.operator, sources.operator],
+      ["buildx", "imagetools", "create", "-t", targets.orchestrator, sources.orchestrator],
       // Pushed by its tag from the digest-pinned source: the copy lands at that same digest.
       ["buildx", "imagetools", "create", "-t", envoyTag, envoy.source],
     ],
-    "both kit images and the Custodian's, each from its home → target",
+    "every Kit image and the Custodian's, each from its home → target",
   );
   assert.ok(
     !calls.some((c) => c[0] === "pull" || c[0] === "push"),
     "a daemon-side pull/push would flatten the manifest list",
   );
-  assert.match(err(), /mirrored 3 image\(s\), 0 already present/);
+  assert.match(err(), /mirrored 4 image\(s\), 0 already present/);
 
   // The one machine-readable line names what a `kitRegistry` should now be set to.
   assert.deepEqual(JSON.parse(out()), {
@@ -95,7 +97,7 @@ test("an absent tag is copied registry-to-registry, never pulled and pushed", as
 test("a tag already in the target is skipped — a published version tag never moves", async () => {
   // Present implies current (ADR-0044), so the skip costs one inspect and no transfer. The target is
   // asked FIRST, which is what makes the repeat run cheap.
-  const { calls, docker } = mkDocker([...Object.values(sources), targets.harness, targets.operator, envoy.target]);
+  const { calls, docker } = mkDocker([...Object.values(sources), ...Object.values(targets), envoy.target]);
   const { io, err } = mkIo();
 
   assert.equal(await kit(["push", "reg.example.com"], io, docker), 0);
@@ -104,12 +106,13 @@ test("a tag already in the target is skipped — a published version tag never m
     [
       ["buildx", "imagetools", "inspect", targets.harness],
       ["buildx", "imagetools", "inspect", targets.operator],
+      ["buildx", "imagetools", "inspect", targets.orchestrator],
       ["buildx", "imagetools", "inspect", envoy.target],
     ],
     "the target is inspected, and nothing else happens",
   );
   assert.match(err(), /harness: already present/);
-  assert.match(err(), /mirrored 0 image\(s\), 3 already present/);
+  assert.match(err(), /mirrored 0 image\(s\), 4 already present/);
 });
 
 test("a partly-filled registry copies only what is missing", async () => {
@@ -119,9 +122,9 @@ test("a partly-filled registry copies only what is missing", async () => {
   assert.equal(await kit(["push", "reg.example.com"], io, docker), 0);
   assert.deepEqual(
     calls.filter((c) => c[2] === "create").map((c) => c[4]),
-    [targets.operator, envoyTag],
+    [targets.operator, targets.orchestrator, envoyTag],
   );
-  assert.match(err(), /mirrored 2 image\(s\), 1 already present/);
+  assert.match(err(), /mirrored 3 image\(s\), 1 already present/);
 });
 
 test("a source the home does not hold fails by name, pointing at the checkout-side seeder", async () => {
