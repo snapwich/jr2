@@ -49,14 +49,17 @@ composition and does not replace it. The two uses stay two mechanisms.
   own and is deferred.
 - **Two settlements, `started` by default.** `{ outcome: "started", run }` settles when the Orchestrator accepts the
   run; the watcher goes round again. `wait: true` settles `{ outcome: "settled", run, status, output }` when that run
-  ends, `status` in the store's own words (`done`, `cancelled`, `faulted`, `lost`,
-  [ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) and `output` the callee Machine's. In-process the run host tells
+  ends, `status` in the store's own words (`done`, `error`, `cancelled`, `lost`, `drifted`,
+  [ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) and `output` the callee Machine's, which `GET /runs/<id>` serves
+  for a settled run from this decision on. A `wait` is bounded by the slot's `timeout`; a run still live when it runs
+  out settles `status: "live"`, the status the run had when the Effect stopped waiting. In-process the run host tells
   it; foreign, the Instance Effector polls `GET /runs/<id>` as a long-running Effect, which it keeps across an
   Orchestrator restart already. No callback from the callee: a callback needs the callee to hold its caller's address
   and a token for it, which inverts the trust. A door refusal, 400 for bad input, 404 for a name the current Assembly
-  lacks, 409 for an unrunnable Chart, is OUTPUT, `{ outcome: "refused", report }`, as a Chart refusal is
-  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)): the body may have come from a model, and the report must
-  be able to reach it through the Chain. A dead target is the invoke's error, as an `http` Effect's is.
+  lacks, 409 for an unrunnable named Chart, 422 for a Chart the door refuses, is OUTPUT,
+  `{ outcome: "refused", report }`, as a Chart refusal is ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)):
+  the body may have come from a model, and the report must be able to reach it through the Chain. A dead target is the
+  invoke's error, as an `http` Effect's is.
 - **The two runs are independent.** Cancelling the caller never cancels the callee; the caller's end never ends it;
   leaving the state stops a wait and never the run; the callee's Workspaces are its own. Temporal's parent-close policy
   (`TERMINATE` by default, `REQUEST_CANCEL`, `ABANDON`) exists because a child there is both a run and a child, and its
@@ -76,8 +79,11 @@ composition and does not replace it. The two uses stay two mechanisms.
   answers with the existing run on a repeat (ADR-0033 as amended). In-process the ledger is consulted directly. Without
   it a watcher double-starts a run after a restart, which a human notices as two pull requests.
 - **`jr2 up` checks what it can see, and the severity follows who owns both sides.** For a same-Instance name the walk
-  resolves it in the Assembly (a Machine, a Chart file or a runtime Chart) and REFUSES a miss, naming the fix; reads the
-  callee's door's keys as what the Effect reads, for ADR-0067's "a pick param nothing reads" check; and compares the
+  resolves it in the Assembly and REFUSES a miss, naming the fix: on the host, among the Machines and the Chart files,
+  and a slashed name whose wrapper exists but whose Chart the host cannot see is a warning there, since a runtime Chart
+  lives on the Orchestrator's volume alone; at the publish door, among all three, and there the miss refuses the
+  publish. ADR-0067's "a pick param nothing reads" check runs at `createMachine`, before any callee is known, so it
+  reads the slot's `input` schema's keys, and with no schema it reads nothing and skips. The walk then compares the
   slot's `input` schema, if given, with the callee's door and REFUSES a mismatch. For a foreign target it does
   `GET /workflows/<name>` with the token, as the model-provider preflight does, compares the served JSON Schema with the
   slot's schema the same way, and WARNS on no reach, a miss or a mismatch, never refuses: the other Instance may be down
