@@ -105,3 +105,7 @@ unchanged.
 - `jr2 up` warns — never refuses — when no current Sandbox node could hold a Workspace's Size (the ADR-0052 stance: the
   node set moves).
 - GLOSSARY.md gains **Size**.
+- The kit-sized control pods ask a node for about 900m a scenario before any Sandbox, so the `@kind` tier on a 4-vCPU
+  hosted runner runs two workers, not the profile's four (`just e2e-kind 2` in the release job). v0.4.0's release run
+  measured the alternative: four workers left every Sandbox Pending on `Insufficient cpu`. The requests are the kit's
+  and are not lowered for a runner.

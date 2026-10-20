@@ -83,9 +83,19 @@ e2e-kind-up:
 # exported kubeconfig, never the shell's current context: `jr2 up` converges whatever `kubectl`
 # points at (ADR-0019), and a shell pointed at a real cluster would otherwise fail every scenario
 # at "is serving" — or worse, converge into it.
-e2e-kind:
+#
+# `parallel` is the worker count, and it is a property of the HOST, not the tier: the profile's
+# default (4, features/cucumber.json) is measured on a dev box, and a scenario's pods ask their
+# node for about 1.4 cpu of requests — the kit-sized control pods (ADR-0060: Orchestrator 500m,
+# Instance Harness 250m, its Custodian, the Repo cache and the Instance Effector 50m each) and a
+# 500m Sandbox (features/kind-instance/jr2.config.ts) — so four at once ask a node for 5.6 cpu. A
+# 4-vCPU hosted runner allocates 4, of which kube-system holds about 1 (v0.4.0's run: every
+# Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.8, which fits;
+# the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
+# of 47, 2 pass 47 of 47. Requests are the kit's, sized for a real cluster, and are not lowered for a runner.
+e2e-kind parallel="":
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:kind
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:kind {{ if parallel != "" { "--parallel " + parallel } else { "" } }}
 
 # A COLD host builds every image the tier deploys four times over: the tier runs four workers, and
 # the first scenario of each converges its own namespace from nothing — Harness, operator,

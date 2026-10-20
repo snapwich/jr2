@@ -53,9 +53,11 @@ export default defineConfig({
   // safe: the Orchestrator never sees an Effect secret.
   secrets: [{ name: "echo-token", value: process.env.JR2_ECHO_TOKEN }],
   // The Size of every Sandbox this tier provisions (ADR-0060): below the kit default, because jr2
-  // reserves the whole Size and the tier runs four scenarios at once on ONE kind node — at 2Gi and
-  // one cpu each, beside every scenario's kit-sized control pods, a 4-core runner leaves Sandboxes
-  // Pending. The Harness still gets 960Mi and 450m after the Custodian's share.
+  // reserves the whole Size and the tier runs several scenarios at once on ONE kind node — at 2Gi
+  // and one cpu each, beside every scenario's kit-sized control pods, a 4-core runner leaves
+  // Sandboxes Pending. The Harness still gets 960Mi and 450m after the Custodian's share. The Size
+  // alone is not enough there: the control pods ask 900m a scenario before any Sandbox, so the
+  // runner also runs fewer workers (`just e2e-kind 2`; the recipe has the arithmetic).
   sandbox: { resources: { limits: { memory: "1Gi", cpu: "500m" } } },
   harness: {
     provider: {
