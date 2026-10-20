@@ -139,8 +139,11 @@ automatic status. It is never control: nothing consumes an Emit, and an Emit can
 _Avoid_: event (what a Gate or an Agent delivers), log (not a diagnostic)
 
 **Effect**:
-Work that a Machine does outside itself: it runs a command, calls a URL or pushes a branch.
-_Avoid_: action (xstate's word), side effect, job, task, step, operation, errand, tool
+Work that a Machine does outside itself: it runs a command, calls a URL, pushes a branch or starts a run. A run that
+an Effect started is **dispatched by** the run that started it, and the two are independent: an in-run child is a
+nested Machine, never a dispatched run.
+_Avoid_: action (xstate's word), side effect, job, task, step, operation, errand, tool; sub-run, child run, nested run,
+spawned run (a dispatched run is a run of its own)
 
 **Open**:
 A part that a Machine declares but does not bind, so that its composer binds it: for example, a Repo Slot with no url,

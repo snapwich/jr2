@@ -2,11 +2,13 @@
 
 An Effect is work a Machine does outside itself. A Machine already runs Agents and Gates as actors (ADR-0049); work such
 as running the tests had no place of its own, so an author either asked an Agent to do it (and trusted its word) or
-wrote a raw xstate promise that a restart ran again. jr2 builds three kinds: `command`, run a program in the Workspace;
-`http`, call a URL — with a JSON or text body, or a Worktree file as its body; and `push`, push the Workspace's branch
-to its Repo Slot's Binding. An Effect that holds a secret runs in an Effector
+wrote a raw xstate promise that a restart ran again. jr2 builds four kinds: `command`, run a program in the Workspace;
+`http`, call a URL — with a JSON or text body, or a Worktree file as its body; `push`, push the Workspace's branch to
+its Repo Slot's Binding; and `dispatch`, start a run of a registered Workflow, on this Orchestrator or another's
+([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). An Effect that holds a secret runs in an Effector
 ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A `command` whose env names a secret —
-the credentialed `command` — runs there too, its child confined (below).
+the credentialed `command` — runs there too, its child confined (below). A `dispatch` with no target runs in the
+Orchestrator's own process, the one Effect that does: it starts the run through the run host and holds no secret.
 
 ## Decision
 
@@ -315,7 +317,9 @@ the credentialed `command` — runs there too, its child confined (below).
 - **No fire-and-forget form.** Two patterns keep D1: an Effect in its own state; or a second invoke with no `onDone`
   beside the state's work — it fires on state entry, a fast exit can cut it, and below an Agent's state it holds Rest
   until it settles. `spawnChild` is not used for an Effect: it is not stopped on exit, it runs again on restore, and it
-  is orphaned after a final state — each breaks D1 or the ledger.
+  is orphaned after a final state — each breaks D1 or the ledger. A `dispatch` without `wait` is not the exception it
+  looks like: the Effect is the START, which settles when the run is accepted; the run it started is a run of its own,
+  not the Effect's child, and D1 never reached it (ADR-0071).
 - **Rest counts an Effect like any child.** A running Effect below an Agent's state holds the Agent's pick (ADR-0024); a
   settled Effect with no `onDone` is Rest. An Effect is not a long-lived invoke, and the load walk does not warn on one.
 - **The load walk checks what a pick hands an Effect** (ADR-0015): a pick param nothing reads — per state, so any invoke

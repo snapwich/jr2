@@ -13,7 +13,9 @@ because they are one problem: **what a Machine depends on that is not inside it.
   Gates list under the parent's run and its emits ride the same feed. There is no sub-run and no
   invoke-by-registered-name: a nested Machine is reached by `import`, never by the name `jr2 run` uses. Rejected:
   Temporal-style child workflows with their own run ids — a new actor kind, cross-run correlation, and cancel
-  propagation, for no requirement that needs a second run id.
+  propagation, for no requirement that needs a second run id. A run that STARTS a run is not composition: it is the
+  `dispatch` Effect ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), by the name `jr2 run` uses, and
+  the two runs are independent. Two uses, two mechanisms.
 - **Everything a Machine depends on rides the Machine, scoped to it.** Vocabulary already did (ADR-0011, per-Machine
   since this decision). The two remaining dependencies join it:
   - **An Agent is an actor slot.** `jr2Setup({ actors: { researcher: agent({ model, instructions, … }) } })`, invoked as

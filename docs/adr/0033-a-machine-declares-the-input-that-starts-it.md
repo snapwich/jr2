@@ -54,6 +54,11 @@ machine is the one piece of its vocabulary that pattern missed.
 - **A declared schema is enforced at the door.** `POST /workflows/:name/runs` validates the body and 400s naming the
   accepted shape — parity with what Gates already do for deliveries. No schema declared → accept anything (today's
   behavior), and the Console falls back from a generated form to a raw-JSON textarea.
+- **The door takes an idempotency key, out of band.** A start may carry one in a header, never in the body (a body field
+  would be one every door had to reserve); a repeat with the same key answers with the run the first one made. A
+  `dispatch` Effect sends its ledger row's id ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), so a
+  start whose answer was lost is sent once where it may have arrived (ADR-0067) and makes one run. `jr2 run` and the
+  Console send none.
 
 ## Considered options
 
