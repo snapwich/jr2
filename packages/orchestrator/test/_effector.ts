@@ -16,7 +16,7 @@ import {
   type StartRequest,
 } from "../src/effector-wire.ts";
 
-type Held = { req: StartRequest; output?: unknown; pinned?: string; waiters: Set<() => void> };
+type Held = { req: StartRequest; output?: unknown; pinned?: string; run?: string; waiters: Set<() => void> };
 type FakeReplica = { name: string; address: string; effects: Map<string, Held>; down: boolean; stopping: boolean };
 
 export const EFFECTOR_KEY = "the-instance-effector-placement-key";
@@ -82,6 +82,16 @@ export class FakeEffector {
     }
   }
 
+  /** A dispatch's door answered with `run`, and its wait runs: the running state names it (ADR-0071). */
+  name(run: string, id = this.starts.at(-1)?.id): void {
+    for (const r of this.replicas) {
+      const held = id ? r.effects.get(id) : undefined;
+      if (!held || held.output) continue;
+      held.run = run;
+      for (const wake of [...held.waiters]) wake();
+    }
+  }
+
   /** A replica restarts: it forgets every Effect it held. */
   restart(name: string): void {
     const r = this.replica(name);
@@ -118,6 +128,7 @@ export class FakeEffector {
         replica: { name: replica.name, address: replica.address },
         state: held === undefined ? "unknown" : held.output ? "settled" : "running",
         ...(held?.pinned ? { pinned: held.pinned } : {}),
+        ...(held?.run ? { run: held.run } : {}),
         ...(held?.output ? { output: held.output as HttpOutput } : {}),
       });
       if (method === "POST") {
@@ -151,13 +162,17 @@ export class FakeEffector {
         return answer(404, stateOf(undefined));
       }
       if (method === "DELETE") {
-        // The stop route: a credentialed command's group is stopped; a push or an http has none.
-        if (held.req.kind !== "command")
-          return answer(405, { error: "POST or GET; DELETE stops a credentialed command" });
+        // The stop route: a credentialed command's group is stopped, and a dispatch's wait
+        // (ADR-0071); a push or an http has none.
+        if (held.req.kind !== "command" && held.req.kind !== "dispatch")
+          return answer(405, { error: "POST or GET; DELETE stops a credentialed command or a dispatch's wait" });
         if (this.stopsMissing) return answer(404, stateOf(undefined));
         this.stopped.push(id);
         if (!held.output) {
-          held.output = this.stopOutcome;
+          held.output =
+            held.req.kind === "dispatch"
+              ? { outcome: "unknown", reason: "the wait was stopped: its state exited" }
+              : this.stopOutcome;
           for (const wake of [...held.waiters]) wake();
         }
         return answer(200, stateOf(held));

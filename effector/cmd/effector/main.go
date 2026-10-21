@@ -55,6 +55,7 @@ import (
 
 	"github.com/snapwich/jr2/effector/internal/commandkind"
 	"github.com/snapwich/jr2/effector/internal/confine"
+	"github.com/snapwich/jr2/effector/internal/dispatchkind"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/kinds"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
@@ -231,9 +232,10 @@ func run(logger *log.Logger) error {
 // mount is where this Effector's own files are: what a credentialed command's child is kept from.
 type mount struct{ key, config, secrets, git string }
 
-// kindsFor is this placement's kinds: `http` alone in the Instance Effector; in a Sandbox
-// Effector (JR2_EFFECTOR_WORK set) also a file-body http, push and the credentialed command, whose child is
-// confined with Landlock. When the kernel cannot confine one, a Workspace that holds a
+// kindsFor is this placement's kinds: `http` and `dispatch` (ADR-0071) in the Instance Effector,
+// which holds a foreign Orchestrator's token as an Effect secret; in a Sandbox Effector
+// (JR2_EFFECTOR_WORK set) `http` with a file body too, push and the credentialed command, whose
+// child is confined with Landlock, and no dispatch. When the kernel cannot confine one, a Workspace that holds a
 // credentialed command stops the start (the Effector never becomes ready); one that holds none
 // runs its other kinds, and a command start is refused.
 func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Scrubber, roots *x509.CertPool,
@@ -243,6 +245,7 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 	r := &kinds.Runner{HTTP: &httpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots,
 		WorkRoot: work}, Reaper: reaper.New()}
 	if work == "" {
+		r.Dispatch = &dispatchkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots}
 		return r, nil
 	}
 	r.Lock = &kinds.Lock{}

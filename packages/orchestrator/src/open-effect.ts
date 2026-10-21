@@ -25,18 +25,22 @@
 import type { ActorLogic, AnyActorRef, EventObject } from "xstate";
 import { open } from "./open.ts";
 import type { Arg, EffectLogic, EffectParts, EffectSnapshot } from "./effect.ts";
-import type { Text } from "./http-effect.ts";
+import type { Secret, Text } from "./http-effect.ts";
 
-/** The parts of an Effect a package may leave Open: an http url, a command's argv, a secret's name. */
-export type OpenEffectPart = "url" | "argv" | "secret";
+/** The parts of an Effect a package may leave Open: an http url, a command's argv, a secret's name,
+ * a dispatch's target (its url and token together, ADR-0071). */
+export type OpenEffectPart = "url" | "argv" | "secret" | "target";
 
 /** What a composer binds an Effect's Open parts to, each key one part: a url (a string, or a `text`
  * with a secret in its path), an argv (each entry one argument, never shell text), a secret's name
- * (its file in the Effector's mount, ADR-0068). One object for an Effect with two Open parts. */
+ * (its file in the Effector's mount, ADR-0068), a dispatch's target (another Orchestrator's origin and
+ * the secret that holds its Instance token, bound as one, ADR-0071). One object for an Effect with
+ * two Open parts. */
 export type EffectBinding = {
   readonly url?: string | Text;
   readonly argv?: readonly (string | Arg)[];
   readonly secret?: string;
+  readonly target?: { readonly url: string; readonly token: Secret };
 };
 
 declare const openPart: unique symbol;
@@ -58,11 +62,13 @@ const BIND: unique symbol = Symbol.for("jr2.effect.bind");
 
 type Binder = (binding: EffectBinding) => EffectLogic<unknown, unknown>;
 
-/** Which parts of these parts are Open, in binding order: the url or the argv, then the secret. */
+/** Which parts of these parts are Open, in binding order: the url, the argv or the target, then the
+ * secret. A dispatch's target is one part: its token is never `secret(open)` (ADR-0071). */
 export function openPartsOf(parts: EffectParts): OpenEffectPart[] {
   const out: OpenEffectPart[] = [];
   if (parts.kind === "http" && parts.url === open) out.push("url");
   if (parts.kind === "command" && parts.argv === open) out.push("argv");
+  if (parts.kind === "dispatch" && parts.target === open) out.push("target");
   if (parts.kind !== "push" && parts.openSecret) out.push("secret");
   return out;
 }
@@ -78,6 +84,7 @@ const BINDING_SAMPLE: Record<OpenEffectPart, string> = {
   url: 'url: "https://<host>/<path>"',
   argv: 'argv: ["<program>", "<arg>"]',
   secret: 'secret: "<name>"',
+  target: 'target: { url: "https://<host>", token: secret("<name>") }',
 };
 
 /** One binding object for these Open parts — `{ url: "…", secret: "<name>" }` for two. */

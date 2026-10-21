@@ -297,8 +297,9 @@ _Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
 
 **Effector**:
 The container where jr2's own process runs a Machine's Effects and holds their secrets, and where the Agent executes
-nothing: a Sandbox Effector or the Instance Effector. Every Effect runs in it except a command that names no secret, and
-a command that runs in it sees a pinned commit, never the live Worktree.
+nothing: a Sandbox Effector or the Instance Effector. Every Effect runs in it except a command that names no secret,
+which runs beside the Agent, and a dispatch that names no target, which runs in the Orchestrator's own process; a
+command that runs in it sees a pinned commit, never the live Worktree.
 _Avoid_: Courier, Actuator, Clerk, machine container, tool image
 
 **Sandbox Effector**:
@@ -308,7 +309,8 @@ an Effect secret.
 _Avoid_: sidecar, worker, runner
 
 **Instance Effector**:
-The Effector as a stateless pod of its own, one per Instance, for an Effect that calls a URL and reads no Worktree file.
+The Effector as a stateless pod of its own, one per Instance, for an Effect that calls a URL and reads no Worktree file,
+and for a dispatch that starts a run on another Orchestrator.
 _Avoid_: sidecar, worker, runner
 
 **Effect secret**:

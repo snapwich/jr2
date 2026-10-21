@@ -8,7 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
+import { FIND_BY_DISPATCH_SQL, SqliteSnapshotStore } from "../src/snapshot-store.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -118,4 +118,99 @@ test("liveAssemblies: the live rows by the Assembly their blob names, terminal r
     ],
   );
   await store.close();
+});
+
+test("findByDispatch finds a run by its blob's idempotency key, in any status, through an index (ADR-0071)", async () => {
+  await withDb(async (path) => {
+    const store = new SqliteSnapshotStore(path);
+    await store.init();
+    await store.save("r-plain", { workflow: "ping", snapshot: {} });
+    await store.save("r-live", { workflow: "ping", dispatchedBy: { run: "c", slot: "s", effect: "k-live", depth: 1 } });
+    await store.save(
+      "r-done",
+      { workflow: "ping", dispatchedBy: { run: "c", slot: "s", effect: "k-done", depth: 1 } },
+      "done",
+    );
+    assert.equal(await store.findByDispatch("k-live"), "r-live");
+    assert.equal(await store.findByDispatch("k-done"), "r-done", "a settled run keeps answering its key");
+    assert.equal(await store.findByDispatch("k-none"), undefined);
+    // `markLost` on a saved row keeps its blob, so a lost run still answers its key: a re-send
+    // after the run was lost names it, and never starts a second.
+    await store.markLost("r-live", "gone");
+    assert.equal(await store.findByDispatch("k-live"), "r-live");
+
+    // The index exists, and the store's own lookup statement seeks through it.
+    const db = new DatabaseSync(path);
+    const index = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'machine_snapshots_dispatch_effect'`)
+      .get() as { name: string } | undefined;
+    assert.equal(index?.name, "machine_snapshots_dispatch_effect");
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${FIND_BY_DISPATCH_SQL}`).all("k-done") as Array<{ detail: string }>;
+    assert.ok(
+      plan.some((row) => row.detail.includes("machine_snapshots_dispatch_effect")),
+      JSON.stringify(plan),
+    );
+    db.close();
+    await store.close();
+  });
+});
+
+/** A blob nested past what SQLite's JSON parser takes (about 1000 levels): `json_extract` throws
+ * on it, so nothing on the save or the boot path may run one over every row. */
+function deep(levels: number): Record<string, unknown> {
+  let node: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < levels; i++) node = { n: node };
+  return node;
+}
+
+test("a blob nested past SQLite's JSON depth still saves and answers its key (ADR-0071)", async () => {
+  const store = new SqliteSnapshotStore(":memory:");
+  await store.init();
+  const blob = {
+    workflow: "parked",
+    data: deep(1200),
+    dispatchedBy: { run: "c", slot: "s", effect: "k-deep", depth: 1 },
+  };
+  await store.save("r-deep", blob);
+  assert.equal((await store.load("r-deep"))?.status, "live");
+  assert.equal(await store.findByDispatch("k-deep"), "r-deep");
+  // A save that drops the key drops it from the lookup too.
+  await store.save("r-deep", { workflow: "parked" }, "done");
+  assert.equal(await store.findByDispatch("k-deep"), undefined);
+  await store.close();
+});
+
+test("init over a volume an earlier Kit wrote — the old table, a deep row among them — adds the key column (ADR-0071)", async () => {
+  await withDb(async (path) => {
+    // The table as it was before the key: no `dispatch_effect` column.
+    const old = new DatabaseSync(path);
+    old.exec(`
+      CREATE TABLE machine_snapshots (
+        run_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'live',
+        snapshot TEXT,
+        reason TEXT,
+        updated_at TEXT
+      )
+    `);
+    const insert = old.prepare(
+      `INSERT INTO machine_snapshots (run_id, status, snapshot, reason, updated_at) VALUES (?, ?, ?, NULL, ?)`,
+    );
+    const now = new Date().toISOString();
+    insert.run("r-old", "live", JSON.stringify({ workflow: "ping" }), now);
+    insert.run("r-deep", "done", JSON.stringify({ workflow: "parked", data: deep(1200) }), now);
+    old.close();
+
+    const store = new SqliteSnapshotStore(path);
+    await store.init();
+    await store.init(); // and again, as every boot does
+    assert.deepEqual(
+      (await store.live()).map((r) => r.runId),
+      ["r-old"],
+    );
+    assert.equal(await store.findByDispatch("k-new"), undefined);
+    await store.save("r-new", { workflow: "ping", dispatchedBy: { run: "c", slot: "s", effect: "k-new", depth: 1 } });
+    assert.equal(await store.findByDispatch("k-new"), "r-new");
+    await store.close();
+  });
 });

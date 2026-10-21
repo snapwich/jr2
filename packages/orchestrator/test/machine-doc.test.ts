@@ -12,6 +12,8 @@ import { jr2Setup } from "../src/setup.ts";
 import { opaqueStates, serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
 import { arg, commandWith } from "../src/effect.ts";
 import { bearer, httpWith, secret } from "../src/http-effect.ts";
+import { dispatch } from "../src/dispatch-effect.ts";
+import { open } from "../src/open.ts";
 
 test("an Effect's invoke carries its parts — argv, timeout, Repo Slot — read without running it (ADR-0067)", () => {
   const lint = commandWith(
@@ -63,6 +65,43 @@ test("an http Effect's invoke carries its method, fixed target and secret names 
       },
     },
   ]);
+});
+
+test("a dispatch's invoke carries the Workflow, the wait, the bound and the target's origin — never its token (ADR-0071)", () => {
+  const machine = setup({
+    actors: {
+      here: dispatch("review", { wait: true }),
+      away: dispatch("task/review-loop", {
+        target: { url: "https://ops.example.com", token: secret("ops") },
+        timeout: "1m",
+      }),
+      later: dispatch("review", { target: open }),
+    },
+  }).createMachine({
+    id: "m",
+    type: "parallel",
+    states: {
+      a: { invoke: { src: "here", id: "here", input: {} } },
+      b: { invoke: { src: "away", id: "away", input: {} } },
+      c: { invoke: { src: "later", id: "later", input: {} } },
+    },
+  });
+  const states = serializeMachine("wf", machine).root.states;
+  assert.deepEqual(
+    states.map((s) => s.invoke[0]!.effect),
+    [
+      { kind: "dispatch", workflow: "review", wait: true, timeoutMs: 600_000 },
+      {
+        kind: "dispatch",
+        workflow: "task/review-loop",
+        wait: false,
+        target: "https://ops.example.com",
+        timeoutMs: 60_000,
+      },
+      { kind: "dispatch", workflow: "review", wait: false, target: "<open>", timeoutMs: 30_000 },
+    ],
+  );
+  assert.ok(!JSON.stringify(states).includes('"ops"'), "the token's secret is not in the doc");
 });
 
 /** A fixture exercising every serialization path. */

@@ -48,10 +48,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   (`the remote could not be reached: ssh: …`), with both in the detail: git's own words for an ssh failure name no
   cause.
 
-- **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file. A Sandbox Effector — the
-  binary with `JR2_EFFECTOR_WORK` set, a read-only view of the Agent's `/work` — runs an `http` whose body is a Worktree
-  file, `push` and a credentialed `command` (ADR-0067); the Instance Effector refuses the last two, and a file body, as
-  a defect. Its env names where its mount holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only),
+- **Two placements, one binary.** The Instance Effector runs `http` with no Worktree file, and `dispatch` toward another
+  Orchestrator ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), the other Orchestrator's Instance
+  token being an Effect secret it holds. A Sandbox Effector — the binary with `JR2_EFFECTOR_WORK` set, a read-only view
+  of the Agent's `/work` — runs an `http` whose body is a Worktree file, `push` and a credentialed `command` (ADR-0067);
+  the Instance Effector refuses the last two, and a file body, as a defect, and a Sandbox Effector refuses a `dispatch`.
+  Its env names where its mount holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only),
   `JR2_EFFECTOR_GIT` (the push credentials: one directory per `git.credentials` entry the Sandbox's pushes spend, the
   entry's own Secret as the operator projects it — `entry.json`, what the entry is; `identity` and `known_hosts` for an
   ssh key; `password` for a token; `sign.identity` or `sign.private.asc` for the signing key; see the Sandbox Effector's
@@ -155,20 +157,24 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   sent last, and `code` when the program caught SIGTERM and exited with one; an `exited` with neither is malformed. A
   command stopped before its program started (it waited for the lock of rule 2, or its pin was being checked out) is
   `unknown`, with the reason that it did not run: nothing was signalled. It answers as a poll does, the outcome once
-  settled, and that outcome counts as read. The route is the command's alone: a `push` and an `http` Effect are one
-  request each and end on their own, so a DELETE on one answers 405 as an unknown method does. A DELETE of an Effect the
-  replica does not hold answers 404 with `state: unknown`, as a poll does, and the replica keeps the stop: a fast exit
-  can send it while the command's start is still on the wire, and a command start with that id that arrives after it
-  runs nothing — it attaches to the kept stop, settled `unknown` with the reason that it did not run; a `push` or an
-  `http` start with that id drops the kept stop and runs, since the stop route is not theirs. The replica keeps such a
-  stop for twice the signing window at least, past which a start signed before it is refused by its time. A DELETE is
-  verified like every request: an unsigned one gets 401 and stops nothing, so no process in the Harness container can
-  stop a command. A malformed request starts nothing and gets 400 with the reason; a request that names a secret the
-  Effector does not hold is malformed. `/healthz` is the kubelet's probe, unsigned, and says only whether the replica
-  takes new Effects. A replica reads at most 4 MiB of a request; it cannot verify a longer one, so it refuses it as
-  unsigned. The Orchestrator never sends one: a start whose body is longer settles with nothing sent and no intent row,
-  as its kind's own outcome (ADR-0067) — an `http` `refused`, a `push` `rejected` at stage `start`, a credentialed
-  `command` `exited` 127 — because a body built from context or a pick's param can reach the bound.
+  settled, and that outcome counts as read. The route is the command's and a dispatch's wait's (ADR-0071): a DELETE of a
+  dispatch ends its poll of the callee's door and never touches the run it started. A `push` and an `http` Effect are
+  one request each and end on their own, so a DELETE on one answers 405 as an unknown method does. A DELETE of an Effect
+  the replica does not hold answers 404 with `state: unknown`, as a poll does, and the replica keeps the stop: a fast
+  exit can send it while the command's start is still on the wire, and a command start with that id that arrives after
+  it runs nothing — it attaches to the kept stop, settled `unknown` with the reason that it did not run; a `push` or an
+  `http` start with that id drops the kept stop and runs, since the stop route is not theirs; a `dispatch` start with
+  that id drops it and runs with no wait, since its stop is of the wait alone and the start may be the one the door
+  takes. A `running` state names the run a dispatch started as soon as the door answers (`run`), so the Orchestrator's
+  ledger names the callee while the wait runs. The replica keeps such a stop for twice the signing window at least, past
+  which a start signed before it is refused by its time. A DELETE is verified like every request: an unsigned one gets
+  401 and stops nothing, so no process in the Harness container can stop a command. A malformed request starts nothing
+  and gets 400 with the reason; a request that names a secret the Effector does not hold is malformed. `/healthz` is the
+  kubelet's probe, unsigned, and says only whether the replica takes new Effects. A replica reads at most 4 MiB of a
+  request; it cannot verify a longer one, so it refuses it as unsigned. The Orchestrator never sends one: a start whose
+  body is longer settles with nothing sent and no intent row, as its kind's own outcome (ADR-0067) — an `http`
+  `refused`, a `push` `rejected` at stage `start`, a credentialed `command` `exited` 127 — because a body built from
+  context or a pick's param can reach the bound.
 - **The Orchestrator holds no git credential and no Effect secret.** `jr2 up` declares and writes every Secret that
   holds a git credential or an Effect secret: the placements' (`jr2-instance-effector`, `jr2-effector-<pod>`) and, for
   each `git.credentials` entry, its clone Secret (`jr2-git-<hash>`, Flux's `username`/`password`, the token from `.env`)

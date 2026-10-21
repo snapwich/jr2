@@ -4,6 +4,8 @@
 // A run with a Workspace in `placing` (ADR-0064) carries `placing`: the child paths of those
 // Workspaces, in `RunWaiting.child`'s form. It is the at-a-glance marker for a run that waits for
 // capacity — why it waits is `jr2 status <runId>`'s `waiting`. A run with none has no `placing` key.
+// A dispatched run (ADR-0071) carries `dispatchedBy` after its id, as the Orchestrator sends it: the
+// run that started it, the caller's slot and the chain's depth, so the chain reads off the listing.
 //
 // The verb also lists the Workflows a run can start (ADR-0070), from `GET /workflows`, as activity on
 // stderr so the result on stdout stays the live runs: one line per Workflow with its origin
@@ -44,7 +46,7 @@ export async function runs(args: string[], io: Io): Promise<number> {
       result(io, await client.workflows());
       return 0;
     }
-    const live = (await client.list()).map(markPlacing);
+    const live = (await client.list()).map(markListed);
     // A report beside the result: a listing that cannot be read says why, and the runs still print.
     try {
       activity(io, renderWorkflows(await client.workflows()));
@@ -93,12 +95,13 @@ function chartFullName(wrapper: string, name: string): string {
   return name.includes("/") ? name : `${wrapper}/${name}`;
 }
 
-/** The run, with `placing` after its id when any Workspace in it is in `placing`. */
-export function markPlacing(run: RunStatus): RunStatus & { placing?: string[] } {
+/** The run as `jr2 runs` lists it: `dispatchedBy` after its id when a `dispatch` Effect started it
+ * (ADR-0071), and `placing` after that when any Workspace in it is in `placing`. */
+export function markListed(run: RunStatus): RunStatus & { placing?: string[] } {
   const placing = [...(run.value === "placing" ? [""] : []), ...placingIn(run.children ?? [], [])];
-  if (!placing.length) return run;
-  const { runId, ...rest } = run;
-  return { runId, placing, ...rest };
+  if (!placing.length && !run.dispatchedBy) return run;
+  const { runId, dispatchedBy, ...rest } = run;
+  return { runId, ...(dispatchedBy ? { dispatchedBy } : {}), ...(placing.length ? { placing } : {}), ...rest };
 }
 
 /** The paths of every child in `placing`, at any depth — read off the state values alone, which

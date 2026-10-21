@@ -492,6 +492,21 @@ export type CarriedEffect = {
     /** A push (ADR-0067, ADR-0051): the Workspace's branch to its Repo Slot's Binding. It names no
      * secret: `jr2 up` resolves its credential through `git.credentials`. */
     | { kind: "push"; slot?: string; sign: boolean; squash: boolean; force: boolean; pin: boolean; secrets: string[] }
+    /** A dispatch (ADR-0071): the Workflow it starts a run of, as `jr2 run` names it, whether it
+     * waits, and — toward another Orchestrator — the target's origin as an http target and its
+     * token as the one secret (placed in the Instance Effector beside the http Effects). No target:
+     * it runs in the Orchestrator's own process and names no secret. `input`: the slot's input
+     * schema as JSON Schema, what the walk compares with the callee's door; absent, the door alone
+     * checks. An Open target has no target and no secret yet. */
+    | {
+        kind: "dispatch";
+        workflow: string;
+        wait: boolean;
+        target?: { scheme: "http" | "https"; host: string; port: number };
+        secrets: string[];
+        input?: Record<string, unknown>;
+        open?: Array<"target">;
+      }
   );
 
 /** Everything the registered Machines carry that a converge or a boot must act on. */
@@ -817,6 +832,23 @@ export function carriedEffectOf(
 ): CarriedEffect {
   const placement = placementOf(parts);
   const openParts = openPartsOf(parts);
+  if (parts.kind === "dispatch") {
+    const input = (parts as { [DISPATCH_INPUT]?: Record<string, unknown> })[DISPATCH_INPUT];
+    return {
+      name,
+      path,
+      route,
+      kind: "dispatch",
+      placement,
+      workflow: parts.workflow,
+      wait: parts.wait,
+      timeoutMs: parts.timeoutMs,
+      ...(parts.target === undefined || parts.target === open ? {} : { target: originTarget(parts.target.url) }),
+      secrets: [...parts.secrets],
+      ...(input !== undefined ? { input } : {}),
+      ...(openParts.length ? { open: openParts as Array<"target"> } : {}),
+    };
+  }
   if (parts.kind === "http") {
     return {
       name,
@@ -865,6 +897,20 @@ export function carriedEffectOf(
     ...(pin ? { pin } : {}),
     ...(openParts.length ? { open: openParts as Array<"argv" | "secret"> } : {}),
   };
+}
+
+/** The key a dispatch's slot schema rides its parts under (dispatch-effect.ts): `Symbol.for`, so this
+ * walk reads it off a Machine built by another copy of the module (ADR-0071). */
+const DISPATCH_INPUT = Symbol.for("jr2.dispatch.input");
+
+/** A dispatch target's origin as the Effector's fence reads an http target: scheme, host, port. The
+ * origin was checked when the slot was built, so it parses. */
+function originTarget(url: string): { scheme: "http" | "https"; host: string; port: number } {
+  const u = new URL(url);
+  const scheme = u.protocol === "http:" ? "http" : "https";
+  // As an http target's: brackets off an IPv6 literal, lower case (http-effect.ts `targetOf`).
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return { scheme, host, port: u.port ? Number(u.port) : scheme === "http" ? 80 : 443 };
 }
 
 /**

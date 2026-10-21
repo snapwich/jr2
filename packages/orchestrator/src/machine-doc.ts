@@ -20,6 +20,7 @@ import { z } from "zod";
 import type { EventAudience } from "@jr2/agent-protocol";
 import { argvText, isEffect, targetText, type EffectParts } from "./effect.ts";
 import { loadWarningsOf, seatsOf, vocabularyOf, type MachineSeat } from "./vocabulary.ts";
+import { open } from "./open.ts";
 
 /** One transition of the Machine, id-addressed at both ends. */
 export type MachineTransitionDoc = {
@@ -55,7 +56,11 @@ export type EffectDoc =
       file?: true;
     }
   /** A push (ADR-0067): which options the author set. */
-  | { kind: "push"; sign: boolean; squash: boolean; force: boolean; pin: boolean; timeoutMs: number; slot?: string };
+  | { kind: "push"; sign: boolean; squash: boolean; force: boolean; pin: boolean; timeoutMs: number; slot?: string }
+  /** A dispatch (ADR-0071): the Workflow it starts a run of, whether it waits, and the other
+   * Orchestrator's origin (`<open>` while a package leaves it Open); no target is this Orchestrator.
+   * The token's secret is named on the parts, never here: the target is what a reader routes on. */
+  | { kind: "dispatch"; workflow: string; wait: boolean; target?: string; timeoutMs: number };
 
 /** One state of the Machine; `states` nests in document order. */
 export type MachineStateDoc = {
@@ -403,6 +408,16 @@ function effectDoc(parts: EffectParts): EffectDoc {
   if (parts.kind === "push") {
     const { sign, squash, force, pin, timeoutMs, slot } = parts;
     return { kind: "push", sign, squash, force, pin, timeoutMs, ...(slot ? { slot } : {}) };
+  }
+  if (parts.kind === "dispatch") {
+    const { workflow, wait, timeoutMs, target } = parts;
+    return {
+      kind: "dispatch",
+      workflow,
+      wait,
+      ...(target === undefined ? {} : { target: target === open ? "<open>" : target.url }),
+      timeoutMs,
+    };
   }
   const { argv, timeoutMs, slot, secrets, pin } = parts;
   return {

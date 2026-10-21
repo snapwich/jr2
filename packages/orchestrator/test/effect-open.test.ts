@@ -32,6 +32,7 @@ import { inputSchemaOf, loadWarningsOf, seatsOf, vocabularyOf } from "../src/voc
 import { fingerprintOf } from "../src/fingerprint.ts";
 import { machineBodies, serializeMachine } from "../src/machine-doc.ts";
 import { workspace } from "../src/workspace.ts";
+import { dispatch } from "../src/dispatch-effect.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
 import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
@@ -595,4 +596,168 @@ test("an http whose body is a Worktree file may leave its url Open too, and bind
   assert.equal(effect?.kind, "http");
   assert.equal((effect as { file?: true }).file, true, "a file body keeps it in the Sandbox Effector");
   assert.deepEqual((effect as { target?: unknown }).target, { scheme: "https", host: "files.example.com", port: 443 });
+});
+
+// --- A dispatch's Open target (ADR-0071) ---------------------------------------------------------
+// One Open part, the whole target: the composer binds the other Orchestrator's origin and the secret
+// that holds its Instance token together, once.
+
+/** A package's watcher: it dispatches a Workflow of an Instance its composer names. */
+function watcher() {
+  return jr2Setup({
+    events: [],
+    actors: { hand: dispatch("task/review-loop", { input: z.object({ ticket: z.string() }), target: open }) },
+  }).createMachine({ id: "watcher", initial: "idle", states: { idle: {} } });
+}
+
+test("an Open dispatch target is carried with no target and no secret, and the walk reports it with its fix line", () => {
+  const carried = partsOf([watcher()]);
+  const hand = carried.effects.find((e) => e.name === "hand")!;
+  assert.equal(hand.kind, "dispatch");
+  assert.equal(hand.placement, "instance", "an Open target is placed where a bound one runs");
+  assert.equal((hand as { target?: unknown }).target, undefined);
+  assert.deepEqual(hand.secrets, []);
+  assert.deepEqual((hand as { open?: unknown }).open, ["target"]);
+  assert.deepEqual(carried.openEffects, [{ slot: "hand", path: [], parts: ["target"] }]);
+  assert.equal(
+    customizeLine("<import>", [], "hand", ["target"]),
+    'customize(<import>, { effects: { hand: { target: { url: "https://<host>", token: secret("<name>") } } } })',
+  );
+});
+
+test("binding the target builds the dispatch again: the origin, the token as its one secret, the Instance Effector's fence", () => {
+  const before = watcher();
+  const bound = customize(before, {
+    effects: { hand: { target: { url: "https://ops.example.com:8443/", token: secret("ops-instance") } } },
+  });
+  const logic = bound.implementations.actors.hand;
+  assert.ok(isEffect(logic));
+  assert.equal(binderOf(logic), undefined, "bound once: nothing Open is left");
+  assert.deepEqual((logic.effect as { target?: unknown }).target, {
+    url: "https://ops.example.com:8443",
+    token: "ops-instance",
+  });
+  const hand = partsOf([bound]).effects.find((e) => e.name === "hand")!;
+  assert.deepEqual((hand as { target?: unknown }).target, { scheme: "https", host: "ops.example.com", port: 8443 });
+  assert.deepEqual(hand.secrets, ["ops-instance"]);
+  assert.equal((hand as { open?: unknown }).open, undefined);
+  assert.deepEqual(partsOf([bound]).openEffects, []);
+  // The slot schema rides the bound parts too: what the walk compares with the door.
+  assert.deepEqual(Object.keys((hand as { input?: { properties?: object } }).input?.properties ?? {}), ["ticket"]);
+  // The original is untouched.
+  assert.ok(binderOf(before.implementations.actors.hand));
+  const placed = secretPlacementsOf(
+    { secrets: [{ name: "ops-instance", value: "ops-instance-token" }] },
+    { effects: partsOf([bound]).effects.map((effect) => ({ workflow: "watch", effect })), workspaces: [] },
+  );
+  assert.deepEqual(placed.instance?.targets, [
+    { scheme: "https", host: "ops.example.com", port: 8443, secrets: ["ops-instance"] },
+  ]);
+  assert.deepEqual(placed.instance?.effects, ["watch/hand"]);
+  assert.equal(placed.instance?.longestTimeoutMs, 0, "a dispatch's bound never stretches the Effector's grace");
+});
+
+test("a target is bound once, whole, to an origin and a named secret — every other binding is refused with the fix", () => {
+  const loose = customize as (m: unknown, p: unknown) => unknown;
+  const fix = /bind it with \{ target: \{ url: "https:\/\/<host>", token: secret\("<name>"\) \} \}/;
+  assert.throws(() => loose(watcher(), { effects: { hand: { url: "https://ops.example.com" } } }), fix);
+  assert.throws(() => loose(watcher(), { effects: { hand: { secret: "ops" } } }), fix);
+  assert.throws(
+    () => loose(watcher(), { effects: { hand: { target: { url: "https://ops.example.com" } } } }),
+    /target is bound to another Orchestrator's origin and the secret/,
+  );
+  assert.throws(
+    () => loose(watcher(), { effects: { hand: { target: { url: "https://ops.example.com", token: "ops" } } } }),
+    /target is bound to another Orchestrator's origin and the secret/,
+  );
+  assert.throws(
+    () =>
+      loose(watcher(), { effects: { hand: { target: { url: "https://ops.example.com/api", token: secret("ops") } } } }),
+    /is not an origin/,
+  );
+  assert.throws(
+    () =>
+      loose(watcher(), { effects: { hand: { target: { url: "https://u:p@ops.example.com", token: secret("ops") } } } }),
+    /is not an origin/,
+  );
+  assert.throws(
+    () => loose(watcher(), { effects: { hand: { target: { url: "https://ops.example.com", token: secret(open) } } } }),
+    /secret\(open\) in a target — the target is the Open part/,
+  );
+  assert.throws(() => loose(watcher(), { effects: { hand: { target: open } } }), /not `open` again/);
+  const once = customize(watcher(), {
+    effects: { hand: { target: { url: "https://a.example.com", token: secret("ops") } } },
+  });
+  assert.throws(
+    () => loose(once, { effects: { hand: { target: { url: "https://b.example.com", token: secret("ops") } } } }),
+    /leaves nothing Open/,
+  );
+});
+
+test("a dispatch with no target is placed in the Orchestrator's own process, and no Effector holds anything for it", () => {
+  const m = jr2Setup({ events: [], actors: { next: dispatch("review") } }).createMachine({
+    id: "local",
+    initial: "idle",
+    states: { idle: {} },
+  });
+  const [next] = partsOf([m]).effects;
+  assert.equal(next!.placement, "orchestrator");
+  assert.deepEqual(next!.secrets, []);
+  const placed = secretPlacementsOf(
+    {},
+    {
+      effects: [{ workflow: "local", effect: next! }],
+      workspaces: workspacePodsOf(m).map((pod) => ({ workflow: "local", pod })),
+    },
+  );
+  assert.equal(placed.instance, undefined);
+  assert.deepEqual(placed.sandbox, []);
+});
+
+test("a dispatch inside a Workspace's body never joins its pod: no Sandbox Effector holds or runs it, with or without a target", () => {
+  const body = jr2Setup({
+    events: [],
+    actors: {
+      next: dispatch("review"),
+      away: dispatch("review", { target: { url: "https://ops.example.com", token: secret("ops") } }),
+    },
+  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  const m = workspace(body, { repos, spec });
+  const pods = workspacePodsOf(m);
+  assert.equal(pods.length, 1);
+  assert.deepEqual(pods[0]!.effects, [], "a dispatch is placed by its target, never by the Workspace it sits in");
+  const effects = partsOf([m]).effects;
+  assert.deepEqual(
+    effects.map((e) => [e.name, e.placement]),
+    [
+      ["next", "orchestrator"],
+      ["away", "instance"],
+    ],
+  );
+  const placed = secretPlacementsOf(
+    { secrets: [{ name: "ops", value: "ops-instance-token-0123" }] },
+    {
+      effects: effects.map((effect) => ({ workflow: "inside", effect })),
+      workspaces: pods.map((pod) => ({ workflow: "inside", pod })),
+    },
+  );
+  assert.deepEqual(placed.sandbox, [], "no Sandbox Effector plan");
+  assert.deepEqual(placed.instance?.targets, [
+    { scheme: "https", host: "ops.example.com", port: 443, secrets: ["ops"] },
+  ]);
+});
+
+test("a dispatch's token nobody declared is refused by name, as an http Effect's secret is", () => {
+  const m = jr2Setup({
+    events: [],
+    actors: { away: dispatch("review", { target: { url: "https://ops.example.com", token: secret("ops") } }) },
+  }).createMachine({ id: "away", initial: "idle", states: { idle: {} } });
+  assert.throws(
+    () =>
+      secretPlacementsOf(
+        {},
+        { effects: partsOf([m]).effects.map((effect) => ({ workflow: "away", effect })), workspaces: [] },
+      ),
+    /workflow "away": the dispatch Effect "away" names secret\("ops"\), which the `secrets` list does not hold/,
+  );
 });

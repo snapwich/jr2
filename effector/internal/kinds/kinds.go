@@ -1,6 +1,7 @@
 // Package kinds routes a start to the kind that runs it (ADR-0067): `http` — a file body (ADR-0067)
-// included — to the http runner, `push` to the push runner, a credentialed `command` to the command runner. The
-// Instance Effector holds only the first; a Sandbox Effector holds all three, and confines a
+// included — to the http runner, `push` to the push runner, a credentialed `command` to the command
+// runner, a `dispatch` to another Orchestrator (ADR-0071) to the dispatch runner. The Instance
+// Effector holds http and dispatch; a Sandbox Effector holds http, push and command, and confines a
 // credentialed command's child with Landlock (ADR-0068).
 //
 // One child cannot reach another (ADR-0068). Every Effect's processes are its own group (package
@@ -15,17 +16,20 @@ import (
 	"time"
 
 	"github.com/snapwich/jr2/effector/internal/commandkind"
+	"github.com/snapwich/jr2/effector/internal/dispatchkind"
 	"github.com/snapwich/jr2/effector/internal/httpkind"
 	"github.com/snapwich/jr2/effector/internal/pushkind"
 	"github.com/snapwich/jr2/effector/internal/reaper"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
-// Runner is one Effector's kinds. A nil Push or Command is a kind this placement does not run.
+// Runner is one Effector's kinds. A nil Push, Command or Dispatch is a kind this placement does not
+// run.
 type Runner struct {
-	HTTP    *httpkind.Runner
-	Push    *pushkind.Runner
-	Command *commandkind.Runner
+	HTTP     *httpkind.Runner
+	Push     *pushkind.Runner
+	Command  *commandkind.Runner
+	Dispatch *dispatchkind.Runner
 	// Reaper ends what each Effect started when it settles; nil, nothing is tracked.
 	Reaper *reaper.Reaper
 	// Lock is the Sandbox Effector's lock over the two classes; nil, none is held.
@@ -33,7 +37,8 @@ type Runner struct {
 }
 
 // Class is the Lock's class of a start, or "" for a start that holds none: `gpg` for a push that
-// signs with a GPG key, `command` for a credentialed command.
+// signs with a GPG key, `command` for a credentialed command. A dispatch holds none: it runs in the
+// Instance Effector, which has no Lock.
 func (r *Runner) Class(req *wire.StartRequest) string {
 	switch {
 	case req.Kind == wire.KindCommand:
@@ -60,6 +65,11 @@ func (r *Runner) Missing(req *wire.StartRequest) string {
 			return "a credentialed command, which runs in a Sandbox Effector"
 		}
 		return r.Command.Missing(req)
+	case wire.KindDispatch:
+		if r.Dispatch == nil {
+			return "a dispatch to another Orchestrator, which runs in the Instance Effector"
+		}
+		return r.Dispatch.Missing(req)
 	}
 	if req.Body != nil && req.Body.File != nil && r.HTTP.WorkRoot == "" {
 		return "a file body, which runs in a Sandbox Effector"
@@ -70,7 +80,7 @@ func (r *Runner) Missing(req *wire.StartRequest) string {
 // Pin fixes the commit a push or a credentialed command runs against, when the start names none:
 // the Agent's branch tip, read as data now. It answers the commit, which the start's answer
 // carries so the Orchestrator writes it to the ledger's intent row; "" when it could not be read
-// (the run then answers why) or the kind runs against none.
+// (the run then answers why) or the kind runs against none — an http or a dispatch.
 func (r *Runner) Pin(req *wire.StartRequest) string {
 	switch {
 	case req.Push != nil && r.Push != nil:
@@ -134,6 +144,8 @@ func (r *Runner) run(ctx context.Context, req *wire.StartRequest) wire.Output {
 		return r.Push.Run(ctx, req)
 	case wire.KindCommand:
 		return r.Command.Run(ctx, req)
+	case wire.KindDispatch:
+		return r.Dispatch.Run(ctx, req)
 	}
 	return r.HTTP.Run(ctx, req)
 }

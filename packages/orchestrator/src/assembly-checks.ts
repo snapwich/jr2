@@ -6,12 +6,26 @@
 
 import { isAbsolute, relative, sep } from "node:path";
 import type { AnyStateMachine } from "xstate";
+import { z } from "zod";
 import type { JR2Config } from "./config.ts";
 import { imageContextDigest, type ImageRefs } from "./images.ts";
 import { openPartsText } from "./open-effect.ts";
 import { customizeLine, partsOf, placedEffectsOf, workspacePodsOf } from "./parts.ts";
 import { refuseEffectSecrets, type PlacementWalk } from "./secret-placement.ts";
-import { chartFileRefusals, type ChartFile } from "./charts.ts";
+import {
+  chartFileRefusals,
+  chartName,
+  chartWrapperOf,
+  splitChartName,
+  wrapperFault,
+  type ChartFile,
+} from "./charts.ts";
+import { doorCompat } from "./door-compat.ts";
+
+// The comparison is the same one `jr2 up`'s foreign preflight makes, so it is exported beside the
+// walk the CLI already imports (ADR-0071).
+export { doorCompat, type DoorCompat } from "./door-compat.ts";
+import { inputSchemaOf } from "./vocabulary.ts";
 
 /** One registered Workflow, as `loadWorkflows` gives it. */
 export type LoadedWorkflow = { name: string; machine: AnyStateMachine };
@@ -89,6 +103,139 @@ export function placementWalkOf(workflows: readonly LoadedWorkflow[]): Placement
   };
 }
 
+/**
+ * What a `dispatch` names, checked against what the walk can see (ADR-0071). Each dispatch with no
+ * target — a same-Instance one; a foreign target is `jr2 up`'s preflight, a warning — must name a
+ * Workflow the Assembly has: a Machine (`workflows/<name>.ts`), or `<wrapper>/<name>`, a named Chart
+ * under a Chart wrapper the Assembly registers, from a Chart file or (when `runtime` is given) a
+ * runtime Chart. A miss is an error. Without `runtime` — on the host, which cannot see the
+ * Orchestrator's volume — a slashed name under a known wrapper with no Chart file is a warning.
+ * Then the slot's input schema, when it has one, is compared with the callee's door
+ * (`doorCompat`): a fault is an error, naming the field; a schema outside the compared subset is a
+ * warning, "not compared".
+ *
+ * A dispatch resolves at RUN time against the current Assembly (ADR-0069); this check is of the
+ * Assembly being published, so a later publish that drops the callee answers `refused` with the
+ * door's 404 then, and is not refused for it here.
+ */
+export function dispatchRefusals(
+  workflows: readonly LoadedWorkflow[],
+  charts: readonly ChartFile[],
+  runtime?: readonly { name: string }[],
+): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  for (const w of workflows) {
+    for (const effect of partsOf([w.machine]).effects) {
+      // A target, bound or Open, is another Orchestrator's: its door is not in this Assembly.
+      if (effect.kind !== "dispatch" || effect.target !== undefined || effect.open !== undefined) continue;
+      const name = effect.workflow;
+      const at = `workflow "${w.name}" dispatches "${name}"`;
+      const once = JSON.stringify([w.name, effect.name, name]);
+      if (seen.has(once)) continue;
+      seen.add(once);
+      const callee = calleeOf(workflows, charts, runtime, name);
+      if ("error" in callee) {
+        errors.push(`${at} ${callee.error} (ADR-0071)`);
+        continue;
+      }
+      // A slashed name with no Chart the host can see still has a known door: the wrapper's minus
+      // its Chart fields, the same for every Chart under it. So it is warned AND compared.
+      if (callee.warning) warnings.push(`${at}: ${callee.warning} (ADR-0071)`);
+      if (effect.input === undefined) continue;
+      if ("notDrawn" in callee.door) {
+        warnings.push(`${at}: its input schema and the door are not compared — ${callee.door.notDrawn} (ADR-0071)`);
+        continue;
+      }
+      const compared = doorCompat(effect.input, callee.door.schema);
+      if (compared.ok === "not-compared") {
+        warnings.push(`${at}: its input schema and the door are not compared — ${compared.why} (ADR-0071)`);
+      } else if (compared.ok === false) {
+        for (const fault of compared.faults) {
+          errors.push(
+            `${at} with input its door does not take: ${fault} — align the slot's \`input\` with the door ` +
+              "(derive it from the door's schema, `door.pick({ ... })`) (ADR-0071)",
+          );
+        }
+      }
+    }
+  }
+  return { errors, warnings };
+}
+
+/** The door a dispatch's name resolves to in these Workflows, or why it does not. */
+function calleeOf(
+  workflows: readonly LoadedWorkflow[],
+  charts: readonly ChartFile[],
+  runtime: readonly { name: string }[] | undefined,
+  name: string,
+): { door: Door; warning?: string } | { error: string } {
+  const split = splitChartName(name);
+  if (!split) {
+    const found = workflows.find((w) => w.name === name);
+    if (!found) {
+      return {
+        error:
+          `which no Workflow in the Assembly has — add workflows/${name}.ts, or name one it registers` +
+          (workflows.length ? `: ${workflows.map((w) => `"${w.name}"`).join(", ")}` : ""),
+      };
+    }
+    return { door: doorOf(found.machine, []) };
+  }
+  const { wrapper, name: short } = split;
+  const fault = wrapperFault(workflows, wrapper);
+  if (fault) {
+    return {
+      error:
+        fault.status === 404
+          ? `which no Workflow in the Assembly has — no workflows/${wrapper}.ts registers the Chart wrapper "${wrapper}"`
+          : `which no Workflow in the Assembly can be: ${fault.error}`,
+    };
+  }
+  const machine = workflows.find((w) => w.name === wrapper)!.machine;
+  const door = doorOf(machine, chartWrapperOf(machine)?.chartFields ?? []);
+  const file = `workflows/${wrapper}/${short}.chart.json`;
+  if (charts.some((c) => chartName(c.wrapper, c.name) === name)) return { door };
+  if (runtime === undefined) {
+    return {
+      door,
+      warning:
+        `the Assembly has no Chart file ${file}, and a runtime Chart lives on the Orchestrator's volume alone, ` +
+        "which jr2 up cannot see — the publish door checks it, and a run of the dispatch is refused with the door's " +
+        "404 if it is not there",
+    };
+  }
+  if (runtime.some((c) => c.name === name)) return { door };
+  return {
+    error:
+      `which no Workflow in the Assembly has — add the Chart file ${file}; or, for a runtime Chart, PUT ` +
+      `/workflows/${wrapper}/charts/${short} before this publish (a PUT needs "${wrapper}" in the current ` +
+      `Assembly: when this publish adds it, publish "${wrapper}" first, then PUT the Chart, then publish the dispatch)`,
+  };
+}
+
+/** A door as the comparison reads it: its JSON Schema (null: it declares no input), or why zod
+ * could not draw one. */
+type Door = { schema: Record<string, unknown> | null } | { notDrawn: string };
+
+/** A Workflow's door as JSON Schema, exactly as `GET /workflows/<name>` serves it (run-host.ts
+ * `inputSchema`): null for a Machine that declares none; for a named Chart the wrapper's minus its
+ * Chart fields, which the Chart supplies (ADR-0070). A door zod cannot draw (`z.date()`,
+ * `z.custom()`) is not drawn as "any", which would guess "compatible": it is not compared. */
+function doorOf(machine: AnyStateMachine, chartFields: readonly string[]): Door {
+  let schema = inputSchemaOf(machine);
+  if (!schema) return { schema: null };
+  if (chartFields.length) schema = schema.omit(Object.fromEntries(chartFields.map((f) => [f, true])) as never);
+  try {
+    return { schema: z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown> };
+  } catch (err) {
+    return {
+      notDrawn: `the door has a part JSON Schema cannot state (${err instanceof Error ? err.message : String(err)})`,
+    };
+  }
+}
+
 export type AssemblyRefusalInput = {
   /** The Assembly's `jr2.config.ts`, loaded; `undefined` when it ships none. */
   config: JR2Config | undefined;
@@ -99,6 +246,12 @@ export type AssemblyRefusalInput = {
    * admitted against its wrapper's Open body by the same door a run's Chart passes. Absent, none.
    */
   charts?: readonly ChartFile[];
+  /**
+   * The runtime Charts on the Orchestrator's volume (ADR-0070), by Workflow name
+   * (`<wrapper>/<name>`): what a dispatch of a named Chart may resolve to beside the Chart files
+   * (ADR-0071). The door can see them; absent, none.
+   */
+  runtimeCharts?: readonly { name: string }[];
   /**
    * The image map the Orchestrator reads per provision (ADR-0038), or a reader of it. Present
    * only when deployed: a host-booted process has no map, and no Sandbox to provision. When
@@ -126,6 +279,10 @@ export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<str
   const lines = openPartRefusals(input.workflows);
   // A Chart file is the Instance's own (ADR-0070): one that fails refuses the publish.
   if (input.charts?.length) lines.push(...chartFileRefusals(input.charts, input.workflows));
+  // A same-Instance dispatch names a Workflow this Assembly has (ADR-0071). The door sees the
+  // runtime Charts, so a miss is an error here. Its warnings (a schema "not compared") have no
+  // channel in the publish's answer, and are dropped: `jr2 up` printed them before the publish.
+  lines.push(...dispatchRefusals(input.workflows, input.charts ?? [], input.runtimeCharts ?? []).errors);
   try {
     refuseEffectSecrets(input.config ?? {}, placementWalkOf(input.workflows));
   } catch (err) {

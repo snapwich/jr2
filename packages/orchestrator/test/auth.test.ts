@@ -307,3 +307,20 @@ test("the publish token resolves to the publisher, which delivers to nothing (AD
   assert.equal((await app.request(`/runs/${run.runId}`, get(publishToken))).status, 403);
   assert.equal((await app.request("/workflows/coding/runs", post({}, publishToken))).status, 403);
 });
+
+test("a start with jr2-dispatched-by is Instance-band like any start: the key opens nothing (ADR-0071)", async () => {
+  const { host, app } = await mkApp();
+  const header = JSON.stringify({ run: "c", slot: "s", effect: "k-auth", depth: 1, instance: "ops" });
+  const start = (token?: string): RequestInit => {
+    const init = post({}, token);
+    return { ...init, headers: { ...(init.headers as Record<string, string>), "jr2-dispatched-by": header } };
+  };
+  assert.equal((await app.request("/workflows/gated/runs", start())).status, 401);
+  assert.equal((await app.request("/workflows/gated/runs", start(sandboxToken(KEY, "ws-mine")))).status, 403);
+  const first = await app.request("/workflows/gated/runs", start(INSTANCE_TOKEN));
+  assert.equal(first.status, 201);
+  // A repeat answers the run only to the Instance token, too: the key is no credential.
+  assert.equal((await app.request("/workflows/gated/runs", start(sandboxToken(KEY, "ws-mine")))).status, 403);
+  assert.equal((await app.request("/workflows/gated/runs", start(INSTANCE_TOKEN))).status, 200);
+  assert.equal(host.list().filter((s) => s.workflow === "gated").length, 1);
+});

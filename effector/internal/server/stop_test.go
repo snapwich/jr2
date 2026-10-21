@@ -14,8 +14,9 @@ import (
 )
 
 // The stop route (ADR-0067, ADR-0068): `DELETE /effects/<id>` stops a credentialed command whose
-// state exited. It is signed like every request; a push and an http Effect are one request each
-// and end on their own, so a DELETE on one answers as an unknown method does.
+// state exited, and a dispatch's wait (ADR-0071). It is signed like every request; a push and an
+// http Effect are one request each and end on their own, so a DELETE on one answers as an unknown
+// method does.
 
 // stoppableRunner runs each Effect until its context is cancelled, and answers the cause it saw.
 type stoppableRunner struct {
@@ -100,7 +101,7 @@ func TestADeleteOnAPushOrAnHttpEffectAnswersAsAnUnknownMethod(t *testing.T) {
 				t.Fatalf("DELETE got %d %s; PUT got %d %s", del.status, del.body, put.status, put.body)
 			}
 			// The text names every method an Effect's path takes, the stop route included.
-			if !strings.Contains(string(del.body), `"POST or GET; DELETE stops a credentialed command"`) {
+			if !strings.Contains(string(del.body), `"POST or GET; DELETE stops a credentialed command or a dispatch's wait"`) {
 				t.Fatalf("405 text: %s", del.body)
 			}
 			// It runs on to its end.
@@ -185,5 +186,57 @@ func TestAStopKeptForAnUnknownIdOutlivesTheSigningWindow(t *testing.T) {
 	s.mu.Unlock()
 	if kept {
 		t.Fatal("the stop was kept past twice the signing window")
+	}
+}
+
+// waitRunner is a dispatch's wait as the server sees it: it runs until its context ends, and
+// answers what a stopped wait answers.
+type waitRunner struct {
+	causes chan error
+	waits  chan bool
+}
+
+func (w *waitRunner) Missing(*wire.StartRequest) string { return "" }
+func (w *waitRunner) Pin(*wire.StartRequest) string     { return "" }
+func (w *waitRunner) Run(ctx context.Context, req *wire.StartRequest) wire.Output {
+	w.waits <- req.Wait != nil && *req.Wait
+	if req.Wait == nil || !*req.Wait {
+		return wire.Output{Outcome: wire.OutcomeStarted, Run: "run-1"}
+	}
+	<-ctx.Done()
+	w.causes <- context.Cause(ctx)
+	return wire.Output{Outcome: wire.OutcomeUnknown, Reason: "the wait for run run-1 was stopped"}
+}
+
+// A dispatch's wait is stopped as a command is (ADR-0071): its state exited, so the poll of the
+// door with the target's token ends here, and the answer is its outcome.
+func TestADeleteStopsADispatchsWaitAndAnswersItsOutcome(t *testing.T) {
+	runner := &waitRunner{causes: make(chan error, 1), waits: make(chan bool, 1)}
+	_, srv := newServer(t, runner)
+	if a := call(t, srv.URL, "POST", "/effects/d1", fixture(t, "request.dispatch-wait.json"), key); a.status != http.StatusAccepted {
+		t.Fatalf("start: %d %s", a.status, a.body)
+	}
+	<-runner.waits
+	a := call(t, srv.URL, "DELETE", "/effects/d1", "", key)
+	if !errors.Is(<-runner.causes, wire.ErrStopped) {
+		t.Fatal("the wait was not stopped by the DELETE")
+	}
+	if s := state(t, a); a.status != http.StatusOK || s.State != wire.StateSettled ||
+		s.Output.Outcome != wire.OutcomeUnknown {
+		t.Fatalf("got %d %s", a.status, a.body)
+	}
+}
+
+// A stop that came before its dispatch's start is kept: the start still goes to the door — it may
+// be the one that started the run — and is not waited for (ADR-0071).
+func TestADispatchStartAfterItsStopIsNotWaitedFor(t *testing.T) {
+	runner := &waitRunner{causes: make(chan error, 1), waits: make(chan bool, 1)}
+	_, srv := newServer(t, runner)
+	call(t, srv.URL, "DELETE", "/effects/d1", "", key)
+	if a := call(t, srv.URL, "POST", "/effects/d1", fixture(t, "request.dispatch-wait.json"), key); a.status != http.StatusAccepted {
+		t.Fatalf("start: %d %s", a.status, a.body)
+	}
+	if waited := <-runner.waits; waited {
+		t.Fatal("a dispatch stopped before its start waits")
 	}
 }

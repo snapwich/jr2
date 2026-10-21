@@ -37,6 +37,7 @@ import { open } from "../src/parts.ts";
 import { agent, command } from "../src/harness-client.ts";
 import { arg } from "../src/effect.ts";
 import { basic, bearer, http, secret, text } from "../src/http-effect.ts";
+import { dispatch } from "../src/dispatch-effect.ts";
 import { pool, source } from "../src/pool.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace, type WorkspaceMachine, type Workspaced } from "../src/workspace.ts";
@@ -341,6 +342,46 @@ function refusedSecrets(): void {
   void customize(secretive, { effects: { fixed: { secret: "other" } } });
 }
 
+// --- 10: a dispatch's Open target (ADR-0071) ------------------------------------------------------
+// `target: open` states the Open part "target": `effects` offers `{ target: { url, token } }`, the
+// token a named secret — never `secret(open)`, since the target is the Open part, not its secret.
+
+const dispatching = jr2Setup({
+  events: [],
+  actors: {
+    hand: dispatch("task/review-loop", { target: open }),
+    local: dispatch("review"),
+    away: dispatch("review", { target: { url: "https://ops.example.com", token: secret("ops") } }),
+  },
+}).createMachine({ id: "dispatching", initial: "idle", states: { idle: {} } });
+
+void customize(dispatching, {
+  effects: { hand: { target: { url: "https://ops.example.com", token: secret("ops-instance") } } },
+});
+
+function refusedTargets(): void {
+  // @ts-expect-error a dispatch's Open part is its target, not a url
+  void customize(dispatching, { effects: { hand: { url: "https://ops.example.com" } } });
+  // @ts-expect-error nor its target's token alone
+  void customize(dispatching, { effects: { hand: { secret: "ops" } } });
+  const openToken = { url: "https://ops.example.com", token: secret(open) };
+  // @ts-expect-error the token is a named secret: secret(open) inside a target is refused
+  void customize(dispatching, { effects: { hand: { target: openToken } } });
+  // @ts-expect-error nor a bare string
+  void customize(dispatching, { effects: { hand: { target: { url: "https://ops.example.com", token: "ops" } } } });
+  // @ts-expect-error a target is bound whole: the token left out does not compile
+  void customize(dispatching, { effects: { hand: { target: { url: "https://ops.example.com" } } } });
+  // @ts-expect-error a dispatch with no target, or a fixed one, is not offered
+  void customize(dispatching, { effects: { local: { target: { url: "https://x.example.com", token: secret("x") } } } });
+  // @ts-expect-error nor a fixed one
+  void customize(dispatching, { effects: { away: { target: { url: "https://x.example.com", token: secret("x") } } } });
+  // The definition holds the same rule as the binding: a target's token is a named secret.
+  // @ts-expect-error secret(open) inside a definition's target
+  void dispatch("review", { target: { url: "https://ops.example.com", token: secret(open) } });
+  // @ts-expect-error nor through a variable
+  void dispatch("review", { target: openToken });
+}
+
 test("customize()'s type-level claims are the compiler's; this run pins the runtime half", () => {
   // A retune is definition-level and total: what comes back carries the override layered over the
   // stock definition, whatever the type says about the keys.
@@ -363,6 +404,7 @@ test("customize()'s type-level claims are the compiler's; this run pins the runt
       refusedSizes,
       refusedEffects,
       refusedSecrets,
+      refusedTargets,
     ].every((f) => !!f),
   );
 });

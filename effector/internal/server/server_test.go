@@ -378,3 +378,26 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// namingRunner names a dispatch's run through the start's hook, then waits, as a dispatch's wait
+// does (ADR-0071).
+type namingRunner struct{ release chan struct{} }
+
+func (n *namingRunner) Missing(*wire.StartRequest) string { return "" }
+func (n *namingRunner) Pin(*wire.StartRequest) string     { return "" }
+func (n *namingRunner) Run(ctx context.Context, _ *wire.StartRequest) wire.Output {
+	wire.Started(ctx, "run-9")
+	<-n.release
+	return wire.Output{Outcome: wire.OutcomeSettled, Run: "run-9", Status: "done"}
+}
+
+func TestARunningDispatchNamesItsRunBeforeItSettles(t *testing.T) {
+	runner := &namingRunner{release: make(chan struct{})}
+	defer close(runner.release)
+	_, srv := newServer(t, runner)
+	call(t, srv.URL, "POST", "/effects/e1", startBody, key)
+	a := call(t, srv.URL, "GET", "/effects/e1", "", key)
+	if s := state(t, a); s.State != wire.StateRunning || s.Run != "run-9" {
+		t.Fatalf("the running state does not name the run: %s", a.body)
+	}
+}

@@ -1,0 +1,16 @@
+{
+  "kind": "dispatch",
+  "url": [{ "text": "https://ops.example.com\\x" }],
+  "workflow": "review",
+  "input": { "ticket": "PROJ-7" },
+  "auth": { "bearer": { "secret": "ops-instance" } },
+  "dispatchedBy": {
+    "run": "0b7e3c1a-5d2f-4e8b-9c6a-1f2e3d4c5b6a",
+    "slot": "review",
+    "effect": "3f1c7a52-1b2d-4c8e-9a0f-6b5d4e3c2a19",
+    "depth": 0,
+    "instance": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+  },
+  "wait": false,
+  "timeoutMs": 30000
+}

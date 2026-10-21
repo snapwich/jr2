@@ -51,7 +51,17 @@ export default defineConfig({
   // credentialed command name it, so it is placed in that Workspace's Sandbox Effector — no
   // `workspace()` lists it and no provider reads it, so no Custodian holds it. Per scenario, from env like the provider key; in-cluster it reads undefined, which is
   // safe: the Orchestrator never sees an Effect secret.
-  secrets: [{ name: "echo-token", value: process.env.JR2_ECHO_TOKEN }],
+  //
+  // `self-token` is the `dispatched` workflow's (ADR-0071): the target token its dispatch names,
+  // so it is placed in the Instance Effector beside `echo-token`. A literal from env, per scenario:
+  // the dispatch scenario writes the same value as the Instance token into the `jr2-instance`
+  // Secret before `jr2 up`, which keeps it; in every other scenario it unlocks nothing. Not a
+  // `valueFrom` on `jr2-instance`: that Secret does not exist yet when a first converge resolves
+  // what its Effects name, so the converge would be refused.
+  secrets: [
+    { name: "echo-token", value: process.env.JR2_ECHO_TOKEN },
+    { name: "self-token", value: process.env.JR2_SELF_TOKEN },
+  ],
   // The Size of every Sandbox this tier provisions (ADR-0060): below the kit default, because jr2
   // reserves the whole Size and the tier runs several scenarios at once on ONE kind node — at 2Gi
   // and one cpu each, beside every scenario's kit-sized control pods, a 4-core runner leaves

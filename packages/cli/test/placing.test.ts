@@ -17,7 +17,7 @@ import {
   type SandboxPort,
 } from "@jr2/orchestrator";
 import { main } from "../src/cli.ts";
-import { markPlacing } from "../src/commands/runs.ts";
+import { markListed } from "../src/commands/runs.ts";
 import type { RunStatus } from "../src/client.ts";
 import type { Io } from "../src/output.ts";
 
@@ -139,9 +139,9 @@ test("runs marks a run with a Workspace in `placing`, and only that run", async 
   await host.stop(idle);
 });
 
-test("markPlacing names a run whose root IS the Workspace with the empty path", () => {
+test("markListed names a run whose root IS the Workspace with the empty path", () => {
   const run = { runId: "r", workflow: "w", instanceId: "i", status: "active", value: "placing", context: {} };
-  assert.deepEqual(markPlacing({ ...run, children: [] }).placing, [""]);
+  assert.deepEqual(markListed({ ...run, children: [] }).placing, [""]);
   const nested = {
     ...run,
     value: "fanning",
@@ -156,8 +156,8 @@ test("markPlacing names a run whose root IS the Workspace with the empty path", 
       },
     ],
   };
-  assert.deepEqual(markPlacing(nested).placing, ["G/F-2"]);
-  assert.equal(markPlacing({ ...run, value: "working" }).placing, undefined);
+  assert.deepEqual(markListed(nested).placing, ["G/F-2"]);
+  assert.equal(markListed({ ...run, value: "working" }).placing, undefined);
 });
 
 test("run streams the wait as activity: `placing` with the reason, then `placed`", async () => {

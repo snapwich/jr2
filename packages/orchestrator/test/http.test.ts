@@ -8,7 +8,9 @@
 
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { setup } from "xstate";
 import { RunHost } from "../src/run-host.ts";
+import { DISPATCHED_BY_HEADER } from "../src/registration.ts";
 import { createApp } from "../src/http.ts";
 import { KIT_VERSION } from "../src/config.ts";
 import type { RepoStatus } from "../src/repos.ts";
@@ -627,4 +629,137 @@ test("GET /workflows/:name/runs/:runId/machine: the run's bound Machine; 404 for
   // Only through the Workflow the run is of, as the per-run feed (open band).
   assert.equal((await app.request(`/workflows/coding/runs/${runId}/machine`)).status, 404);
   assert.equal((await app.request(`/workflows/other/runs/${runId}/machine`)).status, 404);
+});
+
+// ---- The idempotency key at the door (ADR-0071) -------------------------------------------------
+
+/** A foreign caller's `jr2-dispatched-by`, by its ledger row id. */
+const dispatchedBy = (effect: string, extra: Record<string, unknown> = {}) =>
+  JSON.stringify({ run: "caller-run", slot: "review", effect, depth: 1, instance: "ops-instance", ...extra });
+
+const dispatchPost = (body: unknown, header: string): RequestInit => ({
+  method: "POST",
+  headers: { "content-type": "application/json", [DISPATCHED_BY_HEADER]: header },
+  body: JSON.stringify(body),
+});
+
+test("a start with jr2-dispatched-by is 201, and its repeat 200 `existing` with the same run, on both start routes (ADR-0071)", async () => {
+  const { host, app } = await mkChartApp();
+  host.register(gatedDef());
+  const first = await app.request("/workflows/gated/runs", dispatchPost({}, dispatchedBy("k-1")));
+  assert.equal(first.status, 201);
+  const started = (await first.json()) as { runId: string; instanceId: string; existing?: boolean };
+  assert.equal(started.existing, undefined, "a new run says nothing of a key");
+  const again = await app.request("/workflows/gated/runs", dispatchPost({}, dispatchedBy("k-1")));
+  assert.equal(again.status, 200);
+  assert.deepEqual(await again.json(), { runId: started.runId, instanceId: started.instanceId, existing: true });
+  assert.equal(host.list().filter((s) => s.workflow === "gated").length, 1, "one run");
+  // Another key is another run; no header is a start as ever.
+  assert.equal((await app.request("/workflows/gated/runs", dispatchPost({}, dispatchedBy("k-2")))).status, 201);
+  assert.equal((await app.request("/workflows/gated/runs", jsonPost({}))).status, 201);
+  assert.equal(host.list().filter((s) => s.workflow === "gated").length, 3);
+
+  await app.request("/workflows/charted/charts/loop", jsonPut(await reviewLoop()));
+  const body = { endpoint: NO_HARNESS, task: "add a test" };
+  const chart = await app.request("/workflows/charted/charts/loop/runs", dispatchPost(body, dispatchedBy("k-c")));
+  assert.equal(chart.status, 201);
+  const { runId } = (await chart.json()) as { runId: string };
+  const repeat = await app.request("/workflows/charted%2Floop/runs", dispatchPost(body, dispatchedBy("k-c")));
+  assert.equal(repeat.status, 200, "the encoded route is the same door");
+  assert.equal(((await repeat.json()) as { runId: string }).runId, runId);
+});
+
+test("a key a run of another Workflow carries is 409 naming both, never that run answered `existing` (ADR-0071)", async () => {
+  const { host, app } = await mkApp();
+  host.register(gatedDef());
+  host.register({
+    name: "quick",
+    machine: setup({}).createMachine({ id: "quick", initial: "done", states: { done: { type: "final" } } }),
+    provide: () => ({}),
+  });
+  const first = await app.request("/workflows/gated/runs", dispatchPost({}, dispatchedBy("k-shared")));
+  assert.equal(first.status, 201);
+  const { runId } = (await first.json()) as { runId: string };
+  const other = await app.request("/workflows/quick/runs", dispatchPost({}, dispatchedBy("k-shared")));
+  assert.equal(other.status, 409);
+  const { error } = (await other.json()) as { error: string };
+  assert.match(error, new RegExp(`run ${runId} of "gated", not of "quick"`));
+  assert.equal(host.list().filter((s) => s.workflow === "quick").length, 0, "nothing of the other Workflow ran");
+});
+
+test("a start that throws a defect is 500, not 404: a foreign caller reads 404 as nothing started (ADR-0071)", async () => {
+  const { host, app } = await mkApp();
+  host.register(gatedDef());
+  host.start = async () => {
+    throw new Error("spawn failed after the key check");
+  };
+  const res = await app.request("/workflows/gated/runs", dispatchPost({}, dispatchedBy("k-defect")));
+  assert.equal(res.status, 500);
+  assert.match(((await res.json()) as { error: string }).error, /spawn failed/);
+  // A name no Workflow has is still the 404.
+  const { app: plain } = await mkApp();
+  assert.equal((await plain.request("/workflows/nowhere/runs", jsonPost({}))).status, 404);
+});
+
+test("a jr2-dispatched-by that does not parse, or names no instance, is 400 naming the header (ADR-0071)", async () => {
+  const { host, app } = await mkApp();
+  host.register(gatedDef());
+  for (const header of [
+    "not json",
+    JSON.stringify({ run: "c", slot: "s", effect: "k", depth: 1 }),
+    dispatchedBy("k", { depth: 0 }),
+    dispatchedBy(""),
+  ]) {
+    const res = await app.request("/workflows/gated/runs", dispatchPost({}, header));
+    assert.equal(res.status, 400, header);
+    const { error } = (await res.json()) as { error: string };
+    assert.match(error, /jr2-dispatched-by/, header);
+  }
+  assert.deepEqual(
+    host.list().filter((s) => s.workflow === "gated"),
+    [],
+    "a refused header starts nothing",
+  );
+});
+
+test("GET /runs/:id serves a dispatched run's dispatchedBy and, once settled, its output; the open band drops the key (ADR-0071)", async () => {
+  const { host, app } = await mkApp();
+  host.register(gatedDef());
+  host.register({
+    name: "quick",
+    machine: setup({}).createMachine({
+      id: "quick",
+      initial: "done",
+      states: { done: { type: "final" } },
+      output: () => ({ answer: 42 }),
+    }),
+    provide: () => ({}),
+  });
+  const res = await app.request("/workflows/quick/runs", dispatchPost({}, dispatchedBy("k-q")));
+  const { runId } = (await res.json()) as { runId: string };
+  await waitFor(() => host.status(runId) === undefined);
+  let status = (await (await app.request(`/runs/${runId}`)).json()) as Record<string, unknown>;
+  for (let i = 0; i < 50 && status.status !== "done"; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+    status = (await (await app.request(`/runs/${runId}`)).json()) as Record<string, unknown>;
+  }
+  assert.equal(status.status, "done");
+  assert.deepEqual(status.output, { answer: 42 });
+  assert.deepEqual(status.dispatchedBy, {
+    run: "caller-run",
+    slot: "review",
+    effect: "k-q",
+    depth: 1,
+    instance: "ops-instance",
+  });
+
+  // A live run serves no output; the open band carries its routing and never its key.
+  const live = await app.request("/workflows/gated/runs", dispatchPost({}, dispatchedBy("k-g")));
+  const gated = (await live.json()) as { runId: string };
+  const liveStatus = (await (await app.request(`/runs/${gated.runId}`)).json()) as Record<string, unknown>;
+  assert.equal("output" in liveStatus, false);
+  const observed = (await (await app.request("/workflows/gated/runs")).json()) as Array<Record<string, unknown>>;
+  const row = observed.find((o) => o.runId === gated.runId);
+  assert.deepEqual(row?.dispatchedBy, { run: "caller-run", slot: "review", depth: 1, instance: "ops-instance" });
+  assert.ok(!JSON.stringify(observed).includes("k-g"), "the key stays behind the token");
 });

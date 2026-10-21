@@ -78,6 +78,8 @@ import {
   loadCharts,
   loadWorkflows,
   chartFileRefusals,
+  dispatchRefusals,
+  doorCompat,
   machineBodies,
   matchCredential,
   openPartRefusals,
@@ -107,6 +109,7 @@ import {
   seatLine,
   serializeMachine,
   splitSize,
+  type CarriedEffect,
   type CarriedImage,
   type CarriedRepo,
   type HeldManifest,
@@ -254,12 +257,20 @@ export async function up(args: string[], io: Io): Promise<number> {
   // Each Chart file is admitted HERE by the door's own check (ADR-0070), so a Chart file the
   // Orchestrator would refuse is refused at the same command as `tsc`'s errors, before any
   // cluster work, with the lines the publish would answer.
-  const chartRefusals = chartFileRefusals(
-    await loadCharts(root, (line) => activity(io, `warning: ${line}`)),
-    workflows,
-  );
+  const charts = await loadCharts(root, (line) => activity(io, `warning: ${line}`));
+  const chartRefusals = chartFileRefusals(charts, workflows);
   if (chartRefusals.length) {
     for (const line of chartRefusals) activity(io, `refusing: ${line}`);
+    return 1;
+  }
+  // What each same-Instance dispatch names resolves in this Assembly, and its slot schema matches
+  // the callee's door (ADR-0071): the door's own check, so the publish would refuse the same lines.
+  // The host cannot see the Orchestrator's volume, so a named Chart that is no Chart file here is a
+  // warning, which the door decides.
+  const dispatched = dispatchRefusals(workflows, charts);
+  for (const line of dispatched.warnings) activity(io, `warning: ${line}`);
+  if (dispatched.errors.length) {
+    for (const line of dispatched.errors) activity(io, `refusing: ${line}`);
     return 1;
   }
   // What each registered Machine runs outside itself (ADR-0067, ADR-0068): every Effect slot, with
@@ -271,7 +282,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     activity(io, `effects: workflow "${w.name}" — what it runs outside itself (ADR-0067)`);
     for (const e of effects) {
       const where = e.path?.length ? ` (on ${e.path.map((k) => `"${k}"`).join(" → ")})` : "";
-      const slot = e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
+      const slot = "slot" in e && e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
       if (e.kind === "http") {
         const names = e.secrets.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
         // Its body decides where it runs (ADR-0067): a Worktree file needs its Workspace's Sandbox Effector.
@@ -282,6 +293,18 @@ export async function up(args: string[], io: Io): Promise<number> {
           io,
           `  ${e.name}${where}: http ${e.method} ${e.target ? targetText({ target: e.target }) : "<open>"} — ${e.timeoutMs / 1000}s, ` +
             `${where2}${names}${e.idempotent ? ", idempotent" : ""}`,
+        );
+        continue;
+      }
+      if (e.kind === "dispatch") {
+        // Where it runs is read from the target (ADR-0071): none is this Orchestrator, in-process.
+        const to = e.target ? targetText({ target: e.target }) : e.open ? "<open>" : "this Orchestrator";
+        const names = e.secrets.length ? `, token ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
+        const where2 = e.placement === "instance" ? "in the Instance Effector" : "in the Orchestrator's own process";
+        activity(
+          io,
+          `  ${e.name}${where}: dispatch ${e.workflow}${e.wait ? " wait" : ""} → ${to} — ${e.timeoutMs / 1000}s, ` +
+            `${where2}${names}`,
         );
         continue;
       }
@@ -1000,6 +1023,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // After the deploy keys exist (a generated one included), before anything else is applied: a
   // static Binding whose entry cannot push is refused here.
   const gitPush = await resolveGitPush(io, kube, config, placements.sandbox, namespace, ctx);
+
+  // --- dispatch preflight (ADR-0071): each foreign target's door, from the host ------------------
+  await preflightDispatch(io, carried.effects);
 
   // --- provider preflight (ADR-0019): probe the endpoint FROM INSIDE the cluster ----------------
   await preflightProvider(io, kube, config, carried.models, namespace, ctx, caPem);
@@ -2268,6 +2294,79 @@ async function readCaBundle(root: string, config: JR2Config): Promise<string | u
       `harness.caBundle names "${config.harness.caBundle}" but ${path} is not readable — ` +
         `the path is relative to the instance folder; commit the PEM bundle there (CA certs are public)`,
     );
+  }
+}
+
+/**
+ * The foreign dispatch preflight (ADR-0071): for each dispatch whose target is another
+ * Orchestrator, `GET <origin>/workflows/<name>`, and the served door compared with the slot's
+ * input schema (`doorCompat`, one direction). The route is open band (ADR-0014), so no token is
+ * sent: the token is the Effector's to hold, and the host would otherwise carry it over a wire the
+ * target may not secure. Every failure — no answer, a miss, a mismatch, a schema not compared — is a
+ * WARNING, never a refusal: the other Instance may be down or publish later, and refusing here
+ * would couple two Instances' publish order. A run of the dispatch answers what the door then says,
+ * the token's refusal included.
+ */
+async function preflightDispatch(io: Io, effects: readonly CarriedEffect[]): Promise<void> {
+  const fetchImpl = io.fetch ?? globalThis.fetch;
+  const seen = new Set<string>();
+  for (const e of effects) {
+    if (e.kind !== "dispatch" || e.target === undefined) continue;
+    const url = targetText({ target: e.target });
+    const once = JSON.stringify([url, e.workflow, e.secrets, e.input ?? null]);
+    if (seen.has(once)) continue;
+    seen.add(once);
+    const warn = (why: string) => activity(io, `warning: dispatch "${e.workflow}" at ${url}: ${why} (ADR-0071)`);
+    let res: Response;
+    try {
+      // No redirect is followed: the Effector's dispatch client follows none, so a door that
+      // redirects is one it never reaches.
+      res = await fetchImpl(`${url}/workflows/${encodeURIComponent(e.workflow)}`, {
+        headers: { accept: "application/json" },
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (err) {
+      warn(
+        `no answer from this host (${(err as Error).message}) — the other Instance may be down, or reached only ` +
+          'from inside its cluster; while no door answers, the dispatch settles "unreachable"',
+      );
+      continue;
+    }
+    if ((res.status >= 300 && res.status < 400) || res.type === "opaqueredirect") {
+      warn(
+        `the door redirected (HTTP ${res.status}); the Effector follows no redirect, so a run of the dispatch is refused there`,
+      );
+      continue;
+    }
+    if (res.status === 404) {
+      warn(`no Workflow "${e.workflow}" there — a run of the dispatch is refused with the door's 404 until it has one`);
+      continue;
+    }
+    if (!res.ok) {
+      warn(`the door answered HTTP ${res.status}`);
+      continue;
+    }
+    if (e.input === undefined) {
+      activity(io, `dispatch "${e.workflow}" at ${url}: the door answers; the slot states no input schema to compare`);
+      continue;
+    }
+    // A Workflow detail carries its door as `input` (null: it declares none). Any other answer — a
+    // page an ingress serves, another shape at another Kit version — is no door: not compared,
+    // never compared as `{}`, which would call every slot field stripped.
+    const detail: unknown = await res.json().catch(() => undefined);
+    if (typeof detail !== "object" || detail === null || Array.isArray(detail) || !Object.hasOwn(detail, "input")) {
+      warn("the door's answer is not a Workflow detail (no `input`); not compared");
+      continue;
+    }
+    const compared = doorCompat(e.input, (detail as { input: unknown }).input);
+    if (compared.ok === true) {
+      activity(io, `dispatch "${e.workflow}" at ${url}: the door takes the slot's input (ADR-0071)`);
+    } else if (compared.ok === "not-compared") {
+      warn(`its input schema and the door are not compared — ${compared.why}`);
+    } else {
+      for (const fault of compared.faults) warn(`the door does not take the slot's input: ${fault}`);
+    }
   }
 }
 

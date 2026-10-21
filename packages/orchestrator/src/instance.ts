@@ -38,7 +38,15 @@ import {
   type ResolvedAssembly,
 } from "./assembly.ts";
 import { assemblyRefusals, type LoadedWorkflow } from "./assembly-checks.ts";
-import { chartName, NamedCharts, readChartFiles, splitChartName, type ChartCounts, type ChartFile } from "./charts.ts";
+import {
+  chartName,
+  NamedCharts,
+  readChartFiles,
+  readRuntimeCharts,
+  splitChartName,
+  type ChartCounts,
+  type ChartFile,
+} from "./charts.ts";
 import type { ImageRefs } from "./images.ts";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -56,6 +64,7 @@ import type { SnapshotStore } from "./snapshot-store.ts";
 import { createAuthenticator, effectorKey, harnessToken, loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
+import { WORKFLOW_NAME } from "./effector-wire.ts";
 
 export type InstanceOptions = {
   /** The instance folder: the state volume `.jr2/` (its `state.db` unless `store` is supplied, and
@@ -119,6 +128,10 @@ export type InstanceOptions = {
    * The entrypoint derives it from the pod's namespace (deterministic Service DNS); absent,
    * such a Turn without an explicit `endpoint` faults pointedly. */
   instanceHarness?: string;
+  /** The name this Orchestrator gives itself at another Orchestrator's door (ADR-0071): a foreign
+   * dispatch's `dispatchedBy.instance`. The entrypoint passes the pod's namespace; absent, a foreign
+   * dispatch names an unnamed caller. */
+  orchestratorName?: string;
   /** The Instance Effector's headless Service, `host:port` (ADR-0068) — where an http Effect is sent.
    * The entrypoint derives it from the pod's namespace; absent, an http Effect faults pointedly. */
   instanceEffector?: string;
@@ -287,6 +300,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     resolveDef,
     sandbox: opts.sandbox,
     instanceHarness: opts.instanceHarness,
+    ...(opts.orchestratorName !== undefined ? { orchestratorName: opts.orchestratorName } : {}),
     harnessBearer: (placement) => harnessToken(signingKey, placement),
     // The Effectors (ADR-0068): each placement's Service, and the key its wire is signed with —
     // derived from the signing key as the Harness bearer is, so nothing is stored. The Instance
@@ -307,12 +321,15 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     // says why (ADR-0030). stderr, because it is a fault, not the boot's structured result.
     onRestoreError: (runId, err) =>
       console.error(`restore failed for run ${runId}: ${err instanceof Error ? err.message : err}`),
+    // An in-process dispatch of a named Chart the current Assembly left unrunnable answers 409, as
+    // the HTTP door does (ADR-0071). The registry is built after the host; this runs only at a start.
+    unrunnableChart: (name): string | undefined => charts.get(name)?.unrunnable,
   });
 
   // The named Charts (ADR-0070). The runtime ones are read from the volume now, and admitted when
   // the first Assembly binds; with none current, every one waits unrunnable ("not in the current
   // Assembly") and is never deleted.
-  const charts = new NamedCharts({ dir: opts.dir, host });
+  const charts: NamedCharts = new NamedCharts({ dir: opts.dir, host });
   await charts.load();
   // The current Assembly's own Workflow names (ADR-0069, ADR-0070): its Machines and its Chart
   // files, as its record lists them. `GET /assembly` answers these; the runtime Charts the host
@@ -391,10 +408,13 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       // The Assembly's Chart files (ADR-0070): the door admits each against its wrapper, and one
       // that fails refuses the publish naming the file.
       const files = await readChartFiles(root);
+      // The runtime Charts on the volume: a dispatch of a named Chart may resolve to one (ADR-0071).
+      const runtimeCharts = (await readRuntimeCharts(opts.dir)).map((c) => ({ name: chartName(c.wrapper, c.name) }));
       const refusals = await assemblyRefusals({
         config,
         workflows,
         charts: files,
+        runtimeCharts,
         ...(opts.imageMap ? { images: opts.imageMap } : {}),
         root,
       });
@@ -629,6 +649,11 @@ export function loadCharts(root: string, warn?: (line: string) => void): Promise
  * and the `images/<name>` dirname scan it was also written for both retired with ADR-0049. An
  * ABSENT dir is empty; any other readdir failure (EACCES, ENOTDIR, …) throws — a directory that
  * exists but cannot be read must be loud, never "no modules".
+ *
+ * A stem is a Workflow name, and a Workflow name has one rule wherever it is written: lowercase
+ * letters, digits and "-", the rule a Chart name keeps too (`WORKFLOW_NAME`). So `jr2 run`, the
+ * door's path and a `dispatch` slot name the same set of Workflows (ADR-0071), and a stem outside
+ * the rule throws here, naming the rename, before anything registers it.
  */
 export async function discoverModules(moduleDir: string): Promise<Array<{ name: string; file: string }>> {
   let entries: string[];
@@ -638,10 +663,31 @@ export async function discoverModules(moduleDir: string): Promise<Array<{ name: 
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   }
-  return entries
+  const modules = entries
     .filter((f) => f.endsWith(".ts") && !f.endsWith(".d.ts") && !f.startsWith("_"))
     .sort()
     .map((f) => ({ name: f.slice(0, -3), file: join(moduleDir, f) }));
+  for (const { name } of modules) {
+    if (!WORKFLOW_NAME.test(name)) {
+      throw new Error(
+        `${join(moduleDir, `${name}.ts`)}: a Workflow is named by its filename stem, in lowercase letters, digits ` +
+          `and "-", so that \`jr2 run\` and a \`dispatch\` slot name it the same way — rename it to ` +
+          `${kebabOf(name)}.ts (ADR-0071)`,
+      );
+    }
+  }
+  return modules;
+}
+
+/** A stem outside the rule, as the rule would spell it: `reviewLoop` and `review_loop` are
+ * `review-loop`. */
+function kebabOf(stem: string): string {
+  const out = stem
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return out === "" ? "workflow" : out;
 }
 
 /**

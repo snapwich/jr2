@@ -77,7 +77,7 @@ import {
 import { isEffect, type Arg } from "./effect.ts";
 import { attachLent, copyOpenBody, lentIn, openBodiesOf, openBodyDeclarationOf } from "./open-body.ts";
 import { effectChecks } from "./effect-checks.ts";
-import type { Text } from "./http-effect.ts";
+import type { NamedSecret, Text } from "./http-effect.ts";
 import {
   binderOf,
   effectBindingShape,
@@ -126,14 +126,17 @@ type AgentSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AgentL
  * overload states for an `open` url or argv, or a `secret(open)` (open-effect.ts). */
 type OpenEffectSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: OpenEffect<OpenEffectPart> }>["src"];
 
-/** What one Open part binds to: a url, an argv, a secret's name. */
+/** What one Open part binds to: a url, an argv, a secret's name, a dispatch's target — another
+ * Orchestrator's origin and the secret that holds its Instance token, together (ADR-0071). */
 type PartBinding<P> = P extends "url"
   ? { url: string | Text }
   : P extends "argv"
     ? { argv: readonly (string | Arg)[] }
     : P extends "secret"
       ? { secret: string }
-      : never;
+      : P extends "target"
+        ? { target: { url: string; token: NamedSecret } }
+        : never;
 
 /** A union of object types as their intersection: one binding object with every key. */
 type Intersected<U> = (U extends unknown ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
@@ -202,7 +205,8 @@ export type Customize<M extends AnyStateMachine> = {
     : { [K in AgentSlots<Reached<M>>]?: Partial<AgentDefinition> };
   /** Bind an Effect's Open parts (ADR-0054): `{ url }` for an http Effect (whatever its body) whose url
    * the package left Open, `{ argv }` for a command whose argv it left Open, `{ secret }` for an
-   * Effect that names `secret(open)` — one object with both keys for an Effect with two, so a binding
+   * Effect that names `secret(open)`, `{ target: { url, token: secret("<name>") } }` for a dispatch
+   * whose target it left Open (ADR-0071) — one object with both keys for an Effect with two, so a binding
    * that leaves one out does not compile. Bound once, here — a value, never a mapper over the door,
    * so the host is fixed before any run. Only an Effect with an Open part is offered: a part its
    * author fixed stays fixed. A Machine with none takes `never`, as `agents` does. */
@@ -360,7 +364,7 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
 /**
  * Bind one Effect's Open parts (ADR-0054): the slot must be an Effect, each key of the binding one
  * of its Open parts, and each value the value that part takes — a url (a string, or a `text` with a
- * secret in its path), an argv, or a secret's name. A key left out leaves that part Open. The binder
+ * secret in its path), an argv, a secret's name, or a dispatch's target (ADR-0071). A key left out leaves that part Open. The binder
  * builds the Effect again, whole, so the bound one meets every check its constructor runs: the url's
  * literal host, the argv's entries, the secret's name. The compiler's check of the
  * invoke's input against the argv's slots does not reach it (an Open argv's input is one string per
@@ -400,6 +404,17 @@ function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBindi
           `${value === open ? "`open` again" : "a function of the run"}: no run chooses an Effect's ${part} (ADR-0054)`,
       );
     }
+    if (part === "target") {
+      // The whole target is the Open part (ADR-0071): an origin and a named secret, bound together.
+      // The dispatch's own constructor checks the url and the name when the binder rebuilds it.
+      const target = value as { url?: unknown; token?: unknown } | null;
+      if (typeof target !== "object" || target === null || typeof target.url !== "string" || !isSecret(target.token)) {
+        throw new Error(
+          `customize(): the dispatch Effect "${name}"'s target is bound to another Orchestrator's origin and the ` +
+            `secret that holds its Instance token: ${effectBindingShape("target")} (ADR-0071)`,
+        );
+      }
+    }
     if (part === "secret" && typeof value !== "string") {
       throw new Error(
         `customize(): the ${logic.effect.kind} Effect "${name}"'s secret is bound to a secret's name, a string — ` +
@@ -409,6 +424,9 @@ function bindEffect(machine: AnyStateMachine, name: string, binding: EffectBindi
   }
   return binder(binding);
 }
+
+const isSecret = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && typeof (value as { secret?: unknown }).secret === "string";
 
 /**
  * The load walk's Effect checks (ADR-0067), again, on a Machine whose Open argv this `customize()`

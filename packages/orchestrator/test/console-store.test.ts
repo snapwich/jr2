@@ -13,6 +13,9 @@ import assert from "node:assert/strict";
 import {
   emptyStore,
   applyFrame,
+  dispatchBadge,
+  dispatchStrip,
+  dispatchedStrip,
   docSeats,
   fleetEntries,
   fleetRuns,
@@ -714,4 +717,66 @@ test("a run that binds a second Chart in its life draws a second doc: the key ho
     status: { ...run("a", "active", "planner"), bound: true, chartHashes: ["bbbbbbbbbbbb"] },
   });
   assert.notEqual(machineDocSource("planner", selectedRun(store)).key, a);
+});
+
+// A dispatched run (ADR-0071) names its caller on the open band: the reducer keeps the observation
+// whole, so `dispatchedBy` rides every frame that carries a run, with no fetch and no token.
+
+const dispatched = (runId: string, status = "active") => ({
+  ...run(runId, status),
+  dispatchedBy: { run: "caller-0123456789", slot: "review", depth: 1 },
+});
+
+test("`dispatchedBy` is kept through `runs`, `status` and `gone`, with no token", () => {
+  let store = applyFrame(emptyStore(), { kind: "runs", runs: [dispatched("a")] });
+  assert.equal(store.token, "none");
+  assert.deepEqual(store.runs.get("a")?.dispatchedBy, { run: "caller-0123456789", slot: "review", depth: 1 });
+  store = applyFrame(store, { kind: "status", status: dispatched("a", "active") });
+  assert.equal(store.runs.get("a")?.dispatchedBy?.slot, "review");
+  store = applyFrame(store, { kind: "gone", runId: "a" });
+  assert.equal(store.settled.get("a")?.dispatchedBy?.run, "caller-0123456789", "a settled run keeps its caller");
+  assert.equal(selectedRun(store)?.dispatchedBy?.depth, 1);
+});
+
+test("a fleet snapshot keeps `dispatchedBy` for an unselected workflow's runs", () => {
+  const store = applyFrame(emptyStore(), { kind: "fleet", workflow: "wf", runs: [dispatched("a")] });
+  assert.equal(fleetRuns(store, "wf")[0]?.run.dispatchedBy?.slot, "review");
+});
+
+test("the row badge and the pane strip name the caller; a run nobody dispatched shows neither", () => {
+  assert.equal(dispatchBadge(dispatched("a")), "↳ caller-0");
+  assert.equal(dispatchStrip(dispatched("a")), "dispatched by caller-0 · review · depth 1");
+  assert.equal(
+    dispatchStrip({
+      ...run("a"),
+      dispatchedBy: { run: "caller-0123456789", slot: "review", depth: 2, instance: "ops" },
+    }),
+    "dispatched by caller-0 · review · depth 2 · from Orchestrator ops",
+    "a foreign caller names its Orchestrator, as opaque text",
+  );
+  assert.equal(dispatchBadge(run("a")), null);
+  assert.equal(dispatchStrip(run("a")), null);
+  assert.equal(dispatchStrip(null), null);
+});
+
+test("the pane's `dispatched` strip names the runs a run started, newest last, the older counted", () => {
+  assert.equal(dispatchedStrip(run("a")), null);
+  assert.equal(dispatchedStrip(null), null);
+  assert.equal(
+    dispatchedStrip({ ...run("a"), dispatched: [{ slot: "intake", run: "callee-0123456789" }] }),
+    "dispatched callee-0 (intake)",
+  );
+  const many = Array.from({ length: 7 }, (_, i) => ({ slot: "intake", run: `run-${i}-abcdef` }));
+  assert.equal(
+    dispatchedStrip({ ...run("a"), dispatched: many }),
+    "dispatched 2 more · run-2-ab (intake) · run-3-ab (intake) · run-4-ab (intake) · run-5-ab (intake) · run-6-ab (intake)",
+  );
+});
+
+test("`dispatched` is kept through `runs` and `status`, with no token", () => {
+  const started = { ...run("a"), dispatched: [{ slot: "intake", run: "callee-1" }] };
+  let store = applyFrame(emptyStore(), { kind: "runs", runs: [started] });
+  assert.deepEqual(store.runs.get("a")?.dispatched, [{ slot: "intake", run: "callee-1" }]);
+  store = applyFrame(store, { kind: "status", status: started });
+  assert.equal(selectedRun(store)?.dispatched?.[0]?.run, "callee-1");
 });

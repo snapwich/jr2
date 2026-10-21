@@ -65,8 +65,11 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   Effect whose body is not a Worktree file, and a `push` each have one place: the Harness container, the Instance
   Effector, and the Sandbox Effector of the Workspace whose body invokes it. A `command` that names a secret, and an
   `http` whose body is a Worktree file, are placed in that Sandbox Effector — the command runs there with its child
-  confined (below). There is no `placement:` key and no kind per placement: naming a secret places a command, and the
-  body places an `http` — one name per thing, so there is no `upload` kind beside it (ADR-0068).
+  confined (below). A `dispatch` with no target runs in the Orchestrator's own process, the fourth Placement,
+  `orchestrator`, and the one Effect that has it; with a target it runs in the Instance Effector
+  ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). There is no `placement:` key and no kind per
+  placement: naming a secret places a command, the body places an `http`, and the target places a `dispatch` — one name
+  per thing, so there is no `upload` kind beside it (ADR-0068).
 - **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a child of the
   Harness process: the Agent's user, the Sandbox Image's tools, the same Stand-ins as the Agent's `bash` (ADR-0059), and
   no credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route

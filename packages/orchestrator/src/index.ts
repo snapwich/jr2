@@ -16,6 +16,9 @@ export * from "./effect.ts";
 // The http kind (ADR-0068): `http`, `secret`, `bearer`, `basic`, `text`, and the Effector's wire.
 export * from "./http-effect.ts";
 export * from "./sandbox-effect.ts";
+// The dispatch kind (ADR-0071): `dispatch`, a run that starts a run, and `DISPATCHED_BY_HEADER`,
+// the door's idempotency key out of band.
+export * from "./dispatch-effect.ts";
 // An Effect's Open parts (ADR-0054): the types `customize({ effects })` reads.
 export type { EffectBinding, OpenEffect, OpenEffectPart } from "./open-effect.ts";
 export { openPartsText } from "./open-effect.ts";

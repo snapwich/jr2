@@ -5,7 +5,15 @@
 
 import { h, type JSX } from "preact";
 import { useEffect, useRef } from "preact/hooks";
-import { docSeats, type GateCard, type HeldLine, type ObservedRun, type WaitingLine } from "../store.ts";
+import {
+  dispatchStrip,
+  dispatchedStrip as dispatchedStripText,
+  docSeats,
+  type GateCard,
+  type HeldLine,
+  type ObservedRun,
+  type WaitingLine,
+} from "../store.ts";
 import {
   clearCanvas,
   initCanvas,
@@ -58,12 +66,34 @@ export function MachinePane(props: {
     { id: "canvas", ref: canvasRef },
     h("div", { id: "placeholder", hidden: !view.placeholder }, view.placeholder ?? ""),
     h("div", { id: "error", hidden: !view.note, class: view.note?.notice ? "notice" : "" }, view.note?.text ?? ""),
+    dispatchedStrip(run),
+    startedStrip(run),
     rootTransitionStrip(view.doc),
     seatsPanel(view.doc),
     waitingStrip(waiting),
     heldStrip(held),
     h("svg", { id: "machine-svg", ref: svgRef }),
   );
+}
+
+/** Who dispatched the selected run (ADR-0071): its caller's run, slot and the chain's depth. Read
+ *  off the open observation the pane already holds, so it shows for every viewer, with no fetch. */
+function dispatchedStrip(run: ObservedRun | null): JSX.Element | null {
+  const text = dispatchStrip(run);
+  if (!text) return null;
+  return h(
+    "div",
+    { id: "dispatched-by", class: "dim", style: { margin: "28px 28px 0", fontFamily: "var(--mono)" } },
+    text,
+  );
+}
+
+/** The runs the selected run dispatched (ADR-0071): the chain's other direction, off the same
+ *  open observation, with no fetch. */
+function startedStrip(run: ObservedRun | null): JSX.Element | null {
+  const text = dispatchedStripText(run);
+  if (!text) return null;
+  return h("div", { id: "dispatched", class: "dim", style: { margin: "8px 28px 0", fontFamily: "var(--mono)" } }, text);
 }
 
 /** Machine-level transitions ("from any state") as the strip above the Machine — an edge from the

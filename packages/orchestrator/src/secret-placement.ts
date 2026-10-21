@@ -6,7 +6,8 @@
 //   - the Instance Harness: the model keys of the `"none"` Agents it hosts, and nothing else (they
 //     cannot execute code, ADR-0031, so nothing else is theirs to use);
 //   - an Effector: what its Effects name with `secret("name")` — the Instance Effector what its
-//     `http` Effects name; a Workspace's Sandbox Effector what its file-body `http`s and
+//     `http` Effects name and the token of each `dispatch` with a target (ADR-0071; a dispatch with
+//     no target runs in the Orchestrator's own process and names nothing); a Workspace's Sandbox Effector what its file-body `http`s and
 //     credentialed `command`s name. The push credential its `push`es spend is not placed here: the provision
 //     names the entry the slot's url matches on the Sandbox, by reference (git-push.ts, ADR-0051).
 //
@@ -153,7 +154,7 @@ export function secretPlacementsOf(
   walk: PlacementWalk,
   lookups: Pick<HeldLookups, "secretKeys" | "valueLength"> = {},
 ): SecretPlacements {
-  const { entries, namedBy, http } = namesOf(config, walk);
+  const { entries, namedBy, instancePlaced } = namesOf(config, walk);
   const { pods, redundant } = heldPodsOf(config, walk, new Set(entries.map((e) => e.name)));
   const claimed = new Set(pods.flatMap((p) => p.names));
 
@@ -207,12 +208,12 @@ export function secretPlacementsOf(
     report.push(`${label}: secrets lists ${name}, which its Agents' provider claims already — redundant`);
   }
 
-  const instanceSecrets = new Set(http.flatMap((p) => p.effect.secrets));
+  const instanceSecrets = new Set(instancePlaced.flatMap((p) => p.effect.secrets));
   const instance =
-    http.length === 0
+    instancePlaced.length === 0
       ? undefined
       : effectorPlan(
-          http,
+          instancePlaced,
           secrets.filter((s) => instanceSecrets.has(s.name)),
           values,
         );
@@ -322,10 +323,12 @@ function pushesOf(config: JR2Config, ws: PlacedWorkspace): SandboxPush[] {
   return out;
 }
 
-function effectorPlan(http: HttpPlaced[], secrets: EffectSecret[], values: Record<string, string>): EffectorPlan {
+function effectorPlan(placed: InstancePlaced[], secrets: EffectSecret[], values: Record<string, string>): EffectorPlan {
   const targets: EffectorTargetConfig[] = [];
-  for (const { effect } of http) {
-    // An Open url has no target, so it allows nothing: `jr2 up` refuses it before this (ADR-0054).
+  for (const { effect } of placed) {
+    // An Open url or an Open dispatch target has no target, so it allows nothing: `jr2 up` refuses
+    // it before this (ADR-0054). A dispatch's target is its origin, its one secret the token
+    // (ADR-0071).
     if (effect.target === undefined) continue;
     const t = { ...effect.target, secrets: [...effect.secrets].sort() };
     const same = (x: EffectorTargetConfig) =>
@@ -337,12 +340,17 @@ function effectorPlan(http: HttpPlaced[], secrets: EffectSecret[], values: Recor
     secrets,
     values,
     targets,
-    longestTimeoutMs: Math.max(...http.map((p) => p.effect.timeoutMs)),
-    effects: http.map((p) => `${p.workflow}/${p.effect.name}`),
+    // The grace a rollout gives a replica covers the http Effects alone (ADR-0071): a dispatch is
+    // idempotent by construction, so a `wait` a rollout cuts is sent again under its key and its
+    // poll resumes, and a wait of hours never stretches the Effector's grace.
+    longestTimeoutMs: Math.max(0, ...placed.flatMap((p) => (p.effect.kind === "http" ? [p.effect.timeoutMs] : []))),
+    effects: placed.map((p) => `${p.workflow}/${p.effect.name}`),
   };
 }
 
-type HttpPlaced = { workflow: string; effect: Extract<CarriedEffect, { method: string }> };
+/** An Effect the Instance Effector runs: an http one with no Worktree file, or a dispatch with a
+ * target (ADR-0068, ADR-0071). */
+type InstancePlaced = { workflow: string; effect: Extract<CarriedEffect, { kind: "http" | "dispatch" }> };
 
 /** A Workspace as a human reads it: its workflow and the placement route to it, an inline hop as
  * `invoked inline in state <id>`. */
@@ -423,11 +431,14 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
     }
     byName.set(e.name, e);
   }
-  // Every Effect that names a secret names it, whatever its kind: an `http` one in the Instance
-  // Effector, a file-body `http` and a credentialed `command` in their Workspace's Sandbox Effector.
+  // Every Effect that names a secret names it, whatever its kind: an `http` one and a `dispatch`'s
+  // token in the Instance Effector, a file-body `http` and a credentialed `command` in their
+  // Workspace's Sandbox Effector. A dispatch with no target is placed "orchestrator" and names none
+  // (ADR-0071).
   const namedBy = new Map<string, Array<{ label: string; where: string }>>();
-  const http = walk.effects.filter(
-    (p): p is HttpPlaced => p.effect.kind === "http" && p.effect.placement === "instance",
+  const instancePlaced = walk.effects.filter(
+    (p): p is InstancePlaced =>
+      (p.effect.kind === "http" || p.effect.kind === "dispatch") && p.effect.placement === "instance",
   );
   // Keyed by the Effect's placement route and slot name, as workspacePodsOf keys a pod's Effects:
   // two slots of one name in one workflow — one in a workspace(), one outside it — are two Effects,
@@ -463,7 +474,7 @@ function namesOf(config: JR2Config, walk: PlacementWalk) {
       namedBy.set(name, [...(namedBy.get(name) ?? []), { label, where }]);
     }
   }
-  return { entries, namedBy, http };
+  return { entries, namedBy, instancePlaced };
 }
 
 /** An Effect secret shorter than 8 characters is refused, and the refusal says why. */

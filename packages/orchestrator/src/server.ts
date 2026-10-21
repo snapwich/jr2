@@ -295,6 +295,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     instanceHarness: namespace
       ? `http://${INSTANCE_HARNESS_SERVICE}.${namespace}.svc:${INSTANCE_HARNESS_PORT}`
       : undefined,
+    // What a foreign dispatch names this Orchestrator by at the callee's door (ADR-0071): its
+    // namespace, which is stable and not secret — never a run's Instance ID.
+    ...(namespace ? { orchestratorName: namespace } : {}),
     // Where an http Effect runs (ADR-0068): the Instance Effector's headless Service. `jr2 up`
     // converges it whenever a registered Machine carries an http Effect.
     ...(namespace ? { instanceEffector: `${INSTANCE_EFFECTOR}.${namespace}.svc:${EFFECTOR_PORT}` } : {}),

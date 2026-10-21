@@ -4,9 +4,11 @@
 // route on, the input kept in the persisted snapshot, a `src` typo as a compile error, and
 // `.provide()` as the unit-test seam.
 //
-// Two kinds exist: `command`, run in the Harness container of the enclosing Workspace's Sandbox
-// (the Harness's `/exec/:id`, ADR-0067), here; and `http`, run in the Instance Effector
-// (http-effect.ts, ADR-0068). What this module adds to xstate is what makes an Effect safe to
+// The kinds: `command`, run in the Harness container of the enclosing Workspace's Sandbox (the
+// Harness's `/exec/:id`, ADR-0067), here; `http`, run in the Instance Effector (http-effect.ts,
+// ADR-0068); `push`, in the Sandbox Effector (sandbox-effect.ts); and `dispatch`, which starts a run
+// of a registered Workflow, in the Orchestrator's own process or, toward another Orchestrator, in
+// the Instance Effector (dispatch-effect.ts, ADR-0071). What this module adds to xstate is what makes an Effect safe to
 // restart:
 //
 //   - THE LEDGER. The run host keeps one row per Effect, in the run's blob beside the snapshot
@@ -128,6 +130,33 @@ export type PushParts = {
   readonly inputKeys: readonly string[];
 };
 
+/** A `dispatch` Effect's target: another Orchestrator's origin and the secret that holds its
+ * Instance token, by name (ADR-0071). */
+export type DispatchTarget = { readonly url: string; readonly token: string };
+
+/**
+ * A `dispatch` Effect's plain data (ADR-0071): the Workflow it starts a run of, as `jr2 run` names
+ * it (`review`, or `<wrapper>/<name>` for a named Chart), whether it waits for that run to end, the
+ * bound on the start (or the wait), and the target. No target: it runs in the Orchestrator's own
+ * process, through the run host, with no wire and no token. A target: it runs in the Instance
+ * Effector, which holds the token as an Effect secret.
+ */
+export type DispatchParts = {
+  readonly kind: "dispatch";
+  readonly workflow: string;
+  readonly wait: boolean;
+  readonly timeoutMs: number;
+  readonly target?: DispatchTarget;
+  /** The keys of the slot's input schema: what a pick param may fill. Undefined with no schema:
+   * the callee's door alone checks the body, so the load walk reads everything (ADR-0071). */
+  readonly inputKeys: readonly string[] | undefined;
+  /** `[target.token]`, or none in-process: what places the token (ADR-0068). */
+  readonly secrets: readonly string[];
+  /** Always false: a target's token is never `secret(open)` — the whole target is the Open part
+   * (ADR-0071). */
+  readonly openSecret: boolean;
+};
+
 /**
  * An Effect whose url or argv a package left Open (ADR-0054): the same parts with the sentinel in
  * that one place. The kind, the placement, the timeout and the secrets the other parts name are
@@ -140,21 +169,36 @@ export type OpenHttpParts = Omit<HttpParts, "url" | "target"> & {
   readonly target: typeof open;
 };
 
+/** A `dispatch` whose target a package left Open (ADR-0071): the composer binds the url and the
+ * token together, once. */
+export type OpenDispatchParts = Omit<DispatchParts, "target"> & { readonly target: typeof open };
+
 /** Every kind's parts, bound or with an Open part. */
-export type EffectParts = CommandParts | HttpParts | PushParts | OpenCommandParts | OpenHttpParts;
+export type EffectParts =
+  | CommandParts
+  | HttpParts
+  | PushParts
+  | OpenCommandParts
+  | OpenHttpParts
+  | DispatchParts
+  | OpenDispatchParts;
 
 /** The kinds, as their parts name them. */
-export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "push"]);
+export const EFFECT_KINDS: ReadonlySet<string> = new Set(["command", "http", "push", "dispatch"]);
 
 /**
  * Where an Effect runs, derived from its kind and what it names, never authored (ADR-0067,
  * ADR-0068): a `command` that names no secret in the Harness container of its Workspace; an
  * `http` Effect with no Worktree file in the Instance Effector; an `http` whose body is a Worktree
- * file, a `push` and a `command` that names a secret in the Sandbox Effector of its Workspace.
+ * file, a `push` and a `command` that names a secret in the Sandbox Effector of its Workspace; a
+ * `dispatch` with no target in the Orchestrator's own process, and one with a target (an Open one
+ * included: it has one once bound) in the Instance Effector (ADR-0071).
  */
-export type Placement = "harness" | "instance" | "sandbox";
+export type Placement = "harness" | "instance" | "sandbox" | "orchestrator";
 export function placementOf(parts: EffectParts): Placement {
   switch (parts.kind) {
+    case "dispatch":
+      return parts.target === undefined ? "orchestrator" : "instance";
     case "http":
       return parts.file ? "sandbox" : "instance";
     case "push":
@@ -192,9 +236,12 @@ export function targetText(parts: { readonly target: HttpParts["target"] | typeo
 }
 
 /** The keys an Effect's input has, read off its parts: a command's argv slot names (and `sha` with
- * `pin`); an http Effect's input schema keys; a push's `sha` and `message`. Undefined for an Open
- * argv: its slots are the composer's, unknown until `customize()` binds it (ADR-0054). */
+ * `pin`); an http Effect's input schema keys; a push's `sha` and `message`; a dispatch's input
+ * schema keys. Undefined for an Open argv: its slots are the composer's, unknown until
+ * `customize()` binds it (ADR-0054); and for a dispatch with no input schema: the callee's door is
+ * the only check, so nothing here says what it reads (ADR-0071). */
 export function inputKeysOf(parts: EffectParts): string[] | undefined {
+  if (parts.kind === "dispatch") return parts.inputKeys === undefined ? undefined : [...parts.inputKeys];
   if (parts.kind !== "command") return [...parts.inputKeys];
   if (parts.argv === open) return undefined;
   return [...parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg])), ...(parts.pin ? ["sha"] : [])];
@@ -209,6 +256,27 @@ export type Unknown = { outcome: "unknown"; reason: string };
 /** A `command` Effect's output: it exited, its timeout killed it, a signal killed it, or unknown. A
  * credentialed command's says `dirty` when the Worktree held edits it did not see (ADR-0067). */
 export type CommandOutput = (ExecOutcome & { dirty?: boolean }) | Unknown;
+
+/**
+ * A `dispatch` Effect's output (ADR-0071). Reach is output, as an http Effect's is (ADR-0067):
+ * `started` — the Orchestrator accepted the run; `settled` — with `wait`, the run ended (`status` in
+ * the store's own words, `output` the callee Machine's), or the wait's bound ran out with the run
+ * still `live`; `refused` — the door refused the start (400 bad input, 404 no such Workflow, 409 an
+ * unrunnable named Chart, 422 a Chart the door refuses), its report the door's own lines, so a body
+ * a model wrote can be fixed through the Chain; `unreachable` — the foreign target never answered,
+ * nothing started; `unknown`.
+ */
+export type DispatchOutput =
+  | { outcome: "started"; run: string }
+  | {
+      outcome: "settled";
+      run: string;
+      status: "done" | "error" | "cancelled" | "lost" | "drifted" | "live";
+      output?: unknown;
+    }
+  | { outcome: "refused"; status: number; report: string[] }
+  | { outcome: "unreachable"; reason: string }
+  | Unknown;
 
 // --- The ledger row (persisted in the run's blob, ADR-0007) --------------------------------------
 
@@ -238,6 +306,19 @@ export type EffectRow =
       pinned?: string;
       at: string;
     }
+  /** A dispatch's intent (ADR-0071): where it runs, and — once the start's answer names it — the
+   * run it started. A dispatch is idempotent by construction: its ledger id rides every start as
+   * the door's key, so a restore sends it again and gets the same run. */
+  | {
+      state: "intent";
+      kind: "dispatch";
+      slot: string;
+      placement: "orchestrator" | "instance";
+      idempotent: true;
+      wait: boolean;
+      run?: string;
+      at: string;
+    }
   /** `sandbox` and `repo`: the Workspace and the Repo Slot an Effect of the Sandbox Effector ran on
    * — every later push of its own Workspace and Repo Slot (one branch, one remote) sends its pair,
    * and the newest push's unfinished sync runs again in that slot's Worktree. */
@@ -250,7 +331,9 @@ export type EffectRow =
       output: unknown;
       at: string;
     }
-  | { state: "aborted"; kind: EffectParts["kind"]; slot: string; at: string };
+  /** `run`: for a dispatch, the run it started, kept past the abort — the callee runs on, and the
+   * caller's row still names it (ADR-0071). */
+  | { state: "aborted"; kind: EffectParts["kind"]; slot: string; run?: string; at: string };
 
 /**
  * Retention (ADR-0067): drop, in place, the output tail of every settled row once a save on disk
@@ -297,6 +380,11 @@ const TAILS: Record<EffectRow["kind"], readonly string[]> = {
   // every later push of its Repo Slot sends the pair (`pushPairsOf`), and the newest push's sync
   // runs again when it did not finish. The sync's bundle and git's words are its tail.
   push: ["bundle", "detail"],
+  // A dispatch's tail is the callee's output, which `GET /runs/<id>` serves for as long as the run
+  // is kept, and a refusal's report, which can carry the callee door's whole schema: the feed's
+  // settled marker carries both whole. The row keeps the outcome, the run id, its status and the
+  // door's HTTP status (ADR-0071).
+  dispatch: ["output", "report"],
 };
 
 /** A kind's tail for one output. The NEWEST push of its Repo Slot whose sync did not finish
@@ -386,7 +474,7 @@ export type EffectMarker = {
   effect: string;
   stage: "started" | "output" | "settled" | "aborted";
   text?: string;
-  output?: CommandOutput | HttpOutput;
+  output?: CommandOutput | HttpOutput | DispatchOutput;
 };
 
 // --- The port -----------------------------------------------------------------------------------

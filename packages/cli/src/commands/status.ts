@@ -14,6 +14,11 @@
 //
 // A run that binds a Chart (ADR-0070) carries `bound: true`; the verb says so beside the result as
 // `chart: bound`, with the route that draws the Machine the run binds, its Charts compiled in.
+//
+// A dispatched run (ADR-0071) says beside the result who dispatched it: `dispatched by: <run>
+// (<slot>), depth <n>`. A run that dispatched says the other direction, one line per run it
+// started: `dispatched: <run> (<slot>)`. The result itself carries `dispatchedBy`, `dispatched`
+// and, once the run is no longer live, its `output`, as the Orchestrator sends them.
 
 import { parseArgs } from "node:util";
 import type { AssemblyView, RepoStatus } from "@jr2/orchestrator";
@@ -48,12 +53,36 @@ export async function status(args: string[], io: Io): Promise<number> {
       return 1;
     }
     result(io, s);
-    const note = boundActivity(s);
-    if (note) activity(io, note);
+    for (const note of [dispatchedActivity(s), ...dispatchedLines(s), boundActivity(s)]) if (note) activity(io, note);
     return 0;
   } finally {
     target.close?.();
   }
+}
+
+/** The most `dispatched:` lines `jr2 status` prints: a watcher dispatches on every pass, and the
+ * result carries the whole list. */
+const DISPATCHED_LINES = 10;
+
+/** The `dispatched:` lines for the runs this run's `dispatch` Effects started (ADR-0071), newest
+ * last, the older ones counted. */
+export function dispatchedLines(s: RunStatus): string[] {
+  const all = s.dispatched ?? [];
+  const shown = all.slice(-DISPATCHED_LINES);
+  const older = all.length - shown.length;
+  return [
+    ...(older > 0 ? [`dispatched: ${older} older run(s); the result lists them all`] : []),
+    ...shown.map((d) => `dispatched: ${d.run} (${d.slot})`),
+  ];
+}
+
+/** The `dispatched by:` line for a run a `dispatch` Effect started (ADR-0071), or undefined for a
+ * run nobody dispatched. A foreign caller is named by its Orchestrator, as that one sent it: opaque
+ * text, which this Orchestrator could not verify. */
+export function dispatchedActivity(s: RunStatus): string | undefined {
+  const by = s.dispatchedBy;
+  if (!by) return undefined;
+  return `dispatched by: ${by.run} (${by.slot}), depth ${by.depth}${by.instance ? `, from Orchestrator ${by.instance}` : ""}`;
 }
 
 /** The `chart: bound` line for a run that binds a Chart (ADR-0070), or undefined for one that binds

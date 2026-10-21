@@ -38,6 +38,7 @@ import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
 import type { ChartText } from "./chart.ts";
 import { notTaken, senderText, takesNow, type NotTakenWriting } from "./party.ts";
 import { restOf } from "./rest.ts";
+import type { RunStatus } from "./run-host.ts";
 
 /** xstate doesn't export its internal AnyActorSystem; this matches what actors receive. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -398,10 +399,55 @@ export class RegistrationTable {
   }
 }
 
+/**
+ * Which run dispatched a run (ADR-0071): the caller's run id, the slot of its `dispatch` Effect, and
+ * that Effect's ledger row id, which is the idempotency key — a start that carries a key some run
+ * already carries answers that run. `depth` is the dispatched run's depth in the chain, one below
+ * its caller, stated by the caller and recorded as sent: one meaning on the wire, on the binding
+ * and on the row. `instance` is set for a foreign caller, whose Orchestrator this one cannot
+ * verify: opaque text, never resolved.
+ */
+export type DispatchedBy = { run: string; slot: string; effect: string; depth: number; instance?: string };
+
+/** The header a foreign `dispatch` carries its {@link DispatchedBy} in, as JSON (ADR-0071): out of
+ * band, so the callee's door reserves no body field for it. */
+export const DISPATCHED_BY_HEADER = "jr2-dispatched-by";
+
+/**
+ * A dispatch's start as the run host answers it in-process (ADR-0071): the run, and whether the key
+ * found one that already existed; or the door's refusal, with the status `POST /workflows/:name/runs`
+ * would answer — 400 input the door refuses, 404 a name the current Assembly lacks, 409 a named
+ * Chart that cannot run now, 422 a Chart the door refuses — and its report. A refusal is the
+ * Effect's output, never thrown.
+ */
+export type DispatchStart =
+  | { ok: true; runId: string; existing: boolean }
+  | { ok: false; status: 400 | 404 | 409 | 422; report: string[] };
+
 /** What a callback actor needs from its host: run identity, the table, and the host's ports. */
 export type RunBinding = {
   runId: string;
   workflow: string;
+  /** The name this run's Orchestrator gives itself at another Orchestrator's door (ADR-0071): the
+   * `instance` of a foreign dispatch's `dispatchedBy` — stable across its runs and restarts, and not
+   * secret, since the callee serves it on its open band. Deployed, its namespace. Never an Instance
+   * ID, which names an Agent's conversation and stays behind the token. Absent on a bare unit-test
+   * binding and an undeployed Orchestrator. */
+  orchestratorName?: string;
+  /** The run's depth in a chain of dispatches (ADR-0071): 0 for a run nothing dispatched. Absent
+   * on a bare unit-test binding, which reads 0. */
+  depth?: number;
+  /**
+   * The in-process half of a `dispatch` Effect (ADR-0071): the run host, reached directly, with no
+   * wire and no token — the Orchestrator is the single writer of runs. `start` answers a refusal as
+   * {@link DispatchStart}, never by throwing; `settled` resolves with the run's status once it is no
+   * longer live — at once for a run already settled, and across a restore in either order — and
+   * rejects when `signal` aborts. Absent outside a RunHost: a dispatch with no target faults.
+   */
+  dispatch?: {
+    start(workflow: string, input: Record<string, unknown>, by: DispatchedBy): Promise<DispatchStart>;
+    settled(runId: string, signal: AbortSignal): Promise<RunStatus>;
+  };
   /** The hash of the Assembly the run holds (ADR-0069): the one it started under, through
    * restarts. Absent for a run no Assembly started. */
   assembly?: string;

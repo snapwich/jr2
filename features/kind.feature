@@ -233,6 +233,25 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the echo received the run's call exactly once
       And the Instance Effector's rollout completes
 
+  Rule: a dispatch to another Orchestrator runs in the Instance Effector, with the key
+    ADR-0071. A `dispatch` with a target runs in the Instance Effector, which holds the target's
+    token as an Effect secret, sends the start to the target's door with the ledger row's id in the
+    `jr2-dispatched-by` header, and with `wait` polls `GET /runs/<id>` until the run ends. The
+    `dispatched` workflow's target is THIS Instance's Orchestrator, by its Service url and its
+    Instance token, so the foreign path runs with no second cluster. Its callee is `called` in mode
+    `slow`, which the echo holds 20 s and counts by the run's marker: an Orchestrator restart lands
+    while both Effects run, and one start of the callee is one request at the echo.
+
+    Scenario: a dispatch to this Instance by url and token starts one run across an orchestrator restart
+      Given this scenario's self-token is the Instance token
+      And the kind instance is serving
+      When I start the "dispatched" workflow in mode "slow" detached
+      Then the echo has received the run's call
+      And the dispatched run names its caller from another Instance
+      When the orchestrator restarts while the Effect runs
+      Then the dispatch settled with the dispatched run, which ended "done"
+      And the echo received the run's call exactly once
+
   Rule: a file-body http and a credentialed command run in the Workspace's Sandbox Effector, which the Agent cannot read
     ADR-0067, ADR-0068. The `effected` workflow's body commits a file in the Harness container, then
     runs an Effect that `jr2 up` placed in this Workspace's Sandbox Effector: an `http` whose body is the

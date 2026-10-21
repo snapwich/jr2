@@ -4,7 +4,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boundActivity, renderInstanceStatus } from "../src/commands/status.ts";
+import { main } from "../src/cli.ts";
+import { boundActivity, dispatchedActivity, dispatchedLines, renderInstanceStatus } from "../src/commands/status.ts";
+import type { Io } from "../src/output.ts";
 
 const lines = (out: string): string[] => out.split("\n").filter((l) => l.startsWith("assembly:"));
 
@@ -87,4 +89,64 @@ test("a drifted bound run says so: its Machine route may not draw the Chart", ()
     boundActivity({ ...run, bound: true }),
     "chart: bound, drifted — GET /workflows/charted/runs/r1/machine names each Chart it cannot draw",
   );
+});
+
+// `jr2 status <run>` (ADR-0071): a dispatched run says who dispatched it beside the result.
+
+test("a dispatched run reads `dispatched by:` with its caller, slot and depth; any other run prints no line", () => {
+  const run = { runId: "r1", workflow: "review", instanceId: "i", status: "active", value: "x", context: {} };
+  const by = { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 };
+  assert.equal(dispatchedActivity({ ...run, dispatchedBy: by }), "dispatched by: caller-run (review), depth 1");
+  assert.equal(
+    dispatchedActivity({ ...run, dispatchedBy: { ...by, depth: 2, instance: "ops" } }),
+    "dispatched by: caller-run (review), depth 2, from Orchestrator ops",
+  );
+  assert.equal(dispatchedActivity(run), undefined);
+});
+
+test("a run that dispatched reads one `dispatched:` line per run it started, the oldest past ten counted", () => {
+  const run = { runId: "r1", workflow: "watch", instanceId: "i", status: "active", value: "x", context: {} };
+  assert.deepEqual(dispatchedLines(run), []);
+  const two = [
+    { slot: "intake", run: "c1", at: "2026-10-20T00:00:01Z" },
+    { slot: "intake", run: "c2", at: "2026-10-20T00:00:02Z" },
+  ];
+  assert.deepEqual(dispatchedLines({ ...run, dispatched: two }), [
+    "dispatched: c1 (intake)",
+    "dispatched: c2 (intake)",
+  ]);
+  const many = Array.from({ length: 12 }, (_, i) => ({ slot: "intake", run: `c${i}`, at: `t${i}` }));
+  const lines = dispatchedLines({ ...run, dispatched: many });
+  assert.equal(lines.length, 11);
+  assert.equal(lines[0], "dispatched: 2 older run(s); the result lists them all");
+  assert.equal(lines.at(-1), "dispatched: c11 (intake)");
+});
+
+test("`jr2 status <run>` prints the result with `dispatchedBy` and `output`, and the line on stderr", async () => {
+  const runId = "0b9c2f3e-1111-4222-8333-444455556666";
+  const s = {
+    runId,
+    workflow: "review",
+    instanceId: "i",
+    status: "done",
+    value: "done",
+    context: {},
+    dispatchedBy: { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 },
+    output: { verdict: "approve" },
+  };
+  const out: string[] = [];
+  const err: string[] = [];
+  const io: Io = {
+    stdout: (x) => out.push(x),
+    stderr: (x) => err.push(x),
+    env: { JR2_URL: "http://test" },
+    cwd: "/",
+    fetch: async (url) =>
+      new URL(url).pathname === `/runs/${runId}` ? Response.json(s) : new Response("{}", { status: 404 }),
+  };
+  assert.equal(await main(["status", runId], io), 0);
+  const printed = JSON.parse(out.join("")) as typeof s;
+  assert.deepEqual(printed.dispatchedBy, s.dispatchedBy);
+  assert.deepEqual(printed.output, { verdict: "approve" });
+  assert.match(err.join(""), /^dispatched by: caller-run \(review\), depth 1$/m);
 });

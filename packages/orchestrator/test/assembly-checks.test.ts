@@ -8,7 +8,11 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assemblyRefusals, placementWalkOf } from "../src/assembly-checks.ts";
+import { z } from "zod";
+import { assemblyRefusals, dispatchRefusals, placementWalkOf } from "../src/assembly-checks.ts";
+import { dispatch } from "../src/dispatch-effect.ts";
+import { secret } from "../src/http-effect.ts";
+import { open } from "../src/open.ts";
 import { partsOf } from "../src/parts.ts";
 import { chartedSrc, machineOf } from "./_assembly.ts";
 import { agent } from "../src/harness-client.ts";
@@ -50,4 +54,180 @@ test('the placement walk\'s Instance Harness holds the models of an Open body th
   const walk = placementWalkOf([{ name: "charted", machine }]);
   assert.deepEqual(walk.instanceHarness, { models: ["stub/model"] });
   assert.deepEqual(walk.instanceHarness, partsOf([machine]).instanceHarness);
+});
+
+// --- What a dispatch names (ADR-0071) ------------------------------------------------------------
+
+/** A Workflow whose door takes `{ ticket, priority? }`. */
+function intake() {
+  return jr2Setup({ events: [] }).createMachine({
+    id: "intake",
+    input: z.object({ ticket: z.string(), priority: z.enum(["low", "high"]).optional() }),
+    initial: "a",
+    states: { a: {} },
+  });
+}
+
+/** A watcher with one dispatch slot. */
+function caller(slot: ReturnType<typeof dispatch>) {
+  return jr2Setup({ events: [], actors: { hand: slot } }).createMachine({
+    id: "watcher",
+    initial: "a",
+    states: { a: {} },
+  });
+}
+
+test("a dispatch of a Workflow the Assembly has passes; a miss refuses, naming the fix", async () => {
+  const ok = dispatchRefusals(
+    [
+      { name: "watch", machine: caller(dispatch("intake", { input: z.object({ ticket: z.string() }) })) },
+      { name: "intake", machine: intake() },
+    ],
+    [],
+  );
+  assert.deepEqual(ok, { errors: [], warnings: [] });
+  const miss = dispatchRefusals([{ name: "watch", machine: caller(dispatch("intak")) }], []);
+  assert.deepEqual(miss.errors, [
+    'workflow "watch" dispatches "intak" which no Workflow in the Assembly has — add workflows/intak.ts, or name ' +
+      'one it registers: "watch" (ADR-0071)',
+  ]);
+  // The door's walk refuses the publish with the same line.
+  const lines = await assemblyRefusals({
+    config: undefined,
+    workflows: [{ name: "watch", machine: caller(dispatch("intak")) }],
+  });
+  assert.deepEqual(lines, miss.errors);
+});
+
+test("a slot schema the door does not take refuses, naming the field", () => {
+  const { errors } = dispatchRefusals(
+    [
+      { name: "watch", machine: caller(dispatch("intake", { input: z.object({ ticket: z.number() }) })) },
+      { name: "intake", machine: intake() },
+    ],
+    [],
+  );
+  assert.equal(errors.length, 1, errors.join("\n"));
+  assert.match(
+    errors[0]!,
+    /^workflow "watch" dispatches "intake" with input its door does not take: "ticket": the slot sends number, and the door takes string — align/,
+  );
+  const extra = dispatchRefusals(
+    [
+      {
+        name: "watch",
+        machine: caller(dispatch("intake", { input: z.object({ ticket: z.string(), sha: z.string() }) })),
+      },
+      { name: "intake", machine: intake() },
+    ],
+    [],
+  );
+  assert.match(extra.errors[0]!, /the slot's field "sha" is not in the door, which strips it silently/);
+  // With no schema the door alone checks the body: nothing to compare.
+  assert.deepEqual(
+    dispatchRefusals(
+      [
+        { name: "watch", machine: caller(dispatch("intake")) },
+        { name: "intake", machine: intake() },
+      ],
+      [],
+    ),
+    { errors: [], warnings: [] },
+  );
+});
+
+test("a schema outside the compared subset is a warning, not compared", () => {
+  const r = dispatchRefusals(
+    [
+      { name: "watch", machine: caller(dispatch("intake", { input: z.object({ ticket: z.string().email() }) })) },
+      { name: "intake", machine: intake() },
+    ],
+    [],
+  );
+  assert.deepEqual(r.errors, []);
+  assert.match(r.warnings[0]!, /^workflow "watch" dispatches "intake": its input schema and the door are not compared/);
+});
+
+test("a door zod cannot draw as JSON Schema is not compared — a warning, never a guessed match", () => {
+  const dated = jr2Setup({ events: [] }).createMachine({
+    id: "dated",
+    input: z.object({ when: z.date() }),
+    initial: "a",
+    states: { a: {} },
+  });
+  const r = dispatchRefusals(
+    [
+      { name: "watch", machine: caller(dispatch("dated", { input: z.object({ when: z.string() }) })) },
+      { name: "dated", machine: dated },
+    ],
+    [],
+  );
+  assert.deepEqual(r.errors, []);
+  assert.match(
+    r.warnings[0]!,
+    /^workflow "watch" dispatches "dated": its input schema and the door are not compared — the door has a part JSON Schema cannot state/,
+  );
+});
+
+test("a named Chart: a Chart file resolves it; a slashed name under a known wrapper warns without the registry and refuses with it", async () => {
+  const wrapper = await machineOf(chartedSrc());
+  const workflows = (slot: ReturnType<typeof dispatch>) => [
+    { name: "watch", machine: caller(slot) },
+    { name: "task", machine: wrapper },
+  ];
+  const file = { wrapper: "task", name: "loop", path: "workflows/task/loop.chart.json", text: {} };
+  // The door of a named Chart is the wrapper's minus its Chart field: `{ endpoint, task }`.
+  const body = z.object({ endpoint: z.string(), task: z.string() });
+  assert.deepEqual(dispatchRefusals(workflows(dispatch("task/loop", { input: body })), [file]), {
+    errors: [],
+    warnings: [],
+  });
+  const withChart = dispatchRefusals(workflows(dispatch("task/loop", { input: body.extend({ chart: z.string() }) })), [
+    file,
+  ]);
+  assert.match(withChart.errors[0]!, /the slot's field "chart" is not in the door/);
+  // No Chart file: the host cannot see the volume, so it warns.
+  const host = dispatchRefusals(workflows(dispatch("task/other")), []);
+  assert.deepEqual(host.errors, []);
+  assert.match(
+    host.warnings[0]!,
+    /^workflow "watch" dispatches "task\/other": the Assembly has no Chart file workflows\/task\/other\.chart\.json, and a runtime Chart lives on the Orchestrator's volume alone/,
+  );
+  // The door sees the volume: a runtime Chart resolves it, and a miss refuses.
+  assert.deepEqual(dispatchRefusals(workflows(dispatch("task/other")), [], [{ name: "task/other" }]).errors, []);
+  const door = dispatchRefusals(workflows(dispatch("task/other")), [], []);
+  assert.match(
+    door.errors[0]!,
+    /^workflow "watch" dispatches "task\/other" which no Workflow in the Assembly has — add the Chart file/,
+  );
+  // The fix names the order a publish that adds the wrapper needs: a PUT needs it current.
+  assert.match(
+    door.errors[0]!,
+    /PUT \/workflows\/task\/charts\/other before this publish \(a PUT needs "task" in the current Assembly: when this publish adds it, publish "task" first, then PUT the Chart, then publish the dispatch\)/,
+  );
+  // With no Chart file the door is still known — the wrapper's minus its Chart fields — so the host
+  // warns AND compares, and a mismatch refuses before any cluster work.
+  const mismatch = dispatchRefusals(
+    workflows(dispatch("task/other", { input: z.object({ endpoint: z.number(), task: z.string() }) })),
+    [],
+  );
+  assert.equal(mismatch.warnings.length, 1);
+  assert.match(mismatch.errors[0]!, /"endpoint": the slot sends number, and the door takes string/);
+  // A wrapper the Assembly does not have is a miss on both ends.
+  assert.match(
+    dispatchRefusals(workflows(dispatch("gone/loop")), []).errors[0]!,
+    /no workflows\/gone\.ts registers the Chart wrapper "gone"/,
+  );
+  // A wrapper that is no Chart wrapper is named as such.
+  assert.match(dispatchRefusals(workflows(dispatch("watch/loop")), []).errors[0]!, /is no Chart wrapper/);
+});
+
+test("a foreign target is not checked here: its door is another Instance's, which jr2 up only warns about", () => {
+  const away = dispatch("missing", { target: { url: "https://ops.example.com", token: secret("ops") } });
+  const later = dispatch("missing", { target: open });
+  assert.deepEqual(dispatchRefusals([{ name: "watch", machine: caller(away) }], []), { errors: [], warnings: [] });
+  assert.deepEqual(dispatchRefusals([{ name: "watch", machine: caller(later as never) }], []), {
+    errors: [],
+    warnings: [],
+  });
 });

@@ -2630,6 +2630,91 @@ Then("the Instance Effector's rollout completes", async function (this: E2EWorld
   await kubectl(this, ["rollout", "status", `deployment/${INSTANCE_EFFECTOR}`, "--timeout=300s"]);
 });
 
+// --- a dispatch from the Instance Effector (ADR-0071) ----------------------------------------------
+
+/** A run as `jr2 status` and `jr2 runs` print it, with what ADR-0071 adds. */
+type DispatchRun = {
+  runId: string;
+  workflow: string;
+  status: string;
+  output?: Record<string, unknown>;
+  dispatchedBy?: { run: string; slot: string; effect?: string; depth: number; instance?: string };
+};
+
+/** The run the `dispatched` workflow started, once a step has found it. */
+const dispatchedCallee = new WeakMap<E2EWorld, string>();
+
+/**
+ * The scenario's namespace holds the `jr2-instance` Secret before `jr2 up`, with the Instance token
+ * set to this scenario's `self-token` (`kind-instance/jr2.config.ts`): `jr2 up` keeps a token it
+ * finds and mints the rest, so the token the `dispatched` workflow's target names IS this
+ * Instance's. Created, not applied: `jr2 up` writes the Secret whole after this, and owns it.
+ */
+Given("this scenario's self-token is the Instance token", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.namespace && this.selfToken, "setupKind made this scenario's namespace and self-token");
+  const objects = {
+    apiVersion: "v1",
+    kind: "List",
+    items: [
+      { apiVersion: "v1", kind: "Namespace", metadata: { name: this.namespace } },
+      {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: "jr2-instance", namespace: this.namespace },
+        data: { JR2_INSTANCE_TOKEN: Buffer.from(this.selfToken).toString("base64") },
+      },
+    ],
+  };
+  await kubectlInput(this, ["create", "-f", "-"], JSON.stringify(objects));
+});
+
+/** The callee is live while its slow call runs, and names its caller: the run, the slot, the depth,
+ * and an Instance the callee's Orchestrator could not verify, because the start came by its door. */
+Then("the dispatched run names its caller from another Instance", async function (this: E2EWorld): Promise<void> {
+  let found: DispatchRun | undefined;
+  for (let i = 0; i < 120 && !found; i++) {
+    const r = await this.runCli(["runs"]);
+    assert.equal(r.code, 0, `jr2 runs failed: ${r.stderr}`);
+    const mine = this.resultJson<DispatchRun[]>().filter((run) => run.dispatchedBy?.run === this.runId);
+    assert.ok(mine.length <= 1, `one dispatch is one run: ${JSON.stringify(mine)}`);
+    found = mine[0];
+    if (!found) await sleep(500);
+  }
+  assert.ok(found, `no live run names ${this.runId} as its dispatcher`);
+  assert.equal(found.workflow, "called");
+  assert.equal(found.dispatchedBy?.slot, "call");
+  assert.equal(found.dispatchedBy?.depth, 1, "the caller sent its own depth, and the host added one");
+  assert.ok(found.dispatchedBy?.instance, "a start by the door names the caller's Instance, as opaque text");
+  dispatchedCallee.set(this, found.runId);
+});
+
+Then(
+  "the dispatch settled with the dispatched run, which ended {string}",
+  { timeout: 300_000 },
+  async function (this: E2EWorld, status: string): Promise<void> {
+    const callee = dispatchedCallee.get(this);
+    assert.ok(callee, "the dispatched run was found before the restart");
+    let caller: DispatchRun | undefined;
+    for (let i = 0; i < 480; i++) {
+      const r = await this.runCli(["status", this.runId!]);
+      assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
+      caller = this.resultJson<DispatchRun>();
+      if (caller.status !== "active" && caller.status !== "live") break;
+      await sleep(500);
+    }
+    assert.equal(caller?.status, "done", `the caller settled ${caller?.status}: ${JSON.stringify(caller)}`);
+    const output = caller.output ?? {};
+    assert.equal(output.outcome, "settled", JSON.stringify(output));
+    assert.equal(output.run, callee, "the poll followed the run the start began, across the restart");
+    assert.equal(output.status, status, "the callee's status, in the store's words");
+    assert.equal(
+      (output.output as { outcome?: string } | undefined)?.outcome,
+      "response",
+      "the callee Machine's output — its http Effect's answer — came back through the poll",
+    );
+  },
+);
+
 // --- the Sandbox Effector (ADR-0067, ADR-0068) ----------------------------------------------------
 
 /** The run's Sandbox pod has an `effector` container, and the Harness container mounts none of its

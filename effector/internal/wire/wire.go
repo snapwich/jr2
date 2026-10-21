@@ -17,13 +17,14 @@ import (
 	"strings"
 )
 
-// The kinds an Effector runs. The Instance Effector runs `http` with no Worktree file; the
-// Sandbox Effector runs `push`, `command` and an `http` whose body is a Worktree file (ADR-0067,
-// one kind, whose body decides the placement).
+// The kinds an Effector runs. The Instance Effector runs `http` with no Worktree file and a
+// `dispatch` to another Orchestrator (ADR-0071); the Sandbox Effector runs `push`, `command` and an
+// `http` whose body is a Worktree file (ADR-0067, one kind, whose body decides the placement).
 const (
-	KindHTTP    = "http"
-	KindPush    = "push"
-	KindCommand = "command"
+	KindHTTP     = "http"
+	KindPush     = "push"
+	KindCommand  = "command"
+	KindDispatch = "dispatch"
 )
 
 // Outcomes of an http Effect. Every outcome is output (ADR-0067).
@@ -40,6 +41,10 @@ const (
 	OutcomeExited  = "exited"
 	OutcomeTimeout = "timeout"
 	OutcomeKilled  = "killed"
+	// A dispatch's outcomes besides `refused` (with the door's status and report), `unreachable`
+	// and `unknown` (ADR-0071): the run was accepted, or — with `wait` — it ended or the wait did.
+	OutcomeStarted = "started"
+	OutcomeSettled = "settled"
 )
 
 // ErrStopped is the cause a credentialed command's run is cancelled with when the Orchestrator
@@ -173,19 +178,39 @@ type CommandSpec struct {
 	Tail   int               `json:"tail"`
 }
 
-// StartRequest is the body of `POST /effects/<id>`.
+// DispatchedBy is which run starts a run (ADR-0071): the caller's run and slot, its ledger row id
+// (`effect`, the door's idempotency key), the dispatched run's depth in the chain — one below its
+// caller, stated by the caller, so at least 1 — and the caller's Instance as opaque text, set on
+// the wire since the caller is foreign by construction. The Effector sends it as the
+// `jr2-dispatched-by` header and reads none of it.
+type DispatchedBy struct {
+	Run      string `json:"run"`
+	Slot     string `json:"slot"`
+	Effect   string `json:"effect"`
+	Depth    int    `json:"depth"`
+	Instance string `json:"instance"`
+}
+
+// StartRequest is the body of `POST /effects/<id>`. A `dispatch` (ADR-0071) is flat, as the TS
+// shape is: it shares `url` (the target's origin) and `auth` (the bearer) with http, and adds
+// `workflow`, `input` (the run's body, whole), `dispatchedBy` and `wait`.
 type StartRequest struct {
-	Kind      string          `json:"kind"`
-	Method    string          `json:"method,omitempty"`
-	URL       Text            `json:"url,omitempty"`
-	Path      []string        `json:"path,omitempty"`
-	Headers   map[string]Text `json:"headers,omitempty"`
-	Auth      *Auth           `json:"auth,omitempty"`
-	Body      *Body           `json:"body,omitempty"`
-	Push      *PushSpec       `json:"push,omitempty"`
-	Command   *CommandSpec    `json:"command,omitempty"`
-	TimeoutMs int64           `json:"timeoutMs"`
-	MaxBody   int             `json:"maxBody,omitempty"`
+	Kind         string          `json:"kind"`
+	Method       string          `json:"method,omitempty"`
+	URL          Text            `json:"url,omitempty"`
+	Path         []string        `json:"path,omitempty"`
+	Headers      map[string]Text `json:"headers,omitempty"`
+	Auth         *Auth           `json:"auth,omitempty"`
+	Body         *Body           `json:"body,omitempty"`
+	Push         *PushSpec       `json:"push,omitempty"`
+	Command      *CommandSpec    `json:"command,omitempty"`
+	Workflow     string          `json:"workflow,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	DispatchedBy *DispatchedBy   `json:"dispatchedBy,omitempty"`
+	// Wait is a pointer so that `false`, which the TS shape requires, survives a round trip.
+	Wait      *bool `json:"wait,omitempty"`
+	TimeoutMs int64 `json:"timeoutMs"`
+	MaxBody   int   `json:"maxBody,omitempty"`
 }
 
 // Replica names the pod that holds an Effect, and where to poll it.
@@ -201,7 +226,10 @@ type EffectState struct {
 	State   string  `json:"state"`
 	// Pinned is the commit a push or a credentialed command runs against, read when it started
 	// (the Agent's branch tip, or the pin): the Orchestrator writes it to the ledger's intent row.
-	Pinned string  `json:"pinned,omitempty"`
+	Pinned string `json:"pinned,omitempty"`
+	// Run is the run a dispatch started, once the door answered and while its wait runs: the
+	// Orchestrator writes it to the ledger's intent row (ADR-0071).
+	Run    string  `json:"run,omitempty"`
 	Output *Output `json:"output,omitempty"`
 }
 
@@ -254,14 +282,23 @@ type CommandResult struct {
 }
 
 // Output is an Effect's outcome. Every outcome is output (ADR-0067). `response` carries a
-// Response; a push's outcomes a PushResult; a command's a CommandResult; every other outcome a
-// reason.
+// Response; a push's outcomes a PushResult; a command's a CommandResult; a dispatch's (ADR-0071)
+// Run, Status and Result (the callee Machine's output, raw JSON), or a refusal's HTTPStatus and
+// Report; every other outcome a reason. A dispatch `refused` is told from an http one by its
+// Report: non-nil, it is the door's.
 type Output struct {
 	Outcome  string
 	Response *Response
 	Reason   string
 	Push     *PushResult
 	Command  *CommandResult
+	// Run is the run a dispatch started; Status its status as the door served it (`settled`).
+	Run    string
+	Status string
+	// Result is the callee Machine's output: absent when the door served none.
+	Result     json.RawMessage
+	HTTPStatus int
+	Report     []string
 }
 
 type responseJSON struct {
@@ -315,6 +352,25 @@ type timeoutJSON struct {
 	Dirty   bool   `json:"dirty,omitempty"`
 }
 
+type startedJSON struct {
+	Outcome string `json:"outcome"`
+	Run     string `json:"run"`
+}
+
+type settledJSON struct {
+	Outcome string          `json:"outcome"`
+	Run     string          `json:"run"`
+	Status  string          `json:"status"`
+	Output  json.RawMessage `json:"output,omitempty"`
+}
+
+// reportJSON is a dispatch `refused`: the door's status and its report (ADR-0071).
+type reportJSON struct {
+	Outcome string   `json:"outcome"`
+	Status  int      `json:"status"`
+	Report  []string `json:"report"`
+}
+
 type killedJSON struct {
 	Outcome string `json:"outcome"`
 	Signal  string `json:"signal"`
@@ -356,6 +412,14 @@ func (o Output) MarshalJSON() ([]byte, error) {
 		return json.Marshal(timeoutJSON{Outcome: o.Outcome, Tail: c.Tail, Dirty: c.Dirty})
 	case OutcomeKilled:
 		return json.Marshal(killedJSON{Outcome: o.Outcome, Signal: c.Signal, Tail: c.Tail, Dirty: c.Dirty})
+	case OutcomeStarted:
+		return json.Marshal(startedJSON{Outcome: o.Outcome, Run: o.Run})
+	case OutcomeSettled:
+		return json.Marshal(settledJSON{Outcome: o.Outcome, Run: o.Run, Status: o.Status, Output: o.Result})
+	case OutcomeRefused:
+		if o.Report != nil {
+			return json.Marshal(reportJSON{Outcome: o.Outcome, Status: o.HTTPStatus, Report: o.Report})
+		}
 	}
 	return json.Marshal(reasonJSON{Outcome: o.Outcome, Reason: o.Reason})
 }
@@ -375,7 +439,22 @@ func (o *Output) UnmarshalJSON(raw []byte) error {
 			return err
 		}
 		*o = Output{Outcome: OutcomeResponse, Response: &r.Response}
-	case OutcomeUnreachable, OutcomeRefused, OutcomeUnknown:
+	case OutcomeStarted, OutcomeSettled:
+		return o.unmarshalDispatch(head.Outcome, raw)
+	case OutcomeRefused:
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return err
+		}
+		if _, ok := fields["report"]; ok {
+			return o.unmarshalDispatch(head.Outcome, raw)
+		}
+		var r reasonJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Reason: r.Reason}
+	case OutcomeUnreachable, OutcomeUnknown:
 		var r reasonJSON
 		if err := strict(raw, &r); err != nil {
 			return err
@@ -424,6 +503,60 @@ func (o *Output) UnmarshalJSON(raw []byte) error {
 		*o = Output{Outcome: r.Outcome, Command: &CommandResult{Signal: r.Signal, Tail: r.Tail, Dirty: r.Dirty}}
 	default:
 		return fmt.Errorf("wire: unknown outcome %q", head.Outcome)
+	}
+	return nil
+}
+
+// unmarshalDispatch reads a dispatch's own outcomes (ADR-0071): `started`, `settled`, and the
+// door's `refused`. Each field effector-wire.ts's DispatchOutputShape requires is required here
+// too: Go would read an absent one as its zero value, and the TS side would call that answer
+// malformed.
+func (o *Output) unmarshalDispatch(outcome string, raw []byte) error {
+	switch outcome {
+	case OutcomeStarted:
+		var r startedJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		if err := present(raw, outcome, "run"); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Run: r.Run}
+	case OutcomeSettled:
+		var r settledJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		if err := present(raw, outcome, "run", "status"); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, Run: r.Run, Status: r.Status, Result: r.Output}
+	default:
+		var r reportJSON
+		if err := strict(raw, &r); err != nil {
+			return err
+		}
+		if r.Report == nil {
+			return errors.New("wire: a dispatch refused outcome with no report")
+		}
+		if err := present(raw, outcome, "status"); err != nil {
+			return err
+		}
+		*o = Output{Outcome: r.Outcome, HTTPStatus: r.Status, Report: r.Report}
+	}
+	return nil
+}
+
+// present refuses an outcome object that lacks one of keys, or holds null for it.
+func present(raw []byte, outcome string, keys ...string) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if v, ok := fields[k]; !ok || string(bytes.TrimSpace(v)) == "null" {
+			return fmt.Errorf("wire: a dispatch %s outcome with no %s", outcome, k)
+		}
 	}
 	return nil
 }
@@ -480,20 +613,22 @@ func (r *StartRequest) Validate() error {
 	}
 	switch r.Kind {
 	case KindHTTP:
-		if r.Push != nil || r.Command != nil {
-			return fmt.Errorf("a %s start carries a push or a command", r.Kind)
+		if r.Push != nil || r.Command != nil || r.dispatchSet() {
+			return fmt.Errorf("a %s start carries a push, a command or a dispatch's fields", r.Kind)
 		}
 		return r.validateHTTP()
 	case KindPush:
-		if r.Push == nil || r.Command != nil || r.httpSet() {
+		if r.Push == nil || r.Command != nil || r.httpSet() || r.dispatchSet() {
 			return errors.New("a push start carries exactly its push part")
 		}
 		return r.Push.validate()
 	case KindCommand:
-		if r.Command == nil || r.Push != nil || r.httpSet() {
+		if r.Command == nil || r.Push != nil || r.httpSet() || r.dispatchSet() {
 			return errors.New("a command start carries exactly its command part")
 		}
 		return r.Command.validate()
+	case KindDispatch:
+		return r.validateDispatch()
 	}
 	return fmt.Errorf("kind %q is not one an Effector runs", r.Kind)
 }
@@ -501,6 +636,56 @@ func (r *StartRequest) Validate() error {
 func (r *StartRequest) httpSet() bool {
 	return r.Method != "" || r.URL != nil || r.Path != nil || r.Headers != nil || r.Auth != nil ||
 		r.Body != nil || r.MaxBody != 0
+}
+
+func (r *StartRequest) dispatchSet() bool {
+	return r.Workflow != "" || r.Input != nil || r.DispatchedBy != nil || r.Wait != nil
+}
+
+var (
+	// WorkflowName is a Workflow's name as `jr2 run` names it (ADR-0071): a Machine's filename stem,
+	// or `<wrapper>/<name>` for a named Chart. effector-wire.ts's WORKFLOW_NAME is the same rule.
+	WorkflowName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)?$`)
+	// origin is a dispatch target: a scheme and a host (a DNS name or IPv4 address, or a bracketed
+	// IPv6 address), a port when it is not the scheme's, and no path, query, fragment, userinfo or
+	// other character no origin has. effector-wire.ts's ORIGIN is the same rule.
+	origin = regexp.MustCompile(`^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$`)
+)
+
+// validateDispatch checks a dispatch start (ADR-0071): only url and auth of http's fields, the
+// url one text part that is an origin, the bearer named, a Workflow name, the input an object,
+// and who dispatches it — a foreign caller, so its Instance is named.
+func (r *StartRequest) validateDispatch() error {
+	if r.Push != nil || r.Command != nil || r.Method != "" || r.Path != nil || r.Headers != nil ||
+		r.Body != nil || r.MaxBody != 0 {
+		return errors.New("a dispatch start carries http's url and auth alone, and no push or command")
+	}
+	if !WorkflowName.MatchString(r.Workflow) {
+		return fmt.Errorf("workflow %q is not a Workflow name: a Machine's file stem, or <wrapper>/<name>", r.Workflow)
+	}
+	if len(r.URL) != 1 || r.URL[0].Text == nil || r.URL[0].Secret != nil || !origin.MatchString(*r.URL[0].Text) {
+		return errors.New("a dispatch url is one text part, an origin: http(s)://host[:port]")
+	}
+	if r.Auth == nil || r.Auth.Bearer == nil || r.Auth.Basic != nil || r.Auth.Text != nil {
+		return errors.New("a dispatch's auth is a bearer, the target's token")
+	}
+	if err := r.Auth.validate(); err != nil {
+		return err
+	}
+	if trimmed := bytes.TrimSpace(r.Input); len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("a dispatch's input is a JSON object, the run's body")
+	}
+	// Each field the door's header shape requires non-empty (http.ts): one empty here would be the
+	// door's 400, which the author would read as a defect of the input, not of the wire. The effect
+	// is a ledger row id, the door's idempotency key.
+	if b := r.DispatchedBy; b == nil || b.Run == "" || b.Slot == "" || !ValidEffectID(b.Effect) ||
+		b.Instance == "" || b.Depth < 1 {
+		return errors.New("a dispatch's dispatchedBy names the caller's run, slot, effect, depth and instance")
+	}
+	if r.Wait == nil {
+		return errors.New("a dispatch's wait is unset")
+	}
+	return nil
 }
 
 var gitRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)

@@ -53,11 +53,29 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { accepts } from "hono/accepts";
 import { streamSSE } from "hono/streaming";
-import { EventValidationError, NotTakenError, OutstandingError, UnknownAddressError } from "./registration.ts";
+import { z } from "zod";
+import {
+  DISPATCHED_BY_HEADER,
+  EventValidationError,
+  NotTakenError,
+  OutstandingError,
+  UnknownAddressError,
+  type DispatchedBy,
+} from "./registration.ts";
 import type { RepoStatus } from "./repos.ts";
 import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
 import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
-import { observe, type RunFeedEvent, type RunHost, type RunStatus, type WorkflowFeedEvent } from "./run-host.ts";
+import {
+  DispatchKeyConflictError,
+  keyAnswer,
+  keyConflict,
+  observe,
+  UnknownWorkflowError,
+  type RunFeedEvent,
+  type RunHost,
+  type RunStatus,
+  type WorkflowFeedEvent,
+} from "./run-host.ts";
 import { KIT_VERSION } from "./config.ts";
 import type { AssemblyDoor } from "./assembly.ts";
 import { ChartRefusal } from "./chart.ts";
@@ -87,6 +105,40 @@ async function readJson(text: Promise<string>): Promise<Record<string, unknown>>
   } catch {
     return {};
   }
+}
+
+/**
+ * The `jr2-dispatched-by` header a foreign `dispatch` sends (ADR-0071). `instance` is required: a
+ * start that comes over the door with a key comes from another Orchestrator by construction (an
+ * in-process dispatch never reaches the door). Unknown fields are dropped, as a door drops them: a
+ * caller at a later Kit version may send more.
+ */
+const DispatchedByHeader = z.object({
+  run: z.string().min(1),
+  slot: z.string().min(1),
+  effect: z.string().min(1),
+  depth: z.number().int().positive(),
+  instance: z.string().min(1),
+});
+
+/** The header's {@link DispatchedBy}, absent when no header was sent, or why it is refused. */
+function dispatchedByOf(raw: string | undefined): { by?: DispatchedBy } | { error: string } {
+  if (raw === undefined) return {};
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (err) {
+    return { error: `the ${DISPATCHED_BY_HEADER} header is not JSON: ${errMessage(err)} (ADR-0071)` };
+  }
+  const parsed = DispatchedByHeader.safeParse(json);
+  if (!parsed.success) {
+    return {
+      error:
+        `the ${DISPATCHED_BY_HEADER} header must be { run, slot, effect, depth, instance }: ` +
+        `${parsed.error.issues.map((i) => `${i.path.join(".") || "(header)"}: ${i.message}`).join("; ")} (ADR-0071)`,
+    };
+  }
+  return { by: parsed.data };
 }
 
 /** The message of a thrown error, for the `{ error }` 404 body. */
@@ -581,18 +633,35 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
    * Start a run of a Workflow (ADR-0009). A named Chart that cannot run now is 409 with why
    * (ADR-0070); a Chart in the input that the door refuses is 422 with the report; input failing
    * the door schema is 400 (ADR-0033); an unknown Workflow is 404.
+   *
+   * A foreign `dispatch` sends `jr2-dispatched-by` (ADR-0071): its key makes a repeated start one
+   * run, answered `200 { runId, instanceId, existing: true }` where a new one is `201`. The key is
+   * asked first, so a re-send answers its run even when the name would be refused now; a key a
+   * run of another Workflow carries is 409. A header that does not parse is 400. `jr2 run` and the
+   * Console send none. Any throw that is not a refusal is a defect, 500: a foreign caller reads a
+   * 404 as "nothing was started", and a defect may come after a start.
    */
   const startRun = async (c: Context<JR2Env>, name: string): Promise<Response> => {
+    const header = dispatchedByOf(c.req.header(DISPATCHED_BY_HEADER));
+    if ("error" in header) return c.json({ error: header.error }, 400);
+    const { by } = header;
+    if (by) {
+      const found = await host.dispatched(by.effect);
+      if (found && found.workflow !== name) return c.json({ error: keyConflict(found, name, by.effect) }, 409);
+      if (found) return c.json({ ...keyAnswer(found, name, by.effect), existing: true }, 200);
+    }
     const unrunnable = opts.charts?.get(name)?.unrunnable;
     if (unrunnable !== undefined) return c.json({ error: `named Chart "${name}" cannot run: ${unrunnable}` }, 409);
     const input = await readJson(c.req.text());
     try {
-      const { runId, instanceId } = await host.start(name, input);
-      return c.json({ runId, instanceId }, 201);
+      const { runId, instanceId, existing } = await host.start(name, input, by ? { dispatchedBy: by } : {});
+      return existing ? c.json({ runId, instanceId, existing }, 200) : c.json({ runId, instanceId }, 201);
     } catch (err) {
       if (err instanceof ChartRefusal) return c.json({ error: "refused", report: err.report }, 422);
       if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
-      return c.json({ error: errMessage(err) }, 404);
+      if (err instanceof DispatchKeyConflictError) return c.json({ error: errMessage(err) }, 409);
+      if (err instanceof UnknownWorkflowError) return c.json({ error: errMessage(err) }, 404);
+      return c.json({ error: errMessage(err) }, 500);
     }
   };
 
@@ -660,7 +729,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     });
   });
 
-  // Push work: start a run of a registered workflow. Unknown workflow → host.start throws → 404.
+  // Push work: start a run of a registered workflow. Unknown workflow → UnknownWorkflowError → 404.
   // A body failing the machine's declared input schema (ADR-0033) → 400 naming the accepted
   // shape — the same error class, and the same wire mapping, as a gate delivery failing its
   // schema (`POST /runs/:id/gates/:gate/events` below). Instance-band (ADR-0058): starting work is

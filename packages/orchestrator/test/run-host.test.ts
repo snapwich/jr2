@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, setup } from "xstate";
+import { assign, fromPromise, setup } from "xstate";
 import { z } from "zod";
 import { doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -16,9 +16,10 @@ import { jr2Setup } from "../src/setup.ts";
 import { chartSchema, ChartRefusal, type ChartText } from "../src/chart.ts";
 import { openBody } from "../src/open-body.ts";
 import type { AgentDefinition } from "../src/agent.ts";
-import { RunHost, type RunStatus, type WorkflowDef } from "../src/run-host.ts";
-import { EventValidationError } from "../src/registration.ts";
+import { observe, RunHost, type RunStatus, type WorkflowDef } from "../src/run-host.ts";
+import { boundRun, EventValidationError, type DispatchedBy } from "../src/registration.ts";
 import {
+  approveDef,
   admittedIid,
   codingDef,
   coderDefinition,
@@ -1264,4 +1265,444 @@ test("a snapshot save that fails is logged for its run, and never ends the proce
     console.error = error;
     process.off("unhandledRejection", onUnhandled);
   }
+});
+
+// ---- A run starts a run (ADR-0071) ---------------------------------------------------------------
+// The host's half of a `dispatch`: the key on the callee's row, the chain's depth, the output a
+// settled run serves, and the settle hook a `wait` rides — keyed by run id, so a restore in either
+// order resumes it.
+
+const calleeDoor = z.object({ ticket: z.string() });
+
+/** A Workflow with a door, parked on Gate "go" until `approve`; its output names its ticket. */
+const calleeTemplate = jr2Setup({
+  types: {} as { context: { ticket: string }; input: { ticket: string } },
+  events: [approveDef],
+}).createMachine({
+  id: "callee",
+  input: calleeDoor,
+  context: ({ input }) => ({ ticket: input.ticket }),
+  initial: "waiting",
+  states: {
+    waiting: { invoke: { src: "gate", input: { gate: "go", accepts: ["approve"] } }, on: { approve: "done" } },
+    done: { type: "final" },
+  },
+  output: ({ context }) => ({ ticket: context.ticket, verdict: "ok" }),
+});
+
+function calleeDef(): WorkflowDef {
+  return { name: "callee", machine: calleeTemplate, provide: () => ({}) };
+}
+
+/** What a caller's `dispatch` Effect sends, by its ledger row id `effect` (the key). */
+const by = (effect: string, depth = 1): DispatchedBy => ({ run: "caller-run", slot: "review", effect, depth });
+
+/**
+ * A caller that dispatches `callee` through the binding and waits, as an in-process `dispatch` with
+ * `wait` does: its one promise actor is re-run by a restore, and its key makes the re-run's start
+ * the same run. Its output is what the wait settled with.
+ */
+const callerTemplate = setup({
+  types: {} as { context: { result?: unknown } },
+  actors: {
+    call: fromPromise(async ({ system }) => {
+      const binding = boundRun(system)!;
+      const started = await binding.dispatch!.start(
+        "callee",
+        { ticket: "T-7" },
+        { run: binding.runId, slot: "call", effect: "caller-key", depth: (binding.depth ?? 0) + 1 },
+      );
+      if (!started.ok) throw new Error(started.report.join("; "));
+      const settled = await binding.dispatch!.settled(started.runId, new AbortController().signal);
+      return { run: started.runId, existing: started.existing, status: settled.status, output: settled.output };
+    }),
+  },
+}).createMachine({
+  id: "caller",
+  context: {},
+  initial: "calling",
+  states: {
+    calling: {
+      invoke: { src: "call", onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) } },
+    },
+    done: { type: "final" },
+  },
+  output: ({ context }) => context.result,
+});
+
+function callerDef(): WorkflowDef {
+  return { name: "caller", machine: callerTemplate, provide: () => ({}) };
+}
+
+async function storedStatus(store: SnapshotStore, runId: string): Promise<string | undefined> {
+  return (await store.load(runId))?.status;
+}
+
+async function untilStored(store: SnapshotStore, runId: string, pred: (blob: Record<string, unknown>) => boolean) {
+  for (let i = 0; i < 100; i++) {
+    if (pred(await blobOf(store, runId))) return;
+    await tick();
+  }
+  throw new Error(`run ${runId}: the stored blob never matched`);
+}
+
+test("a dispatched run's record, blob and status carry dispatchedBy at its depth; restore rebuilds it (ADR-0071)", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register(calleeDef());
+  const { runId, existing } = await hostA.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-1", 3) });
+  assert.equal(existing, undefined, "a new run is not `existing`");
+  const expected = { ...by("k-1"), depth: 3 };
+  assert.deepEqual(
+    hostA.status(runId)?.dispatchedBy,
+    expected,
+    "the row records the depth as the caller sent it: the callee's own",
+  );
+  assert.equal(hostA.depthOf(runId), 3);
+  await untilStored(store, runId, (blob) => blob.dispatchedBy !== undefined);
+  assert.deepEqual((await blobOf(store, runId)).dispatchedBy, expected, "the blob carries it, key and all");
+
+  // A run nothing dispatched is depth 0, and carries none.
+  const root = await hostA.start("callee", { ticket: "T-2" });
+  assert.equal(hostA.depthOf(root.runId), 0);
+  assert.equal(hostA.status(root.runId)?.dispatchedBy, undefined);
+
+  await hostA.stop(runId);
+  assert.equal(hostA.depthOf(runId), undefined, "a run this process does not host is not a root run");
+  const hostB = new RunHost({ store });
+  hostB.register(calleeDef());
+  const { reattached } = await hostB.restore();
+  assert.ok(reattached.includes(runId));
+  assert.deepEqual(hostB.status(runId)?.dispatchedBy, expected, "restore rebuilds the record from the blob");
+  assert.equal(hostB.depthOf(runId), 3);
+});
+
+test("the key answers the run it started from the live set, before the run's first save (ADR-0071)", async () => {
+  const store = await mkStore();
+  // A store that keeps nothing: whatever answers the second start, it is not the store.
+  const blind: SnapshotStore = Object.assign(Object.create(store) as SnapshotStore, { save: async () => {} });
+  const host = new RunHost({ store: blind });
+  host.register(calleeDef());
+  const first = await host.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-live") });
+  assert.equal(await store.findByDispatch("k-live"), undefined, "nothing was saved");
+  const again = await host.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-live") });
+  assert.deepEqual(again, { runId: first.runId, instanceId: first.instanceId, existing: true });
+
+  // Two starts with one key at once — the second before the first has spawned — are one run.
+  const [a, b] = await Promise.all([
+    host.start("callee", { ticket: "T-2" }, { dispatchedBy: by("k-race") }),
+    host.start("callee", { ticket: "T-2" }, { dispatchedBy: by("k-race") }),
+  ]);
+  assert.equal(a.runId, b.runId);
+  assert.equal(b.existing, true);
+  assert.equal(host.list().filter((s) => s.dispatchedBy?.effect === "k-race").length, 1);
+});
+
+test("a key a run of another Workflow carries is refused, never answered as that run (ADR-0071)", async () => {
+  const store = await mkStore();
+  let answer: unknown;
+  const probe = setup({
+    actors: {
+      probe: fromPromise(async ({ system }) => {
+        answer = await boundRun(system)!.dispatch!.start("other", { ticket: "T-1" }, by("k-shared"));
+        return null;
+      }),
+    },
+  }).createMachine({ id: "probe", initial: "a", states: { a: { invoke: { src: "probe" } } } });
+  const host = new RunHost({ store });
+  host.register(calleeDef());
+  host.register({ name: "other", machine: calleeTemplate, provide: () => ({}) });
+  host.register({ name: "probe", machine: probe, provide: () => ({}) });
+  const first = await host.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-shared") });
+  await assert.rejects(
+    host.start("other", { ticket: "T-1" }, { dispatchedBy: by("k-shared") }),
+    (err: Error) => err.name === "DispatchKeyConflictError" && /of "callee", not of "other"/.test(err.message),
+  );
+  // From the store too: a host that does not host the run refuses it the same way.
+  await untilStored(store, first.runId, (blob) => blob.dispatchedBy !== undefined);
+  await host.stop(first.runId);
+  await assert.rejects(
+    host.start("other", { ticket: "T-1" }, { dispatchedBy: by("k-shared") }),
+    (err: Error) => err.name === "DispatchKeyConflictError",
+  );
+  // In-process, the refusal is the Effect's output, 409.
+  await host.start("probe");
+  await waitFor(() => answer !== undefined);
+  const refused = answer as { ok: false; status: number; report: string[] };
+  assert.equal(refused.ok, false);
+  assert.equal(refused.status, 409);
+  assert.match(refused.report[0]!, new RegExp(`run ${first.runId} of "callee", not of "other"`));
+  assert.equal(host.list().filter((s) => s.workflow === "other").length, 0, "no run of the other Workflow started");
+});
+
+test("the key answers a run from the store on a host that does not host it, whatever its status (ADR-0071)", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register(calleeDef());
+  const first = await hostA.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-stored") });
+  hostA.sendToGate(first.runId, "go", { type: "approve" });
+  await waitFor(() => hostA.status(first.runId) === undefined);
+  assert.equal(await storedStatus(store, first.runId), "done");
+
+  // Host B never restored and hosts nothing; the Workflow is not even registered there: the key is
+  // asked before the name.
+  const hostB = new RunHost({ store });
+  const again = await hostB.start("callee", { ticket: "T-1" }, { dispatchedBy: by("k-stored") });
+  assert.deepEqual(again, { runId: first.runId, instanceId: first.instanceId, existing: true });
+  assert.deepEqual(hostB.list(), [], "no second run");
+});
+
+test("a settled run's status carries the Machine's output; a live one's never does (ADR-0071)", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(calleeDef());
+  const { runId } = await host.start("callee", { ticket: "T-9" });
+  await tick();
+  assert.equal(host.status(runId)?.output, undefined);
+  assert.equal((await host.read(runId))?.output, undefined, "live: no output");
+  host.sendToGate(runId, "go", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+  const read = await host.read(runId);
+  assert.equal(read?.status, "done");
+  assert.deepEqual(read?.output, { ticket: "T-9", verdict: "ok" }, "read through the store");
+});
+
+test("observe carries dispatchedBy without its key (ADR-0071, ADR-0014)", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(calleeDef());
+  const { runId } = await host.start(
+    "callee",
+    { ticket: "T-1" },
+    { dispatchedBy: { ...by("k-secret"), instance: "other-instance" } },
+  );
+  const observed = host.observations("callee").find((o) => o.runId === runId);
+  assert.deepEqual(observed?.dispatchedBy, { run: "caller-run", slot: "review", depth: 1, instance: "other-instance" });
+  assert.ok(!JSON.stringify(observe(host.status(runId)!)).includes("k-secret"), "the key stays off the open band");
+  assert.equal(host.status(runId)?.dispatchedBy?.effect, "k-secret", "behind the token it is there");
+});
+
+test("onSettled hears a run settle once, with its output, and answers a run already settled at once (ADR-0071)", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(calleeDef());
+  const { runId } = await host.start("callee", { ticket: "T-3" });
+  const heard: RunStatus[] = [];
+  host.onSettled(runId, (s) => heard.push(s));
+  const detached: RunStatus[] = [];
+  const off = host.onSettled(runId, (s) => detached.push(s));
+  off();
+  await tick();
+  assert.equal(heard.length, 0, "a live run has not settled");
+  host.sendToGate(runId, "go", { type: "approve" });
+  await waitFor(() => heard.length === 1);
+  assert.equal(heard[0]!.status, "done");
+  assert.deepEqual(heard[0]!.output, { ticket: "T-3", verdict: "ok" });
+  assert.deepEqual(detached, [], "a detached listener hears nothing");
+
+  const late: RunStatus[] = [];
+  host.onSettled(runId, (s) => late.push(s));
+  await waitFor(() => late.length === 1);
+  assert.equal(late[0]!.status, "done");
+  assert.deepEqual(late[0]!.output, { ticket: "T-3", verdict: "ok" }, "answered from read()");
+  await tick();
+  assert.equal(heard.length, 1, "once");
+
+  // A cancel is a settle, in the store's word.
+  const other = await host.start("callee", { ticket: "T-4" });
+  const cancelled: string[] = [];
+  host.onSettled(other.runId, (s) => cancelled.push(s.status));
+  await host.cancel(other.runId);
+  assert.deepEqual(cancelled, ["cancelled"]);
+});
+
+test("onSettled attached before restore hosts the run hears it settle after (ADR-0071)", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register(calleeDef());
+  const { runId } = await hostA.start("callee", { ticket: "T-5" });
+  await untilStored(store, runId, (blob) => blob.machine !== undefined);
+  await hostA.stop(runId);
+
+  const hostB = new RunHost({ store });
+  hostB.register(calleeDef());
+  const heard: RunStatus[] = [];
+  // Attached to a run this host does not host: its row is live, so nothing is answered yet.
+  hostB.onSettled(runId, (s) => heard.push(s));
+  await tick();
+  assert.equal(heard.length, 0);
+  await hostB.restore();
+  hostB.sendToGate(runId, "go", { type: "approve" });
+  await waitFor(() => heard.length === 1);
+  assert.equal(heard[0]!.status, "done");
+  assert.deepEqual(heard[0]!.output, { ticket: "T-5", verdict: "ok" });
+});
+
+test("onSettled hears a run restore marks lost or drifted (ADR-0071)", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register(calleeDef());
+  const lostRun = await hostA.start("callee", { ticket: "T-L" });
+  await untilStored(store, lostRun.runId, (blob) => blob.machine !== undefined);
+
+  const hostB = new RunHost({ store, reconcile: () => false });
+  hostB.register(calleeDef());
+  const lost: RunStatus[] = [];
+  hostB.onSettled(lostRun.runId, (s) => lost.push(s));
+  await hostB.restore();
+  await waitFor(() => lost.length === 1);
+  assert.equal(lost[0]!.status, "lost");
+  assert.equal(lost[0]!.reason, "reconcile: live world absent");
+
+  const hostC = new RunHost({ store });
+  hostC.register(calleeDef());
+  const driftRun = await hostC.start("callee", { ticket: "T-D" });
+  await untilStored(store, driftRun.runId, (blob) => blob.machine !== undefined);
+  await hostC.stop(driftRun.runId);
+  // Host D registers another Machine under the name: the snapshot's shape no longer matches.
+  const hostD = new RunHost({ store });
+  hostD.register({
+    name: "callee",
+    machine: setup({}).createMachine({ id: "callee", initial: "other", states: { other: {} } }),
+    provide: () => ({}),
+  });
+  const drifted: RunStatus[] = [];
+  hostD.onSettled(driftRun.runId, (s) => drifted.push(s));
+  await hostD.restore();
+  await waitFor(() => drifted.length === 1);
+  assert.equal(drifted[0]!.status, "drifted");
+  assert.match(drifted[0]!.reason ?? "", /changed shape/);
+});
+
+test("a re-run caller attaches onSettled before its callee is hosted, and its start under a known key answers the existing run (ADR-0071)", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register(callerDef());
+  hostA.register(calleeDef());
+  const caller = await hostA.start("caller");
+  await waitFor(() => hostA.list().some((s) => s.workflow === "callee"));
+  const callee = hostA.list().find((s) => s.workflow === "callee")!;
+  assert.deepEqual(callee.dispatchedBy, { run: caller.runId, slot: "call", effect: "caller-key", depth: 1 });
+  await untilStored(store, callee.runId, (blob) => blob.machine !== undefined);
+  // The restart: neither run is hosted any more, and both rows stay live.
+  await hostA.stop(caller.runId);
+  await hostA.stop(callee.runId);
+  assert.deepEqual(
+    (await store.live()).map((r) => r.runId),
+    [caller.runId, callee.runId],
+    "the caller's row restores first",
+  );
+
+  // The callee's reconcile is slow, so the restored caller's re-run reaches its wait while the
+  // callee is not hosted: the wait attaches to a run id, not to a hosted run.
+  let calleeHosted = false;
+  let waitedUnhosted = false;
+  const hostB = new RunHost({
+    store,
+    reconcile: async (record) => {
+      if (record.runId === callee.runId) {
+        await tick();
+        waitedUnhosted = attached.includes(callee.runId) && !calleeHosted;
+        calleeHosted = true;
+      }
+      return true;
+    },
+  });
+  const attached: string[] = [];
+  const onSettled = hostB.onSettled.bind(hostB);
+  hostB.onSettled = (runId, listener) => {
+    attached.push(runId);
+    return onSettled(runId, listener);
+  };
+  hostB.register(callerDef());
+  hostB.register(calleeDef());
+  const { reattached } = await hostB.restore();
+  assert.deepEqual(reattached, [caller.runId, callee.runId]);
+  assert.ok(waitedUnhosted, "the caller's wait attached to its callee before the callee was hosted");
+  await tick();
+  assert.equal(
+    (await store.live()).filter((r) => (r.snapshot as { workflow?: string }).workflow === "callee").length,
+    1,
+    "the re-run start found the callee by its key: one callee",
+  );
+  hostB.sendToGate(callee.runId, "go", { type: "approve" });
+  await waitFor(() => hostB.status(caller.runId) === undefined);
+  const settled = await hostB.read(caller.runId);
+  assert.equal(settled?.status, "done");
+  assert.deepEqual(settled?.output, {
+    run: callee.runId,
+    existing: true,
+    status: "done",
+    output: { ticket: "T-7", verdict: "ok" },
+  });
+});
+
+test("the binding's dispatch.start answers each door refusal as output, and settled rejects on abort (ADR-0071)", async () => {
+  let refusals: unknown[] = [];
+  let aborted: unknown;
+  const probe = setup({
+    actors: {
+      probe: fromPromise(async ({ system }) => {
+        const d = boundRun(system)!.dispatch!;
+        refusals = [
+          await d.start("callee", { ticket: 7 }, by("p-400")),
+          await d.start("nowhere", {}, by("p-404")),
+          await d.start("wrap/broken", {}, by("p-409")),
+        ];
+        const ac = new AbortController();
+        const waiting = d.settled("no-such-run", ac.signal).catch((err: unknown) => (aborted = err));
+        ac.abort(new Error("the state exited"));
+        await waiting;
+        return null;
+      }),
+    },
+  }).createMachine({ id: "probe", initial: "a", states: { a: { invoke: { src: "probe", onDone: "b" } }, b: {} } });
+  const host = new RunHost({
+    store: await mkStore(),
+    unrunnableChart: (name) => (name === "wrap/broken" ? "its lent slot is gone" : undefined),
+  });
+  host.register(calleeDef());
+  host.register({ name: "probe", machine: probe, provide: () => ({}) });
+  await host.start("probe");
+  await waitFor(() => refusals.length === 3 && aborted !== undefined);
+  const [bad, missing, unrunnable] = refusals as [{ ok: false; status: number; report: string[] }, unknown, unknown];
+  assert.equal(bad.ok, false);
+  assert.equal(bad.status, 400);
+  assert.match(bad.report[0]!, /invalid input for workflow "callee"/);
+  assert.match(bad.report[1]!, /the door of "callee" takes .*"ticket"/, "the report names the door's shape");
+  assert.deepEqual(missing, { ok: false, status: 404, report: ['no workflow registered as "nowhere"'] });
+  assert.deepEqual(unrunnable, {
+    ok: false,
+    status: 409,
+    report: ['named Chart "wrap/broken" cannot run: its lent slot is gone'],
+  });
+  assert.equal((aborted as Error).message, "the state exited");
+  assert.equal(host.list().filter((s) => s.workflow === "callee").length, 0, "no refused start made a run");
+});
+
+test("the binding's dispatch.start answers a Chart the door refuses 422 with the report (ADR-0071)", async () => {
+  const { wf } = chartWrapper();
+  let answer: unknown;
+  const probe = setup({
+    actors: {
+      probe: fromPromise(async ({ system }) => {
+        const bad = { ...oneTurn, agents: { tester: { model: "openai/gpt-5", instructions: "test" } } };
+        answer = await boundRun(system)!.dispatch!.start(
+          wf.name,
+          { endpoint: "http://harness.invalid", chart: bad },
+          by("p-422"),
+        );
+        return null;
+      }),
+    },
+  }).createMachine({ id: "probe", initial: "a", states: { a: { invoke: { src: "probe" } } } });
+  const host = new RunHost({ store: await mkStore() });
+  host.register(wf);
+  host.register({ name: "probe", machine: probe, provide: () => ({}) });
+  await host.start("probe");
+  await waitFor(() => answer !== undefined);
+  const refused = answer as { ok: false; status: number; report: string[] };
+  assert.equal(refused.ok, false);
+  assert.equal(refused.status, 422);
+  assert.ok(
+    refused.report.some((l) => l.startsWith("agents.tester.model")),
+    JSON.stringify(refused.report),
+  );
 });

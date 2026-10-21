@@ -284,6 +284,19 @@ test("an Effector's outcome reads as its output, decoded off the wire as the Orc
     "response.settled-exited-dirty.json":
       'Its answer: the output of `comment`: {"outcome":"exited","code":0,"tail":"Apply complete! [secret:aws]\\n",' +
       '"dirty":true}.',
+    // A dispatch's outcomes (ADR-0071): the run it started, the run's end, the door's refusal, and
+    // no reach — each the Effect's output, so each is what an Agent's pick is answered with.
+    "response.settled-dispatch-started.json":
+      'Its answer: the output of `comment`: {"outcome":"started","run":"5c4b3a29-1807-4f6e-9d5c-4b3a2918f7e6"}.',
+    "response.settled-dispatch-settled.json":
+      'Its answer: the output of `comment`: {"outcome":"settled","run":"5c4b3a29-1807-4f6e-9d5c-4b3a2918f7e6",' +
+      '"status":"done","output":{"verdict":"approve","notes":["[secret:ops-instance]"],"score":0.9,"extra":null}}.',
+    "response.settled-dispatch-refused.json":
+      'Its answer: the output of `comment`: {"outcome":"refused","status":400,"report":["invalid input for ' +
+      'workflow \\"review\\": ticket: Invalid input: expected string, received undefined"]}.',
+    "response.settled-dispatch-unreachable.json":
+      'Its answer: the output of `comment`: {"outcome":"unreachable","reason":"dial tcp 10.0.0.9:443: connect: ' +
+      'connection refused; nothing was started"}.',
   };
   // A stopped command's outcome (`exited` with the signal) answers the Orchestrator's stop, after the
   // state that asked has exited: no Machine takes it, so no Agent reads it (ADR-0067).

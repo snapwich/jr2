@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { main } from "../src/cli.ts";
 import { JR2Client, type WorkflowListing } from "../src/client.ts";
-import { renderWorkflows, RUNS_USAGE } from "../src/commands/runs.ts";
+import { markListed, renderWorkflows, RUNS_USAGE } from "../src/commands/runs.ts";
 import type { Io } from "../src/output.ts";
 
 const LISTING: WorkflowListing[] = [
@@ -132,4 +132,34 @@ test("`jr2 --help` names the Workflow listing and `--workflows` under `runs`", a
   await main(["--help"], io);
   assert.match(err(), /named Charts on stderr \(ADR-0070\)/);
   assert.match(err(), /\[--workflows\] +\.\.\.or print that listing as the result \(see "runs --help"\)/);
+});
+
+// A dispatched run (ADR-0071) carries `dispatchedBy` after its id in `jr2 runs`, as it is sent.
+
+test("`jr2 runs` puts a dispatched run's `dispatchedBy` after its id, and a plain run has none", async () => {
+  const by = { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 };
+  const fetch: Io["fetch"] = async (url) => {
+    const path = new URL(url).pathname;
+    if (path === "/workflows") return Response.json([]);
+    return Response.json([
+      { runId: "r1", workflow: "review", status: "active", value: "x", dispatchedBy: by },
+      { runId: "r2", workflow: "ping", status: "active", value: "x" },
+    ]);
+  };
+  const { io, out } = mkIo(fetch);
+  assert.equal(await main(["runs"], io), 0);
+  const [dispatched, plain] = JSON.parse(out()) as Array<Record<string, unknown>>;
+  assert.deepEqual(Object.keys(dispatched!).slice(0, 2), ["runId", "dispatchedBy"]);
+  assert.deepEqual(dispatched!.dispatchedBy, by);
+  assert.equal("dispatchedBy" in plain!, false);
+});
+
+test("a dispatched run in `placing` keeps both marks after its id", () => {
+  const by = { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 };
+  const run = { runId: "r", workflow: "w", instanceId: "i", status: "active", value: "placing", context: {} };
+  assert.deepEqual(Object.keys(markListed({ ...run, dispatchedBy: by })).slice(0, 3), [
+    "runId",
+    "dispatchedBy",
+    "placing",
+  ]);
 });

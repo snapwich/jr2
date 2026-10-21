@@ -9,7 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
-import { customizeLine, open, partsOf, workspacePodsOf } from "../src/parts.ts";
+import { customizeLine, open, partsOf, placedEffectsOf, workspacePodsOf } from "../src/parts.ts";
+import { dispatch } from "../src/dispatch-effect.ts";
 import { agent, command } from "../src/harness-client.ts";
 import { file, http, secret } from "../src/http-effect.ts";
 import { push } from "../src/sandbox-effect.ts";
@@ -775,4 +776,58 @@ test("a lent Agent's Turn runs where its own access says, so the allowed models 
     },
   }).createMachine({ id: "charted", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
   assert.deepEqual(partsOf([noneLent]).instanceHarness, { models: ["prov/B", "prov/C"] });
+});
+
+test("a dispatch is carried as plain data: the Workflow, the wait, the placement, the target's origin, its token, the slot schema (ADR-0071)", () => {
+  const m = jr2Setup({
+    events: [],
+    actors: {
+      here: dispatch("review", { wait: true, input: z.object({ ticket: z.string() }) }),
+      away: dispatch("task/review-loop", {
+        target: { url: "http://jr2-orchestrator.ops.svc:4000", token: secret("ops") },
+      }),
+    },
+  }).createMachine({ id: "watcher", initial: "a", states: { a: {} } });
+  const [here, away] = partsOf([m]).effects;
+  assert.deepEqual(here, {
+    name: "here",
+    path: [],
+    route: [],
+    kind: "dispatch",
+    placement: "orchestrator",
+    workflow: "review",
+    wait: true,
+    timeoutMs: 600_000,
+    secrets: [],
+    input: {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: { ticket: { type: "string" } },
+      required: ["ticket"],
+      // What the driver sends: the slot schema's parse, which keeps no other field.
+      additionalProperties: false,
+    },
+  });
+  assert.deepEqual(away, {
+    name: "away",
+    path: [],
+    route: [],
+    kind: "dispatch",
+    placement: "instance",
+    workflow: "task/review-loop",
+    wait: false,
+    timeoutMs: 30_000,
+    target: { scheme: "http", host: "jr2-orchestrator.ops.svc", port: 4000 },
+    secrets: ["ops"],
+  });
+  assert.deepEqual(partsOf([m]).openEffects, []);
+  // The placement walk reads the same arm; no Workspace pod holds a dispatch.
+  assert.deepEqual(
+    placedEffectsOf(m).map((e) => [e.name, e.placement]),
+    [
+      ["here", "orchestrator"],
+      ["away", "instance"],
+    ],
+  );
+  assert.deepEqual(workspacePodsOf(m), []);
 });

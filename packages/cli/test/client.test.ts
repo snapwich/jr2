@@ -181,3 +181,35 @@ test("events() carries a child's error below an Agent's state, which the Agent's
   assert.equal(seen[1]?.kind, "status");
   assert.equal(childErrorActivity(failed), "child-error: `lint` failed below coder's pick `go` — lint crashed");
 });
+
+test("read() and list() carry `dispatchedBy` for a dispatched run, as the Orchestrator records it (ADR-0071)", async () => {
+  const { client, host } = await mkHarness();
+  const by = { run: "caller-run", slot: "review", effect: "caller-run:review:1", depth: 1 };
+  const { runId } = await host.start("loop", {}, { dispatchedBy: by });
+  // The host records the depth as the caller sent it: the callee's own.
+  const read = await client.read(runId);
+  assert.deepEqual(read?.dispatchedBy, by);
+  assert.equal(read?.output, undefined, "a live run has no output");
+  const listed = (await client.list()).find((r) => r.runId === runId);
+  assert.equal(listed?.dispatchedBy?.slot, "review");
+  // `start()` sends no `jr2-dispatched-by` header: a run `jr2 run` starts is nobody's dispatch.
+  const { runId: plain } = await client.start("loop");
+  assert.equal((await client.read(plain))?.dispatchedBy, undefined);
+});
+
+test("the RunStatus mirror reads a settled run's `output` beside `dispatchedBy` (ADR-0071)", async () => {
+  const settled = {
+    runId: "r",
+    workflow: "review",
+    instanceId: "i",
+    status: "done",
+    value: "done",
+    context: {},
+    dispatchedBy: { run: "caller", slot: "review", effect: "caller:review:1", depth: 1, instance: "ops" },
+    output: { verdict: "approve" },
+  };
+  const client = new JR2Client("http://test", async () => Response.json(settled));
+  const s = await client.read("r");
+  assert.deepEqual(s?.output, { verdict: "approve" });
+  assert.equal(s?.dispatchedBy?.instance, "ops");
+});

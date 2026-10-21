@@ -7,7 +7,7 @@
 // (`chart file` or `chart`) and, when a publish no longer admits it, `unrunnable` with the reason.
 
 import { h, type JSX } from "preact";
-import { fleetEntries, fleetRuns, type FleetEntry, type ObservedRun, type Store } from "../store.ts";
+import { dispatchBadge, fleetEntries, fleetRuns, type FleetEntry, type ObservedRun, type Store } from "../store.ts";
 import { SchemaForm } from "./schema-form.ts";
 import type { AppApi } from "./app.ts";
 
@@ -131,6 +131,8 @@ function runRows(
 function runRow(name: string, run: ObservedRun, settled: boolean, store: Store, api: AppApi): JSX.Element {
   const gates = store.gates.get(run.runId)?.gates.length ?? 0;
   const selected = name === store.workflow && run.runId === store.selectedRunId;
+  // A dispatched run names its caller on the row (ADR-0071), off the open observation.
+  const badge = dispatchBadge(run);
   return h(
     "li",
     {
@@ -142,6 +144,17 @@ function runRow(name: string, run: ObservedRun, settled: boolean, store: Store, 
       },
     },
     h("span", { class: "run-id" }, run.runId.slice(0, 8)),
+    badge && run.dispatchedBy
+      ? h(
+          "span",
+          {
+            class: "dispatch-badge dim",
+            title: `dispatched by ${run.dispatchedBy.run} (${run.dispatchedBy.slot}), depth ${run.dispatchedBy.depth}`,
+            style: { fontSize: "11px", marginRight: "6px" },
+          },
+          badge,
+        )
+      : null,
     gates
       ? h("span", { class: "gate-badge", title: `${gates} open gate${gates === 1 ? "" : "s"}` }, `⚑${gates}`)
       : null,

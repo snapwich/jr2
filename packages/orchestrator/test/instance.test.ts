@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import {
   defaultImageContext,
+  discoverModules,
   loadWorkflows,
   startInstance,
   type RestoreOutcome,
@@ -748,6 +749,32 @@ test("module contract (ADR-0011): no `machine` named export is refused at the do
     assert.deepEqual(inst.host.workflows(), []);
   } finally {
     await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Workflow's filename stem keeps the one name rule `dispatch` and `jr2 run` share, else discovery names the rename (ADR-0071)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-names-"));
+  try {
+    await writeFile(join(dir, "review-loop.ts"), "");
+    await writeFile(join(dir, "_helper.ts"), "");
+    assert.deepEqual(
+      (await discoverModules(dir)).map((m) => m.name),
+      ["review-loop"],
+    );
+    for (const [file, fix] of [
+      ["reviewLoop.ts", "review-loop.ts"],
+      ["review_loop.ts", "review-loop.ts"],
+    ] as const) {
+      await writeFile(join(dir, file), "");
+      await assert.rejects(discoverModules(dir), (err: Error) => {
+        assert.match(err.message, new RegExp(`${file.replace(".", "\\.")}: a Workflow is named by its filename stem`));
+        assert.match(err.message, new RegExp(`rename it to ${fix.replace(".", "\\.")} \\(ADR-0071\\)`));
+        return true;
+      });
+      await rm(join(dir, file));
+    }
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

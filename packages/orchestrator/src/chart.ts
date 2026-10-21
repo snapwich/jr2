@@ -1864,6 +1864,23 @@ class Door {
     if (kind === "effect") {
       const logic = this.lent.actors[inv.src];
       const keys = isEffect(logic) ? inputKeysOf(logic.effect) : undefined;
+      if (keys === undefined && isEffect(logic) && logic.effect.kind === "dispatch") {
+        // A dispatch with no input schema has no keys to hold the Chart to: its input is the run's
+        // body, and the callee's door is the check (ADR-0071). Its values are what any Effect's
+        // input slot takes.
+        if (input === undefined) return;
+        if (!isObject) {
+          return this.fail(
+            8,
+            `${ipath}: the lent dispatch "${inv.src}" takes an object, the run's body — the callee's door checks it`,
+          );
+        }
+        for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+          if (typeof v !== "string" && !isRef(v))
+            this.fail(8, `${ipath}.${k}: an Effect's input slot takes a string or a reference`);
+        }
+        return;
+      }
       if (keys === undefined) {
         return this.fail(
           8,
@@ -1953,9 +1970,10 @@ class Door {
  * The JSON Schema keywords a Chart event's payload may use (ADR-0070, rule 4). The Orchestrator
  * checks every pick against this schema in its own process, before the Allowed check, so a keyword
  * whose cost the door cannot bound is refused by name: `pattern` (a backtracking regex),
- * `patternProperties`, `$ref`, the combinators and the conditionals.
+ * `patternProperties`, `$ref`, the combinators and the conditionals. It is also the subset a
+ * dispatch's slot schema and its callee's door are compared within (ADR-0071, door-compat.ts).
  */
-const PAYLOAD_KEYWORDS = new Set([
+export const PAYLOAD_KEYWORDS: ReadonlySet<string> = new Set([
   "type",
   "properties",
   "required",
@@ -1981,6 +1999,39 @@ const PAYLOAD_KEYWORDS = new Set([
  * the payload name the event a Chart receives (registration.ts builds `{ type, ...payload }`).
  */
 function payloadSchemaFaults(schema: unknown): Array<{ path: PropertyKey[]; message: string }> {
+  const out = subsetFaults(
+    schema,
+    (key) =>
+      `"${key}" is not a keyword a Chart event's payload may use; it may use ${[...PAYLOAD_KEYWORDS].join(", ")}`,
+  );
+  const props = (schema as { properties?: unknown } | null)?.properties;
+  if (typeof props === "object" && props !== null && Object.hasOwn(props, "type")) {
+    out.push({
+      path: ["properties", "type"],
+      message: "a payload field named `type` is refused: jr2 writes the event's type, and the payload never names it",
+    });
+  }
+  return out;
+}
+
+/**
+ * The faults of a door's JSON Schema, or of a dispatch slot's (ADR-0071): every keyword not in
+ * {@link PAYLOAD_KEYWORDS} and a list-form `items` — the payload rules without the Chart's own one
+ * (a field named `type` is a door's to have). A schema with a fault is reported "not compared":
+ * outside the subset, a comparison would be a guess.
+ */
+export function doorSchemaFaults(schema: unknown): Array<{ path: PropertyKey[]; message: string }> {
+  return subsetFaults(
+    schema,
+    (key) => `"${key}" is outside the JSON Schema subset jr2 compares (${[...PAYLOAD_KEYWORDS].join(", ")})`,
+  );
+}
+
+/** The subset's faults: `outside` words the fault of a keyword not in it, for whose rule it is. */
+function subsetFaults(
+  schema: unknown,
+  outside: (key: string) => string,
+): Array<{ path: PropertyKey[]; message: string }> {
   const out: Array<{ path: PropertyKey[]; message: string }> = [];
   const walk = (node: unknown, path: PropertyKey[]): void => {
     if (typeof node === "boolean" && path.length && path[path.length - 1] === "additionalProperties") return;
@@ -1993,7 +2044,7 @@ function payloadSchemaFaults(schema: unknown): Array<{ path: PropertyKey[]; mess
       if (!PAYLOAD_KEYWORDS.has(key)) {
         out.push({
           path: [...path, key],
-          message: `"${key}" is not a keyword a Chart event's payload may use; it may use ${[...PAYLOAD_KEYWORDS].join(", ")}`,
+          message: outside(key),
         });
         continue;
       }
@@ -2012,13 +2063,6 @@ function payloadSchemaFaults(schema: unknown): Array<{ path: PropertyKey[]; mess
     }
   };
   walk(schema, []);
-  const props = (schema as { properties?: unknown } | null)?.properties;
-  if (typeof props === "object" && props !== null && Object.hasOwn(props, "type")) {
-    out.push({
-      path: ["properties", "type"],
-      message: "a payload field named `type` is refused: jr2 writes the event's type, and the payload never names it",
-    });
-  }
   return out;
 }
 

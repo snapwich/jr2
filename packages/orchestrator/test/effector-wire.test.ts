@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   createEffectorClient,
+  DispatchOutputShape,
+  DispatchStartShape,
   EffectorForged,
   EffectorNotSent,
   EffectorRefused,
@@ -30,6 +32,7 @@ import {
   type CommandEnv,
 } from "../src/sandbox-effect.ts";
 import { effectorKey } from "../src/tokens.ts";
+import { dispatchParts, dispatchStartOf } from "../src/dispatch-effect.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
 
 /** The fixtures, by the relative path the ADR names: one directory both languages read. */
@@ -137,6 +140,32 @@ test("every request fixture is what a definition encodes", () => {
       "app/jr2-run-1",
       { path: "dist/report.pdf" },
     ),
+    // The dispatch kind (ADR-0071): a foreign start, its body whole, the token by name, the key.
+    "request.dispatch-start.json": dispatchStartOf(
+      dispatchParts("review", { target: { url: "https://ops.example.com/", token: secret("ops-instance") } }),
+      { ticket: "PROJ-7", note: null, labels: ["ci", 1, true] },
+      {
+        run: "0b7e3c1a-5d2f-4e8b-9c6a-1f2e3d4c5b6a",
+        slot: "review",
+        effect: "3f1c7a52-1b2d-4c8e-9a0f-6b5d4e3c2a19",
+        depth: 1,
+        instance: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      },
+    ),
+    "request.dispatch-wait.json": dispatchStartOf(
+      dispatchParts("task/review-loop", {
+        wait: true,
+        target: { url: "http://jr2-orchestrator.jr2-e2e.svc:4000", token: secret("self-token") },
+      }),
+      { repo: "https://github.com/ourorg/app.git", branch: "jr2/run-1" },
+      {
+        run: "0b7e3c1a-5d2f-4e8b-9c6a-1f2e3d4c5b6a",
+        slot: "loop",
+        effect: "7d2e9b40-3c1f-4a6d-8e5b-2a9c0f1e3d47",
+        depth: 2,
+        instance: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      },
+    ),
   };
   assert.deepEqual(named("request.").sort(), Object.keys(cases).sort(), "one case per request fixture");
   for (const [name, encoded] of Object.entries(cases)) {
@@ -210,6 +239,57 @@ test("every answer fixture decodes strictly; every reject fixture is refused", (
   for (const name of named("reject.response")) {
     assert.ok(!EffectStateShape.safeParse(fixture(name)).success, name);
   }
+});
+
+test("a dispatch's answers decode as a dispatch's outcome set, and its `refused` is told from an http one by its fields", () => {
+  const outcomes: Record<string, string> = {
+    "response.settled-dispatch-started.json": "started",
+    "response.settled-dispatch-settled.json": "settled",
+    "response.settled-dispatch-refused.json": "refused",
+    "response.settled-dispatch-unreachable.json": "unreachable",
+  };
+  assert.deepEqual(named("response.settled-dispatch-").sort(), Object.keys(outcomes).sort());
+  for (const [name, outcome] of Object.entries(outcomes)) {
+    const state = EffectStateShape.parse(fixture(name));
+    assert.deepEqual(state, fixture(name), name);
+    const output = DispatchOutputShape.parse(state.output);
+    assert.equal(output.outcome, outcome, name);
+  }
+  // The callee's output passes through whole, whatever its JSON.
+  const settled = DispatchOutputShape.parse(
+    (fixture("response.settled-dispatch-settled.json") as { output: unknown }).output,
+  );
+  assert.deepEqual((settled as { output: unknown }).output, {
+    verdict: "approve",
+    notes: ["[secret:ops-instance]"],
+    score: 0.9,
+    extra: null,
+  });
+  // An http `refused` has a reason; a dispatch's has the door's status and report.
+  const http = (fixture("response.settled-refused.json") as { output: unknown }).output;
+  assert.ok(!DispatchOutputShape.safeParse(http).success);
+  assert.ok(!DispatchOutputShape.safeParse({ outcome: "refused", status: 400, reason: "x" }).success);
+  // A settled status is one the Machine's type names: another word is malformed, never output.
+  for (const status of ["done", "error", "cancelled", "lost", "drifted", "live"]) {
+    assert.ok(DispatchOutputShape.safeParse({ outcome: "settled", run: "r", status }).success, status);
+  }
+  for (const status of ["active", "stopped", ""]) {
+    assert.ok(!DispatchOutputShape.safeParse({ outcome: "settled", run: "r", status }).success, status);
+  }
+});
+
+test("a dispatch start's shape refuses a url that is not an origin, a name `jr2 run` would not take, and no caller instance", () => {
+  const good = fixture("request.dispatch-start.json") as Record<string, unknown>;
+  assert.ok(DispatchStartShape.safeParse(good).success);
+  for (const url of ["https://ops.example.com/x", "https://u:p@ops.example.com", "https://ops.example.com?a=1"]) {
+    assert.ok(!StartRequestShape.safeParse({ ...good, url: [{ text: url }] }).success, url);
+  }
+  assert.ok(!StartRequestShape.safeParse({ ...good, url: [{ text: "https://a" }, { secret: "s" }] }).success);
+  for (const workflow of ["", "Review", "a/b/c", "../x"]) {
+    assert.ok(!StartRequestShape.safeParse({ ...good, workflow }).success, workflow);
+  }
+  const { instance: _instance, ...by } = good.dispatchedBy as Record<string, unknown>;
+  assert.ok(!StartRequestShape.safeParse({ ...good, dispatchedBy: by }).success);
 });
 
 test("the placement's key is derived, as the Harness bearer is: the same signing key gives the same key", () => {

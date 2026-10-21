@@ -52,6 +52,8 @@ import {
   wouldMove,
   targetsOf,
   leftAgain,
+  type DispatchedBy,
+  type DispatchStart,
   type Registration,
   type RetryTelemetry,
   type RunBinding,
@@ -214,8 +216,44 @@ function chartDrift(machine: AnyStateMachine, routes: readonly BoundChartRoute[]
   return undefined;
 }
 
-/** The serializable identity of a run — what reconcile sees and what restore rebuilds from. */
-export type RunRecord = { runId: string; workflow: string; instanceId: string };
+/** The serializable identity of a run — what reconcile sees and what restore rebuilds from.
+ * `dispatchedBy` is the run that started it through a `dispatch` Effect, and this run's depth in
+ * that chain, as the caller sent it (ADR-0071); absent for a run a human or a client started. */
+export type RunRecord = { runId: string; workflow: string; instanceId: string; dispatchedBy?: DispatchedBy };
+
+/** A start of a name no Workflow is registered under: the door answers 404 (ADR-0009), and an
+ * in-process `dispatch` settles `refused` with status 404 (ADR-0071). */
+export class UnknownWorkflowError extends Error {
+  override name = "UnknownWorkflowError";
+}
+
+/** A start whose idempotency key a run of ANOTHER Workflow already carries (ADR-0071): the door
+ * answers 409, and an in-process `dispatch` settles `refused` with status 409. Never answered as
+ * the existing run: the caller asked for a run of one Workflow and would wait on a run of another. */
+export class DispatchKeyConflictError extends Error {
+  override name = "DispatchKeyConflictError";
+}
+
+/** The run a key names (ADR-0071), with its Workflow so a start of another can be refused. */
+export type DispatchedRun = { runId: string; instanceId: string; workflow: string };
+
+/** The run `found` as the answer to a start of `workflow` under its key, or the 409 (ADR-0071). */
+export function keyAnswer(
+  found: DispatchedRun,
+  workflow: string,
+  effect: string,
+): { runId: string; instanceId: string } {
+  if (found.workflow !== workflow) throw new DispatchKeyConflictError(keyConflict(found, workflow, effect));
+  return { runId: found.runId, instanceId: found.instanceId };
+}
+
+/** Why a start of `workflow` under `effect` is refused, when the key's run is of another. */
+export function keyConflict(found: DispatchedRun, workflow: string, effect: string): string {
+  return (
+    `the key "${effect}" already started run ${found.runId} of "${found.workflow}", not of "${workflow}" — ` +
+    "one key is one start of one Workflow (ADR-0071)"
+  );
+}
 
 /**
  * One live child MACHINE of a run, and its own children below it. A workflow's root machine is
@@ -475,7 +513,21 @@ export type RunStatus = RunRecord & {
    * second Chart in its life (a planner whose first Chart reaches a ceiling picks again), so these,
    * not the run id, say which bound Machine `runMachine` draws. Absent when it binds none. */
   chartHashes?: string[];
+  /**
+   * The Machine's output, for a run that is no longer live (ADR-0071): what a `dispatch` with
+   * `wait` settles with, and what `GET /runs/<id>` serves its foreign caller. Never for a live run,
+   * whose Machine has none yet. Behind the token, like `context`: it is the workflow's data.
+   */
+  output?: unknown;
+  /** The runs this run's `dispatch` Effects started, oldest first (ADR-0071): the chain's other
+   * direction, read off the caller's own ledger rows. A foreign dispatch's run is a run of the
+   * Orchestrator its target names. Absent when it started none. */
+  dispatched?: Dispatched[];
 };
+
+/** One run a `dispatch` Effect of this run started (ADR-0071): its slot, the run, and when the
+ * ledger row was written. */
+export type Dispatched = { slot: string; run: string; at: string };
 
 /**
  * A run as an UNAUTHENTICATED observer may see it: which run, of what workflow, and where in the
@@ -506,6 +558,13 @@ export type RunObservation = {
   /** The hashes of the Charts it binds now (see {@link RunStatus.chartHashes}). Structure: a hash
    * of a Chart's text, which `runMachine` already serves on the open band. */
   chartHashes?: string[];
+  /** The run that dispatched this one, its slot, and the chain's depth (ADR-0071). Routing — two
+   * ids, a slot name and a number — the class of thing `runId` and `value` are, so ADR-0014's line
+   * is unmoved. The idempotency key is not: it names the caller's ledger, which is the caller's. */
+  dispatchedBy?: Omit<DispatchedBy, "effect">;
+  /** The runs it dispatched, by slot (ADR-0071): the same routing as `dispatchedBy`, the other
+   * direction. */
+  dispatched?: Array<{ slot: string; run: string }>;
 };
 
 /** Project a full status down to what an observer may see. The one place the line is drawn. */
@@ -518,7 +577,15 @@ export function observe(status: RunStatus): RunObservation {
     children: status.children,
     ...(status.bound ? { bound: true as const } : {}),
     ...(status.chartHashes ? { chartHashes: status.chartHashes } : {}),
+    ...(status.dispatchedBy ? { dispatchedBy: routingOf(status.dispatchedBy) } : {}),
+    ...(status.dispatched ? { dispatched: status.dispatched.map(({ slot, run }) => ({ slot, run })) } : {}),
   };
+}
+
+/** A {@link DispatchedBy} without its idempotency key (ADR-0071): what the open band carries. */
+function routingOf(by: DispatchedBy): Omit<DispatchedBy, "effect"> {
+  const { effect: _key, ...routing } = by;
+  return routing;
 }
 
 /** An Agent registration's Menu (ADR-0029): the one it registered, or — registered with none, by a
@@ -805,6 +872,9 @@ export type RunHostOptions = {
   sandbox?: SandboxPort;
   /** The Instance Harness base URL (ADR-0031) — where `workspace: "none"` Turns are admitted. */
   instanceHarness?: string;
+  /** The name this Orchestrator gives itself at another Orchestrator's door, as a foreign
+   * dispatch's `dispatchedBy.instance` (ADR-0071): stable and not secret. Deployed, its namespace. */
+  orchestratorName?: string;
   /** The Harness bearer for a placement (ADR-0058) — `startInstance` closes `harnessToken` over the
    * signing key. Handed to every run's binding, and to the echo pusher below. Absent, no Harness
    * call bears one: only the stub Harness answers such a host. */
@@ -812,6 +882,13 @@ export type RunHostOptions = {
   /** Where an Effector placement is, and its key (ADR-0068) — `startInstance` derives both, the key
    * from the signing key. Handed to every run's binding; absent, an http Effect faults pointedly. */
   effector?: (placement: EffectorPlacement) => EffectorTarget | undefined;
+  /**
+   * Why a listed named Chart cannot run now, or undefined (ADR-0070): the registry of named Charts
+   * keeps the unrunnable ones, never the host. An in-process `dispatch` of one is refused 409 with
+   * this reason, as its start through the door is (ADR-0071). Absent, such a name answers 404:
+   * the host registers only the runnable ones.
+   */
+  unrunnableChart?: (name: string) => string | undefined;
   /**
    * Build the run-narrative echo pusher for one Workspace's Harness (ADR-0023) — the seam a fake
    * echo server rides in tests; `startInstance` binds the real wire push (harness-client.ts).
@@ -840,6 +917,9 @@ export type RunHostOptions = {
 type RunBlob = {
   workflow: string;
   instanceId: string;
+  /** The run that dispatched this one (ADR-0071), its key included: the store finds a run by its
+   * key here (`findByDispatch`), so a re-sent start answers the run it already made. */
+  dispatchedBy?: DispatchedBy;
   /** The shape of the Machine that WROTE this snapshot (ADR-0030). `workflow` says which def to
    * look up; this says whether the def found there is still the one this snapshot can be read by.
    * Absent means written before the stamp existed, which restore treats as drift — the point is to
@@ -954,8 +1034,19 @@ export class RunHost {
   private readonly resolveDef?: RunHostOptions["resolveDef"];
   private readonly sandbox?: SandboxPort;
   private readonly instanceHarness?: string;
+  private readonly orchestratorName?: string;
   private readonly harnessBearer?: (placement: string) => string;
   private readonly effector?: (placement: EffectorPlacement) => EffectorTarget | undefined;
+  private readonly unrunnableChart?: (name: string) => string | undefined;
+  /**
+   * Run id → what waits for that run to settle (ADR-0071): a `dispatch` with `wait`. Keyed by the
+   * run, not kept on its {@link LiveRun}, because a restored caller may attach before its callee is
+   * hosted again (`store.live()` row order) or while the callee is not hosted at all.
+   */
+  private readonly settleListeners = new Map<string, Set<(status: RunStatus) => void>>();
+  /** Idempotency key → the start in flight under it (ADR-0071): a second start with the same key
+   * before the first has spawned its run answers the first's run, never a second. */
+  private readonly dispatching = new Map<string, Promise<DispatchedRun>>();
   private readonly echoFactory?: (
     endpoint: string,
     bearer: string | undefined,
@@ -1025,8 +1116,10 @@ export class RunHost {
     this.resolveDef = opts.resolveDef;
     this.sandbox = opts.sandbox;
     this.instanceHarness = opts.instanceHarness;
+    this.orchestratorName = opts.orchestratorName;
     this.harnessBearer = opts.harnessBearer;
     this.effector = opts.effector;
+    this.unrunnableChart = opts.unrunnableChart;
     this.echoFactory = opts.echo;
     this.liveSetPush =
       opts.instanceHarness && opts.liveSet
@@ -1200,10 +1293,107 @@ export class RunHost {
     return schema ? (z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>) : null;
   }
 
-  /** Start a fresh run of a registered workflow; returns its durable ids. */
-  async start(workflow: string, input: Record<string, unknown> = {}): Promise<{ runId: string; instanceId: string }> {
+  /**
+   * Start a fresh run of a registered workflow; returns its durable ids.
+   *
+   * With `dispatchedBy` (ADR-0071), the start is a `dispatch` Effect's, and its `effect` is the
+   * idempotency key: a run that already carries the key is answered, `existing`, and none is
+   * started. That is what lets a caller re-send a start whose answer it lost. The key is looked for
+   * among the runs this process hosts first — a run's first save is a microtask after its spawn —
+   * then in the store. A key on a row the weekly sweep removed (ADR-0065) starts a new run: known,
+   * and not guarded. The depth is recorded as sent: the caller states the callee's.
+   */
+  async start(
+    workflow: string,
+    input: Record<string, unknown> = {},
+    opts: { dispatchedBy?: DispatchedBy } = {},
+  ): Promise<{ runId: string; instanceId: string; existing?: true }> {
+    const by = opts.dispatchedBy;
+    if (!by) return this.startFresh(workflow, input);
+    const inFlight = this.dispatching.get(by.effect);
+    if (inFlight) return { ...keyAnswer(await inFlight, workflow, by.effect), existing: true };
+    let existing = false;
+    const started = (async (): Promise<DispatchedRun> => {
+      const found = await this.dispatched(by.effect);
+      if (found) {
+        existing = true;
+        return found;
+      }
+      return { ...(await this.startFresh(workflow, input, by)), workflow };
+    })();
+    this.dispatching.set(by.effect, started);
+    try {
+      const ids = keyAnswer(await started, workflow, by.effect);
+      return existing ? { ...ids, existing: true } : ids;
+    } finally {
+      this.dispatching.delete(by.effect);
+    }
+  }
+
+  /**
+   * The run that carries the idempotency key `effect` (ADR-0071), or undefined: a hosted run first,
+   * then a stored one, in any status.
+   */
+  async dispatched(effect: string): Promise<DispatchedRun | undefined> {
+    for (const run of this.runs.values()) {
+      if (run.record.dispatchedBy?.effect === effect) {
+        return { runId: run.record.runId, instanceId: run.record.instanceId, workflow: run.record.workflow };
+      }
+    }
+    const runId = await this.store.findByDispatch(effect);
+    if (runId === undefined) return undefined;
+    const blob = (await this.store.load(runId))?.snapshot as RunBlob | null | undefined;
+    return blob ? { runId, instanceId: blob.instanceId, workflow: blob.workflow } : undefined;
+  }
+
+  /**
+   * The in-process start of a `dispatch` Effect (ADR-0071, the binding's `dispatch.start`): every
+   * refusal the door would answer, with its status, as output — the body may have come from a
+   * model, and the report must reach it through the Chain. Any other throw is a defect, and is the
+   * invoke's error.
+   */
+  private async dispatchStart(
+    workflow: string,
+    input: Record<string, unknown>,
+    by: DispatchedBy,
+  ): Promise<DispatchStart> {
+    // The key first: a re-sent start answers its run whatever the Assembly holds now.
+    const found = await this.dispatched(by.effect);
+    if (found && found.workflow !== workflow) {
+      return { ok: false, status: 409, report: [keyConflict(found, workflow, by.effect)] };
+    }
+    if (found) return { ok: true, runId: found.runId, existing: true };
+    const unrunnable = this.unrunnableChart?.(workflow);
+    if (unrunnable !== undefined) {
+      return { ok: false, status: 409, report: [`named Chart "${workflow}" cannot run: ${unrunnable}`] };
+    }
+    try {
+      const started = await this.start(workflow, input, { dispatchedBy: by });
+      return { ok: true, runId: started.runId, existing: started.existing === true };
+    } catch (err) {
+      if (err instanceof ChartRefusal) return { ok: false, status: 422, report: err.report };
+      if (err instanceof EventValidationError) {
+        return {
+          ok: false,
+          status: 400,
+          report: [err.message, `the door of "${workflow}" takes ${JSON.stringify(this.inputSchema(workflow))}`],
+        };
+      }
+      if (err instanceof UnknownWorkflowError) return { ok: false, status: 404, report: [err.message] };
+      if (err instanceof DispatchKeyConflictError) return { ok: false, status: 409, report: [err.message] };
+      throw err;
+    }
+  }
+
+  /** A fresh run: the door, the Chart admission, the spawn. Synchronous after its call, so the run
+   * is hosted — and its key findable in {@link dispatched} — before anything else runs. */
+  private async startFresh(
+    workflow: string,
+    input: Record<string, unknown>,
+    dispatchedBy?: DispatchedBy,
+  ): Promise<{ runId: string; instanceId: string }> {
     const def = this.workflowDefs.get(workflow);
-    if (!def) throw new Error(`no workflow registered as "${workflow}"`);
+    if (!def) throw new UnknownWorkflowError(`no workflow registered as "${workflow}"`);
 
     // A named Chart supplies every Chart field of its wrapper's door, and the caller the rest
     // (ADR-0070): what the caller sent under a Chart field is not the run's.
@@ -1228,7 +1418,7 @@ export class RunHost {
 
     const runId = this.newId();
     const instanceId = this.newId();
-    const record: RunRecord = { runId, workflow, instanceId };
+    const record: RunRecord = { runId, workflow, instanceId, ...(dispatchedBy ? { dispatchedBy } : {}) };
 
     const machine = this.assemble(def, instanceId);
     // Every Chart field of a Chart wrapper's door is admitted BEFORE the run exists (ADR-0070): a
@@ -1319,6 +1509,7 @@ export class RunHost {
       const blob = stored.snapshot as RunBlob | null;
       if (!blob) {
         await this.store.markLost(stored.runId, "empty snapshot");
+        this.settledUnhosted(stored.runId, "lost", "empty snapshot");
         lost.push(stored.runId);
         continue;
       }
@@ -1333,11 +1524,13 @@ export class RunHost {
         const found = await this.defFor(blob);
         if ("lost" in found) {
           await this.store.markLost(stored.runId, found.lost);
+          this.settledUnhosted(stored.runId, "lost", found.lost, blob);
           lost.push(stored.runId);
           continue;
         }
         if ("drifted" in found) {
           await this.store.markDrifted(stored.runId, found.drifted);
+          this.settledUnhosted(stored.runId, "drifted", found.drifted, blob);
           drifted.push(stored.runId);
           continue;
         }
@@ -1357,11 +1550,11 @@ export class RunHost {
       // a run that cannot be read.
       const expected = fingerprintOf(def.machine);
       if (blob.machine !== expected) {
-        await this.store.markDrifted(
-          stored.runId,
+        const reason =
           `workflow "${blob.workflow}"${def.assembly !== undefined ? ` in Assembly ${def.assembly}` : ""} changed shape since this run was saved ` +
-            `(saved under ${blob.machine ?? "an unstamped Machine"}, now ${expected})`,
-        );
+          `(saved under ${blob.machine ?? "an unstamped Machine"}, now ${expected})`;
+        await this.store.markDrifted(stored.runId, reason);
+        this.settledUnhosted(stored.runId, "drifted", reason, blob);
         drifted.push(stored.runId);
         continue;
       }
@@ -1372,15 +1565,24 @@ export class RunHost {
       const charts = chartDrift(def.machine, boundChartRoutesOf(blob.snapshot));
       if (charts !== undefined) {
         await this.store.markDrifted(stored.runId, charts);
+        this.settledUnhosted(stored.runId, "drifted", charts, blob);
         drifted.push(stored.runId);
         continue;
       }
 
-      const record: RunRecord = { runId: stored.runId, workflow: blob.workflow, instanceId: blob.instanceId };
+      // The run's place in a chain of dispatches comes back with it (ADR-0071): its key keeps
+      // answering a re-sent start, and its depth is the one it started at.
+      const record: RunRecord = {
+        runId: stored.runId,
+        workflow: blob.workflow,
+        instanceId: blob.instanceId,
+        ...(blob.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
+      };
 
       try {
         if (!(await this.reconcile(record))) {
           await this.store.markLost(stored.runId, "reconcile: live world absent");
+          this.settledUnhosted(stored.runId, "lost", "reconcile: live world absent", blob);
           lost.push(stored.runId);
           continue;
         }
@@ -2061,6 +2263,105 @@ export class RunHost {
   }
 
   /**
+   * Hear once that a run is no longer live (ADR-0071): `listener` gets its last status — `done`,
+   * `error` or `cancelled` with the Machine's `output`, or the store's `lost` or `drifted` — and is
+   * then dropped. Returns the detach. What an in-process `dispatch` with `wait` waits on.
+   *
+   * Keyed by the run id, not by the run's hosting, so the order of a restore does not matter: a
+   * caller restored before its callee attaches to a run this process does not host yet, and hears
+   * it when the restored callee settles, or when restore marks it lost or drifted. A run that has
+   * settled already is answered at once, from {@link read}. `subscribe` is the feed, and unchanged:
+   * it attaches only to a hosted run.
+   */
+  onSettled(runId: string, listener: (status: RunStatus) => void): () => void {
+    let listeners = this.settleListeners.get(runId);
+    if (!listeners) this.settleListeners.set(runId, (listeners = new Set()));
+    // Its own entry, so one listener attached twice is heard twice and detached once each.
+    const entry = (status: RunStatus): void => listener(status);
+    listeners.add(entry);
+    const attached = (): boolean => this.settleListeners.get(runId)?.has(entry) === true;
+    const detach = (): void => {
+      const now = this.settleListeners.get(runId);
+      now?.delete(entry);
+      if (now?.size === 0) this.settleListeners.delete(runId);
+    };
+    if (!this.runs.has(runId)) {
+      // Not hosted: settled already, or a live row a restore has not reached. Only the first is
+      // answered here; a settle heard in the meantime has detached the entry.
+      this.read(runId).then(
+        (status) => {
+          if (!status || !attached() || !settledStatus(status.status)) return;
+          detach();
+          hear(entry, status);
+        },
+        () => {},
+      );
+    }
+    return detach;
+  }
+
+  /** A hosted run's depth in a chain of dispatches (ADR-0071): 0 for a run nothing dispatched, and
+   * undefined for a run this process does not host — not hosted is not a root run. */
+  depthOf(runId: string): number | undefined {
+    const run = this.runs.get(runId);
+    return run && (run.record.dispatchedBy?.depth ?? 0);
+  }
+
+  /** Tell everything waiting on `runId` that it settled, once (ADR-0071). */
+  private fireSettled(runId: string, status: RunStatus): void {
+    const listeners = this.settleListeners.get(runId);
+    if (!listeners) return;
+    this.settleListeners.delete(runId);
+    for (const listener of listeners) hear(listener, status);
+  }
+
+  /**
+   * A run restore did not host settled: marked `lost` (its status is the row's identity and reason
+   * alone: a lost run is not read back, though a row that was saved keeps its blob and its key) or
+   * `drifted` (its snapshot is read back).
+   * Only when something waits on it (ADR-0071).
+   */
+  private settledUnhosted(runId: string, status: "lost" | "drifted", reason: string, blob?: RunBlob): void {
+    if (!this.settleListeners.has(runId)) return;
+    const bare: RunStatus = {
+      runId,
+      workflow: blob?.workflow ?? "",
+      instanceId: blob?.instanceId ?? "",
+      ...(blob?.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
+      status,
+      value: undefined,
+      context: undefined,
+      children: [],
+      waiting: [],
+      held: [],
+      reason,
+    };
+    if (status === "lost") return this.fireSettled(runId, bare);
+    this.read(runId).then(
+      (read) => this.fireSettled(runId, read ?? bare),
+      () => this.fireSettled(runId, bare),
+    );
+  }
+
+  /** The binding's `dispatch.settled` (ADR-0071): {@link onSettled} as a promise that an abort —
+   * the Effect's state exiting, its wait timing out — rejects and detaches. */
+  private settledOf(runId: string, signal: AbortSignal): Promise<RunStatus> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      let detach = (): void => {};
+      const onAbort = (): void => {
+        detach();
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      detach = this.onSettled(runId, (status) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(status);
+      });
+    });
+  }
+
+  /**
    * Observe a whole WORKFLOW (the `GET /workflows/:name/events` SSE — ADR-0022): every run of it
    * appearing, moving, emitting and leaving, for as long as the caller stays attached.
    *
@@ -2111,8 +2412,9 @@ export class RunHost {
    * Read a run's status, **reading through to the store** when it is no longer live (ADR-0009). A
    * completed run's final snapshot is persisted before `persist()` drops it from the registry, so a
    * terminal run reports its `done`/`error` status + final context here rather than 404-ing. Returns
-   * undefined only for a genuinely unknown run (or one marked `lost`, whose snapshot was cleared) —
-   * and a swept one is unknown: a finished run's row lives a week (ADR-0065).
+   * undefined only for a genuinely unknown run (or one marked `lost` with no row saved before, so no
+   * snapshot: `markLost` keeps a saved row's blob, whose key must keep answering, ADR-0071) — and a
+   * swept one is unknown: a finished run's row lives a week (ADR-0065).
    */
   async read(runId: string): Promise<RunStatus | undefined> {
     const live = this.status(runId);
@@ -2120,7 +2422,7 @@ export class RunHost {
     const stored = await this.store.load(runId);
     const blob = stored?.snapshot as RunBlob | null | undefined;
     if (!stored || !blob) return undefined;
-    const snap = (blob.snapshot ?? {}) as { status?: string; value?: unknown; context?: unknown };
+    const snap = (blob.snapshot ?? {}) as { status?: string; value?: unknown; context?: unknown; output?: unknown };
     // The STORE row is the authority on the run's lifecycle, the snapshot on the Machine's: a
     // cancelled run's actor reports xstate's "stopped", which is mechanism, not an outcome
     // (ADR-0025). While the row still says "live", the Machine's own status is the answer.
@@ -2139,6 +2441,10 @@ export class RunHost {
       reason: stored.reason,
       ...(blob.assembly !== undefined ? { assembly: blob.assembly } : {}),
       ...boundFields(snap),
+      ...(blob.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
+      // The Machine's output once the row says the run is over (ADR-0071), never while it is live.
+      ...(stored.status !== "live" && snap.output !== undefined ? { output: snap.output } : {}),
+      ...dispatchedField(blob.effects ?? {}),
     };
   }
 
@@ -2362,6 +2668,9 @@ export class RunHost {
       fault: run.fault,
       ...(run.def.assembly !== undefined ? { assembly: run.def.assembly } : {}),
       ...boundFields(snap),
+      // A Machine that reached its final state has its output (ADR-0071); an active one has none.
+      ...(snap.status !== "active" && snap.output !== undefined ? { output: snap.output } : {}),
+      ...dispatchedField(run.effects),
     };
   }
 
@@ -2406,6 +2715,13 @@ export class RunHost {
     const binding: RunBinding = {
       runId: record.runId,
       workflow: record.workflow,
+      ...(this.orchestratorName !== undefined ? { orchestratorName: this.orchestratorName } : {}),
+      depth: record.dispatchedBy?.depth ?? 0,
+      // A `dispatch` with no target (ADR-0071): the run host itself, with no wire and no token.
+      dispatch: {
+        start: (workflow, input, by) => this.dispatchStart(workflow, input, by),
+        settled: (runId, signal) => this.settledOf(runId, signal),
+      },
       ...(def.assembly !== undefined ? { assembly: def.assembly } : {}),
       table: this.table,
       sandbox: this.sandbox,
@@ -2750,6 +3066,7 @@ export class RunHost {
     const blob: RunBlob = {
       workflow: run.record.workflow,
       instanceId: run.record.instanceId,
+      ...(run.record.dispatchedBy ? { dispatchedBy: run.record.dispatchedBy } : {}),
       // Stamped on every save, off the registered TEMPLATE (never the per-run `.provide()` result —
       // providers do not change shape, and `fingerprintOf` memoizes per machine object). ADR-0030.
       machine: fingerprintOf(run.def.machine),
@@ -2794,9 +3111,27 @@ export class RunHost {
       this.announceGone(run, runStatus);
       this.untrack(run.record);
       run.listeners.clear();
+      // After the save and the untrack: a listener that reads the run back reads it settled.
+      this.fireSettled(run.record.runId, runStatus);
     } else {
       this.announce(run.record.workflow, { kind: "status", status: runStatus });
     }
+  }
+}
+
+/** A status that is no longer live (ADR-0071): the store's terminal words. A live row reads its
+ * Machine's `active`; the store's own `live` is never a status a reader is handed, but is not
+ * settled either. */
+function settledStatus(status: string): boolean {
+  return status !== "active" && status !== "live";
+}
+
+/** Call a settle listener; one that throws is its own fault, never the run's or the host's. */
+function hear(listener: (status: RunStatus) => void, status: RunStatus): void {
+  try {
+    listener(status);
+  } catch (err) {
+    console.error(`run ${status.runId}: a settle listener threw: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -2816,6 +3151,23 @@ function atOrBelow(actor: AnyActorRef, ref: AnyActorRef): boolean {
 
 /** A status's bound fields (ADR-0070): `bound`, and the hashes of the Charts bound, distinct and
  * sorted. Both absent when the snapshot binds no Chart. */
+/** The runs a run's `dispatch` Effects started (ADR-0071), from its ledger: an intent row the
+ * start's answer re-wrote with its run, a settled row whose output names one (`started`,
+ * `settled`), and an aborted row that kept it. A row that never learned its run names none. */
+function dispatchedField(effects: Record<string, EffectRow>): { dispatched?: Dispatched[] } {
+  const out: Dispatched[] = [];
+  for (const row of Object.values(effects)) {
+    if (row.kind !== "dispatch") continue;
+    const run =
+      row.state === "settled"
+        ? (row.output as { run?: unknown } | null | undefined)?.run
+        : (row as { run?: unknown }).run;
+    if (typeof run === "string" && run !== "") out.push({ slot: row.slot, run, at: row.at });
+  }
+  out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  return out.length ? { dispatched: out } : {};
+}
+
 function boundFields(snap: unknown): { bound?: true; chartHashes?: string[] } {
   const hashes = [...new Set(boundChartRoutesOf(snap).map((route) => route.chartHash))].sort();
   return hashes.length ? { bound: true, chartHashes: hashes } : {};

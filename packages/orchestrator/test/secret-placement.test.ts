@@ -12,6 +12,7 @@ import { heldSecretsOf, workspaceHeldPod } from "../src/held-secrets.ts";
 import { partsOf, placedEffectsOf, workspacePodsOf, type CarriedEffect, type WorkspacePod } from "../src/parts.ts";
 import { bearer, file, http, secret } from "../src/http-effect.ts";
 import { jr2Setup } from "../src/setup.ts";
+import { dispatch } from "../src/dispatch-effect.ts";
 import { workspace } from "../src/workspace.ts";
 import { pool, source } from "../src/pool.ts";
 import { fromPromise } from "xstate";
@@ -750,4 +751,42 @@ test("a Machine placed twice — { ws: workspace(M), plain: M } — is refused f
       wsFirst ? "ws first" : "plain first",
     );
   }
+});
+
+test("a dispatch with a target sits in the Instance Effector beside the http Effects; its bound never sets the grace (ADR-0071)", () => {
+  const m = jr2Setup({
+    events: [],
+    actors: {
+      post: http({ method: "POST", url: "https://hooks.example.com/x", auth: bearer(secret("hook")), timeout: "2m" }),
+      away: dispatch("review", {
+        wait: true,
+        timeout: "6h",
+        target: { url: "https://ops.example.com", token: secret("ops") },
+      }),
+      here: dispatch("review", { wait: true, timeout: "6h" }),
+    },
+  }).createMachine({ id: "m", initial: "a", states: { a: {} } });
+  const out = secretPlacementsOf(
+    {
+      secrets: [
+        { name: "hook", value: "hook-secret-value" },
+        { name: "ops", value: "ops-instance-token" },
+      ],
+    },
+    { effects: placedEffectsOf(m).map((effect) => ({ workflow: "w", effect })), workspaces: [] },
+  );
+  assert.deepEqual(out.instance?.targets, [
+    { scheme: "https", host: "hooks.example.com", port: 443, secrets: ["hook"] },
+    { scheme: "https", host: "ops.example.com", port: 443, secrets: ["ops"] },
+  ]);
+  assert.deepEqual(
+    out.instance?.secrets.map((s) => s.name),
+    ["hook", "ops"],
+  );
+  assert.deepEqual(out.instance?.effects, ["w/post", "w/away"], "the in-process dispatch is in no Effector");
+  assert.equal(out.instance?.longestTimeoutMs, 120_000, "a 6h wait is re-sent under its key, not waited out");
+  assert.ok(
+    out.report.includes("secret ops: an Effect secret in the Instance Effector (w/away)"),
+    out.report.join("\n"),
+  );
 });

@@ -30,7 +30,19 @@ export type ObservedRun = {
   /** The hashes of the Charts the run binds now, distinct and sorted. A run can bind a second Chart
    *  in its life, so these, with the run id, key its doc. Absent from an older Orchestrator. */
   chartHashes?: string[];
+  /** The run that dispatched this one, the caller's slot, and this run's depth in the chain
+   *  (ADR-0071). Routing, on the open band (ADR-0014): the page reads it off the observation it
+   *  already holds, with no fetch and no token. `instance` is set for a foreign caller, opaque text.
+   *  Absent for a run nobody dispatched, and from an Orchestrator older than ADR-0071. */
+  dispatchedBy?: DispatchedByView;
+  /** The runs this run's `dispatch` Effects started, oldest first, by slot (ADR-0071): the chain's
+   *  other direction, the same routing on the same band. Absent when it started none. */
+  dispatched?: Array<{ slot: string; run: string }>;
 };
+
+/** {@link ObservedRun.dispatchedBy} — mirrors `RunObservation.dispatchedBy` in run-host.ts. The
+ *  idempotency key is not on the open band: it names the caller's ledger. */
+export type DispatchedByView = { run: string; slot: string; depth: number; instance?: string };
 
 /** Where a Workflow came from (ADR-0070): a Machine or a Chart file in the Assembly, or a runtime
  *  Chart put on the Instance. */
@@ -462,6 +474,38 @@ export function machineDocSource(
     return { key: `run:${run.runId}${charts}`, path: `${base}/runs/${encodeURIComponent(run.runId)}/machine` };
   }
   return { key: `workflow:${workflow}`, path: `${base}/machine` };
+}
+
+/** The fleet row's badge for a dispatched run (ADR-0071): `↳ <run8>`, the caller's run id cut as
+ *  the row cuts its own. Null for a run nobody dispatched. */
+export function dispatchBadge(run: ObservedRun): string | null {
+  const by = run.dispatchedBy;
+  return by ? `↳ ${by.run.slice(0, 8)}` : null;
+}
+
+/** The Machine pane's strip for a dispatched run (ADR-0071): `dispatched by <run8> · <slot> ·
+ *  depth n`, and `· from Orchestrator <name>` when the caller is on another Orchestrator (its
+ *  name as it sent it, never an Instance ID). Null for a run
+ *  nobody dispatched. */
+export function dispatchStrip(run: ObservedRun | null): string | null {
+  const by = run?.dispatchedBy;
+  if (!by) return null;
+  const from = by.instance ? ` · from Orchestrator ${by.instance}` : "";
+  return `dispatched by ${by.run.slice(0, 8)} · ${by.slot} · depth ${by.depth}${from}`;
+}
+
+/** The most runs the pane's `dispatched` strip names: a watcher dispatches on every pass. */
+const DISPATCHED_SHOWN = 5;
+
+/** The Machine pane's strip for a run that dispatched (ADR-0071): `dispatched <run8> (<slot>) · …`,
+ *  newest last, the older ones counted. Null for a run that started none. */
+export function dispatchedStrip(run: ObservedRun | null): string | null {
+  const all = run?.dispatched ?? [];
+  if (all.length === 0) return null;
+  const shown = all.slice(-DISPATCHED_SHOWN);
+  const older = all.length - shown.length;
+  const named = shown.map((d) => `${d.run.slice(0, 8)} (${d.slot})`).join(" · ");
+  return `dispatched ${older > 0 ? `${older} more · ` : ""}${named}`;
 }
 
 /** The inbox as the Attention tab draws it: every card, or the selection's slice. The inbox itself

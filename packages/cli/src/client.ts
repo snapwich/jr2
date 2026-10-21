@@ -6,7 +6,15 @@
 // `fetchImpl` is injectable so tests drive it with a hono `app.request` (no socket) the same way the
 // orchestrator's own http tests do; in production it defaults to the global `fetch`.
 
-import type { ChildErrorMarker, MachineDoc, PlacingMarker, RepoStatus, RunChild, RunWaiting } from "@jr2/orchestrator";
+import type {
+  ChildErrorMarker,
+  DispatchedBy,
+  MachineDoc,
+  PlacingMarker,
+  RepoStatus,
+  RunChild,
+  RunWaiting,
+} from "@jr2/orchestrator";
 import { parseSSE } from "./sse.ts";
 
 /** A run's current observable state — mirrors the orchestrator's `RunStatus` (run-host.ts). */
@@ -35,6 +43,16 @@ export type RunStatus = {
   bound?: true;
   /** The hashes of the Charts the run binds now, distinct and sorted (ADR-0070). */
   chartHashes?: string[];
+  /** The run that dispatched this one through a `dispatch` Effect, the caller's slot, its ledger
+   * row id (the idempotency key) and this run's depth in the chain (ADR-0071); `instance` names a
+   * foreign caller, as opaque text. Absent for a run nobody dispatched. */
+  dispatchedBy?: DispatchedBy;
+  /** The Machine's output, for a run that is no longer live (ADR-0071): what a `dispatch` with
+   * `wait` settles with. Never for a live run. */
+  output?: unknown;
+  /** The runs this run's `dispatch` Effects started, oldest first: the slot, the run, and when its
+   * ledger row was written (ADR-0071). Absent when it started none. */
+  dispatched?: Array<{ slot: string; run: string; at: string }>;
 };
 
 /** Where a Workflow came from (ADR-0070): a Machine in the Assembly, a Chart file in the Assembly, or

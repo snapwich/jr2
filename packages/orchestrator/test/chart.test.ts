@@ -28,6 +28,7 @@ import {
 import { createMachine } from "xstate";
 import { arg, commandWith, type ExecPortFactory } from "../src/effect.ts";
 import { agent } from "../src/harness-client.ts";
+import { dispatch } from "../src/dispatch-effect.ts";
 import {
   attachLent,
   declarationFaults,
@@ -939,6 +940,28 @@ test("8. a lent Effect takes exactly its input keys", () => {
     invoking("tests", { filter: { nested: true } }),
     /^states\.a\.invoke\.input\.filter: an Effect's input slot takes a string or a reference$/,
   );
+});
+
+test("8. a lent dispatch with no input schema takes any object, the run's body; one with a schema takes its keys (ADR-0071)", () => {
+  const withDispatch: LentParts = {
+    ...lent,
+    actors: {
+      ...lent.actors,
+      go: dispatch("intake") as unknown as UnknownActorLogic,
+      typed: dispatch("intake", { input: z.object({ ticket: z.string() }) }) as unknown as UnknownActorLogic,
+    },
+  };
+  const lends = { ...decl, lends: { ...decl.lends, effects: ["tests", "go", "typed"] } };
+  const lines = (text: unknown) => report(text, undefined, lends, withDispatch);
+  assert.deepEqual(lines(invoking("go", { ticket: "x" })), []);
+  assert.deepEqual(lines(invoking("go", undefined)), []);
+  assert.deepEqual(lines(invoking("typed", { ticket: "x" })), []);
+  assert.match(lines(invoking("go", "x")).join("\n"), /the lent dispatch "go" takes an object, the run's body/);
+  assert.match(
+    lines(invoking("go", { ticket: { nested: true } })).join("\n"),
+    /states\.a\.invoke\.input\.ticket: an Effect's input slot takes a string or a reference/,
+  );
+  assert.match(lines(invoking("typed", {})).join("\n"), /takes exactly ticket; missing: ticket/);
 });
 
 test("8. an Agent takes a prompt and its Dials, nothing else", () => {

@@ -4480,3 +4480,154 @@ test("an Open body that allows only a Workspace access converges no Instance Har
   assert.doesNotMatch(w.err.join("\n"), /instance harness: converging/);
   assert.equal(findInstanceHarness(w).statefulSet, undefined);
 });
+
+// --- dispatch (ADR-0071) -------------------------------------------------------------------------
+
+/** Workflows that dispatch: `intake` (door `{ ticket }`) and a `watch` whose slots are `slots`. */
+async function withDispatch(root: string, slots: string): Promise<string> {
+  const kit = JSON.stringify(KIT_SRC);
+  await writeFile(
+    join(root, "workflows", "intake.ts"),
+    `import { z } from ${JSON.stringify(import.meta.resolve("zod"))};\n` +
+      `import { jr2Setup } from ${kit};\n` +
+      `export const machine = jr2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "intake", input: z.object({ ticket: z.string() }), initial: "idle", states: { idle: {} } });\n`,
+  );
+  await writeFile(
+    join(root, "workflows", "watch.ts"),
+    `import { z } from ${JSON.stringify(import.meta.resolve("zod"))};\n` +
+      `import { dispatch, jr2Setup, secret } from ${kit};\n` +
+      `export const machine = jr2Setup({ events: [], actors: { ${slots} } })\n` +
+      `  .createMachine({ id: "watch", initial: "idle", states: { idle: {} } });\n`,
+  );
+  return root;
+}
+
+test("a dispatch is listed with its Workflow, its wait and where it runs; a same-Instance miss refuses before any cluster work", async () => {
+  const root = await withDispatch(
+    await mkInstance(`export default { name: "myinst" };\n`),
+    `next: dispatch("intake", { input: z.object({ ticket: z.string() }), wait: true })`,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const out = w.err.join("\n");
+  assert.match(out, /next: dispatch intake wait → this Orchestrator — 600s, in the Orchestrator's own process/);
+  assert.doesNotMatch(out, /instance effector: converging/, "an in-process dispatch needs no Effector");
+
+  const missRoot = await withDispatch(
+    await mkInstance(`export default { name: "myinst" };\n`),
+    `next: dispatch("intak"), bad: dispatch("intake", { input: z.object({ ticket: z.number() }) })`,
+  );
+  const miss = mkWorld(missRoot);
+  assert.equal(await up(["--yes"], miss.io), 1);
+  const said = miss.err.join("\n");
+  assert.match(
+    said,
+    /refusing: workflow "watch" dispatches "intak" which no Workflow in the Assembly has — add workflows\/intak\.ts/,
+  );
+  assert.match(
+    said,
+    /refusing: workflow "watch" dispatches "intake" with input its door does not take: "ticket": the slot sends number, and the door takes string/,
+  );
+  assert.deepEqual(miss.kube.applied, [], "nothing applied");
+});
+
+test("a foreign dispatch is placed in the Instance Effector and preflighted from the host: every failure warns, none refuses", async () => {
+  const config = `export default { name: "myinst", secrets: [{ name: "ops", value: "ops-instance-token-0123" }] };\n`;
+  const slots =
+    `away: dispatch("intake", { input: z.object({ ticket: z.string(), sha: z.string() }), ` +
+    `target: { url: "https://ops.example.com", token: secret("ops") } })`;
+  const asked: Array<{ url: string; auth?: string; redirect?: RequestInit["redirect"] }> = [];
+  const world = async (
+    answer: (url: string) => Promise<Response>,
+    cfg = config,
+    seed?: (w: ReturnType<typeof mkWorld>) => void,
+  ) => {
+    const w = mkWorld(await withDispatch(await mkInstance(cfg), slots));
+    seed?.(w);
+    const inner = w.io.fetch!;
+    w.io.fetch = async (url: string, init?: RequestInit) => {
+      if (!url.startsWith("https://ops.example.com/")) return inner(url, init);
+      asked.push({ url, auth: new Headers(init?.headers).get("authorization") ?? undefined, redirect: init?.redirect });
+      return answer(url);
+    };
+    return w;
+  };
+
+  // A door that strips the slot's `sha`: a mismatch, warned.
+  const strips = await world(async () =>
+    Response.json({
+      name: "intake",
+      input: { type: "object", properties: { ticket: { type: "string" } }, required: ["ticket"] },
+    }),
+  );
+  assert.equal(await up(["--yes"], strips.io), 0);
+  let out = strips.err.join("\n");
+  assert.match(out, /away: dispatch intake → https:\/\/ops\.example\.com — 30s, in the Instance Effector, token "ops"/);
+  assert.match(
+    out,
+    /warning: dispatch "intake" at https:\/\/ops\.example\.com: the door does not take the slot's input: the slot's field "sha" is not in the door, which strips it silently \(ADR-0071\)/,
+  );
+  assert.match(out, /instance effector: converging \(watch\/away; secrets `ops`/);
+  // The route is open band: the token stays with the Effector, and never leaves this host.
+  assert.deepEqual(asked[0], { url: "https://ops.example.com/workflows/intake", auth: undefined, redirect: "manual" });
+  assert.ok(!out.includes("ops-instance-token-0123"), "the token is never printed");
+  const list = strips.kube.applied.find(
+    (m) => m.includes(`"name":"jr2-instance-effector"`) && m.includes(`"kind":"Deployment"`),
+  )!;
+  const secretObj = (JSON.parse(list) as { items: Array<Record<string, any>> }).items[0]!;
+  assert.deepEqual(JSON.parse(secretObj.stringData["effector.json"]).targets, [
+    { scheme: "https", host: "ops.example.com", port: 443, secrets: ["ops"] },
+  ]);
+
+  // No answer, and a miss: warnings, exit 0.
+  const down = await world(async () => {
+    throw new Error("connect ECONNREFUSED");
+  });
+  assert.equal(await up(["--yes"], down.io), 0);
+  out = down.err.join("\n");
+  assert.match(
+    out,
+    /warning: dispatch "intake" at https:\/\/ops\.example\.com: no answer from this host \(connect ECONNREFUSED\)/,
+  );
+  const gone = await world(async () => Response.json({ error: 'no workflow "intake"' }, { status: 404 }));
+  assert.equal(await up(["--yes"], gone.io), 0);
+  assert.match(
+    gone.err.join("\n"),
+    /warning: dispatch "intake" at https:\/\/ops\.example\.com: no Workflow "intake" there/,
+  );
+  // A door outside the compared subset: not compared, warned.
+  const anyOf = await world(async () =>
+    Response.json({ input: { type: "object", properties: { ticket: { anyOf: [{ type: "string" }] } } } }),
+  );
+  assert.equal(await up(["--yes"], anyOf.io), 0);
+  assert.match(
+    anyOf.err.join("\n"),
+    /warning: dispatch "intake" at https:\/\/ops\.example\.com: its input schema and the door are not compared/,
+  );
+  // Any other status: warned with it, exit 0.
+  const refused = await world(async () => Response.json({ error: "unauthorized" }, { status: 401 }));
+  assert.equal(await up(["--yes"], refused.io), 0);
+  assert.match(
+    refused.err.join("\n"),
+    /warning: dispatch "intake" at https:\/\/ops\.example\.com: the door answered HTTP 401/,
+  );
+  // A page that is no Workflow detail (an ingress's HTML): not compared, never "strips".
+  const page = await world(
+    async () => new Response("<html>sign in</html>", { status: 200, headers: { "content-type": "text/html" } }),
+  );
+  assert.equal(await up(["--yes"], page.io), 0);
+  out = page.err.join("\n");
+  assert.match(
+    out,
+    /warning: dispatch "intake" at https:\/\/ops\.example\.com: the door's answer is not a Workflow detail \(no `input`\); not compared/,
+  );
+  assert.doesNotMatch(out, /strips it silently/);
+  // A redirect is not followed, as the Effector follows none: warned with its status.
+  const moved = await world(async () => new Response(null, { status: 302, headers: { location: "/login" } }));
+  assert.equal(await up(["--yes"], moved.io), 0);
+  assert.match(
+    moved.err.join("\n"),
+    /warning: dispatch "intake" at https:\/\/ops\.example\.com: the door redirected \(HTTP 302\); the Effector follows no redirect/,
+  );
+});

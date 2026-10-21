@@ -142,8 +142,71 @@ export const CommandStartShape = z.strictObject({
 });
 export type CommandStartRequest = z.infer<typeof CommandStartShape>;
 
-/** Every start: the http kinds, a push, a credentialed command. */
-export const StartRequestShape = z.union([HttpStartShape, PushStartShape, CommandStartShape]);
+/** A string the Effector builds, as parts (the `text` template's wire form). */
+export const TextShape = z.array(TextPartShape);
+
+/** A secret the Effector holds, by name. */
+export const SecretRefShape = z.strictObject({ secret: z.string() });
+
+/** A Workflow's name as `jr2 run` names it (ADR-0071): a Machine's filename stem, or
+ * `<wrapper>/<name>` for a named Chart. The Go side's `Validate` holds the same rule. */
+export const WORKFLOW_NAME = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
+
+/** A dispatch target's origin: a scheme and a host — a DNS name or IPv4 address, or a bracketed
+ * IPv6 address — a port when it is not the scheme's, and no path, query, fragment, userinfo or any
+ * other character no origin has — the Effector appends the door's path (ADR-0071). The Go side's
+ * `origin` is the same rule. */
+export const ORIGIN = /^https?:\/\/(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$/;
+
+/**
+ * Which run started a run, and its place in the chain (ADR-0071): the caller's run and slot, the
+ * caller's ledger row id (`effect`, the door's idempotency key), the dispatched run's depth — one
+ * below its caller, stated by the caller and recorded as sent, so at least 1 — and, for a caller
+ * on another Orchestrator, that Instance as opaque text.
+ */
+export const DispatchedByShape = z.strictObject({
+  run: z.string(),
+  slot: z.string(),
+  effect: z.string(),
+  depth: z.number().int().positive(),
+  instance: z.string().optional(),
+});
+
+/**
+ * A `dispatch` start (ADR-0071), which only the Instance Effector serves: a run of `workflow` on the
+ * Orchestrator at `url` (its origin, one text part), the body `input` whole, the Instance token as a
+ * bearer by name, `dispatchedBy` as the `jr2-dispatched-by` header — `instance` set, since the
+ * caller is foreign by construction — and, with `wait`, a poll of `GET /runs/<id>` until the run
+ * ends or `timeoutMs` passes.
+ */
+export const DispatchStartShape = z.strictObject({
+  kind: z.literal("dispatch"),
+  url: TextShape.refine(
+    (parts) => parts.length === 1 && "text" in parts[0]! && ORIGIN.test(parts[0].text),
+    "a dispatch url is one text part, an origin: http(s)://host[:port]",
+  ),
+  workflow: z.string().regex(WORKFLOW_NAME),
+  input: z.record(z.string(), z.unknown()),
+  auth: z.strictObject({ bearer: SecretRefShape }),
+  // Every id non-empty, as the door's header shape requires (http.ts): an empty one would be the
+  // door's 400, which reads as a defect of the input. The effect is a ledger row id, the key. The Go
+  // side's `validateDispatch` holds the same rule.
+  dispatchedBy: DispatchedByShape.extend({
+    run: z.string().min(1),
+    slot: z.string().min(1),
+    effect: z
+      .string()
+      .regex(/^[A-Za-z0-9._-]{1,128}$/)
+      .refine((id) => id !== "." && id !== ".."),
+    instance: z.string().min(1),
+  }),
+  wait: z.boolean(),
+  timeoutMs: z.number().int().positive(),
+});
+export type DispatchStartRequest = z.infer<typeof DispatchStartShape>;
+
+/** Every start: the http kinds, a push, a credentialed command, a dispatch. */
+export const StartRequestShape = z.union([HttpStartShape, PushStartShape, CommandStartShape, DispatchStartShape]);
 export type StartRequest = z.infer<typeof StartRequestShape>;
 
 /** The most bytes of a start's body the Effector reads (its `maxRequestBody`). A longer body
@@ -233,6 +296,29 @@ export const CommandOutputShape = z.union([
 ]);
 export type CommandWireOutput = z.infer<typeof CommandOutputShape>;
 
+/**
+ * A `dispatch` Effect's output on the wire (ADR-0071): its own outcome set. `settled.status` is the
+ * callee's status as the door served it, in the store's words, and `output` the callee Machine's,
+ * passed through scrubbed; `refused` is the door's status and its report, told from an http
+ * `refused` (which has a `reason`) by its fields.
+ */
+export const DispatchOutputShape = z.discriminatedUnion("outcome", [
+  z.strictObject({ outcome: z.literal("started"), run: z.string() }),
+  z.strictObject({
+    outcome: z.literal("settled"),
+    run: z.string(),
+    // The store's words (ADR-0025) and the timeout's `live`, as `DispatchOutput` types them for the
+    // Machine: a door that serves another word (another Kit version) is a malformed answer, the
+    // invoke's error, never a status the Machine's type does not name (ADR-0071).
+    status: z.enum(["done", "error", "cancelled", "lost", "drifted", "live"]),
+    output: z.unknown().optional(),
+  }),
+  z.strictObject({ outcome: z.literal("refused"), status: z.number().int(), report: z.array(z.string()) }),
+  z.strictObject({ outcome: z.literal("unreachable"), reason: z.string() }),
+  z.strictObject({ outcome: z.literal("unknown"), reason: z.string() }),
+]);
+export type DispatchWireOutput = z.infer<typeof DispatchOutputShape>;
+
 /** The replica that holds an Effect, and where to poll it. */
 export const ReplicaShape = z.strictObject({ name: z.string(), address: z.string() });
 export type Replica = z.infer<typeof ReplicaShape>;
@@ -245,7 +331,10 @@ export const EffectStateShape = z.strictObject({
   /** The commit a push or a credentialed command runs against, read when it started: the
    * Orchestrator writes it to the ledger's intent row. */
   pinned: z.string().optional(),
-  output: z.union([HttpOutputShape, PushOutputShape, CommandOutputShape]).optional(),
+  /** The run a dispatch started, once the door answered and while its wait runs: the Orchestrator
+   * writes it to the ledger's intent row, so the caller names its callee during the wait (ADR-0071). */
+  run: z.string().optional(),
+  output: z.union([HttpOutputShape, PushOutputShape, CommandOutputShape, DispatchOutputShape]).optional(),
 });
 export type EffectState = z.infer<typeof EffectStateShape>;
 

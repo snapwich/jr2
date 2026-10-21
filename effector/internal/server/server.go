@@ -2,8 +2,10 @@
 // answers at once; a second POST with the same id starts nothing and attaches to the one that
 // runs. `GET /effects/<id>` long-polls for its outcome. `DELETE /effects/<id>` stops a credentialed
 // command whose state exited (ADR-0067): its process group gets SIGTERM, then SIGKILL past a
-// grace, and the answer is its outcome, as a poll's; a push and an http Effect are one request
-// each and end on their own, so a DELETE on one answers as an unknown method does. Every request
+// grace, and the answer is its outcome, as a poll's. It stops a dispatch's wait the same way
+// (ADR-0071): the poll of the run ends, and the run it started is never touched. A push and an
+// http Effect are one request each and end on their own, so a DELETE on one answers as an unknown
+// method does. Every request
 // is verified before anything else — an unsigned, mis-signed or replayed request gets 401 and an
 // empty body, so it learns nothing, not even whether an Effect exists — and every answer is
 // scrubbed, then signed.
@@ -63,11 +65,14 @@ const maxRequestBody = 4 << 20
 type effect struct {
 	kind, method, host string
 	pinned             string
-	done               chan struct{}
-	output             *wire.Output
-	settledAt          time.Time
-	read               bool
-	// stop cancels the run with wire.ErrStopped: a credentialed command's stop route.
+	// run is the run a dispatch started, once the door answered (ADR-0071); named closes then.
+	run       string
+	named     chan struct{}
+	done      chan struct{}
+	output    *wire.Output
+	settledAt time.Time
+	read      bool
+	// stop cancels the run with wire.ErrStopped: a credentialed command's or a dispatch's stop route.
 	stop context.CancelCauseFunc
 	// early is a stop of an id this replica did not hold: a credentialed command's start still on
 	// the wire. A command start with its id runs nothing; it is kept past the signing window.
@@ -99,8 +104,8 @@ func New(opts Options) *Server {
 }
 
 // methodsRefusal is the 405's text: the methods an Effect's path takes. DELETE is the stop route,
-// a credentialed command's alone (ADR-0067).
-const methodsRefusal = "POST or GET; DELETE stops a credentialed command"
+// a credentialed command's (ADR-0067) and a dispatch's wait's (ADR-0071).
+const methodsRefusal = "POST or GET; DELETE stops a credentialed command or a dispatch's wait"
 
 // ServeHTTP is the wire.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +149,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // stop is the stop route: a credentialed command's run is cancelled with wire.ErrStopped, and the
 // answer is a poll's — its outcome once it settled, within the hold. Its outcome counts as read:
-// nobody polls a stopped Effect. A push or an http Effect has no stop: one request each, they end
+// nobody polls a stopped Effect. A dispatch is cancelled the same way: its wait, a poll of the
+// door with the target's token, ends there, and nothing is sent to the callee, so the run goes on
+// (ADR-0071). A push or an http Effect has no stop: one request each, they end
 // on their own, and a DELETE on one answers as an unknown method does. A DELETE of an id this
 // replica does not hold answers so, and is kept: a fast exit can send the stop while the command's
 // start is still on the wire, and that start, when it arrives, runs nothing (ADR-0067).
@@ -165,7 +172,7 @@ func (s *Server) stop(ctx context.Context, reply func(int, any), id string) {
 		reply(http.StatusNotFound, wire.EffectState{Effect: id, Replica: s.opts.Replica, State: wire.StateUnknown})
 		return
 	}
-	if e.kind != wire.KindCommand {
+	if e.kind != wire.KindCommand && e.kind != wire.KindDispatch {
 		reply(http.StatusMethodNotAllowed, wire.Refusal{Error: methodsRefusal})
 		return
 	}
@@ -208,8 +215,13 @@ func (s *Server) start(_ context.Context, reply func(int, any), id string, body 
 
 	s.mu.Lock()
 	if e, ok := s.effects[id]; ok && e.early && req.Kind != wire.KindCommand {
-		// Only a credentialed command has the stop route: a kept stop leaves another kind's start as it is.
+		// A kept stop runs nothing only for a credentialed command. Another kind's start runs as it
+		// is, except a dispatch's: its stop is of its wait, so the run is started and not waited for —
+		// the start may be the one that reached the door, and the key answers it (ADR-0071).
 		delete(s.effects, id)
+		if req.Kind == wire.KindDispatch {
+			req.Wait = new(bool)
+		}
 	}
 	if e, ok := s.effects[id]; ok {
 		// A second POST with the same id starts nothing: it attaches. A command start after its kept
@@ -227,7 +239,20 @@ func (s *Server) start(_ context.Context, reply func(int, any), id string, body 
 	// Not the request's context: the Effect runs to its outcome whoever is listening, until it
 	// settles or a stop cancels it.
 	run, stop := context.WithCancelCause(context.Background())
-	e := &effect{kind: req.Kind, method: req.Method, host: hostOf(&req), done: make(chan struct{}), stop: stop}
+	e := &effect{kind: req.Kind, method: req.Method, host: hostOf(&req), done: make(chan struct{}),
+		named: make(chan struct{}), stop: stop}
+	// A dispatch names its run before its wait ends: the `running` state carries it from then on,
+	// so the Orchestrator's ledger names the callee during the wait (ADR-0071).
+	run = wire.WithStarted(run, func(id string) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if e.run != "" || id == "" {
+			return
+		}
+		e.run = id
+		close(e.named)
+		s.notify()
+	})
 	s.effects[id] = e
 	// Read before the answer, so the Orchestrator writes the commit to the intent row: a restore
 	// repeats only that commit.
@@ -257,6 +282,12 @@ func (s *Server) start(_ context.Context, reply func(int, any), id string, body 
 func (s *Server) poll(ctx context.Context, reply func(int, any), id string) {
 	s.mu.Lock()
 	e, ok := s.effects[id]
+	// A poll that does not yet know the dispatch's run is answered when it is named, not at the
+	// hold: one answer per change, so a poll that knows it waits for the outcome.
+	var named <-chan struct{}
+	if ok && e.run == "" {
+		named = e.named
+	}
 	s.mu.Unlock()
 	if !ok {
 		// Not here: the Effect is another replica's, or this one restarted.
@@ -267,6 +298,7 @@ func (s *Server) poll(ctx context.Context, reply func(int, any), id string) {
 	defer hold.Stop()
 	select {
 	case <-e.done:
+	case <-named:
 	case <-hold.C:
 	case <-ctx.Done():
 		return
@@ -283,7 +315,8 @@ func (s *Server) poll(ctx context.Context, reply func(int, any), id string) {
 
 // stateOf is one Effect's answer. Called with mu held.
 func (s *Server) stateOf(id string, e *effect) wire.EffectState {
-	state := wire.EffectState{Effect: id, Replica: s.opts.Replica, State: wire.StateRunning, Pinned: e.pinned}
+	state := wire.EffectState{Effect: id, Replica: s.opts.Replica, State: wire.StateRunning, Pinned: e.pinned,
+		Run: e.run}
 	if e.output != nil {
 		state.State = wire.StateSettled
 		state.Output = e.output
@@ -354,7 +387,8 @@ func (s *Server) Drain(ctx context.Context) {
 
 func hostOf(req *wire.StartRequest) string {
 	// The host is the url's literal head: a secret never sits before the path (the constructor
-	// refuses one there), so this logs no value.
+	// refuses one there), so this logs no value. A dispatch's url is its target's origin, one text
+	// part (ADR-0071), so its head is that host.
 	if req.Kind == wire.KindPush || req.Kind == wire.KindCommand {
 		return "-"
 	}
