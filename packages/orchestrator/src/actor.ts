@@ -137,6 +137,8 @@ export type AgentTurnInput = {
    * ADR-0028's containment claim, which per-invocation escalation would void.
    */
   model?: string;
+  /** Omitted → the definition's, else `off`. A model with no `off` runs at the level its provider
+   * chooses; the printed conversation names it. */
   thinkingLevel?: ThinkingLevel;
   /**
    * Continue this Agent's ONE conversation in this Machine instance (ADR-0016, ADR-0057) — the

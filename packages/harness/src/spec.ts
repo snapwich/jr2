@@ -18,7 +18,9 @@
 import { isAbsolute } from "node:path";
 
 /** jr2's reasoning-effort scale (mirrors `@jr2/orchestrator`'s `ThinkingLevel`). A strict subset of
- * pi's — every value passes through to the runtime unmapped. */
+ * pi's — every value passes through to the runtime unmapped. A model can lack a level. Claude Sonnet
+ * 5.5 has no `off`, and at `off` the Harness's request then sends effort `high`. The Harness does
+ * not refuse such a level: it runs the Turn and prints the level that the model ran at (ADR-0023). */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /** The scale as data — what an admission's `thinkingLevel` is checked against before pi ever
@@ -40,7 +42,8 @@ export type AgentDefinition = {
   model: string;
   /** The Agent's system prompt. */
   instructions: string;
-  /** Reasoning effort. Omitted → the runtime's default. */
+  /** Reasoning effort. Omitted → `off`. A model with no `off` runs at the level its provider
+   * chooses; the printed conversation names it. */
   thinkingLevel?: ThinkingLevel;
   /** What the Agent may DO to the Workspace (ADR-0028): `"read"` withholds write/edit from the
    * Working tools; `"none"` withholds them all — the Menu-only Agent. Default `"write"`. */

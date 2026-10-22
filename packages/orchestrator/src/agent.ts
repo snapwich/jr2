@@ -23,7 +23,10 @@
 import { open } from "./open.ts";
 
 /** jr2's reasoning-effort scale (ADR-0027) — a strict subset of the runtime's, so every value
- * passes through unmapped; mirrored by `@jr2/harness`'s spec contract. */
+ * passes through unmapped; mirrored by `@jr2/harness`'s spec contract. A model can lack a level.
+ * Claude Sonnet 5.5 has no `off`, and at `off` the Harness's request then sends effort `high`. The
+ * Harness does not refuse such a level: it runs the Turn and prints the level that the model ran at
+ * (ADR-0023). */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /** What an Agent may DO to the Workspace (ADR-0028) — and, through `"none"`, where its Turn runs
@@ -49,9 +52,11 @@ export type AgentDefinition = {
   instructions: string;
   /** Optional static description — observability, never sent to the model. */
   description?: string;
-  /** Reasoning effort. Omitted → the runtime's default. An invocation may override it for one
-   * Turn (`AgentTurnInput.thinkingLevel`) — effort is a property of the task's difficulty, so the
-   * same persona legitimately runs at different settings in different Machines. */
+  /** Reasoning effort. Omitted → `off`. A model with no `off` runs at another level, which the
+   * Harness's request or the provider chooses; the printed conversation names it. An invocation
+   * may override it for one Turn (`AgentTurnInput.thinkingLevel`) — effort is a property of the
+   * task's difficulty, so the same persona legitimately runs at different settings in different
+   * Machines. */
   thinkingLevel?: ThinkingLevel;
   /** What this Agent may DO to the Workspace (ADR-0028) — the persona in one word, deliberately
    * not `tools` (that names the control-plane Menu, what it may SAY). `"read"` withholds the

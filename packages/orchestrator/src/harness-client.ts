@@ -521,7 +521,8 @@ export function createLiveSetPush(options: {
  *
  * It takes a DECLARATION (ADR-0054), so a packaged Machine may write `agent({ model: open, … })`
  * and leave the one part it cannot honestly fill to whoever registers it. What rides the Turn is
- * still an `AgentDefinition`: the actor narrows on start and refuses an Open one there.
+ * still an `AgentDefinition`: the actor narrows on start and refuses an Open one there. A model
+ * can lack the definition's thinking level (see {@link ThinkingLevel}).
  */
 export function agent(declaration: AgentDeclaration): AgentLogic {
   return agentActorWith(
