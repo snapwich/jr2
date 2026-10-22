@@ -85,12 +85,13 @@ import { chartName, NamedChartError, splitChartName, type NamedCharts } from "./
 // the app's own registrations both ways and checks each row's band on the wire, so the table
 // cannot drift from the code by forgetting.
 
-/** The access bands of ADR-0014, named for the credential each requires. */
-export type HttpBand = "open" | "authenticated" | "instanceOnly";
+/** The access bands of ADR-0014, named for the credential each requires, and the publish door's
+ * band (ADR-0069): the publish token alone. */
+export type HttpBand = "open" | "authenticated" | "instanceOnly" | "publishOnly";
 
 /** One route of the Orchestrator's HTTP API (ADR-0072). */
 export type HttpRoute = {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PUT" | "DELETE";
   /** In Hono syntax, exactly as registered: `:param`, and `:param{regex}` for a constrained one. */
   path: string;
   band: HttpBand;
@@ -130,10 +131,79 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     method: "GET",
     path: "/workflows",
     band: "open",
-    summary: "The names of the registered workflows.",
-    response: "string[]",
+    summary:
+      "The Workflows a run can start, each with its origin, and each Chart wrapper's named Charts in its entry. A named Chart that cannot run now says why.",
+    response: "WorkflowListing[]",
     stream: false,
-    adrs: ["0014"],
+    adrs: ["0014", "0070"],
+  },
+  {
+    method: "GET",
+    path: "/assembly",
+    band: "open",
+    summary: "The current Assembly and the Assemblies that live runs hold.",
+    response: "AssemblyView",
+    stream: false,
+    adrs: ["0069"],
+  },
+  {
+    method: "PUT",
+    path: "/assembly",
+    band: "publishOnly",
+    summary:
+      "Publish the next Assembly. `jr2 up` calls it, and nothing else. A refused Assembly leaves the current one current.",
+    body: "the Assembly as a tar stream, with the headers `jr2-kit-version` and `jr2-assembly-hash`",
+    response:
+      "200 with the Assembly, its Workflows, the held Assemblies and the ones collected; 400, 409 or 422 with the reason",
+    stream: false,
+    adrs: ["0069"],
+  },
+  {
+    method: "GET",
+    path: "/workflows/:wrapper/chart-schema",
+    band: "open",
+    summary: "The Chart grammar, narrowed to the Open body of one Chart wrapper.",
+    response: "JSON Schema",
+    stream: false,
+    adrs: ["0070"],
+  },
+  {
+    method: "PUT",
+    path: "/workflows/:wrapper/charts/:name",
+    band: "instanceOnly",
+    summary: "Admit and keep a runtime Chart under a name. Its Workflow is `<wrapper>/<name>`.",
+    body: "the Chart text alone",
+    response: "201 { name, origin, hash } when new, 200 when it replaced one; 422 { error, report } when refused",
+    stream: false,
+    adrs: ["0070"],
+  },
+  {
+    method: "DELETE",
+    path: "/workflows/:wrapper/charts/:name",
+    band: "instanceOnly",
+    summary: "Remove a runtime Chart. A live run of it keeps its own text.",
+    response: "204",
+    stream: false,
+    adrs: ["0070"],
+  },
+  {
+    method: "POST",
+    path: "/workflows/:wrapper/charts/:name/runs",
+    band: "instanceOnly",
+    summary: "Start a run of a named Chart, as `POST /workflows/<wrapper>%2F<name>/runs` does.",
+    body: "the Chart wrapper's input, without the Chart",
+    response: "201 { runId, instanceId }; 409 when the named Chart cannot run now",
+    stream: false,
+    adrs: ["0070"],
+  },
+  {
+    method: "GET",
+    path: "/workflows/:name/runs/:runId/machine",
+    band: "open",
+    summary: "The Machine that a run binds, with each bound Chart compiled in, which the Console draws.",
+    response: "MachineDoc",
+    stream: false,
+    adrs: ["0070"],
   },
   {
     method: "GET",
@@ -157,11 +227,13 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     method: "POST",
     path: "/workflows/:name/runs",
     band: "instanceOnly",
-    summary: "Start a run of a registered workflow.",
+    summary:
+      "Start a run of a registered workflow. A `dispatch` from another Orchestrator sends the header `jr2-dispatched-by`, and a repeated start with its key answers the run that it started.",
     body: "the workflow's input, checked against its declared input schema",
-    response: "201 { runId, instanceId }",
+    response:
+      "201 { runId, instanceId }; 200 { runId, instanceId, existing: true } for a repeated dispatch; 422 { error, report } when the door refuses a Chart in the input",
     stream: false,
-    adrs: ["0033", "0058"],
+    adrs: ["0033", "0058", "0070", "0071"],
   },
   {
     method: "GET",

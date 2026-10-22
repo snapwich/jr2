@@ -25,6 +25,11 @@ const BANDS: { band: HttpBand; title: string; text: string }[] = [
     title: "Instance token only",
     text: "The Instance token alone: run control, starting a run, and full run state. A Sandbox token is refused.",
   },
+  {
+    band: "publishOnly",
+    title: "Publish token only",
+    text: "The publish token alone, which `jr2 up` reads from the instance Secret. The Instance token is refused, because a publish puts code into the Orchestrator.",
+  },
 ];
 
 export const routeAnchor = (r: HttpRoute): string => anchorOf(r.method, r.path.replace(/\{[^}]*\}/g, ""));

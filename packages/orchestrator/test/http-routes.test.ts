@@ -75,7 +75,7 @@ async function statusOf(app: Awaited<ReturnType<typeof mkApp>>, row: HttpRoute, 
   const res = await app.request(addressOf(row), {
     method: row.method,
     headers: token ? { authorization: `Bearer ${token}` } : {},
-    ...(row.method === "POST" ? { body: "{}" } : {}),
+    ...(row.method === "POST" || row.method === "PUT" ? { body: "{}" } : {}),
   });
   await res.body?.cancel();
   return res.status;
@@ -92,8 +92,8 @@ test("each row's band is the band the route enforces", async () => {
     }
     assert.equal(noToken, 401, `${key(row)} is ${row.band}, but takes a caller with no token`);
     const withSandbox = await statusOf(app, row, sandbox);
-    if (row.band === "instanceOnly") {
-      assert.equal(withSandbox, 403, `${key(row)} is instanceOnly, but takes a Sandbox token`);
+    if (row.band === "instanceOnly" || row.band === "publishOnly") {
+      assert.equal(withSandbox, 403, `${key(row)} is ${row.band}, but takes a Sandbox token`);
     } else {
       assert.ok(
         withSandbox !== 401 && withSandbox !== 403,
