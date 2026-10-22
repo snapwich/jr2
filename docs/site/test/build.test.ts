@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildDocs, REPO, writeBundle } from "../build/build.ts";
-import { formatError } from "../build/markdown.ts";
+import { formatError, pageHead, parseFrontmatter } from "../build/markdown.ts";
 import { allPages, readSitemap, type Page, type Sitemap } from "../build/sitemap.ts";
 
 const tmp = await mkdtemp(join(tmpdir(), "jr2-docs-build-"));
@@ -127,4 +127,13 @@ test("a group that the AGENTS.md block indexes first, renamed in sitemap.json, i
   assert.deepEqual(r.errors.map(formatError), [
     'docs/site/sitemap.json:1: the AGENTS.md block indexes the group "Write Machines" first, and sitemap.json has none',
   ]);
+});
+
+test("the bundle's frontmatter quotes a value that YAML cannot read plain, such as one that starts with a backtick", () => {
+  for (const description of ["`jr2 up` converges the cluster.", "Plain text.", "A: B", "(note) x"]) {
+    const head = parseFrontmatter(pageHead("Title", description))!;
+    assert.deepEqual(head.errors, [], description);
+    assert.equal(head.data.description, description);
+  }
+  assert.match(pageHead("Title", "`jr2 up` converges."), /^description: "`jr2 up` converges\."$/m);
 });

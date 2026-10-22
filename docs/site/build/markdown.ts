@@ -108,9 +108,10 @@ export function parseFrontmatter(text: string): Frontmatter | undefined {
   return { data, body: lines.slice(end + 1).join("\n"), bodyLine: end + 2, errors };
 }
 
-/** A YAML scalar for a frontmatter value: plain when YAML reads it back as the same string. */
+/** A YAML scalar for a frontmatter value: plain when YAML reads it back as the same string. A
+ * backtick is a YAML indicator that a plain value cannot start with, so such a value is quoted. */
 function yamlScalar(value: string): string {
-  return /^[A-Za-z0-9`(][^:#"'\n]*$/.test(value) && !/\s$/.test(value) ? value : JSON.stringify(value);
+  return /^[A-Za-z0-9(][^:#"'\n]*$/.test(value) && !/\s$/.test(value) ? value : JSON.stringify(value);
 }
 
 /** The bundle's head of a page: its frontmatter, then its title as the one H1. */
