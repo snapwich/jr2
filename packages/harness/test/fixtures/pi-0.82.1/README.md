@@ -14,8 +14,9 @@ Machine-specific values are stand-ins: the temporary directory is `<dir>`, a ful
 
 ## How they were made
 
-The script is `packages/harness/scripts/pi-0.82.1-fixtures.mjs` in the `pi-golden` worktree (main at `fdc8ce7`, where pi
-0.82.1 is installed). It is not in this tree, because it imports pi 0.82.1. From that worktree's `packages/harness`:
+The script is `packages/harness/scripts/pi-0.82.1-fixtures.mjs`. It imports pi 0.82.1, which this tree does not install,
+so it runs only in a checkout of `fdc8ce7` (the last commit on pi 0.82.1). Copy the script into that checkout and, from
+its `packages/harness`:
 
 ```sh
 node scripts/pi-0.82.1-fixtures.mjs <this folder>
