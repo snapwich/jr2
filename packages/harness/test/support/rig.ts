@@ -40,6 +40,10 @@ export type Turn = {
   /** The error body's message with `status` — what a provider says, which is what tells a rate
    * limit from quota exhaustion (ADR-0064). Default "scripted provider failure". */
   errorMessage?: string;
+  /** Headers on the `status` answer — a server's `retry-after` (ADR-0064). */
+  headers?: Record<string, string>;
+  /** Reasoning the model streams before its answer (`reasoning_content`). */
+  reasoning?: string;
   /** The usage this response reports — Compaction's only lever (ADR-0036), since a scripted
    * transcript can never fill a real window. pi DERIVES its total from the parts rather than
    * reading `total_tokens`, so the fabricated context size goes in `prompt_tokens`. */
@@ -56,6 +60,8 @@ export type RecordedCall = {
    * every model declaring `reasoning` (which `provider.ts` does for the custom provider), so this
    * is where a Turn's level is visible — including on the summarizer's own request (ADR-0036). */
   reasoning_effort?: string;
+  /** The request's headers (node's lower-case names): attribution headers are visible here. */
+  headers?: Record<string, string | string[] | undefined>;
   /** Arrival order across BOTH streams (turn requests and summarizer requests), from 1. Compaction
    * happens at a step the test does not choose, so this is the only witness that the cut landed
    * BETWEEN two requests of one turn rather than at a turn boundary. */
@@ -104,6 +110,7 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
       const body = JSON.parse(raw) as RecordedCall & { stream?: boolean };
       seq += 1;
       body.seq = seq;
+      body.headers = req.headers;
       // pi's summarizer request is not a scripted turn: it arrives at a step the test did not
       // choose, so it is recorded apart and answered from `summarize` (ADR-0036).
       const summarizing = raw.includes(SUMMARIZER_MARK);
@@ -122,7 +129,7 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
       const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, ...turn.usage };
 
       if (turn.status !== undefined) {
-        res.writeHead(turn.status, { "content-type": "application/json" });
+        res.writeHead(turn.status, { "content-type": "application/json", ...turn.headers });
         res.end(JSON.stringify({ error: { message: turn.errorMessage ?? "scripted provider failure" } }));
         return;
       }
@@ -133,6 +140,7 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
           `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: "model-x", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
         );
 
+      if (turn.reasoning !== undefined) frame({ role: "assistant", reasoning_content: turn.reasoning });
       if (turn.text !== undefined) {
         frame({ role: "assistant" });
         frame({ content: turn.text });

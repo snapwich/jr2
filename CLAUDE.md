@@ -40,7 +40,7 @@ from the default e2e profile; store logic stays unit-tested in `console-store.te
 in `@jr2/harness`, no infra):** the claims the socket-free tests cannot see, driven through the real turn loop — pi at
 the exact pin, the Menu over a real socket to the Custodian's address, a scripted provider that chooses each turn's
 shape. Not a separate tier: it runs in the default `test` gate as part of `pnpm -r test`. `@jr2/harness` owns the pi
-pin; conformance is the canary for pi bumps (0.x minors break), and since ADR-0038 `@kind` is a **second** canary — it
+pin; conformance is the canary for pi bumps (a minor can break), and since ADR-0038 `@kind` is a **second** canary — it
 drives the same turn loop in a real pod — so **run both before bumping pi** — and the `@model` tier below, the third
 canary. **`@model` (ADR-0066; opt-in):** a REAL model behind each scenario's Custodian — see
 [Model-tier testing](#model-tier-testing-adr-0066) below. **Custodian suite (ADR-0059; opt-in, needs docker):** the

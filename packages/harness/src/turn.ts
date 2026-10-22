@@ -4,41 +4,56 @@
 // with the Frame's cwd beside them — ADR-0057 — so a later Submission on the same conversation may
 // carry a retuned one and a different worktree), the surface is read afresh through the Custodian
 // (menu.ts) — the Menu, fixed for the conversation, becomes the tools block, and the Turn's Allowed
-// picks go into the Briefing's Turn part after the prompt (ADR-0029/0062) — and the same pi session
-// carries the conversation: a later Submission is the next `prompt()` on the same AgentHarness.
+// picks go into the Briefing's Turn part after the prompt (ADR-0029/0062) — and the same engine
+// part carries the conversation: a later Submission is the next `prompt()` on the same pi `Agent`.
 // Settlement mapping: a surface read that finds the Turn over throws `TurnOverError`, which settles
 // `aborted` with the model never asked (ADR-0026); any other throw settles `failed` (the Menu
-// read, or a provider failure after pi's retries — pi RESOLVES `prompt()` even then,
-// with the outcome on the message's `stopReason`, so this module inspects and throws, and a
+// read, or a provider failure after the Harness's retries — pi RESOLVES `prompt()` even then,
+// with the outcome on the last message's `stopReason`, so this module inspects and throws, and a
 // provider's refusal of the load reads `provider limit …`, ADR-0064); the
 // signal aborts pi's run, and the prompt winding down rejects promptly so the pump can promote.
+//
+// pi is the engine, not the contract (ADR-0027). jr2 takes pi-agent-core's slim core — the `Agent`
+// loop, its tool hooks, its abort and its steering queue — and owns the rest: the engine part on
+// disk (`pi-engine.ts`), Compaction (`compaction.ts`), the Working tools (`working-tools.ts`) and
+// the leading system message that carries the system prompt and the tools.
 
 import {
-  AgentHarness,
+  Agent,
   type AgentMessage,
-  type ExecutionToolContext,
-  type Session,
+  type AgentTool,
   type ThinkingLevel as PiThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import type {
-  Api,
-  AssistantMessage,
-  Model,
-  Models,
-  ToolCall,
-  ToolResultMessage,
-  UserMessage,
+import {
+  createInitialSystemMessage,
+  toToolDeclaration,
+  type Api,
+  type AssistantMessage,
+  type Message,
+  type Model,
+  type Models,
+  type SystemMessage,
+  type ToolCall,
+  type ToolResultMessage,
+  type UserMessage,
 } from "@earendil-works/pi-ai";
 import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
+import { compactionSummaryText } from "./compaction-summary.ts";
 import { RunawayError, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
 import { briefingsOf, cutPickResult, readMenu, unsentPickResult, type MenuItem, type MenuOptions } from "./menu.ts";
 import { MENU_TOOL_PREFIX, menuToolName, menuTools } from "./menu-tools.ts";
-import { attachPrinter, printLines, renderCompaction, renderMessage, type PrinterOut } from "./printer.ts";
-import { piSession } from "./pi-engine.ts";
-import { mapThinkingLevel, providerLimit, resolveModel } from "./provider.ts";
+import {
+  attachPrinter,
+  printLines,
+  renderCompaction,
+  renderMessage,
+  renderThinkingLevel,
+  type PrinterOut,
+} from "./printer.ts";
+import { openEnginePart, type EnginePart } from "./pi-engine.ts";
+import { lacksLevel, mapThinkingLevel, providerLimit, ranAt, resolveModel } from "./provider.ts";
 import type { EngineSeat } from "./record.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage } from "./wire.ts";
@@ -56,11 +71,12 @@ export type TurnDeps = {
   agentName: string;
   instanceId: string;
   appendMessage: (message: HistoryMessage) => void;
-  /** Where pi keeps its session for this conversation, and the record it continues from when that
-   * session will not open (ADR-0031, `pi-engine.ts`). Omitted, the session lives in memory. */
+  /** Where the engine part of this conversation is kept, and the record it continues from when
+   * that part does not open (ADR-0031, `pi-engine.ts`). Omitted, the part lives in memory. */
   engine?: EngineSeat;
   /** Provider-stream retry attempts — the seat ADR-0016 delegated to flue's `durability{}`,
-   * re-owned as pi's `maxRetries`. Omitted → pi's default. */
+   * re-owned as the Harness's: pi-ai runs them (`maxRetries`). Omitted → `PROVIDER_RETRIES`. A
+   * rig that must see each provider error passes 0. */
   maxRetries?: number;
   /** Where the conversation prints (ADR-0023). Default `process.stdout` (the pod log). */
   printerOut?: PrinterOut;
@@ -90,37 +106,77 @@ const STEP_BUDGET = 256;
 /** K consecutive byte-identical tool calls (same name, same JSON arguments) — the early exit.
  * Healthy max observed: 2. */
 const IDENTICAL_CALL_LIMIT = 4;
+/** The provider retries of each request (ADR-0016, ADR-0064): a 429, a 503 or an overload is
+ * retried twice, with backoff, and a server's `retry-after` is honored up to 60 s. pi-ai runs them,
+ * but only when the Harness states a number: it reads `maxRetries ?? 0`. 2 is the summarizer's
+ * number too (`compaction.ts`), and the SDKs' own default. */
+const PROVIDER_RETRIES = 2;
 // Compaction's numbers (ADR-0036) live in `compaction.ts`, beside the derivation that reads them:
 // `reserve = max(16384, maxTokens)` with the small-window floor, and a 20000-token retained tail.
 
-/** The conversation's assembled runtime: one AgentHarness on one pi session, plus the seat the
- * lazy `systemPrompt`/`toolContext` callbacks and the once-registered hooks read — so each turn
- * works from what was resolved at ITS start, on a harness constructed once. The Session is held
- * because pi keeps its own reference private and Compaction writes to it (ADR-0036). */
+/** The conversation's assembled runtime: one pi `Agent` on one engine part, plus the seat the
+ * once-registered hooks and listeners read — so each turn works from what was resolved at ITS
+ * start, on an `Agent` constructed once. */
 type Assembled = {
-  harness: AgentHarness<ExecutionToolContext>;
-  session: Session;
+  agent: Agent;
+  part: EnginePart;
   current: {
     definition: ResolvedDefinition;
     /** This Submission's resolved model and level — the summarizer inherits both (ADR-0036), and
      * the model carries the `contextWindow`/`maxTokens` the thresholds derive from. */
     model: Model<Api>;
     thinkingLevel: PiThinkingLevel;
-    /** The run's abort signal. pi's loop hands `transformContext` a signal but `AgentHarness`
-     * drops it before the hook sees it, so a summary would outlive the sweep that cancelled its
-     * turn (ADR-0024) unless jr2 carries the signal itself. */
-    signal: AbortSignal;
     /** The Menu's pick briefings (`briefingsOf`): fixed with the Menu, read once per Submission. */
     briefings: ReadonlyMap<string, string>;
+    /** The leading system message of this Submission's context (see `leadOf`). */
+    lead: SystemMessage | undefined;
   };
 };
+
+/**
+ * The leading system message: the instructions, then the Briefing's standing part (byte-stable for
+ * the seat, ADR-0062), and the declarations of the tools, in order. jr2 makes it for each Submission
+ * and keeps it out of the engine part, so a changed prompt or tools block REPLACES it, as a system
+ * prompt is replaced. pi compares these declarations with the tools it runs before each request
+ * (`declareToolChanges`); they are equal, so pi adds no system message of its own.
+ */
+function leadOf(prompt: string, tools: AgentTool[]): SystemMessage | undefined {
+  return createInitialSystemMessage(prompt, tools.map(toToolDeclaration));
+}
+
+/** True for the message pi makes when a run fails before a provider answered (`handleRunFailure`):
+ * ended `error` or `aborted`, with nothing spent. */
+function isFailureShell(message: AssistantMessage): boolean {
+  if (message.stopReason !== "error" && message.stopReason !== "aborted") return false;
+  const u = message.usage;
+  return u.input === 0 && u.output === 0 && u.cacheRead === 0 && u.cacheWrite === 0 && u.totalTokens === 0;
+}
+
+/**
+ * The messages the provider gets (pi's `convertToLlm`), from the loop's: the cut picks settled
+ * (`settleCutPicks`), and a Compaction's summary as the user message pi 0.82.1 made of it. The
+ * system message, user, assistant and tool result messages pass; nothing else is sent. It must not
+ * throw (pi's contract), and nothing in it does.
+ */
+export function convertToLlm(messages: AgentMessage[]): Message[] {
+  return settleCutPicks(messages).flatMap((m): Message[] => {
+    if (m.role === "compactionSummary") {
+      return [
+        { role: "user", content: [{ type: "text", text: compactionSummaryText(m.summary) }], timestamp: m.timestamp },
+      ];
+    }
+    if (m.role === "system" || m.role === "user" || m.role === "assistant" || m.role === "toolResult") return [m];
+    return [];
+  });
+}
 
 /** Build the turn executor for one conversation (the `RunSubmission` its Conversation pumps). */
 export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   let assembled: Assembled | undefined;
   const stepBudget = deps.stepBudget ?? STEP_BUDGET;
   const identicalCallLimit = deps.identicalCallLimit ?? IDENTICAL_CALL_LIMIT;
-  /** The `context` hook writes the Compaction line itself (there is no pi event to subscribe to),
+  const maxRetries = deps.maxRetries ?? PROVIDER_RETRIES;
+  /** The request hook writes the Compaction line itself (there is no pi event to subscribe to),
    * so the printer's destination is resolved once here rather than only inside `attachPrinter`. */
   const out = deps.printerOut ?? process.stdout;
   const summaryRetry = summaryRetryPolicy(deps.maxRetries);
@@ -165,9 +221,15 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
    * the step boundary reads nothing — under `continue: true` the next state re-registers the SAME
    * address before the abort lands, so a read would answer for the NEXT Turn, and steer the NEXT
    * Turn's picks into this Submission. Reset when each Submission starts. */
-  const turn = { over: false };
+  const turn = {
+    over: false,
+    /** The newest assistant message of this Submission's run: what `prompt()` settles on. */
+    answer: undefined as AssistantMessage | undefined,
+    /** The thinking level line (ADR-0023) is printed, or not needed, for this Submission. */
+    levelSaid: false,
+  };
   /** The runaway watch (ADR-0035), per Submission — reset when each turn starts. The
-   * once-per-conversation `tool_call` hook reads it through this seat, like `current.definition`. */
+   * once-per-conversation `beforeToolCall` hook reads it through this seat, like `current.definition`. */
   const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
   /** The Menu calls whose jr2 answer (`cutPickAnswers`) this process printed: each prints once. */
   const printedCuts = new Set<string>();
@@ -183,20 +245,19 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     watch.signature = "";
     watch.tripped = "";
     turn.over = false;
+    turn.answer = undefined;
+    turn.levelSaid = false;
     // This Submission's Frame and dials layer over the definition it carries (ADR-0018/0049/0057).
     // Read HERE, per Submission, so one `continue` conversation can queue turns at different
-    // settings and in different worktrees — the `setModel`/`setThinkingLevel` reconciliation below
-    // handles a changed dial, and a changed `cwd` re-roots the Working tools two ways, because
-    // they take their root two ways (`working-tools.ts`): `setTools` below rebuilds grep and glob,
-    // which close over it, while pi's read/write/edit/bash read the `toolContext` callback below,
-    // which pi resolves per turn off `current.definition`.
+    // settings and in different worktrees: the model, the level and the tools (rooted at the
+    // Frame's `cwd`) are set on the `Agent` below for each Submission.
     const definition = resolveDefinition(submission.definition, submission);
     const model = resolveModel(deps.models, definition.model);
     const thinkingLevel = definition.thinkingLevel ? mapThinkingLevel(definition.thinkingLevel) : "off";
 
     // A turn that cannot see its Menu settles `failed` — the throw propagates to the pump. The
     // signal rides along so an abort landing mid read cancels it: promotion of the next admission
-    // (the ADR-0024 hot path) must not park behind a retry ladder. Read BEFORE the harness is
+    // (the ADR-0024 hot path) must not park behind a retry ladder. Read BEFORE the agent is
     // assembled or touched, so a Turn that is over leaves nothing behind: no model call, no
     // history entry, and no tools block that differs from the conversation's Menu (ADR-0026).
     const read = await readMenu(menuOptions, deps.instanceId, signal);
@@ -207,184 +268,186 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     }
 
     if (!assembled) {
-      const current = { definition, model, thinkingLevel, signal, briefings: briefingsOf(read.menu) };
-      // Held, not inlined: Compaction appends its entry to THIS session (ADR-0036), and
-      // `AgentHarness` exposes no accessor for the one it was given. Opened, not created, when the
-      // conversation was rebuilt: the engine part a previous process wrote (ADR-0031).
-      const session = await piSession(deps.engine, { cwd: definition.cwd, model });
-      const harness = new AgentHarness<ExecutionToolContext>({
-        session,
-        models: deps.models,
+      const current: Assembled["current"] = {
+        definition,
         model,
         thinkingLevel,
-        // The instructions, then the Briefing's standing part — byte-stable for the seat (ADR-0062).
-        systemPrompt: () => standing(current.definition.instructions, current.definition.workspace),
-        toolContext: () => ({ env: new NodeExecutionEnv({ cwd: current.definition.cwd }) }),
-        ...(deps.maxRetries === undefined ? {} : { streamOptions: { maxRetries: deps.maxRetries } }),
+        briefings: briefingsOf(read.menu),
+        lead: undefined,
+      };
+      // Opened, not created, when the conversation was rebuilt: the engine part a previous process
+      // wrote (ADR-0031).
+      const part = openEnginePart(deps.engine, { cwd: definition.cwd, model });
+      const agent = new Agent({
+        initialState: { model, thinkingLevel },
+        // The transcript's identity rides as pi-ai's `sessionId` (a prompt-cache key).
+        sessionId: part.id,
+        // jr2 is not pi: no attribution headers on its requests.
+        identity: { attribution: null },
+        // pi's `Agent` does not forward `maxRetries`, so the stream states it.
+        streamFn: (streamModel, context, options) =>
+          deps.models.streamSimple(streamModel, context, { ...options, maxRetries }),
+        convertToLlm,
+        // Compaction (ADR-0036), before EVERY provider request, the first one included — pi has
+        // appended and emitted the pending messages, so the engine part is complete at this
+        // moment. Firing on a first request is what rescues ADR-0016's nudge ladder: a nudge is a
+        // fresh admission on the same conversation, so it compacts before it asks. A cut answers
+        // with the rebuilt context, which pi uses for this request and the rest of the run; a
+        // failure throws, which pi turns into a failed run and `prompt()` reports below as an infra
+        // fault. It touches no ADR-0035 counter: the watch counts tool calls, the summarizer makes
+        // none, and a turn that compacts and continues is still spending its one step budget.
+        //
+        // A run that has ended asks for no summary: a tripped watch (ADR-0035) here, and an abort
+        // that landed after the step's end in `compactIfOver`. There is no request left to cut for.
+        prepareRequest: async (request, runSignal) => {
+          if (watch.tripped) return undefined;
+          const cut = await compactIfOver({
+            part,
+            models: deps.models,
+            model: current.model,
+            thinkingLevel: current.thinkingLevel,
+            settings: compactionSettingsFor(current.model, deps.keepRecentTokens),
+            retry: summaryRetry,
+            signal: runSignal,
+          });
+          if (!cut) return undefined;
+          printLines(out, deps.agentName, [
+            renderCompaction(cut.tokensBefore, cut.tokensAfter, current.model.contextWindow),
+          ]);
+          return {
+            context: {
+              messages: current.lead ? [current.lead, ...cut.messages] : cut.messages,
+              tools: request.context.tools ?? [],
+            },
+          };
+        },
+        // The runaway watch (ADR-0035): steps are the tool calls this Submission observed; K
+        // consecutive byte-identical calls is the early exit, the step budget the unconditional
+        // backstop. Identity is name + JSON arguments — pi hands the VALIDATED args, and stringify
+        // keeps the wire's key order, so byte-identical provider frames compare equal. Tripping
+        // aborts the run: pi checks the signal the moment this hook returns, so the tripping call
+        // never executes and answers `Operation aborted`; the block is the belt over that check,
+        // and it also answers any sibling call of the same message behind the trip.
+        beforeToolCall: async ({ toolCall, args }) => {
+          if (!watch.tripped) {
+            watch.steps += 1;
+            const signature = `${toolCall.name} ${JSON.stringify(args)}`;
+            watch.streak = signature === watch.signature ? watch.streak + 1 : 1;
+            watch.signature = signature;
+            if (watch.streak >= identicalCallLimit) {
+              watch.tripped = `repeated an identical tool call ${identicalCallLimit} times`;
+            } else if (watch.steps > stepBudget) {
+              watch.tripped = `exceeded ${stepBudget} steps`;
+            }
+            if (!watch.tripped) return undefined;
+            agent.abort();
+          }
+          return { block: true, reason: watch.tripped };
+        },
+        // A tripped watch or an aborted run ends at the step boundary: no steer, no other request.
+        finishTurn: (_turn, runSignal) => (watch.tripped || runSignal?.aborted ? { action: "end" } : undefined),
       });
       // Once per conversation — the subscriptions survive across Submissions; re-attaching per
-      // Submission would duplicate every line and every stream event.
-      attachPrinter(harness, deps.agentName, out);
+      // Submission would duplicate every line and every stream event. pi awaits each listener, in
+      // this order.
+      //
+      // First the engine part: a completed message is on disk before anything else sees it. A
+      // system message never reaches it (`leadOf`).
+      agent.subscribe((event) => {
+        if (event.type !== "message_end") return;
+        const role = event.message.role;
+        if (role === "user" || role === "assistant" || role === "toolResult") part.appendMessage(event.message);
+      });
+      // The thinking level line (ADR-0023, ADR-0018): when this Submission's model has no level of
+      // the name the Turn asked for, the first assistant message a provider answered says which
+      // level ran. It prints before that message's own lines, once a Submission.
+      agent.subscribe((event) => {
+        if (event.type !== "message_end" || turn.levelSaid || event.message.role !== "assistant") return;
+        if (isFailureShell(event.message)) return;
+        turn.levelSaid = true;
+        if (!lacksLevel(current.model, current.thinkingLevel)) return;
+        printLines(out, deps.agentName, [
+          renderThinkingLevel(
+            current.model,
+            current.thinkingLevel,
+            ranAt(current.model, current.thinkingLevel, event.message),
+          ),
+        ]);
+      });
+      attachPrinter(agent, deps.agentName, out);
       // The step boundary — pi's placement of the engine-neutral check (`between-steps.ts`, ADR-0029):
       // after a step's tool results and before its next model request, the Turn part is restated
       // when the Allowed picks changed since the model last read them. pi awaits `turn_end`
-      // subscribers and drains its steering queue right after (agent-loop.js), so a message steered
+      // listeners and drains its steering queue right after (agent-loop.js), so a message steered
       // HERE is the next request's newest message, after every tool result of the step — the one
       // position every provider accepts — and it keeps the loop going after a text-only answer.
-      // A subscriber that throws fails the run, so this one never throws. It says nothing to a Turn
-      // that is ending: a steer that missed its drain would ride into the conversation's NEXT
-      // Submission (pi drains the queue first thing), so both ends are checked again after the read.
-      // A Turn is ending once a runaway trips, the run's signal aborts, or a pick's answer said the
-      // Turn is over — the last is the Harness's own fact, and the only one that never races the
-      // Orchestrator's abort.
-      harness.subscribe(async (event) => {
+      // A listener that throws fails the run, so this one never throws. It says nothing to a Turn
+      // that is ending: a step that ended `error` or `aborted` is the run's last (pi makes no
+      // request after it), and a steer that missed its drain would ride into the conversation's
+      // NEXT Submission, so both ends are checked again after the read. A Turn is ending once a
+      // runaway trips, the run's signal aborts, or a pick's answer said the Turn is over — the last
+      // is the Harness's own fact, and the only one that never races the Orchestrator's abort.
+      agent.subscribe(async (event, runSignal) => {
         if (event.type !== "turn_end") return;
-        const live = () => !watch.tripped && !current.signal.aborted && !turn.over;
+        const stop = (event.message as { stopReason?: string }).stopReason;
+        if (stop === "error" || stop === "aborted") return;
+        const live = () => !watch.tripped && !runSignal.aborted && !turn.over;
         if (!live()) return;
         // A step with no tool result is the model stopping: the ask-again rule (ADR-0016).
         const stopped = event.toolResults.length === 0;
-        const text = await between(menuOptions, deps.instanceId, told, current.signal, {
+        const text = await between(menuOptions, deps.instanceId, told, runSignal, {
           stopped,
           briefings: current.briefings,
         }).catch(() => undefined);
         if (text === undefined || !live()) return;
-        await harness.steer(text).catch((err: unknown) => {
-          console.error(`[${deps.agentName}] could not restate the Allowed picks:`, err);
-        });
+        agent.steer({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
       });
       // What is executing (`work`): every tool call between its start and its end.
-      harness.subscribe((event) => {
+      agent.subscribe((event) => {
         if (event.type === "tool_execution_start") work.running.add(event.toolCallId);
         else if (event.type === "tool_execution_end") work.running.delete(event.toolCallId);
         else return;
         work.report();
       });
-      harness.subscribe((event) => {
+      agent.subscribe((event) => {
         if (event.type !== "message_end") return;
+        if (event.message.role === "assistant") turn.answer = event.message;
         const entry = historyMessage(event.message);
         if (entry) deps.appendMessage(entry);
       });
-      // The `context` hook, which jr2 owns twice over — ONE handler, because pi's `emitHook` hands
-      // every handler the same untransformed event and keeps only the LAST non-undefined result,
-      // so a second registration would silently discard the first's transform rather than chain
-      // onto it.
-      //
-      // First the Compaction (ADR-0036). This hook fires before EVERY provider request, including
-      // a turn's first — pi emits the prompt's `message_end` straight to the Session before the
-      // loop starts, and `prepareNextTurn` rebuilds from the Session after every later step, so
-      // the Session is complete and consistent at this moment either way. Firing on a first
-      // request is what rescues ADR-0016's nudge ladder: a nudge is a fresh admission on the same
-      // conversation, so it compacts before it asks. A cut answers with the rebuilt context, so
-      // the request that NOTICED is already compacted; a failure throws, which pi turns into a
-      // failed run and `prompt()` reports below as an infra fault. It touches no ADR-0035 counter:
-      // the watch counts tool calls, the summarizer makes none, and a turn that compacts and
-      // continues is still spending its one step budget.
-      //
-      // Then the abandoned trailing state, on whichever array will be sent. pi keeps an aborted
-      // partial message in the session but REPLAYS none of it — its API layer drops any assistant
-      // message whose stopReason is `aborted` from every later request, which is byte-for-byte the
-      // flue defect ADR-0027 inverts (an abort mid-stream must NOT erase the assistant message).
-      // So it settles at read time: an aborted message that carried real content re-enters the
-      // context completed (pi synthesizes results for its orphaned tool calls); the empty
-      // synthesized failure shells stay dropped. The rebuilt context needs the same pass — the
-      // Session stores the aborted message verbatim, cut or no cut.
-      harness.on("context", async ({ messages }) => {
-        // A tripped watch (ADR-0035) already ended this turn, so there is nothing left to compact
-        // FOR. pi does not agree yet: it has no signal check between a blocked tool batch and the
-        // next request, so the loop takes one more pass through here — and the signal this seat
-        // carries is the pump's, which a runaway trip never touches (the trip aborts pi's OWN
-        // controller, and pi's `transformContext` wrapper drops the signal before the hook sees
-        // it). Without this gate the cut would run a full summarization, on a full window, for a
-        // request that is aborted before it is sent: real tokens and an unbounded wait — the very
-        // liveness ADR-0035's watch exists to guarantee — plus a compaction entry and a
-        // `[compacted]` line that make a killed turn read as a healthy one. Skipping beats
-        // cancelling: there is no round-trip to cancel.
-        const cut = watch.tripped
-          ? undefined
-          : await compactIfOver(
-              {
-                session,
-                models: deps.models,
-                model: current.model,
-                thinkingLevel: current.thinkingLevel,
-                settings: compactionSettingsFor(current.model, deps.keepRecentTokens),
-                retry: summaryRetry,
-                signal: current.signal,
-              },
-              messages,
-            );
-        if (cut) {
-          printLines(out, deps.agentName, [
-            renderCompaction(cut.tokensBefore, cut.tokensAfter, current.model.contextWindow),
-          ]);
-        }
-        return { messages: settleCutPicks(cut?.messages ?? messages) };
-      });
-      // The runaway watch (ADR-0035): steps are the tool calls this Submission observed; K
-      // consecutive byte-identical calls is the early exit, the step budget the unconditional
-      // backstop. Identity is name + JSON arguments — pi hands the PARSED args, and stringify
-      // keeps the wire's key order, so byte-identical provider frames compare equal. Tripping
-      // ends the run: abort() is fire-and-forget — it awaits waitForIdle, which is parked on
-      // this very hook, so awaiting would deadlock; and it REJECTS when a wind-down step throws
-      // (see onAbort below). pi re-checks the run signal the moment this hook returns, so the
-      // tripping call never executes; the block is the belt over that check, and it also answers
-      // any parallel sibling calls in flight behind the trip.
-      harness.on("tool_call", ({ toolName, input }) => {
-        if (!watch.tripped) {
-          watch.steps += 1;
-          const signature = `${toolName} ${JSON.stringify(input)}`;
-          watch.streak = signature === watch.signature ? watch.streak + 1 : 1;
-          watch.signature = signature;
-          if (watch.streak >= identicalCallLimit) {
-            watch.tripped = `repeated an identical tool call ${identicalCallLimit} times`;
-          } else if (watch.steps > stepBudget) {
-            watch.tripped = `exceeded ${stepBudget} steps`;
-          }
-          if (!watch.tripped) return undefined;
-          harness.abort().catch((err: unknown) => {
-            console.error(`[${deps.agentName}] abort wind-down failed:`, err);
-          });
-        }
-        return { block: true, reason: watch.tripped };
-      });
-      assembled = { harness, session, current };
+      assembled = { agent, part, current };
     } else {
       assembled.current.definition = definition;
       assembled.current.model = model;
       assembled.current.thinkingLevel = thinkingLevel;
-      assembled.current.signal = signal;
       assembled.current.briefings = briefingsOf(read.menu);
-      const live = assembled.harness.getModel() as { provider: string; id: string };
-      if (live.provider !== model.provider || live.id !== model.id) await assembled.harness.setModel(model);
-      if (assembled.harness.getThinkingLevel() !== thinkingLevel) {
-        await assembled.harness.setThinkingLevel(thinkingLevel);
-      }
     }
 
-    const harness = assembled.harness;
+    const { agent, part, current } = assembled;
     // The Turn part below states this list: it is the first the model reads this Submission.
     told.heard(read.allowed);
     // The whole Menu, never the Allowed picks: the tools lead the provider's prefix cache, so they
     // are the same bytes on every Turn of the conversation (ADR-0029). What this Turn may pick is
     // said in the Turn part below, and enforced at delivery.
     const menu = seat ? read.menu.map((item) => cutWith(item, seat.cut)) : read.menu;
-    const tools = [...workingToolsFor(definition, definition.cwd, { guard: deps.guard }), ...menuTools(menu)];
-    // The active names go explicitly: without them setTools KEEPS the previous active set, which
-    // is empty on a harness constructed with no tools — every tool would ride to pi inactive.
-    await harness.setTools(
-      tools,
-      tools.map((tool) => tool.name),
-    );
+    const tools: AgentTool[] = [
+      ...workingToolsFor(definition, definition.cwd, { guard: deps.guard }),
+      ...(menuTools(menu) as AgentTool[]),
+    ];
+    current.lead = leadOf(standing(definition.instructions, definition.workspace), tools);
+    agent.state.model = model;
+    agent.state.thinkingLevel = thinkingLevel;
+    agent.state.tools = tools;
+    // The context the model reads: the leading system message, then the engine part's context —
+    // the conversation so far, a Compaction's summary in place of what it cut.
+    const context = part.context();
+    agent.state.messages = current.lead ? [current.lead, ...context] : context;
+    // Nothing queued before this Submission reaches it: a restatement belongs to the Turn that asked
+    // for it (ADR-0029), and pi's `abort()` does not clear the queues.
+    agent.clearAllQueues();
+    part.appendSubmission();
 
-    // pi's abort() REJECTS when a wind-down step throws (queue flush, idle wait, a subscriber on
-    // the abort event — e.g. an EPIPE from the printer during shutdown). Nothing awaits this
-    // listener, so an uncaught rejection would take down the whole process — every conversation,
-    // not just this Submission. Logged to the pod log instead; the settlement is the sweep's.
-    const onAbort = () => {
-      harness.abort().catch((err: unknown) => {
-        console.error(`[${deps.agentName}] abort wind-down failed:`, err);
-      });
-    };
+    const onAbort = () => agent.abort();
     signal.addEventListener("abort", onAbort, { once: true });
     try {
       if (signal.aborted) throw new Error("swept before its turn started");
@@ -392,14 +455,12 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // call was out, or an abort cut it while the model was still writing the call: the history
       // answers it with jr2's text from here on, which pi adds to no event. So the log shows that
       // answer once, here, before the prompt that follows the call (ADR-0023).
-      const cuts = cutPickAnswers((await assembled.session.buildContext()).messages).filter(
-        (answer) => !printedCuts.has(answer.toolCallId),
-      );
+      const cuts = cutPickAnswers(context).filter((answer) => !printedCuts.has(answer.toolCallId));
       for (const answer of cuts) printedCuts.add(answer.toolCallId);
       printLines(out, deps.agentName, cuts.flatMap(renderMessage));
       // The Briefing's Turn part FOLLOWS the Frame's prompt (ADR-0062): the author's task reads
       // first, and the Allowed picks last, where a model obeys them (ADR-0029, measured).
-      const answer = await harness.prompt(
+      await agent.prompt(
         briefedPrompt(
           message,
           turnPart({
@@ -407,23 +468,24 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
             cwd: definition.cwd,
             allowed: read.allowed,
             toolName: menuToolName,
-            briefings: assembled.current.briefings,
+            briefings: current.briefings,
             ...(submission.notices ? { notices: submission.notices } : {}),
           }),
         ),
       );
-      // The watch's SELF-abort (ADR-0035): pi resolved with stopReason `aborted`, but the pump's
-      // signal never fired. Checked first so the runaway reason wins over the generic mapping
-      // below; a sweep that raced the trip still settles `aborted` — the pump's own signal check
-      // outranks any throw.
+      // The watch's SELF-abort (ADR-0035): pi ended the run, but the pump's signal never fired.
+      // Checked first so the runaway reason wins over the generic mapping below; a sweep that raced
+      // the trip still settles `aborted` — the pump's own signal check outranks any throw.
       if (watch.tripped) throw new RunawayError(watch.tripped);
-      // pi 0.82 resolves prompt() even on abort/failure — the synthesized message carries the
-      // outcome. Rejecting here is what lets the pump promote the next admission promptly.
-      if (signal.aborted || answer.stopReason === "aborted") {
-        throw new Error(answer.errorMessage ?? "the run aborted");
+      // Read through the seat: the listener set it while `prompt()` ran.
+      const answer = turn.answer as AssistantMessage | undefined;
+      // pi resolves prompt() even on abort/failure — its last message carries the outcome.
+      // Rejecting here is what lets the pump promote the next admission promptly.
+      if (signal.aborted || !answer || answer.stopReason === "aborted") {
+        throw new Error(answer?.errorMessage ?? "the run aborted");
       }
-      // A provider that still refused the load after pi's retries is NAMED (ADR-0064): the fixed
-      // prefix `provider limit`, so the fault reason tells provider pressure from a bug.
+      // A provider that still refused the load after the Harness's retries is NAMED (ADR-0064):
+      // the fixed prefix `provider limit`, so the fault reason tells provider pressure from a bug.
       if (answer.stopReason === "error") {
         throw new Error(providerLimit(answer) ?? answer.errorMessage ?? "provider failure");
       }
@@ -436,7 +498,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
 /**
  * A Menu item whose pick a stopping Harness can cut (ADR-0031): `cut` aborts the pick's requests —
  * the poll ends unanswered, so the Orchestrator does not count its answer as read — and the call
- * then never returns. pi gets no result for it, writes none to the session, and asks the model
+ * then never returns. pi gets no result for it, writes none to the engine part, and asks the model
  * nothing more; the next process answers the call with jr2's text (`settleCutPicks`, the pick
  * reached the workflow), and the re-admission carries the answer.
  */
@@ -454,8 +516,13 @@ function cutWith(item: MenuItem, cut: AbortSignal): MenuItem {
 }
 
 /** An aborted assistant message with real content, re-tagged so pi's API layer replays instead of
- * dropping it (see the `context` hook above). Anything else passes through — including pi's
- * synthesized failure shells, whose only content is an empty text block. */
+ * dropping it (`convertToLlm` above). pi keeps an aborted partial message in the engine part but
+ * REPLAYS none of it — its API layer drops any assistant message whose stopReason is `aborted` from
+ * every later request, which is byte-for-byte the flue defect ADR-0027 inverts (an abort mid-stream
+ * must NOT erase the assistant message). So it settles at send time: an aborted message that carried
+ * real content re-enters the context completed (pi synthesizes results for its orphaned tool calls).
+ * Anything else passes through — including pi's synthesized failure shells, whose only content is an
+ * empty text block. */
 function settleAbandonedMessage(message: AgentMessage): AgentMessage {
   if ((message as { role?: string }).role !== "assistant") return message;
   const assistant = message as AssistantMessage;

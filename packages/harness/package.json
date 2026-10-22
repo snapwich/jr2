@@ -14,8 +14,8 @@
     "test": "node --test --test-global-setup=../../scripts/test-tmpdir.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.82.1",
-    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
     "@hono/node-server": "^2.0.6",
     "hono": "^4.12.27"
   },

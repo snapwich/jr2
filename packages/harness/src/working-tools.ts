@@ -1,31 +1,25 @@
 // Working tools (ADR-0027/0028): the file and shell tools the Harness executes in its own
-// container — what an Agent may DO (the Menu, read through the Custodian, is what it may SAY). pi
-// ships read/write/edit/bash; grep and glob are jr2-written (`rg` with a plain-`grep` fallback
-// when rg is absent; `find`). `rg` is vendored into the image at /opt/jr2/bin and reached off PATH,
-// never by absolute path, so a user's own rg in a Sandbox Image wins (ADR-0037) and the plain-grep
-// fallback still covers a host run. The definition's `workspace` filters the set: `"read"` withholds
-// write and edit (ADR-0028) — bash stays, because the tool layer states intent and stops the
-// honest path; the worktree layer is the containment. `"none"` withholds the whole set — the
-// Menu-only Agent has no data plane at all. `bash` is pi's, wrapped (bash-tool.ts, ADR-0061).
+// container — what an Agent may DO (the Menu, read through the Custodian, is what it may SAY). All
+// six are jr2's: read/write/edit (`file-tools.ts`) and bash (`bash-tool.ts`, ADR-0061) are ports of
+// pi-agent-core 0.82.1's, which pi 1.x removed, and keep the text the model reads; grep and glob are
+// jr2-written (`rg` with a plain-`grep` fallback when rg is absent; `find`). `rg` is vendored into
+// the image at /opt/jr2/bin and reached off PATH, never by absolute path, so a user's own rg in a
+// Sandbox Image wins (ADR-0037) and the plain-grep fallback still covers a host run. Each tool
+// closes over the Frame's `cwd` (ADR-0057). The definition's `workspace` filters the set: `"read"`
+// withholds write and edit (ADR-0028) — bash stays, because the tool layer states intent and stops
+// the honest path; the worktree layer is the containment. `"none"` withholds the whole set — the
+// Menu-only Agent has no data plane at all.
 
 import { execFile } from "node:child_process";
-import {
-  type AgentHarnessTool,
-  type AgentToolResult,
-  createEditTool,
-  createReadTool,
-  createWriteTool,
-  type ExecutionToolContext,
-} from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { bashTool } from "./bash-tool.ts";
+import { fileTools } from "./file-tools.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
 import type { AgentDefinition } from "./spec.ts";
 
-/** A Working tool, in the shape the harness assembly consumes (`setTools`). The built-in file
- * tools draw the Frame's cwd from the harness's `toolContext` (`NodeExecutionEnv`); grep/glob
- * close over the same cwd directly. */
-export type WorkingTool = AgentHarnessTool<ExecutionToolContext>;
+/** A Working tool, in the shape the loop runs (`AgentTool`). */
+export type WorkingTool = AgentTool;
 
 /** Output bound for grep/glob — a search that would flood the context truncates, loudly. */
 const MAX_LINES = 200;
@@ -46,9 +40,8 @@ export function workingToolsFor(
 ): WorkingTool[] {
   if (definition.workspace === "none") return [];
   const search: WorkingTool[] = [grepTool(cwd), globTool(cwd)];
-  const bash = bashTool(opts.guard ? { guard: opts.guard } : {});
-  if (definition.workspace === "read") return [createReadTool(), bash, ...search];
-  return [createReadTool(), createWriteTool(), createEditTool(), bash, ...search];
+  const bash = bashTool({ cwd, guard: opts.guard }) as WorkingTool;
+  return [...fileTools(cwd, { readOnly: definition.workspace === "read" }), bash, ...search];
 }
 
 const grepSchema = Type.Object({
@@ -58,7 +51,7 @@ const grepSchema = Type.Object({
   ),
 });
 
-function grepTool(cwd: string): AgentHarnessTool<ExecutionToolContext, typeof grepSchema, undefined> {
+function grepTool(cwd: string): AgentTool<typeof grepSchema, undefined> {
   return {
     name: "grep",
     label: "grep",
@@ -84,7 +77,7 @@ const globSchema = Type.Object({
   ),
 });
 
-function globTool(cwd: string): AgentHarnessTool<ExecutionToolContext, typeof globSchema, undefined> {
+function globTool(cwd: string): AgentTool<typeof globSchema, undefined> {
   return {
     name: "glob",
     label: "glob",

@@ -7,14 +7,15 @@
 // Truncation is load-bearing too — kubelet rotates at 10Mi and drops the remainder, so an
 // untruncated turn loses its own beginning.
 
-import type { AgentHarnessEvent, AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Api, AssistantMessage, Model, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { RanAt } from "./provider.ts";
 import { MENU_TOOL_PREFIX } from "./menu-tools.ts";
 import type { EchoEvent } from "./wire.ts";
 
-/** What the printer needs from an AgentHarness: the in-process event stream. */
+/** What the printer needs from a pi `Agent`: the in-process event stream. */
 export type PrinterSource = {
-  subscribe(listener: (event: AgentHarnessEvent) => void): () => void;
+  subscribe(listener: (event: AgentEvent) => void): () => void;
 };
 
 /** Where the lines go — `process.stdout` (the pod log) unless a test collects them. */
@@ -97,16 +98,32 @@ export function renderMessage(message: AgentMessage): string[] {
 /**
  * The Compaction line (ADR-0036) — the one mechanic a reader must see. A turn that summarized 120
  * tool calls away is not an agent that forgot what it read at step 20, and without this line the
- * two are indistinguishable in the pod log. Facts only, and only here: pi emits `session_compact`
- * from its idle-guarded `compact()` alone, which a mid-turn cut cannot call, so this renderer has
- * a CALLER (`turn.ts`) instead of a subscription — the `renderEchoEvent` shape. The cut itself is
- * pi's compaction entry; this is its projection, never the record.
+ * two are indistinguishable in the pod log. Facts only, and only here: pi has no Compaction and no
+ * event for one, so this renderer has a CALLER (`turn.ts`) instead of a subscription — the
+ * `renderEchoEvent` shape. The cut itself is the engine part's compaction entry; this is its
+ * projection, never the record.
  *
  * The two numbers are measured differently on purpose (`compaction.ts` says why): before is the
  * provider's own count, after is an estimate of what remains.
  */
 export function renderCompaction(tokensBefore: number, tokensAfter: number, contextWindow: number): string {
   return `[compacted] context ${tokensBefore} → ~${tokensAfter} tokens (window ${contextWindow})`;
+}
+
+/**
+ * The thinking level line (ADR-0023, ADR-0018): a model that has no level of the name the Turn asked
+ * for ran at another one, and the reader sees which. A mechanic line, like `[compacted]`: printed
+ * once a Submission, never on the wire, never in the history. The words name no engine. `ran` says
+ * who chose the level: the Harness (it clamped the level it sent, or its request sent the
+ * provider's word for the level), the provider (its answer named the level), or nobody that the
+ * Harness knows.
+ */
+export function renderThinkingLevel(model: Model<Api>, asked: string, ran: RanAt | undefined): string {
+  const head = `[thinking level] ${model.provider}/${model.id} has no level "${asked}"`;
+  if (ran?.by === "clamp") return `${head}; the Harness sent "${ran.level}"`;
+  if (ran?.by === "request") return `${head}; the Harness sent effort "${ran.level}"`;
+  if (ran?.by === "answer") return `${head}; the provider chose "${ran.level}"`;
+  return `${head}; the provider chose the level`;
 }
 
 /** A conversation line's one shape: the Agent name, then a labelled body that may span lines.
@@ -118,12 +135,12 @@ export function printLines(out: PrinterOut, agentName: string, bodies: string[])
 }
 
 /**
- * Subscribe the conversation printer to a harness's event stream. Every line carries the Agent
+ * Subscribe the conversation printer to a pi `Agent`'s event stream. Every line carries the Agent
  * name alone — the minted iid mostly restates it (ADR-0015), and per-conversation diagnostics
  * live elsewhere. Returns the unsubscribe.
  */
-export function attachPrinter(harness: PrinterSource, agentName: string, out: PrinterOut = process.stdout): () => void {
-  return harness.subscribe((event) => {
+export function attachPrinter(source: PrinterSource, agentName: string, out: PrinterOut = process.stdout): () => void {
+  return source.subscribe((event) => {
     if (event.type !== "message_end") return;
     printLines(out, agentName, renderMessage(event.message));
   });

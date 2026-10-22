@@ -38,9 +38,9 @@ definition can state.
   the invocation. Placement is definitional, which is this ADR's thesis extended one step: what an Agent may do to the
   Workspace decides where it runs. (`cwd` is moot for `"none"` — only Working tools consume it.)
 - **The tool layer enforces the honest path.** `access: "read"` withholds `write` and `edit` from the assembled working
-  tools (pi's journaled active-tool set). `bash` stays — the reviewer's own instructions require running the tests — and
-  the ADR says plainly what that means: a shell can write, so the tool layer states intent and stops the honest path. It
-  is known leaky, and it is not the guarantee.
+  tools (the tool set that the Harness gives the loop for each Submission). `bash` stays — the reviewer's own
+  instructions require running the tests — and the ADR says plainly what that means: a shell can write, so the tool
+  layer states intent and stops the honest path. It is known leaky, and it is not the guarantee.
 - **The worktree layer contains the blast radius: a reviewer works in a detached review worktree.** The attach step —
   already jr2-owned (`sandbox-kubectl.ts`'s `attachScript`) — adds a worktree at the sha under review with a detached
   HEAD, sibling to the branch worktree per the Project layout. A write there cannot move the branch or dirty the coder's

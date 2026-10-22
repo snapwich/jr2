@@ -24,7 +24,7 @@ function tool(name: string): WorkingTool {
 }
 
 async function output(t: WorkingTool, params: unknown): Promise<string> {
-  const result = await t.execute("call-1", params as never, undefined, undefined, undefined as never);
+  const result = await t.execute("call-1", params as never, undefined, undefined);
   const first = result.content[0];
   assert.ok(first && first.type === "text", "expected text content");
   return first.text;
@@ -121,4 +121,26 @@ test('glob: path narrows the search; zero matches answers "no matches"', async (
 
 test("glob: a missing directory throws", async () => {
   await assert.rejects(output(tool("glob"), { pattern: "*", path: "no-such-dir" }));
+});
+
+test("each Working tool declares to the model what pi 0.82.1 declared, byte for byte (ADR-0027)", async () => {
+  // The fixture is the tools block of the golden capture made on pi 0.82.1 (`working-tools`), with
+  // the Menu tools left out. JSON text, so the key order counts: it is part of what a provider caches.
+  const { toToolDeclaration } = await import("@earendil-works/pi-ai");
+  const { readFileSync } = await import("node:fs");
+  const golden = JSON.parse(readFileSync(join(dirname(fixtures), "working-tool-declarations.json"), "utf8")) as Array<{
+    name: string;
+    description: string;
+    parameters: unknown;
+    strict: boolean;
+  }>;
+  const declared = workingToolsFor(definition, fixtures).map(toToolDeclaration);
+  assert.deepEqual(
+    declared.map((d) => d.name),
+    golden.map((g) => g.name),
+  );
+  for (const [i, tool] of declared.entries()) {
+    const { strict: _strict, ...expected } = golden[i]!;
+    assert.equal(JSON.stringify(tool), JSON.stringify(expected), `${tool.name}'s declaration changed`);
+  }
 });

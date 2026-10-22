@@ -1,0 +1,3825 @@
+[
+  {
+    "name": "a split turn inside one Submission",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 12,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 8,
+        "isSplitTurn": true,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Find the flag.\n\n[Assistant]: Looking.\n\n[Assistant tool calls]: read(path=\"src/a.ts\")\n\n[Tool result]: export const a = 1;\n\n[Assistant thinking]: The flag is near.\n\n[Assistant tool calls]: bash(command=\"grep -rn flag .\")\n\n[Tool result]: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n\n[... 500 more characters truncated]\n\n[Assistant tool calls]: write(path=\"out/flag.txt\", content=\"found\")\n\n[Tool result]: Successfully wrote 5 bytes to out/flag.txt\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1\n\n<read-files>\nsrc/a.ts\n</read-files>\n\n<modified-files>\nout/flag.txt\n</modified-files>",
+      "firstKept": 8,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": ["src/a.ts"],
+        "modifiedFiles": ["out/flag.txt"]
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "a cut at a Submission's prompt (the mark before it makes a split turn)",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "First task."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "edit",
+              "arguments": {
+                "path": "b.md",
+                "edits": [
+                  {
+                    "oldText": "x",
+                    "newText": "y"
+                  }
+                ]
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "edit",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully replaced 1 block(s) in b.md."
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "First done."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Second task, with a long prompt that is longer than the budget the cut keeps."
+            }
+          ],
+          "timestamp": 1
+        }
+      }
+    ],
+    "keepRecentTokens": 12,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 5,
+        "isSplitTurn": true,
+        "tokensBefore": 1030
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: First task.\n\n[Assistant tool calls]: edit(path=\"b.md\", edits=[{\"oldText\":\"x\",\"newText\":\"y\"}])\n\n[Tool result]: Successfully replaced 1 block(s) in b.md.\n\n[Assistant]: First done.\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1\n\n<modified-files>\nb.md\n</modified-files>",
+      "firstKept": 5,
+      "tokensBefore": 1030,
+      "details": {
+        "readFiles": [],
+        "modifiedFiles": ["b.md"]
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "a budget that keeps everything",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 1000000,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 0,
+        "isSplitTurn": false,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n\n</conversation>\n\nThe messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "SUMMARY 1",
+      "firstKept": 0,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": [],
+        "modifiedFiles": []
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "history before a split turn: two summaries",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "First task."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "edit",
+              "arguments": {
+                "path": "b.md",
+                "edits": [
+                  {
+                    "oldText": "x",
+                    "newText": "y"
+                  }
+                ]
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "edit",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully replaced 1 block(s) in b.md."
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "First done."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Second task, with a long prompt that is longer than the budget the cut keeps."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c9",
+              "name": "bash",
+              "arguments": {
+                "command": "ls"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c9",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "a\nb"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Listed."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 8,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 7,
+        "isSplitTurn": true,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: First task.\n\n[Assistant tool calls]: edit(path=\"b.md\", edits=[{\"oldText\":\"x\",\"newText\":\"y\"}])\n\n[Tool result]: Successfully replaced 1 block(s) in b.md.\n\n[Assistant]: First done.\n</conversation>\n\nThe messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        },
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Second task, with a long prompt that is longer than the budget the cut keeps.\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "SUMMARY 1\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 2\n\n<modified-files>\nb.md\n</modified-files>",
+      "firstKept": 7,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": [],
+        "modifiedFiles": ["b.md"]
+      },
+      "usage": {
+        "input": 300,
+        "output": 20,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 320,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "a second cut: the update prompt, the previous summary and its file lists",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "compaction",
+        "summary": "## Goal\nThe first summary.",
+        "firstKept": 6,
+        "tokensBefore": 190000,
+        "details": {
+          "readFiles": ["src/a.ts"],
+          "modifiedFiles": ["out/flag.txt"]
+        },
+        "usage": {
+          "input": 500,
+          "output": 10,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 510,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "timestamp": 4
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c4",
+              "name": "read",
+              "arguments": {
+                "path": "src/c.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c4",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const c = 3;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Read c."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 8,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 10,
+        "isSplitTurn": false,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[Assistant tool calls]: write(path=\"out/flag.txt\", content=\"found\")\n\n[Tool result]: Successfully wrote 5 bytes to out/flag.txt\n\n[Assistant]: Done looking.\n</conversation>\n\n<previous-summary>\n## Goal\nThe first summary.\n</previous-summary>\n\nThe messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information. RULES:\n- PRESERVE all existing information from the previous summary\n- ADD new progress, decisions, and context from the new messages\n- UPDATE the Progress section: move items from \"In Progress\" to \"Done\" when completed\n- UPDATE \"Next Steps\" based on what was accomplished\n- PRESERVE exact file paths, function names, and error messages\n- If something is no longer relevant, you may remove it\n\nUse this EXACT format:\n\n## Goal\n[Preserve existing goals, add new ones if the task expanded]\n\n## Constraints & Preferences\n- [Preserve existing, add new ones discovered]\n\n## Progress\n### Done\n- [x] [Include previously done items AND newly completed items]\n\n### In Progress\n- [ ] [Current work - update based on progress]\n\n### Blocked\n- [Current blockers - remove if resolved]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale] (preserve all previous, add new)\n\n## Next Steps\n1. [Update based on current state]\n\n## Critical Context\n- [Preserve important context, add new if needed]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "SUMMARY 1\n\n<read-files>\nsrc/a.ts\n</read-files>\n\n<modified-files>\nout/flag.txt\n</modified-files>",
+      "firstKept": 10,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": ["src/a.ts"],
+        "modifiedFiles": ["out/flag.txt"]
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "a second cut that reaches the first cut's kept tail",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "compaction",
+        "summary": "## Goal\nThe first summary.",
+        "firstKept": 4,
+        "tokensBefore": 190000,
+        "details": {
+          "readFiles": [],
+          "modifiedFiles": []
+        },
+        "usage": {
+          "input": 500,
+          "output": 10,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 510,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "timestamp": 4
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "After the cut."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 4,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 10,
+        "isSplitTurn": false,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[Assistant thinking]: The flag is near.\n\n[Assistant tool calls]: bash(command=\"grep -rn flag .\")\n\n[Tool result]: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n\n[... 500 more characters truncated]\n\n[Assistant tool calls]: write(path=\"out/flag.txt\", content=\"found\")\n\n[Tool result]: Successfully wrote 5 bytes to out/flag.txt\n\n[Assistant]: Done looking.\n</conversation>\n\n<previous-summary>\n## Goal\nThe first summary.\n</previous-summary>\n\nThe messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information. RULES:\n- PRESERVE all existing information from the previous summary\n- ADD new progress, decisions, and context from the new messages\n- UPDATE the Progress section: move items from \"In Progress\" to \"Done\" when completed\n- UPDATE \"Next Steps\" based on what was accomplished\n- PRESERVE exact file paths, function names, and error messages\n- If something is no longer relevant, you may remove it\n\nUse this EXACT format:\n\n## Goal\n[Preserve existing goals, add new ones if the task expanded]\n\n## Constraints & Preferences\n- [Preserve existing, add new ones discovered]\n\n## Progress\n### Done\n- [x] [Include previously done items AND newly completed items]\n\n### In Progress\n- [ ] [Current work - update based on progress]\n\n### Blocked\n- [Current blockers - remove if resolved]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale] (preserve all previous, add new)\n\n## Next Steps\n1. [Update based on current state]\n\n## Critical Context\n- [Preserve important context, add new if needed]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "SUMMARY 1\n\n<modified-files>\nout/flag.txt\n</modified-files>",
+      "firstKept": 10,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": [],
+        "modifiedFiles": ["out/flag.txt"]
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "thinking high: the summary request reasons",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 12,
+    "thinkingLevel": "high",
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 8,
+        "isSplitTurn": true,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Find the flag.\n\n[Assistant]: Looking.\n\n[Assistant tool calls]: read(path=\"src/a.ts\")\n\n[Tool result]: export const a = 1;\n\n[Assistant thinking]: The flag is near.\n\n[Assistant tool calls]: bash(command=\"grep -rn flag .\")\n\n[Tool result]: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n\n[... 500 more characters truncated]\n\n[Assistant tool calls]: write(path=\"out/flag.txt\", content=\"found\")\n\n[Tool result]: Successfully wrote 5 bytes to out/flag.txt\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "reasoning": "high",
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1\n\n<read-files>\nsrc/a.ts\n</read-files>\n\n<modified-files>\nout/flag.txt\n</modified-files>",
+      "firstKept": 8,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": ["src/a.ts"],
+        "modifiedFiles": ["out/flag.txt"]
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "a model that states no maxTokens",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 12,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 0
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 8,
+        "isSplitTurn": true,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Find the flag.\n\n[Assistant]: Looking.\n\n[Assistant tool calls]: read(path=\"src/a.ts\")\n\n[Tool result]: export const a = 1;\n\n[Assistant thinking]: The flag is near.\n\n[Assistant tool calls]: bash(command=\"grep -rn flag .\")\n\n[Tool result]: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n\n[... 500 more characters truncated]\n\n[Assistant tool calls]: write(path=\"out/flag.txt\", content=\"found\")\n\n[Tool result]: Successfully wrote 5 bytes to out/flag.txt\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1\n\n<read-files>\nsrc/a.ts\n</read-files>\n\n<modified-files>\nout/flag.txt\n</modified-files>",
+      "firstKept": 8,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": ["src/a.ts"],
+        "modifiedFiles": ["out/flag.txt"]
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "a model that does not reason: no reasoning at high",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 12,
+    "thinkingLevel": "high",
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": false,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 8,
+        "isSplitTurn": true,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Find the flag.\n\n[Assistant]: Looking.\n\n[Assistant tool calls]: read(path=\"src/a.ts\")\n\n[Tool result]: export const a = 1;\n\n[Assistant thinking]: The flag is near.\n\n[Assistant tool calls]: bash(command=\"grep -rn flag .\")\n\n[Tool result]: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n\n[... 500 more characters truncated]\n\n[Assistant tool calls]: write(path=\"out/flag.txt\", content=\"found\")\n\n[Tool result]: Successfully wrote 5 bytes to out/flag.txt\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1\n\n<read-files>\nsrc/a.ts\n</read-files>\n\n<modified-files>\nout/flag.txt\n</modified-files>",
+      "firstKept": 8,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": ["src/a.ts"],
+        "modifiedFiles": ["out/flag.txt"]
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "an aborted message and a cut pick: the plain role mapping",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Pick."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "I will pick."
+            },
+            {
+              "type": "toolCall",
+              "id": "p1",
+              "name": "mcp__jr2__review_verdict",
+              "arguments": {
+                "verdict": "approved"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "aborted",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": ""
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 0,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 10,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "errorMessage": "boom",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Again."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "p2",
+              "name": "mcp__jr2__review_verdict",
+              "arguments": {
+                "verdict": "approved"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Waiting."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 4,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 6,
+        "isSplitTurn": true,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Pick.\n\n[Assistant]: I will pick.\n\n[Assistant tool calls]: mcp__jr2__review_verdict(verdict=\"approved\")\n\n[Assistant]: \n</conversation>\n\nThe messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        },
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Again.\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "SUMMARY 1\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 2",
+      "firstKept": 6,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": [],
+        "modifiedFiles": []
+      },
+      "usage": {
+        "input": 300,
+        "output": 20,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 320,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "images count 4800 characters",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Look."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "i1",
+              "name": "read",
+              "arguments": {
+                "path": "a.png"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "i1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "Read image file [image/png]"
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Seen."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 4,
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 4,
+        "isSplitTurn": true,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Look.\n\n[Assistant tool calls]: read(path=\"a.png\")\n\n[Tool result]: Read image file [image/png]\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "summary": "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1\n\n<read-files>\na.png\n</read-files>",
+      "firstKept": 4,
+      "tokensBefore": 1010,
+      "details": {
+        "readFiles": ["a.png"],
+        "modifiedFiles": []
+      },
+      "usage": {
+        "input": 100,
+        "output": 10,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 110,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "the summary call fails",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 1000000,
+    "fail": "error",
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 0,
+        "isSplitTurn": false,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n\n</conversation>\n\nThe messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "error": "Summarization failed: 400 scripted summary failure"
+    }
+  },
+  {
+    "name": "the turn prefix call fails",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 12,
+    "fail": "error",
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 8,
+        "isSplitTurn": true,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n[User]: Find the flag.\n\n[Assistant]: Looking.\n\n[Assistant tool calls]: read(path=\"src/a.ts\")\n\n[Tool result]: export const a = 1;\n\n[Assistant thinking]: The flag is near.\n\n[Assistant tool calls]: bash(command=\"grep -rn flag .\")\n\n[Tool result]: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n\n[... 500 more characters truncated]\n\n[Assistant tool calls]: write(path=\"out/flag.txt\", content=\"found\")\n\n[Tool result]: Successfully wrote 5 bytes to out/flag.txt\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "error": "Turn prefix summarization failed: 400 scripted summary failure"
+    }
+  },
+  {
+    "name": "the summary call is aborted with no message",
+    "entries": [
+      {
+        "type": "submission"
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Find the flag."
+            }
+          ],
+          "timestamp": 1
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Looking."
+            },
+            {
+              "type": "toolCall",
+              "id": "c1",
+              "name": "read",
+              "arguments": {
+                "path": "src/a.ts"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "text",
+              "text": "export const a = 1;"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "The flag is near."
+            },
+            {
+              "type": "toolCall",
+              "id": "c2",
+              "name": "bash",
+              "arguments": {
+                "command": "grep -rn flag ."
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c2",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "c3",
+              "name": "write",
+              "arguments": {
+                "path": "out/flag.txt",
+                "content": "found"
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 2
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "c3",
+          "toolName": "write",
+          "content": [
+            {
+              "type": "text",
+              "text": "Successfully wrote 5 bytes to out/flag.txt"
+            }
+          ],
+          "isError": false,
+          "timestamp": 3
+        }
+      },
+      {
+        "type": "message",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done looking."
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "fake",
+          "model": "model-x",
+          "usage": {
+            "input": 1000,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1010,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 2
+        }
+      }
+    ],
+    "keepRecentTokens": 1000000,
+    "fail": "aborted",
+    "model": {
+      "id": "model-x",
+      "name": "model-x",
+      "api": "openai-completions",
+      "provider": "fake",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "reasoning": true,
+      "input": ["text"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    },
+    "output": {
+      "prepared": {
+        "firstKept": 0,
+        "isSplitTurn": false,
+        "tokensBefore": 1010
+      },
+      "requests": [
+        {
+          "systemPrompt": "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "<conversation>\n\n</conversation>\n\nThe messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages."
+                }
+              ]
+            }
+          ],
+          "options": {
+            "maxTokens": 8192,
+            "cacheRetention": "none"
+          }
+        }
+      ],
+      "error": "Summarization aborted"
+    }
+  }
+]

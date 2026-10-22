@@ -24,16 +24,18 @@ imports `@flue/sdk` in exactly one module (`flue-client.ts`), uses three verbs �
 `AgentRunPort`, and persists a three-string admission handle. The stub Harness (`stub-harness.ts`) is a hand-written,
 SDK-verified model of the five wire endpoints. And the base flue builds on is public: `@earendil-works/pi-agent-core`
 (MIT, independent of flue's authors) — from which flue imports only the low-level `Agent` loop and reimplements the
-rest. pi's `AgentHarness` is a **higher** starting point than flue's own: session tree, compaction, skills, an abort, an
-in-process event stream, and `setTools(tools, activeToolNames)` — the tool-restriction gap does not exist for a caller
-that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; grep and glob are ~40 lines each.
+rest. jr2 takes the same slim core: pi-agent-core gives the `Agent` loop, its tool hooks (`beforeToolCall`,
+`finishTurn`, `prepareRequest`), the abort, the steering queue and an in-process event stream. The tool-restriction gap
+does not exist for a caller that owns tool assembly. jr2 owns the rest: the engine part on disk, Compaction
+([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md)) and the six Working tools, whose text the model reads.
 
 ## Decision
 
 - **jr2 owns its Harness: `@jr2/harness` at `packages/harness`**, built on `@earendil-works/pi-agent-core` +
-  `@earendil-works/pi-ai` (pinned exact — 0.x minors break) and Hono, which the repo already uses. The stock image keeps
-  its tag (`jr2-harness:<kitversion>`) and every operator contract: numeric uid, binding `:8080` is Ready, `git` in the
-  image — plus `ripgrep` for the grep tool.
+  `@earendil-works/pi-ai` (pinned exact; a minor can break, and pi 1.0 removed the session, Compaction and the coding
+  tools from pi-agent-core) and Hono, which the repo already uses. The stock image keeps its tag
+  (`jr2-harness:<kitversion>`) and every operator contract: numeric uid, binding `:8080` is Ready, `git` in the image —
+  plus `ripgrep` for the grep tool.
 - **Assembly is runtime construction, not codegen.** `main.ts` constructs the server and listens; each admission carries
   its Agent's definition (ADR-0049), validated loudly and re-read per Submission. `boot.mjs`, the generated shims, the
   boot-time `flue build`, and the readiness lag it caused are deleted, and so — later — was the `JR2_AGENTS_JSON` roster
@@ -69,7 +71,8 @@ that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; g
     What is durable across a lost pod is Orchestrator-side — the admission ledger and snapshot
     ([ADR-0007](0007-durable-machine-state.md)), and `wait`'s reconnect-from-offset. A conversation that is gone
     surfaces as 404 → fault → workflow policy, the same family as `workspace.lost`. Provider-stream retry moves inside
-    the turn (pi's `maxRetries`) — the seat ADR-0016 delegated to flue's `durability{}`.
+    the turn: the Harness states 2 retries, and pi-ai runs them (`maxRetries`) — the seat ADR-0016 delegated to flue's
+    `durability{}`.
   - **[ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)'s enabling fact is reproduced
     as explicit code.** Each Submission reads `$JR2_CUSTODIAN_URL/agents/<iid>/surface` afresh and presents it to pi as
     the Menu, so the menu is per-turn with no push channel, no turn index, no second port. Menu tools keep the
@@ -113,9 +116,10 @@ that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; g
   pod against a scripted model, and `@model`
   ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)) against a real one —
   run all three before bumping the pin.
-- **The pinning risk moves; it does not vanish.** pi releases ~2.4×/week and breaks across 0.x minors. The pin is exact,
-  a bump is a deliberate kit change gated by the conformance suite, and the breaking surface is now a class jr2
-  constructs — not a code generator, a CLI build, and a process-global registry.
+- **The pinning risk moves; it does not vanish.** pi releases often and a minor can break. The pin is exact, a bump is a
+  deliberate kit change gated by the conformance suite, and the breaking surface is now the `Agent` loop's hooks and
+  pi-ai's provider adapters — not a code generator, a CLI build, and a process-global registry. What pi removed jr2 now
+  owns, so a bump cannot move it: the Working tools keep their text, and Compaction its algorithm.
 - **Migration is phased behind the wire.** Because both ends speak the same protocol, the image swap and the
   Orchestrator client swap are independent commits, each leaving every tier green; an old Orchestrator drives the new
   image and vice versa. `@flue/*` leaves the repo when the last pin (the retired contract tier) is deleted.

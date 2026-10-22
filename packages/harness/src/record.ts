@@ -8,7 +8,7 @@
 //   <root>/<agent>/<instance id>/record/admitted.jsonl    one { submissionId } per Admission
 //   <root>/<agent>/<instance id>/record/stream.jsonl      the stream log, one StreamEvent per line
 //   <root>/<agent>/<instance id>/record/messages.jsonl    the history view's messages
-//   <root>/<agent>/<instance id>/engine/<engine>/         the engine part (pi's sessions: engine/pi)
+//   <root>/<agent>/<instance id>/engine/<engine>/         the engine part (for pi: engine/pi/transcript.jsonl)
 //
 // Append-only JSONL, written synchronously: the Conversation's appends are synchronous, and a line
 // on disk before the append returns is what lets a rebuilt stream agree with every offset the
@@ -50,6 +50,9 @@ export type EngineSeat = {
   dir(engine: string): string | undefined;
   /** What was said in the conversation, as the record holds it. */
   history(): HistoryMessage[];
+  /** What a write to the engine part that failed does: the record's own fault (`RecordFault`). The
+   * engine part and the record are on one volume, so the next record write would fail too. */
+  fault: RecordFault;
 };
 
 /**
@@ -124,8 +127,9 @@ export function recorderAt(dir: string, fault: RecordFault): ConversationRecorde
 }
 
 /** The engine seat over a conversation directory (or over none: memory only). */
-export function engineSeat(dir: string | undefined, history: () => HistoryMessage[]): EngineSeat {
+export function engineSeat(dir: string | undefined, history: () => HistoryMessage[], fault: RecordFault): EngineSeat {
   return {
+    fault,
     dir: (engine) => {
       if (dir === undefined) return undefined;
       const own = join(dir, "engine", engine);
@@ -188,8 +192,9 @@ export function freeDir(dir: string): void {
 }
 
 /** Truncate a JSONL file to its last newline — every line is written whole with its newline, so
- * whatever follows the last one is a torn write (see `jsonl`). A missing file has no tail. */
-function cutTornTail(path: string): void {
+ * whatever follows the last one is a torn write (see `jsonl`). A missing file has no tail. The
+ * engine part's transcript has the same rule (`pi-engine.ts`). */
+export function cutTornTail(path: string): void {
   let bytes: Buffer;
   try {
     bytes = readFileSync(path);

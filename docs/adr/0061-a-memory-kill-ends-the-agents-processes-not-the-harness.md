@@ -4,8 +4,8 @@ The Agent runs its programs (Playwright and its Chromium, `tsc`, `cargo`) throug
 children of the Harness, in the Harness container's one cgroup (ADR-0005, ADR-0037). On cgroup v2 the kubelet sets
 `memory.oom.group`, so when those programs pass the container's limit (ADR-0060) the kernel kills the whole container:
 the Harness dies with them, its conversation with it, and the Turn faults as "conversation lost" (lab 2026-09-28; chaos
-test T11). Worse, pi's bash tool reports a command killed by a signal as success — `exitCode: code ?? 0` in
-pi-agent-core 0.82.1 — so when a program is killed the Agent sees its output stop partway and reads it as a pass.
+test T11). Worse, the bash tool that pi-agent-core 0.82.1 shipped reported a command killed by a signal as success
+(`exitCode: code ?? 0`), so when a program was killed the Agent saw its output stop partway and read it as a pass.
 
 **The Agent's processes** are every process in the Harness container except the Harness and its init: the tree of the
 running `bash` call, anything the Agent left running from earlier calls (a dev server, a watcher), and a human's
@@ -15,8 +15,8 @@ running `bash` call, anything the Agent left running from earlier calls (a dev s
 
 Layers, each a backstop for the one before:
 
-1. **A process killed by a signal is an error.** jr2 wraps pi's bash tool so a signal death reports the signal and never
-   exit 0. A Harness conformance test holds it (ADR-0027).
+1. **A process killed by a signal is an error.** jr2's bash tool reads the shell's exit: a signal death, of the command
+   or of the shell, reports the signal and never exit 0. A Harness conformance test holds it (ADR-0027).
 2. **`tini` is PID 1 in the Harness container**, shipped on `/opt/jr2`, so killed trees leave no zombies. Not
    `shareProcessNamespace` — ADR-0005 keeps it off for good.
 3. **The `bash` Working tool starts each command with `oom_score_adj=1000`**, inherited by its children. It needs no

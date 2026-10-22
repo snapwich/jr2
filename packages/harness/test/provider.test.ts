@@ -8,7 +8,9 @@ import assert from "node:assert/strict";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   admissionFault,
+  lacksLevel,
   modelsFor,
+  ranAt,
   resolveModel,
   mapThinkingLevel,
   providerLimit,
@@ -181,7 +183,7 @@ function failed(
   };
 }
 
-test("providerLimit: a refusal of the load after pi's retries is named, with the fixed prefix (ADR-0064)", () => {
+test("providerLimit: a refusal of the load after the Harness's retries is named, with the fixed prefix (ADR-0064)", () => {
   for (const error of [
     "429 Too Many Requests",
     "Rate limit reached for requests",
@@ -195,7 +197,7 @@ test("providerLimit: a refusal of the load after pi's retries is named, with the
   assert.equal(PROVIDER_LIMIT, "provider limit");
 });
 
-test("providerLimit: quota exhaustion is not a provider limit — pi does not retry it (ADR-0064)", () => {
+test("providerLimit: quota exhaustion is not a provider limit — pi does not call it retryable (ADR-0064)", () => {
   for (const error of [
     "429 You exceeded your current quota: insufficient_quota",
     "429 Monthly usage limit reached",
@@ -214,4 +216,60 @@ test("providerLimit: a retryable error that is not load keeps its own words", ()
   assert.equal(providerLimit(failed("400 invalid request")), undefined, "not retryable");
   assert.equal(providerLimit(failed(undefined)), undefined, "no words to read");
   assert.equal(providerLimit(failed("429 Too Many Requests", "aborted")), undefined, "an abort is the sweep's");
+});
+
+// ─── the level a model ran at (ADR-0018, ADR-0023) ───────────────────────────
+
+const answer = (over: Partial<AssistantMessage> = {}) =>
+  ({ role: "assistant", content: [], stopReason: "stop", ...over }) as unknown as AssistantMessage;
+
+test("a model can lack a level: the test is on pi's level names", () => {
+  const models = modelsFor(vllm, {});
+  const sonnet55 = resolveModel(models, "anthropic/claude-sonnet-5-5");
+  assert.equal(lacksLevel(sonnet55, "off"), true, "Claude Sonnet 5.5 has no off");
+  assert.equal(lacksLevel(sonnet55, "minimal"), true);
+  assert.equal(lacksLevel(sonnet55, "high"), false);
+  assert.equal(lacksLevel(resolveModel(models, "anthropic/claude-sonnet-5"), "off"), false);
+  // The custom provider's model states no map: it has off to high, and no xhigh.
+  const custom = resolveModel(models, "vllm/Qwen/Qwen3-32B");
+  assert.equal(lacksLevel(custom, "high"), false);
+  assert.equal(lacksLevel(custom, "xhigh"), true);
+  // An openai-responses model whose map names `off` "none": the provider's word is not pi's, and
+  // the model has the level. No line prints for it.
+  const luna = models.getModels("github-copilot").find((m) => m.thinkingLevelMap?.off === "none");
+  assert.ok(luna, "the catalog has an openai-responses model that maps off to none");
+  assert.equal(lacksLevel(luna, "off"), false);
+});
+
+test("ranAt: the Harness's clamp for the adapter jr2 registers, else the request's or the answer's word, else unknown", () => {
+  const models = modelsFor(vllm, {});
+  const custom = resolveModel(models, "vllm/Qwen/Qwen3-32B");
+  // OpenAI completions clamps the level and sends the clamp; the answer does not choose it.
+  assert.deepEqual(ranAt(custom, "xhigh", answer({ providerThinkingLevel: "anything" })), {
+    by: "clamp",
+    level: "high",
+  });
+  // The Anthropic adapter sets the word from the request that it builds: the Harness sent it.
+  const sonnet55 = resolveModel(models, "anthropic/claude-sonnet-5-5");
+  assert.deepEqual(ranAt(sonnet55, "off", answer({ providerThinkingLevel: "high" })), {
+    by: "request",
+    level: "high",
+  });
+  assert.equal(ranAt(sonnet55, "off", answer()), undefined);
+});
+
+test("ranAt: at off, an OpenAI completions model with no off gets no level, so the Harness names none", () => {
+  // At `off` the Harness gives the adapter no level. The adapter clamps nothing, and a map whose
+  // `off` is null sends no reasoning field: the line must not name the clamp `low`.
+  const models = modelsFor(vllm, {});
+  const gptOss = resolveModel(models, "cerebras/gpt-oss-120b");
+  assert.equal(gptOss.api, "openai-completions");
+  assert.equal(lacksLevel(gptOss, "off"), true, "the catalog model has no off");
+  assert.equal(ranAt(gptOss, "off", answer()), undefined);
+  assert.deepEqual(ranAt(gptOss, "xhigh", answer()), { by: "clamp", level: "high" });
+});
+
+test("the custom provider keeps `strict: false` on each tool, as pi 0.82.1 sent it", () => {
+  const custom = resolveModel(modelsFor(vllm, {}), "vllm/Qwen/Qwen3-32B");
+  assert.deepEqual(custom.compat, { supportsDeveloperRole: false, supportsStrictMode: true });
 });

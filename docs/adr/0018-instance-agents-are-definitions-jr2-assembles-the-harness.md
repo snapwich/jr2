@@ -63,7 +63,9 @@ One definition value may be carried by several Machines, so one persona legitima
 different workflows — a reviewer on a one-line diff and the same reviewer on an architecture change want identical
 instructions and different effort. Spread-composition (below) answers this with persona×tier files where "heavy" is a
 knob wearing a persona's filename, so `agentRun` takes two optional **dials**, `model` and `thinkingLevel`, layered over
-the definition per Submission.
+the definition per Submission. A model can lack a level (Claude Sonnet 5.5 has no `off`). The Harness does not refuse it
+at admission: the Turn runs, and the printed conversation names the level that the model ran at
+([ADR-0023](0023-the-harness-prints-the-conversation.md)).
 
 The line that keeps this from becoming "re-specify the definition at the call site": **identity vs. dial.** Identity —
 `instructions`, `access` — is definition-only: a call site that rewrote it would make the Agent's name a lie, and

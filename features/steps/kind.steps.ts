@@ -1880,7 +1880,7 @@ When(
  * The caller's prose reached the model — the whole reason `task` has a door. Asserted off the
  * provider's own recorded request, so what is checked is the text pi put on the wire, not what the
  * Machine believed it sent: between the two sit the input mapper, the admission, the Harness's
- * prompt handling and pi's session.
+ * prompt handling and the engine part.
  */
 Then("the model's first turn carries the prompt {string}", async function (this: E2EWorld, prompt: string) {
   assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");

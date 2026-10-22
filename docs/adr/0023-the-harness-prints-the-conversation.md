@@ -71,6 +71,17 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   Submission's in the same process. A message's answers print in the order of its calls, whichever came back first, and
   every prompt prints after the answers of the calls before it (a nudge, a restated Turn part and a re-admission alike),
   so no call's answer prints after a prompt that follows it.
+- **Two mechanic lines print.** A Compaction prints
+  `[<agent>] [compacted] context <before> → ~<after> tokens (window <w>)` where it cuts
+  ([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md)). When a model has no level of the name the Turn asked
+  for ([ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)), the Harness prints, once in a
+  Submission and before the first answer a provider gave, the level that the model ran at:
+  `[thinking level] <provider>/<id> has no level "<asked>"; the Harness sent "<level>"` when the Harness clamped the
+  level and sent the result, `the Harness sent effort "<word>"` when the Harness's own request sent the provider's word
+  for the level (Claude Sonnet 5.5 at `off` gets effort `high`), `the provider chose "<word>"` when the answer names it,
+  and `the provider chose the level` when the Harness does not know. At `off` the Harness sends no level, so an OpenAI
+  completions model with no `off` gets no reasoning field, and the line says that the provider chose. Neither line is on
+  the wire or in the history, and the model reads neither.
 - **The writer structures, the reader colorizes.** Lines carry a parseable prefix and no ANSI. jr's colors were correct
   for an fzf preview, which is a terminal; `kubectl logs` output is piped, grepped, and ingested, where escape codes are
   corruption. A future reader may colorize on `isatty`.

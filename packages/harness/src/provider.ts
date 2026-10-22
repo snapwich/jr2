@@ -9,11 +9,15 @@
 // carries its Agent's definition and the invocation's dials together — so the retired boot-time
 // sweep of a mounted roster has nothing left to sweep.
 //
-// `providerLimit` names a Turn's end when the provider still refused the load after pi's retries
-// (ADR-0064): the fixed prefix `provider limit`, as a memory kill has `memory limit` (ADR-0061).
+// `providerLimit` names a Turn's end when the provider still refused the load after the Harness's
+// retries (ADR-0064): the fixed prefix `provider limit`, as a memory kill has `memory limit`
+// (ADR-0061). `ranAt` names the thinking level a model ran at when it has no level of the name the
+// Turn asked for (ADR-0018): the Harness runs the Turn and says so, and never changes it silently.
 
 import {
+  clampThinkingLevel,
   createProvider,
+  getSupportedThinkingLevels,
   isRetryableAssistantError,
   type Api,
   type AssistantMessage,
@@ -145,8 +149,8 @@ export function mapThinkingLevel(level: ThinkingLevel): PiThinkingLevel {
   return mapped;
 }
 
-/** The fixed prefix of a fault reason for a provider that still refused the load after pi's
- * retries (ADR-0064) — so `jr2 status` and the Machine can tell provider pressure from a bug. */
+/** The fixed prefix of a fault reason for a provider that still refused the load after the
+ * Harness's retries (ADR-0064) — so `jr2 status` and the Machine can tell provider pressure from a bug. */
 export const PROVIDER_LIMIT = "provider limit";
 
 /** The load signals inside pi's retryable set (pi-ai `RETRYABLE_PROVIDER_ERROR_PATTERN`): a rate
@@ -156,10 +160,11 @@ const PROVIDER_PRESSURE =
   /overloaded|rate.?limit|too many requests|\b429\b|\b503\b|\b529\b|service.?unavailable|ResourceExhausted/i;
 
 /**
- * The fault reason for a Turn that ended on a provider's refusal after pi's retries, else
- * undefined. pi decides "retryable" first: quota or billing exhaustion is not retryable, so it is
- * never a provider limit (ADR-0064). A retryable error on a Turn's final message means the
- * retries ran out, so no retry count is read here.
+ * The fault reason for a Turn that ended on a provider's refusal after the Harness's retries
+ * (`turn.ts`, `PROVIDER_RETRIES`; pi-ai runs them), else undefined. pi decides "retryable" first:
+ * quota or billing exhaustion is not retryable, so it is never a provider limit (ADR-0064). A
+ * retryable error on a Turn's final message means the retries ran out, so no retry count is read
+ * here.
  */
 export function providerLimit(answer: AssistantMessage): string | undefined {
   if (!isRetryableAssistantError(answer)) return undefined;
@@ -167,8 +172,43 @@ export function providerLimit(answer: AssistantMessage): string | undefined {
   if (!PROVIDER_PRESSURE.test(error)) return undefined;
   return (
     `${PROVIDER_LIMIT} (${answer.provider}/${answer.model}): ${error} — the provider still refused the load ` +
-    "after pi's retries; this is provider pressure, not a fault in the Turn"
+    "after the Harness's retries; this is provider pressure, not a fault in the Turn"
   );
+}
+
+/** The level a model ran at, and where the Harness read it, when the Harness knows (`ranAt`):
+ * `clamp` — the Harness clamped the level to one of pi's level names and sent that; `request` — the
+ * Harness's own request sent this provider word (the adapter sets `providerThinkingLevel` from the
+ * request that it builds); `answer` — the provider's answer named this word. */
+export type RanAt = { by: "clamp" | "request" | "answer"; level: string };
+
+/** True when the model has no level of this name. A model can lack one: Claude Sonnet 5.5 has no
+ * `off`. The test is on pi's level names, never on what a provider answered. */
+export function lacksLevel(model: Model<Api>, asked: PiThinkingLevel): boolean {
+  return !getSupportedThinkingLevels(model).includes(asked);
+}
+
+/** The adapters that set `providerThinkingLevel` from the request that they build, not from the
+ * answer: Anthropic sends `output_config.effort` (`high` when it gets no effort), and OpenAI
+ * responses sends its configuration effort. Of the other adapters, only pi's own messages API sets
+ * the word, and it reads it from the answer. */
+const REQUEST_SIDE_LEVEL: ReadonlySet<Api> = new Set<Api>(["anthropic-messages", "openai-responses"]);
+
+/**
+ * The level a model ran at, for a level it lacks. OpenAI completions (the one adapter jr2 registers
+ * itself, `CUSTOM_APIS`) clamps the level and sends the result — but only a level that the Harness
+ * gives it: at `off` the Harness gives no level, the adapter clamps nothing, and a model whose map
+ * has no `off` gets no reasoning field. Else the `providerThinkingLevel` word: the Harness's own
+ * request for the adapters in `REQUEST_SIDE_LEVEL`, the provider's answer for the others. Else
+ * undefined — the provider chose the level, and the Harness does not know which.
+ */
+export function ranAt(model: Model<Api>, asked: PiThinkingLevel, message: AssistantMessage): RanAt | undefined {
+  if (model.api === "openai-completions") {
+    return asked === "off" ? undefined : { by: "clamp", level: clampThinkingLevel(model, asked) };
+  }
+  const word = message.providerThinkingLevel;
+  if (!word) return undefined;
+  return { by: REQUEST_SIDE_LEVEL.has(model.api) ? "request" : "answer", level: word };
 }
 
 const PI_LEVELS: Record<ThinkingLevel, PiThinkingLevel> = {
@@ -212,6 +252,10 @@ function customModel(spec: ProviderSpec, id: string): Model<Api> {
     maxTokens: limits?.maxTokens ?? spec.maxTokens ?? 0,
     // A self-hosted OpenAI-compatible server renders the model's own chat template, which knows
     // `system` and not OpenAI's `developer` — pi would send `developer` for a reasoning model.
-    compat: { supportsDeveloperRole: false },
+    // `supportsStrictMode` keeps `"strict": false` on each tool, as pi 0.82.1 sent it: a vLLM chat
+    // template renders the tool object into the prompt, so the field is text the model reads. It is
+    // `false` because no jr2 tool sets `constrainedSampling`; a tool that set it would need a new
+    // decision here.
+    compat: { supportsDeveloperRole: false, supportsStrictMode: true },
   };
 }

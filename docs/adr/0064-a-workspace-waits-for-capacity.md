@@ -37,9 +37,9 @@ Workspaces for the Instance (R4), and concurrent Turns per model provider (R5)?
   Sandbox that was placed and then faulted keeps ADR-0021's rule: it stays inspectable (logs, `jr2 ssh`) and ages out at
   the idle timeout.
 - **jr2 caps nothing of its own.** Not live Workspaces (R4), not concurrent Turns per provider (R5). See the options.
-- **A provider's refusal is named.** A Turn that ends because pi ran out of retries has a fault reason with the fixed
-  prefix `provider limit`, as a memory kill has `memory limit` (ADR-0061), so `jr2 status` and the Machine can tell
-  provider pressure from a bug.
+- **A provider's refusal is named.** A Turn that ends because the Harness's provider retries ran out has a fault reason
+  with the fixed prefix `provider limit`, as a memory kill has `memory limit` (ADR-0061), so `jr2 status` and the
+  Machine can tell provider pressure from a bug.
 
 ## Considered options
 
@@ -56,9 +56,11 @@ Workspaces for the Instance (R4), and concurrent Turns per model provider (R5)?
     blocks the provider while it has nothing to do.
   - A fixed number is the wrong measure: hosted providers limit tokens and requests per minute, vLLM by batch and KV
     cache.
-  - The wait already happens in the right place: vLLM queues in arrival order, and pi retries 429, 503 and overload with
-    backoff, honors `retry-after`, and does not retry quota exhaustion (pi-ai 0.82.1). The scaling review measured slow
-    Turns at 40 concurrent (about 90s against 14s alone), which is throughput a cap cannot add, and no failed ones.
+  - The wait already happens in the right place: vLLM queues in arrival order, and the Harness retries twice, through
+    pi-ai, with backoff, and honors `retry-after` up to 60 s (pi-ai 1.4.0). pi-ai retries what the SDKs retry: a 408, a
+    409, a 429, each 5xx, and a connection error (an error with no status). So a quota 429 is asked again too; its
+    settlement keeps the quota's own words, never `provider limit`. The scaling review measured slow Turns at 40
+    concurrent (about 90s against 14s alone), which is throughput a cap cannot add, and no failed ones.
   - A slow provider cannot make a Runaway: ADR-0035 counts steps and repeats, not time.
   - If a hosted provider's 429 storm is ever measured, the answer is shared backoff at the Custodian (Envoy's global
     rate limit), not a Turn count.

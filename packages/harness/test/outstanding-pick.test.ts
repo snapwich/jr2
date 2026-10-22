@@ -538,7 +538,7 @@ test("a Menu call in a message a provider error ended gets no answer and is not 
   assert.deepEqual(settleCutPicks(later), later);
 });
 
-test("the cut answers a rebuilt session prints are those of the Menu calls it ends in; a cut call further back printed already (ADR-0023)", () => {
+test("the cut answers a rebuilt engine part prints are those of the Menu calls it ends in; a cut call further back printed already (ADR-0023)", () => {
   const cutTurn = [
     { role: "user", content: "go", timestamp: 1 },
     {

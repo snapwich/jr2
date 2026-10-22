@@ -195,7 +195,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
       agentName,
       instanceId,
       appendMessage: (message) => created.appendMessage(message),
-      engine: engineSeat(dir, () => created.historyView().messages),
+      engine: engineSeat(dir, () => created.historyView().messages, recordFault),
     });
     created = recorded
       ? Conversation.rebuilt(recorded, run, recorder)

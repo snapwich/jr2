@@ -1,136 +1,350 @@
-// The `bash` Working tool (ADR-0027), wrapped (ADR-0061). pi's own tool runs the command; jr2 wraps
-// it for three claims pi does not make:
+// Ported from @earendil-works/pi-agent-core 0.82.1 (MIT, see PI-LICENSE): dist/harness/tools/bash.js and dist/harness/utils/shell-output.js
 //
-//   1. A process killed by a signal is an error that names the signal, never exit 0. pi-agent-core
-//      0.82.1 reports `exitCode: code ?? 0`, so a command whose top process died by a signal — and
-//      `bash -c 'one command'` execs the command AS the top process — read as a pass, its output
-//      cut off partway. The wrapper runs the command in a subshell, so the shell pi spawned sees
-//      the death as 128+n; and the shell writes its status to a file as its last act, so a shell
-//      that was itself killed (and so wrote nothing) is an error too, not pi's 0.
+// The `bash` Working tool (ADR-0027, ADR-0061). The output the model reads is pi 0.82.1's, byte for
+// byte: stdout and stderr together in arrival order, the control characters removed, the tail of
+// 2000 lines or 50 KB, the full output in a temporary file past that bound, and pi's status lines.
+// jr2 makes three claims in the tool itself:
+//
+//   1. A process killed by a signal is an error that names the signal, never exit 0. The command
+//      runs in a subshell, so the shell sees the death as 128+n (`bash -c 'one command'` would exec
+//      the command AS the shell); and a shell that was itself killed reports its own signal, read
+//      from its exit (`shell.ts`).
 //   2. Every command starts with `oom_score_adj=1000`, inherited by its children: no privilege
 //      needed to raise it, and on a node with the kubelet's `singleProcessOOMKill: true` the
 //      kernel then picks the Agent's process, not the Harness.
 //   3. The memory guard (memory-guard.ts) watches while the call runs; when it fires, the call
-//      answers its `killed: memory limit …` text — whatever pi saw of the killed shell.
+//      answers its `killed: memory limit …` text, whatever else the shell reported.
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { constants } from "node:os";
-import { tmpdir } from "node:os";
+import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
+import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBashTool, type AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
 import type { MemoryGuard } from "./memory-guard.ts";
-import type { WorkingTool } from "./working-tools.ts";
+import { exec, isExecError, MAX_TIMEOUT_SECONDS, type ExecError, type ExecExit } from "./shell.ts";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateTail, type TruncationResult } from "./truncate.ts";
 
 /**
- * The script pi's shell runs in place of the Agent's command. The command itself rides the env
+ * The script the shell runs in place of the Agent's command. The command itself rides the env
  * (`JR2_BASH_COMMAND`) and runs under `eval` in a subshell: a syntax error in it is `eval`'s exit 2,
- * not a broken wrapper, and the subshell drops both variables before the command's programs could
- * inherit them. `$$` in the command is still the shell pi spawned, as it was.
+ * not a broken wrapper, and the subshell drops the variable before the command's programs could
+ * inherit it. `$$` in the command is still the shell that `shell.ts` spawned. Line 2 stays as it
+ * was when the shell wrote a status file (its `unset` names `JR2_BASH_STATUS` too): when bash reports
+ * that the subshell was killed, it prints the subshell's text, and the model reads that text.
  */
 const WRAPPER = [
   "echo 1000 > /proc/self/oom_score_adj 2>/dev/null",
   '( __jr2_command=$JR2_BASH_COMMAND; unset JR2_BASH_COMMAND JR2_BASH_STATUS; eval "$__jr2_command" )',
   "__jr2_status=$?",
-  '[ -z "$JR2_BASH_STATUS" ] || echo "$__jr2_status" > "$JR2_BASH_STATUS" 2>/dev/null',
   'exit "$__jr2_status"',
 ].join("\n");
-
-/** The last line pi's error carries for a non-zero exit. */
-const EXITED = /Command exited with code (\d+)$/;
 
 /** Signal numbers to names — 137 is 128 + 9, SIGKILL. */
 const SIGNAL_NAMES = new Map<number, string>(Object.entries(constants.signals).map(([name, n]) => [n, name]));
 
-/** Where each call's status file lands: one private directory per process, made on first use. A
- * base with no writable tmpdir gets no status files and keeps the 128+n half of claim 1. */
-let statusDir: string | null | undefined;
-function statusDirOf(): string | null {
-  if (statusDir === undefined) {
-    try {
-      statusDir = mkdtempSync(join(tmpdir(), "jr2-bash-"));
-    } catch {
-      statusDir = null;
-    }
-  }
-  return statusDir;
+const BASH_UPDATE_THROTTLE_MS = 100;
+
+const bashSchema = Type.Object({
+  command: Type.String({ description: "Bash command to execute" }),
+  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+});
+
+type BashDetails = { truncation?: TruncationResult; fullOutputPath?: string } | undefined;
+
+function validateTimeout(timeout: number | undefined): void {
+  if (timeout === undefined) return;
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid timeout: must be a finite number of seconds");
+  if (timeout > MAX_TIMEOUT_SECONDS) throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_SECONDS} seconds`);
 }
 
-/** The `bash` Working tool. `guard` is the process's memory guard (`main.ts`); omitted, no guard
- * watches — a host run, or a test. */
-export function bashTool(opts: { guard?: Pick<MemoryGuard, "watch"> } = {}): WorkingTool {
-  const shape = createBashTool();
+/** The `bash` Working tool, rooted at `cwd`. `guard` is the process's memory guard (`main.ts`);
+ * omitted, no guard watches — a host run, or a test. */
+export function bashTool(opts: {
+  cwd: string;
+  guard?: Pick<MemoryGuard, "watch"> | undefined;
+}): AgentTool<typeof bashSchema, BashDetails> {
   return {
-    ...shape,
-    execute: async (toolCallId, params, signal, onUpdate, context) => {
-      const dir = statusDirOf();
-      const statusFile = dir === null ? undefined : join(dir, randomUUID());
-      const inner = createBashTool({
-        prepare: (execution) => {
-          execution.env = {
-            ...execution.env,
-            JR2_BASH_COMMAND: execution.command,
-            ...(statusFile ? { JR2_BASH_STATUS: statusFile } : {}),
-          };
-          execution.command = WRAPPER;
-        },
-      });
+    name: "bash",
+    label: "bash",
+    description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+    parameters: bashSchema,
+    async execute(_toolCallId, { command, timeout }, signal, onUpdate) {
+      validateTimeout(timeout);
+      const updates = throttled(onUpdate);
+      onUpdate?.({ content: [], details: undefined });
       const watch = opts.guard?.watch();
-      let result: AgentToolResult<unknown> | undefined;
-      let failure: unknown;
+      let capture: Capture;
       try {
-        result = await inner.execute(toolCallId, params as never, signal, onUpdate, context);
-      } catch (err) {
-        failure = err;
+        capture = await executeShellWithCapture(WRAPPER, {
+          cwd: opts.cwd,
+          env: { JR2_BASH_COMMAND: command },
+          ...(timeout === undefined ? {} : { timeout }),
+          ...(signal ? { signal } : {}),
+          onChunk: updates.chunk,
+        });
       } finally {
         watch?.end();
+        updates.stop();
       }
-      const status = statusFile === undefined ? undefined : takeStatus(statusFile);
+      updates.last(capture);
 
-      const killed = watch?.verdict();
-      if (killed) throw new Error(withStatus(outputOf(result, failure), killed));
-      if (failure !== undefined) throw named(failure);
-      // pi said it finished; the shell never wrote its status, so it did not finish — pi's 0 is
-      // `code ?? 0` for a shell killed by a signal it cannot name.
-      if (statusFile !== undefined && status === undefined) {
-        throw new Error(withStatus(outputOf(result, undefined), "Command was killed by a signal before it finished"));
+      let outputText = capture.output;
+      let details: BashDetails;
+      if (capture.truncation.truncated) {
+        details = {
+          truncation: capture.truncation,
+          ...(capture.fullOutputPath ? { fullOutputPath: capture.fullOutputPath } : {}),
+        };
+        const startLine = capture.truncation.totalLines - capture.truncation.outputLines + 1;
+        const endLine = capture.truncation.totalLines;
+        if (capture.truncation.lastLinePartial) {
+          const lastLineSize = formatSize(capture.lastLineBytes);
+          outputText += `\n\n[Showing last ${formatSize(capture.truncation.outputBytes)} of line ${endLine} (line is ${lastLineSize}). Full output: ${capture.fullOutputPath}]`;
+        } else if (capture.truncation.truncatedBy === "lines") {
+          outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${capture.truncation.totalLines}. Full output: ${capture.fullOutputPath}]`;
+        } else {
+          outputText += `\n\n[Showing lines ${startLine}-${endLine} of ${capture.truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Full output: ${capture.fullOutputPath}]`;
+        }
       }
-      return result!;
+      const withStatus = (output: string, text: string) => `${output ? `${output}\n\n` : ""}${text}`;
+      const status = statusOf(capture, timeout);
+      // The memory guard's verdict wins over every other status. Before it, the call answers what
+      // the Agent saw of the command, trimmed, as jr2 answered it on pi 0.82.1: an exit code is not
+      // said (the kill made it), and an abort or a timeout is.
+      const verdict = watch?.verdict();
+      if (verdict) {
+        const seen =
+          !status || status.exit ? outputText : status.alone ? status.text : withStatus(outputText, status.text);
+        throw new Error(withStatus(seen.trimEnd(), verdict));
+      }
+      if (status === undefined) return { content: [{ type: "text", text: outputText || "(no output)" }], details };
+      // An execution error (the spawn failed, the working directory is gone) is its own text alone.
+      if (status.alone) throw new Error(status.text);
+      throw new Error(withStatus(outputText, status.text));
     },
   };
 }
 
-/** pi's non-zero-exit error, with an exit of 128+n read as the signal n that ended the command.
- * The shell cannot tell a signal death from a program that exited 128+n itself; bash reports both
- * the same way, and so does this. Aborts, timeouts and spawn errors pass through unchanged. */
-function named(err: unknown): unknown {
-  if (!(err instanceof Error)) return err;
-  const match = EXITED.exec(err.message);
-  const code = match ? Number(match[1]) : NaN;
+/**
+ * The status line of a call that did not succeed, or undefined when it did. The first match wins:
+ * an abort, then the timeout, then an execution error, then a signal death, then a non-zero exit —
+ * pi 0.82.1's order (cancelled, timeout, execution error, code), with the signal before the code.
+ * The memory guard's verdict comes before all of them (`execute`). The order matters: an abort and
+ * a timeout kill the process group with SIGKILL, so the shell's exit names SIGKILL then too.
+ * `exit` marks a status that the shell's exit gave.
+ */
+function statusOf(
+  capture: Capture,
+  timeout: number | undefined,
+): { text: string; alone?: boolean; exit?: boolean } | undefined {
+  if (capture.cancelled) return { text: "Command aborted" };
+  if (capture.error?.kind === "timeout") return { text: `Command timed out after ${timeout} seconds` };
+  if (capture.error) return { text: capture.error.message, alone: true };
+  const exit = capture.exit!;
+  // The shell itself died by a signal: it wrote no exit code.
+  if (exit.signal !== null) return { text: `Command killed by signal ${exit.signal}`, exit: true };
+  const code = exit.code ?? 0;
+  // A command that a signal killed inside the subshell: the shell exits 128+n. The shell cannot tell
+  // it from a program that exited 128+n itself; bash reports both the same way, and so does this.
   const name = code > 128 ? SIGNAL_NAMES.get(code - 128) : undefined;
-  if (!name) return err;
-  return new Error(err.message.replace(EXITED, `Command killed by signal ${name} (exit ${code})`), { cause: err });
+  if (name) return { text: `Command killed by signal ${name} (exit ${code})`, exit: true };
+  if (code !== 0) return { text: `Command exited with code ${code}`, exit: true };
+  return undefined;
 }
 
-function takeStatus(file: string): string | undefined {
-  try {
-    return readFileSync(file, "utf8").trim();
-  } catch {
-    return undefined;
-  } finally {
-    rmSync(file, { force: true });
+/** The streamed partial output: at most one update each 100 ms, and the last one at the end. */
+function throttled(onUpdate: AgentToolUpdateCallback<BashDetails> | undefined) {
+  let latest: (() => Progress) | undefined;
+  let timer: NodeJS.Timeout | undefined;
+  let dirty = false;
+  let lastAt = 0;
+  const emit = () => {
+    if (!onUpdate || !dirty || !latest) return;
+    dirty = false;
+    lastAt = Date.now();
+    const progress = latest();
+    onUpdate({
+      content: [{ type: "text", text: progress.output }],
+      details: {
+        ...(progress.truncation.truncated ? { truncation: progress.truncation } : {}),
+        ...(progress.fullOutputPath ? { fullOutputPath: progress.fullOutputPath } : {}),
+      },
+    });
+  };
+  const stop = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+  return {
+    chunk: (getProgress: () => Progress) => {
+      latest = getProgress;
+      if (!onUpdate) return;
+      dirty = true;
+      const delay = BASH_UPDATE_THROTTLE_MS - (Date.now() - lastAt);
+      if (delay <= 0) {
+        stop();
+        emit();
+        return;
+      }
+      timer ??= setTimeout(() => {
+        timer = undefined;
+        emit();
+      }, delay);
+    },
+    stop,
+    last: (capture: Progress) => {
+      latest = () => capture;
+      dirty = true;
+      emit();
+    },
+  };
+}
+
+// ─── the capture (pi's `executeShellWithCapture`) ───────────────────────────
+
+type Progress = {
+  output: string;
+  truncation: TruncationResult;
+  fullOutputPath: string | undefined;
+  lastLineBytes: number;
+};
+
+type Capture = Progress & {
+  /** The shell's exit, when it ran to one. */
+  exit?: ExecExit;
+  error?: ExecError;
+  cancelled: boolean;
+};
+
+/** Remove the control characters except tab, newline and carriage return, and U+FFF9 to U+FFFB. */
+export function sanitizeBinaryOutput(str: string): string {
+  return Array.from(str)
+    .filter((char) => {
+      const code = char.codePointAt(0);
+      if (code === undefined) return false;
+      if (code === 0x09 || code === 0x0a || code === 0x0d) return true;
+      if (code <= 0x1f) return false;
+      if (code >= 0xfff9 && code <= 0xfffb) return false;
+      return true;
+    })
+    .join("");
+}
+
+function trimToLastUtf8Bytes(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.byteLength <= maxBytes) return text;
+  let start = bytes.byteLength - maxBytes;
+  while (start < bytes.byteLength && ((bytes[start] ?? 0) & 0xc0) === 0x80) start++;
+  return new TextDecoder().decode(bytes.subarray(start));
+}
+
+async function executeShellWithCapture(
+  command: string,
+  options: {
+    cwd: string;
+    env: Record<string, string>;
+    timeout?: number;
+    signal?: AbortSignal;
+    onChunk?: (getProgress: () => Progress) => void;
+  },
+): Promise<Capture> {
+  let tailOutput = "";
+  const maxOutputBytes = DEFAULT_MAX_BYTES * 2;
+  let totalBytes = 0;
+  let completedLines = 0;
+  let hasOpenLine = false;
+  let currentLineBytes = 0;
+  let fullOutputPath: string | undefined;
+  let fullOutputRequested = false;
+  let acceptingOutput = true;
+  let writeChain: Promise<void> = Promise.resolve();
+  let captureError: Error | undefined;
+  const appendFullOutput = (text: string) => {
+    if (!fullOutputRequested || captureError) return;
+    writeChain = writeChain.then(async () => {
+      if (!fullOutputPath) throw new Error("Full output path was not created");
+      await appendFile(fullOutputPath, text);
+    });
+  };
+  const ensureFullOutputFile = (initialContent: string) => {
+    if (fullOutputRequested || captureError) return;
+    fullOutputRequested = true;
+    writeChain = writeChain.then(async () => {
+      const dir = await mkdtemp(join(tmpdir(), "tmp-"));
+      const path = join(dir, `bash-${randomUUID()}.log`);
+      await writeFile(path, "");
+      fullOutputPath = path;
+      await appendFile(path, initialContent);
+    });
+  };
+  const createProgress = (): Progress => {
+    const tailTruncation = truncateTail(tailOutput);
+    const totalLines = completedLines + (hasOpenLine ? 1 : 0);
+    const truncated = totalLines > DEFAULT_MAX_LINES || totalBytes > DEFAULT_MAX_BYTES;
+    const truncation: TruncationResult = {
+      ...tailTruncation,
+      truncated,
+      truncatedBy: truncated
+        ? (tailTruncation.truncatedBy ?? (totalBytes > DEFAULT_MAX_BYTES ? "bytes" : "lines"))
+        : null,
+      totalLines,
+      totalBytes,
+    };
+    return {
+      output: truncated ? truncation.content : tailOutput,
+      truncation,
+      fullOutputPath,
+      lastLineBytes: currentLineBytes,
+    };
+  };
+  const onChunk = (chunk: string) => {
+    if (!acceptingOutput) return;
+    try {
+      const text = sanitizeBinaryOutput(chunk).replace(/\r/g, "");
+      const textBytes = Buffer.byteLength(text, "utf8");
+      totalBytes += textBytes;
+      completedLines += text.split("\n").length - 1;
+      const lastNewline = text.lastIndexOf("\n");
+      if (lastNewline >= 0) {
+        const trailingText = text.slice(lastNewline + 1);
+        currentLineBytes = Buffer.byteLength(trailingText, "utf8");
+        hasOpenLine = trailingText.length > 0;
+      } else if (text.length > 0) {
+        currentLineBytes += textBytes;
+        hasOpenLine = true;
+      }
+      tailOutput += text;
+      const totalLines = completedLines + (hasOpenLine ? 1 : 0);
+      if ((totalBytes > DEFAULT_MAX_BYTES || totalLines > DEFAULT_MAX_LINES) && !fullOutputRequested) {
+        ensureFullOutputFile(tailOutput);
+      } else if (fullOutputRequested) {
+        appendFullOutput(text);
+      }
+      tailOutput = trimToLastUtf8Bytes(tailOutput, maxOutputBytes);
+      options.onChunk?.(createProgress);
+    } catch (error) {
+      captureError = error instanceof Error ? error : new Error(String(error));
+    }
+  };
+  const result = await exec(command, {
+    cwd: options.cwd,
+    env: options.env,
+    ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
+    ...(options.signal ? { signal: options.signal } : {}),
+    onStdout: onChunk,
+    onStderr: onChunk,
+  });
+  acceptingOutput = false;
+  if (createProgress().truncation.truncated && !fullOutputRequested) ensureFullOutputFile(tailOutput);
+  // A failed write of the full output, or a failed capture, fails the call with its own words.
+  await writeChain;
+  if (captureError) throw captureError;
+  const progress = createProgress();
+  if (isExecError(result)) {
+    if (result.kind === "aborted" || options.signal?.aborted) return { ...progress, cancelled: true };
+    return { ...progress, error: result, cancelled: false };
   }
-}
-
-/** What the Agent saw of the command before it ended: the result's text, or pi's error message
- * (which carries the output ahead of its status line). */
-function outputOf(result: AgentToolResult<unknown> | undefined, failure: unknown): string {
-  if (failure instanceof Error) return failure.message.replace(EXITED, "").trimEnd();
-  const first = result?.content[0];
-  const text = first && first.type === "text" ? first.text : "";
-  return text === "(no output)" ? "" : text.trimEnd();
-}
-
-function withStatus(output: string, status: string): string {
-  return `${output ? `${output}\n\n` : ""}${status}`;
+  const cancelled = options.signal?.aborted ?? false;
+  return { ...progress, ...(cancelled ? {} : { exit: result }), cancelled };
 }

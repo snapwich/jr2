@@ -20,6 +20,7 @@ import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
 import { runSubmissionFor } from "../src/turn.ts";
 import type { HistoryView, Settlement, StreamEvent } from "../src/wire.ts";
+import { startAnthropicGateway, type AnthropicGateway } from "./support/anthropic-gateway.ts";
 import {
   SANDBOX_STAND_IN,
   severKeepAliveSockets,
@@ -103,6 +104,16 @@ let boundedCompactApp: Hono;
 let appOver: (conversationsDir: string) => Hono;
 /** The same, with the drain a SIGTERM runs (ADR-0031). */
 let serverOver: (conversationsDir: string) => HarnessServer;
+/** The same composition with the Harness's own provider retries (no `maxRetries` seam): what
+ * production runs (ADR-0016, ADR-0064). */
+let retryApp: Hono;
+/** The same custom provider reached at a base URL that names `openrouter.ai`, where pi-ai would
+ * add its attribution headers. */
+let openRouterApp: Hono;
+/** The same custom provider, with pi's catalog `anthropic` moved to a fake Anthropic gateway
+ * (ADR-0059): a Turn on a catalog model that runs through the Anthropic adapter. */
+let gatewayApp: Hono;
+let anthropicGateway: AnthropicGateway;
 /** Small enough that the cut lands near the tail of a scripted transcript. */
 const KEEP_RECENT = 12;
 /** What each conversation printed (ADR-0023) — the pod log, keyed by iid. */
@@ -129,10 +140,8 @@ before(async () => {
     },
   };
   const models = modelsFor(harness, {});
-  const serverWith = (
-    seams?: { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number },
-    conversationsDir?: string,
-  ): HarnessServer =>
+  type Seams = { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number; retries?: "harness" };
+  const serverWith = (seams?: Seams, conversationsDir?: string, registry = models): HarnessServer =>
     harnessServer({
       ...(conversationsDir ? { conversationsDir } : {}),
       longPollMs: 250,
@@ -140,30 +149,39 @@ before(async () => {
       checkBearer: () => true,
       // The real composition (`main.ts`): admission rejects a definition (or dial) the turn
       // could not run.
-      checkAdmission: (resolved) => admissionFault(models, resolved),
-      runSubmissionFor: (seat) =>
-        runSubmissionFor({
-          models,
+      checkAdmission: (resolved) => admissionFault(registry, resolved),
+      runSubmissionFor: (seat) => {
+        const { retries, ...turnSeams } = seams ?? {};
+        return runSubmissionFor({
+          models: registry,
           menu: { url: sandbox.url, token: SANDBOX_STAND_IN, retryWindowMs: 50, retryInitialMs: 1 },
-          // No provider-stream retries: a scripted failure must settle on the first attempt.
-          maxRetries: 0,
+          // No provider-stream retries: a scripted failure must settle on the first attempt. The
+          // `retries` seam leaves the Harness's own number in place.
+          ...(retries === "harness" ? {} : { maxRetries: 0 }),
           printerOut: {
             write: (chunk) => printed.set(seat.instanceId, (printed.get(seat.instanceId) ?? "") + chunk),
           },
-          ...seams,
+          ...turnSeams,
           ...seat,
-        }),
+        });
+      },
     });
-  const appWith = (
-    seams?: { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number },
-    conversationsDir?: string,
-  ): Hono => serverWith(seams, conversationsDir).app;
+  const appWith = (seams?: Seams, conversationsDir?: string): Hono => serverWith(seams, conversationsDir).app;
   app = appWith();
   boundedApp = appWith({ stepBudget: 3 });
   compactApp = appWith({ keepRecentTokens: KEEP_RECENT });
   boundedCompactApp = appWith({ stepBudget: 3, keepRecentTokens: KEEP_RECENT });
   appOver = (conversationsDir) => appWith(undefined, conversationsDir);
   serverOver = (conversationsDir) => serverWith(undefined, conversationsDir);
+  retryApp = appWith({ retries: "harness" });
+  const openRouter = modelsFor(
+    { provider: { ...harness.provider!, baseUrl: `${provider.url.replace(/\/v1$/, "")}/openrouter.ai/v1` } },
+    {},
+  );
+  openRouterApp = serverWith(undefined, undefined, openRouter).app;
+  anthropicGateway = await startAnthropicGateway();
+  const gatewayModels = modelsFor({ ...harness, catalog: { anthropic: { baseUrl: anthropicGateway.url } } }, {});
+  gatewayApp = serverWith(undefined, undefined, gatewayModels).app;
   process.on("unhandledRejection", onRejection);
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array, ...rest: never[]) => {
@@ -183,6 +201,7 @@ after(async () => {
   await severKeepAliveSockets();
   await sandbox.close();
   await provider.close();
+  await anthropicGateway.close();
 });
 
 function conversationPath(iid: string, agent = AGENT): string {
@@ -454,8 +473,9 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
 test("the Frame's cwd is re-read per Submission: two turns of one conversation work in different directories (ADR-0057)", async () => {
   // The one claim the old identity cwd could never make — it was fixed when the harness was
   // assembled, so it could not go stale. A `continue` conversation that moves to a second worktree
-  // depends on pi resolving `toolContext` per turn; if a pi bump ever froze it at assembly, the
-  // second turn would list the FIRST worktree and say nothing. That is what this canary watches.
+  // depends on each Submission building its Working tools rooted at that Submission's Frame cwd; if
+  // the tools were ever built once at assembly, the second turn would list the FIRST worktree and
+  // say nothing. That is what this canary watches.
   const dirA = await mkdtemp(join(tmpdir(), "conf-frame-a-"));
   const dirB = await mkdtemp(join(tmpdir(), "conf-frame-b-"));
   await writeFile(join(dirA, "MARK_ALPHA"), "");
@@ -504,8 +524,8 @@ test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018
   sandbox.reset(surfaceWith("review_verdict"));
   const iid = "conf/dials";
 
-  // Three Submissions on one conversation — the `session: "continue"` shape, where the harness is
-  // assembled once and later turns reconcile onto it (`setModel`). The definition's model, then a
+  // Three Submissions on one conversation — the `session: "continue"` shape, where the pi `Agent`
+  // is assembled once and each later turn sets its model on it. The definition's model, then a
   // dial, then back to the definition's when the dial is gone.
   const first = await admit(iid, "Review the diff.");
   assert.equal((await settled(iid, first)).outcome, "completed");
@@ -519,8 +539,8 @@ test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018
     ["model-x", "model-y", "model-x"],
     "the dial is per-SUBMISSION, not sticky on the conversation",
   );
-  // The conversation itself survived the swap: turn 3 still sees turns 1-2 (one pi session, one
-  // assembled harness — the dial reconciles onto it rather than rebuilding it).
+  // The conversation itself survived the swap: turn 3 still sees turns 1-2 (one engine part, one
+  // assembled `Agent` — the dial is set on it rather than rebuilding it).
   assert.ok(
     provider.calls[2]!.messages.length > provider.calls[0]!.messages.length,
     "the context accumulated across the model change",
@@ -570,7 +590,7 @@ async function nextTurnAfterRestart(iid: string, dir: string): Promise<Array<Rec
   return provider.calls[0]?.messages ?? [];
 }
 
-test("a conversation survives the Harness's restart: pi's session reopens from the engine part (ADR-0031)", async () => {
+test("a conversation survives the Harness's restart: the engine part reopens (ADR-0031)", async () => {
   const iid = "conf/restart";
   const dir = await firstTurnPersisted(iid);
   const sent = await nextTurnAfterRestart(iid, dir);
@@ -581,7 +601,7 @@ test("a conversation survives the Harness's restart: pi's session reopens from t
   assert.match(text, /The inputs say alpha\./);
   assert.ok(
     sent.some((m) => m.role === "tool"),
-    "the first Turn's tool traffic came back with the session",
+    "the first Turn's tool traffic came back with the engine part",
   );
   assert.match(lastUserText(provider.calls[0]), /Decide the second thing\./);
 });
@@ -589,12 +609,18 @@ test("a conversation survives the Harness's restart: pi's session reopens from t
 test("an engine part that does not open: the conversation continues from the record's messages (ADR-0031)", async () => {
   const iid = "conf/restart-unreadable";
   const dir = await firstTurnPersisted(iid);
-  // Another engine's part, or another pi's: nothing this pi reads as a session.
+  // Another engine's part, or another version's: nothing this Harness reads as a transcript.
   const engineDir = join(dir, DECISIONER, encodeURIComponent(iid), "engine", "pi");
   for (const entry of await readdir(engineDir, { recursive: true, withFileTypes: true })) {
-    if (entry.isFile()) await writeFile(join(entry.parentPath, entry.name), "not a session\n");
+    if (entry.isFile()) await writeFile(join(entry.parentPath, entry.name), "not a transcript\n");
   }
+  const stderrMark = stderrText.length;
   const sent = await nextTurnAfterRestart(iid, dir);
+  // The pod log says why, in jr2's words.
+  assert.match(
+    stderrText.slice(stderrMark),
+    /harness: the engine part at .*engine\/pi does not open \(line 1 does not parse\) — continuing from the record's messages \(ADR-0031\)/,
+  );
   // The words, as the record kept them — and no tool traffic, which the record never had.
   const said = sent.filter((m) => m.role === "user" || m.role === "assistant").map((m) => JSON.stringify(m.content));
   assert.ok(
@@ -610,8 +636,8 @@ test("an engine part that does not open: the conversation continues from the rec
 });
 
 test("a restart that cut a Turn mid-tool-call: the next Turn sends every tool call with its result (ADR-0031)", async () => {
-  // The case the persistence exists for: the process dies while a tool call is open, so pi's
-  // session ends in an assistant tool call with no result. A provider refuses a dangling call, so
+  // The case the persistence exists for: the process dies while a tool call is open, so the
+  // engine part ends in an assistant tool call with no result. A provider refuses a dangling call, so
   // the conversation's next Turn must not send one.
   const iid = "conf/restart-mid-call";
   const dir = await mkdtemp(join(tmpdir(), "jr2-conversations-"));
@@ -631,7 +657,7 @@ test("a restart that cut a Turn mid-tool-call: the next Turn sends every tool ca
     m.role === "assistant" ? ((m.tool_calls ?? []) as Array<{ id: string }>).map((c) => c.id) : [],
   );
   const results = new Set(sent.flatMap((m) => (m.role === "tool" ? [String(m.tool_call_id)] : [])));
-  // The cut call comes back with the session (pi answers an orphaned call with a result of its own
+  // The cut call comes back with the engine part (pi answers an orphaned call with a result of its own
   // when it sends the history), so the model reads what it began and the request is well-formed.
   assert.ok(calls.includes("call_cut"), `the cut Turn's call came back: ${JSON.stringify(sent)}`);
   for (const id of calls) {
@@ -1130,7 +1156,7 @@ test("step boundary: across a Harness restart the restatement stays in the conve
   const after = appOver(dir);
   const next = await admit(iid, "Continue.", undefined, AGENT, after);
   assert.equal((await settled(iid, next, AGENT, after)).outcome, "completed");
-  // The next Turn reopened pi's session: the cut Turn's restatement is in it, exactly once, and
+  // The next Turn reopened the engine part: the cut Turn's restatement is in it, exactly once, and
   // the next Turn's own Turn part is the newest statement.
   assert.equal(pushesIn(provider.calls[0]), 1);
   assert.match(
@@ -1454,8 +1480,8 @@ test("history settlements from the real loop match the wire contract: outcomes a
 });
 
 test('a provider that refuses the load is named: the failed settlement reads "provider limit" (ADR-0064)', async () => {
-  // With `maxRetries: 0` the first refusal is the one left after pi's retries. Quota exhaustion is
-  // the same 429 status, but pi does not retry it, so it keeps its own words.
+  // With `maxRetries: 0` the first refusal is the one left after the Harness's retries. Quota
+  // exhaustion is the same 429 status, but pi does not call it retryable, so it keeps its own words.
   provider.reset([
     { status: 429, errorMessage: "Rate limit reached for requests" },
     { status: 429, errorMessage: "You exceeded your current quota: insufficient_quota" },
@@ -1604,11 +1630,10 @@ test("a turn compacts MID-flight: the cut lands between two steps of ONE Submiss
     provider.calls[4]!.messages.length < provider.calls[3]!.messages.length,
     `the context SHRANK (${provider.calls[3]!.messages.length} → ${provider.calls[4]!.messages.length})`,
   );
-  // …and it KEEPS carrying it. This is the pi-bump canary ADR-0036 names: the mechanism is
-  // `prepareNextTurn` rebuilding the loop's context from the Session at every step boundary, and
-  // `buildContext` replaying from the latest compaction entry — behavior pi documents in types but
-  // does not promise as a caller contract.
-  assert.ok(carriesSummary(provider.calls[5]), "the NEXT step rebuilt from the cut Session too");
+  // …and it KEEPS carrying it. This is the pi-bump canary ADR-0036 names: the mechanism is pi's
+  // loop keeping the context that `prepareRequest` returned for the rest of the run — behavior pi
+  // documents in types but does not promise as a caller contract.
+  assert.ok(carriesSummary(provider.calls[5]), "the NEXT step kept the cut context too");
   // The turn went on to its pick: a compacted turn still concludes (ADR-0006).
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
@@ -1645,7 +1670,8 @@ test("a turn compacts MID-flight: the cut lands between two steps of ONE Submiss
 test("a fresh Submission compacts BEFORE it asks: the nudge ladder's rescue (ADR-0016/0036)", async () => {
   // ADR-0016's no-signal ladder continues the SAME conversation, so at a full window every nudge
   // was structurally futile — the regression that took run `588b0f5e` to a humanReview park. The
-  // `context` hook fires before a turn's FIRST request too, so the nudge compacts before it asks.
+  // request hook (`prepareRequest`) fires before a turn's FIRST request too, so the nudge compacts
+  // before it asks.
   provider.reset([
     { toolCall: { id: "call_1", name: "bash", args: '{"command":"echo a"}' } },
     { toolCall: { id: "call_2", name: "bash", args: '{"command":"echo b"}' } },
@@ -1687,9 +1713,9 @@ test("a fresh Submission compacts BEFORE it asks: the nudge ladder's rescue (ADR
 test("a SECOND cut in one Submission keeps the first cut's retained tail (ADR-0036)", async () => {
   // ADR-0036's own workload cuts more than once: the 161-step turn on a 131k window fills the
   // window repeatedly. Every cut retains up to `keepRecentTokens` of the most recent work
-  // VERBATIM, and the next cut must be able to reach that work — pi's compaction entry may carry
-  // its tail on the ENTRY, and then the next cut's boundary walk cannot find the entry on a path
-  // truncated at it, so the tail is neither summarized nor kept. Silent amnesia of the most recent
+  // VERBATIM, and the next cut must be able to reach that work — a compaction entry that carried
+  // its tail on the ENTRY would stop the next cut's boundary walk at it, so the tail would be
+  // neither summarized nor kept (the engine part's entry stores no tail for this reason). Silent amnesia of the most recent
   // work is the exact failure this ADR exists to prevent, so it is pinned end-to-end: every mark
   // the agent produced must survive somewhere the model can still read it.
   const marks = ["MARKAAA", "MARKBBB", "MARKCCC", "MARKDDD", "MARKEEE", "MARKFFF"];
@@ -1803,12 +1829,11 @@ test("ADR-0035's counters do not reset on Compaction, and the cut is not a step"
 test("a runaway trip on the CROSSING response takes no cut at all (ADR-0035/0036)", async () => {
   // The trip and the crossing on the SAME response — the ordinary shape, since the estimate reads
   // the previous response's usage, so a crossing at response k has had no earlier pass to act on
-  // it. ADR-0035's trip aborts pi's OWN controller, and pi has no signal check between a blocked
-  // tool batch and the next request, so the loop takes one more pass through the `context` hook —
-  // where the Submission's signal (all this seat can see) has not fired. A cut there would spend a
-  // full-window summarization, and an unbounded wait on it, for a request that is aborted before
-  // it is sent — and would leave a compaction entry and a `[compacted]` line making a killed turn
-  // read as a healthy one.
+  // it. ADR-0035's trip ends the run at the step boundary (`finishTurn`), so the loop makes no
+  // other request and takes no pass through the request hook. A cut there would spend a
+  // full-window summarization, and an unbounded wait on it, for a request that is never sent — and
+  // would leave a compaction entry and a `[compacted]` line making a killed turn read as a healthy
+  // one.
   provider.reset([
     { toolCall: { id: "call_1", name: "bash", args: '{"command":"echo 0"}' } },
     { toolCall: { id: "call_2", name: "bash", args: '{"command":"echo 1"}' } },
@@ -2243,4 +2268,270 @@ test("a stopping Harness keeps the graceful wait for a Turn that is running a to
     );
     assert.equal(provider.calls.length, 1, "the model was asked nothing after the cut");
   }
+});
+
+// ─── pi 1.x: what the Harness owns now ───────────────────────────────────────
+
+/** The text of the tool result for `toolCallId` in a request. */
+function toolResultText(call: { messages: Array<Record<string, unknown>> } | undefined, toolCallId: string): string {
+  const result = (call?.messages ?? []).find((m) => m.role === "tool" && m.tool_call_id === toolCallId);
+  const content = result?.content;
+  if (typeof content === "string") return content;
+  return ((content ?? []) as Array<{ text?: string }>).map((part) => part.text ?? "").join("");
+}
+
+test("the Harness states its provider retries: a 503, a 503, then the answer completes, with no retry seam (I-1, ADR-0064)", async () => {
+  // pi-ai retries only when told how often (`maxRetries ?? 0`), and production never said it, so a
+  // production Turn made no provider retry at all. The Harness says 2.
+  const busy = { status: 503, errorMessage: "Service Unavailable: overloaded", headers: { "retry-after-ms": "1" } };
+  provider.reset([busy, busy, { text: "Recovered." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/provider-retries";
+  assert.equal(
+    (await settled(iid, await admit(iid, "one", undefined, AGENT, retryApp), AGENT, retryApp)).outcome,
+    "completed",
+  );
+  assert.equal(provider.calls.length, 3, "two retries, then the answer");
+});
+
+test("a server that asks for a delay over 60 s is not waited for: one request, and pi-ai's words in the settlement (I-1)", async () => {
+  provider.reset([{ status: 429, errorMessage: "Rate limit reached for requests", headers: { "retry-after": "120" } }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/provider-retry-after";
+  const settlement = await settled(iid, await admit(iid, "one", undefined, AGENT, retryApp), AGENT, retryApp);
+  assert.equal(provider.calls.length, 1);
+  assert.equal(settlement.outcome, "failed");
+  // The text names the delay, and it is still a load the provider refused (ADR-0064).
+  assert.match(
+    settlement.error?.message ?? "",
+    /^provider limit \(fake\/model-x\): Server requested 120s retry delay \(max: 60s\)\. 429\b.*Rate limit reached/,
+  );
+});
+
+test("a quota 429 is retried by its status like any 429, and still keeps its own words (ADR-0064)", async () => {
+  // pi-ai's provider retry follows the SDKs' policy: it reads the status, not the message, so
+  // quota exhaustion is asked again. The settlement still is not a provider limit: pi does not
+  // call quota exhaustion retryable (`isRetryableAssistantError`).
+  const quota = {
+    status: 429,
+    errorMessage: "You exceeded your current quota: insufficient_quota",
+    headers: { "retry-after-ms": "1" },
+  };
+  provider.reset([quota, quota, quota]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/provider-quota";
+  const settlement = await settled(iid, await admit(iid, "one", undefined, AGENT, retryApp), AGENT, retryApp);
+  assert.equal(provider.calls.length, 3);
+  assert.doesNotMatch(settlement.error?.message ?? "", /provider limit/);
+  assert.match(settlement.error?.message ?? "", /insufficient_quota/);
+});
+
+test("a trip ends the run at the step boundary: no further request, and no empty aborted message in the engine part (I-5)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "conf-trip-part-"));
+  const via = appOver(dir);
+  const repeated = { name: "bash", args: '{"command":"true"}' };
+  provider.reset([1, 2, 3, 4].map((n) => ({ toolCall: { id: `call_${n}`, ...repeated } })));
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/trip-part";
+  const settlement = await settled(iid, await admit(iid, "Find the flag.", undefined, AGENT, via), AGENT, via);
+  assert.equal(settlement.error?.type, "runaway");
+  assert.equal(provider.calls.length, 4, "no request after the trip");
+  const transcript = join(dir, AGENT, encodeURIComponent(iid), "engine", "pi", "transcript.jsonl");
+  const { readFileSync } = await import("node:fs");
+  const messages = readFileSync(transcript, "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { message?: { role: string; stopReason?: string } })
+    .flatMap((entry) => (entry.message ? [entry.message] : []));
+  assert.equal(messages.filter((m) => m.role === "assistant" && m.stopReason === "aborted").length, 0);
+  // The tripping call reads `Operation aborted`, as on pi 0.82.1.
+  const last = messages.at(-1) as unknown as { role: string; content: Array<{ text: string }> };
+  assert.equal(last.role, "toolResult");
+  assert.equal(last.content[0]!.text, "Operation aborted");
+});
+
+test("no system message reaches the engine part, and a changed instruction REPLACES the system prompt", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "conf-no-system-"));
+  const via = appOver(dir);
+  provider.reset([{ text: "First." }, { text: "Second." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/no-system";
+  const send = async (message: string, instructions: string) => {
+    const res = await via.request(conversationPath(iid), {
+      method: "POST",
+      body: JSON.stringify({ message, cwd: tmpdir(), definition: { ...definitions[AGENT], instructions } }),
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(res.status, 200);
+    return settled(iid, (await res.json()) as { offset: string; submissionId: string }, AGENT, via);
+  };
+  assert.equal((await send("one", "Instructions one.")).outcome, "completed");
+  assert.equal((await send("two", "Instructions two.")).outcome, "completed");
+  const systems = provider.calls[1]!.messages.filter((m) => m.role === "system");
+  assert.equal(systems.length, 1, "one system message, leading");
+  assert.ok(systemText(provider.calls[1]).startsWith("Instructions two."), "the new instructions replaced the old");
+  assert.ok(!sentText(provider.calls[1]).includes("Instructions one."));
+  const { readFileSync } = await import("node:fs");
+  const text = readFileSync(join(dir, AGENT, encodeURIComponent(iid), "engine", "pi", "transcript.jsonl"), "utf8");
+  assert.ok(!text.includes('"role":"system"'), "the transcript holds no system message");
+});
+
+test("the thinking level line: a level the model lacks names the level the Harness sent; a level it has prints none (ADR-0023)", async () => {
+  provider.reset([{ text: "Deep." }, { text: "High." }, { status: 500, errorMessage: "boom" }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/thinking-line";
+  // The custom provider's model has no `xhigh`: the OpenAI-completions adapter clamps it to `high`.
+  assert.equal((await settled(iid, await admit(iid, "one", { thinkingLevel: "xhigh" }))).outcome, "completed");
+  assert.equal(provider.calls[0]!.reasoning_effort, "high");
+  assert.match(
+    printed.get(iid) ?? "",
+    /\[reviewer\] \[thinking level\] fake\/model-x has no level "xhigh"; the Harness sent "high"\n\[reviewer\] \[text\] Deep\./,
+  );
+  const before = (printed.get(iid) ?? "").length;
+  assert.equal((await settled(iid, await admit(iid, "two", { thinkingLevel: "high" }))).outcome, "completed");
+  assert.ok(!(printed.get(iid) ?? "").slice(before).includes("[thinking level]"), "a level the model has prints none");
+  // A Submission whose only assistant message is a failure with nothing spent says nothing of a level.
+  const failed = (printed.get(iid) ?? "").length;
+  assert.equal((await settled(iid, await admit(iid, "three", { thinkingLevel: "xhigh" }))).outcome, "failed");
+  assert.ok(!(printed.get(iid) ?? "").slice(failed).includes("[thinking level]"));
+});
+
+test("the thinking level line: Claude Sonnet 5.5 at off names the effort that the Harness's request sent (ADR-0023)", async () => {
+  // jr2's default level is `off`, which this model lacks. The Anthropic adapter then sends its
+  // default effort, `high`, and sets the word from that request: the line gives the choice to the
+  // Harness, not to the provider.
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/thinking-line-sonnet-5-5";
+  const before = anthropicGateway.seen.length;
+  // A catalog provider's key comes from the ambient env (`modelsFor`).
+  const saved = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "x";
+  try {
+    const dials = { model: "anthropic/claude-sonnet-5-5" };
+    const settlement = await settled(iid, await admit(iid, "one", dials, AGENT, gatewayApp), AGENT, gatewayApp);
+    assert.equal(settlement.outcome, "completed", JSON.stringify(settlement));
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = saved;
+  }
+  const sent = anthropicGateway.seen.slice(before);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0]!.body.output_config, { effort: "high" });
+  assert.match(
+    printed.get(iid) ?? "",
+    /\[reviewer\] \[thinking level\] anthropic\/claude-sonnet-5-5 has no level "off"; the Harness sent effort "high"\n\[reviewer\] \[text\] pong/,
+  );
+});
+
+test("M9: a null optional argument is dropped before validation — the call runs (pi-ai 1.4)", async () => {
+  // On pi 0.82.1 the null became a value that failed: `Invalid timeout: must be a finite number of
+  // seconds`. pi-ai 1.4 deletes a null optional field first.
+  provider.reset([
+    { toolCall: { id: "call_n", name: "bash", args: '{"command":"echo hi","timeout":null}' } },
+    { text: "Ran." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/null-argument";
+  assert.equal((await settled(iid, await admit(iid, "Run it."))).outcome, "completed");
+  assert.equal(toolResultText(provider.calls[1], "call_n"), "hi\n");
+});
+
+test("M10: argument text that does not parse is refused, and the call does not run (pi-ai 1.4)", async () => {
+  const marker = join(await mkdtemp(join(tmpdir(), "conf-malformed-")), "ran");
+  const args = `{"command":"touch ${marker}"`;
+  provider.reset([{ toolCall: { id: "call_m", name: "bash", args } }, { text: "Noted." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/malformed-argument";
+  assert.equal((await settled(iid, await admit(iid, "Run it."))).outcome, "completed");
+  const text = toolResultText(provider.calls[1], "call_m");
+  assert.ok(text.startsWith('Invalid arguments for tool "bash": '), text);
+  assert.ok(text.endsWith(`\n\nReceived arguments:\n${args}`), text);
+  const { existsSync } = await import("node:fs");
+  assert.equal(existsSync(marker), false, "the call did not run");
+});
+
+test("M11: another model's thinking is not sent after a model Dial change (pi-ai 1.4)", async () => {
+  provider.reset([{ reasoning: "Model x thought this.", text: "One." }, { text: "Two." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/dial-thinking";
+  assert.equal((await settled(iid, await admit(iid, "one"))).outcome, "completed");
+  assert.equal((await settled(iid, await admit(iid, "two", { model: "fake/model-y" }))).outcome, "completed");
+  assert.equal(provider.calls[1]!.model, "model-y");
+  assert.ok(!sentText(provider.calls[1]).includes("Model x thought this."), "no thinking of model-x in any form");
+});
+
+test("M12: a step that a provider error ended steers nothing, and the next Submission ends with its prompt (I-7)", async () => {
+  provider.reset([{ status: 500, errorMessage: "boom" }, { text: "Next." }]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  // Read 1 starts the first Submission; any read after it sees the list changed.
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read === 1 ? CODING : REVIEWING));
+  const iid = "conf/error-no-restate";
+  assert.equal((await settled(iid, await admit(iid, "Fix the ticket."))).outcome, "failed");
+  assert.equal(sandbox.reads(), 1, "the failed step read no Menu");
+  const next = await admit(iid, "Next Turn.");
+  assert.equal((await settled(iid, next)).outcome, "completed");
+  const last = provider.calls[1]!.messages.at(-1);
+  assert.equal(last?.role, "user");
+  assert.match(lastUserText(provider.calls[1]), /^Next Turn\.\n\n<jr2-turn>/);
+  assert.equal(pushesIn(provider.calls[1]), 0, "no restatement rides into the next Submission");
+});
+
+test("M6: a call that pi prepared before the trip but did not start answers `Operation aborted` and does not run", async () => {
+  const marker = join(await mkdtemp(join(tmpdir(), "conf-behind-trip-")), "ran");
+  provider.reset([
+    bashCall("call_1", "echo 1"),
+    bashCall("call_2", "echo 2"),
+    {
+      toolCalls: [
+        { id: "call_3", name: "bash", args: JSON.stringify({ command: `touch ${marker}` }) },
+        { id: "call_4", name: "bash", args: JSON.stringify({ command: "echo 4" }) },
+      ],
+    },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/behind-trip";
+  // A toy budget of 3: the 4th call trips.
+  const settlement = await settled(
+    iid,
+    await admit(iid, "Keep busy.", undefined, AGENT, boundedApp),
+    AGENT,
+    boundedApp,
+  );
+  assert.deepEqual(settlement.error, { type: "runaway", message: "exceeded 3 steps" });
+  const { existsSync } = await import("node:fs");
+  assert.equal(existsSync(marker), false, "the call before the trip did not run");
+});
+
+test("jr2 is not pi: a request names no attribution, even to a base URL that pi-ai reads as OpenRouter", async () => {
+  provider.reset([{ text: "Hello." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/no-attribution";
+  assert.equal(
+    (await settled(iid, await admit(iid, "one", undefined, AGENT, openRouterApp), AGENT, openRouterApp)).outcome,
+    "completed",
+  );
+  const headers = provider.calls[0]!.headers ?? {};
+  assert.equal(headers["http-referer"], undefined);
+  assert.equal(headers["x-openrouter-title"], undefined);
+  assert.equal(headers["x-title"], undefined);
+});
+
+test("an abort that lands after the step's end asks for no summary, and the run ends (I-10)", async () => {
+  // The request hook runs once more after such an abort, over a full window. It asks for no summary
+  // then. This test cannot tell jr2's own check from pi-ai's: a summary call on an aborted signal
+  // sends nothing either. It pins the outcome — no summary request, and a run that ends; the check
+  // itself is pinned socket-free in `compaction.test.ts`, by a count of the summary calls.
+  provider.reset([{ ...bashCall("call_1", "echo 1"), usage: { prompt_tokens: 190_000 } }, { text: "Unreached." }]);
+  provider.summarize({ stall: true });
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/abort-no-summary";
+  sandbox.surfaceByRead(async (read) => {
+    // The boundary read after the step: the abort lands while it is out.
+    if (read === 2) await compactApp.request(`${conversationPath(iid)}/abort`, { method: "POST" });
+    return surfaceWith("review_verdict");
+  });
+  const settlement = await settled(iid, await admit(iid, "Find it.", undefined, AGENT, compactApp), AGENT, compactApp);
+  provider.summarize({});
+  assert.equal(settlement.outcome, "aborted");
+  assert.equal(provider.summaries.length, 0, "an ended run buys no summarizer round-trip");
 });

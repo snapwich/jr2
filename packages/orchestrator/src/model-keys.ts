@@ -36,20 +36,22 @@ export const MODEL_KEYS: Readonly<Record<string, ModelKey>> = {
   // all — a signature is not a header a Stand-in can be swapped into — and `jr2 up` warns on them.)
   AWS_BEARER_TOKEN_BEDROCK: { providers: ["amazon-bedrock"] },
   ANT_LING_API_KEY: { providers: ["ant-ling"], host: "api.ant-ling.com" },
+  // Two providers, one host: the team plan and the individual plan.
   QWEN_TOKEN_PLAN_API_KEY: {
-    providers: ["qwen-token-plan"],
+    providers: ["qwen-token-plan", "qwen-token-plan-individual"],
     host: "token-plan.ap-southeast-1.maas.aliyuncs.com",
   },
   QWEN_TOKEN_PLAN_CN_API_KEY: { providers: ["qwen-token-plan-cn"], host: "token-plan.cn-beijing.maas.aliyuncs.com" },
   // The catalog names no base URL: an Azure deployment is the user's own resource.
-  AZURE_OPENAI_API_KEY: { providers: ["azure-openai-responses"] },
+  AZURE_OPENAI_API_KEY: { providers: ["azure"] },
   NVIDIA_API_KEY: { providers: ["nvidia"], host: "integrate.api.nvidia.com" },
   DEEPSEEK_API_KEY: { providers: ["deepseek"], host: "api.deepseek.com" },
   GROQ_API_KEY: { providers: ["groq"], host: "api.groq.com" },
   CEREBRAS_API_KEY: { providers: ["cerebras"], host: "api.cerebras.ai" },
   XAI_API_KEY: { providers: ["xai"], host: "api.x.ai" },
-  // pi reads the name, and its catalog lists no model for the provider at this pin.
-  RADIUS_API_KEY: { providers: ["radius"] },
+  RADIUS_API_KEY: { providers: ["radius"], host: "radius.pi.dev" },
+  BASETEN_API_KEY: { providers: ["baseten"], host: "inference.baseten.co" },
+  META_API_KEY: { providers: ["meta"], host: "api.meta.ai" },
   OPENROUTER_API_KEY: { providers: ["openrouter"], host: "openrouter.ai" },
   AI_GATEWAY_API_KEY: { providers: ["vercel-ai-gateway"], host: "ai-gateway.vercel.sh" },
   ZAI_API_KEY: { providers: ["zai"], host: "api.z.ai" },

@@ -5,8 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { AgentHarnessEvent, AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, JsonObject } from "@earendil-works/pi-ai";
 import { receiptProse } from "../src/menu.ts";
 import { menuToolName } from "../src/menu-tools.ts";
 import { attachPrinter, renderMessage, renderToolInput } from "../src/printer.ts";
@@ -32,18 +32,18 @@ function assistant(content: AssistantMessage["content"]): AgentMessage {
 }
 
 function toolCall(name: string, args: Record<string, unknown>): AssistantMessage["content"][number] {
-  return { type: "toolCall", id: "tc-1", name, arguments: args };
+  return { type: "toolCall", id: "tc-1", name, arguments: args as JsonObject };
 }
 
-/** A fake harness: the printer needs only `subscribe`, and tests need `emit`. */
+/** A fake `Agent`: the printer needs only `subscribe`, and tests need `emit`. */
 function fakeHarness() {
-  const listeners = new Set<(event: AgentHarnessEvent) => void>();
+  const listeners = new Set<(event: AgentEvent) => void>();
   return {
-    subscribe(listener: (event: AgentHarnessEvent) => void): () => void {
+    subscribe(listener: (event: AgentEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    emit(event: AgentHarnessEvent): void {
+    emit(event: AgentEvent): void {
       for (const listener of listeners) listener(event);
     },
   };
