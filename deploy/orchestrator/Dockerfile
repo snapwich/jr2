@@ -43,6 +43,9 @@ COPY packages/orchestrator ./orchestrator
 # stage did not copy fails the build and names the package: a new kit package must join this
 # image's sources, or the image would fetch a different copy of it from a registry.
 # devDependencies go first: they are test rigging (`@jr2/harness`), and nothing installs them here.
+# `--ignore-scripts`: `@jr2/orchestrator`'s `prepack` builds the docs bundle with pnpm and the whole
+# repo (ADR-0072), which this stage has neither of. The bundle is for an Instance's Assistant, in the
+# package an Instance installs from npm; the Orchestrator's process never reads it.
 RUN node -e ' \
   const fs = require("fs"); \
   const dirs = ["agent-protocol", "orchestrator"]; \
@@ -59,8 +62,8 @@ RUN node -e ' \
     fs.writeFileSync(`${d}/package.json`, JSON.stringify(j, null, 2)); \
   }' \
  && mkdir /tgz \
- && (cd agent-protocol && npm pack --pack-destination /tgz) \
- && (cd orchestrator && npm pack --pack-destination /tgz)
+ && (cd agent-protocol && npm pack --ignore-scripts --pack-destination /tgz) \
+ && (cd orchestrator && npm pack --ignore-scripts --pack-destination /tgz)
 
 # ---------------------------------------------------------------------------------------------
 # The image itself.
