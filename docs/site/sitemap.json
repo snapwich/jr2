@@ -97,6 +97,11 @@
               "source": "page"
             },
             {
+              "slug": "concepts/charts",
+              "title": "Charts",
+              "source": "page"
+            },
+            {
               "slug": "concepts/pools-and-sources",
               "title": "Pools and Sources",
               "source": "page"
@@ -269,6 +274,16 @@
             {
               "slug": "guides/publish-a-machine-as-an-npm-package",
               "title": "Publish a Machine as an npm package",
+              "source": "page"
+            },
+            {
+              "slug": "guides/let-an-agent-write-a-chart",
+              "title": "Let an Agent write a Chart",
+              "source": "page"
+            },
+            {
+              "slug": "guides/run-a-chart-by-name",
+              "title": "Run a Chart by name",
               "source": "page"
             }
           ]

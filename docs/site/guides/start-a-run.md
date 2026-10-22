@@ -8,8 +8,9 @@ Start a run of a [Workflow](../reference/glossary.md#workflow) from the CLI, fro
 
 A Workflow is a [Machine](../reference/glossary.md#machine) that your [Instance](../reference/glossary.md#instance)
 registers. Its name is the name of its file in `workflows/`, without `.ts`. Thus `workflows/ping.ts` is the Workflow
-`ping`. A run is one execution of that Machine. The run input is a JSON object, and the Machine reads it when the run
-starts.
+`ping`. A named [Chart](../reference/glossary.md#chart) is a Workflow too, with the name `<wrapper>/<name>`: start it
+with `jr2 run <wrapper>/<name>`. See [Run a Chart by name](run-a-chart-by-name.md). A run is one execution of that
+Machine. The run input is a JSON object, and the Machine reads it when the run starts.
 
 The examples on this page start `ping`, the Workflow that `jr2 init` writes. In the commands, replace `<namespace>` with
 the namespace of your Instance. It is the [`name`](../reference/config.md#name) in `jr2.config.ts`. When `jr2.config.ts`
@@ -146,7 +147,9 @@ curl -s http://localhost:4000/workflows/ping -H "Accept: application/json"
 {"name":"ping","machineId":"ping","input":null}
 ```
 
-[`GET /workflows`](../reference/http-api.md#get-workflows) gives the names of all the Workflows. It also needs no token.
+[`GET /workflows`](../reference/http-api.md#get-workflows) gives all the Workflows, each with where it comes from, and
+the named Charts of each Chart wrapper. It also needs no token. [`jr2 runs`](../reference/cli.md#runs) prints the same
+list on stderr.
 
 ### Use the CLI without the Instance folder
 

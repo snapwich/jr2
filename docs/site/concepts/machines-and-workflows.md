@@ -32,6 +32,11 @@ A Workflow is only a name. The Machine holds all that it needs: its events, its 
 Machine can be a Workflow of your Instance, a child of a different Machine, or a part of an npm package.
 [Composition](composition.md) tells how one Machine invokes a different Machine.
 
+A Workflow can also be a named [Chart](../reference/glossary.md#chart): a Machine written as data, which runs under a
+Machine of the Instance. Its name is `<wrapper>/<name>`, such as `notes/summary`. It comes from a Chart file,
+`workflows/<wrapper>/<name>.chart.json`, or from a runtime Chart that the Orchestrator keeps. [Charts](charts.md) tells
+how.
+
 `jr2 up` loads each Workflow before it changes the cluster. It runs the typecheck of the Instance, then it loads each
 Machine and examines its parts. An error that the typecheck or the load finds stops `jr2 up`, so a run never starts with
 that error. The Orchestrator runs the Machines that the last `jr2 up` gave it. After you change a Machine, run `jr2 up`
@@ -125,7 +130,8 @@ moves a Machine.
 
 ## Rules
 
-- A Workflow is a `.ts` file in `workflows/`, and its name is the name of the file without `.ts`.
+- A Workflow is a `.ts` file in `workflows/`, and its name is the name of the file without `.ts`. A named Chart is a
+  Workflow too, with the name `<wrapper>/<name>`.
 - jr2 does not register a file whose name starts with `_`, or a `.d.ts` file. Put a Machine that only other Machines
   import in such a file. A file in `workflows/` that a different Workflow imports is also a Workflow of its own.
 - A Workflow file must export `machine`. jr2 refuses a file without it.
@@ -145,7 +151,7 @@ moves a Machine.
 
 - [Write a Workflow](../guides/write-a-workflow.md)
 - [Start a run](../guides/start-a-run.md)
-- [Agents and Turns](agents-and-turns.md), [The Menu](the-menu.md) and [Gates](gates.md)
+- [Agents and Turns](agents-and-turns.md), [The Menu](the-menu.md), [Gates](gates.md) and [Charts](charts.md)
 - Reference: [`jr2Setup`](../reference/authoring-surface.md#jr2setup),
   [`defineEvent`](../reference/authoring-surface.md#defineevent),
   [`HostInjectedInput`](../reference/authoring-surface.md#type-hostinjectedinput), [`jr2 run`](../reference/cli.md#run),

@@ -51,14 +51,18 @@ jr2 runs
 
 ```text
 → context <context> / namespace <namespace>
+workflows:
+  release (machine)
 [{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}]
 ```
 
-`jr2 runs` prints a JSON array of the runs that did not end. To read a run that ended, use `jr2 status <run id>`. A run
-with a [Workspace](../reference/glossary.md#workspace) that waits for capacity also has `placing`: the path of each such
-Workspace in the run. `jr2 status` tells why it waits. A run that a `dispatch` [Effect](../reference/glossary.md#effect)
-started has `dispatchedBy` after its id: the run that started it, the slot of the Effect, and its `depth` in the chain.
-[Start a run from a run](start-a-run-from-a-run.md) shows it.
+`jr2 runs` prints a JSON array of the runs that did not end. On stderr, it first lists the Workflows that a run can
+start, each with where it comes from: `machine`, `chart file` or `chart`. A Chart wrapper lists its named Charts under
+it. `jr2 runs --workflows` prints that list as the JSON result. To read a run that ended, use `jr2 status <run id>`. A
+run with a [Workspace](../reference/glossary.md#workspace) that waits for capacity also has `placing`: the path of each
+such Workspace in the run. `jr2 status` tells why it waits. A run that a `dispatch`
+[Effect](../reference/glossary.md#effect) started has `dispatchedBy` after its id: the run that started it, the slot of
+the Effect, and its `depth` in the chain. [Start a run from a run](start-a-run-from-a-run.md) shows it.
 
 ## Read the status of a run
 

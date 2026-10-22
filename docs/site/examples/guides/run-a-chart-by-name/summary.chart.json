@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "summary",
+  "context": { "summary": "" },
+  "events": {
+    "finished": {
+      "description": "Give the summary. This ends your work.",
+      "input": {
+        "type": "object",
+        "properties": { "summary": { "type": "string", "description": "The summary, in three sentences." } },
+        "required": ["summary"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "initial": "writing",
+  "states": {
+    "writing": {
+      "invoke": {
+        "src": "writer",
+        "input": { "prompt": "Write a summary of {{input.topic}} in three sentences. Then pick finished with it." }
+      },
+      "on": {
+        "finished": {
+          "target": "done",
+          "actions": [{ "type": "set", "path": "summary", "from": "{{event.summary}}" }]
+        }
+      }
+    },
+    "done": { "type": "final", "output": { "summary": "{{context.summary}}" } }
+  }
+}

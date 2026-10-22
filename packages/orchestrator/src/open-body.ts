@@ -51,20 +51,23 @@ import { actorPath, boundRun } from "./registration.ts";
 import { jr2Setup } from "./setup.ts";
 import { attachBoundMachine, boundMachineFor } from "./vocabulary.ts";
 
+// ADR-0070: "counters are the Open body's".
 /**
- * The ceilings an Open body sets on the Chart that binds it (ADR-0070: "counters are the Open
- * body's"). Each is a positive bound; reaching one settles the body with a `ceiling` output.
+ * The limits that an Open body sets on its Chart. Each one is a positive bound. When the Chart gets
+ * to one, the Open body stops it and ends with `{ outcome: "ceiling", ceiling, detail }`.
  */
 export type Ceilings = {
-  /** The Agent Turns started under the body, at any depth: a lent Machine's Turns count too. */
+  /** The Agent Turns that start under the Open body, at all levels. The Turns of a lent Machine
+   * count too. */
   turns: number;
-  /** The wall clock from the body's start. */
+  /** The time from the start of the Open body, such as `"30m"`. At most about 596 hours. */
   wallClock: Duration;
-  /** The microsteps the body takes, over the whole run: a budget, since xstate has no loop guard. */
+  /** The transitions of the Chart in the whole run. xstate has no guard against a loop, so this is
+   * the guard. */
   transitions: number;
-  /** The children live under the body at once. */
+  /** The children that run under the Open body at one time. */
   fanOut: number;
-  /** The Chart's canonical JSON, in bytes: the door's own limit. At most {@link MAX_CHART_SIZE}. */
+  /** The size of the Chart, as JSON, in bytes. At most 1048576 (1 MiB). */
   size: number;
 };
 
@@ -106,8 +109,9 @@ export function jsonOver(value: unknown, cap: number): boolean {
   return false;
 }
 
-/** The kinds of part an Open body lends, each as a list of the wrapper's own slot names; and the
- * kit's Gate, lent whole (`gate: true`), since there is one and it has no name to list. */
+/** The parts of the Chart wrapper that a Chart can use, by their keys in `actors`, `guards`,
+ * `actions` and `delays`. `gate: true` lends the Gate, so that a Chart can wait for an answer from
+ * outside the run. A Chart can use no other part. */
 export type Lends = {
   agents?: string[];
   effects?: string[];
@@ -118,11 +122,20 @@ export type Lends = {
   gate?: boolean;
 };
 
-/** What an Open body states (ADR-0070): the parts it lends, what a Chart may define, the ceilings. */
+/**
+ * What an Open body declares: the parts that it lends a Chart, what the Agents of a Chart can
+ * have, and the limits of a Chart. Give it to {@link openBody}, and to `chartSchemaFor` for the
+ * pick of a planner.
+ *
+ * @see docs/concepts/charts.md
+ */
 export type OpenBodyDeclaration = {
+  /** The parts that a Chart can use. */
   lends: Lends;
-  /** What a Chart's own Agents may have: a model from `models`, a Workspace access from `workspace`. */
+  /** What the Agents that a Chart adds can have: a model from `models`, and a Workspace access
+   * from `workspace`. With no model, a Chart cannot add an Agent. */
   allows: { models: string[]; workspace: WorkspaceAccess[] };
+  /** The limits of one Chart. */
   ceilings: Ceilings;
 };
 
@@ -271,11 +284,75 @@ function frozen(decl: OpenBodyDeclaration): OpenBodyDeclaration {
   });
 }
 
+// It validates the declaration now, so a bad one fails where the Machine is written, and returns
+// actor logic branded with it. `jr2Setup` resolves every lent name against its own `actors`,
+// `guards`, `actions` and `delays` at createMachine, and stamps the result with `attachLent`
+// (ADR-0070).
 /**
- * Declare an Open body (ADR-0070). It validates the declaration now, so a bad one fails where the
- * Machine is written, and returns actor logic branded with it. `jr2Setup` resolves every lent name
- * against its own `actors`, `guards`, `actions` and `delays` at createMachine, and stamps the
- * result with {@link attachLent}.
+ * Make an Open body: the actor slot that a Chart binds. Put it in `actors`, and invoke it from a
+ * state with `{ chart, ...input }`. `chart` is the text of a Chart, or `{ name }` for a named
+ * Chart of this wrapper. The other keys are the input of the Chart, which it reads as
+ * `{{input.<key>}}`. A Machine with an Open body is a Chart wrapper.
+ *
+ * Each Agent Turn of the Chart runs where the Open body runs: in the Sandbox of its `workspace()`,
+ * or on the Instance Harness. The Open body ends with an {@link OpenBodyOutput}.
+ *
+ * It refuses a declaration that is not correct: `openBody: <problem>; <problem>`, for example
+ * `ceilings.turns: missing; an Open body states every ceiling`. `createMachine` refuses a lent
+ * name that the Machine does not have: `machine "<id>": Open body "<slot>": lends.agents: "<name>"
+ * is no actor slot of this Machine; its actors: <slots>`.
+ *
+ * @param decl - What a Chart can use, and its limits (see {@link OpenBodyDeclaration}).
+ * @returns The actor logic of the slot.
+ *
+ * @example
+ * ```ts
+ * import { assign } from "xstate";
+ * import { z } from "zod";
+ * import { agent, chartSchema, jr2Setup, openBody, type OpenBodyOutput } from "@jr2/orchestrator";
+ *
+ * // `chart` is a Chart, so a run input can carry one, and Charts can have names.
+ * const door = z.object({ topic: z.string(), chart: chartSchema });
+ * type Input = z.infer<typeof door>;
+ * type Context = Input & { result?: OpenBodyOutput };
+ *
+ * export const machine = jr2Setup({
+ *   types: {} as { context: Context; input: Input },
+ *   events: [],
+ *   actors: {
+ *     writer: agent({
+ *       model: "anthropic/claude-sonnet-5-5",
+ *       workspace: "none",
+ *       instructions: "You write clear, short text for engineers.",
+ *     }),
+ *     body: openBody({
+ *       lends: { agents: ["writer"] },
+ *       allows: { models: [], workspace: [] },
+ *       ceilings: { turns: 6, wallClock: "15m", transitions: 200, fanOut: 1, size: 65536 },
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "notes",
+ *   input: door,
+ *   context: ({ input }) => ({ ...input }),
+ *   initial: "running",
+ *   states: {
+ *     running: {
+ *       invoke: {
+ *         src: "body",
+ *         input: ({ context }: { context: Context }) => ({ chart: context.chart, topic: context.topic }),
+ *         onDone: { target: "done", actions: assign({ result: ({ event }) => event.output as OpenBodyOutput }) },
+ *       },
+ *     },
+ *     done: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/concepts/charts.md
+ * @see docs/guides/run-a-chart-by-name.md
+ * @see docs/guides/let-an-agent-write-a-chart.md
+ * @see docs/reference/decisions/0070-a-machine-lends-its-parts-to-a-chart.md
  */
 export function openBody(decl: OpenBodyDeclaration): OpenBodyLogic {
   return openBodyWith(decl);
@@ -358,7 +435,16 @@ export function lentOf(logic: OpenBodyLogic): LentParts | undefined {
 /** What an Open body is invoked with: the Chart, by text or by name, and its `input` (the rest). */
 export type OpenBodyInput = { chart: ChartText | { name: string } } & Record<string, unknown>;
 
-/** How an Open body settles: the Chart's output, the door's refusal, or the ceiling it reached. */
+/**
+ * The output of an Open body. Route on `outcome` in the `onDone` of the state that invokes it:
+ *
+ * - `done`: the Chart got to a final state. `output` is the output of the Chart.
+ * - `refused`: the door refused the Chart. `report` has one line for each problem. Give it to the
+ *   Agent that wrote the Chart, so that it can send a corrected one.
+ * - `ceiling`: the Chart got to a ceiling, and the Open body stopped it. `ceiling` names it.
+ *
+ * @see docs/concepts/charts.md
+ */
 export type OpenBodyOutput =
   | { outcome: "done"; output: unknown }
   | { outcome: "refused"; report: string[] }

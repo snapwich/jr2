@@ -526,9 +526,17 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
     .describe(chartBriefing(narrow)) as unknown as z.ZodType<ChartText>;
 }
 
+// A door field or a pick param that IS this schema is a Chart field: `isChartSchema` tells, and
+// jr2 reads a Chart wrapper's one-shot door off it (ADR-0070).
 /**
- * The Chart grammar (ADR-0070), as zod. A door field or a pick param that IS this schema is a
- * Chart field: `isChartSchema` tells, and jr2 reads a Chart wrapper's one-shot door off it.
+ * The Chart grammar, as a zod schema. Make a field of the run input of a Chart wrapper this schema,
+ * as in `z.object({ topic: z.string(), chart: chartSchema })`. Then a run input can carry a Chart,
+ * and the wrapper can keep Charts under names: Chart files in `workflows/<wrapper>/`, and runtime
+ * Charts. For the pick of a planner, use `chartSchemaFor`, which knows the names that the Open body
+ * lends.
+ *
+ * @see docs/guides/run-a-chart-by-name.md
+ * @see docs/concepts/charts.md
  */
 export const chartSchema: z.ZodType<ChartText> = guarded(grammar());
 
@@ -578,13 +586,38 @@ export function chartBriefingOf(schema: unknown): string | undefined {
 
 const narrowedSchemas = new WeakMap<OpenBodyDeclaration, z.ZodType<ChartText>>();
 
+// Either way it is a Chart field (`isChartSchema`), and the door still admits the Chart against
+// the lent set the body has at its start. One schema per declaration (ADR-0070).
 /**
- * The Chart grammar as zod, narrowed to one Open body (ADR-0070): the lent `src` names, guard,
- * action and delay names, and the allowed models and Workspace accesses are enums. A planner's
- * pick whose field is this schema gets the narrowed grammar as its tool parameters, so the model
- * is constrained when it writes the Chart; a Chart wrapper's door may take it too. Either way it
- * is a Chart field (`isChartSchema`), and the door still admits the Chart against the lent set the
- * body has at its start. One schema per declaration.
+ * The Chart grammar for one Open body, as a zod schema. The names that the Open body lends, and the
+ * models and the Workspace accesses that it allows, are the only values that the schema takes.
+ * Make it the parameter of the pick of a planner. The model then gets the grammar as the
+ * parameters of its tool, and the Briefing tells it how a Chart runs. The door still checks each
+ * Chart before it runs.
+ *
+ * @param decl - The declaration of the Open body that the Chart binds.
+ * @returns The schema of a Chart for that Open body.
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { chartSchemaFor, defineEvent, type OpenBodyDeclaration } from "@jr2/orchestrator";
+ *
+ * const declaration: OpenBodyDeclaration = {
+ *   lends: { agents: ["writer"], gate: true },
+ *   allows: { models: ["anthropic/claude-sonnet-5-5"], workspace: ["none"] },
+ *   ceilings: { turns: 12, wallClock: "30m", transitions: 500, fanOut: 2, size: 65536 },
+ * };
+ *
+ * export const runChart = defineEvent({
+ *   name: "run_chart",
+ *   description: "Run this Chart. Its outcome is the answer to this call.",
+ *   input: z.object({ chart: chartSchemaFor(declaration) }),
+ * });
+ * ```
+ *
+ * @see docs/guides/let-an-agent-write-a-chart.md
+ * @see docs/concepts/charts.md
  */
 export function chartSchemaFor(decl: OpenBodyDeclaration): z.ZodType<ChartText> {
   const hit = narrowedSchemas.get(decl);

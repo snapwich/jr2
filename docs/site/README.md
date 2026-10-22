@@ -183,6 +183,7 @@ page that uses a term links to the page that owns it, and does not explain the t
 | `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, dispatched by, at-most-once, `fromPick`                         |
 | `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, Size, Placing, Lease, Continuity, Sandbox Image, User Container |
 | `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                       |
+| `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                |
 | `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set                                                                           |
 | `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                     |
 | `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                         |
@@ -215,6 +216,7 @@ The first link in `## Read next` is the Concept in this table. A Guide can link 
 | `run-a-command-or-call-a-url`, `push-and-sign-a-branch`, `start-a-run-from-a-run`        | `concepts/effects`                |
 | `look-inside-a-sandbox`, `add-tools-to-the-sandbox`, `size-a-workspace`                  | `concepts/workspaces`             |
 | `bind-open-parts`, `publish-a-machine-as-an-npm-package`                                 | `concepts/composition`            |
+| `let-an-agent-write-a-chart`, `run-a-chart-by-name`                                      | `concepts/charts`                 |
 | `run-one-worker-per-item`                                                                | `concepts/pools-and-sources`      |
 | `open-the-console`                                                                       | `concepts/architecture`           |
 | `use-a-local-model`, `use-a-hosted-provider`, `give-the-cluster-git-credentials`         | `concepts/secrets-and-trust`      |
