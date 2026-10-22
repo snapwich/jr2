@@ -1444,7 +1444,9 @@ test("ending a turn logs no error: no 404 spam, no unhandled rejection (ADR-0026
     [],
     "a perfectly ordinary turn ending must not leave a rejection nothing awaits",
   );
-  const logged = stderrText.slice(stderrMark) + (printed.get(iid) ?? "");
+  // The Turn part prints the cwd, under a temp folder whose name holds the pid: a pid with 404 in it
+  // is not a 404.
+  const logged = (stderrText.slice(stderrMark) + (printed.get(iid) ?? "")).replaceAll(tmpdir(), "<tmp>");
   assert.doesNotMatch(logged, /404/, "no 404 belongs in the happy path (ADR-0026)");
 });
 
