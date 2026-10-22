@@ -28,12 +28,12 @@ const body = jr2Setup({
   actors: {
     // The definition: who the Agent is. It is the same on every Turn.
     coder: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You fix failing tests. You change no test.",
     }),
     // A Menu-only Agent: no Working tools. It reads its prompt and picks.
     checker: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You read the summary of a fix, and you decide if the fix is complete.",
       workspace: "none",
       thinkingLevel: "low",

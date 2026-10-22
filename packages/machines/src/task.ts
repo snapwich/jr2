@@ -206,7 +206,7 @@ type BodyContext = BodyInput & {
  * });
  *
  * export const machine = customize(fixed, {
- *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
  * });
  * ```
  *
@@ -378,7 +378,7 @@ export const body = jr2Setup({
  *     app: { url: "https://github.com/you/app.git" },
  *     lib: { url: "https://github.com/you/lib.git" },
  *   },
- *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
  * });
  * ```
  *

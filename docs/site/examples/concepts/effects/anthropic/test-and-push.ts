@@ -33,7 +33,7 @@ const body = jr2Setup({
   events: [runTests, finished],
   actors: {
     coder: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You are a careful engineer. You commit your work on the branch.",
     }),
     // Two Effects. Each is an actor slot, beside the Agent.

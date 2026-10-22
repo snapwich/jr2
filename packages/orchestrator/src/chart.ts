@@ -605,7 +605,7 @@ const narrowedSchemas = new WeakMap<OpenBodyDeclaration, z.ZodType<ChartText>>()
  *
  * const declaration: OpenBodyDeclaration = {
  *   lends: { agents: ["writer"], gate: true },
- *   allows: { models: ["anthropic/claude-sonnet-5-5"], workspace: ["none"] },
+ *   allows: { models: ["anthropic/claude-haiku-5-5"], workspace: ["none"] },
  *   ceilings: { turns: 12, wallClock: "30m", transitions: 500, fanOut: 2, size: 65536 },
  * };
  *

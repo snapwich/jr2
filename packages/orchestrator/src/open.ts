@@ -56,7 +56,7 @@
  * // What an Instance's `workflows/fix.ts` exports: the same Machine, its Open parts bound.
  * export const machine = customize(fix, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
  * });
  * ```
  *

@@ -232,7 +232,7 @@ type RepoSlotsOf<M extends AnyStateMachine> = [WorkspaceOf<M>] extends [never]
  *
  * const parts: Customize<typeof task> = {
  *   repos: { app: { url: "https://github.com/you/app.git", ref: "main" } },
- *   agents: { coder: { model: "anthropic/claude-sonnet-5-5", thinkingLevel: "high" } },
+ *   agents: { coder: { model: "anthropic/claude-haiku-5-5", thinkingLevel: "high" } },
  * };
  *
  * export const machine = customize(task, parts);
@@ -365,7 +365,7 @@ type LooseParts = {
  *
  * export const machine = customize(task, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
  *   resources: { limits: { memory: "4Gi" } },
  * });
  * ```

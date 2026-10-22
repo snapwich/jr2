@@ -29,18 +29,18 @@ const body = jr2Setup({
   actors: {
     // "read": no write tool and no edit tool. It keeps bash.
     reviewer: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You review one commit. You do not change files.",
       workspace: "read",
     }),
     // No `workspace` field: "write", all the Working tools.
     coder: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You change code as the review asks, and you commit each change.",
     }),
     // "none": a Menu-only Agent. It has no Working tools, and it runs on the Instance Harness.
     checker: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You read review notes and the summary of a change, and you decide if the change is complete.",
       workspace: "none",
       thinkingLevel: "low",

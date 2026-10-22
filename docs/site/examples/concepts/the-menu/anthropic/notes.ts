@@ -31,7 +31,7 @@ export const machine = jr2Setup({
   events: [ask, done, reply],
   actors: {
     writer: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You write short release notes. Ask the editor at least one question before you finish.",
       workspace: "none",
     }),

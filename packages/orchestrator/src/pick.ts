@@ -87,7 +87,7 @@ import type { PickAnswer } from "./wire.ts";
  *   events: [runTest, finished],
  *   actors: {
  *     coder: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You are a careful engineer.",
  *     }),
  *     test: command(["node", "--test", arg("file")]),
@@ -196,7 +196,7 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *   events: [postNote],
  *   actors: {
  *     writer: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You write one short note for the team.",
  *       workspace: "none",
  *     }),
@@ -262,7 +262,7 @@ export function fromPick<N extends string, I extends z.ZodObject, C, E extends E
  *   events: [postComment],
  *   actors: {
  *     triager: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You triage tickets.",
  *       workspace: "none",
  *     }),
@@ -582,7 +582,7 @@ export const isAnswer = (action: unknown): boolean =>
  *   events: [runTests, finished],
  *   actors: {
  *     coder: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You are a careful engineer.",
  *     }),
  *     tests: command(["npm", "test"]),

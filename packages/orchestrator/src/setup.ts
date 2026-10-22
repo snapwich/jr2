@@ -179,7 +179,7 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  *   events: [proposed, approve, reject],
  *   actors: {
  *     planner: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You plan small releases.",
  *       workspace: "none",
  *     }),

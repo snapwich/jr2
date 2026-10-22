@@ -249,7 +249,7 @@ function normalizeClaim(output: unknown): Claim {
  *
  * const fixer = customize(task, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
  * });
  *
  * export const machine = pool(fixer, {

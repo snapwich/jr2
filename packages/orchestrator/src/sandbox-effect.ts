@@ -1046,7 +1046,7 @@ export function credentialedCommandWith(
  *   events: [committed],
  *   actors: {
  *     coder: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You are a careful engineer.",
  *     }),
  *     publish: push({ sign: true }),

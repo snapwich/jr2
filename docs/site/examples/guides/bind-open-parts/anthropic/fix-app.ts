@@ -1,7 +1,7 @@
 import { customize } from "@jr2/orchestrator";
 import { task } from "@jr2/machines";
 
-const model = "anthropic/claude-sonnet-5-5";
+const model = "anthropic/claude-haiku-5-5";
 
 // `task` leaves two parts Open: its Repo Slots and the model of its coder. Bind the two here.
 // The file name gives the Workflow its name: fix-app.

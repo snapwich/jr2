@@ -14,7 +14,7 @@ import {
 // #endregion imports
 
 // #region model
-const model = "anthropic/claude-sonnet-5-5";
+const model = "anthropic/claude-haiku-5-5";
 // #endregion model
 
 // #region body

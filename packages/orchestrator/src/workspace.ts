@@ -197,7 +197,7 @@ export type WorkspaceHandles<TSlots extends string> = {
  *   events: [done],
  *   actors: {
  *     reviewer: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You review one commit and write REVIEW.md.",
  *       workspace: "read",
  *     }),

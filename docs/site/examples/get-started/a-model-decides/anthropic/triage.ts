@@ -45,7 +45,7 @@ export const machine = jr2Setup({
   actors: {
     triager: agent({
       // The provider, then the model. jr2.config.ts holds the key for the provider.
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       description: "Reads one feature request and decides whether it can be built as written.",
       // No Sandbox and no Working tools: the Agent can only read its prompt and pick.
       workspace: "none",

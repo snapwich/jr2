@@ -68,7 +68,7 @@ export type Quantity = string | number;
  *
  * export const machine = customize(task, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
  *   resources: size,
  * });
  * ```
@@ -400,7 +400,7 @@ export function splitSize(size: ResolvedSize, user?: Size): SizeSplit {
  *
  * export const machine = customize(task, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+ *   agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
  *   user: sshd,
  * });
  * ```

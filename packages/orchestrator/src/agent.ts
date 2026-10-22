@@ -40,7 +40,7 @@ import { open } from "./open.ts";
  * const effort: ThinkingLevel = "high";
  *
  * export const reviewer = agent({
- *   model: "anthropic/claude-sonnet-5-5",
+ *   model: "anthropic/claude-haiku-5-5",
  *   instructions: "You review diffs for correctness.",
  *   thinkingLevel: effort,
  * });
@@ -81,7 +81,7 @@ export type WorkspaceAccess = "write" | "read" | "none";
  * import { agent, type AgentDefinition } from "@jr2/orchestrator";
  *
  * const definition: AgentDefinition = {
- *   model: "anthropic/claude-sonnet-5-5",
+ *   model: "anthropic/claude-haiku-5-5",
  *   instructions: "You fix the failing test, and you change nothing else.",
  *   description: "Fixes one failing test",
  *   thinkingLevel: "medium",
@@ -101,7 +101,7 @@ export type AgentDefinition = {
   // declares which providers are REACHABLE, and the definition makes the choice. This is also the
   // only model `jr2 up` can preflight, since a workflow's is not statically recoverable. An
   // invocation may override it for one Turn (`AgentTurnInput.model`).
-  /** The model, as `<provider>/<modelId>`: for example `anthropic/claude-sonnet-5-5`. The
+  /** The model, as `<provider>/<modelId>`: for example `anthropic/claude-haiku-5-5`. The
    * provider must be one that `jr2.config.ts` can reach. Here it is always a string: an `open`
    * model of `agent()` must be bound before a Turn starts. One Turn may set another model in the
    * invoke's `input`. */
@@ -141,7 +141,7 @@ export type AgentDefinition = {
 // AgentDefinition, and `requireBoundAgent` is the one door between the two.
 /** What `agent()` takes: an {@link AgentDefinition}, except that `model` can also be `open`. */
 export type AgentDeclaration = Omit<AgentDefinition, "model"> & {
-  /** The model, as `<provider>/<modelId>`: for example `anthropic/claude-sonnet-5-5`. Required:
+  /** The model, as `<provider>/<modelId>`: for example `anthropic/claude-haiku-5-5`. Required:
    * there is no default model. The provider must be one that `jr2.config.ts` can reach.
    *
    * Or `open`, in a Machine that you publish as a package. Then the Instance that registers the

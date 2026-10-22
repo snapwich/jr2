@@ -36,7 +36,7 @@ const body = jr2Setup({
   events: [runTest, finished],
   actors: {
     coder: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You fix failing tests. You change no test. You commit the fix.",
     }),
     // One program, with no shell. arg("file") is one argument, from the input of the Effect.

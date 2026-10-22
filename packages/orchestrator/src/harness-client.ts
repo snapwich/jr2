@@ -567,7 +567,7 @@ export function createLiveSetPush(options: {
  *   events: [finish],
  *   actors: {
  *     coder: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You fix failing tests. You change no test.",
  *     }),
  *   },

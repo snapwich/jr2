@@ -68,7 +68,7 @@ const body = jr2Setup({
   events: [finish, approve, requestChanges],
   actors: {
     coder: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       description: "Fixes one bug in its own Workspace, and commits the fix.",
       workspace: "write",
       instructions: `You are a software engineer. You fix one bug, in a container of your own.

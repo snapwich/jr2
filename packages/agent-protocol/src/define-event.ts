@@ -146,7 +146,7 @@ export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
  *   events: [done],
  *   actors: {
  *     writer: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You write short summaries.",
  *       workspace: "none",
  *     }),

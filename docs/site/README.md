@@ -275,7 +275,7 @@ Text and code for a local model.
 
 The key `provider` makes each tab set on the site show the tab that the reader chose last, on each page.
 
-- **Anthropic.** The model is `anthropic/claude-sonnet-5-5`. `jr2.config.ts` adds one `secrets` line, and `.env` holds
+- **Anthropic.** The model is `anthropic/claude-haiku-5-5`. `jr2.config.ts` adds one `secrets` line, and `.env` holds
   `ANTHROPIC_API_KEY`. The id is an open item: see [Open items](#open-items).
 - **Local.** The model is Qwen3.6-35B-A3B, on an OpenAI-compatible endpoint (vLLM or llama.cpp) over plain `http://`,
   with no key. Its specifier is `local/qwen3.6-35b-a3b`. `jr2.config.ts` sets `harness.provider`, and `.env` holds
@@ -672,10 +672,10 @@ pages do not use `--detach`.
 
 ### The models
 
-| Tab       | Model                         | `jr2.config.ts`                           | `.env`                                     |
-| --------- | ----------------------------- | ----------------------------------------- | ------------------------------------------ |
-| Anthropic | `anthropic/claude-sonnet-5-5` | `examples/shared/anthropic/jr2.config.ts` | `ANTHROPIC_API_KEY=<your key>`             |
-| Local     | `local/qwen3.6-35b-a3b`       | `examples/shared/local/jr2.config.ts`     | `LOCAL_MODEL_URL=http://<address>:8000/v1` |
+| Tab       | Model                        | `jr2.config.ts`                           | `.env`                                     |
+| --------- | ---------------------------- | ----------------------------------------- | ------------------------------------------ |
+| Anthropic | `anthropic/claude-haiku-5-5` | `examples/shared/anthropic/jr2.config.ts` | `ANTHROPIC_API_KEY=<your key>`             |
+| Local     | `local/qwen3.6-35b-a3b`      | `examples/shared/local/jr2.config.ts`     | `LOCAL_MODEL_URL=http://<address>:8000/v1` |
 
 - Page 3 adds the model to the Instance. Each page after it uses the model of the tab.
 - The two `jr2.config.ts` files show only the result. The file that `jr2 init` writes has more comments, and you keep

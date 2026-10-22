@@ -8,5 +8,5 @@ export const machine = customize(task, {
   // Replace <you> with your GitHub user name. Replace <version> with the Kit version.
   repos: { target: { url: "https://github.com/<you>/jr2.git", ref: "v<version>" } },
   // The model that the coder Agent uses.
-  agents: { coder: { model: "anthropic/claude-sonnet-5-5" } },
+  agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
 });

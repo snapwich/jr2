@@ -21,7 +21,7 @@ const body = jr2Setup({
   events: [finished, approve],
   actors: {
     coder: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You are a careful engineer. You commit your work on the branch.",
     }),
     // Two Repo Slots, so the push names the slot that it pushes.

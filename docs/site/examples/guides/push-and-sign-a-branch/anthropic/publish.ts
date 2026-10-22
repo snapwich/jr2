@@ -20,7 +20,7 @@ const body = jr2Setup({
   events: [finished, approve, stop],
   actors: {
     coder: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You fix failing tests. You change no test. You commit the fix.",
     }),
     // Push signed copies of the Agent's commits, with the key of the git.credentials entry.

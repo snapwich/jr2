@@ -58,7 +58,7 @@ export const SENT_BY = "jr2.sentBy";
  *   events: [done],
  *   actors: {
  *     writer: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You write release notes.",
  *       workspace: "none",
  *     }),

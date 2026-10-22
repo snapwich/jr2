@@ -21,7 +21,7 @@ export const machine = jr2Setup({
   events: [postComment],
   actors: {
     triager: agent({
-      model: "anthropic/claude-sonnet-5-5",
+      model: "anthropic/claude-haiku-5-5",
       instructions: "You triage tickets.",
       workspace: "none",
     }),

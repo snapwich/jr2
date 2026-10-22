@@ -321,7 +321,7 @@ function frozen(decl: OpenBodyDeclaration): OpenBodyDeclaration {
  *   events: [],
  *   actors: {
  *     writer: agent({
- *       model: "anthropic/claude-sonnet-5-5",
+ *       model: "anthropic/claude-haiku-5-5",
  *       workspace: "none",
  *       instructions: "You write clear, short text for engineers.",
  *     }),
