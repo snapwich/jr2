@@ -57,12 +57,12 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   version, and refuses it as the door would: between the roll and the publish the Orchestrator serves and holds no
   current Assembly: for a kubelet ConfigMap period in a converge, and until the next `jr2 up` after a volume loss. In
   that window `/agents/*` answers 503 for a surface the process does not host, never 404
-  ([ADR-0026](0026-a-turn-whose-surface-is-gone-is-aborted-not-failed.md)). A boot with no current Assembly restores
-  nothing, because no config is bound in that window and a run that provisioned under none would fault for good; it
-  leaves the live rows untouched, announces them as `waiting`, and the first publish restores them, each inside the
-  Assembly its snapshot names. A run whose Assembly was published for the old Kit version is `drifted` at that publish,
-  naming the hash and both versions. That verdict is final, and the collection that follows removes the Assembly: an
-  image rolled back before the publish still finds every run live, an image rolled back after it does not.
+  ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)). A boot with no current Assembly restores nothing, because
+  no config is bound in that window and a run that provisioned under none would fault for good; it leaves the live rows
+  untouched, announces them as `waiting`, and the first publish restores them, each inside the Assembly its snapshot
+  names. A run whose Assembly was published for the old Kit version is `drifted` at that publish, naming the hash and
+  both versions. That verdict is final, and the collection that follows removes the Assembly: an image rolled back
+  before the publish still finds every run live, an image rolled back after it does not.
 - **The route is one noun and two verbs.** `PUT /assembly`, behind a **publish token**: one tarball, the Kit version and
   the content hash in headers; `200 { hash, kitVersion, workflows, held, collected }` or `4xx` carrying the walk's
   report, the old Assembly untouched. `held` lists every Assembly a live run holds, the current one first, each with the
