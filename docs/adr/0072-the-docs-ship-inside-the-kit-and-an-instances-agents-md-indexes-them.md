@@ -55,6 +55,15 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
 - **The site describes the latest release and deploys on its tag**, in a `pages` job in `release.yml` that needs the
   release job, so a failed gate deploys nothing. It does not wait for the staged packages' approval
   ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)).
+- **VitePress builds the site, from the pages as they are.** The source format is VitePress's own Markdown, so a page
+  renders on GitHub and in the site, and an error names the file that a writer edits. `docs:build` accepts four forms of
+  it, and makes each one plain for the bundle: an aside, the provider tabs, a code group, and a `<<<` code import. It
+  refuses every other form, so no generator syntax reaches the bundle. The provider tabs are `::: tabs key:provider`
+  from `vitepress-plugin-tabs`, not VitePress's `::: code-group`: a provider tab holds prose as well as code, and the
+  plugin keeps the reader's choice on each page, which a code group does not. `docs:build` refuses tabs with another
+  key, and a `<<<` of a file outside `docs/site/examples/`, which `pnpm typecheck` checks. A `mermaid` fence is a theme
+  component that imports mermaid only on a page with a diagram. The site has local search, a `sitemap.xml`, and the
+  `.md` URL of each page in a `<link rel="alternate">`.
 
 ## Considered options
 
@@ -73,6 +82,10 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
   refresh it** is rejected too: a step that someone must remember.
 - **Deploy when npm serves the version** — an hourly job that compares `npm view` with the deployed version. Rejected:
   more machinery to close a window of minutes.
+- **Astro Starlight.** Built to the same bundle, and compared with VitePress on the same pages. It had better search and
+  a lighter page, which VitePress gets with a small search fix and a mermaid component. Rejected: its tabs and code
+  imports are MDX components, so 28 pages become `.mdx` that GitHub shows as source text, and a page carries more than
+  twice the generator lines.
 
 ## Consequences
 
@@ -84,4 +97,7 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
 - A docs fix goes live with the next release, not on merge.
 - A rejected stage leaves the site describing a version that npm does not serve, until the next tag. Accepted: the
   window is short, and a rejected stage is rare.
-- The site generator is chosen separately. This decision holds for any generator, because the bundle is plain Markdown.
+- The bundle is plain Markdown, so a change of the site generator changes `build/vitepress.ts` and the pages' forms, and
+  nothing that an Assistant reads.
+- VitePress 1.x is on Vite 5, with dev-server advisories that the site cannot fix. The site is static, so they reach
+  only `docs:dev`. A move to VitePress 2 is a later change.
