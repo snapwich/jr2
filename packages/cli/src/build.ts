@@ -37,7 +37,7 @@ import { cp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { contentHash, KIT_VERSION } from "@jr2/orchestrator";
+import { contentHash, KIT_VERSION } from "@jr2/orchestrator/internal";
 import { LABEL_INSTANCE } from "./deploy.ts";
 
 const exec = promisify(execFile);
@@ -149,9 +149,9 @@ const KIT_PACKAGE_EXCLUDE = new Set(["node_modules", "dist"]);
  * rest of the non-go tree (Makefile, config/, hack/) stays hashed: over-hash, the cheap side. */
 const KIT_OPERATOR_EXCLUDE = new Set(["bin", "testbin", "cover.out"]);
 
-// `contentHash` lives in `@jr2/orchestrator` (ADR-0069): the door recomputes an Assembly's hash
+// `contentHash` lives in `@jr2/orchestrator/internal` (ADR-0069): the door recomputes an Assembly's hash
 // with the same function. Re-exported so every CLI caller keeps its import.
-export { contentHash } from "@jr2/orchestrator";
+export { contentHash } from "@jr2/orchestrator/internal";
 
 // --- ownership: who built this image (ADR-0039) ------------------------------------------------
 

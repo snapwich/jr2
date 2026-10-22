@@ -15,7 +15,7 @@
 import { fromCallback } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { jr2Setup, type AgentRunInput, type AgentRunReceiveEvent } from "@jr2/orchestrator";
+import { jr2Setup, type AgentRunInput, type AgentRunReceiveEvent } from "@jr2/orchestrator/internal";
 
 const done = defineEvent({ name: "done", input: z.object({ summary: z.string().optional() }) });
 

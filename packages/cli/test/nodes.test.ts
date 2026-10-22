@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { resolveSize } from "@jr2/orchestrator";
+import { resolveSize } from "@jr2/orchestrator/internal";
 import { anyNodeHolds, buildNodes, excludedBecause, sandboxNodes, tolerates, type NodeObject } from "../src/nodes.ts";
 
 const node = (name: string, over: Partial<NodeObject> = {}): NodeObject => ({

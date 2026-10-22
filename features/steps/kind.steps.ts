@@ -33,7 +33,7 @@ import {
   repoIdentity,
   repoKey,
   type RepoStatus,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import {
   ensureSeed,
   gpgRemoteCommit,

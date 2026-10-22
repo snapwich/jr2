@@ -19,7 +19,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { KIT_VERSION } from "@jr2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator/internal";
 import { init } from "../src/commands/init.ts";
 import type { Io } from "../src/output.ts";
 

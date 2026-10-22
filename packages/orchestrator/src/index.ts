@@ -1,88 +1,59 @@
-// @jr2/orchestrator — the deployed app that runs Machines: workflow config, the agent + gate
-// delivery surfaces, the duplex Actor over the Harness wire, and durable snapshot persistence
-// (ADR-0002/0006/0007). Builds on the `@jr2/agent-protocol` wire contract.
+// @jr2/orchestrator — the Authoring surface (CONTEXT.md): the names an author writes in a
+// workflow module or in `jr2.config.ts`, and no other name. A name is here when an author writes
+// it; a name an author only meets through inference (a jr2Setup event union, a gate's input, a
+// pick's Frame) stays internal. A workflow authors against ONE package — `defineEvent`,
+// `jr2Setup`, `workspace`, … all import from "@jr2/orchestrator" (ADR-0015) — and an Assistant that
+// reads this file reads the whole of what it may write.
 //
-// It does NOT speak MCP (ADR-0013): the Harness presents the Menu to its model itself, and reaches
-// the surface here through the Custodian in its pod. What lives here is the registration table and
-// two thin HTTP adapters over it — plus what composes a Custodian (ADR-0059).
+// Named re-exports only, never `export *`: each name below is a decision, and
+// test/authoring-surface.test.ts pins the list. The kit's own packages (the CLI, the e2e suite,
+// the Harness's tests) import "@jr2/orchestrator/internal", which holds everything here and the
+// runtime besides.
 
-// The wire contract, re-exported: a workflow authors against ONE package (`defineEvent`,
-// `jr2Setup`, `workspace`, … all import from "@jr2/orchestrator" — ADR-0015).
-export * from "@jr2/agent-protocol";
-export * from "./agent.ts";
-// The Effect surface (ADR-0067): `command` itself is the wire-bound one, from harness-client.ts;
-// `fromPick`, `paramsOf` and `answer` are what an author writes between a pick and its work.
-export * from "./effect.ts";
-// The http kind (ADR-0068): `http`, `secret`, `bearer`, `basic`, `text`, and the Effector's wire.
-export * from "./http-effect.ts";
-export * from "./sandbox-effect.ts";
-// The dispatch kind (ADR-0071): `dispatch`, a run that starts a run, and `DISPATCHED_BY_HEADER`,
-// the door's idempotency key out of band.
-export * from "./dispatch-effect.ts";
-// An Effect's Open parts (ADR-0054): the types `customize({ effects })` reads.
-export type { EffectBinding, OpenEffect, OpenEffectPart } from "./open-effect.ts";
-export { openPartsText } from "./open-effect.ts";
-export * from "./effector-wire.ts";
-export * from "./pick.ts";
-// The Chart (ADR-0070): its grammar (`chartSchema`, which a Chart wrapper's door and a planner's pick
-// import), the door that admits one, and the resolver of its references.
-export * from "./chart.ts";
-// The Open body a Chart binds (`openBody`, the slot constructor a Chart wrapper places in `actors`)
-// and the named Charts of an Instance: Chart files and runtime Charts (ADR-0070).
-export * from "./open-body.ts";
-export * from "./charts.ts";
-export * from "./parts.ts";
-export * from "./size.ts";
-export * from "./customize.ts";
-export * from "./ambient.ts";
-export * from "./config.ts";
-export * from "./repo-identity.ts";
-export * from "./pool.ts";
-export * from "./setup.ts";
-// The author's routing guard (ADR-0015).
+// Machine and events: the setup a workflow writes its Machine with, the events its parties send,
+// and the guard that makes a writing decline other senders (ADR-0011, ADR-0015).
+export { defineEvent } from "@jr2/agent-protocol";
+export { jr2Setup } from "./setup.ts";
 export { sentBy } from "./party.ts";
-export * from "./vocabulary.ts";
-export * from "./tokens.ts";
-export * from "./durability.ts";
-export * from "./snapshot-store.ts";
-export * from "./actor.ts";
-export * from "./gate.ts";
-export * from "./workspace.ts";
-export * from "./images.ts";
-// The Assembly's content address and wire form (ADR-0069): `jr2 up` and the door share both.
-export * from "./content-hash.ts";
-export * from "./assembly-tar.ts";
-// The current Assembly and the publish door (ADR-0069), and the walk's refusal listing that
-// `jr2 up` and the door both run.
-export * from "./assembly.ts";
-export * from "./assembly-checks.ts";
-export * from "./mount-digest.ts";
-export * from "./model-keys.ts";
-export * from "./held-secrets.ts";
-export * from "./secret-placement.ts";
-export * from "./git-push.ts";
-export * from "./git-clone.ts";
-export * from "./custodian.ts";
-export * from "./sandbox-kube.ts";
-export {
-  effectorManifestKey,
-  LABEL_EFFECTOR_POD,
-  readSandboxEffectorManifest,
-  sandboxEffectorKeySecret,
-  sandboxEffectorObjectsOf,
-  type ProjectedSecret,
-  type SandboxEffectorManifest,
-} from "./sandbox-effector.ts";
-export * from "./repos.ts";
-export * from "./repo-fetch.ts";
-// Type-only: what a workflow event delivery looks like (the registration TABLE stays internal —
-// ADR-0011: workflows speak only defineEvent/agent/gate).
-export type { ChildErrorMarker, DeliveredEvent, PlacingMarker, RunMarker, TurnMarker } from "./registration.ts";
-export * from "./machine-doc.ts";
-export * from "./run-host.ts";
-export * from "./http.ts";
-export * from "./harness-client.ts";
-export * from "./stub-harness.ts";
-export * from "./instance.ts";
-export * from "./server.ts";
-export * from "./names.ts";
+export type { HostInjectedInput } from "./vocabulary.ts";
+
+// Agents: an Agent slot and the definition it carries (ADR-0028, ADR-0049).
+export { agent } from "./harness-client.ts";
+export type { AgentDefinition, ThinkingLevel } from "./agent.ts";
+
+// Workspaces and Repos: a Sandbox and the Repo Slots it binds (ADR-0012, ADR-0051).
+export { workspace } from "./workspace.ts";
+export type { Workspaced } from "./workspace.ts";
+export type { Binding, RepoSlot } from "./parts.ts";
+
+// Effects: work a Machine does outside itself, as an actor slot (ADR-0067, ADR-0068, ADR-0071),
+// and what an author writes between a pick and that work.
+export { arg } from "./effect.ts";
+export type { CommandOutput } from "./effect.ts";
+export { command } from "./harness-client.ts";
+export { basic, bearer, file, http, secret, text } from "./http-effect.ts";
+export type { HttpOutput } from "./effector-wire.ts";
+export { push } from "./sandbox-effect.ts";
+export type { PushOutput } from "./sandbox-effect.ts";
+export { dispatch } from "./dispatch-effect.ts";
+export type { DispatchOutput } from "./effect.ts";
+export { answer, fromPick, paramsOf } from "./pick.ts";
+
+// Composition: a part left Open, a Machine's parts retuned, a Pool over a Source (ADR-0017,
+// ADR-0049, ADR-0054, ADR-0060).
+export { open } from "./parts.ts";
+export { customize } from "./customize.ts";
+export type { Customize } from "./customize.ts";
+export type { EffectBinding } from "./open-effect.ts";
+export type { Size, UserContainer } from "./size.ts";
+export { pool, source } from "./pool.ts";
+
+// Charts: the Open body a Chart wrapper places in `actors`, and the grammar a planner's pick
+// declares, whole or narrowed to one wrapper (ADR-0070).
+export { openBody } from "./open-body.ts";
+export type { OpenBodyDeclaration, OpenBodyOutput } from "./open-body.ts";
+export { chartSchema, chartSchemaFor } from "./chart.ts";
+
+// Config: `jr2.config.ts`, the deployment facts a Machine cannot carry (ADR-0050).
+export { defineConfig } from "./config.ts";
+export type { JR2Config } from "./config.ts";

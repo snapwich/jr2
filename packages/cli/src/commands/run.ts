@@ -13,7 +13,7 @@
 // is a 422 whose report lines this prints, one per rule the Chart fails.
 
 import { parseArgs } from "node:util";
-import type { ChildErrorMarker, PlacingMarker } from "@jr2/orchestrator";
+import type { ChildErrorMarker, PlacingMarker } from "@jr2/orchestrator/internal";
 import { JR2Client, JR2HttpError } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";

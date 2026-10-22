@@ -23,7 +23,7 @@
 
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { loadConfig } from "@jr2/orchestrator";
+import { loadConfig } from "@jr2/orchestrator/internal";
 import { pnpmDockerBuild } from "../build.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";

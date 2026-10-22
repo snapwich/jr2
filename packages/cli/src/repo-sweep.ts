@@ -11,7 +11,7 @@
 // no Repos — the one read that may answer "none" — while any other failure throws and the caller
 // sweeps nothing.
 
-import { ANNOTATION_REPO_LAST_ATTACHED, LABEL_REPO_BOUND } from "@jr2/orchestrator";
+import { ANNOTATION_REPO_LAST_ATTACHED, LABEL_REPO_BOUND } from "@jr2/orchestrator/internal";
 import { LABEL_INSTANCE } from "./deploy.ts";
 import { isMissingResourceType, type KubeAdmin } from "./kube.ts";
 import { activity, type Io } from "./output.ts";

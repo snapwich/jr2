@@ -117,7 +117,7 @@ import {
   type ImageRefs,
   type JR2Config,
   type ResolvedSize,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import { stageAssembly, stagedCopyOf } from "../assembly.ts";
 import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
 import {

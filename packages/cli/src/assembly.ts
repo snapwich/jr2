@@ -13,7 +13,7 @@
 import { lstat, mkdtemp, readdir, readFile, readlink, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { assemblyHash, discoverModules, KIT_VERSION } from "@jr2/orchestrator";
+import { assemblyHash, discoverModules, KIT_VERSION } from "@jr2/orchestrator/internal";
 import { lockfileInstall, type BuildPort } from "./build.ts";
 
 const ORCHESTRATOR = "@jr2/orchestrator";

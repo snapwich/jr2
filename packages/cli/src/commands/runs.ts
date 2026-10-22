@@ -14,7 +14,7 @@
 // a runtime Chart in this step: `PUT`/`DELETE /workflows/<wrapper>/charts/<name>` is for an MCP or curl.
 
 import { parseArgs } from "node:util";
-import type { RunChild } from "@jr2/orchestrator";
+import type { RunChild } from "@jr2/orchestrator/internal";
 import { JR2Client, type RunStatus, type WorkflowListing, type WorkflowOrigin } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";

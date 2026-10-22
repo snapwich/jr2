@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EffectStateShape } from "@jr2/orchestrator";
+import { EffectStateShape } from "@jr2/orchestrator/internal";
 import { noticeText } from "../src/briefing.ts";
 import type { EngineMessage } from "../src/engine.ts";
 import {

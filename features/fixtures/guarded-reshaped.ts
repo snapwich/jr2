@@ -5,7 +5,7 @@
 // starts here, at `implementing` (ADR-0069).
 
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator";
+import { agent, defineEvent, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator/internal";
 
 const requestReview = defineEvent({
   name: "request_review",

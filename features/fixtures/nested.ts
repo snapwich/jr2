@@ -11,7 +11,7 @@
 // never settles (the stub is inert), so both admissions exist at once and the scenario reads them
 // off the stub. Nothing here needs driving — the point is what was admitted, not what came back.
 
-import { agent, customize, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator";
+import { agent, customize, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator/internal";
 
 /** The Machine a package would export: one Agent slot, one state, everything else carried. The
  * stub never runs a model, but a slot IS its definition, so the stock one is stated. */

@@ -25,7 +25,7 @@ import {
   sandboxToken,
   workspaceHeldPod,
   type HeldManifest,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import { linkKit } from "./_kit.ts";
 import { heldDigest, MAP_PROPAGATION, up } from "../src/commands/up.ts";
 import { instanceObjects, type HeldObjects } from "../src/deploy.ts";

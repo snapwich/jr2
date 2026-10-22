@@ -31,7 +31,7 @@ function unreachable(e: unknown): string {
 
 // The fixed in-namespace object names live with the orchestrator (its entrypoint consumes them
 // too); re-exported here for the CLI's own modules.
-export { INSTANCE_SECRET, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "@jr2/orchestrator";
+export { INSTANCE_SECRET, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "@jr2/orchestrator/internal";
 
 export type KubePort = {
   /** The current kubectl context, or undefined when there is none configured. */

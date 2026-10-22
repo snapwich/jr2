@@ -4,8 +4,35 @@ The jr-parity exercise produced a working model but a bad consumer API: mechanis
 event-union bookkeeping) dominated the workflow. The redesign grill (2026-07-13/14, full record in
 [docs/design/workflow-api/](https://github.com/snapwich/jr2/blob/71ebe36/docs/design/workflow-api/proposal.md)) settled
 the split: **the consumer writes pure workflow — states, transitions, prompts, policy — and jr2 absorbs everything else
-through convention.** This ADR covers the authoring surface; [ADR-0016](0016-agent-turn-mechanics-are-internal.md)
+through convention.** This ADR covers the Authoring surface; [ADR-0016](0016-agent-turn-mechanics-are-internal.md)
 covers the agent turn; [ADR-0017](0017-pool-over-a-source-port.md) covers the run loop.
+
+## The root of `@jr2/orchestrator` is the Authoring surface
+
+A workflow authors against one package: `jr2Setup`, `defineEvent`, `agent`, `workspace`, the Effects, `customize` and
+`defineConfig` all import from `@jr2/orchestrator`. Its root exports the Authoring surface (CONTEXT.md) and nothing
+else.
+
+- **The rule.** A name is on the surface when an author writes it in a workflow module or in `jr2.config.ts`. No other
+  name is. A name that an author only gets by inference stays off the surface: the event union that `jr2Setup` derives,
+  a Gate's input, an Agent's Frame. The `gate` actor is off the surface too. `jr2Setup` registers it, and a state
+  invokes it as `src: "gate"`, so no author writes the value. A type is on the surface when an author must write its
+  name, for example `Workspaced`, `HostInjectedInput`, `AgentDefinition`, and the types of the parts that `customize()`
+  takes. `JR2Config` is on the surface too: the `jr2.config.ts` Reference documents its fields, and an author names it
+  to type a config that is built outside `defineConfig()`.
+- **Named exports only.** `src/index.ts` names each export (`export { a } from …`, `export type { T } from …`), in
+  groups by topic, and has no `export *`. Thus an Assistant that reads the file sees the full surface, and each change
+  to the surface is a line in a diff.
+- **A test pins it.** `test/authoring-surface.test.ts` makes sure that `index.ts` has no `export *`, that the root's
+  runtime values are equal to a sorted list in the test, and that the type names in the `export` lists of `index.ts` are
+  equal to a second sorted list. A name that is added or removed fails the test until the list changes. The same test
+  makes sure that `@jr2/machines` and each Instance-shaped folder import the root only.
+- **The kit's own packages import `@jr2/orchestrator/internal`.** It holds the surface and all that the kit shares: the
+  run host, the HTTP API, the Harness wire, the Custodian, the Effector wire, the cluster names. It is not for authors,
+  and it has no stability promise: any name in it can change in any release. A Machine that the kit ships
+  (`@jr2/machines`) and each Instance-shaped folder in the repo import the root only. The `exports` map has `.`,
+  `./internal` and `./tsconfig.instance.json`, and nothing else. Thus an Instance that imports a deep path, such as
+  `@jr2/orchestrator/src/run-host.ts`, does not resolve it, in `tsc` or in Node.
 
 ## `jr2Setup`: an xstate `setup()` analog, not a DSL
 

@@ -8,7 +8,7 @@ import { lstat, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { KIT_VERSION } from "@jr2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator/internal";
 import { checkSealed, closureOf, stageAssembly, stagedCopyOf } from "../src/assembly.ts";
 import type { BuildPort } from "../src/build.ts";
 

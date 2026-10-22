@@ -21,7 +21,7 @@ import {
   INSTANCE_SECRET,
   ORCHESTRATOR_PORT,
   ORCHESTRATOR_SERVICE,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);

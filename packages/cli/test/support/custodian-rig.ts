@@ -32,7 +32,7 @@ import {
   CUSTODIAN_PROGRAM_KEY,
   CUSTODIAN_SCRIPT_KEY,
   type HeldManifest,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import { issueCa, issueLeaf, trustBundles, type Pem } from "../../src/held-pki.ts";
 
 const exec = promisify(execFile);

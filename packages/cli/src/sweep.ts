@@ -29,7 +29,7 @@
 // have its host kit generation swept. The rebuild is BuildKit-cached seconds. Re-introducing a name
 // filter would resurrect the exact primitive this ADR deletes.
 
-import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@jr2/orchestrator";
+import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@jr2/orchestrator/internal";
 import { formatBytes, mergeSweeps, sweepHost, sweepNodes, type BuildPort, type SweepResult } from "./build.ts";
 import { LABEL_INSTANCE, OPERATOR_NAMESPACE } from "./deploy.ts";
 import { isMissingResourceType, type KubeAdmin } from "./kube.ts";

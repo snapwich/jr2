@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { custodianRef, KIT_VERSION } from "@jr2/orchestrator";
+import { custodianRef, KIT_VERSION } from "@jr2/orchestrator/internal";
 import { main } from "../src/cli.ts";
 import { kit, type RunDocker } from "../src/commands/kit.ts";
 import { publishedKitRefs } from "../src/build.ts";

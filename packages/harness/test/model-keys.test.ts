@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findEnvKeys, getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { MODEL_KEYS } from "@jr2/orchestrator";
+import { MODEL_KEYS } from "@jr2/orchestrator/internal";
 import { MODEL_KEYS_FILE, modelKeys, modelKeysSource } from "../scripts/model-keys.ts";
 
 const catalog = builtinModels();

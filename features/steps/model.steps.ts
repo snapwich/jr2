@@ -18,7 +18,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { harnessToken } from "@jr2/orchestrator";
+import { harnessToken } from "@jr2/orchestrator/internal";
 import {
   answersIn,
   askAfter,

@@ -62,7 +62,7 @@ import {
   type HeldManifest,
   type PriorityClasses,
   type SandboxPlacement,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import type { Pem } from "./held-pki.ts";
 
 export {

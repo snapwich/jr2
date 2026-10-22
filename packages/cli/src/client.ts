@@ -14,7 +14,7 @@ import type {
   RepoStatus,
   RunChild,
   RunWaiting,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import { parseSSE } from "./sse.ts";
 
 /** A run's current observable state — mirrors the orchestrator's `RunStatus` (run-host.ts). */

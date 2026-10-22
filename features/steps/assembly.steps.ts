@@ -7,7 +7,7 @@ import { Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { KIT_VERSION } from "@jr2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator/internal";
 import { E2EWorld, type PublishAnswer } from "./world.ts";
 
 /** What `GET /assembly` answers, as these steps read it. */

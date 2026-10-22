@@ -27,7 +27,7 @@ import {
   type AgentTurnPlacement,
   type OpenBodyDeclaration,
   type OpenBodyOutput,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 
 const declaration: OpenBodyDeclaration = {
   lends: { agents: ["coder"], guards: ["underLimit"] },

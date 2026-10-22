@@ -14,7 +14,7 @@
 //   - Every resolution prints its target on stderr, so ambient-context drift stays visible.
 
 import { basename } from "node:path";
-import { loadConfig } from "@jr2/orchestrator";
+import { loadConfig } from "@jr2/orchestrator/internal";
 import { INSTANCE_SECRET, kubectlKube, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "./kube.ts";
 import { assertKitVersion } from "./kit-version.ts";
 import { activity, type Io } from "./output.ts";

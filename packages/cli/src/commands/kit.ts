@@ -25,7 +25,7 @@
 
 import { execFile } from "node:child_process";
 import { parseArgs, promisify } from "node:util";
-import { custodianRef, KIT_VERSION } from "@jr2/orchestrator";
+import { custodianRef, KIT_VERSION } from "@jr2/orchestrator/internal";
 import { KIT_IMAGES, publishedKitRefs, type KitImageName } from "../build.ts";
 import { activity, result, type Io } from "../output.ts";
 

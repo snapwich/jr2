@@ -32,7 +32,7 @@ import {
   startStubHarness,
   type Admission,
   type RunningStubHarness,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import type { Browser, Page } from "playwright";
 import { startFakeProvider, type FakeProvider } from "./fake-provider.ts";
 import type { InstalledKit } from "./dist-kit.ts";

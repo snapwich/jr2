@@ -14,7 +14,7 @@ architecture decisions.
 | Path                       | Lang | What it is                                                                                                    |
 | -------------------------- | ---- | ------------------------------------------------------------------------------------------------------------- |
 | `packages/cli/`            | TS   | The `jr2` binary: `init`, `up`, `down`, `gc`, `kit push`, `run`, `send`, `status`, `runs`, `logs` (ADR-0009). |
-| `packages/orchestrator/`   | TS   | The Orchestrator: xstate runtime, HTTP API + Console, Actors, and the kit pieces a Workflow imports.          |
+| `packages/orchestrator/`   | TS   | The Orchestrator: xstate runtime, HTTP API + Console, Actors, and the Authoring surface.                      |
 | `packages/harness/`        | TS   | jr2's own Harness (ADR-0027): hosts the Agents inside a Sandbox and on the Instance Harness.                  |
 | `packages/agent-protocol/` | TS   | The Orchestrator↔Agent wire: `defineEvent` and nothing else — a pure leaf.                                    |
 | `operator/`                | Go   | Kubernetes operator: the `Sandbox` and `Repo` CRDs, the controller, and the per-node cache agent (ADR-0051).  |

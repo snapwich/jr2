@@ -15,7 +15,7 @@ import {
   type PlaceRequest,
   type PlacingWait,
   type SandboxPort,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import { main } from "../src/cli.ts";
 import { markListed } from "../src/commands/runs.ts";
 import type { RunStatus } from "../src/client.ts";

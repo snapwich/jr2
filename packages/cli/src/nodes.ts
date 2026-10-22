@@ -7,7 +7,13 @@
 // at the moment of the read. The set moves (a pool autoscales, a node is cordoned), which is why an
 // empty set is reported and never refused.
 
-import { cpuMillis, memoryBytes, type ResolvedSize, type SandboxPlacement, type Toleration } from "@jr2/orchestrator";
+import {
+  cpuMillis,
+  memoryBytes,
+  type ResolvedSize,
+  type SandboxPlacement,
+  type Toleration,
+} from "@jr2/orchestrator/internal";
 
 /** A cluster node, read for the facts that decide placement and platform (ADR-0045/0052). */
 export type NodeObject = {

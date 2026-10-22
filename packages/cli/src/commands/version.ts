@@ -14,7 +14,7 @@
 
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { IMAGES_CONFIGMAP, IMAGES_KEY, INSTANCE_SECRET, loadConfig, type ImageRefs } from "@jr2/orchestrator";
+import { IMAGES_CONFIGMAP, IMAGES_KEY, INSTANCE_SECRET, loadConfig, type ImageRefs } from "@jr2/orchestrator/internal";
 import { detectKitCheckout, KIT_IMAGE_HOME } from "../build.ts";
 import type { InstanceIdentity } from "../client.ts";
 import { compareVersions, LABEL_VERSION, OPERATOR_DEPLOYMENT, OPERATOR_NAMESPACE } from "../deploy.ts";

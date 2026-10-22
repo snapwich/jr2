@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
-import { narrowedChartSchema } from "@jr2/orchestrator";
+import { narrowedChartSchema } from "@jr2/orchestrator/internal";
 import { cutPickResult, unsentPickResult, type Surface } from "../src/menu.ts";
 import { harnessServer, type HarnessServer } from "../src/app.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";

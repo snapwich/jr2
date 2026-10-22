@@ -30,6 +30,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./internal": "./src/internal.ts",
     "./tsconfig.instance.json": "./tsconfig.instance.json"
   },
   "types": "./src/index.ts",

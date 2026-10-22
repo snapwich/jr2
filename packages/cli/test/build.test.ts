@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, readlink, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { KIT_VERSION } from "@jr2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator/internal";
 import {
   assertEmulation,
   buildSandboxImage,
@@ -38,7 +38,7 @@ import {
   type ObservedImage,
   type RunCommand,
 } from "../src/build.ts";
-import { imageContextDigest } from "@jr2/orchestrator";
+import { imageContextDigest } from "@jr2/orchestrator/internal";
 
 /** Every verb, inert. Each test overrides the two or three it is about; the rest answering with
  * nothing is what keeps a build test from depending on the sweep and vice versa. */

@@ -21,7 +21,7 @@
 // and, once the run is no longer live, its `output`, as the Orchestrator sends them.
 
 import { parseArgs } from "node:util";
-import type { AssemblyView, RepoStatus } from "@jr2/orchestrator";
+import type { AssemblyView, RepoStatus } from "@jr2/orchestrator/internal";
 import { JR2Client, type FetchLike, type RunStatus, workflowPath } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";

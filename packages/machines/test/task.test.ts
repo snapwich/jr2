@@ -31,7 +31,7 @@ import {
   type SandboxPort,
   type WorkflowDef,
   type WorkspaceSpec,
-} from "@jr2/orchestrator";
+} from "@jr2/orchestrator/internal";
 import { task } from "../src/task.ts";
 
 const REPO = "https://github.com/acme/app.git";

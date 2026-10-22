@@ -12,7 +12,7 @@ import { connect, type Socket } from "node:net";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { leafStem, standIn, type HeldManifest } from "@jr2/orchestrator";
+import { leafStem, standIn, type HeldManifest } from "@jr2/orchestrator/internal";
 import {
   connectThrough,
   controlRequest,

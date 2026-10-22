@@ -8,7 +8,7 @@
 
 import { emit, setup } from "xstate";
 import { z } from "zod";
-import { RunHost, SqliteSnapshotStore, createApp, defineEvent, jr2Setup } from "@jr2/orchestrator";
+import { RunHost, SqliteSnapshotStore, createApp, defineEvent, jr2Setup } from "@jr2/orchestrator/internal";
 import { JR2Client } from "../src/client.ts";
 
 function feedMachine() {

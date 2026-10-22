@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { vocabularyOf } from "@jr2/orchestrator";
+import { vocabularyOf } from "@jr2/orchestrator/internal";
 import type { AnyStateMachine } from "xstate";
 import { z } from "zod";
 

@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { DISPATCHED_BY_HEADER } from "@jr2/orchestrator";
+import { DISPATCHED_BY_HEADER } from "@jr2/orchestrator/internal";
 import { E2EWorld } from "./world.ts";
 
 type DispatchedBy = { run: string; slot: string; effect?: string; depth: number; instance?: string };
