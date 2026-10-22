@@ -106,7 +106,8 @@ To use the result of the run, add `wait: true` to the definition:
 The Effect then ends when the run of `triage` ends, with `{ outcome: "settled", run, status, output }`. `status` is
 `done`, `error`, `cancelled`, `lost` or `drifted`. `output` is the output of the Machine of that run. The default
 timeout is then 10 minutes. Set a different one with `timeout`, such as `timeout: "1h"`. When the timeout comes first,
-`status` is `live`, and the run continues.
+`status` is `live`, and the run continues. On a different Orchestrator, the Effect reads the run every 5 seconds. When
+its last read got no answer, the outcome is `unknown`, not `settled`.
 
 `wait` is fixed in the definition. A Machine that starts the same Workflow in the two ways has two slots.
 
@@ -156,9 +157,14 @@ the token together:
   `warning: workflow "<workflow>" dispatches "<wrapper>/<name>": the Assembly has no Chart file workflows/<wrapper>/<name>.chart.json`.
 - For a target, each problem that `jr2 up` finds is a warning. For example, when the other Orchestrator does not answer:
   `warning: dispatch "<name>" at <url>: no answer from this host (<error>) — the other Instance may be down, or reached only from inside its cluster; while no door answers, the dispatch settles "unreachable" (ADR-0071)`
-- When the Workflow refuses the run input, the Effect ends with `refused`, not with an error. `status` is the status
-  code of the refusal: `400` for an input that the Workflow does not take, and `404` for a Workflow that the current
-  Assembly does not have. `report` holds the lines of the refusal.
+- When the Orchestrator starts no run, the Effect ends with `refused`, not with an error. `report` holds the lines of
+  the refusal, and `status` is its status code:
+  - `400`: the Workflow does not take the input.
+  - `404`: the current Assembly has no Workflow of that name.
+  - `409`: the named Chart cannot run now, or a run of a different Workflow has the key of this start.
+  - `413`: the start is larger than the Effector reads.
+  - `422`: the door refuses the Chart in the input.
+  - `0`: the Effector refused the start before it sent it.
 
 ## Read next
 
