@@ -83,6 +83,8 @@ const config = withMermaid(
         };
       },
     },
+    // https://snapwich.github.io/jr2/sitemap.xml, for a search engine.
+    sitemap: { hostname: "https://snapwich.github.io/jr2/" },
     themeConfig: {
       nav: navOf(map),
       sidebar: sidebarOf(map),
