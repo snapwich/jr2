@@ -1,0 +1,12 @@
+# jr2's default git identity for every git the Agent runs in a Sandbox (ADR-0037). It is the lowest
+# rung, a catch-all, never an override: the Harness points git's SYSTEM level at this file
+# (`GIT_CONFIG_SYSTEM`, startup.ts) only when the image sets neither GIT_CONFIG_SYSTEM nor
+# GIT_CONFIG_NOSYSTEM and the image's git reads /etc/gitconfig as its system file (prefix /usr);
+# the include below reads that file AFTER jr2's lines,
+# so the image's system values win. Global (~/.gitconfig, XDG), repo-local config, `-c`, and the
+# GIT_AUTHOR_*/GIT_COMMITTER_* env all win over the system level anyway.
+[user]
+	name = jr2 Agent
+	email = agent@jr2.invalid
+[include]
+	path = /etc/gitconfig

@@ -51,6 +51,41 @@ every build) and promotes incidental image properties into contract items.
   Inside the repo trees the umask stops mattering — the attach stamps a default ACL on each repo root and POSIX ignores
   the umask where one exists ([ADR-0005](0005-sandbox-pod-composition.md)); this is the defence-in-depth layer, inert
   when no other uid ever writes.
+- **git's system level is jr2's default identity, at the lowest rung.** An image with no git identity made the Agent's
+  first `git commit` fail ("Author identity unknown"), and a model then spent its Turn on `git config`; real Haiku 5.5
+  runs lost trials to it. The image is the author's, and the author may set git config at any level, so jr2's identity
+  must never override one. The runtime volume carries `/opt/jr2/etc/gitconfig`: `[user] name = jr2 Agent`,
+  `email = agent@jr2.invalid`, then `[include] path = /etc/gitconfig`. At startup the Harness sets `GIT_CONFIG_SYSTEM`
+  to it, at the process level like PATH, so every git the Harness container runs reads it — the Agent's `bash`, a
+  `command` Effect there, and the attach (which commits nothing, so the identity is unused). The include reads the
+  image's own system file after jr2's lines, so the image's values win key by key, and every higher level wins anyway:
+  global (`~/.gitconfig`, XDG), repo-local, `-c`, and `GIT_AUTHOR_*`/`GIT_COMMITTER_*`. The Harness sets nothing when:
+  - the image sets `GIT_CONFIG_SYSTEM` or `GIT_CONFIG_NOSYSTEM` (any value): it made its own choice about git's system
+    level, and a file jr2 put in front of the image's would replace a value the image set. Including the image's file in
+    place of `/etc/gitconfig` was rejected: the file is static on a read-only volume, and to name the image's file it
+    must be written at boot into a writable directory the image owns;
+  - the image's git reads another system file than `/etc/gitconfig`, or the Harness cannot tell which. A git built with
+    another prefix (a source build in `/usr/local`, Homebrew, conda) reads `<prefix>/etc/gitconfig`, which jr2's file
+    does not include, so its `safe.directory`, credential helper and identity would be lost. git 2.42 and later name the
+    file (`git var GIT_CONFIG_SYSTEM`); for an older git the Harness reads `git --exec-path`, and only
+    `/usr/lib/git-core` or `/usr/libexec/git-core` (prefix `/usr`, which reads `/etc/gitconfig`) passes. No git on PATH
+    gets nothing too. Such an image gets no default identity: that is the limit, and it sets its own;
+  - the file is not on the volume: git reads a missing system file as empty, and the image's `/etc/gitconfig` would be
+    lost.
+
+  Five limits are known and accepted. A git older than 2.32 does not read `GIT_CONFIG_SYSTEM`: it is safe (it reads
+  `/etc/gitconfig` as before) and gets no default identity. "The image's values win" holds for the config git uses (a
+  commit, `git config --get`), not for a `--system` read: `git config --system` does not follow the include, so
+  `--system --get user.name` answers `jr2 Agent` where the image's `/etc/gitconfig` names another, and `--system --list`
+  omits the image's values. An image that sets `user.useConfigOnly = true` and no identity no longer stops a commit,
+  because jr2's file supplies one; such an image sets `GIT_CONFIG_SYSTEM=/etc/gitconfig` itself, and jr2 then adds
+  nothing. With the variable set, `git config --system <key> <value>` writes jr2's file on the read-only volume and
+  fails (exit 4); without it, an Agent that runs as root wrote `/etc/gitconfig`. A `--global` or repo-local write works
+  as before. A human's `kubectl exec` shell does not get the variable, as it does not get the PATH append. jr2's other
+  git is out of scope: the sync runs under `GIT_CONFIG_NOSYSTEM` (ADR-0067); the Sandbox Effector is another container
+  with its own committer rules (ADR-0068), and a credentialed `command` Effect runs there with `PATH`, `HOME` and
+  `TMPDIR` alone, so it gets no default identity.
+
 - **The contract is the floor, and the preflight proves it.** What is inherent to "jr2's runtime in your filesystem" and
   nothing more: a **glibc** base no older than the one jr2's node was built against (musl is out entirely), **`git`** on
   the system PATH (relocating git means `/usr/lib/git-core`, templates, `git-remote-https` → curl + openssl + CA store —

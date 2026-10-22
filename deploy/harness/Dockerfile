@@ -20,8 +20,8 @@
 #      baked on their own registry is runnable without jr2 ever touching it.
 #
 # So **/opt/jr2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/jr2-upload-pack · bin/effector · lib/*.so · src/ ·
-#   node_modules/ · package.json
+#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/jr2-upload-pack · bin/effector · lib/*.so ·
+#   etc/gitconfig · src/ · node_modules/ · package.json
 # — is mounted verbatim, this image's own layers, into a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
 # this repo never sees. `/opt/jr2` and not `/app`, because a user's base may already use /app and a
@@ -206,6 +206,12 @@ COPY --from=uploadpack --chmod=0755 /out/jr2-upload-pack /opt/jr2/bin/jr2-upload
 
 # The Effector (ADR-0068): the Instance Effector runs this image with it as its command.
 COPY --from=effector --chmod=0755 /out/effector /opt/jr2/bin/effector
+
+# The default git identity (ADR-0037): the lowest rung of git's config, for every git the Agent runs.
+# The Harness points GIT_CONFIG_SYSTEM at it (startup.ts) only when the image sets neither
+# GIT_CONFIG_SYSTEM nor GIT_CONFIG_NOSYSTEM and its git reads /etc/gitconfig; the file includes that
+# /etc/gitconfig after its lines, so every level the image or the Agent sets wins over it.
+COPY --chmod=a+r deploy/harness/gitconfig /opt/jr2/etc/gitconfig
 
 WORKDIR /opt/jr2
 ENV NODE_ENV=production

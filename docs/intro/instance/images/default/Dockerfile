@@ -32,7 +32,8 @@ RUN apt-get update \
 
 # Your agents' toolchain goes here — compilers, CLIs, language servers, dotfiles.
 
-# Who the coder commits as. jr2 sets no git identity yet, and a first `git commit` with none fails;
-# the local model then set its own and looped. `--system`, so it holds for any uid and HOME.
+# Who the coder commits as. Without these lines the coder commits as jr2's default identity,
+# `jr2 Agent <agent@jr2.invalid>`, which is the lowest rung of git's config (ADR-0037): an identity
+# the image sets at any level wins over it. `--system`, so it holds for any uid and HOME.
 RUN git config --system user.name "jr2 coder" \
   && git config --system user.email "coder@intro.jr2.invalid"

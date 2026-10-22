@@ -24,8 +24,9 @@ import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
 
 // FIRST, before anything reads the environment or writes a file: umask 002, PATH appended with
-// /opt/jr2/bin, HOME defaulted. In a Sandbox the image is the user's and carries none of these, and
-// every Working tool child inherits them from here (startup.ts, ADR-0037/ADR-0005).
+// /opt/jr2/bin, HOME defaulted, git's default identity at its lowest rung. In a Sandbox the image
+// is the user's and carries none of these, and every Working tool child inherits them from here
+// (startup.ts, ADR-0037/ADR-0005).
 // "First" is first STATEMENT, not first code: the imports above are ESM, so their module bodies run
 // ahead of this line. That holds only because none of them touches PATH, HOME, the umask, or spawns
 // a child at module scope — they declare constants and schemas (verified). A module that ever needs

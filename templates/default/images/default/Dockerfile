@@ -14,7 +14,9 @@
 # (`user:` on `workspace()`, ADR-0005).
 #
 # Two things jr2 cannot vendor, both proven by `jr2 up` before it converges:
-#   - `git` — the agent clones, worktrees, and commits with the git you chose;
+#   - `git` — the agent clones, worktrees, and commits with the git you chose. With no identity
+#     here, the agent commits as `jr2 Agent <agent@jr2.invalid>`, jr2's default at the lowest rung
+#     of git's config: an identity you set at any level wins over it (ADR-0037);
 #   - a glibc base no older than jr2's node. alpine/musl cannot run it at all.
 #
 # This one folder is a path convention; there is no `images/` scan (ADR-0049/0050). A SECOND Sandbox

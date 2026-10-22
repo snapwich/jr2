@@ -684,15 +684,20 @@ Feature: a workspace() run drives a real Sandbox on kind
     commits with bare `git add`, and the file has to be in the Worktree and in no directory above
     it. `/work` is exactly where the retired definition-level `cwd` could only ever have pointed.
 
+    The same commit proves git's default identity (ADR-0037): the Sandbox Image sets no git
+    identity, and the command sets none, so the commit succeeds only because the Harness points
+    git's system level at jr2's file. The author git prints is `jr2 Agent <agent@jr2.invalid>`.
+
     Scenario: a relative path from the model lands in the Worktree, and the commit is on the branch
       Given the kind instance is serving
       When I start the "task" workflow with prompt "write a SUMMARY.md for this repository" detached
       Then the run's Sandbox becomes Ready
       When the Agent writes "SUMMARY.md" through its write Working tool
-      And the Agent runs "git add SUMMARY.md && git -c user.email=coder@jr2 -c user.name=coder commit -q -m jr2-frame-ok && git log -1 --pretty=format:committed-%s" through its bash Working tool
+      And the Agent runs "git add SUMMARY.md && git commit -q -m jr2-frame-ok && git log -1 --pretty=format:committed-%s-by-%an-%ae" through its bash Working tool
       # The marker is the git OUTPUT, not the command: `%s` is expanded by git, so only a bash tool
-      # that ran in the Worktree — where the relative `git add` found the file — can produce it.
-      Then the model was shown the tool result "committed-jr2-frame-ok"
+      # that ran in the Worktree — where the relative `git add` found the file — can produce it, and
+      # `%an`/`%ae` only a commit that found jr2's default identity.
+      Then the model was shown the tool result "committed-jr2-frame-ok-by-jr2 Agent-agent@jr2.invalid"
       When the Agent in the Sandbox calls "finish" with summary "wrote the summary"
       Then the run parks at the "review" Gate, with summary "wrote the summary"
       And the file "SUMMARY.md" is in the Worktree the Gate names and in no directory above it
