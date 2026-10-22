@@ -175,8 +175,10 @@ decision generalizes that container. It holds every credential the Harness in it
   Each message names the config path, never a value, and says what to write instead. A SigV4 or ADC credential in
   `harness.env` is warned about, not refused. A known model key with no `hosts` is bound to the host its provider's
   calls go to: the host of `harness.catalog.<id>.baseUrl` when set, else pi's catalog host. The key and the calls then
-  read one config and cannot drift. `MODEL_KEYS` is a copy of pi's data at the pin; a test in `@jr2/harness` checks it
-  against pi, so a pi bump that moves a provider fails the default gate.
+  read one config and cannot drift. `MODEL_KEYS` is pi's data at the pin, written as plain data by `just model-keys` (a
+  script in `@jr2/harness`) at each pi bump, so the Orchestrator has no pi dependency. A test in `@jr2/harness` checks
+  the table against pi, and checks that the file is the script's exact text. So a pi bump that moves a provider, or a
+  hand edit of the file, fails the default gate until the recipe runs.
 
 - **A catalog provider can move to a gateway.** pi has no env var for a catalog provider's base URL. It hands the
   provider the model it is given. So `resolveModel` returns a copy of the catalog model with `baseUrl` replaced, for

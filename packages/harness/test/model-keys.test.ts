@@ -1,14 +1,16 @@
-// The known model keys (ADR-0059), checked against pi at the exact pin. `@jr2/orchestrator` holds a
-// COPY of pi's data — it has no pi dependency, and `jr2 up` reads the table host-side — so this is
-// the canary: a pi bump that adds a provider, renames a key, or moves a default host fails the
-// default gate here, before a converge binds a key to the wrong host (the conformance role,
-// ADR-0027).
+// The known model keys (ADR-0059), checked against pi at the exact pin. `@jr2/orchestrator` holds
+// pi's data as plain data — it has no pi dependency, and `jr2 up` reads the table host-side — and
+// `scripts/model-keys.ts` writes it (`just model-keys`). So this is the canary: a pi bump that adds a
+// provider, renames a key, or moves a default host fails the default gate here until the recipe
+// runs, before a converge binds a key to the wrong host (the conformance role, ADR-0027).
 
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findEnvKeys, getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { MODEL_KEYS } from "@jr2/orchestrator";
+import { MODEL_KEYS_FILE, modelKeys, modelKeysSource } from "../scripts/model-keys.ts";
 
 const catalog = builtinModels();
 /** Every catalog provider, with the set of base URLs its models name. */
@@ -70,4 +72,12 @@ test("every provider's default host is the table's — or the table has none whe
     const agreed = hosts.every((h) => h !== undefined && h === hosts[0]) ? hosts[0] : undefined;
     assert.equal(key.host, agreed, `${name}: the table's default host is ${key.host}, pi's catalog says ${agreed}`);
   }
+});
+
+test("the checked-in file is the script's exact text: a hand edit of any byte, the header's pi pin included, or a bump without `just model-keys`, fails here", async () => {
+  assert.equal(
+    readFileSync(MODEL_KEYS_FILE, "utf8"),
+    await modelKeysSource(modelKeys(), MODEL_KEYS_FILE),
+    "run `just model-keys` and check in packages/orchestrator/src/model-keys.generated.ts",
+  );
 });

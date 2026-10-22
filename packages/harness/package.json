@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@jr2/orchestrator": "workspace:*",
-    "@types/node": "^26.0.1"
+    "@types/node": "^26.0.1",
+    "prettier": "^3.3.0"
   }
 }

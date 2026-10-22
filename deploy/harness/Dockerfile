@@ -210,10 +210,11 @@ COPY --from=effector --chmod=0755 /out/effector /opt/jr2/bin/effector
 WORKDIR /opt/jr2
 ENV NODE_ENV=production
 
-# The package is vendored standalone — this is an image, not a pnpm workspace — so npm resolves
-# its manifest directly. The devDependencies are workspace:* test rigging npm cannot parse outside
-# the workspace (even under --omit=dev), so they are pruned from the vendored manifest first. The
-# runtime deps are exact-pinned where it matters (a pi minor can break, ADR-0027).
+# The package is vendored standalone — this is an image, not a pnpm workspace — so npm resolves its
+# manifest directly. The devDependencies are test and script rigging, and one of them is a
+# workspace:* link that npm cannot parse outside the workspace (even under --omit=dev), so they are
+# all pruned from the vendored manifest first. The runtime deps are exact-pinned where it matters (a
+# pi minor can break, ADR-0027).
 COPY --chmod=a+rX packages/harness/package.json ./package.json
 RUN node -e 'const f="package.json",j=JSON.parse(require("fs").readFileSync(f));delete j.devDependencies;require("fs").writeFileSync(f,JSON.stringify(j,null,2))' \
  && npm install --no-audit --no-fund --omit=dev

@@ -122,6 +122,10 @@ e2e-kind-warm:
 operator-manifest:
     kubectl kustomize operator/config/default > packages/cli/manifests/operator.yaml
 
+# write the Orchestrator's MODEL_KEYS from pi-ai's data at the pin (ADR-0059; run at each pi bump, check in the result)
+model-keys:
+    node packages/harness/scripts/model-keys.ts packages/orchestrator/src/model-keys.generated.ts
+
 # build the operator controller image by hand and load it into kind (a shortcut, not a prerequisite)
 operator-image:
     docker build -t jr2-operator:local operator
