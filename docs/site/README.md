@@ -276,13 +276,16 @@ Text and code for a local model.
 The key `provider` makes each tab set on the site show the tab that the reader chose last, on each page.
 
 - **Anthropic.** The model is `anthropic/claude-haiku-5-5`. `jr2.config.ts` adds one `secrets` line, and `.env` holds
-  `ANTHROPIC_API_KEY`. The id is an open item: see [Open items](#open-items).
+  `ANTHROPIC_API_KEY`. The pinned catalog has the model, and its levels include `off`, the default of jr2.
 - **Local.** The model is Qwen3.6-35B-A3B, on an OpenAI-compatible endpoint (vLLM or llama.cpp) over plain `http://`,
   with no key. Its specifier is `local/qwen3.6-35b-a3b`. `jr2.config.ts` sets `harness.provider`, and `.env` holds
   `LOCAL_MODEL_URL`. The guide "Use a local model" gives TLS and a key.
 - Import `jr2.config.ts` from `examples/shared/anthropic/` or `examples/shared/local/`.
   [Tutorial facts](#tutorial-facts) gives the `.env` lines.
 - Put in a tab only the text and the code that change with the provider. Put the rest outside the tabs.
+- Write the model id only in example files and in the table in [The models](#the-models). In the text of a page, write
+  "the model of the tab". The Anthropic id is also in the TSDoc `@example` blocks of the Authoring surface and of
+  `@jr2/machines`, which the Reference shows. A change of the id changes those examples too.
 - For [Glossary links](#glossary-links), each tab counts as a page. Link the first use of a term in each tab, because
   the reader sees only one tab.
 - A guide for one provider, such as "Use a hosted provider or a gateway", has no tabs.
@@ -616,13 +619,6 @@ change it here and on each page that uses it.
 
 The user must decide these items. Until then, obey the rule for each item.
 
-- **The Anthropic model id.** The pinned Harness does not know `anthropic/claude-sonnet-5-5`. Its pi catalog has
-  `anthropic/claude-sonnet-5`. `jr2 up` does not check a catalog model, so the first Turn faults. The user chooses
-  `anthropic/claude-sonnet-5`, or a new pi pin. Until then, write the id only in example files and in the table in
-  [The models](#the-models). In the text of a page, write "the model of the tab". The same id is in the TSDoc `@example`
-  blocks of the Authoring surface and of `@jr2/machines`, which the Reference shows (for example,
-  `packages/orchestrator/src/customize.ts` and `packages/machines/src/task.ts`). A change of the id changes those
-  examples too.
 - **The fork and its tags.** No test shows that a fork with "Copy the main branch only" cleared has the release tags.
   The manual check confirms it.
 - **`git push` in `kubectl exec`.** No test shows that `git push` asks for a user name and a password inside
