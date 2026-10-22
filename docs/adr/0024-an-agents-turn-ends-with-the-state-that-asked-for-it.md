@@ -121,7 +121,11 @@ single-threaded.
   was, and is answered with `straightBack` — the one answer that says "it moved the workflow, and nothing ran". An
   outstanding pick's answer never carries it. A pick that changes the state value moved to a mode, and gets the plain
   receipt with its Allowed picks; a pick with no target went nowhere, and gets the same, as does a pick whose target is
-  the state it was taken in (it enters nothing it leaves). A route that leaves the Agent's state ends the Turn like any
+  the state it was taken in (it enters nothing it leaves). Every receipt that leaves the Turn open (the plain receipt, a
+  guard straight back, and an answered pick back at Rest) ends its state part with the same words, "Your turn is not
+  over.": the plain receipt once said "the workflow is still in the state that asked for this turn, so it is not over
+  yet", and real Haiku 5.5 runs stopped after it, because "it" can be the workflow or the Turn. The refusals and the
+  notices of a cut or unsent pick keep their own words. A route that leaves the Agent's state ends the Turn like any
   other: the poll reads `turnComplete`, the next state's prompt is the author's, and the answer is a `pick-answer`
   notice to the Agent that picked: the next Turn of the conversation the picking Turn continued (`continue: true`,
   ADR-0062). A FRESH picking Turn's conversation is never heard again, and a later continued Turn of the same slot never

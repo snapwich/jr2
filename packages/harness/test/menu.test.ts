@@ -221,7 +221,10 @@ test("a pick the workflow did not act on, or that left the turn open, says what 
     allowed: ["note.add"],
   };
   assert.match(receiptProse(receipt), /did NOT act on it.*Allowed now: `note_add`\./s);
-  assert.match(receiptProse({ ...receipt, moved: true }), /not over yet.*Allowed now: `note_add`\./s);
+  assert.match(
+    receiptProse({ ...receipt, moved: true }),
+    /state that asked for this turn\. Your turn is not over\..*Allowed now: `note_add`\./s,
+  );
   // An older Orchestrator sends no `allowed`: nothing is said, rather than "none".
   const { allowed: _a, ...old } = receipt;
   assert.doesNotMatch(receiptProse(old), /Allowed now/);

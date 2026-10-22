@@ -380,8 +380,8 @@ test('a guard straight back alone reads "moved; nothing ran"; a move to a mode r
   );
   assert.equal(
     receiptProse({ ...base, event: "draft", allowed: ["finish"] }, menuToolName),
-    'Delivered "draft" to the workflow (delivery d). The workflow is still in the state that asked for this turn, ' +
-      "so it is not over yet. Allowed now: `mcp__jr2__finish`.",
+    'Delivered "draft" to the workflow (delivery d). The workflow is still in the state that asked for this turn. ' +
+      "Your turn is not over. Allowed now: `mcp__jr2__finish`.",
   );
 });
 

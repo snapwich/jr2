@@ -720,7 +720,7 @@ test("in-Turn modes: ONE Submission walks two modes — the tools block never mo
   assert.equal(results.length, 3);
   assert.match(results[0]!, /did NOT act on it: `mcp__jr2__submit` is not allowed in the workflow's current state/);
   assert.match(results[0]!, /Allowed now: `mcp__jr2__ask_review`, `mcp__jr2__run_tests`\./);
-  assert.match(results[1]!, /not over yet\. Allowed now: `mcp__jr2__revise`, `mcp__jr2__submit`\./);
+  assert.match(results[1]!, /Your turn is not over\. Allowed now: `mcp__jr2__revise`, `mcp__jr2__submit`\./);
   assert.match(results[2]!, /your turn is over/);
 });
 

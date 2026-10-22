@@ -492,7 +492,7 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
   }
   return receipt.turnComplete
     ? `${delivered} The workflow consumed it and moved on: your turn is over. Stop here — do not call this or any other tool again.`
-    : `${delivered} The workflow is still in the state that asked for this turn, so it is not over yet.${allowed}`;
+    : `${delivered} The workflow is still in the state that asked for this turn. Your turn is not over.${allowed}`;
 }
 
 /**
