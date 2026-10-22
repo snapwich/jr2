@@ -19,7 +19,7 @@
 //
 //   export const machine = customize(task, {
 //     repos: { target: { url: "https://github.com/you/repo.git" } },
-//     agents: { coder: { model: "anthropic/claude-sonnet-4-6" } },
+//     agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
 //   });
 //
 // A packaged Machine leaves the parts it cannot honestly fill OPEN: it does not know your

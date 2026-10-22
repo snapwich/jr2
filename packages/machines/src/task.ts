@@ -17,7 +17,7 @@
 //       target: { url: "https://github.com/you/repo.git" },
 //       reference: { url: "https://github.com/you/lib.git" }, // optional: more checkouts to read
 //     },
-//     agents: { coder: { model: "anthropic/claude-sonnet-4-6" } },
+//     agents: { coder: { model: "anthropic/claude-haiku-5-5" } },
 //   });
 //
 // `jr2 up` walks the registered Machines and refuses either part unbound, printing exactly that
