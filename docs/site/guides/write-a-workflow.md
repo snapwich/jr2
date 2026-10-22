@@ -88,7 +88,7 @@ added, and the `reason`:
 ```text
   emit {"type":"decided","promoted":false}
   → done "rolledBack"
-{"runId":"a078c3f8-0346-4464-a768-45c44b8ac310","workflow":"rollout","instanceId":"dd6f251e-4d9c-40bb-ab28-ed8537837a1d","status":"done","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"dd6f251e-4d9c-40bb-ab28-ed8537837a1d","reason":"The error rate went up."},"children":[],"waiting":[],"held":[]}
+{"runId":"a078c3f8-0346-4464-a768-45c44b8ac310","workflow":"rollout","instanceId":"dd6f251e-4d9c-40bb-ab28-ed8537837a1d","status":"done","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"dd6f251e-4d9c-40bb-ab28-ed8537837a1d","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}
 ```
 
 [Start a run](start-a-run.md) gives the other ways to start a run. [Answer a Gate](answer-a-gate.md) gives the other

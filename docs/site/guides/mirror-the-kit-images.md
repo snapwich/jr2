@@ -5,10 +5,10 @@ description: Copy the Kit images and the Pinned image into your own registry, an
 
 Copy the Kit images and the Pinned image into your own registry, and make the cluster pull them from there.
 
-An installed Kit builds none of its own images. The nodes pull the two [Kit images](../reference/glossary.md#kit-image),
-`jr2-harness` and `jr2-operator`, from `ghcr.io/snapwich`. They pull the
-[Pinned image](../reference/glossary.md#pinned-image), the Envoy image of the
-[Custodian](../reference/glossary.md#custodian), from `docker.io`. Mirror these three images when the nodes cannot reach
+An installed Kit builds none of its own images. The nodes pull the three
+[Kit images](../reference/glossary.md#kit-image), `jr2-harness`, `jr2-operator` and `jr2-orchestrator`, from
+`ghcr.io/snapwich`. They pull the [Pinned image](../reference/glossary.md#pinned-image), the Envoy image of the
+[Custodian](../reference/glossary.md#custodian), from `docker.io`. Mirror these four images when the nodes cannot reach
 those registries, or when the cluster pulls from one registry only.
 
 One more image does not come from the mirror. When the [Instance](../reference/glossary.md#instance) sets
@@ -46,9 +46,10 @@ jr2 kit push <registry>
 jr2 kit push — mirroring the v<version> kit images to <registry>
 harness: copied ghcr.io/snapwich/jr2-harness:<version> → <registry>/jr2-harness:<version>
 operator: copied ghcr.io/snapwich/jr2-operator:<version> → <registry>/jr2-operator:<version>
+orchestrator: copied ghcr.io/snapwich/jr2-orchestrator:<version> → <registry>/jr2-orchestrator:<version>
 custodian: copied docker.io/envoyproxy/envoy:<tag>@<digest> → <registry>/envoy:<tag>@<digest>
-mirrored 3 image(s), 0 already present
-{"registry":"<registry>","version":"<version>","images":{"harness":"<registry>/jr2-harness:<version>","operator":"<registry>/jr2-operator:<version>","custodian":"<registry>/envoy:<tag>@<digest>"}}
+mirrored 4 image(s), 0 already present
+{"registry":"<registry>","version":"<version>","images":{"harness":"<registry>/jr2-harness:<version>","operator":"<registry>/jr2-operator:<version>","orchestrator":"<registry>/jr2-orchestrator:<version>","custodian":"<registry>/envoy:<tag>@<digest>"}}
 ```
 
 `<version>` is the Kit version. `<tag>` and `<digest>` are the tag and the digest of the Envoy image that this Kit
@@ -72,8 +73,9 @@ registry already. You can run it again at any time:
 jr2 kit push — mirroring the v<version> kit images to <registry>
 harness: already present — <registry>/jr2-harness:<version>
 operator: already present — <registry>/jr2-operator:<version>
+orchestrator: already present — <registry>/jr2-orchestrator:<version>
 custodian: already present — <registry>/envoy:<tag>@<digest>
-mirrored 0 image(s), 3 already present
+mirrored 0 image(s), 4 already present
 …
 ```
 
@@ -86,7 +88,8 @@ JR2_KIT_REGISTRY=<registry>
 ```
 
 Give `kitRegistry` the same value that you gave `jr2 kit push`, with no `/` at the end. The nodes then pull
-`<registry>/jr2-harness:<version>`, `<registry>/jr2-operator:<version>` and `<registry>/envoy:<tag>@<digest>`.
+`<registry>/jr2-harness:<version>`, `<registry>/jr2-operator:<version>`, `<registry>/jr2-orchestrator:<version>` and
+`<registry>/envoy:<tag>@<digest>`.
 
 `jr2 version --local` shows where the Kit images come from:
 
@@ -118,7 +121,7 @@ jr2 up
 
 ```text
 …
-images: installed kit — the published v<version> Harness and operator, pulled from <registry> (kitRegistry)
+images: installed kit — the published v<version> Harness, operator and Orchestrator, pulled from <registry> (kitRegistry)
 custodian image: <registry>/envoy:<tag>@<digest> (pinned, deployed — never built)
 …
 converged — `jr2 run <workflow>` when ready

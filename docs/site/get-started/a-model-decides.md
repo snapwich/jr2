@@ -64,8 +64,8 @@ prompt.
 
 ## Converge the Instance
 
-[`jr2 up`](../reference/cli.md#up) puts the Workflows in the image of the Instance. Thus you run it each time that you
-change a Workflow. In the first terminal, run:
+[`jr2 up`](../reference/cli.md#up) publishes the Workflows to the [Orchestrator](../reference/glossary.md#orchestrator).
+Thus you run it each time that you change a Workflow. In the first terminal, run:
 
 ```sh
 jr2 up
@@ -134,12 +134,7 @@ gone. `triager` names a `local/…` model, so `jr2 up` checks that the endpoint 
 
 :::
 
-`jr2 up` replaces the [Orchestrator](../reference/glossary.md#orchestrator) pod. If the port forward stops, start it
-again in its terminal:
-
-```sh
-kubectl -n my-instance port-forward svc/jr2-orchestrator 4000:4000
-```
+The Orchestrator loads the new Workflows with no restart, so the port forward stays open.
 
 ## Start the first run
 
@@ -178,11 +173,12 @@ example, a run that the Agent accepts immediately prints:
 run <run id> (triage) — attached
   → active "triaging"
   → done "accepted"
-{"runId":"<run id>","workflow":"triage","instanceId":"<instance id>","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[],"summary":"<summary>"},"children":[],"waiting":[],"held":[]}
+{"runId":"<run id>","workflow":"triage","instanceId":"<instance id>","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[],"summary":"<summary>"},"children":[],"waiting":[],"held":[],"assembly":"<hash>"}
 ```
 
 `<run id>` is the id of this run, and `<instance id>` is the [Instance ID](../reference/glossary.md#instance-id) of the
-run. jr2 makes a new one for each run. `<summary>` is the text of the model. Start the run again until it waits at
+run. jr2 makes a new one for each run. `<summary>` is the text of the model. `<hash>` is the hash of the
+[Assembly](../reference/glossary.md#assembly) that the run started under. Start the run again until it waits at
 `clarify`.
 
 :::
@@ -203,7 +199,7 @@ the end:
 
 ```text
 → context kind-jr2 / namespace my-instance
-{"runId":"6f56c5d9-23a0-4ce4-8e16-5b0323f4f924","workflow":"triage","instanceId":"610f245a-2638-4a1c-b4c9-ed56d8d9d459","status":"active","value":"clarify","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"<question>"}]},"children":[],"waiting":[],"held":[],"gates":[{"gate":"clarify","path":["clarify"],"accepts":[{"name":"answer","description":"Answer the triager's question. It triages the request again with the answer in hand.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"info":{"type":"string","description":"The answer, in prose."}},"required":["info"],"additionalProperties":false}}],"acceptsNow":["answer"],"meta":{"question":"<question>"}}]}
+{"runId":"6f56c5d9-23a0-4ce4-8e16-5b0323f4f924","workflow":"triage","instanceId":"610f245a-2638-4a1c-b4c9-ed56d8d9d459","status":"active","value":"clarify","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"<question>"}]},"children":[],"waiting":[],"held":[],"assembly":"7f13ac9e0b54","gates":[{"gate":"clarify","path":["clarify"],"accepts":[{"name":"answer","description":"Answer the triager's question. It triages the request again with the answer in hand.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"info":{"type":"string","description":"The answer, in prose."}},"required":["info"],"additionalProperties":false}}],"acceptsNow":["answer"],"meta":{"question":"<question>"}}]}
 ```
 
 `<question>` is the question of the model. Your instance id is different too. The Gate `clarify` takes `answer`, with an
@@ -236,7 +232,7 @@ The run goes back to `triaging`, and the Agent reads your answer. Look at the fi
   → active "triaging"
   → active "triaging"
   → done "accepted"
-{"runId":"6f56c5d9-23a0-4ce4-8e16-5b0323f4f924","workflow":"triage","instanceId":"610f245a-2638-4a1c-b4c9-ed56d8d9d459","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"<question>","info":"Add a --version flag to the CLI. It prints the installed version and exits."}],"summary":"<summary>"},"children":[],"waiting":[],"held":[]}
+{"runId":"6f56c5d9-23a0-4ce4-8e16-5b0323f4f924","workflow":"triage","instanceId":"610f245a-2638-4a1c-b4c9-ed56d8d9d459","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"<question>","info":"Add a --version flag to the CLI. It prints the installed version and exits."}],"summary":"<summary>"},"children":[],"waiting":[],"held":[],"assembly":"7f13ac9e0b54"}
 ```
 
 `summary` is the request as the model wrote it again, in one sentence. If the Agent asks a second question, the run goes

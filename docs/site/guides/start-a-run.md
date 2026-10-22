@@ -30,7 +30,7 @@ jr2 run ping --input '{"message":"hi"}'
 → context <context> / namespace <namespace>
 run 9f2e467b-5b5b-403f-8896-e795ada603bf (ping) — attached
   → done "done"
-{"runId":"9f2e467b-5b5b-403f-8896-e795ada603bf","workflow":"ping","instanceId":"7a348d06-7210-4e2e-a2e4-3337302116a0","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[]}
+{"runId":"9f2e467b-5b5b-403f-8896-e795ada603bf","workflow":"ping","instanceId":"7a348d06-7210-4e2e-a2e4-3337302116a0","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"5e0a91c3d7f2"}
 ```
 
 Your run id is different.
@@ -172,7 +172,7 @@ JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN jr2 run ping --input '{"message":
   `no workflow registered as "<workflow>"`. `jr2 run` prints `error: no workflow registered as "<workflow>"` and exits
   with `1`. It also prints the version of the Instance in one more line:
   ``instance: <version> (<hash>) — if it predates this CLI, `jr2 up` converges the cluster to this kit``. `<hash>` is
-  the content hash of the image of the Instance.
+  the hash of the current [Assembly](../reference/glossary.md#assembly).
 - When the Machine declares its input, the Orchestrator checks each run input against it. It refuses an input that does
   not agree, with the status code `400`: `invalid input for workflow "<workflow>": <issues>`. `<issues>` is the list of
   the problems as JSON. The Console shows the same text below its form.

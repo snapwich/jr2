@@ -63,7 +63,7 @@ instance:  none — no jr2.config.ts walking up from cwd
 node:      v24.18.0
 ```
 
-`<version>` is the version of jr2 that you installed, such as `0.3.0`. The folder is in the global folder of your npm,
+`<version>` is the version of jr2 that you installed, such as `0.4.1`. The folder is in the global folder of your npm,
 so it can be different.
 
 ## Make the kind cluster

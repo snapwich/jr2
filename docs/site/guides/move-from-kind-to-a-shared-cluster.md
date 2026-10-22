@@ -44,8 +44,9 @@ All the Instances on a cluster share one operator. `jr2 up` does not downgrade i
 
 On kind, `jr2 up` loads each image that it builds into the nodes with `kind load`. A shared cluster is not kind, so
 `jr2 up` pushes each image to [`registry`](../reference/config.md#registry), and the nodes pull it from there. These are
-the image of the [Orchestrator](../reference/glossary.md#orchestrator) and each
-[Sandbox Image](../reference/glossary.md#sandbox-image) that `jr2 up` builds: `images/default` and each `file:` URL.
+the [Sandbox Images](../reference/glossary.md#sandbox-image) that `jr2 up` builds: `images/default` and each `file:`
+URL. When no registered Machine makes a [Sandbox](../reference/glossary.md#sandbox), `jr2 up` builds no image, and the
+Instance needs no `registry`.
 
 The example reads `registry` from `JR2_REGISTRY`. Put this line in `.env`:
 
@@ -61,9 +62,10 @@ When `registry` is set, `jr2 up` pushes to it on kind too. To converge into kind
 jr2 sets no image pull secret on its pods. The nodes must pull from the registry with no pull secret, for example with
 credentials on the nodes or with anonymous pulls.
 
-The [Kit images](../reference/glossary.md#kit-image) do not go to `registry`. The nodes pull them from
-`ghcr.io/snapwich`, and the Envoy image of the [Custodian](../reference/glossary.md#custodian) from `docker.io`. When
-the nodes cannot reach those registries, see [Mirror the Kit images](mirror-the-kit-images.md).
+The [Kit images](../reference/glossary.md#kit-image) do not go to `registry`. The image of the
+[Orchestrator](../reference/glossary.md#orchestrator) is one of them. The nodes pull them from `ghcr.io/snapwich`, and
+the Envoy image of the [Custodian](../reference/glossary.md#custodian) from `docker.io`. When the nodes cannot reach
+those registries, see [Mirror the Kit images](mirror-the-kit-images.md).
 
 When the Instance sets `harness.provider` and an [Agent](../reference/glossary.md#agent) names one of its models,
 `jr2 up` also checks the model from a pod in the cluster. That pod uses the image `node:24-slim`, which the nodes pull
@@ -213,18 +215,21 @@ kubernetes: v1.35.<patch> (floor 1.35, ADR-0037)
 first contact: deploy instance "my-instance" to context <context> (create namespace "my-instance")? [y/N] y
 platforms: linux/amd64 (from 3 schedulable node(s))
 sandbox nodes: <node>, <node>
-images: installed kit — the published v<version> Harness and operator, pulled from ghcr.io/snapwich
+images: installed kit — the published v<version> Harness, operator and Orchestrator, pulled from ghcr.io/snapwich
 …
 priority: the Instance's own — control "platform-critical", sandbox "batch-low"
 …
-image: building <registry>/jr2-instance-my-instance:<hash>-amd64
+sandbox image "default": building <registry>/jr2-sandbox-my-instance-default:<hash>-amd64
   push → <registry>
 …
+assembly: publishing <assembly hash> (no current Assembly)
+assembly: <assembly hash> is current — workflows: <workflows>
 converged — `jr2 run <workflow>` when ready
 ```
 
 `<patch>` is the patch version of Kubernetes. `<version>` is the [Kit version](../reference/glossary.md#kit-version) of
-the Instance. `<hash>` changes when the inputs of the image change.
+the Instance. `<hash>` changes when the inputs of the image change. `<assembly hash>` is the hash of the
+[Assembly](../reference/glossary.md#assembly) of the Instance.
 
 The other commands take the same `--context`, such as `jr2 run ping --context <context>`.
 
@@ -239,8 +244,8 @@ These things also change in a shared cluster:
 
 ## Rules
 
-- On a cluster that is not kind, `jr2 up` refuses when you do not set `registry`. A kind cluster is a context whose name
-  starts with `kind-`:
+- On a cluster that is not kind, `jr2 up` refuses to build a Sandbox Image when you do not set `registry`. A kind
+  cluster is a context whose name starts with `kind-`:
   ``error: context <context> is not a kind cluster and no `registry` is configured — set `registry` in jr2.config.ts (from env) so the image can be pushed (ADR-0019)``
 - `jr2 up` refuses a cluster earlier than Kubernetes 1.35:
   `refusing: <context> runs Kubernetes <kubernetes version>; jr2 needs Kubernetes 1.35 or newer (every Sandbox mounts jr2's runtime as an image volume, ADR-0037). Nothing was applied.`

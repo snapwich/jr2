@@ -201,13 +201,9 @@ it converges. It is the first `jr2 up` that reaches the model.
 
 :::
 
-`jr2 up` replaced the [Orchestrator](../reference/glossary.md#orchestrator) pod, because `jr2.config.ts` is in the image
-of the Instance. Thus the port forward of [Create an Instance](create-an-instance.md) stopped. Start it again in its
-terminal:
-
-```sh
-kubectl -n my-instance port-forward svc/jr2-orchestrator 4000:4000
-```
+`jr2 up` published the new `jr2.config.ts` to the [Orchestrator](../reference/glossary.md#orchestrator) in the
+[Assembly](../reference/glossary.md#assembly). The Orchestrator loaded it with no restart, so the port forward of
+[Create an Instance](create-an-instance.md) stays open.
 
 ## What happened
 

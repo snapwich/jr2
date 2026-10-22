@@ -148,6 +148,23 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
     `customize()` line sets the memory of the Size through `actors`:
     `customize(<import>, { actors: { <slot>: { resources: { limits: { memory: "<memory>" } } } } })`. At each deeper
     level, the parenthetical adds ` → "<slot>"`, and the `customize()` line adds one more `actors`.
+- `jr2 up` makes the [Assembly](../reference/glossary.md#assembly) before it reads the cluster. The Assembly must not
+  hold a second copy of a Kit package, such as `@jr2/orchestrator`, `xstate` or `zod`:
+  `error: cannot stage the Assembly: it would carry a second copy of a Kit package (ADR-0069)`. Each line after it names
+  one copy:
+  `<path> is a second copy of <package>, nested by <package>: the Orchestrator's image ships <package> for @jr2/orchestrator <version>, and an Assembly that carries its own copy loads Machines whose Menus are empty (ADR-0054) — align that dependency with the <package> @jr2/orchestrator uses, or remove it, and reinstall`.
+  Give the dependency that nests the copy a version that uses the same `<package>` as `@jr2/orchestrator`. Then run
+  `npm install`.
+- A symlink in the Assembly must stay in the Assembly:
+  `error: cannot seal the Assembly: the symlink <path> points outside the Assembly ("<target>") — an Assembly carries only what it holds; <fix>`.
+  The fix is `install that dependency as a copy, not a link` for a link in `node_modules`, and
+  `make the link relative, with a target inside the Instance` for a different link.
+- A file in the Assembly must not hold the path where `jr2 up` makes the Assembly. The refusal starts with
+  `error: cannot seal the Assembly: <file> holds the staging path (<path>)`. A `postinstall` step of a dependency is the
+  usual cause.
+- The Assembly must hold each Workflow of the folder. The refusal starts with
+  `refusing: the staged Assembly does not hold the Workflows this folder holds (ADR-0069)`, and names each file. It ends
+  with ``— the Assembly holds what the Instance's install keeps; check the `files:` list in package.json``.
 - `jr2 up` must reach the API server of the context:
   `refusing: cannot reach the API server of <context> (<error>). Nothing was applied.` For example, with
   `--context nope`, the error is `error: context "nope" does not exist`. Check the context with
@@ -244,6 +261,15 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   ``error: <layer>: rollout reported success, but the running pod carries <images> — expected <image>. The cluster is serving code this converge did not deploy; `kubectl -n <namespace> rollout restart deploy` and re-run `jr2 up` to resolve it.``
 - When the rollout completes but no pod matches, `jr2 up` cannot check the image. It continues:
   `<layer>: WARNING — rollout succeeded but no pod matched <selector> (nothing verified)`
+- Before the publish, the Orchestrator must read the image map that `jr2 up` wrote. When it does not read it in time,
+  `jr2 up` publishes nothing:
+  ``refusing: after <seconds>s the Orchestrator still reads an older <maps> from its mount — the kubelet has not refreshed it; nothing was published, and the previous Assembly is still current. Run `jr2 up` again``
+- The Orchestrator checks the Assembly again before it makes it current. It loads each Workflow and `jr2.config.ts`. It
+  refuses an [Open](../reference/glossary.md#open) part that nobody bound, a secret that the config does not declare,
+  and a Kit version that is not its own. The refusal gives the status code and the reason, then one line for each
+  problem:
+  `refusing: the Orchestrator refused Assembly <hash> (HTTP <status>): <error> — the previous Assembly is still current`.
+  Fix each problem. Then run `jr2 up` again.
 
 ## Read next
 
@@ -256,6 +282,8 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `jr2 up` refuses an Open part.
 - [ADR-0056](../reference/decisions/0056-a-global-jr2-hands-off-to-the-instances-own-and-an-instance-has-one-kit-version.md):
   why an Instance has one Kit version.
+- [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): why
+  `jr2 up` makes an Assembly and publishes it.
 - [ADR-0019](../reference/decisions/0019-one-converging-command-against-the-current-context.md): the current context and
   the namespace.
 - [ADR-0045](../reference/decisions/0045-the-platform-joins-the-image-address-and-the-cluster-chooses-it.md): how

@@ -51,7 +51,7 @@ jr2 runs
 
 ```text
 → context <context> / namespace <namespace>
-[{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[]}]
+[{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}]
 ```
 
 `jr2 runs` prints a JSON array of the runs that did not end. To read a run that ended, use `jr2 status <run id>`. A run
@@ -70,7 +70,7 @@ jr2 status 3651
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"2.0.0"}}]}
+{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"2.0.0"}}]}
 ```
 
 The status is a [`RunStatus`](../reference/http-api.md#type-runstatus), with the open Gates of the run:
@@ -85,11 +85,13 @@ The status is a [`RunStatus`](../reference/http-api.md#type-runstatus), with the
 | `held`     | Each [outstanding](../reference/glossary.md#outstanding) pick of an Agent: the Agent, the pick, and since when.         |
 | `fault`    | The error, when the status is `error`.                                                                                  |
 | `reason`   | Why jr2 set the status, when the Machine did not set it, such as `drifted`.                                             |
+| `assembly` | The hash of the [Assembly](../reference/glossary.md#assembly) that the run started under, and holds.                    |
 | `gates`    | Each open Gate. [Answer a Gate](answer-a-gate.md) explains its fields.                                                  |
 
 [Durable runs](../concepts/durable-runs.md) tells how long jr2 keeps a run that ended.
 
-`jr2 status` with no run id does not read a run. It prints the [Repos](../reference/glossary.md#repo) of the Instance.
+`jr2 status` with no run id does not read a run. It prints the current Assembly, each Assembly that a live run holds,
+and the [Repos](../reference/glossary.md#repo) of the Instance.
 
 ## Follow a run
 
@@ -111,8 +113,8 @@ The run ends. `jr2 logs -f` prints the status when it attached, then the last st
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[]}
-{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[]}
+{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}
+{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}
 ```
 
 When the run ended before you attach, `jr2 logs -f` prints only its last status. Without `-f`, `jr2 logs` prints the

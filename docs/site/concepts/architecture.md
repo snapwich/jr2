@@ -93,6 +93,10 @@ hosts all the [Workflows](../reference/glossary.md#workflow) of the Instance and
 the snapshot of each run on its own volume, so a run continues after a restart. [Durable runs](durable-runs.md) tells
 how.
 
+The pod runs the `jr2-orchestrator` [Kit image](../reference/glossary.md#kit-image), which holds no code of yours. The
+Orchestrator loads your Workflows and your config from the [Assembly](../reference/glossary.md#assembly) that `jr2 up`
+publishes to it, and it keeps each Assembly on its volume. [Converge](converge.md#the-assembly) tells how.
+
 The Orchestrator does these things:
 
 - It runs each Machine as an xstate actor, and holds the state of each run.
@@ -154,7 +158,7 @@ which the Agent executes nothing. [Effects](effects.md) tells which Effect runs 
   a `push`, an `http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is
   the Sandbox Image, unless the `workspace()` names a different image.
 - **The Instance Effector** is one pod for each Instance, `jr2-instance-effector`. It runs each `http` Effect that reads
-  no Worktree file. It runs in the `jr2-harness` [Kit image](../reference/glossary.md#kit-image).
+  no Worktree file. It runs in the `jr2-harness` Kit image.
 
 Each placement exists only when a Machine of the Instance puts an Effect there. A `command` that names no Effect secret
 does not use an Effector. It runs in the Harness container of its Sandbox, with the same tools and access as the Agent.

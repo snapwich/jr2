@@ -186,7 +186,7 @@ page that uses a term links to the page that owns it, and does not explain the t
 | `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set                                                                           |
 | `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                     |
 | `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                         |
-| `concepts/converge`               | `jr2 up`, Kit version, Handoff, Kit image, Pinned image, Sandbox Image as an image to build, `gc`              |
+| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Handoff, Kit image, Pinned image, Sandbox Image as an image to build, `gc`    |
 | `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, the week of history              |
 
 Workspaces owns the Sandbox Image as a part of the Sandbox. Converge owns only how `jr2 up` builds and loads it.
@@ -654,7 +654,7 @@ The user must decide these items. Until then, obey the rule for each item.
 | The first Workflow  | `ping`, which `jr2 init` writes. Run it with `jr2 run ping --input '{"message":"hi"}'`.                      |
 | The Console         | Run `kubectl -n my-instance port-forward svc/jr2-orchestrator 4000:4000`, then open `http://localhost:4000`. |
 | The Instance token  | See the command below. Type the token in the Console nav to send events from the Console.                    |
-| The Kit version     | `<version>`: the version that `package.json` gives for `@jr2/orchestrator`, such as `0.3.0`.                 |
+| The Kit version     | `<version>`: the version that `package.json` gives for `@jr2/orchestrator`, such as `0.4.1`.                 |
 
 `jr2 init` pins `@jr2/orchestrator` and `@jr2/cli` to one exact version, so `package.json` shows the Kit version. No jr2
 command opens the Console. The Console shows a run without the token. To answer a Gate from the Console, you need the
@@ -703,9 +703,8 @@ pages do not use `--detach`.
   - Anthropic: `jr2 up` does not check a catalog model. Page 4's `jr2 up` gives the key to the Custodian of the pod
     where the Agent works, and the first Turn of the run is the first call to the model.
   - Local: page 4's `jr2 up` checks the endpoint before it converges. It is the first `jr2 up` that reaches the model.
-- Page 3's `jr2 up` replaces the Orchestrator pod, because `jr2.config.ts` is in the image of the Instance. Thus the
-  port forward stops, and page 3 tells the reader to start it again. Each page whose `jr2 up` changes the Instance says
-  the same.
+- Page 3's `jr2 up` publishes `jr2.config.ts` in the Assembly, and the Orchestrator loads it with no restart. Thus the
+  port forward stays open. Each page whose `jr2 up` changes only the Instance folder says the same.
 
 ### Page 4: A model decides
 

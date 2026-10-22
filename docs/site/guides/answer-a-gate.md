@@ -58,7 +58,7 @@ jr2 status 8c14
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"8c14e8f1-3bcf-4951-b400-a56973f5a38a","workflow":"release","instanceId":"8af78244-a186-43b9-a30d-cd16f9df4afe","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
+{"runId":"8c14e8f1-3bcf-4951-b400-a56973f5a38a","workflow":"release","instanceId":"8af78244-a186-43b9-a30d-cd16f9df4afe","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
 ```
 
 `gates` holds each open Gate of the run, as a [`GateView`](../reference/http-api.md#type-gateview):
@@ -93,7 +93,7 @@ delivered reject to gate "review" on 8c14e8f1-3bcf-4951-b400-a56973f5a38a
 
 ```text
   → done "rejected"
-{"runId":"8c14e8f1-3bcf-4951-b400-a56973f5a38a","workflow":"release","instanceId":"8af78244-a186-43b9-a30d-cd16f9df4afe","status":"done","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[]}
+{"runId":"8c14e8f1-3bcf-4951-b400-a56973f5a38a","workflow":"release","instanceId":"8af78244-a186-43b9-a30d-cd16f9df4afe","status":"done","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}
 ```
 
 The run ended, so its Gate closed. Each example below answers a run that waits. Before each example, start a new run in
@@ -232,7 +232,7 @@ delivered approve to gate "review" on <run id>
 - `jr2 send` prints each refusal of the Orchestrator as `error: <refusal>`, and exits with `1`. After a `404` refusal,
   it also prints the version of the Instance in one more line:
   ``instance: <version> (<hash>) — if it predates this CLI, `jr2 up` converges the cluster to this kit``. `<hash>` is
-  the content hash of the image of the Instance.
+  the hash of the current [Assembly](../reference/glossary.md#assembly).
 - `jr2 send` without `--gate` sends run control, and run control accepts only `CANCEL`. For a different event, it exits
   with `2`: `jr2 send: unknown event "<event>" (run control accepts: CANCEL; workflow events need --gate)`
 - With `--gate`, `jr2 send` sends nothing when `--input` is not valid JSON. It exits with `2`:

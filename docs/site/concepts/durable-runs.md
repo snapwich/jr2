@@ -12,9 +12,8 @@ from the state that it saved. A run that ended stays readable for one week.
 A run can take a long time. An [Agent](../reference/glossary.md#agent) can work for an hour, and a run can wait at a
 [Gate](../reference/glossary.md#gate) for days, until a person answers. In that time, the Orchestrator can stop:
 
-- Each [`jr2 up`](../reference/cli.md#up) that changes your [Workflows](../reference/glossary.md#workflow) or the
-  [Kit version](../reference/glossary.md#kit-version) builds a new image of the Orchestrator, and the Orchestrator
-  starts again on it.
+- Each [`jr2 up`](../reference/cli.md#up) that changes the [Kit version](../reference/glossary.md#kit-version) starts
+  the Orchestrator again on the image of the new version.
 - The node of the Orchestrator can fail.
 - The process can stop because of an error.
 
@@ -44,10 +43,17 @@ stopped.
 
 When the Orchestrator starts, it reads each run that did not end, one at a time. For each run, it:
 
-1. Finds the Workflow by the name of its file in `workflows/`.
+1. Finds the [Assembly](../reference/glossary.md#assembly) that the run holds: the Assembly that was current when the
+   run started. Then it finds the [Workflow](../reference/glossary.md#workflow) in that Assembly, by the name of its
+   file in `workflows/`.
 2. Compares the shape of the Machine with the shape that the snapshot records. See
    [Machine shape and drift](#machine-shape-and-drift).
 3. Starts the Machine again from the snapshot.
+
+Thus a run continues on the Machine that it started on, also when `jr2 up` published a newer Assembly after it started.
+When the Orchestrator has no current Assembly, it continues no run. This occurs after its volume lost the Assembly, and
+after `jr2 up` started a new Kit image and before it published. The Orchestrator keeps the live runs, and the next
+publish continues them.
 
 The parts of the run then continue:
 
@@ -68,11 +74,11 @@ The parts of the run then continue:
 
 A run that the Orchestrator does not continue gets one of these results:
 
-| Result    | When                                                                      | What stays                                         |
-| --------- | ------------------------------------------------------------------------- | -------------------------------------------------- |
-| `lost`    | No Workflow has the name of the run's file, or the row holds no snapshot. | The row and the reason, for one week.              |
-| `drifted` | The Machine of the Workflow has a different shape.                        | The row and the snapshot.                          |
-| `failed`  | The restore of the run stopped with an error.                             | The run stays live. The next start tries it again. |
+| Result    | When                                                                                                        | What stays                                         |
+| --------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `lost`    | No Workflow has the name of the run's file, or the row holds no snapshot.                                   | The row and the reason, for one week.              |
+| `drifted` | The Orchestrator cannot read the Assembly of the run, or the Machine of the Workflow has a different shape. | The row and the snapshot.                          |
+| `failed`  | The restore of the run stopped with an error.                                                               | The run stays live. The next start tries it again. |
 
 The Orchestrator prints the ids of these runs on the line that it writes when it starts. A run that it continued is
 normal, and it does not print it.
@@ -94,10 +100,18 @@ The digest does not include the bodies of the guards and the actions (other than
 calls, the prompts and the descriptions. A change to these parts does not cause drift. A run that continues after such a
 change uses the new code from its next transition.
 
+A run holds its Assembly, so a change that you publish does not change the Machine of a live run. Drift occurs when the
+Orchestrator cannot read the Assembly that the run holds:
+
+- The Assembly is for a different Kit version. After you upgrade the Kit version, the first publish marks each run of an
+  older Assembly `drifted`.
+- The volume of the Orchestrator lost the Assembly.
+- The Assembly does not load.
+
 The Orchestrator keeps a drifted run, and you can read it. [`jr2 status`](../reference/cli.md#status) shows its status,
-`drifted`, with the reason. The reason names the Workflow and the two digests. [`jr2 runs`](../reference/cli.md#runs)
-does not show it, because `jr2 runs` shows only the runs that run now. jr2 cannot move a drifted run to the new Machine.
-Thus, before you converge a change to the shape of a Workflow, let its runs end, or cancel them.
+`drifted`, with the reason. The reason names the Workflow and the two digests, or the Assembly and why it cannot load.
+[`jr2 runs`](../reference/cli.md#runs) does not show it, because `jr2 runs` shows only the runs that run now. jr2 cannot
+move a drifted run to a new Machine. Thus, before you change the Kit version, let the runs end, or cancel them.
 
 ## CANCEL and stop
 
@@ -129,7 +143,7 @@ You cannot change the 7 days. jr2 is not the record of the results of a run. A M
 belong, such as a pull request. `jr2 status` on a run that ended is for debugging. After the 7 days, `jr2 status` says
 that the run does not exist, and a prefix of its id no longer finds it.
 
-The week of a drifted run starts at the restart that refused it, not at its last transition.
+The week of a drifted run starts at the restart or the publish that refused it, not at its last transition.
 
 [`jr2 down`](../reference/cli.md#down) deletes the namespace of the Instance, and the store with it. The live runs go
 too.
@@ -138,7 +152,8 @@ too.
 
 - The context of a Machine and the input of each actor hold only plain data, such as ids, counts and strings. A live
   object, such as a server or a client, does not survive a restart.
-- The Orchestrator continues a run only under a Machine that has the same shape.
+- The Orchestrator continues a run only under the Assembly that it started under, and only when its Machine has the same
+  shape.
 - The Orchestrator never continues a drifted run, and never moves it to a new Machine.
 - The Orchestrator never continues a cancelled run.
 - `CANCEL` is the only run event that `jr2 send` sends without `--gate`. `--keep` goes only with `CANCEL`.
@@ -165,3 +180,5 @@ output.
   Machine that wrote it
 - [ADR-0065](../reference/decisions/0065-a-persist-survives-a-crash-and-history-is-a-week.md): a save survives a crash,
   and jr2 keeps a week of history
+- [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): a
+  run holds the Assembly that it started under

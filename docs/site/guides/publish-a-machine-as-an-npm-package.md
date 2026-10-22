@@ -31,7 +31,7 @@ labeler/
 <<< @/examples/guides/publish-a-machine-as-an-npm-package/labeler/package.json
 
 - `peerDependencies` names `@jr2/orchestrator`, `xstate` and `zod`. The package has no `dependencies`. Replace
-  `<version>` with the [Kit version](../reference/glossary.md#kit-version) that the package is for, such as `0.3.0`.
+  `<version>` with the [Kit version](../reference/glossary.md#kit-version) that the package is for, such as `0.4.1`.
   Write the exact version, with no `^` and no `~`.
 - `devDependencies` also names the three packages, at the same versions, and `typescript` and `@types/node`. With them,
   you can typecheck the package.
@@ -116,11 +116,11 @@ npm ls @jr2/orchestrator
 
 ```text
 my-instance@0.0.0 <path>
-├─┬ @jr2/cli@0.3.0
-│ └── @jr2/orchestrator@0.3.0 deduped
-├── @jr2/orchestrator@0.3.0
+├─┬ @jr2/cli@0.4.1
+│ └── @jr2/orchestrator@0.4.1 deduped
+├── @jr2/orchestrator@0.4.1
 └─┬ @you/labeler@1.0.0
-  └── @jr2/orchestrator@0.3.0 deduped
+  └── @jr2/orchestrator@0.4.1 deduped
 ```
 
 `<path>` is the path of your Instance folder, and the version is your Kit version. Each line names the same version.
@@ -184,9 +184,9 @@ seats: workflow "label" — who may send what, per state (ADR-0015)
   Do not install with `--force` or `--legacy-peer-deps`. Publish a version of the package for the Kit version of the
   Instance. Thus each [upgrade of the Kit version](upgrade-the-kit-version.md) needs a new version of the package.
 
-- In the Instance, the package must be in `dependencies`, not in `devDependencies`. The image of the Instance installs
-  only `dependencies`. Without the package, the [Orchestrator](../reference/glossary.md#orchestrator) cannot load the
-  Workflow, and it does not start.
+- In the Instance, the package must be in `dependencies`, not in `devDependencies`. The
+  [Assembly](../reference/glossary.md#assembly) holds only `dependencies`. Without the package, the
+  [Orchestrator](../reference/glossary.md#orchestrator) cannot load the Workflow, and it refuses the Assembly.
 - The typecheck of `jr2 up` includes the `.ts` files of the package. A type error in it stops the converge:
   `refusing: this instance does not typecheck — nothing was built and nothing was applied`.
 - Use only TypeScript that jr2 can erase: no `enum`, no `namespace`, and no parameter properties in a constructor. The

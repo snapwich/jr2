@@ -84,23 +84,28 @@ your current kubectl context. The first time, it asks before it makes the namesp
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 agents: (none) (carried by 1 workflow machine(s))
+assembly: staging
+assembly: <hash> (kit v<version>; 1 workflow(s): ping)
 kubernetes: v1.36.1 (floor 1.35, ADR-0037)
 first contact: deploy instance "my-instance" to context kind-jr2 (create namespace "my-instance")? [y/N] y
 …
-images: installed kit — the published v<version> Harness and operator, pulled from ghcr.io/snapwich
+images: installed kit — the published v<version> Harness, operator and Orchestrator, pulled from ghcr.io/snapwich
 …
 orchestrator: waiting for rollout
-orchestrator: verified — 1 pod(s) running jr2-instance-my-instance:<hash>-amd64
+orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
 …
+assembly: publishing <hash> (no current Assembly)
+assembly: <hash> is current — workflows: ping
 converged — `jr2 run <workflow>` when ready
 ```
 
-`<version>` is the Kit version, such as `0.3.0`. `<hash>` is the content hash of the image of your Instance, so it is
-different each time that the Instance changes. The end of the tag is the architecture of the node: `-amd64` or `-arm64`.
+`<version>` is the Kit version, such as `0.4.1`. `<hash>` is the hash of the
+[Assembly](../reference/glossary.md#assembly) of your Instance: your Workflows and your config. It is different each
+time that they change.
 
-The namespace is `my-instance`, because `jr2.config.ts` sets no `name`. The first `jr2 up` builds the image of the
-Instance, and the cluster pulls the operator image, so it takes longer than the next ones. If `jr2 up` stops with
-`refusing:`, read [Fix a failed converge](../guides/fix-a-failed-converge.md).
+The namespace is `my-instance`, because `jr2.config.ts` sets no `name`. The first `jr2 up` takes longer than the next
+ones, because the cluster pulls the images of the Orchestrator and of the operator. If `jr2 up` stops with `refusing:`,
+read [Fix a failed converge](../guides/fix-a-failed-converge.md).
 
 ## Run ping
 
@@ -119,7 +124,7 @@ JSON:
 → context kind-jr2 / namespace my-instance
 run 890aa503-dd65-49ab-a359-28112f390fff (ping) — attached
   → done "done"
-{"runId":"890aa503-dd65-49ab-a359-28112f390fff","workflow":"ping","instanceId":"d7f74c70-776f-4f39-a2e0-6338e97b0970","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[]}
+{"runId":"890aa503-dd65-49ab-a359-28112f390fff","workflow":"ping","instanceId":"d7f74c70-776f-4f39-a2e0-6338e97b0970","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"d2b8e41f6c03"}
 ```
 
 Your run id and your [Instance ID](../reference/glossary.md#instance-id) are not the same as the ones here. The run is
@@ -169,9 +174,9 @@ about the Console.
 ## What happened
 
 `jr2 init` made an Instance: a folder that you own, with its config and its Workflows. `jr2 up` read the folder and
-converged the cluster to it. It built one image that holds the Orchestrator and your Workflows, and it started the
-Orchestrator in the namespace `my-instance`. You run `jr2 up` again each time that you change the folder.
-[Converge](../concepts/converge.md) explains what `jr2 up` makes, and
+converged the cluster to it. It started the Orchestrator in the namespace `my-instance`, from the image of your Kit
+version. Then it published your Workflows and your config to the Orchestrator, as the Assembly. You run `jr2 up` again
+each time that you change the folder. [Converge](../concepts/converge.md) explains what `jr2 up` makes, and
 [ADR-0019](../reference/decisions/0019-one-converging-command-against-the-current-context.md) gives the reasons.
 
 `jr2 run` started a run of `ping` in the Orchestrator. A Workflow is a Machine with a name, and the Orchestrator runs

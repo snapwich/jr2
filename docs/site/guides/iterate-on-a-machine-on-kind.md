@@ -46,26 +46,30 @@ For an Instance that has only `ping`, the output is:
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 agents: (none) (carried by 1 workflow machine(s))
+assembly: staging
+assembly: <hash> (kit v<version>; 1 workflow(s): ping)
 …
-image: building jr2-instance-my-instance:<hash>-<arch>
-  kind load → cluster "jr2"
 sandbox images: skipped (no registered Machine composes a Sandbox)
 …
-orchestrator: applying (image jr2-instance-my-instance:<hash>-<arch>)
+orchestrator: applying (image ghcr.io/snapwich/jr2-orchestrator:<version>)
 orchestrator: waiting for rollout
-orchestrator: verified — 1 pod(s) running jr2-instance-my-instance:<hash>-<arch>
+orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
 …
+assembly: publishing <hash> (current is <old hash>)
+assembly: <hash> is current — workflows: ping
 converged — `jr2 run <workflow>` when ready
 ```
 
-`<hash>` is the content hash of the image of the Orchestrator, and `<arch>` is the architecture of the node, such as
-`amd64`. The hash changed, because the Workflow changed. Thus `jr2 up` built the image again, loaded it into the kind
-nodes, and replaced the pod of the Orchestrator. Your output has more lines when your Machines use a model, a
-[Sandbox](../reference/glossary.md#sandbox) or an [Effect](../reference/glossary.md#effect).
+`<hash>` is the hash of the new [Assembly](../reference/glossary.md#assembly), and `<old hash>` is the hash of the
+Assembly that was current. `<version>` is the [Kit version](../reference/glossary.md#kit-version). The hash changed,
+because the Workflow changed. Thus `jr2 up` published the new Assembly to the
+[Orchestrator](../reference/glossary.md#orchestrator). The image of the Orchestrator did not change, so its pod did not
+start again. Your output has more lines when your Machines use a model, a [Sandbox](../reference/glossary.md#sandbox) or
+an [Effect](../reference/glossary.md#effect).
 
-`jr2 up` says `converged` only when the new pod runs the new image. When it stops with `refusing:`, it did not change
-the Orchestrator. An `error:` after the line `orchestrator: applying` comes after the change. In both cases, fix the
-cause, then run `jr2 up` again. [Fix a failed converge](fix-a-failed-converge.md) gives each refusal and its fix.
+`jr2 up` says `converged` only when the Orchestrator made the new Assembly current. When it stops with `refusing:`, the
+Assembly that was current stays current. In both cases, fix the cause, then run `jr2 up` again.
+[Fix a failed converge](fix-a-failed-converge.md) gives each refusal and its fix.
 
 ## Run it again
 
@@ -81,72 +85,67 @@ jr2 run ping --input '{"message":"hi"}'
 → context kind-jr2 / namespace my-instance
 run 56f83075-b4eb-4095-a350-4c7428ae0bd9 (ping) — attached
   → done "done"
-{"runId":"56f83075-b4eb-4095-a350-4c7428ae0bd9","workflow":"ping","instanceId":"25e49524-27b0-47ae-b1c0-242cb759580f","status":"done","value":"done","context":{"message":"hi","reply":"pong, again: hi"},"children":[],"waiting":[],"held":[]}
+{"runId":"56f83075-b4eb-4095-a350-4c7428ae0bd9","workflow":"ping","instanceId":"25e49524-27b0-47ae-b1c0-242cb759580f","status":"done","value":"done","context":{"message":"hi","reply":"pong, again: hi"},"children":[],"waiting":[],"held":[],"assembly":"a83f60e21b9c"}
 ```
 
 Your run id is different. The `reply` comes from the new Machine.
 
-A `kubectl port-forward` stops when its pod stops. Thus, after a converge that replaces the Orchestrator, start the port
-forward of the [Console](../reference/glossary.md#console) again. Then the Console draws the new Machine.
-[Open the Console](open-the-console.md) gives the command.
+The pod of the Orchestrator did not start again, so the port forward of the [Console](../reference/glossary.md#console)
+stays open. Load the page again. Then the Console draws the new Machine. [Open the Console](open-the-console.md) gives
+the command for the port forward.
 
 ## Why a repeated jr2 up is fast
 
-`jr2 up` does the full converge each time, but it builds an image only when its inputs changed.
-[Converge](../concepts/converge.md#the-images) tells why. You see it in these lines:
+`jr2 up` does the full converge each time, but it builds an image only when its inputs changed, and it publishes the
+Assembly only when its hash changed. [Converge](../concepts/converge.md#the-images) tells why. You see it in these
+lines:
 
-- `(fresh — build skipped; --force to rebuild anyway)`: the tag did not change, so `jr2 up` did not build the image.
-- `(host-built — build skipped, delivering; --force to rebuild)`: your computer holds the image of the Orchestrator with
-  that tag, so `jr2 up` loaded it and did not build it. For a [Sandbox Image](../reference/glossary.md#sandbox-image),
-  the line ends with `(host-built — build skipped; --force to rebuild)`.
+- `(fresh — build skipped; --force to rebuild anyway)`: the tag of a
+  [Sandbox Image](../reference/glossary.md#sandbox-image) did not change, so `jr2 up` did not build it.
+- `(host-built — build skipped; --force to rebuild)`: your computer holds the Sandbox Image with that tag, so `jr2 up`
+  did not build it.
+- `(current — publish skipped)`: the Orchestrator already has the Assembly with this hash.
 
-A second `jr2 up` with no change builds nothing:
+A second `jr2 up` with no change builds nothing and publishes nothing:
 
 <!-- output: not run -->
 
 ```text
 …
-image: jr2-instance-my-instance:<hash>-<arch> (fresh — build skipped; --force to rebuild anyway)
-…
+assembly: <hash> (current — publish skipped)
 converged — `jr2 run <workflow>` when ready
 ```
 
-To build all the images again, run `jr2 up --force`. It builds an image again also when its tag did not change.
+To build all the images again, run `jr2 up --force`. It builds an image again also when its tag did not change. It also
+sends the Assembly again, and the Orchestrator answers that the Assembly did not change.
 
 ## The runs that are live when you converge
 
-`jr2 up` replaces the pod of the Orchestrator. The new pod continues each live run under the new Machine. A run that
-waits at a [Gate](../reference/glossary.md#gate) still waits there, and its Sandbox stays.
+A publish does not start the pod of the Orchestrator again. A run that is live keeps the Assembly that it started under.
+Thus it continues on the old Machine, to its end, also after a restart. A run that waits at a
+[Gate](../reference/glossary.md#gate) still waits there, and its Sandbox stays. A `jr2 run` that is attached stays
+attached. Each new run uses the new Machine.
 
-A `jr2 run` that is attached when `jr2 up` replaces the pod exits with `1` and prints an `error:` line. The run
-continues in the new pod. Follow it with [`jr2 logs -f <run id>`](../reference/cli.md#logs).
-
-The Orchestrator continues a run only when the [Machine shape](../reference/glossary.md#machine-shape) did not change.
-The shape is the states, the invokes and the transitions of the Machine. A change to an action, a guard, a prompt or a
-description does not change the shape. A run that continues uses the new code from its next transition.
-
-When the shape changed, the Orchestrator does not continue the run. It keeps the run with the status `drifted`.
-[`jr2 status`](../reference/cli.md#status) shows the reason. In this example, a run of `rollout` from
-[Write a Workflow](write-a-workflow.md) waited at its Gate, and the converge added a state to the Machine. `<run id>` is
-the id that `jr2 run` printed, or its first 4 characters or more:
+[`jr2 status`](../reference/cli.md#status), with no run id, shows each Assembly that a live run holds:
 
 ```sh
-jr2 status <run id>
+jr2 status
 ```
 
 <!-- output: not run -->
 
 ```text
 → context kind-jr2 / namespace my-instance
-{"runId":"929a1f3c-4223-42f2-b687-e685ca27684f","workflow":"rollout","instanceId":"73ad59b5-7d89-42bc-9d3d-8c3dced7ee8e","status":"drifted","value":"canary","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"73ad59b5-7d89-42bc-9d3d-8c3dced7ee8e"},"children":[],"waiting":[],"held":[],"reason":"workflow \"rollout\" changed shape since this run was saved (saved under bad70d4393d1, now 6580f29b090f)","gates":[]}
+assembly: <hash> (kit v<version>, current), 0 live runs hold it
+assembly: <old hash> (kit v<version>), 1 live run holds it
+…
 ```
 
-Your run id and digests are different.
+The Orchestrator removes the old Assembly when the last run that holds it ends.
 
-jr2 cannot move a drifted run to the new Machine. Thus, before you converge a change to the shape, let the live runs of
-the Workflow end. Or cancel them with `jr2 send <run id> --event CANCEL`. [Cancel a run](cancel-a-run.md) tells how.
-
-The Orchestrator does not continue a run whose Workflow file you removed. It marks the run `lost`.
+A live run cannot continue when the Orchestrator cannot read its Assembly: the volume lost it, or it is for a different
+Kit version. Then the Orchestrator keeps the run with the status `drifted`, and `jr2 status <run id>` gives the reason.
+[Upgrade the Kit version](upgrade-the-kit-version.md) tells when this occurs.
 
 ## Rules
 
@@ -161,11 +160,12 @@ The Orchestrator does not continue a run whose Workflow file you removed. It mar
   cluster. [Write a Workflow](write-a-workflow.md) gives each error.
 - `jr2 up` refuses when kubectl has no current context:
   ``error: no kube context — `kind create cluster` (or point kubectl at one), then re-run `jr2 up` ``
-- `jr2 up` loads the images into the nodes only on a kind cluster: a context whose name starts with `kind-`. For a
-  different context with no [`registry`](../reference/config.md#registry), it builds nothing:
+- `jr2 up` loads the Sandbox Images into the nodes only on a kind cluster: a context whose name starts with `kind-`. For
+  a different context with no [`registry`](../reference/config.md#registry), it builds nothing:
   ``error: context <context> is not a kind cluster and no `registry` is configured — set `registry` in jr2.config.ts (from env) so the image can be pushed (ADR-0019)``
-- The Orchestrator does not continue a run whose Machine changed shape. `jr2 status` shows the status `drifted` and the
-  reason: `workflow "<workflow>" changed shape since this run was saved (saved under <digest>, now <digest>)`
+- The Orchestrator refuses an Assembly that fails its checks. `jr2 up` prints the reason and the lines of the report,
+  and the Assembly that was current stays current:
+  `refusing: the Orchestrator refused Assembly <hash> (HTTP <status>): <error> — the previous Assembly is still current`
 
 ## Read next
 
@@ -173,6 +173,8 @@ The Orchestrator does not continue a run whose Workflow file you removed. It mar
 - [Durable runs](../concepts/durable-runs.md): the Machine shape and drift.
 - [ADR-0019](../reference/decisions/0019-one-converging-command-against-the-current-context.md): one converging command
   against the current context.
+- [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): a
+  publish loads the Assembly with no restart, and a run keeps its Assembly.
 - [ADR-0038](../reference/decisions/0038-jr2-up-builds-every-image-it-deploys.md): `jr2 up` builds each image that the
   cluster runs, with a content hash as its tag.
 - [ADR-0041](../reference/decisions/0041-a-build-the-host-already-holds-is-not-spent-again.md): a build that your

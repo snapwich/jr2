@@ -11,7 +11,7 @@ An Instance has one Kit version: the version of `@jr2/orchestrator` that it inst
 install, and run [`jr2 up`](../reference/cli.md#up). Each upgrade ends in `jr2 up`. It converges the cluster to the new
 version, and it updates the jr2 block in `AGENTS.md`, which your [Assistant](../reference/glossary.md#assistant) reads.
 
-In the commands on this page, `<version>` is the new Kit version, such as `0.3.0`, and `<old version>` is the version
+In the commands on this page, `<version>` is the new Kit version, such as `0.4.1`, and `<old version>` is the version
 that the Instance has now.
 
 ## Before you start
@@ -122,14 +122,14 @@ jr2 version
 
 ```text
 …
-orchestrator:  <old version>  hash <hash>  <image>
+orchestrator:  <old version>  assembly <hash>  <image>
 operator:      <old version>  ghcr.io/snapwich/jr2-operator:<old version>
 …
 skew:          deployed <old version> predates this kit <version> — `jr2 up` converges it
 ```
 
-`<hash>` and `<image>` are the hash and the image of the [Orchestrator](../reference/glossary.md#orchestrator) that runs
-in the cluster.
+`<hash>` is the hash of the current [Assembly](../reference/glossary.md#assembly), and `<image>` is the image of the
+[Orchestrator](../reference/glossary.md#orchestrator) that runs in the cluster.
 
 When the Orchestrator in the cluster is newer than the Kit version of the Instance, the `skew` line says
 ``deployed <deployed version> is newer than this kit <version> — `jr2 up` would roll the orchestrator back; the operator is never downgraded``.
@@ -152,14 +152,21 @@ AGENTS.md: jr2 block updated for <version>
 jr2 up — instance "my-instance" → context <context> / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 …
-images: installed kit — the published v<version> Harness and operator, pulled from ghcr.io/snapwich
+images: installed kit — the published v<version> Harness, operator and Orchestrator, pulled from ghcr.io/snapwich
 …
 operator: applying v<version> (ghcr.io/snapwich/jr2-operator:<version>) over v<old version>
 …
+orchestrator: applying (image ghcr.io/snapwich/jr2-orchestrator:<version>)
+orchestrator: waiting for rollout
+orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
+…
+assembly: publishing <hash> (current is <old hash>)
+assembly: <hash> is current — workflows: <workflows>
 converged — `jr2 run <workflow>` when ready
 ```
 
-`<context>` is the kubectl context of the cluster.
+`<context>` is the kubectl context of the cluster. `<hash>` is the hash of the Assembly for the new version, and
+`<old hash>` is the hash of the Assembly that was current.
 
 `jr2 up` does these things for the upgrade:
 
@@ -169,9 +176,11 @@ converged — `jr2 run <workflow>` when ready
   and the converge continues: `warning: AGENTS.md: <reason>, so the jr2 block was not updated`.
 - **The typecheck.** It typechecks the Instance against the new Kit. A [Workflow](../reference/glossary.md#workflow)
   that the new version does not accept stops the converge before the cluster changes. See the Rules.
-- **The images.** The nodes pull the [Kit images](../reference/glossary.md#kit-image) at the tag of the new version.
-  `jr2 up` builds the image of the Orchestrator again, because the Kit is in it. A
+- **The images.** The nodes pull the [Kit images](../reference/glossary.md#kit-image) at the tag of the new version, the
+  image of the Orchestrator too. The pod of the Orchestrator starts again on it. A
   [Sandbox Image](../reference/glossary.md#sandbox-image) does not change, because the runtime of jr2 is not in it.
+- **The Assembly.** The Assembly records its Kit version, so the hash changes. `jr2 up` publishes the Assembly after the
+  new Orchestrator runs. Until the publish, the new Orchestrator has no current Assembly, and it starts no run.
 - **The operator.** All the Instances on the cluster share one operator. `jr2 up` upgrades an older operator, so the
   upgrade of one Instance upgrades the operator for each Instance on the cluster. `jr2 up` never downgrades the
   operator. When a different Instance upgraded the operator to a later version, `jr2 up` keeps it:
@@ -179,12 +188,11 @@ converged — `jr2 run <workflow>` when ready
 
 ## What happens to the runs
 
-The new Orchestrator starts, and it continues each run from its snapshot. A run that waits at a
-[Gate](../reference/glossary.md#gate) continues to wait, when its [Machine](../reference/glossary.md#machine) has the
-same shape. A run whose Machine has a different shape after the upgrade does not continue. Its status is `drifted`. The
-new Kit version can change the shape of a Machine that your Workflow composes, such as a
-[Workspace](../reference/glossary.md#workspace), or a shipped Machine of `@jr2/machines`. To keep a run, let it end
-before you converge, or cancel it. See [Machine shape and drift](../concepts/durable-runs.md#machine-shape-and-drift).
+A live run holds the Assembly that it started under, and that Assembly is for the old Kit version. The new Orchestrator
+cannot load it. Thus the publish of the new Assembly marks each live run `drifted`, also a run that waits at a
+[Gate](../reference/glossary.md#gate). `jr2 status <run id>` gives the reason, with the hash of the Assembly and the two
+versions. To keep the result of a run, let it end before you converge, or cancel it. See
+[Machine shape and drift](../concepts/durable-runs.md#machine-shape-and-drift).
 
 A [Sandbox](../reference/glossary.md#sandbox) that runs keeps its pod, with the
 [Harness](../reference/glossary.md#harness) of the old version. `jr2 up` does not replace the pod, because the new pod
@@ -219,6 +227,8 @@ would lose the commits that nobody pushed. A Sandbox that starts after the conve
   the Handoff, and one Kit version for each Instance.
 - [ADR-0072](../reference/decisions/0072-the-docs-ship-inside-the-kit-and-an-instances-agents-md-indexes-them.md): the
   docs in the Kit, and the block in `AGENTS.md`.
+- [ADR-0069](../reference/decisions/0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md): an
+  Assembly names its Kit version, and the Orchestrator refuses any other.
 - [ADR-0030](../reference/decisions/0030-a-snapshot-names-the-machine-it-was-written-under.md): a run whose Machine has
   a different shape.
 - [Mirror the Kit images](mirror-the-kit-images.md)

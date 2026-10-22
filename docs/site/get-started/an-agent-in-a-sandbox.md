@@ -26,10 +26,10 @@ tutorial fixture, `docs/site/tutorial/greet/`. It is a small Node CLI with one b
 
 Make sure that the fork has the release tag of your Kit. `<you>` is your GitHub user name. `<version>` is the
 [Kit version](../reference/glossary.md#kit-version): the version of `@jr2/orchestrator` in `package.json`, such as
-`0.3.0`.
+`0.4.1`.
 
 1. Open `https://github.com/<you>/jr2/tags`.
-2. Find the tag `v<version>`, such as `v0.3.0`.
+2. Find the tag `v<version>`, such as `v0.4.1`.
 
 If the page shows no tags, delete the fork. Fork again with **Copy the main branch only** cleared.
 
