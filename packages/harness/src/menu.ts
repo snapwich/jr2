@@ -352,13 +352,36 @@ export function answerText(answer: PickAnswer | undefined): string {
       return `Its answer: \`${answer.event}\`${from}${payload}.`;
     }
     case "output": {
-      const after = rewrittenPushText(answer.output);
+      const after = [noNewCommitText(answer.output), rewrittenPushText(answer.output)].filter(Boolean).join(" ");
       return `Its answer: the output of \`${answer.actor}\`: ${JSON.stringify(answer.output) ?? "nothing"}.${after ? ` ${after}` : ""}`;
     }
     // The Machine shaped it (ADR-0067): its words, as the workflow wrote them.
     case "answer":
       return `Its answer: ${typeof answer.value === "string" ? answer.value : (JSON.stringify(answer.value) ?? "nothing")}`;
   }
+}
+
+/**
+ * What the Agent reads after a push in which jr2 counted no new commit (ADR-0067, `newCommits: 0`):
+ * jr2 found the published commit on the remote's branch or in the node's Repo cache, its copy of
+ * the remote. The first clause names what jr2 counted, not what the remote holds, because a stale
+ * cache can hold a commit the remote dropped.
+ * `pushed` alone does not say it, and a model that sent a `git commit` that failed and the push in
+ * one answer read `pushed` as its work published. Undefined for every other
+ * output, an older Effector's `pushed` with no count included.
+ */
+export function noNewCommitText(output: unknown): string | undefined {
+  if (!sentNoNewCommit(output)) return undefined;
+  return (
+    `jr2 counted no new commit in this push: it found commit \`${(output as { published: string }).published}\` already on ` +
+    "the remote or in jr2's copy of the remote. A change that you did not commit before the push is not in this push."
+  );
+}
+
+function sentNoNewCommit(output: unknown): boolean {
+  if (typeof output !== "object" || output === null) return false;
+  const o = output as { outcome?: unknown; published?: unknown; newCommits?: unknown };
+  return o.outcome === "pushed" && o.newCommits === 0 && typeof o.published === "string";
 }
 
 /**
@@ -388,8 +411,13 @@ export function rewrittenPushText(output: unknown): string | undefined {
     'amend, rebase or reset them, the next push stops with "diverged".';
   const synced = o.sync === "synced" || o.sync === "already";
   const why = typeof o.syncReason === "string" ? ` (${o.syncReason})` : "";
+  // A push that sent no new commit did not sign or squash now: an earlier push published the commit.
+  const earlier = sentNoNewCommit(output);
   if (o.squashed === "signed" || o.squashed === "unsigned") {
-    const what = `jr2 squashed your commits into one ${o.squashed === "signed" ? "signed " : ""}commit and pushed it.`;
+    const one = `one ${o.squashed === "signed" ? "signed " : ""}commit`;
+    const what = earlier
+      ? `An earlier push squashed your commits into ${one} and pushed it.`
+      : `jr2 squashed your commits into ${one} and pushed it.`;
     if (synced) {
       return (
         `${what} That commit has a new commit id, and jr2 moved your branch to it. Your files, your index and your ` +
@@ -401,16 +429,19 @@ export function rewrittenPushText(output: unknown): string | undefined {
       `the published commit. ${keep}`
     );
   }
+  const signed = earlier
+    ? "An earlier push signed your commits and pushed the signed copies."
+    : "jr2 signed your commits and pushed the signed copies.";
   if (synced) {
     return (
-      "jr2 signed your commits and pushed the signed copies. The signed commits have new commit ids, and jr2 moved " +
-      "your branch to them. Your files, your index and your stash did not change. The old commit ids are in the " +
-      `reflog. Continue your work on your branch. ${keep}`
+      `${signed} The signed commits have new commit ids, and jr2 moved your branch to them. Your files, your index ` +
+      "and your stash did not change. The old commit ids are in the reflog. Continue your work on your branch. " +
+      keep
     );
   }
   return (
-    `jr2 signed your commits and pushed the signed copies. jr2 did not move your branch to them${why}. Continue ` +
-    `your work on your branch: the next push finds the published commits. ${keep}`
+    `${signed} jr2 did not move your branch to them${why}. Continue your work on your branch: the next push finds ` +
+    `the published commits. ${keep}`
   );
 }
 

@@ -190,11 +190,13 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   faithful image of it: the commit's tree, and as parents the commit's own parents as mapped so far. Every commit the
   remote lacks must be one the call signed, or the push is `diverged`. `pushed` carries the published commit, its
   source, what the remote held before, how the new commits were found (`ancestry | pair | cherry`), `unchanged` when the
-  remote already held it, `squashed: signed | unsigned` when the published commit is one squashed commit (absent for
-  signed copies; it names what the published commit is, not what the push's options ask for: a commit the call made is
-  named by its options, and the published tip that an earlier push made, which `pair` or `cherry` maps, by that push's
-  own `squashed`, which its pair carries), and — whenever the published commit is not the Agent's own — the published
-  commits as a bundle for the sync step (`git bundle create` of the published tip, with the Agent's tip as its
+  remote already held it, `newCommits` (how many commits the published commit adds to what jr2 found held, the remote's
+  branch and the Repo cache's refs as the push read them; `0` when jr2 found the published commit already held — the
+  remote's branch or the Repo cache), `squashed: signed | unsigned` when the published commit is one squashed commit
+  (absent for signed copies; it names what the published commit is, not what the push's options ask for: a commit the
+  call made is named by its options, and the published tip that an earlier push made, which `pair` or `cherry` maps, by
+  that push's own `squashed`, which its pair carries), and — whenever the published commit is not the Agent's own — the
+  published commits as a bundle for the sync step (`git bundle create` of the published tip, with the Agent's tip as its
   prerequisite: the new commits, and the trees and blobs git adds beside them, which the Agent's store may already
   hold). A push that publishes nothing new carries one too: when `pair` or `cherry` maps the published tip itself (a
   restore that sends a pinned push again, a push after a sync that did not finish), or the published tip is this
@@ -242,7 +244,25 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   squashed into one commit, named "signed" only when it is — and that jr2 moved its branch to it, or did not and why;
   that its files, index and stash did not change; and that amending, rebasing or resetting the pushed commits makes the
   next push `diverged`. The Harness keys that paragraph on a synced push whose published commit is not the Agent's, and
-  its words on `squashed`.
+  its words on `squashed`. A push in which jr2 counted no new commit (`newCommits: 0`) is still `pushed`, because the
+  push ran and the remote's branch may have moved (a new branch at a commit the remote held on another branch). But
+  `pushed` alone does not tell the Agent that its work did not go out: in a real Haiku 5.5 run, the model sent a
+  `git commit` that failed and the push in one answer, the push published the branch at a commit the remote already
+  held, and the model read `pushed` as its work published. So beside the output the Agent reads that jr2 counted no new
+  commit in this push, that it found the published commit already on the remote or in jr2's copy of the remote, and that
+  a change it did not commit before the push is not in this push. The words name where jr2 looked because the count
+  reads the Repo cache, which fetches without pruning: a commit the remote dropped can stay there, and then a count of 0
+  is not a fact about the remote, which is why the first clause names what jr2 counted. No @model claim reaches
+  `newCommits: 0`, so no measurement has read these words. When the signed-copies or squash paragraph above also
+  applies, it names "an earlier push" as the one that signed or squashed, so the two do not contradict. The Harness keys
+  the sentence on `newCommits: 0` alone, and says nothing with no count. The count is optional on the wire: a live
+  Sandbox keeps the runtime it started with (ADR-0037), so after `jr2 up` its older Effector answers `pushed` with no
+  `newCommits`, and a required field would fault a push that reached the remote. The count's input to
+  `git rev-list --stdin` is revisions only (`^<sha>` for each tip the remote held), never `--not`: git takes an option
+  there only from 2.42, and the Sandbox Effector runs its image's git — the Sandbox Image's, unless the `workspace()`
+  names one — which can be older (Debian bookworm's is 2.39). A distinct outcome (`unchanged`, `up-to-date`) was
+  rejected: every consumer of a push keys on `pushed` (the ledger's pairs, the sync, the Machines' guards), and a push
+  that made a new branch did change the remote.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing that stays in the group outlives it. In the Harness container a descendant
   that leaves the group (`setsid`) is not killed; it holds no credential. A credentialed command's descendant cannot

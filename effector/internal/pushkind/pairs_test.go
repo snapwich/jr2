@@ -287,11 +287,12 @@ func TestASquashSentAgainOnRestoreIsThisPushsOwnCommit(t *testing.T) {
 }
 
 // squashedOnce runs a squash push the remote has not seen: it settles pushed, not unchanged, from
-// the Agent's source, and the squashed commit's one parent is parent (when parent is not "").
+// the Agent's source, with one new commit (the squash), and the squashed commit's one parent is
+// parent (when parent is not "").
 func squashedOnce(t *testing.T, f *fixture, req *wire.StartRequest, source, parent, what string) wire.Output {
 	t.Helper()
 	out := f.runner.Run(context.Background(), req)
-	if out.Outcome != wire.OutcomePushed || out.Push.Source != source || out.Push.Unchanged {
+	if out.Outcome != wire.OutcomePushed || out.Push.Source != source || out.Push.Unchanged || out.Push.NewCommits != 1 {
 		t.Fatalf("%s: %+v %+v", what, out, out.Push)
 	}
 	if parent != "" {
@@ -303,12 +304,12 @@ func squashedOnce(t *testing.T, f *fixture, req *wire.StartRequest, source, pare
 }
 
 // sentAgain sends req again, as a restore does after the Effector lost the Effect: the remote's tip
-// is the push's own commit, so it settles pushed, unchanged, as first did, with the sync bundle,
-// and the remote's branch does not move.
+// is the push's own commit, so it settles pushed, unchanged, with no new commit, as first did, with
+// the sync bundle, and the remote's branch does not move.
 func sentAgain(t *testing.T, f *fixture, req *wire.StartRequest, first wire.Output, what string) wire.Output {
 	t.Helper()
 	again := f.runner.Run(context.Background(), req)
-	if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged ||
+	if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged || again.Push.NewCommits != 0 ||
 		again.Push.Published != first.Push.Published || again.Push.Source != first.Push.Source {
 		t.Fatalf("%s: %+v %+v", what, again, again.Push)
 	}

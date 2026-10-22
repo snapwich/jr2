@@ -10,10 +10,10 @@
 // directory.
 //
 // Outcomes, every one output: `pushed` (the published commit, its source — the Agent's commit —
-// and what the remote held before), `rejected` (a stage — fetch, import, sign, push — and git's
-// words), `diverged` (signing: the published commit is not in the Agent's history, and no
-// fallback pairs it; nothing was pushed), `unknown` (the push may have reached the remote, and no
-// answer came).
+// what the remote held before, and how many new commits it sent), `rejected` (a stage — fetch,
+// import, sign, push — and git's words), `diverged` (signing: the published commit is not in the
+// Agent's history, and no fallback pairs it; nothing was pushed), `unknown` (the push may have
+// reached the remote, and no answer came).
 //
 // Signed: the new commits are found by ancestry — the published tip must be an ancestor of the
 // Agent's tip, which the sync step makes true after each push that publishes a commit not the
@@ -46,6 +46,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -226,11 +227,50 @@ func (c *call) run(ctx context.Context) wire.Output {
 			}
 		}
 	}
+	// What the published commit adds to what jr2 found held, counted before the push — the remote's
+	// branch and the Repo cache's refs: 0 says jr2 counted no new commit (ADR-0067) — a branch made
+	// at a commit held there, or one that already held it. A stale cache can hold a commit the
+	// remote dropped, so 0 is a fact about what jr2 counted, not about the remote alone. The Agent
+	// reads it in the answer, so a commit that failed before the push is not taken for published work.
+	n, out := c.newCommits(ctx, res.Published, have)
+	if out != nil {
+		return *out
+	}
+	res.NewCommits = n
 	if res.Published == pub {
 		res.Unchanged = true
 		return wire.Output{Outcome: wire.OutcomePushed, Push: &res}
 	}
 	return c.push(ctx, res)
+}
+
+// newCommits counts the commits reachable from published and from none of held: the remote's
+// branch and the Repo cache's refs. The tips go on stdin, so a cache with many refs is no argv.
+func (c *call) newCommits(ctx context.Context, published string, held []string) (int, *wire.Output) {
+	raw, err := c.repo.Git(ctx, strings.NewReader(revListInput(published, held)), "rev-list", "--count", "--stdin")
+	if err != nil {
+		out := rejected("push", "the new commits could not be counted", tail(stderrOf(err)))
+		return 0, &out
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		out := rejected("push", "the new commits could not be counted", strings.TrimSpace(string(raw)))
+		return 0, &out
+	}
+	return n, nil
+}
+
+// revListInput is rev-list's stdin for newCommits: the published commit, then each held tip as a
+// `^<sha>` line. Never a `--not` line: git takes an option on stdin only from 2.42, and the
+// Sandbox Image's git can be older (Debian bookworm has 2.39: "options not supported in --stdin
+// mode"). A `^` line is a revision, which every git takes there, a tag of a tree or blob included.
+func revListInput(published string, held []string) string {
+	var b strings.Builder
+	b.WriteString(published + "\n")
+	for _, h := range held {
+		b.WriteString("^" + h + "\n")
+	}
+	return b.String()
 }
 
 // credential is the env and the protocols of this push's git calls: a token's file for the

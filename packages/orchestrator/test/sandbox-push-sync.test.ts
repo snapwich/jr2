@@ -117,7 +117,7 @@ test("two Repo Slots: each push's pair and its sync re-run are its own slot's, n
   // app's push; its sync answers busy.
   await waitFor(() => fake.starts.length === 1);
   syncs.answers.push({ sync: "busy", reason: "a rebase of your branch is in progress" });
-  fake.settle({ outcome: "pushed", published: B, source: A, via: "ancestry", bundle: "QVBQ" });
+  fake.settle({ outcome: "pushed", published: B, source: A, newCommits: 1, via: "ancestry", bundle: "QVBQ" });
   await waitFor(() => ctxOf(rig.host, rig.runId)?.out0 !== undefined);
   rig.host.sendToGate(rig.runId, "g0", { type: "next" });
 
@@ -131,7 +131,7 @@ test("two Repo Slots: each push's pair and its sync re-run are its own slot's, n
     ["/work/app/jr2-run-1"],
     "nothing ran in lib's Worktree before lib's push",
   );
-  fake.settle({ outcome: "pushed", published: C, source: C });
+  fake.settle({ outcome: "pushed", published: C, source: C, newCommits: 1 });
   await waitFor(() => ctxOf(rig.host, rig.runId)?.out1 !== undefined);
   rig.host.sendToGate(rig.runId, "g1", { type: "next" });
 
@@ -160,7 +160,7 @@ test("a sync that never unbundled runs again before the next push with the bundl
   const rig = await run(pushes({ app: "/work/app/jr2-run-1" }, { push }, ["push", "push"]));
   await waitFor(() => fake.starts.length === 1);
   syncs.answers.push({ sync: "not-synced", reason: "the Harness could not be reached: ECONNREFUSED" });
-  fake.settle({ outcome: "pushed", published: B, source: A, via: "ancestry", bundle: "QlVORExF" });
+  fake.settle({ outcome: "pushed", published: B, source: A, newCommits: 1, via: "ancestry", bundle: "QlVORExF" });
   await waitFor(() => ctxOf(rig.host, rig.runId)?.out0 !== undefined);
   // The save that carries the push's transition is on disk; the row still holds the bundle.
   await until(async () => {
@@ -175,7 +175,7 @@ test("a sync that never unbundled runs again before the next push with the bundl
   await waitFor(() => fake.starts.length === 2);
   assert.equal(syncs.calls.length, 2);
   assert.equal(syncs.calls[1]!.bundle, "QlVORExF", "the re-run carries the bundle");
-  fake.settle({ outcome: "pushed", published: C, source: C });
+  fake.settle({ outcome: "pushed", published: C, source: C, newCommits: 1 });
   await waitFor(() => ctxOf(rig.host, rig.runId)?.out1 !== undefined);
   rig.host.sendToGate(rig.runId, "g1", { type: "next" });
   await waitFor(() => rig.host.status(rig.runId)?.value === "done");
@@ -242,7 +242,14 @@ test("only the newest push of a Repo Slot keeps its bundle: three pushes whose s
       { sync: "not-synced", reason: "the Harness could not be reached: ECONNREFUSED" },
       { sync: "not-synced", reason: "the Harness could not be reached: ECONNREFUSED" },
     ];
-    fake.settle({ outcome: "pushed", published: tips[i]!, source: A, via: "ancestry", bundle: `QlVORExF${i}` });
+    fake.settle({
+      outcome: "pushed",
+      published: tips[i]!,
+      source: A,
+      newCommits: 1,
+      via: "ancestry",
+      bundle: `QlVORExF${i}`,
+    });
     await waitFor(() => ctxOf(rig.host, rig.runId)?.[`out${i}`] !== undefined);
     rig.host.sendToGate(rig.runId, `g${i}`, { type: "next" });
   }
@@ -301,6 +308,7 @@ test("a signed push that published nothing new (the pair mapped the published ti
       previous: B,
       via: "pair",
       unchanged: true,
+      newCommits: 0,
       ...(bundle ? { bundle } : {}),
     });
     await waitFor(() => ctxOf(rig.host, rig.runId)?.out0 !== undefined);

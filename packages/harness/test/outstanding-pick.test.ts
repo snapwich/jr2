@@ -12,6 +12,7 @@ import { noticeText } from "../src/briefing.ts";
 import type { EngineMessage } from "../src/engine.ts";
 import {
   answerText,
+  noNewCommitText,
   rewrittenPushText,
   cutPickResult,
   outstandingRefusal,
@@ -269,11 +270,17 @@ test("an Effector's outcome reads as its output, decoded off the wire as the Orc
       'have reached the host, and no answer came"}.',
     "response.settled-pushed.json":
       'Its answer: the output of `comment`: {"outcome":"pushed","published":"2222222222222222222222222222222222222222",' +
-      '"source":"1111111111111111111111111111111111111111","via":"ancestry"}.',
+      '"source":"1111111111111111111111111111111111111111","via":"ancestry","newCommits":1}.',
     "response.settled-pushed-squashed.json":
       'Its answer: the output of `comment`: {"outcome":"pushed","published":"3333333333333333333333333333333333333333",' +
       '"source":"1111111111111111111111111111111111111111","previous":"2222222222222222222222222222222222222222",' +
-      '"via":"ancestry","squashed":"unsigned"}.',
+      '"via":"ancestry","newCommits":1,"squashed":"unsigned"}.',
+    // A push that sent no new commit says so in words (ADR-0067): `pushed` alone does not.
+    "response.settled-pushed-no-new-commit.json":
+      'Its answer: the output of `comment`: {"outcome":"pushed","published":"1111111111111111111111111111111111111111",' +
+      '"source":"1111111111111111111111111111111111111111","newCommits":0}. jr2 counted no new commit in this ' +
+      "push: it found commit `1111111111111111111111111111111111111111` already on the remote or in jr2's copy of the remote. A " +
+      "change that you did not commit before the push is not in this push.",
     "response.settled-rejected.json":
       'Its answer: the output of `comment`: {"outcome":"rejected","stage":"push","reason":"non-fast-forward: the ' +
       'remote\'s branch moved","detail":"! [rejected] (fetch first)"}.',
@@ -328,6 +335,26 @@ test("after a push whose published commit is not the Agent's own, the Agent read
   );
   assert.equal(rewrittenPushText({ ...pushed, source: pushed.published, sync: "skipped" }), undefined, "its own");
   assert.equal(rewrittenPushText({ outcome: "diverged", reason: "x" }), undefined);
+
+  // A signed push that sent no new commit (a restore, a pair that mapped the published tip): the fact
+  // that it sent nothing first, and the paragraph names the earlier push that signed, so the two agree.
+  const restored = answerText({
+    kind: "output",
+    actor: "publish",
+    output: { ...pushed, newCommits: 0, unchanged: true, sync: "synced" },
+  });
+  assert.match(
+    restored,
+    /\}\. jr2 counted no new commit in this push: it found commit `2{40}` already on the remote or in jr2's copy of the remote\. .* An earlier push signed your commits and pushed the signed copies\. The signed commits have new commit ids/,
+  );
+  assert.doesNotMatch(restored, /jr2 signed your commits/);
+  assert.match(
+    rewrittenPushText({ ...pushed, squashed: "signed", newCommits: 0, sync: "synced" }) ?? "",
+    /^An earlier push squashed your commits into one signed commit and pushed it\./,
+  );
+  assert.equal(noNewCommitText({ ...pushed, newCommits: 1 }), undefined, "a new commit went out");
+  assert.equal(noNewCommitText({ ...pushed }), undefined, "no count, no claim");
+  assert.equal(noNewCommitText({ outcome: "diverged", published: "2".repeat(40), newCommits: 0 }), undefined);
 
   // One squashed commit: the paragraph names it, and says "signed" only of a signed one.
   const keep =

@@ -8,6 +8,7 @@
     "source": "1111111111111111111111111111111111111111",
     "previous": "2222222222222222222222222222222222222222",
     "via": "ancestry",
+    "newCommits": 1,
     "squashed": "unsigned",
     "bundle": "IyB2MyBnaXQgYnVuZGxl"
   }

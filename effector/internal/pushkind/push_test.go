@@ -314,8 +314,34 @@ func TestAPushWhoseRemoteAlreadyHoldsItIsUnchanged(t *testing.T) {
 	first := f.push(true, nil)
 	pairs := []wire.Pair{{Published: first.Push.Published, Source: first.Push.Source}}
 	again := f.push(true, pairs)
-	if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged || again.Push.Published != first.Push.Published {
+	if first.Push.NewCommits != 1 {
+		t.Fatalf("the first push: got %+v", first.Push)
+	}
+	if again.Outcome != wire.OutcomePushed || !again.Push.Unchanged || again.Push.Published != first.Push.Published ||
+		again.Push.NewCommits != 0 {
 		t.Fatalf("got %+v %+v", again, again.Push)
+	}
+}
+
+// The answer says when no new commit went out (ADR-0067): the Agent's commit failed, and the push
+// that ran after it published the branch at the commit the remote's main already held.
+func TestAPushOfACommitTheRemoteHoldsSaysNoNewCommitWentOut(t *testing.T) {
+	f := newFixture(t, "")
+	main := f.pod.RemoteTip("refs/heads/main")
+	out := f.push(false, nil)
+	if out.Outcome != wire.OutcomePushed || out.Push.Published != main || out.Push.NewCommits != 0 {
+		t.Fatalf("got %+v %+v", out, out.Push)
+	}
+	if out.Push.Unchanged || remoteRef(f) != main {
+		t.Fatalf("the branch is new on the remote, at main's tip: got %+v, remote %q", out.Push, remoteRef(f))
+	}
+	f.pod.Commit("one", map[string]string{"a.txt": "a\n"})
+	f.pod.Commit("two", map[string]string{"b.txt": "b\n"})
+	if out = f.push(false, nil); out.Outcome != wire.OutcomePushed || out.Push.NewCommits != 2 {
+		t.Fatalf("two commits: got %+v %+v", out, out.Push)
+	}
+	if out = f.push(false, nil); out.Outcome != wire.OutcomePushed || !out.Push.Unchanged || out.Push.NewCommits != 0 {
+		t.Fatalf("again: got %+v %+v", out, out.Push)
 	}
 }
 
@@ -537,5 +563,19 @@ func TestAnSSHPushThatCannotConnectNamesSSHsOwnLine(t *testing.T) {
 	if !strings.Contains(out.Push.Detail, "Could not read from remote repository") ||
 		!strings.Contains(out.Push.Detail, "ssh:\n") {
 		t.Fatalf("the detail does not keep git's and ssh's words: %q", out.Push.Detail)
+	}
+}
+
+// The count's stdin holds revisions only, never an option: git takes an option on stdin only from
+// 2.42, and a Sandbox Image's git can be older (Debian bookworm's 2.39 refuses "--not" there).
+func TestTheNewCommitsCountGivesRevListNoOptionOnStdin(t *testing.T) {
+	in := revListInput("a1", []string{"b2", "c3"})
+	if in != "a1\n^b2\n^c3\n" {
+		t.Fatalf("got %q", in)
+	}
+	for line := range strings.SplitSeq(strings.TrimSuffix(in, "\n"), "\n") {
+		if strings.HasPrefix(line, "-") {
+			t.Fatalf("an option on stdin: %q", line)
+		}
 	}
 }

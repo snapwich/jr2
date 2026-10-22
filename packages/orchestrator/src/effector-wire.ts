@@ -243,12 +243,15 @@ export type HttpOutput = z.infer<typeof HttpOutputShape>;
 /**
  * A `push` Effect's output (ADR-0067). `pushed`: the published commit, its source (the Agent's
  * commit), what the remote held before, how the new commits were found after a signed push
- * (`ancestry | pair | cherry | force`), `unchanged` when the remote held it already, `squashed`
- * when the published commit is one squashed commit (`signed | unsigned`; absent for signed
- * copies; what the published commit is, an earlier push's included, never only this push's
- * options), and — when the published commit is not the Agent's own — the published commits as a
- * bundle for the sync. `rejected`: a stage and git's words. `diverged`: the
- * published commit is not in the Agent's history and nothing paired it; nothing was pushed.
+ * (`ancestry | pair | cherry | force`), `unchanged` when the remote held it already, `newCommits`
+ * (how many commits the published commit adds to what jr2 found held, the remote's branch and the
+ * Repo cache; 0 when jr2 found the published commit already held, which the Agent reads in words,
+ * menu.ts), `squashed` when the published
+ * commit is one squashed commit (`signed | unsigned`; absent for signed copies; what the published
+ * commit is, an earlier push's included, never only this push's options), and — when the published
+ * commit is not the Agent's own — the published commits as a bundle for the sync. `rejected`: a
+ * stage and git's words. `diverged`: the published commit is not in the Agent's history and
+ * nothing paired it; nothing was pushed.
  */
 export const PushOutputShape = z.union([
   z.strictObject({
@@ -258,6 +261,9 @@ export const PushOutputShape = z.union([
     previous: z.string().optional(),
     via: z.string().optional(),
     unchanged: z.boolean().optional(),
+    // Optional: a live Sandbox keeps the runtime it started with (ADR-0037), so its older Effector
+    // sends no count after `jr2 up`. With no count the Harness makes no claim (menu.ts).
+    newCommits: z.number().int().nonnegative().optional(),
     squashed: z.enum(["signed", "unsigned"]).optional(),
     bundle: z.string().optional(),
   }),

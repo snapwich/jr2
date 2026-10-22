@@ -113,6 +113,7 @@ const pushed = (published: string) => ({
   published,
   source: "a".repeat(40),
   via: "ancestry",
+  newCommits: 1,
   bundle: "QlVORExF",
 });
 
@@ -174,7 +175,7 @@ test("an unsigned push is sync `skipped`, and no sync is asked", async () => {
   const syncs = new FakeSync();
   const rig = await started(pushWith(port(fake), {}, syncs.factory) as AnyEffect);
   await waitFor(() => fake.starts.length === 1);
-  fake.settle({ outcome: "pushed", published: "a".repeat(40), source: "a".repeat(40) });
+  fake.settle({ outcome: "pushed", published: "a".repeat(40), source: "a".repeat(40), newCommits: 1 });
   await waitFor(() => rig.host.status(rig.runId)?.value === "done");
   const result = (rig.host.status(rig.runId)?.context as Ctx).result as Record<string, unknown>;
   assert.equal(result.sync, "skipped");

@@ -15,6 +15,7 @@ import {
   EffectorNotSent,
   EffectorRefused,
   EffectStateShape,
+  PushOutputShape,
   RefusalShape,
   requestMac,
   StartRequestShape,
@@ -391,4 +392,10 @@ test("an answer that is not the Effector's signed answer is forged; a 400 is a r
     createEffectorClient({ key: EFFECTOR_KEY, transport: refusing }).start("e1", req, signal),
     EffectorRefused,
   );
+});
+
+test("a `pushed` with no `newCommits` parses: a live Sandbox's older Effector sends none after `jr2 up` (ADR-0037, ADR-0067)", () => {
+  const old = { outcome: "pushed", published: "2".repeat(40), source: "1".repeat(40) };
+  assert.deepEqual(PushOutputShape.parse(old), old);
+  assert.equal(PushOutputShape.safeParse({ ...old, newCommits: -1 }).success, false);
 });

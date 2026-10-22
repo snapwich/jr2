@@ -2854,6 +2854,7 @@ type PushOut = {
   published?: string;
   source?: string;
   via?: string;
+  newCommits?: number;
   sync?: string;
   syncReason?: string;
   reason?: string;
@@ -2872,6 +2873,8 @@ Then(
     const first = run.first;
     assert.equal(first?.outcome, "pushed", JSON.stringify(run));
     assert.ok(first.published && first.source && first.published !== first.source, "a signed copy, a new id");
+    // Counted against the remote's branch and the node's Repo cache (ADR-0067): the signed copy is new.
+    assert.ok((first.newCommits ?? 0) >= 1, `the push says a new commit went out: ${JSON.stringify(first)}`);
     assert.equal(await pushRemoteTip(`pushed-${this.marker}`), first.published, "the remote holds the signed commit");
     const verified = await verifyOnPushRemote(first.published);
     assert.ok(verified.verified, `the commit does not verify with the allowed signer: ${verified.out}`);
