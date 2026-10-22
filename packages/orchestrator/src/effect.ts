@@ -370,14 +370,22 @@ export type Unknown = { outcome: "unknown"; reason: string };
  */
 export type CommandOutput = (ExecOutcome & { dirty?: boolean }) | Unknown;
 
+// Reach is output, as an http Effect's is (ADR-0067): a body a model wrote can be fixed through
+// the Chain, so a refusal is output too.
 /**
- * A `dispatch` Effect's output (ADR-0071). Reach is output, as an http Effect's is (ADR-0067):
- * `started` — the Orchestrator accepted the run; `settled` — with `wait`, the run ended (`status` in
- * the store's own words, `output` the callee Machine's), or the wait's bound ran out with the run
- * still `live`; `refused` — the door refused the start (400 bad input, 404 no such Workflow, 409 an
- * unrunnable named Chart, 422 a Chart the door refuses), its report the door's own lines, so a body
- * a model wrote can be fixed through the Chain; `unreachable` — the foreign target never answered,
- * nothing started; `unknown`.
+ * The output of a `dispatch` Effect. Route on `outcome`:
+ *
+ * - `started`: the Orchestrator accepted the new run. `run` is its id.
+ * - `settled`: with `wait`, the new run ended. `status` is `done`, `error`, `cancelled`, `lost` or
+ *   `drifted`, and `output` is the output of its Machine. `status` is `live` when the timeout came
+ *   first, and the run continues.
+ * - `refused`: the Orchestrator started no run. `status` is the HTTP status: 400 for an input that
+ *   the Workflow does not take, 404 for a Workflow that it does not have, 409 for a named Chart that
+ *   cannot run now, 422 for a Chart that it refuses. `report` holds the lines of the refusal.
+ * - `unreachable`: the Orchestrator of the target did not answer. No run started.
+ * - `unknown`: jr2 cannot tell if a run started.
+ *
+ * @see docs/concepts/effects.md
  */
 export type DispatchOutput =
   | { outcome: "started"; run: string }

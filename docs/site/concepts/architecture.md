@@ -8,10 +8,11 @@ Most parts of an [Instance](../reference/glossary.md#instance) run in one Kubern
 [Harness](../reference/glossary.md#harness) runs each [Agent](../reference/glossary.md#agent)'s
 [Turn](../reference/glossary.md#turn). A [Custodian](../reference/glossary.md#custodian) holds the credentials of a
 Harness pod. An [Effector](../reference/glossary.md#effector) runs each `http` and `push`
-[Effect](../reference/glossary.md#effect), and each `command` that names an
-[Effect secret](../reference/glossary.md#effect-secret). The operator makes the pod of each
-[Sandbox](../reference/glossary.md#sandbox). One operator serves each cluster. The Repo cache keeps a copy of each
-[Repo](../reference/glossary.md#repo) on each node that needs it. This page tells where each part runs and what it does.
+[Effect](../reference/glossary.md#effect), each `command` that names an
+[Effect secret](../reference/glossary.md#effect-secret), and each `dispatch` to a different Orchestrator. The operator
+makes the pod of each [Sandbox](../reference/glossary.md#sandbox). One operator serves each cluster. The Repo cache
+keeps a copy of each [Repo](../reference/glossary.md#repo) on each node that needs it. This page tells where each part
+runs and what it does.
 
 ## Why the parts are separate
 
@@ -105,7 +106,8 @@ The Orchestrator does these things:
 - It sends each Turn to a Harness, and judges each pick that comes back.
 - It writes a Sandbox resource when a run enters a Workspace. Then it watches the Sandbox resource until the Workspace
   ends.
-- It sends each Effect to the place where it runs.
+- It sends each Effect to the place where it runs. It runs a `dispatch` with no target itself: the Effect starts a run
+  of a Workflow of the same Instance.
 
 The Orchestrator does no work of an Agent. It runs no model and no Working tools. That work runs in the pods that the
 cluster places.
@@ -150,15 +152,17 @@ how the Custodian holds a credential.
 
 ## The Effector
 
-The Effector runs each `http` and `push` Effect, and each `command` that names an Effect secret. Thus a credential that
-an Effect uses stays out of the Harness container. The Effector is jr2's own program, and it runs in a container in
-which the Agent executes nothing. [Effects](effects.md) tells which Effect runs where. It has two placements:
+The Effector runs each `http` and `push` Effect, each `command` that names an Effect secret, and each `dispatch` that
+names a target. Thus a credential that an Effect uses stays out of the Harness container. The Effector is jr2's own
+program, and it runs in a container in which the Agent executes nothing. [Effects](effects.md) tells which Effect runs
+where. It has two placements:
 
 - **The Sandbox Effector** is a container in a Sandbox pod, named `effector`. It mounts the Worktree read-only. It runs
   a `push`, an `http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is
   the Sandbox Image, unless the `workspace()` names a different image.
 - **The Instance Effector** is one pod for each Instance, `jr2-instance-effector`. It runs each `http` Effect that reads
-  no Worktree file. It runs in the `jr2-harness` Kit image.
+  no Worktree file, and each `dispatch` that starts a run on a different Orchestrator. It holds the Instance token of
+  that Orchestrator as an Effect secret. It runs in the `jr2-harness` Kit image.
 
 Each placement exists only when a Machine of the Instance puts an Effect there. A `command` that names no Effect secret
 does not use an Effector. It runs in the Harness container of its Sandbox, with the same tools and access as the Agent.

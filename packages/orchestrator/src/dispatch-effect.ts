@@ -67,18 +67,20 @@ export { DISPATCHED_BY_HEADER, type DispatchedBy, type DispatchStart } from "./r
 
 // --- The definition ------------------------------------------------------------------------------
 
-/** A `dispatch` Effect's definition (ADR-0071). Every knob is the slot's. */
+/** The definition of a `dispatch` Effect (ADR-0071). Every field is optional. */
 export type DispatchDefinition<S extends z.ZodObject | undefined = undefined> = {
-  /** The author's claim about the callee's door: it types the invoke's mapper and `fromPick`, and
-   * is what `jr2 up` compares with the door. Absent, the door alone checks the body. */
+  /** A zod schema of the run input of the Workflow. It types the `input` of the invoke and
+   * `fromPick`, and `jr2 up` compares it with the input that the Workflow declares. Without it,
+   * only the Workflow checks the input. */
   input?: S;
-  /** Settle when the run ends (`settled`), not when it is accepted (`started`). Default false. */
+  /** `true`: end when the new run ends (`settled`). `false`, the default: end when the
+   * Orchestrator accepts the run (`started`). */
   wait?: boolean;
-  /** The bound on the wait — default 10m — or, without `wait`, on the start alone — default 30s. */
+  /** How long the Effect waits: by default 30s for the start, and 10m with `wait`. */
   timeout?: Duration;
-  /** Another Orchestrator: its origin and the secret that holds its Instance token. Or `open`: the
-   * composer binds both, once, with `customize(m, { effects: { <slot>: { target } } })`. Absent:
-   * this Orchestrator, in-process. */
+  /** A different Orchestrator: `url` is its origin, and `token` is the secret that holds its
+   * Instance token. Or `open`, which the composer binds with `customize(<import>, { effects: {
+   * <slot>: { target: { url, token } } } })`. Without it, the run starts in this Orchestrator. */
   target?: { url: string; token: NamedSecret } | typeof open;
 };
 
@@ -840,12 +842,93 @@ function parseDuration(workflow: string, d: Duration): number {
   return d.endsWith("h") ? n * 3_600_000 : d.endsWith("m") ? n * 60_000 : n * 1000;
 }
 
+// THE authoring surface for a `dispatch` Effect (ADR-0071). With no target it starts the run in
+// this Orchestrator, through the run host; with one it runs in the Instance Effector, which
+// `jr2 up` converges because this definition is placed there.
 /**
- * THE authoring surface for a `dispatch` Effect (ADR-0071): `actors: { review: dispatch("review",
- * { input, wait, target }) }`, invoked as `src: "review"`. With no target it starts the run in this
- * Orchestrator, through the run host; with one it runs in the Instance Effector, which `jr2 up`
- * converges because this definition is placed there. Every outcome is output:
- * `started | settled | refused | unreachable | unknown`.
+ * Make a `dispatch` Effect: it starts a run of a Workflow. Put it in `actors`, and invoke it from a
+ * state: `actors: { triage: dispatch("triage", { input }) }`. The input of the invoke is the run
+ * input of the new run, as `jr2 run --input` gives it.
+ *
+ * The new run is a run of its own, with its own id, its own Workspaces and its own `CANCEL`. Its
+ * record names this run as the run that dispatched it. A `CANCEL` of this run does not end it.
+ *
+ * With no `target`, the run starts in this Orchestrator, under the current Assembly. With
+ * `target: { url, token }`, it starts on the Orchestrator at `url`, and the Effect runs in the
+ * Instance Effector. Every outcome is output ({@link DispatchOutput}): `started`, `settled`,
+ * `refused`, `unreachable` or `unknown`. Each start carries a key, so a start that jr2 sends again
+ * after a restart starts no second run.
+ *
+ * It refuses:
+ * - a name that is not a Workflow name: ``dispatch("<name>"): the Workflow is named as `jr2 run`
+ *   names it — a Machine's filename stem ("review"), or "<wrapper>/<name>" for a named Chart:
+ *   lowercase letters, digits and "-" (ADR-0071)``
+ * - a `wait` that is not a boolean: `dispatch("<name>", { wait }): wait is true or false — a slot
+ *   that needs both declares two`
+ * - an `input` that is not a `z.object()`: `dispatch("<name>", { input }): the input is a
+ *   z.object(...) — the run's body is a JSON object (ADR-0071)`
+ * - a `timeout` that is not a duration: `dispatch("<name>"): timeout "<timeout>" is not a positive
+ *   duration (like "30s", "10m", "1h")`
+ * - a `target` url that is not an origin: `dispatch("<name>", { target }): "<url>" is not an
+ *   origin — write the scheme and the host, with a port if it is not the scheme's, and no path,
+ *   query or userinfo`, then two examples
+ * - `secret(open)` in a target: `dispatch("<name>", { target }): secret(open) in a target — the
+ *   target is the Open part, not its secret`, then the fix
+ *
+ * `jr2 up` refuses a dispatch with no target whose Workflow the Assembly does not have, and an
+ * `input` schema that the input of that Workflow does not take.
+ *
+ * @param workflow - The Workflow to start, as `jr2 run` names it: `"triage"`, or
+ *   `"<wrapper>/<name>"` for a named Chart.
+ * @param def - Optional. Each field tells what it does.
+ * @returns An Effect, for `actors`.
+ *
+ * @example
+ * ```ts
+ * import { assign } from "xstate";
+ * import { z } from "zod";
+ * import { defineEvent, dispatch, jr2Setup } from "@jr2/orchestrator";
+ *
+ * const triageInput = z.object({ request: z.string() });
+ *
+ * const report = defineEvent({
+ *   name: "report",
+ *   description: "Report a request. A run of triage starts for it.",
+ *   input: triageInput,
+ * });
+ *
+ * export const machine = jr2Setup({
+ *   types: {} as { context: { request: string } },
+ *   events: [report],
+ *   // `wait: true`: the Effect ends when the run of triage ends.
+ *   actors: { triage: dispatch("triage", { input: triageInput, wait: true }) },
+ * }).createMachine({
+ *   id: "intake",
+ *   context: { request: "" },
+ *   initial: "listening",
+ *   states: {
+ *     listening: {
+ *       invoke: { src: "gate" },
+ *       on: { report: { target: "starting", actions: assign({ request: ({ event }) => event.request }) } },
+ *     },
+ *     starting: {
+ *       invoke: {
+ *         src: "triage",
+ *         input: ({ context }) => ({ request: context.request }),
+ *         onDone: [
+ *           { guard: ({ event }) => event.output.outcome === "settled", target: "done" },
+ *           { target: "listening" },
+ *         ],
+ *       },
+ *     },
+ *     done: { type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @see docs/guides/start-a-run-from-a-run.md
+ * @see docs/concepts/effects.md
+ * @see docs/reference/decisions/0071-a-run-starts-a-run-through-a-dispatch-effect.md
  */
 export function dispatch<
   S extends z.ZodObject | undefined = undefined,

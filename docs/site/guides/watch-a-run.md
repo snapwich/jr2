@@ -56,7 +56,9 @@ jr2 runs
 
 `jr2 runs` prints a JSON array of the runs that did not end. To read a run that ended, use `jr2 status <run id>`. A run
 with a [Workspace](../reference/glossary.md#workspace) that waits for capacity also has `placing`: the path of each such
-Workspace in the run. `jr2 status` tells why it waits.
+Workspace in the run. `jr2 status` tells why it waits. A run that a `dispatch` [Effect](../reference/glossary.md#effect)
+started has `dispatchedBy` after its id: the run that started it, the slot of the Effect, and its `depth` in the chain.
+[Start a run from a run](start-a-run-from-a-run.md) shows it.
 
 ## Read the status of a run
 
@@ -275,8 +277,8 @@ kubectl -n <namespace> logs <sandbox> -c harness > <file>
 ::: warning
 
 A person who can read the pod logs of the namespace can read each conversation, and the answers that jr2 gives to the
-picks. An answer can hold the output of a [`command`](../reference/authoring-surface.md#command)
-[Effect](../reference/glossary.md#effect). On a shared cluster, decide who can read the pod logs.
+picks. An answer can hold the output of a [`command`](../reference/authoring-surface.md#command) Effect. On a shared
+cluster, decide who can read the pod logs.
 
 :::
 

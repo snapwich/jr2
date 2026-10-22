@@ -35,6 +35,9 @@ sent CANCEL to <run id>
   [Orchestrator](../reference/glossary.md#orchestrator) restarts.
 - The [Turn](../reference/glossary.md#turn) of each [Agent](../reference/glossary.md#agent) in the run ends.
 - The Orchestrator deletes each Sandbox of the run. When a Sandbox goes, a commit that you did not push goes with it.
+- A run that a `dispatch` [Effect](../reference/glossary.md#effect) of this run started does not end. It is a run of its
+  own. Cancel it with its own run id. `jr2 status <run id>` lists it in a `dispatched:` line. See
+  [Start a run from a run](start-a-run-from-a-run.md).
 
 A `jr2 run` that is attached to the run prints `→ cancelled`, then the state that the run was in. Then it prints the
 status of the run as JSON and exits with the code 0.

@@ -1,11 +1,12 @@
 ---
 title: Effects
-description: How a Machine runs a command, calls a URL or pushes a branch, and why each Effect runs at most once.
+description: How a Machine runs a command, calls a URL, pushes a branch or starts a run, at most once.
 ---
 
 An [Effect](../reference/glossary.md#effect) is work that a [Machine](../reference/glossary.md#machine) does outside
-itself. jr2 has three kinds: `command` runs a program in the [Workspace](../reference/glossary.md#workspace), `http`
-calls a URL, and `push` pushes the Workspace's branch. You write an Effect as an actor slot, beside the
+itself. jr2 has four kinds: `command` runs a program in the [Workspace](../reference/glossary.md#workspace), `http`
+calls a URL, `push` pushes the Workspace's branch, and `dispatch` starts a run of a
+[Workflow](../reference/glossary.md#workflow). You write an Effect as an actor slot, beside the
 [Agents](../reference/glossary.md#agent) of the Machine.
 
 ## Why Effects exist
@@ -22,9 +23,9 @@ two times. A plain xstate promise has no such record.
 ## An Effect is an actor slot
 
 Put an Effect under `actors` in [`jr2Setup`](../reference/authoring-surface.md#jr2setup). Invoke it by its key from a
-state. The state's `onDone` gets the output of the Effect. This example is a
-[Workflow](../reference/glossary.md#workflow) with a Workspace. An Agent fixes the code, and it can ask for a test run
-with the pick `run_tests`. When the Agent picks `finished`, the Machine pushes the branch:
+state. The state's `onDone` gets the output of the Effect. This example is a Workflow with a Workspace. An Agent fixes
+the code, and it can ask for a test run with the pick `run_tests`. When the Agent picks `finished`, the Machine pushes
+the branch:
 
 ::: tabs key:provider
 
@@ -58,7 +59,7 @@ effects: workflow "<name>" — what it runs outside itself (ADR-0067)
 
 `<name>` is the name of the Workflow.
 
-## The three kinds
+## The four kinds
 
 ### `command`
 
@@ -118,6 +119,30 @@ With `pin`, the input gives `{ sha }`. With `squash`, it gives `{ message }`.
 After a signed or a squashed push, the commits on the remote are not the Agent's own commits. Then jr2 moves the Agent's
 branch to the published commits. The Agent's files, index and stash do not change. The default timeout is 5 minutes.
 
+### `dispatch`
+
+[`dispatch`](../reference/authoring-surface.md#dispatch) starts a run of a Workflow. The new run is a run of its own: it
+has its own line in [`jr2 runs`](../reference/cli.md#runs), its own Workspaces and its own `CANCEL`. Its record names
+the run that started it: it is **dispatched by** that run. Use `dispatch` when a Machine waits for work, for example at
+a [Gate](../reference/glossary.md#gate) that a webhook answers, and each item of work needs a run of a Workflow that you
+have. To use a Machine as a part of one run, invoke it in the run instead (see [Composition](composition.md)).
+
+- The name of the Workflow is a constant of the definition, as `jr2 run` writes it: `"triage"`, or `"<wrapper>/<name>"`
+  for a named [Chart](../reference/glossary.md#chart). An Agent cannot choose it.
+- The `input` of the invoke is the run input of the new run: the same JSON that `jr2 run --input` sends. The `input`
+  option of the definition is a zod schema of that run input. It types the invoke, and `jr2 up` compares it with the
+  input that the Workflow declares.
+- By default, the Effect ends when the Orchestrator accepts the new run. With `wait: true`, the Effect ends when the new
+  run ends, and its output holds the status and the output of that run. The default timeout is 30 seconds, and 10
+  minutes with `wait`.
+- With no `target`, the new run starts in the same Orchestrator. With
+  `target: { url: "https://<host>", token: secret("<name>") }`, it starts on a different Orchestrator. `url` is the
+  origin of that Orchestrator, and the secret holds its Instance token.
+- The new run starts under the current [Assembly](../reference/glossary.md#assembly), as a run of `jr2 run` does.
+
+The two runs are independent. A `CANCEL` of one run does not cancel the other. When the run that dispatched ends, the
+new run continues.
+
 ## Where an Effect runs
 
 You do not choose where an Effect runs. The kind, and what the Effect names, decide it. Each
@@ -131,6 +156,8 @@ commands in it:
 | An `http` Effect                        | The [Instance Effector](../reference/glossary.md#instance-effector)                 |
 | An `http` Effect with a Worktree file   | The Sandbox Effector                                                                |
 | A `push`                                | The Sandbox Effector                                                                |
+| A `dispatch` with no `target`           | The Orchestrator, in its own process                                                |
+| A `dispatch` with a `target`            | The Instance Effector                                                               |
 
 A `command` that names no Effect secret runs beside the Agent's [Working tools](../reference/glossary.md#working-tools).
 It runs as the Agent's user, with the tools of the [Sandbox Image](../reference/glossary.md#sandbox-image). It has the
@@ -149,14 +176,16 @@ is, and [Secrets and trust](secrets-and-trust.md) tells how an Effector holds th
 
 An Effect gives each outcome to `onDone`, a failure too. Route on the `outcome` field:
 
-| Kind      | The outcomes                                    | The output type                                                         |
-| --------- | ----------------------------------------------- | ----------------------------------------------------------------------- |
-| `command` | `exited`, `timeout`, `killed`, `unknown`        | [`CommandOutput`](../reference/authoring-surface.md#type-commandoutput) |
-| `http`    | `response`, `unreachable`, `refused`, `unknown` | [`HttpOutput`](../reference/authoring-surface.md#type-httpoutput)       |
-| `push`    | `pushed`, `rejected`, `diverged`, `unknown`     | [`PushOutput`](../reference/authoring-surface.md#type-pushoutput)       |
+| Kind       | The outcomes                                              | The output type                                                           |
+| ---------- | --------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `command`  | `exited`, `timeout`, `killed`, `unknown`                  | [`CommandOutput`](../reference/authoring-surface.md#type-commandoutput)   |
+| `http`     | `response`, `unreachable`, `refused`, `unknown`           | [`HttpOutput`](../reference/authoring-surface.md#type-httpoutput)         |
+| `push`     | `pushed`, `rejected`, `diverged`, `unknown`               | [`PushOutput`](../reference/authoring-surface.md#type-pushoutput)         |
+| `dispatch` | `started`, `settled`, `refused`, `unreachable`, `unknown` | [`DispatchOutput`](../reference/authoring-surface.md#type-dispatchoutput) |
 
 A test that fails is `exited` with a code that is not 0. A program that the container does not have is `exited` with
-code 127. An HTTP 4xx or 5xx status is a `response`. `unknown` means that jr2 cannot tell what the Effect did.
+code 127. An HTTP 4xx or 5xx status is a `response`. A Workflow that refuses the run input of a `dispatch` is `refused`,
+with the status code and the report of the refusal. `unknown` means that jr2 cannot tell what the Effect did.
 
 The `onError` route is only for a defect in the Machine or in the config. For example, the Effect is not in a Workspace,
 or an `arg()` has no value, or an Open part has no binding.
@@ -176,6 +205,7 @@ jr2 records its output. After an Orchestrator restart, jr2 reads the record:
 | A `command` that names an Effect secret | jr2 follows it. When the Sandbox Effector lost it, jr2 runs it again against the same commit. With no commit recorded, the outcome is `unknown`.             |
 | A `push`                                | jr2 follows it. When the Sandbox Effector lost it, jr2 pushes the same commit again, and no other commit. With no commit recorded, the outcome is `unknown`. |
 | An `http` Effect                        | jr2 follows it. When no Effector holds it, jr2 sends it again only if it is `idempotent`. Else the outcome is `unknown`.                                     |
+| A `dispatch`                            | jr2 sends the start again, with the same key. The Orchestrator answers with the run that the key started, and it starts no second run.                       |
 
 A `command` that names no Effect secret runs the code of the Worktree, and that code can spend a Stand-in. Thus jr2 does
 not run it two times. A `push`, and a `command` that names an Effect secret, run against a commit that jr2 records. Thus
@@ -193,6 +223,7 @@ When the run leaves the state, the Effect stops:
   `SIGKILL`.
 - An `http` Effect and a `push` have no stop. jr2 stops waiting for the output, but the Effector can still finish the
   work.
+- A `dispatch` with `wait` stops its wait. The run that it started continues.
 
 jr2 records the stop, and the Machine gets no output. There is no "finally" in a Machine: cleanup is a state. Put an
 Effect that must not stop in a state of its own. The only exit of that state is its `onDone`. That state handles the
@@ -229,8 +260,11 @@ pick waits for its answer.
   a `committer` field there.
 - Each param of a pick that enters an Effect's state has a reader: the Effect's input, `fill`, a guard or an `assign`.
   `createMachine` refuses a param that nothing reads, and a `fill` key that is also a param.
-- A packaged Machine can leave an `http` URL, a `command` argv or one Effect secret name Open. The composer binds it one
-  time with `customize()`. `jr2 up` refuses an Open part that nobody bound.
+- A packaged Machine can leave an `http` URL, a `command` argv, one Effect secret name or the `target` of a `dispatch`
+  Open. The composer binds it one time with `customize()`. `jr2 up` refuses an Open part that nobody bound.
+- A `dispatch` with no `target` names a Workflow that the Assembly has. `jr2 up` refuses a name that it does not have,
+  and an `input` schema that the input of that Workflow does not take.
+- The `url` of a `dispatch` target is an origin only: a scheme, a host and a port, with no path, no query and no user.
 
 The guides give the refusal text of each rule.
 
@@ -238,11 +272,14 @@ The guides give the refusal text of each rule.
 
 - [Run a command or call a URL with an Effect](../guides/run-a-command-or-call-a-url.md)
 - [Push and sign a branch](../guides/push-and-sign-a-branch.md)
+- [Start a run from a run](../guides/start-a-run-from-a-run.md)
 - [Workspaces](workspaces.md), [The Menu](the-menu.md), [Secrets and trust](secrets-and-trust.md)
 - Reference: [`command`](../reference/authoring-surface.md#command), [`http`](../reference/authoring-surface.md#http),
-  [`push`](../reference/authoring-surface.md#push), [`fromPick`](../reference/authoring-surface.md#frompick),
-  [`answer`](../reference/authoring-surface.md#answer)
+  [`push`](../reference/authoring-surface.md#push), [`dispatch`](../reference/authoring-surface.md#dispatch),
+  [`fromPick`](../reference/authoring-surface.md#frompick), [`answer`](../reference/authoring-surface.md#answer)
 - [ADR-0067](../reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md):
   an Effect is an actor slot, and runs at most once unless marked idempotent
 - [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md): an Effector holds
   an Effect's secrets and signs its wire
+- [ADR-0071](../reference/decisions/0071-a-run-starts-a-run-through-a-dispatch-effect.md): a run starts a run through a
+  `dispatch` Effect

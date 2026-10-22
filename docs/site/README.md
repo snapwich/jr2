@@ -180,7 +180,7 @@ page that uses a term links to the page that owns it, and does not explain the t
 | `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, `continue`, Briefing, Working tools, Runaway, Compaction                            |
 | `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                 |
 | `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a webhook                                        |
-| `concepts/effects`                | Effect: `command`, `http`, `push`, at-most-once, `fromPick`                                                    |
+| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, dispatched by, at-most-once, `fromPick`                         |
 | `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, Size, Placing, Lease, Continuity, Sandbox Image, User Container |
 | `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                       |
 | `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set                                                                           |
@@ -212,7 +212,7 @@ The first link in `## Read next` is the Concept in this table. A Guide can link 
 | `start-a-run`, `write-a-workflow`                                                        | `concepts/machines-and-workflows` |
 | `set-an-agents-access-and-dials`                                                         | `concepts/agents-and-turns`       |
 | `answer-a-gate`                                                                          | `concepts/gates`                  |
-| `run-a-command-or-call-a-url`, `push-and-sign-a-branch`                                  | `concepts/effects`                |
+| `run-a-command-or-call-a-url`, `push-and-sign-a-branch`, `start-a-run-from-a-run`        | `concepts/effects`                |
 | `look-inside-a-sandbox`, `add-tools-to-the-sandbox`, `size-a-workspace`                  | `concepts/workspaces`             |
 | `bind-open-parts`, `publish-a-machine-as-an-npm-package`                                 | `concepts/composition`            |
 | `run-one-worker-per-item`                                                                | `concepts/pools-and-sources`      |
