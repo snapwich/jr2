@@ -54,8 +54,10 @@ const config = withMermaid(
         md.renderer.rules.code_inline = (tokens, idx, options, env, self) =>
           codeInline(tokens, idx, options, env, self).replace(/^<code/, "<code v-pre");
         // A page's title is its frontmatter's: the source has no H1, so the site adds it, as the
-        // bundle does. A generated page has its H1 already.
-        md.core.ruler.push("jr2-title", (state) => {
+        // bundle does. A generated page has its H1 already. Before the anchor rule, so that the H1
+        // gets its `id`, and the local search indexes the page's title and the text before its
+        // first H2 under it.
+        md.core.ruler.before("anchor", "jr2-title", (state) => {
           const tokens = state.tokens as unknown as Token[];
           const title = (state.env as { frontmatter?: { title?: string } }).frontmatter?.title;
           if (!title || tokens.some((t) => t.type === "heading_open" && t.tag === "h1")) return;
