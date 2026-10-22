@@ -9,4 +9,10 @@ operator/testbin
 poc
 tmp
 **/*.log
+# The docs bundle that `docs:build` writes into @jr2/orchestrator (ADR-0072): it is for an Instance's
+# Assistant, in the package npm serves, and the Orchestrator image never reads it. Dropped from the
+# context, so a local docs:build changes neither the image nor its tag (build.ts KIT_ORCHESTRATOR_EXCLUDE).
+packages/orchestrator/**/docs
+packages/agent-protocol/**/docs
+deploy/orchestrator/**/docs
 **/.env

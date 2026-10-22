@@ -142,6 +142,12 @@ export type BuildPort = {
  * so it must stay hashed — the old shared set excluded it and lied. */
 const KIT_PACKAGE_EXCLUDE = new Set(["node_modules", "dist"]);
 
+/** For the walk of the Orchestrator image's sources: the kit root's `.dockerignore` also drops
+ * `docs` at any depth under each of them (`packages/orchestrator/**\/docs`, …), the docs bundle that
+ * `docs:build` writes into `@jr2/orchestrator` (ADR-0072). The image never reads it, so a local
+ * `docs:build` must move neither the image nor its tag. */
+const KIT_ORCHESTRATOR_EXCLUDE = new Set([...KIT_PACKAGE_EXCLUDE, "docs"]);
+
 /** For the walk of `operator/`: its context is `operator/` itself, governed by
  * `operator/.dockerignore`, an ALLOWLIST (`**` then `!**\/*.go`, go.mod, go.sum). `bin/` (~400 MB
  * of downloaded tooling) and `testbin/` hold no `.go`, and `cover.out` is not one — all three are
@@ -376,7 +382,7 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     // this list equals the Orchestrator's `workspace:` dependencies, both asserted in
     // test/orchestrator-image.test.ts.
     sources: ["packages/orchestrator", "packages/agent-protocol", "deploy/orchestrator"],
-    exclude: KIT_PACKAGE_EXCLUDE,
+    exclude: KIT_ORCHESTRATOR_EXCLUDE,
   },
 };
 

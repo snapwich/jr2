@@ -262,6 +262,18 @@ test("kit hashes exclude only what each context's OWN .dockerignore drops", asyn
     { platforms: AMD64 },
   );
   assert.equal(withTooling.operator, base.operator, "operator's non-go tooling and coverage stay excluded");
+
+  // The docs bundle docs:build writes into @jr2/orchestrator (ADR-0072) is dockerignored at any
+  // depth under the Orchestrator image's sources, so a local docs:build must not move its ref.
+  const withDocs = await kitImageRefs(
+    await mkTree({ ...kitFiles(src), "packages/orchestrator/docs/index.md": "# Home\n" }),
+    { platforms: AMD64 },
+  );
+  assert.equal(withDocs.orchestrator, base.orchestrator, "packages/orchestrator/docs is dockerignored, so excluded");
+  const ignore = await readFile(new URL("../../../.dockerignore", import.meta.url), "utf8");
+  for (const source of ["packages/orchestrator", "packages/agent-protocol", "deploy/orchestrator"]) {
+    assert.match(ignore, new RegExp(`^${source}/\\*\\*/docs$`, "m"), `${source}/**/docs is in .dockerignore`);
+  }
 });
 
 test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", async () => {
