@@ -91,6 +91,10 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
 
 - `jr2 up` writes into the Instance folder, and only between the markers.
 - `@jr2/orchestrator` gains its first pack-time step. Its source still ships as `.ts`; only `docs/` is assembled.
+- The Orchestrator's Kit image packs `@jr2/orchestrator` with `npm pack --ignore-scripts`, and its build context drops
+  `docs/`: the `prepack` needs pnpm and the whole repo, which the image stage has not, and the Orchestrator's process
+  never reads the bundle. So the image holds no docs, and a local `docs:build` does not move its tag
+  ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)).
 - The tarball grows by the docs, most of it the ADRs (about 0.7 MB of text today).
 - A TSDoc edit on the Authoring surface is a docs edit. `--help` and the CLI Reference come from one table, so they
   cannot disagree.
