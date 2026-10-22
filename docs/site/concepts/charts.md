@@ -1,6 +1,6 @@
 ---
 title: Charts
-description: How an Agent writes a Workflow at run time as data, and why that data cannot reach the Orchestrator.
+description: How an Agent writes a Machine as data at run time, which cannot reach the process of the Orchestrator.
 ---
 
 A [Chart](../reference/glossary.md#chart) is a [Machine](../reference/glossary.md#machine) that is written as data, in
@@ -15,10 +15,12 @@ coder, then a reviewer, then a person. You cannot write that Machine before the 
 
 An Agent cannot write code for the [Orchestrator](../reference/glossary.md#orchestrator). Only
 [`jr2 up`](../reference/cli.md#up) publishes code, because the Orchestrator holds the credentials of the
-[Instance](../reference/glossary.md#instance). Code that an Agent wrote could reach them. A Chart is data, so it cannot
-reach them. It can only name parts that your code gives it, and jr2 checks each name before the Chart runs. Thus an
-Agent can make a Workflow while a run runs, and it can do only what the Open body lets it do. This is true also when the
-model is wrong or someone gives it bad text.
+[Instance](../reference/glossary.md#instance). Code that an Agent wrote could reach them. A Chart is data: the
+Orchestrator reads it, but it cannot reach the process of the Orchestrator or its credentials. It can only name parts
+that your code gives it, and jr2 checks each name before the Chart runs. Thus an Agent can make a Machine while a run
+runs, and it can do only what the Open body lets it do. A Chart becomes a Workflow only when it is kept under a name
+(see [Four ways to run a Chart](#four-ways-to-run-a-chart)). This is true also when the model is wrong or someone gives
+it bad text.
 
 ## The Open body
 
