@@ -97,7 +97,7 @@ of its own.
 - The door refuses a Chart, and gives one line for each problem. Each line starts with the path in the Chart. For
   example:
   - `<path>: "<name>" is not a lent actor or an Agent of this Chart; lent: <names>; kit: <gate or none>; minted: <names>`
-  - `<path>: "<name>" is not a lent guard; lent guards: <names>`
+  - `<path>: "<name>" is not a lent guard; lent guards: <names> (and jr2.sentBy with params { id })`
   - `<path>.type: "<name>" is not a generic or a lent action; generic: set, append, increment, clear; lent: <names>`
   - ``<path>: <reference> is supplied by nothing: it is not in the initial `context`, and no `set`, `append` or `increment` writes it``,
     then what a write supplies
