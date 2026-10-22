@@ -15,9 +15,11 @@
 // Text is data and layout is the renderer's: no entry holds a line break, a column or an ADR number
 // in its prose.
 //
-// Builtins only, and no kit code: the docs generator reads this module without an Instance.
+// Builtins and the Kit version only, and no other kit code: the docs generator reads this module
+// without an Instance.
 
 import { parseArgs, type ParseArgsOptionDescriptor } from "node:util";
+import { KIT_VERSION } from "@jr2/orchestrator/internal";
 
 /** One flag. A `value` placeholder makes it a string option; without one it is a boolean. */
 export type Flag = {
@@ -242,7 +244,7 @@ const TABLE = [
     env: [],
     summary: "mirror the published kit images into a registry",
     lines: [
-      "this kit version's images (harness, operator, orchestrator) from their canonical home, and the Custodian's pinned Envoy from its own, for a cluster whose `kitRegistry` names the registry",
+      `the v${KIT_VERSION} kit images (harness, operator, orchestrator) from their canonical home, and the Custodian's pinned Envoy from its own, for a cluster whose \`kitRegistry\` names the registry`,
     ],
     output: RESULT,
     adrs: ["0044", "0059", "0069"],

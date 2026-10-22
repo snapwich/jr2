@@ -23,6 +23,7 @@ import {
   type CommandName,
 } from "../src/command-table.ts";
 import type { Io } from "../src/output.ts";
+import { KIT_VERSION } from "@jr2/orchestrator/internal";
 
 const SRC = join(import.meta.dirname, "..", "src");
 
@@ -257,4 +258,11 @@ test("a usage error prints the verb's usage line from the table", async () => {
   const io: Io = { stdout: () => {}, stderr: (s) => err.push(s), env: {}, cwd: "/" };
   assert.equal(await main(["run"], io), 2);
   assert.ok(err.join("").startsWith(`usage: jr2 ${synopsis(commandNamed("run" satisfies CommandName), true)}`));
+});
+
+test("`jr2 kit push --help` names the Kit version whose images it mirrors", () => {
+  assert.match(
+    renderCommand(commandNamed("kit push")),
+    new RegExp(`the v${KIT_VERSION.replace(/\./g, "\\.")} kit images`),
+  );
 });
