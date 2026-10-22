@@ -62,7 +62,8 @@ it. `jr2 runs --workflows` prints that list as the JSON result. To read a run th
 run with a [Workspace](../reference/glossary.md#workspace) that waits for capacity also has `placing`: the path of each
 such Workspace in the run. `jr2 status` tells why it waits. A run that a `dispatch`
 [Effect](../reference/glossary.md#effect) started has `dispatchedBy` after its id: the run that started it, the slot of
-the Effect, and its `depth` in the chain. [Start a run from a run](start-a-run-from-a-run.md) shows it.
+the Effect, the id of the Effect (`effect`), and its `depth` in the chain.
+[Start a run from a run](start-a-run-from-a-run.md) shows it.
 
 ## Read the status of a run
 
