@@ -1,13 +1,16 @@
 // The default theme, with the components of vitepress-plugin-tabs: `::: tabs key:provider` shares
-// the reader's choice of provider across every tab set on every page.
+// the reader's choice of provider across every tab set on every page. And the component that draws
+// a `mermaid` fence, which loads mermaid only on a page that has one (mermaid.ts).
 
 import type { Theme } from "vitepress";
 import DefaultTheme from "vitepress/theme";
 import { enhanceAppWithTabs } from "vitepress-plugin-tabs/client";
+import { MermaidDiagram } from "./mermaid.ts";
 
 export default {
   extends: DefaultTheme,
   enhanceApp({ app }) {
     enhanceAppWithTabs(app);
+    app.component("MermaidDiagram", MermaidDiagram);
   },
 } satisfies Theme;

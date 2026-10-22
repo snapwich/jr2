@@ -462,8 +462,9 @@ checks every `.ts` file in `examples/` against `@jr2/orchestrator` and `@jr2/mac
 
 ### Diagrams
 
-Use a `mermaid` fenced code block. The plugin `vitepress-plugin-mermaid` draws it on the site, in the light theme and in
-the dark theme. Only four diagrams exist. See [Diagrams](#the-four-diagrams) for the rule and the list.
+Use a `mermaid` fenced code block. The site draws it with mermaid, in the light theme and in the dark theme. The theme's
+`MermaidDiagram` loads mermaid only on a page that has a diagram, and shows the source of the diagram until then. Only
+four diagrams exist. See [Diagrams](#the-four-diagrams) for the rule and the list.
 
 ### What not to use
 
