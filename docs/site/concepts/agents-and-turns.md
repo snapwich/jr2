@@ -31,7 +31,7 @@ Agent. A state invokes it with `src: "coder"`. The definition is plain data, and
 | `model`         | The model, as `<provider>/<model id>`. It is required.                                 |
 | `instructions`  | Who the Agent is and how it works. The model reads them on each Turn.                  |
 | `workspace`     | What the Agent can do to the Workspace: `"write"` (the default), `"read"` or `"none"`. |
-| `thinkingLevel` | How hard the model thinks, when the state sets no other level.                         |
+| `thinkingLevel` | How hard the model thinks, when the state sets no other level. The default is `"off"`. |
 | `description`   | A short text for the people who read the Machine. The model does not read it.          |
 
 [`AgentDefinition`](../reference/authoring-surface.md#type-agentdefinition) gives each field.
@@ -161,7 +161,9 @@ itself. It tells nothing about the task: the prompt tells the task. It has two p
   Sandbox, or that a Menu-only Agent has no Working tools.
 - **The Turn part** comes after the prompt. It tells the directory of the Turn, its
   [Allowed picks](../reference/glossary.md#allowed-picks), and the notices. [The Menu](the-menu.md) tells what the
-  Allowed picks are. When they change during the Turn, the Harness tells them to the model again.
+  Allowed picks are. When they change during the Turn, the Harness tells them to the model again. When an Allowed pick
+  carries a [Chart](../reference/glossary.md#chart), the Turn part also tells how a Chart runs (see
+  [Charts](charts.md)).
 
 A notice tells the next Turn what happened before it. For example: the conversation is new and the earlier context is
 gone, or the processes of the Sandbox stopped at its memory limit. jr2 gives each notice one time, to the next Turn that
@@ -185,10 +187,11 @@ jr2 tries to recover a Turn before it tells the Machine. When it cannot recover 
 - **The Turn is a [Runaway](../reference/glossary.md#runaway).**
 
 A Runaway is a Turn that does not end by itself. The Harness ends a Turn when it makes the same tool call four times in
-sequence, with the same arguments. It also ends a Turn that makes more than 256 tool calls on one prompt. Then jr2
-starts the Turn again one time, with the same prompt, on a new conversation. When that Turn is also a Runaway, jr2 sends
-`agent.fault`. jr2 does not start the Turn again when it continues a conversation, or when the Agent already made a pick
-in it. Then it sends `agent.fault` immediately.
+sequence, with the same arguments. It also ends a Turn of more than 256 [steps](../reference/glossary.md#step) on one
+prompt. A step is one tool call: a call of a Working tool, or a pick. Then jr2 starts the Turn again one time, with the
+same prompt, on a new conversation. When that Turn is also a Runaway, jr2 sends `agent.fault`. jr2 does not start the
+Turn again when it continues a conversation, or when the Agent already made a pick in it. Then it sends `agent.fault`
+immediately.
 
 You cannot change these limits. They are a part of jr2.
 

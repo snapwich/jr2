@@ -61,7 +61,9 @@ it uses the value of the definition.
 
 - `thinkingLevel` is one of `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"` and `"xhigh"`. In the example, the
   definition of `checker` sets `"low"`, and the `reviewing` state sets `"high"` for the reviewer's Turn. A definition
-  with no `thinkingLevel` uses the default of the [Harness](../reference/glossary.md#harness) for the model.
+  with no `thinkingLevel` uses `"off"`. A model can lack a level. Then the [Harness](../reference/glossary.md#harness)
+  runs the Turn at a different level, and the printed conversation names it in a `[thinking level]` line. See
+  [Watch a run](watch-a-run.md).
 - `model` is `<provider>/<model id>`, as in the definition. In the example, the `fixing` state gives the coder the
   `model` of the run input. When the run input has no `model`, the value is `undefined`, and the Turn uses the model of
   the definition.

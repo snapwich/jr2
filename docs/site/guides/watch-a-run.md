@@ -249,15 +249,16 @@ kubectl -n <namespace> logs -f <sandbox> -c harness
 Each line starts with the name of the Agent in brackets. The first line of each message then has a label in brackets.
 The next lines of the same message have no label:
 
-| Line                               | What it shows                                                                                                                                                                    |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[<agent>] [prompt] <text>`        | A message that the model reads: the prompt of the Turn, or a message that jr2 adds to the Turn.                                                                                  |
-| `[<agent>] [thinking] <text>`      | The thinking of the model.                                                                                                                                                       |
-| `[<agent>] [text] <text>`          | The text of the model.                                                                                                                                                           |
-| `[<agent>] [<call>] <input>`       | A call of a [Working tool](../reference/glossary.md#working-tools), or a pick from the Menu. `<input>` is a path for read, write and edit, the command for `bash`, or else JSON. |
-| `[<agent>] [<pick> answer] <text>` | The answer that the model got for a pick from its Menu.                                                                                                                          |
-| `[<agent>] [<pick> error] <text>`  | An answer to a pick that the model reads as an error, such as a refusal.                                                                                                         |
-| `[<agent>] [compacted] <text>`     | The Harness made the context of the conversation smaller.                                                                                                                        |
+| Line                                | What it shows                                                                                                                                                                    |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[<agent>] [prompt] <text>`         | A message that the model reads: the prompt of the Turn, or a message that jr2 adds to the Turn.                                                                                  |
+| `[<agent>] [thinking] <text>`       | The thinking of the model.                                                                                                                                                       |
+| `[<agent>] [text] <text>`           | The text of the model.                                                                                                                                                           |
+| `[<agent>] [<call>] <input>`        | A call of a [Working tool](../reference/glossary.md#working-tools), or a pick from the Menu. `<input>` is a path for read, write and edit, the command for `bash`, or else JSON. |
+| `[<agent>] [<pick> answer] <text>`  | The answer that the model got for a pick from its Menu.                                                                                                                          |
+| `[<agent>] [<pick> error] <text>`   | An answer to a pick that the model reads as an error, such as a refusal.                                                                                                         |
+| `[<agent>] [compacted] <text>`      | The Harness made the context of the conversation smaller: `context <before> → ~<after> tokens (window <window>)`.                                                                |
+| `[<agent>] [thinking level] <text>` | The model has no thinking level of the name that the Turn asked for, and the line names the level that the model ran at. The Harness prints it one time for each Turn.           |
 
 The log of a Sandbox also tells the story of its run, in lines that start with `[run]`. `[run] [status] <state>` gives
 the state of the run, or its status when it ends. `[run] [emit] <type> <payload>` gives an Emit. A Turn that runs in a
