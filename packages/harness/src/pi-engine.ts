@@ -1,51 +1,22 @@
-// Ported in part from @earendil-works/pi-agent-core 0.82.1 (MIT, see PI-LICENSE): the context rule and the branch walk of dist/harness/session/session.js and memory-storage.js
-//
-// The engine part of a conversation, for the engine jr2 runs today: pi (ADR-0031). pi is the
-// ENGINE, not the contract — jr2's record (`record.ts`) is the contract — so everything that knows
-// what the engine keeps lives behind the `EngineSeat`: the directory is named for the engine
-// (`engine/pi`), and nothing outside this module reads what is written there.
-//
-// pi 1.x keeps no conversation on disk, so jr2 writes the engine part itself: one append-only file,
-// `engine/pi/transcript.jsonl`. It holds the pi messages the model read, a mark where each
-// Submission starts, and each Compaction (ADR-0036). One JSON value on each line, never changed:
-//
-//   {"type":"transcript","version":1,"id":"<uuid>","cwd":"<the first Turn's cwd>","created":"<ISO time>"}
-//   {"type":"message","message":<a pi message: user, assistant or toolResult>}
-//   {"type":"submission"}
-//   {"type":"compaction","summary":"…","firstKept":<entry index>,"tokensBefore":<n>,"details":{…},"usage":{…},"timestamp":<ms>}
-//
-// Entry indexes count from 0, after the header line. Each line is appended synchronously, before
-// the loop goes on, as the record is: the transcript holds a message before the printer prints it.
-// A Harness that restarts reopens it, and the model reads every message, tool result and Compaction
-// it read before. When the part is missing or does not open — another engine wrote it, another
-// version, a damaged line — the conversation continues from the record's history messages instead:
-// best effort, because the record keeps what was SAID (role and text), not the tool calls between.
-// The model then reads the conversation's words without its tool traffic, which is enough to
-// continue a decision and says nothing false.
+// The engine jr2 runs today: pi (ADR-0027). pi is the ENGINE, not the contract — jr2's record
+// (`record.ts`), the seam's shapes (`engine.ts`) and the transcript (`transcript.ts`) are the
+// contract — so everything that knows pi lives here, and this is the one module that imports
+// pi-agent-core. `piAdapter` is the seam's adapter: pi-agent-core's `Agent` loop, its tool hooks,
+// its abort and its steering queue, behind `Engine`. It makes the leading system message that
+// carries the system prompt and the tools, which is how pi 1.x carries them. pi 1.x keeps no
+// conversation, so the adapter's engine part is jr2's transcript, under `engine/pi`.
 
-import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { uuidv7, type Api, type AssistantMessage, type Message, type Model, type Usage } from "@earendil-works/pi-ai";
-import { cutTornTail, type EngineSeat } from "./record.ts";
-import type { HistoryMessage } from "./wire.ts";
-
-/** The engine's name — its directory under the conversation (`engine/pi`). */
-export const ENGINE = "pi";
-
-/** The transcript format this Harness writes and reads. Another version does not open. */
-export const TRANSCRIPT_VERSION = 1;
-
-const TRANSCRIPT = "transcript.jsonl";
-
-/** A Compaction's summary as the loop carries it (ADR-0036): the context's first message after a
- * cut. `convertToLlm` makes it the user message the model reads (`turn.ts`). */
-export type CompactionSummaryMessage = {
-  role: "compactionSummary";
-  summary: string;
-  tokensBefore: number;
-  timestamp: number;
-};
+import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { createInitialSystemMessage, toToolDeclaration, type SystemMessage } from "@earendil-works/pi-ai";
+import type {
+  CompactionSummaryMessage,
+  Engine,
+  EngineAdapter,
+  EngineEvent,
+  EngineOptions,
+  EngineTool,
+} from "./engine.ts";
+import { openEnginePart } from "./transcript.ts";
 
 declare module "@earendil-works/pi-agent-core" {
   interface CustomAgentMessages {
@@ -53,272 +24,114 @@ declare module "@earendil-works/pi-agent-core" {
   }
 }
 
-/** The files a Compaction's summary names, carried to the next cut. */
-export type CompactionDetails = { readFiles: string[]; modifiedFiles: string[] };
+/** The engine's name: its directory under the conversation (`engine/pi`). */
+const ENGINE = "pi";
 
-/** One entry of the transcript. */
-export type TranscriptEntry =
-  | { type: "message"; message: Message }
-  /** A Submission starts here. The cut reads it as pi 0.82.1 read the tool-set entry it wrote at
-   * the same place (`compaction-summary.ts`, `findCutPoint`). */
-  | { type: "submission" }
-  | {
-      type: "compaction";
-      summary: string;
-      /** The index of the first entry the cut keeps. Always before this entry. */
-      firstKept: number;
-      tokensBefore: number;
-      details: CompactionDetails;
-      usage: Usage;
-      timestamp: number;
-    };
-
-type Header = { type: "transcript"; version: number; id: string; cwd: string; created: string };
-
-/** The engine part of one conversation: the transcript, on disk or in memory. */
-export class EnginePart {
-  /** The transcript's identity. The loop passes it to pi-ai as `sessionId` (a prompt cache key). */
-  readonly id: string;
-  private readonly entries: TranscriptEntry[];
-  /** Undefined in memory mode. */
-  private readonly path: string | undefined;
-  private readonly fault: EngineSeat["fault"] | undefined;
-
-  constructor(
-    id: string,
-    entries: TranscriptEntry[],
-    path: string | undefined,
-    fault: EngineSeat["fault"] | undefined,
-  ) {
-    this.id = id;
-    this.entries = entries;
-    this.path = path;
-    this.fault = fault;
-  }
-
-  /** Every entry, in order. */
-  all(): readonly TranscriptEntry[] {
-    return this.entries;
-  }
-
-  /** Append a message the loop completed. A system message is never appended: the Harness makes
-   * the leading one for each Submission (`turn.ts`). */
-  appendMessage(message: Message): void {
-    this.append({ type: "message", message });
-  }
-
-  /** Mark the start of a Submission, before its prompt. */
-  appendSubmission(): void {
-    this.append({ type: "submission" });
-  }
-
-  /** Append a Compaction. */
-  appendCompaction(entry: Omit<Extract<TranscriptEntry, { type: "compaction" }>, "type">): void {
-    this.append({ type: "compaction", ...entry });
-  }
-
-  /** The file first, then the array: an entry is in `context()` only when it is on disk. A failed
-   * write is the record's fault (ADR-0031): the process ends, and the boot cuts the torn tail. */
-  private append(entry: TranscriptEntry): void {
-    if (this.path !== undefined) {
-      try {
-        appendFileSync(this.path, `${JSON.stringify(entry)}\n`);
-      } catch (err) {
-        this.fault!(err, this.path);
-      }
-    }
-    this.entries.push(entry);
-  }
-
-  /** The entries the next cut works on: back from the newest entry to the first entry the oldest
-   * reached Compaction keeps. `start` is the index of the first one. */
-  branch(): { start: number; entries: TranscriptEntry[] } {
-    const start = branchStart(this.entries);
-    return { start, entries: this.entries.slice(start) };
-  }
-
-  /** The messages the model reads, without the system message. */
-  context(): AgentMessage[] {
-    const { start, entries } = this.branch();
-    return contextOf(entries, start);
-  }
-}
-
-/** pi 0.82.1's walk to the root or a Compaction (`getPathToRootOrCompaction`) over a linear log:
- * at each Compaction the stop moves to its `firstKept`, and the walk stops there. */
-export function branchStart(entries: readonly TranscriptEntry[]): number {
-  let stop: number | undefined;
-  let i = entries.length - 1;
-  for (; i > 0; i--) {
-    if (stop !== undefined && i === stop) break;
-    const entry = entries[i]!;
-    if (entry.type === "compaction") stop = entry.firstKept;
-  }
-  return Math.max(i, 0);
-}
-
-/** A Compaction's summary as a context message. */
-export function summaryMessage(entry: Extract<TranscriptEntry, { type: "compaction" }>): CompactionSummaryMessage {
-  return {
-    role: "compactionSummary",
-    summary: entry.summary,
-    tokensBefore: entry.tokensBefore,
-    timestamp: entry.timestamp,
-  };
-}
+/** pi as the seam's adapter: its engine part is the transcript under `engine/pi`. */
+export const piAdapter: EngineAdapter = {
+  open: (seat, first, say) => openEnginePart(seat, ENGINE, first, say),
+  make: (options) => piEngine(options),
+};
 
 /**
- * pi 0.82.1's context over a branch (`buildSessionContext`): every message when no Compaction is
- * in it; else the newest Compaction's summary, then the entries it keeps before it, then every entry
- * after it. `start` is the index of the branch's first entry in the whole transcript.
+ * The seam's adapter (`engine.ts`): one pi `Agent` for one conversation, made once. For each run
+ * it sets the model, the level and the tools, and puts the leading system message before the
+ * context. pi compares the declarations in that message with the tools it runs before each request
+ * (`declareToolChanges`); they are equal, so pi adds no system message of its own.
+ *
+ * The seam's messages are pi-ai's, with the Compaction summary merged into `CustomAgentMessages`
+ * above, so the adapter passes them through without a copy; the compiler checks each direction
+ * where they cross. A seam tool becomes a pi tool here (`agentTool`).
  */
-export function contextOf(entries: readonly TranscriptEntry[], start: number): AgentMessage[] {
-  let newest = -1;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i]!.type === "compaction") {
-      newest = i;
-      break;
-    }
-  }
-  const messagesOf = (entry: TranscriptEntry): AgentMessage[] => {
-    if (entry.type === "message") return [entry.message];
-    if (entry.type === "compaction") return [summaryMessage(entry)];
-    return [];
-  };
-  if (newest < 0) return entries.flatMap(messagesOf);
-  const cut = entries[newest] as Extract<TranscriptEntry, { type: "compaction" }>;
-  // A first kept entry before the branch is not on it, and pi then kept nothing before the cut.
-  const kept = cut.firstKept >= start ? cut.firstKept - start : newest;
-  return [
-    summaryMessage(cut),
-    ...entries.slice(kept, newest).flatMap(messagesOf),
-    ...entries.slice(newest + 1).flatMap(messagesOf),
-  ];
-}
-
-/**
- * The engine part a conversation's Turns run on. In memory when the Harness persists nothing;
- * otherwise the transcript under the engine's directory, or — when there is none that opens — a
- * new one there, seeded with the record's history. `cwd` and `model` are the first Turn's: the
- * transcript's own header, and the identity a seeded assistant message is written under.
- */
-export function openEnginePart(
-  engine: EngineSeat | undefined,
-  first: { cwd: string; model: Model<Api> },
-  say: (line: string) => void = (line) => console.error(line),
-): EnginePart {
-  const dir = engine?.dir(ENGINE);
-  const history = engine?.history() ?? [];
-  if (dir === undefined) {
-    return new EnginePart(uuidv7(), seeded(history, first.model), undefined, undefined);
-  }
-  const path = join(dir, TRANSCRIPT);
-  const opened = readTranscript(path);
-  if ("part" in opened) return new EnginePart(opened.part.id, opened.part.entries, path, engine!.fault);
-  // A conversation with nothing said is new, and has no part to lose. One with history is the
-  // fallback, and the pod log says so: the model reads its words without its tool traffic.
-  if (history.length > 0) {
-    say(
-      `harness: the engine part at ${dir} does not open (${opened.why}) — continuing from the record's messages (ADR-0031)`,
-    );
-  }
-  const header: Header = {
-    type: "transcript",
-    version: TRANSCRIPT_VERSION,
-    id: uuidv7(),
-    cwd: first.cwd,
-    created: new Date().toISOString(),
-  };
-  const entries = seeded(history, first.model);
-  // The new file replaces the old one whole: written beside it, then renamed over it.
-  const next = `${path}.new`;
-  try {
-    writeFileSync(next, [header, ...entries].map((line) => `${JSON.stringify(line)}\n`).join(""));
-    renameSync(next, path);
-  } catch (err) {
-    engine!.fault(err, path);
-  }
-  return new EnginePart(header.id, entries, path, engine!.fault);
-}
-
-/** The transcript at `path`, or why it does not open. The torn last line a restart may have left is
- * cut first, as the record's is: it was never acknowledged, and a line appended onto it would make a
- * middle line that does not parse. */
-export function readTranscript(path: string): { part: { id: string; entries: TranscriptEntry[] } } | { why: string } {
-  let text: string;
-  try {
-    cutTornTail(path);
-    text = readFileSync(path, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { why: "no transcript there" };
-    return { why: err instanceof Error ? err.message : String(err) };
-  }
-  const lines = text.split("\n").slice(0, -1);
-  if (lines.length === 0) return { why: "the transcript is empty" };
-  const values: unknown[] = [];
-  for (const [i, line] of lines.entries()) {
-    try {
-      values.push(JSON.parse(line));
-    } catch {
-      return { why: `line ${i + 1} does not parse` };
-    }
-  }
-  const header = values[0] as Partial<Header> | null;
-  if (!header || typeof header !== "object" || header.type !== "transcript" || typeof header.id !== "string") {
-    return { why: "line 1 is not a transcript header" };
-  }
-  if (header.version !== TRANSCRIPT_VERSION) {
-    return { why: `version ${String(header.version)} is not this Harness's (${TRANSCRIPT_VERSION})` };
-  }
-  const entries: TranscriptEntry[] = [];
-  for (const [i, value] of values.slice(1).entries()) {
-    const line = i + 2;
-    const entry = value as Partial<TranscriptEntry> | null;
-    const type = entry && typeof entry === "object" ? entry.type : undefined;
-    if (type === "message") {
-      const role = (entry as { message?: { role?: unknown } }).message?.role;
-      if (role !== "user" && role !== "assistant" && role !== "toolResult") {
-        return { why: `line ${line} holds no user, assistant or tool result message` };
-      }
-    } else if (type === "compaction") {
-      const firstKept = (entry as { firstKept?: unknown }).firstKept;
-      if (typeof firstKept !== "number" || !Number.isInteger(firstKept) || firstKept < 0 || firstKept >= i) {
-        return { why: `line ${line} is a Compaction whose first kept entry is not before it` };
-      }
-    } else if (type !== "submission") {
-      return { why: `line ${line} has an unknown type (${JSON.stringify(type ?? null)})` };
-    }
-    entries.push(entry as TranscriptEntry);
-  }
-  return { part: { id: header.id, entries } };
-}
-
-/** The record's history as transcript entries, so the next prompt continues it. */
-function seeded(history: HistoryMessage[], model: Model<Api>): TranscriptEntry[] {
-  return history.map((message) => ({ type: "message", message: piMessage(message, model) }));
-}
-
-/** A history message as pi carries one. An assistant message needs the model's identity and a
- * usage; it is written under the model that continues it, with nothing spent. */
-function piMessage(message: HistoryMessage, model: Model<Api>): Message {
-  const timestamp = Date.now();
-  if (message.role === "user") return { role: "user", content: message.text, timestamp };
-  const assistant: AssistantMessage = {
-    role: "assistant",
-    content: [{ type: "text", text: message.text }],
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+function piEngine(options: EngineOptions): Engine {
+  const { hooks, models, maxRetries } = options;
+  /** The leading system message of this run's context: the system prompt and the tools'
+   * declarations, in order. It is never in the engine part, so a changed prompt or tools block
+   * REPLACES it, as a system prompt is replaced. */
+  let lead: SystemMessage | undefined;
+  const agent: Agent = new Agent({
+    // The transcript's identity rides as pi-ai's `sessionId` (a prompt-cache key).
+    sessionId: options.id,
+    // jr2 is not pi: no attribution headers on its requests.
+    identity: { attribution: null },
+    // pi's `Agent` does not forward `maxRetries`, so the stream states it.
+    streamFn: (streamModel, context, streamOptions) =>
+      models.streamSimple(streamModel, context, { ...streamOptions, maxRetries }),
+    convertToLlm: (messages) => hooks.convertToLlm(messages),
+    // Before EVERY provider request, the first one included: pi has appended and emitted the
+    // pending messages. A context returned is what pi uses for this request and the rest of the
+    // run; a throw is a failed run.
+    prepareRequest: async (request, signal) => {
+      const messages = await hooks.beforeRequest(signal);
+      if (!messages) return undefined;
+      return { context: { messages: lead ? [lead, ...messages] : messages, tools: request.context.tools ?? [] } };
     },
-    stopReason: "stop",
-    timestamp,
+    // pi hands the VALIDATED args. A block's text is the error result the model reads. A block
+    // that also aborts the run (the runaway watch) aborts it HERE, before pi checks the signal the
+    // moment this hook returns: pi then answers the call `Operation aborted` (`ToolCallBlock`).
+    beforeToolCall: async ({ toolCall, args }) => {
+      const verdict = hooks.beforeToolCall({ name: toolCall.name, args });
+      if (verdict === undefined) return undefined;
+      if (verdict.abortRun) agent.abort();
+      return { block: true, reason: verdict.block };
+    },
+    // `{ action: "end" }` ends the run before pi polls the steering queue or makes a request.
+    finishTurn: (_turn, signal) => (hooks.endsRun() || signal?.aborted ? { action: "end" } : undefined),
+  });
+  return {
+    async run(run) {
+      lead = createInitialSystemMessage(run.systemPrompt, run.tools.map(toToolDeclaration));
+      agent.state.model = run.model;
+      agent.state.thinkingLevel = run.thinkingLevel;
+      agent.state.tools = run.tools.map(agentTool);
+      agent.state.messages = lead ? [lead, ...run.context] : run.context;
+      // pi's `abort()` does not clear the queues.
+      agent.clearAllQueues();
+      await agent.prompt(run.prompt);
+    },
+    steer(text) {
+      // The shape pi 0.82's `createUserMessage` made.
+      agent.steer({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
+    },
+    abort() {
+      agent.abort();
+    },
+    subscribe(listener) {
+      return agent.subscribe((event, signal) => {
+        const seen = engineEvent(event);
+        return seen ? listener(seen, signal) : undefined;
+      });
+    },
   };
-  return assistant;
+}
+
+/** A seam tool as pi runs it. pi wants a `label` (for a UI; it reads none) and a result's `details`,
+ * which no model reads: the label is the name, and the result has no details. pi's `onUpdate` (the
+ * partial results of a running call) is not passed on: no seam event carries one. */
+function agentTool(tool: EngineTool): AgentTool {
+  return {
+    ...tool,
+    label: tool.name,
+    execute: async (toolCallId, params, signal) => ({
+      content: (await tool.execute(toolCallId, params, signal)).content,
+      details: undefined,
+    }),
+  };
+}
+
+/** A pi event as the seam names it, or none: the seam has no use for the others. pi's `turn_end`
+ * (one model answer and its tool results) is the seam's `step_boundary`. */
+export function engineEvent(event: AgentEvent): EngineEvent | undefined {
+  switch (event.type) {
+    case "message_end":
+      return { type: "message_end", message: event.message };
+    case "turn_end":
+      return { type: "step_boundary", message: event.message, toolResults: event.toolResults };
+    case "tool_execution_start":
+      return { type: "tool_start", toolCallId: event.toolCallId };
+    case "tool_execution_end":
+      return { type: "tool_end", toolCallId: event.toolCallId };
+    default:
+      return undefined;
+  }
 }

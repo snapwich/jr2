@@ -160,15 +160,15 @@ test("the engine seat: a directory the engine names, beside the record, and the 
   const harness = harnessOver(dir);
   await admitted(harness.app, "/agents/decider/i1", "hello");
   await flush();
-  const engine = harness.seats[0]!.engine;
+  const engine = harness.seats[0]!.engineSeat;
   assert.equal(engine.dir("pi"), join(conversationDir(dir, "decider", "i1"), "engine", "pi"));
   assert.deepEqual(engine.history(), [{ role: "user", text: "hello" }]);
   // Rebuilt, the engine gets the same directory and the history the record kept.
   const after = harnessOver(dir);
   await admitted(after.app, "/agents/decider/i1", "again");
   await flush();
-  assert.equal(after.seats[0]!.engine.dir("pi"), engine.dir("pi"));
-  assert.deepEqual(after.seats[0]!.engine.history(), [
+  assert.equal(after.seats[0]!.engineSeat.dir("pi"), engine.dir("pi"));
+  assert.deepEqual(after.seats[0]!.engineSeat.history(), [
     { role: "user", text: "hello" },
     { role: "user", text: "again" },
   ]);
@@ -178,7 +178,7 @@ test("no directory, no persistence: the engine keeps its part in memory, and a r
   const harness = harnessOver(undefined);
   await admitted(harness.app, "/agents/decider/i1");
   await flush();
-  assert.equal(harness.seats[0]!.engine.dir("pi"), undefined);
+  assert.equal(harness.seats[0]!.engineSeat.dir("pi"), undefined);
   assert.equal((await harness.app.request("/agents/decider/i1")).status, 200);
   assert.equal((await harnessOver(undefined).app.request("/agents/decider/i1")).status, 404);
 });

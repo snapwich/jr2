@@ -23,13 +23,13 @@ import {
   type AssistantMessage,
   type Model,
   type Models,
+  type ModelThinkingLevel,
   type MutableModels,
   type ProviderAuth,
   type ProviderStreams,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type { ThinkingLevel as PiThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CatalogReachSpec, ProviderSpec, HarnessSpec, ResolvedDefinition, ThinkingLevel } from "./spec.ts";
 
 /** The wire protocols a custom provider may name. One entry today: the OpenAI-compatible path is
@@ -139,7 +139,7 @@ export function admissionFault(models: Models, resolved: ResolvedDefinition): st
  * jr2's effort scale onto pi's. A strict subset today (pi adds `max`), so every value passes
  * through unmapped — the throw guards the runtime JSON, where a definition can carry anything.
  */
-export function mapThinkingLevel(level: ThinkingLevel): PiThinkingLevel {
+export function mapThinkingLevel(level: ThinkingLevel): ModelThinkingLevel {
   const mapped = PI_LEVELS[level];
   if (!mapped) {
     throw new Error(
@@ -184,7 +184,7 @@ export type RanAt = { by: "clamp" | "request" | "answer"; level: string };
 
 /** True when the model has no level of this name. A model can lack one: Claude Sonnet 5.5 has no
  * `off`. The test is on pi's level names, never on what a provider answered. */
-export function lacksLevel(model: Model<Api>, asked: PiThinkingLevel): boolean {
+export function lacksLevel(model: Model<Api>, asked: ModelThinkingLevel): boolean {
   return !getSupportedThinkingLevels(model).includes(asked);
 }
 
@@ -202,7 +202,7 @@ const REQUEST_SIDE_LEVEL: ReadonlySet<Api> = new Set<Api>(["anthropic-messages",
  * request for the adapters in `REQUEST_SIDE_LEVEL`, the provider's answer for the others. Else
  * undefined — the provider chose the level, and the Harness does not know which.
  */
-export function ranAt(model: Model<Api>, asked: PiThinkingLevel, message: AssistantMessage): RanAt | undefined {
+export function ranAt(model: Model<Api>, asked: ModelThinkingLevel, message: AssistantMessage): RanAt | undefined {
   if (model.api === "openai-completions") {
     return asked === "off" ? undefined : { by: "clamp", level: clampThinkingLevel(model, asked) };
   }
@@ -211,7 +211,7 @@ export function ranAt(model: Model<Api>, asked: PiThinkingLevel, message: Assist
   return { by: REQUEST_SIDE_LEVEL.has(model.api) ? "request" : "answer", level: word };
 }
 
-const PI_LEVELS: Record<ThinkingLevel, PiThinkingLevel> = {
+const PI_LEVELS: Record<ThinkingLevel, ModelThinkingLevel> = {
   off: "off",
   minimal: "minimal",
   low: "low",

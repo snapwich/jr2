@@ -70,7 +70,7 @@ export type ConversationSeat = {
   appendMessage: (message: HistoryMessage) => void;
   /** Where the engine keeps its part of the conversation, and the record it continues from when
    * that part is unreadable (ADR-0031). */
-  engine: EngineSeat;
+  engineSeat: EngineSeat;
 };
 
 export type HarnessAppDeps = {
@@ -195,7 +195,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
       agentName,
       instanceId,
       appendMessage: (message) => created.appendMessage(message),
-      engine: engineSeat(dir, () => created.historyView().messages, recordFault),
+      engineSeat: engineSeat(dir, () => created.historyView().messages, recordFault),
     });
     created = recorded
       ? Conversation.rebuilt(recorded, run, recorder)

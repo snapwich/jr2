@@ -63,7 +63,7 @@ export type RecordedCall = {
   /** The request's headers (node's lower-case names): attribution headers are visible here. */
   headers?: Record<string, string | string[] | undefined>;
   /** Arrival order across BOTH streams (turn requests and summarizer requests), from 1. Compaction
-   * happens at a step the test does not choose, so this is the only witness that the cut landed
+   * happens at a request the test does not choose, so this is the only witness that the cut landed
    * BETWEEN two requests of one turn rather than at a turn boundary. */
   seq: number;
 };
@@ -73,7 +73,7 @@ export type FakeProvider = {
   /** Every request body the provider received since the last `reset`, in order. */
   calls: RecordedCall[];
   /** The compaction summarizer's requests (ADR-0036) — pi's own LLM call, recorded APART from
-   * `calls`: it fires at a step the test does not choose, so letting it consume a script slot
+   * `calls`: it fires at a request the test does not choose, so letting it consume a script slot
    * would shift every later turn and quietly break the exact-count assertions. */
   summaries: RecordedCall[];
   /** What any summarization request answers with. `status` is the compaction-failure lever. */
@@ -111,7 +111,7 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
       seq += 1;
       body.seq = seq;
       body.headers = req.headers;
-      // pi's summarizer request is not a scripted turn: it arrives at a step the test did not
+      // pi's summarizer request is not a scripted turn: it arrives at a request the test did not
       // choose, so it is recorded apart and answered from `summarize` (ADR-0036).
       const summarizing = raw.includes(SUMMARIZER_MARK);
       let turn: Turn;
@@ -231,7 +231,7 @@ export type FakeSandbox = {
   /** Serve each later surface read by its number (1-based since the last `reset`): a surface, or
    * an HTTP status to answer instead (a promise: an answer that takes that long). Read 1 is a
    * Submission's start; each later read is a step boundary — so a test places a change made by
-   * SOMETHING ELSE (a Gate's answer, an outside event) between two exact steps. Wins over
+   * SOMETHING ELSE (a Gate's answer, an outside event) between two exact model answers. Wins over
    * `setSurface`; cleared by `reset`. */
   surfaceByRead: (serve: (read: number) => Surface | number | Promise<Surface | number>) => void;
   /** Answer each delivery poll (`GET /agents/:iid/deliveries/:id`, ADR-0024) by its number since

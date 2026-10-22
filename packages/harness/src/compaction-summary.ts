@@ -1,7 +1,7 @@
 // Ported from @earendil-works/pi-agent-core 0.82.1 (MIT, see PI-LICENSE): dist/harness/compaction/compaction.js, dist/harness/compaction/utils.js and the summary text of dist/harness/messages.js
 //
 // The cut and the summary of a Compaction (ADR-0036), over the engine part's linear transcript
-// (`pi-engine.ts`). pi 1.x removed Compaction from pi-agent-core, so jr2 owns the algorithm now:
+// (`transcript.ts`). pi 1.x removed Compaction from pi-agent-core, so jr2 owns the algorithm now:
 // where the cut goes, which messages the summary covers, the summary request, and the files the
 // summary names. Every text the summarizer reads is pi 0.82.1's, byte for byte, and so are the
 // failure words (`Summarization failed: …`). `compaction.ts` decides WHEN to cut; this module
@@ -15,11 +15,12 @@ import {
   type Message,
   type Model,
   type Models,
+  type ModelThinkingLevel,
   type RetryPolicy,
   type Usage,
 } from "@earendil-works/pi-ai";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { contextOf, type CompactionDetails, type TranscriptEntry } from "./pi-engine.ts";
+import type { EngineMessage } from "./engine.ts";
+import { contextOf, type CompactionDetails, type TranscriptEntry } from "./transcript.ts";
 
 /** What a cut is told: whether it is on, how much room to keep for the answer, and how much recent
  * work survives verbatim. Derived by `compaction.ts`. */
@@ -41,7 +42,7 @@ export function calculateContextTokens(usage: Usage): number {
 }
 
 /** A valid assistant usage: not an error, not an abort, and more than zero. */
-function getAssistantUsage(message: AgentMessage): Usage | undefined {
+function getAssistantUsage(message: EngineMessage): Usage | undefined {
   if (message.role === "assistant" && "usage" in message) {
     if (
       message.stopReason !== "aborted" &&
@@ -75,7 +76,7 @@ export type ContextEstimate = {
 };
 
 /** The newest valid assistant usage, plus the estimate of each message after it. */
-export function estimateContextTokens(messages: readonly AgentMessage[]): ContextEstimate {
+export function estimateContextTokens(messages: readonly EngineMessage[]): ContextEstimate {
   let index = -1;
   let usage: Usage | undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -109,7 +110,7 @@ function estimateTextAndImageContentChars(content: string | ReadonlyArray<{ type
 }
 
 /** One message's tokens by the character heuristic: characters / 4, 4800 characters an image. */
-export function estimateTokens(message: AgentMessage): number {
+export function estimateTokens(message: EngineMessage): number {
   let chars = 0;
   switch (message.role) {
     case "user":
@@ -209,7 +210,7 @@ export function findCutPoint(
 type FileOps = { read: Set<string>; written: Set<string>; edited: Set<string> };
 
 /** The paths of the `read`, `write` and `edit` calls in an assistant message. */
-function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOps): void {
+function extractFileOpsFromMessage(message: EngineMessage, fileOps: FileOps): void {
   if (message.role !== "assistant" || !Array.isArray(message.content)) return;
   for (const block of message.content) {
     if (block.type !== "toolCall") continue;
@@ -255,7 +256,7 @@ export function compactionSummaryText(summary: string): string {
 /** The summarizer's own role mapping (pi 0.82.1 `convertToLlm`): the summary becomes its user
  * message; user, assistant and tool result messages pass. It does not settle cut picks or re-tag an
  * aborted message, as the Turn's `convertToLlm` does: the summary request stays pi 0.82.1's. */
-export function summaryLlmMessages(messages: readonly AgentMessage[]): Message[] {
+export function summaryLlmMessages(messages: readonly EngineMessage[]): Message[] {
   return messages.flatMap((m): Message[] => {
     if (m.role === "compactionSummary") {
       return [
@@ -400,7 +401,7 @@ Be concise. Focus on what's needed to understand the kept suffix.`;
 export type SummarySeat = {
   models: Models;
   model: Model<Api>;
-  thinkingLevel: ThinkingLevel;
+  thinkingLevel: ModelThinkingLevel;
   retry: RetryPolicy;
   signal: AbortSignal | undefined;
 };
@@ -428,7 +429,7 @@ function capOf(model: Model<Api>): number {
 }
 
 async function generateSummary(
-  messages: readonly AgentMessage[],
+  messages: readonly EngineMessage[],
   seat: SummarySeat,
   reserveTokens: number,
   previousSummary: string | undefined,
@@ -447,7 +448,7 @@ async function generateSummary(
 }
 
 async function generateTurnPrefixSummary(
-  messages: readonly AgentMessage[],
+  messages: readonly EngineMessage[],
   seat: SummarySeat,
   reserveTokens: number,
 ): Promise<{ text: string; usage: Usage }> {
@@ -490,8 +491,8 @@ function combineUsage(first: Usage, second: Usage): Usage {
 export type PreparedCut = {
   /** The index in the whole transcript of the first entry the cut keeps. */
   firstKept: number;
-  messagesToSummarize: AgentMessage[];
-  turnPrefixMessages: AgentMessage[];
+  messagesToSummarize: EngineMessage[];
+  turnPrefixMessages: EngineMessage[];
   isSplitTurn: boolean;
   tokensBefore: number;
   previousSummary: string | undefined;
@@ -530,7 +531,7 @@ export function prepareCompaction(
   const tokensBefore = estimateContextTokens(contextOf(entries, start)).tokens;
   const cutPoint = findCutPoint(entries, boundaryStart, entries.length, settings.keepRecentTokens);
   if (entries[cutPoint.firstKeptEntryIndex] === undefined) throw new Error("the cut keeps no entry of the transcript");
-  const messageOf = (entry: TranscriptEntry): AgentMessage[] => (entry.type === "message" ? [entry.message] : []);
+  const messageOf = (entry: TranscriptEntry): EngineMessage[] => (entry.type === "message" ? [entry.message] : []);
   const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
   const messagesToSummarize = entries.slice(boundaryStart, historyEnd).flatMap(messageOf);
   const turnPrefixMessages = cutPoint.isSplitTurn

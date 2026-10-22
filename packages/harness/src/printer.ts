@@ -1,4 +1,4 @@
-// The Harness prints the conversation, and `kubectl logs` reads it (ADR-0023) — over pi's
+// The Harness prints the conversation, and `kubectl logs` reads it (ADR-0023) — over the engine's
 // in-process event stream (ADR-0027; the retired shim needed a loopback SSE client). Reasoning,
 // and jr2's own answers: prompts, assistant text, thinking, tool calls with TRUNCATED inputs, and
 // each Menu pick's answer under the same bound, cut in its middle. A Working tool's RESULT is never
@@ -7,15 +7,15 @@
 // Truncation is load-bearing too — kubelet rotates at 10Mi and drops the remainder, so an
 // untruncated turn loses its own beginning.
 
-import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { EngineEvent, EngineMessage } from "./engine.ts";
 import type { RanAt } from "./provider.ts";
 import { MENU_TOOL_PREFIX } from "./menu-tools.ts";
 import type { EchoEvent } from "./wire.ts";
 
-/** What the printer needs from a pi `Agent`: the in-process event stream. */
+/** What the printer needs from the engine (`engine.ts`): the in-process event stream. */
 export type PrinterSource = {
-  subscribe(listener: (event: AgentEvent) => void): () => void;
+  subscribe(listener: (event: EngineEvent) => void): () => void;
 };
 
 /** Where the lines go — `process.stdout` (the pod log) unless a test collects them. */
@@ -63,7 +63,7 @@ export function renderToolInput(toolName: string, input: unknown): string {
 /** One completed message → its labelled line bodies (a body may span lines), or none for what
  * does not print. Deltas are best-effort live progress; a completed message is authoritative, and
  * a log line is atomic — so content prints once, at `message_end`. */
-export function renderMessage(message: AgentMessage): string[] {
+export function renderMessage(message: EngineMessage): string[] {
   const role = (message as { role?: string }).role;
   if (role === "user") {
     const content = (message as UserMessage).content;
@@ -135,7 +135,7 @@ export function printLines(out: PrinterOut, agentName: string, bodies: string[])
 }
 
 /**
- * Subscribe the conversation printer to a pi `Agent`'s event stream. Every line carries the Agent
+ * Subscribe the conversation printer to the engine's event stream. Every line carries the Agent
  * name alone — the minted iid mostly restates it (ADR-0015), and per-conversation diagnostics
  * live elsewhere. Returns the unsubscribe.
  */

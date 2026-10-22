@@ -24,7 +24,7 @@ function tool(name: string): WorkingTool {
 }
 
 async function output(t: WorkingTool, params: unknown): Promise<string> {
-  const result = await t.execute("call-1", params as never, undefined, undefined);
+  const result = await t.execute("call-1", params as never, undefined);
   const first = result.content[0];
   assert.ok(first && first.type === "text", "expected text content");
   return first.text;

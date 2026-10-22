@@ -7,9 +7,9 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { EffectStateShape } from "@jr2/orchestrator";
 import { noticeText } from "../src/briefing.ts";
+import type { EngineMessage } from "../src/engine.ts";
 import {
   answerText,
   rewrittenPushText,
@@ -472,7 +472,7 @@ test("a Menu call a restart cut gets jr2's result in the history; a Working-tool
       stopReason: "toolUse",
       timestamp: 2,
     },
-  ] as unknown as AgentMessage[];
+  ] as unknown as EngineMessage[];
   const settled = settleCutPicks(messages) as Array<{ role: string; toolCallId?: string; content?: unknown }>;
   const results = settled.filter((m) => m.role === "toolResult");
   assert.deepEqual(
@@ -480,7 +480,7 @@ test("a Menu call a restart cut gets jr2's result in the history; a Working-tool
     ["m1"],
   );
   assert.deepEqual((results[0]!.content as Array<{ text: string }>)[0]!.text, cutPickResult("mcp__jr2__run_tests"));
-  assert.deepEqual(settleCutPicks(settled as unknown as AgentMessage[]), settled, "an answered call is left alone");
+  assert.deepEqual(settleCutPicks(settled as unknown as EngineMessage[]), settled, "an answered call is left alone");
 });
 
 test("a Menu call in a message an abort cut while the model wrote it gets the text that it never reached the workflow; a finished message's call keeps the restart's (ADR-0031)", () => {
@@ -496,8 +496,8 @@ test("a Menu call in a message an abort cut while the model wrote it gets the te
         stopReason,
         timestamp: 2,
       },
-    ] as unknown as AgentMessage[];
-  const textOf = (messages: AgentMessage[]) =>
+    ] as unknown as EngineMessage[];
+  const textOf = (messages: EngineMessage[]) =>
     (settleCutPicks(messages) as Array<{ role: string; toolCallId?: string; content?: Array<{ text: string }> }>)
       .filter((m) => m.role === "toolResult")
       .map((m) => [m.toolCallId, m.content![0]!.text]);
@@ -530,11 +530,11 @@ test("a Menu call in a message a provider error ended gets no answer and is not 
       errorMessage: "Stream ended without finish_reason",
       timestamp: 2,
     },
-  ] as unknown as AgentMessage[];
+  ] as unknown as EngineMessage[];
   assert.deepEqual(settleCutPicks(messages), messages, "nothing is added and nothing is re-tagged");
   assert.deepEqual(cutPickAnswers(messages), [], "nothing prints");
   // The same message followed by the next prompt: still no answer.
-  const later = [...messages, { role: "user", content: "Try again.", timestamp: 3 }] as AgentMessage[];
+  const later = [...messages, { role: "user", content: "Try again.", timestamp: 3 }] as EngineMessage[];
   assert.deepEqual(settleCutPicks(later), later);
 });
 
@@ -551,14 +551,14 @@ test("the cut answers a rebuilt engine part prints are those of the Menu calls i
       timestamp: 2,
     },
     { role: "toolResult", toolCallId: "b1", toolName: "bash", content: [], isError: false, timestamp: 3 },
-  ] as unknown as AgentMessage[];
+  ] as unknown as EngineMessage[];
   assert.deepEqual(
     cutPickAnswers(cutTurn).map((m) => [m.toolCallId, (m.content[0] as { text: string }).text]),
     [["m1", cutPickResult("mcp__jr2__run_tests")]],
   );
   // The same call once the next process prompted after it: the history still answers it, and it
   // printed in that process, so nothing prints now.
-  const later = [...cutTurn, { role: "user", content: "Your previous turn was cut", timestamp: 4 }] as AgentMessage[];
+  const later = [...cutTurn, { role: "user", content: "Your previous turn was cut", timestamp: 4 }] as EngineMessage[];
   assert.equal(
     settleCutPicks(later).filter((m) => (m as { role: string }).role === "toolResult").length,
     2,

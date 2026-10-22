@@ -726,7 +726,7 @@ test("in-Turn modes: ONE Submission walks two modes — the tools block never mo
 
 // ─── the step boundary: the Turn part restated (ADR-0029, ADR-0016) ─────────────────────────────
 // A modes Machine (coding / testing / reviewing), its Orchestrator side scripted by surface read:
-// read 1 is the Submission's start, read n+1 the boundary after step n.
+// read 1 is the Submission's start, read n+1 the boundary after model answer n.
 // A change made by SOMETHING ELSE (a Gate's answer, an external event) is a surface that differs
 // from read k on — no pick of the Agent's made it.
 
@@ -766,7 +766,7 @@ test("step boundary: a Gate's answer during a run of Working-tool calls is resta
     { text: "Done." },
   ]);
   sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
-  // The human answered the Gate during step 2: reads 1-2 coding, from read 3 on reviewing.
+  // The human answered the Gate during model answer 2: reads 1-2 coding, from read 3 on reviewing.
   sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 2 ? CODING : REVIEWING));
   sandbox.answerWith(endsTurn);
   const iid = "conf/push-gate";
@@ -775,13 +775,13 @@ test("step boundary: a Gate's answer during a run of Working-tool calls is resta
   assert.equal((await settled(iid, admission)).outcome, "completed");
 
   const calls = provider.calls;
-  assert.equal(calls.length, 6, "one request per scripted step: the restatement is not a step");
+  assert.equal(calls.length, 6, "one request per scripted model answer: the restatement is not a request of its own");
   for (const call of calls)
     assert.equal(JSON.stringify(call.tools), JSON.stringify(calls[0]!.tools), "tools byte-identical");
   assert.equal(systemText(calls[5]), systemText(calls[0]), "and the system prompt");
   // Not before the change, and exactly once after it — in every later request, the SAME one.
   assert.deepEqual(calls.map(pushesIn), [0, 0, 1, 1, 1, 1]);
-  // Its position in request 3: the newest message, right after step 2's tool result.
+  // Its position in request 3: the newest message, right after model answer 2's tool result.
   const third = calls[2]!.messages as Array<{ role: string; content?: unknown; tool_call_id?: string }>;
   assert.equal(third.at(-2)?.role, "tool");
   assert.equal(third.at(-2)?.tool_call_id, "w2");
@@ -843,7 +843,7 @@ test("step boundary: a change that came and went between two boundaries is no ch
   ]);
   sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
   // Read 2 coding (whatever happened in between came back), read 3 reviewing, read 4 coding,
-  // read 5 coding: the guard flapped across steps 2-3.
+  // read 5 coding: the guard flapped across model answers 2-3.
   const served = [CODING, CODING, REVIEWING, CODING, CODING, CODING, CODING];
   sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, served[read - 1] ?? CODING));
   sandbox.answerWith(endsTurn);
@@ -1598,9 +1598,9 @@ test('the step budget is the unconditional backstop: varied calls past the bound
   assert.equal(provider.calls.length, 4, "the call past the budget trips before executing — no further round-trip");
 });
 
-test("a turn compacts MID-flight: the cut lands between two steps of ONE Submission (ADR-0036)", async () => {
+test("a turn compacts MID-flight: the cut lands between two requests of ONE Submission (ADR-0036)", async () => {
   // The claim that distinguishes ADR-0036 from flue's turn-boundary split, and the failure it was
-  // written for: run `588b0f5e` filled its window at step ~161 of a single turn. Step 4's response
+  // written for: run `588b0f5e` filled its window at step ~161 of a single turn. Request 4's response
   // reports a context past the reserve (window 200000 − max(16384, 8192) = 183616), so the cut
   // must happen inside the turn, and the very next provider request must already carry it.
   provider.reset([
@@ -1619,15 +1619,15 @@ test("a turn compacts MID-flight: the cut lands between two steps of ONE Submiss
   assert.equal(settlement.outcome, "completed");
 
   assert.equal(provider.summaries.length, 1, "one cut, one summarizer call");
-  assert.equal(provider.calls.length, 6, "the summarizer is not a step: the turn ran its script");
+  assert.equal(provider.calls.length, 6, "the summarizer is not a scripted request: the turn ran its script");
   // MID-flight: the summary was fetched AFTER the request that crossed and BEFORE the next one.
   assert.ok(
     provider.calls[3]!.seq < provider.summaries[0]!.seq && provider.summaries[0]!.seq < provider.calls[4]!.seq,
-    `the cut landed between two steps (calls ${provider.calls.map((c) => c.seq)}, summary ${provider.summaries[0]!.seq})`,
+    `the cut landed between two requests (calls ${provider.calls.map((c) => c.seq)}, summary ${provider.summaries[0]!.seq})`,
   );
   // …and the request that NOTICED is already compacted — no round-trip is spent on a full window.
-  assert.ok(!carriesSummary(provider.calls[3]), "the pre-cut steps carried no summary");
-  assert.ok(carriesSummary(provider.calls[4]), "the step after the cut carries the summary");
+  assert.ok(!carriesSummary(provider.calls[3]), "the pre-cut requests carried no summary");
+  assert.ok(carriesSummary(provider.calls[4]), "the request after the cut carries the summary");
   assert.ok(
     provider.calls[4]!.messages.length < provider.calls[3]!.messages.length,
     `the context SHRANK (${provider.calls[3]!.messages.length} → ${provider.calls[4]!.messages.length})`,
@@ -1635,7 +1635,7 @@ test("a turn compacts MID-flight: the cut lands between two steps of ONE Submiss
   // …and it KEEPS carrying it. This is the pi-bump canary ADR-0036 names: the mechanism is pi's
   // loop keeping the context that `prepareRequest` returned for the rest of the run — behavior pi
   // documents in types but does not promise as a caller contract.
-  assert.ok(carriesSummary(provider.calls[5]), "the NEXT step kept the cut context too");
+  assert.ok(carriesSummary(provider.calls[5]), "the NEXT request kept the cut context too");
   // The turn went on to its pick: a compacted turn still concludes (ADR-0006).
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
@@ -1737,7 +1737,7 @@ test("a SECOND cut in one Submission keeps the first cut's retained tail (ADR-00
   assert.equal((await settled(iid, admission, AGENT, compactApp)).outcome, "completed");
 
   assert.equal(provider.summaries.length, 2, "two cuts, in ONE Submission");
-  assert.equal(provider.calls.length, 8, "neither summarizer call is a step");
+  assert.equal(provider.calls.length, 8, "neither summarizer call is a scripted request");
   // Nothing was deleted. A mark is either in a summarizer's input (it was summarized) or in the
   // last request (it is still verbatim in the context) — a mark in NEITHER is work the model can
   // no longer see and no summary describes.
@@ -2462,14 +2462,14 @@ test("M11: another model's thinking is not sent after a model Dial change (pi-ai
   assert.ok(!sentText(provider.calls[1]).includes("Model x thought this."), "no thinking of model-x in any form");
 });
 
-test("M12: a step that a provider error ended steers nothing, and the next Submission ends with its prompt (I-7)", async () => {
+test("M12: a request that a provider error ended steers nothing, and the next Submission ends with its prompt (I-7)", async () => {
   provider.reset([{ status: 500, errorMessage: "boom" }, { text: "Next." }]);
   sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
   // Read 1 starts the first Submission; any read after it sees the list changed.
   sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read === 1 ? CODING : REVIEWING));
   const iid = "conf/error-no-restate";
   assert.equal((await settled(iid, await admit(iid, "Fix the ticket."))).outcome, "failed");
-  assert.equal(sandbox.reads(), 1, "the failed step read no Menu");
+  assert.equal(sandbox.reads(), 1, "the failed request read no Menu");
   const next = await admit(iid, "Next Turn.");
   assert.equal((await settled(iid, next)).outcome, "completed");
   const last = provider.calls[1]!.messages.at(-1);
@@ -2518,7 +2518,7 @@ test("jr2 is not pi: a request names no attribution, even to a base URL that pi-
   assert.equal(headers["x-title"], undefined);
 });
 
-test("an abort that lands after the step's end asks for no summary, and the run ends (I-10)", async () => {
+test("an abort that lands after the step boundary asks for no summary, and the run ends (I-10)", async () => {
   // The request hook runs once more after such an abort, over a full window. It asks for no summary
   // then. This test cannot tell jr2's own check from pi-ai's: a summary call on an aborted signal
   // sends nothing either. It pins the outcome — no summary request, and a run that ends; the check

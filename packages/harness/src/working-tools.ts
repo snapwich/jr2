@@ -11,15 +11,15 @@
 // Menu-only Agent has no data plane at all.
 
 import { execFile } from "node:child_process";
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { bashTool } from "./bash-tool.ts";
+import type { EngineTool, EngineToolResult } from "./engine.ts";
 import { fileTools } from "./file-tools.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
 import type { AgentDefinition } from "./spec.ts";
 
-/** A Working tool, in the shape the loop runs (`AgentTool`). */
-export type WorkingTool = AgentTool;
+/** A Working tool, in the shape the engine runs (`engine.ts`). */
+export type WorkingTool = EngineTool;
 
 /** Output bound for grep/glob — a search that would flood the context truncates, loudly. */
 const MAX_LINES = 200;
@@ -51,10 +51,9 @@ const grepSchema = Type.Object({
   ),
 });
 
-function grepTool(cwd: string): AgentTool<typeof grepSchema, undefined> {
+function grepTool(cwd: string): EngineTool<typeof grepSchema> {
   return {
     name: "grep",
-    label: "grep",
     description:
       "Search file contents for a regular expression. Answers matching lines as file:line:text, " +
       `first ${MAX_LINES} matches.`,
@@ -77,10 +76,9 @@ const globSchema = Type.Object({
   ),
 });
 
-function globTool(cwd: string): AgentTool<typeof globSchema, undefined> {
+function globTool(cwd: string): EngineTool<typeof globSchema> {
   return {
     name: "glob",
-    label: "glob",
     description: `Find files by name pattern. Answers matching paths, first ${MAX_LINES}.`,
     parameters: globSchema,
     execute: async (_id, { pattern, path }, signal) => {
@@ -120,6 +118,6 @@ function bounded(out: string): string {
   );
 }
 
-function text(t: string): AgentToolResult<undefined> {
-  return { content: [{ type: "text", text: t }], details: undefined };
+function text(t: string): EngineToolResult {
+  return { content: [{ type: "text", text: t }] };
 }

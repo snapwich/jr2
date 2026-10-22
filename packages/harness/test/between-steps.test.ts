@@ -59,7 +59,7 @@ test("between: says the new list once, then records it as read", async () => {
   assert.deepEqual(urls, Array(3).fill("http://custodian.invalid/agents/run-1%2Fcoder/surface"));
 });
 
-test("between, the ask-again rule: a model that STOPPED is not restated an empty list; a step that ran tools is", async () => {
+test("between, the ask-again rule: a model that STOPPED is not restated an empty list; a model answer that ran tools is", async () => {
   let allowed: string[] = [];
   const { options } = opts(() => json(200, surface(allowed)));
   const told = new ToldPicks();
@@ -72,7 +72,7 @@ test("between, the ask-again rule: a model that STOPPED is not restated an empty
   assert.match(
     (await between(options, "i", told, undefined, { stopped: false })) ?? "",
     /Allowed now: none/,
-    "a step that ran tools goes on anyway: the empty list is said",
+    "a model answer that ran tools goes on anyway: the empty list is said",
   );
 });
 

@@ -19,8 +19,8 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
 import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import type { EngineTool } from "./engine.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
 import { exec, isExecError, MAX_TIMEOUT_SECONDS, type ExecError, type ExecExit } from "./shell.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateTail, type TruncationResult } from "./truncate.ts";
@@ -43,14 +43,10 @@ const WRAPPER = [
 /** Signal numbers to names — 137 is 128 + 9, SIGKILL. */
 const SIGNAL_NAMES = new Map<number, string>(Object.entries(constants.signals).map(([name, n]) => [n, name]));
 
-const BASH_UPDATE_THROTTLE_MS = 100;
-
 const bashSchema = Type.Object({
   command: Type.String({ description: "Bash command to execute" }),
   timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
 });
-
-type BashDetails = { truncation?: TruncationResult; fullOutputPath?: string } | undefined;
 
 function validateTimeout(timeout: number | undefined): void {
   if (timeout === undefined) return;
@@ -63,16 +59,13 @@ function validateTimeout(timeout: number | undefined): void {
 export function bashTool(opts: {
   cwd: string;
   guard?: Pick<MemoryGuard, "watch"> | undefined;
-}): AgentTool<typeof bashSchema, BashDetails> {
+}): EngineTool<typeof bashSchema> {
   return {
     name: "bash",
-    label: "bash",
     description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
     parameters: bashSchema,
-    async execute(_toolCallId, { command, timeout }, signal, onUpdate) {
+    async execute(_toolCallId, { command, timeout }, signal) {
       validateTimeout(timeout);
-      const updates = throttled(onUpdate);
-      onUpdate?.({ content: [], details: undefined });
       const watch = opts.guard?.watch();
       let capture: Capture;
       try {
@@ -81,21 +74,13 @@ export function bashTool(opts: {
           env: { JR2_BASH_COMMAND: command },
           ...(timeout === undefined ? {} : { timeout }),
           ...(signal ? { signal } : {}),
-          onChunk: updates.chunk,
         });
       } finally {
         watch?.end();
-        updates.stop();
       }
-      updates.last(capture);
 
       let outputText = capture.output;
-      let details: BashDetails;
       if (capture.truncation.truncated) {
-        details = {
-          truncation: capture.truncation,
-          ...(capture.fullOutputPath ? { fullOutputPath: capture.fullOutputPath } : {}),
-        };
         const startLine = capture.truncation.totalLines - capture.truncation.outputLines + 1;
         const endLine = capture.truncation.totalLines;
         if (capture.truncation.lastLinePartial) {
@@ -118,7 +103,7 @@ export function bashTool(opts: {
           !status || status.exit ? outputText : status.alone ? status.text : withStatus(outputText, status.text);
         throw new Error(withStatus(seen.trimEnd(), verdict));
       }
-      if (status === undefined) return { content: [{ type: "text", text: outputText || "(no output)" }], details };
+      if (status === undefined) return { content: [{ type: "text", text: outputText || "(no output)" }] };
       // An execution error (the spawn failed, the working directory is gone) is its own text alone.
       if (status.alone) throw new Error(status.text);
       throw new Error(withStatus(outputText, status.text));
@@ -153,64 +138,17 @@ function statusOf(
   return undefined;
 }
 
-/** The streamed partial output: at most one update each 100 ms, and the last one at the end. */
-function throttled(onUpdate: AgentToolUpdateCallback<BashDetails> | undefined) {
-  let latest: (() => Progress) | undefined;
-  let timer: NodeJS.Timeout | undefined;
-  let dirty = false;
-  let lastAt = 0;
-  const emit = () => {
-    if (!onUpdate || !dirty || !latest) return;
-    dirty = false;
-    lastAt = Date.now();
-    const progress = latest();
-    onUpdate({
-      content: [{ type: "text", text: progress.output }],
-      details: {
-        ...(progress.truncation.truncated ? { truncation: progress.truncation } : {}),
-        ...(progress.fullOutputPath ? { fullOutputPath: progress.fullOutputPath } : {}),
-      },
-    });
-  };
-  const stop = () => {
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-  };
-  return {
-    chunk: (getProgress: () => Progress) => {
-      latest = getProgress;
-      if (!onUpdate) return;
-      dirty = true;
-      const delay = BASH_UPDATE_THROTTLE_MS - (Date.now() - lastAt);
-      if (delay <= 0) {
-        stop();
-        emit();
-        return;
-      }
-      timer ??= setTimeout(() => {
-        timer = undefined;
-        emit();
-      }, delay);
-    },
-    stop,
-    last: (capture: Progress) => {
-      latest = () => capture;
-      dirty = true;
-      emit();
-    },
-  };
-}
-
 // ─── the capture (pi's `executeShellWithCapture`) ───────────────────────────
 
-type Progress = {
+/** The output as the model reads it: the tail, its truncation, and the full output's file. */
+type Tail = {
   output: string;
   truncation: TruncationResult;
   fullOutputPath: string | undefined;
   lastLineBytes: number;
 };
 
-type Capture = Progress & {
+type Capture = Tail & {
   /** The shell's exit, when it ran to one. */
   exit?: ExecExit;
   error?: ExecError;
@@ -246,7 +184,6 @@ async function executeShellWithCapture(
     env: Record<string, string>;
     timeout?: number;
     signal?: AbortSignal;
-    onChunk?: (getProgress: () => Progress) => void;
   },
 ): Promise<Capture> {
   let tailOutput = "";
@@ -278,7 +215,7 @@ async function executeShellWithCapture(
       await appendFile(path, initialContent);
     });
   };
-  const createProgress = (): Progress => {
+  const tailNow = (): Tail => {
     const tailTruncation = truncateTail(tailOutput);
     const totalLines = completedLines + (hasOpenLine ? 1 : 0);
     const truncated = totalLines > DEFAULT_MAX_LINES || totalBytes > DEFAULT_MAX_BYTES;
@@ -322,7 +259,6 @@ async function executeShellWithCapture(
         appendFullOutput(text);
       }
       tailOutput = trimToLastUtf8Bytes(tailOutput, maxOutputBytes);
-      options.onChunk?.(createProgress);
     } catch (error) {
       captureError = error instanceof Error ? error : new Error(String(error));
     }
@@ -336,15 +272,15 @@ async function executeShellWithCapture(
     onStderr: onChunk,
   });
   acceptingOutput = false;
-  if (createProgress().truncation.truncated && !fullOutputRequested) ensureFullOutputFile(tailOutput);
+  if (tailNow().truncation.truncated && !fullOutputRequested) ensureFullOutputFile(tailOutput);
   // A failed write of the full output, or a failed capture, fails the call with its own words.
   await writeChain;
   if (captureError) throw captureError;
-  const progress = createProgress();
+  const tail = tailNow();
   if (isExecError(result)) {
-    if (result.kind === "aborted" || options.signal?.aborted) return { ...progress, cancelled: true };
-    return { ...progress, error: result, cancelled: false };
+    if (result.kind === "aborted" || options.signal?.aborted) return { ...tail, cancelled: true };
+    return { ...tail, error: result, cancelled: false };
   }
   const cancelled = options.signal?.aborted ?? false;
-  return { ...progress, ...(cancelled ? {} : { exit: result }), cancelled };
+  return { ...tail, ...(cancelled ? {} : { exit: result }), cancelled };
 }

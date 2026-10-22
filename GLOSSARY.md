@@ -73,7 +73,7 @@ _Avoid_: app, pipeline
 **Orchestrator**:
 The runtime that runs Machines, as the single writer of their run snapshots. Single means one writer, not one Workflow
 per process: one Orchestrator hosts many Workflows and many runs.
-_Avoid_: runner, engine
+_Avoid_: runner, engine (the loop in a Harness that runs a model)
 
 **Actor**:
 An xstate actor in a Machine that drives a remote worker through a Harness: a local handle in the Orchestrator for work
@@ -208,11 +208,17 @@ A Turn that will not end on its own, which the Harness ends when the Turn runs p
 it will end. It is a fault class, named for what jr2 observed and not for what the model did.
 _Avoid_: degeneration (the model behavior, not the fault class), loop, hang, stall
 
+**step**:
+One tool call that a Turn makes: a call of a Working tool, or a pick. The Harness counts steps to find a Runaway. A
+**step boundary** is the point after a model answer and the results of all its calls, and before the next model
+request; there the Harness can restate the Turn part.
+_Avoid_: turn (a Turn is the Agent's whole answer to its Frame), round, iteration, request
+
 **Compaction**:
 The cut that the Harness makes in a conversation's model context during a Turn: a summary plus a retained tail replaces
 the earlier context. jr2 alone decides when it occurs, and it changes what the model sees, never what jr2
 recorded.
-_Avoid_: summarization (one step of a Compaction), truncation (the failure that Compaction prevents), pruning
+_Avoid_: summarization (one part of a Compaction), truncation (the failure that Compaction prevents), pruning
 
 **Menu**:
 The workflow events that an Agent can ever be offered in its Machine, which do not change for the life of a
@@ -270,6 +276,12 @@ jr2's own long-running server that hosts the conversations of Agents and execute
 and once per Instance as the Instance Harness. It holds no Agent of its own: each Submission carries the definition
 that it runs.
 _Avoid_: flue agent, server, `local()`
+
+**engine**:
+The loop in a Harness that runs a model's requests and the tool calls of each model answer, for one conversation. The
+Harness can replace it: the engine is not the Harness's contract. What the engine keeps of a conversation is its
+**engine part**, in a folder that the engine names, which jr2's record does not read.
+_Avoid_: runtime, runner, agent loop, harness (the server that holds the engine), Orchestrator
 
 **Instance Harness**:
 The one Harness of an Instance that is in no Sandbox: the Turns of every Menu-only Agent run on it, also when a

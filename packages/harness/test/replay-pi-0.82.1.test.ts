@@ -12,11 +12,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-works/pi-ai";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { bashTool } from "../src/bash-tool.ts";
 import { compact, prepareCompaction } from "../src/compaction-summary.ts";
+import type { EngineTool } from "../src/engine.ts";
 import { fileTools } from "../src/file-tools.ts";
-import { EnginePart, type TranscriptEntry } from "../src/pi-engine.ts";
+import { EnginePart, type TranscriptEntry } from "../src/transcript.ts";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "pi-0.82.1");
 const load = <T>(name: string): T => JSON.parse(readFileSync(join(fixtures, name), "utf8")) as T;
@@ -140,7 +140,7 @@ for (const c of load<FileCase[]>("file-tools.json")) {
         mkdirSync(join(dir, name, ".."), { recursive: true });
         writeFileSync(join(dir, name), typeof content === "string" ? content : Buffer.from(content.base64, "base64"));
       }
-      const tool = fileTools(dir).find((t) => t.name === c.tool) as AgentTool;
+      const tool = fileTools(dir).find((t) => t.name === c.tool) as EngineTool;
       const raw = JSON.parse(JSON.stringify(c.args).replaceAll("<dir>", dir)) as Record<string, unknown>;
       const args = tool.prepareArguments ? tool.prepareArguments(raw) : raw;
       let output: { content?: unknown; error?: string; files?: Record<string, string> };

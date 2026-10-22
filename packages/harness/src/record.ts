@@ -1,8 +1,8 @@
 // A conversation's directory (ADR-0031): jr2's own RECORD of it, written as it goes, and beside it
-// the ENGINE PART — whatever the engine that runs the Turns keeps, opaque to jr2 and named by that
-// engine. The record is the contract: it is written in the wire's shapes (wire.ts) and it is what
-// a boot rebuilds the conversation from. The engine part is not: an engine that cannot read it
-// (another engine, another version) continues from the record's history messages.
+// the ENGINE PART — whatever the engine that runs the Turns keeps, opaque to the record and named
+// by that engine. The record is the contract: it is written in the wire's shapes (wire.ts) and it
+// is what a boot rebuilds the conversation from. The engine part is not: an engine that cannot read
+// it (another engine, another version) continues from the record's history messages.
 //
 //   <root>/<agent>/<instance id>/conversation.json    who it is — the route's two parts, unencoded
 //   <root>/<agent>/<instance id>/record/admitted.jsonl    one { submissionId } per Admission
@@ -193,7 +193,7 @@ export function freeDir(dir: string): void {
 
 /** Truncate a JSONL file to its last newline — every line is written whole with its newline, so
  * whatever follows the last one is a torn write (see `jsonl`). A missing file has no tail. The
- * engine part's transcript has the same rule (`pi-engine.ts`). */
+ * engine part's transcript has the same rule (`transcript.ts`). */
 export function cutTornTail(path: string): void {
   let bytes: Buffer;
   try {

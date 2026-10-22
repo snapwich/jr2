@@ -25,16 +25,16 @@ by a summary plus a retained tail.
 
 ## Decision
 
-- **The seat is the loop's `prepareRequest` hook, and the write goes to the engine part.** The hook fires before every
-  provider request, the first one included, with the run's own abort signal. The engine part is complete at that moment:
-  the Harness appends each message the loop completes before the loop goes on, and pi has appended the pending messages
-  (the prompt, a steered message) before it calls the hook. The hook estimates the context tokens of the engine part
-  against the model's `contextWindow`; over the threshold it prepares the cut, asks for the summary, appends the
-  compaction entry to the engine part, and returns the rebuilt context, so the request that noticed is already
-  compacted. Firing on a turn's first request is what rescues the nudge ladder: a nudge is a fresh admission on the same
-  conversation (`actor.ts`), so it compacts before it asks. `settleAbandonedMessage` runs in the loop's `convertToLlm`,
-  over each array that is sent — including a rebuilt one, since the engine part stores an aborted assistant message
-  verbatim.
+- **The seat is the engine's request hook, and the write goes to the engine part.** The hook is `beforeRequest` at the
+  engine seam (ADR-0027), which the pi adapter runs from pi's `prepareRequest`. It fires before every provider request,
+  the first one included, with the run's own abort signal. The engine part is complete at that moment: the Harness
+  appends each message the loop completes before the loop goes on, and pi has appended the pending messages (the prompt,
+  a steered message) before it calls the hook. The hook estimates the context tokens of the engine part against the
+  model's `contextWindow`; over the threshold it prepares the cut, asks for the summary, appends the compaction entry to
+  the engine part, and returns the rebuilt context, so the request that noticed is already compacted. Firing on a turn's
+  first request is what rescues the nudge ladder: a nudge is a fresh admission on the same conversation (`actor.ts`), so
+  it compacts before it asks. `settleAbandonedMessage` runs in the seam's `convertToLlm` hook, over each array that is
+  sent — including a rebuilt one, since the engine part stores an aborted assistant message verbatim.
 - **The algorithm is jr2's, ported from pi-agent-core 0.82.1.** Where the cut goes, which messages the summary covers,
   the split turn, the file lists, and every text the summarizer reads (its system prompt, the summary and update
   prompts, the serialized conversation) are pi 0.82.1's, byte for byte; replay fixtures from pi 0.82.1's own code pin
@@ -80,10 +80,11 @@ by a summary plus a retained tail.
 - **ADR-0035's runaway counters do not reset on compaction, and the compaction call is not a step.** The watch counts
   tool calls per Submission; compaction is a fact about tokens. A turn that compacts and continues is still spending its
   one step budget.
-- **A tripped watch ends the run at the step boundary (`finishTurn`), so no request follows and no cut is taken.** A cut
-  there would run a full summarization on a full window for a request that is never sent: real tokens, an unbounded wait
-  against the very liveness ADR-0035 exists to guarantee, and a `[compacted]` line that makes a killed turn read as a
-  healthy one. The hook also asks for no summary when the run's signal has aborted or the watch has tripped.
+- **A tripped watch ends the run at the step boundary (the seam's `endsRun`, which the pi adapter runs from pi's
+  `finishTurn`), so no request follows and no cut is taken.** A cut there would run a full summarization on a full
+  window for a request that is never sent: real tokens, an unbounded wait against the very liveness ADR-0035 exists to
+  guarantee, and a `[compacted]` line that makes a killed turn read as a healthy one. The hook also asks for no summary
+  when the run's signal has aborted or the watch has tripped.
 - **The claims are proven in the ADR-0027 conformance suite**, where a scripted provider fabricates usage to cross the
   threshold without burning a real window; it runs in the default `pnpm -r test` gate.
 
@@ -94,7 +95,7 @@ by a summary plus a retained tail.
   `588b0f5e`, whose window filled at step ~161 of a single turn. It rescues the nudges after the failure, not the
   failure.
 - **A pure transform in the request hook, never touching the engine part.** Rejected: no compaction record for the
-  printer or the engine part, and the summary would have to be cached jr2-side anyway to avoid an LLM call per step —
+  printer or the engine part, and the summary would have to be cached jr2-side anyway to avoid an LLM call per request —
   which is the compaction entry reimplemented worse.
 - **Wait for pi to own Compaction.** Rejected on ADR-0027's grounds: pi 0.82 had the arithmetic and called it from no
   loop, pi 1.0 removed it from pi-agent-core, and the pin is exact.
@@ -127,11 +128,11 @@ by a summary plus a retained tail.
   still over, the turn fails as infra.
 - A cut does not lower the reading that triggered it: the estimate reads the last valid assistant usage, and a cut
   RETAINS recent assistant messages, so the number survives the cut. When the request after a cut ends `error` or
-  `aborted` it contributes no usage of its own and the next step would cut again on a context nothing has grown — a
+  `aborted` it contributes no usage of its own and the next request would cut again on a context nothing has grown — a
   second summary over work the first already covered. A cut therefore requires assistant usage recorded AFTER the newest
   compaction entry.
-- **The pi surface is the `prepareRequest` hook and pi-ai's message types.** The hook's rule that its context "replaces
-  the runtime values for this and later requests" is documented in pi's types, not promised as a caller contract. The
-  algorithm, the context rule and the branch walk are jr2's code, so a pin bump cannot move them. The conformance suite
-  is still the canary (ADR-0027): it asserts the mid-turn cut and the SECOND cut's retention, not just the threshold
-  arithmetic.
+- **The pi surface is the `prepareRequest` hook, behind the engine seam (`pi-engine.ts`), and pi-ai's message types.**
+  The hook's rule that its context "replaces the runtime values for this and later requests" is documented in pi's
+  types, not promised as a caller contract. The algorithm, the context rule and the branch walk are jr2's code, so a pin
+  bump cannot move them. The conformance suite is still the canary (ADR-0027): it asserts the mid-turn cut and the
+  SECOND cut's retention, not just the threshold arithmetic.

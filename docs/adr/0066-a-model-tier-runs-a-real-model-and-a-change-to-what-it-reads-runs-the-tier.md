@@ -269,11 +269,11 @@ recover, finish — are exercised only one scripted tool call at a time.
   - `push-wake`, since replaced by `wake`. It measured a Menu-only Turn that started with nothing allowed and picked
     inside the same Submission once a Gate's answer was restated at a step boundary. The step first answered the board
     as soon as the Turn's prompt printed; in two runs, 8 and 9 trials had no restatement, each with one `hold` or
-    `release` as its whole conversation (7 and 5 of 10). It then answered once the Turn's first step had ended with a
-    Menu call, and the claim fell to 2 of 10. The cause is the standing Briefing, rewritten after the claim was written
-    (ADR-0062): "If nothing is allowed, stop: the workflow prompts you again when something is." A correct model with
-    nothing allowed now stops, so the in-Submission moment the claim measured is rare, and the model that skips it is
-    the correct one. What the Briefing promises instead is the wake (ADR-0016), and `wake` measures that: the model
+    `release` as its whole conversation (7 and 5 of 10). It then answered once the Turn's first model answer had ended
+    with a Menu call, and the claim fell to 2 of 10. The cause is the standing Briefing, rewritten after the claim was
+    written (ADR-0062): "If nothing is allowed, stop: the workflow prompts you again when something is." A correct model
+    with nothing allowed now stops, so the in-Submission moment the claim measured is rare, and the model that skips it
+    is the correct one. What the Briefing promises instead is the wake (ADR-0016), and `wake` measures that: the model
     stopped with nothing allowed; once its Submission has settled, the step answers the board; and the first Menu call
     after the wake is `release` or `hold`. A model that never stopped is void. Its floor is `push-follow`'s, 9 of 10.
     `push-follow` keeps the restatement case: a list that changes while the model is still working. `push-wake` had no

@@ -1,4 +1,4 @@
-// The engine part (ADR-0031, `pi-engine.ts`): the transcript jr2 writes for pi — one append-only,
+// The engine part (ADR-0031, `transcript.ts`): the transcript jr2 writes for an engine — one append-only,
 // versioned file that a restart reopens or plainly does not open, and the context and the branch
 // that Compaction reads from it (ADR-0036).
 
@@ -17,7 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Message, Model, Usage } from "@earendil-works/pi-ai";
-import { EnginePart, openEnginePart, type TranscriptEntry } from "../src/pi-engine.ts";
+import { EnginePart, openEnginePart, type TranscriptEntry } from "../src/transcript.ts";
 import type { EngineSeat } from "../src/record.ts";
 import type { HistoryMessage } from "../src/wire.ts";
 
@@ -55,7 +55,7 @@ function seatIn(history: HistoryMessage[] = []) {
       throw new Error("faulted");
     },
   };
-  const open = () => openEnginePart(seat, { cwd: "/work", model }, (line) => said.push(line));
+  const open = () => openEnginePart(seat, "pi", { cwd: "/work", model }, (line) => said.push(line));
   return { dir, seat, faults, said, open, file: join(dir, "transcript.jsonl") };
 }
 
@@ -144,7 +144,7 @@ test("no history and no file: a new transcript, and no log line", () => {
 });
 
 test("memory mode writes no file", () => {
-  const part = openEnginePart(undefined, { cwd: "/work", model });
+  const part = openEnginePart(undefined, "pi", { cwd: "/work", model });
   part.appendMessage(user("in memory"));
   assert.deepEqual(texts(part), ["user: in memory"]);
 });

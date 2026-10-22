@@ -56,10 +56,10 @@ whole history again. It also left the history calling tools the request no longe
 - **The Turn part is restated at a step boundary when the Allowed picks changed under the Agent.** A Gate's answer, an
   outside event or a child's settled invoke the Agent did not pick can move the Machine while the Agent works with its
   Working tools and picks nothing. So the Harness keeps the last Allowed-picks list the model read — the Turn part, then
-  every receipt and refusal — and after each step's tool results reads the surface once and compares the two as sets. If
-  they differ, it appends one message before the next model request: "The workflow's state changed since you last read
-  the Allowed picks. Allowed now: …", in a `<jr2-turn>` block. The Agent's own pick is never restated, because its
-  receipt already told the model. The read is one bounded attempt and a failure is silence; the next boundary asks
+  every receipt and refusal — and after each model answer's tool results reads the surface once and compares the two as
+  sets. If they differ, it appends one message before the next model request: "The workflow's state changed since you
+  last read the Allowed picks. Allowed now: …", in a `<jr2-turn>` block. The Agent's own pick is never restated, because
+  its receipt already told the model. The read is one bounded attempt and a failure is silence; the next boundary asks
   again. Nothing is read or said after the Turn ended or after an abort. The Harness knows the Turn ended from a pick's
   answer (`turnComplete`, or a 404), not only from a read: under `continue: true` the next state re-registers the same
   address before the abort lands, so a read there would answer for the next Turn. An empty list is not restated to a
@@ -145,8 +145,8 @@ block was not perfect either: once the model invented a tool it had never been g
   The conformance tier asserts it: two Submissions with different Allowed picks send a byte-identical tools block
   (ADR-0027).
 - **A restatement is appended, never rewritten.** Conformance asserts that each request of a Submission is a byte prefix
-  of the next, with the tools and the system prompt unchanged, and that the restatement sits right after the step's last
-  tool result.
+  of the next, with the tools and the system prompt unchanged, and that the restatement sits right after the model
+  answer's last tool result.
 - **A workflow expresses "not available yet" with a guard alone,** and the Agent is told so rather than finding a tool
   that silently does nothing.
 - **`on: { X: {} }` — targetless and actionless — is never allowed,** matching xstate's `can()`.

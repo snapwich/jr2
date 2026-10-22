@@ -7,6 +7,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, JsonObject } from "@earendil-works/pi-ai";
+import type { EngineEvent } from "../src/engine.ts";
+import { engineEvent } from "../src/pi-engine.ts";
 import { receiptProse } from "../src/menu.ts";
 import { menuToolName } from "../src/menu-tools.ts";
 import { attachPrinter, renderMessage, renderToolInput } from "../src/printer.ts";
@@ -35,16 +37,18 @@ function toolCall(name: string, args: Record<string, unknown>): AssistantMessage
   return { type: "toolCall", id: "tc-1", name, arguments: args as JsonObject };
 }
 
-/** A fake `Agent`: the printer needs only `subscribe`, and tests need `emit`. */
+/** A fake engine: the printer needs only `subscribe`, and tests need `emit`. A pi event goes
+ * through the adapter's own mapping (`pi-engine.ts`), as a pi `Agent`'s does. */
 function fakeHarness() {
-  const listeners = new Set<(event: AgentEvent) => void>();
+  const listeners = new Set<(event: EngineEvent) => void>();
   return {
-    subscribe(listener: (event: AgentEvent) => void): () => void {
+    subscribe(listener: (event: EngineEvent) => void): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     emit(event: AgentEvent): void {
-      for (const listener of listeners) listener(event);
+      const seen = engineEvent(event);
+      if (seen) for (const listener of listeners) listener(seen);
     },
   };
 }

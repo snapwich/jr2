@@ -679,8 +679,8 @@ async function awaitAnswer(
  * The Allowed picks NOW, read at a step boundary of a running Turn (`between-steps.ts`). ONE
  * attempt, bounded, and every failure is `undefined`: unlike `readSurface`, this read is not the
  * Turn's footing. A 404 (the Turn is over), a stopping Orchestrator's 503, the Custodian's
- * unreachable, a blip — each means "say nothing this step", and the next boundary asks again. It
- * never stalls or fails a Turn.
+ * unreachable, a blip — each means "say nothing at this boundary", and the next boundary asks
+ * again. It never stalls or fails a Turn.
  */
 export async function readAllowed(
   opts: MenuOptions,

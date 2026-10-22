@@ -4,8 +4,8 @@
 // pi-agent-core, so jr2 owns them now. What the model reads stays pi 0.82.1's, byte for byte: the
 // names, the descriptions and the parameter schemas (`test/working-tools.test.ts` compares them with
 // the golden capture), each result text and each error text. Two changes, each with its reason:
-// `write` counts UTF-8 bytes, not UTF-16 units (its text says "bytes"), and `edit` returns no diff
-// details, which nothing read (the printer never prints a Working tool's result, ADR-0023).
+// `write` counts UTF-8 bytes, not UTF-16 units (its text says "bytes"), and no tool returns pi's
+// result `details` (a diff, a truncation), which no model and no printer read (ADR-0023).
 //
 // Each tool closes over the Frame's `cwd` (ADR-0057): a relative path resolves against it. The
 // schemas stay TypeBox (`Type` from pi-ai), so pi-ai coerces the arguments as it did on 0.82.1.
@@ -14,8 +14,8 @@ import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type, type Static } from "@earendil-works/pi-ai";
+import type { EngineTool } from "./engine.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "./truncate.ts";
 
 // ─── the path rules ──────────────────────────────────────────────────────────
@@ -191,10 +191,9 @@ const readSchema = Type.Object({
   limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
 });
 
-function readTool(cwd: string): AgentTool<typeof readSchema> {
+function readTool(cwd: string): EngineTool<typeof readSchema> {
   return {
     name: "read",
-    label: "read",
     description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
     parameters: readSchema,
     async execute(_toolCallId, { path, offset, limit }, signal) {
@@ -213,7 +212,6 @@ function readTool(cwd: string): AgentTool<typeof readSchema> {
               text: "Read image file [image/bmp]\n[Image omitted: configure an imageProcessor to convert BMP images.]",
             },
           ],
-          details: undefined,
         };
       }
       if (mimeType) {
@@ -222,7 +220,6 @@ function readTool(cwd: string): AgentTool<typeof readSchema> {
             { type: "text", text: `Read image file [${mimeType}]` },
             { type: "image", data: bytes.toString("base64"), mimeType },
           ],
-          details: undefined,
         };
       }
       // `TextDecoder` drops a leading BOM, as pi's did.
@@ -244,11 +241,9 @@ function readTool(cwd: string): AgentTool<typeof readSchema> {
       }
       const truncation = truncateHead(selectedContent);
       let outputText: string;
-      let details: { truncation: typeof truncation } | undefined;
       if (truncation.firstLineExceedsLimit) {
         const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine]!, "utf8"));
         outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
-        details = { truncation };
       } else if (truncation.truncated) {
         const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
         const nextOffset = endLineDisplay + 1;
@@ -258,7 +253,6 @@ function readTool(cwd: string): AgentTool<typeof readSchema> {
         } else {
           outputText += `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
         }
-        details = { truncation };
       } else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
         const remaining = allLines.length - (startLine + userLimitedLines);
         const nextOffset = startLine + userLimitedLines + 1;
@@ -266,7 +260,7 @@ function readTool(cwd: string): AgentTool<typeof readSchema> {
       } else {
         outputText = truncation.content;
       }
-      return { content: [{ type: "text", text: outputText }], details };
+      return { content: [{ type: "text", text: outputText }] };
     },
   };
 }
@@ -278,10 +272,9 @@ const writeSchema = Type.Object({
   content: Type.String({ description: "Content to write to the file" }),
 });
 
-function writeTool(cwd: string, queue: MutationQueue): AgentTool<typeof writeSchema> {
+function writeTool(cwd: string, queue: MutationQueue): EngineTool<typeof writeSchema> {
   return {
     name: "write",
-    label: "write",
     description:
       "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
     parameters: writeSchema,
@@ -296,7 +289,6 @@ function writeTool(cwd: string, queue: MutationQueue): AgentTool<typeof writeSch
         const bytes = Buffer.byteLength(content, "utf8");
         return {
           content: [{ type: "text", text: `Successfully wrote ${bytes} bytes to ${path}` }],
-          details: undefined,
         };
       });
     },
@@ -355,10 +347,9 @@ function editAccessError(path: string, error: unknown): Error {
   return new Error(`Could not edit file: ${path}. Error code: ${fileError(error).code}.`, { cause: error });
 }
 
-function editTool(cwd: string, queue: MutationQueue): AgentTool<typeof editSchema> {
+function editTool(cwd: string, queue: MutationQueue): EngineTool<typeof editSchema> {
   return {
     name: "edit",
-    label: "edit",
     description:
       "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
     parameters: editSchema,
@@ -400,7 +391,6 @@ function editTool(cwd: string, queue: MutationQueue): AgentTool<typeof editSchem
         if (signal?.aborted) throw new Error("Operation aborted");
         return {
           content: [{ type: "text", text: `Successfully replaced ${edits.length} block(s) in ${path}.` }],
-          details: undefined,
         };
       });
     },
@@ -717,8 +707,8 @@ function startsWithAscii(buffer: Uint8Array, offset: number, text: string): bool
 
 /** The file tools rooted at `cwd`, in the order the model reads them. `write` and `edit` share
  * one mutation queue. `readOnly` gives `read` alone (ADR-0028). */
-export function fileTools(cwd: string, opts: { readOnly?: boolean } = {}): AgentTool[] {
+export function fileTools(cwd: string, opts: { readOnly?: boolean } = {}): EngineTool[] {
   const queue: MutationQueue = { queues: new Map(), registration: Promise.resolve() };
-  if (opts.readOnly) return [readTool(cwd) as AgentTool];
-  return [readTool(cwd) as AgentTool, writeTool(cwd, queue) as AgentTool, editTool(cwd, queue) as AgentTool];
+  if (opts.readOnly) return [readTool(cwd) as EngineTool];
+  return [readTool(cwd) as EngineTool, writeTool(cwd, queue) as EngineTool, editTool(cwd, queue) as EngineTool];
 }

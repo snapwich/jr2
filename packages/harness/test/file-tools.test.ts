@@ -8,14 +8,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { EngineTool } from "../src/engine.ts";
 import { fileTools } from "../src/file-tools.ts";
 
-function toolsIn(dir: string): Record<string, AgentTool> {
+function toolsIn(dir: string): Record<string, EngineTool> {
   return Object.fromEntries(fileTools(dir).map((t) => [t.name, t]));
 }
 
-async function text(tool: AgentTool, args: unknown): Promise<string> {
+async function text(tool: EngineTool, args: unknown): Promise<string> {
   const first = (await tool.execute("call-1", args as never)).content[0];
   assert.ok(first && first.type === "text");
   return first.text;
@@ -29,14 +29,14 @@ test("write reports UTF-8 bytes, which pi 0.82.1 counted as UTF-16 units (I-9)",
   assert.equal(readFileSync(join(dir, "u.txt")).length, 10);
 });
 
-test("edit returns no diff details: nothing reads them (I-8)", async () => {
+test("edit returns its text alone, no diff details: nothing reads them (I-8)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jr2-file-tools-"));
   writeFileSync(join(dir, "a.txt"), "one\n");
   const result = await toolsIn(dir).edit!.execute("call-1", {
     path: "a.txt",
     edits: [{ oldText: "one", newText: "1" }],
   } as never);
-  assert.equal(result.details, undefined);
+  assert.deepEqual(Object.keys(result), ["content"]);
 });
 
 test("two parallel edits of one file run one after the other, and both land", async () => {

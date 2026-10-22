@@ -7,9 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, Models } from "@earendil-works/pi-ai";
 import { compactIfOver, compactionSettingsFor, overContextThreshold, summaryRetryPolicy } from "../src/compaction.ts";
+import type { EngineMessage } from "../src/engine.ts";
 import {
   compact,
   estimateContextTokens,
@@ -17,7 +17,7 @@ import {
   findCutPoint,
   prepareCompaction,
 } from "../src/compaction-summary.ts";
-import { EnginePart, type TranscriptEntry } from "../src/pi-engine.ts";
+import { EnginePart, type TranscriptEntry } from "../src/transcript.ts";
 
 test("the reserve is one full response, never less than the floor (ADR-0036)", () => {
   // The threshold is checked BEFORE a request that may emit up to `maxTokens`, so a reserve under
@@ -138,7 +138,7 @@ const answered = (id: string, text: string): TranscriptEntry => ({
     timestamp: 3,
   },
 });
-const messageOf = (entry: TranscriptEntry) => (entry as { message: AgentMessage }).message;
+const messageOf = (entry: TranscriptEntry) => (entry as { message: EngineMessage }).message;
 
 test("the estimate: characters / 4, 4800 characters an image, a summary by its text", () => {
   assert.equal(estimateTokens(messageOf(user("12345678"))), 2);

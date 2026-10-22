@@ -69,12 +69,12 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
 
 - **A conversation is persisted to a directory, and rebuilt from it on boot.** The Harness writes each conversation as
   it goes: jr2's own record — the stream log, the Settlements, the history messages, in the wire's shapes — plus the
-  engine's state as an opaque, engine-named part (today an append-only file that jr2 writes:
-  `engine/pi/transcript.jsonl`, the pi messages the model read and each Compaction). Rebuilding reads jr2's record
-  first; an engine that cannot read the engine part (another engine, another version) continues from the history
-  messages. The record is the contract; the engine part is not. A Submission in flight at the restart settles `failed`
-  (the typed error `harness_restarted`, which the Agent's Actor reads as "Turn lost") on the rebuilt stream, so the
-  Orchestrator reads a Settlement, not a 404, and the conversation's next Turn continues it.
+  engine part, in a folder the engine names (`engine/<name>`), which the record does not read. Today it is jr2's
+  transcript (ADR-0027): `engine/pi/transcript.jsonl`, the pi-ai messages the model read and each Compaction. Rebuilding
+  reads jr2's record first; an engine that cannot read the engine part (another engine, another version) continues from
+  the history messages. The record is the contract; the engine part is not. A Submission in flight at the restart
+  settles `failed` (the typed error `harness_restarted`, which the Agent's Actor reads as "Turn lost") on the rebuilt
+  stream, so the Orchestrator reads a Settlement, not a 404, and the conversation's next Turn continues it.
 - **A restart while the Agent's state is busy cuts the Turn and is no fault.** When the Agent's state is not at Rest —
   its pick is outstanding, or work it started in runs below it — or its pick's answer was read and never reached the
   model, the Agent's Actor raises no `agent.fault` for a restart: the Machine would route it and stop the work the Turn
@@ -85,20 +85,20 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   rebuilt Harness for the conversation first, as a continued Turn does: one it cannot read gets a `conversation-new`
   notice ahead of the answer, and the notices pending for the Turn ride along. In the rebuilt engine part the cut Menu
   call has no result; the Harness answers it in the history with jr2's text — the pick reached the workflow, which does
-  not run it twice, and its result comes in the next message — before pi would answer "No result provided", which reads
-  as a failed pick. That text prints once in the rebuilt Harness's log, before its first prompt (ADR-0023). A Menu call
-  that an abort cut while the model was still writing it (the abort lands mid-stream) did not reach the workflow: pi
-  runs no call of a message the model did not finish. The Harness tells the two cuts apart by whether the call was
-  delivered, read before it re-tags an aborted message so that pi replays it: a call in a finished message keeps the
-  text above, and a call in an aborted message gets jr2's text in the same form — the Turn was cut while the model was
-  still writing this call, it did not reach the workflow, nothing ran, and the model may call it again if the newest
-  "Allowed now" still lists it. That text prints once too, before the conversation's next prompt, in the same process or
-  the next. The Harness reads whether a call was delivered off its message, not off a record of the POST, and that is
-  the limit of the test: a SIGKILL of the Harness after the model finished the message and before the pick's POST
-  reached the Orchestrator leaves a call that never reached the workflow, and the rebuilt Harness answers it with the
-  restart's text. Closing that window needs a delivery record written before the POST, which is not built. A Menu call
-  in a message that a provider error ended mid-stream (stopReason `error`) is neither cut: pi runs no call of such a
-  message (pi-agent-core 1.4.0 `agent-loop.js` line 148 returns after a message that ended `error` or `aborted`) and
+  not run it twice, and its result comes in the next message — before pi-ai would answer "No result provided", which
+  reads as a failed pick. That text prints once in the rebuilt Harness's log, before its first prompt (ADR-0023). A Menu
+  call that an abort cut while the model was still writing it (the abort lands mid-stream) did not reach the workflow:
+  the engine runs no call of a message the model did not finish. The Harness tells the two cuts apart by whether the
+  call was delivered, read before it re-tags an aborted message so that pi-ai replays it: a call in a finished message
+  keeps the text above, and a call in an aborted message gets jr2's text in the same form — the Turn was cut while the
+  model was still writing this call, it did not reach the workflow, nothing ran, and the model may call it again if the
+  newest "Allowed now" still lists it. That text prints once too, before the conversation's next prompt, in the same
+  process or the next. The Harness reads whether a call was delivered off its message, not off a record of the POST, and
+  that is the limit of the test: a SIGKILL of the Harness after the model finished the message and before the pick's
+  POST reached the Orchestrator leaves a call that never reached the workflow, and the rebuilt Harness answers it with
+  the restart's text. Closing that window needs a delivery record written before the POST, which is not built. A Menu
+  call in a message that a provider error ended mid-stream (stopReason `error`) is neither cut: pi runs no call of such
+  a message (pi-agent-core 1.4.0 `agent-loop.js` line 148 returns after a message that ended `error` or `aborted`) and
   drops it from every later request (pi-ai 1.4.0 `transform-messages.js` lines 172 to 180), so the Harness does not
   re-tag it and adds no answer for its call: an answer would be a tool result with no call before it, which the
   providers refuse. The pick did not reach the workflow, the Submission settles `failed` as any provider error does, and

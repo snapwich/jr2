@@ -2,8 +2,8 @@
 // still sees, replaced by a summary plus a retained tail. jr2's shape is one long agentic turn per
 // Submission (ADR-0027), so a window fills in the middle of a Turn, not between Turns. pi 1.x has no
 // Compaction, so jr2 owns all of it: this module decides WHEN to cut and appends the cut to the
-// engine part (`pi-engine.ts`); `compaction-summary.ts` decides WHAT the cut is. The seat is the
-// loop's `prepareRequest` hook (`turn.ts`), which fires before each provider request, the first one
+// engine part (`transcript.ts`); `compaction-summary.ts` decides WHAT the cut is. The seat is the
+// engine's `beforeRequest` hook (`turn.ts`), which fires before each provider request, the first one
 // included; the rebuilt context it returns is the context of this request and of the rest of the run.
 //
 // The thresholds are jr2-owned turn mechanics (ADR-0016): derived from the model, no author
@@ -12,8 +12,7 @@
 // inherits from the Dials, and a summary jr2 no longer wants must not outlive the run that asked for
 // it (ADR-0024).
 
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model, Models, RetryPolicy } from "@earendil-works/pi-ai";
+import type { Api, Model, Models, ModelThinkingLevel, RetryPolicy } from "@earendil-works/pi-ai";
 import {
   compact,
   estimateContextTokens,
@@ -22,7 +21,8 @@ import {
   prepareCompaction,
   type CompactionSettings,
 } from "./compaction-summary.ts";
-import type { EnginePart } from "./pi-engine.ts";
+import type { EngineMessage } from "./engine.ts";
+import type { EnginePart } from "./transcript.ts";
 
 export type { CompactionSettings } from "./compaction-summary.ts";
 
@@ -91,7 +91,7 @@ export type CompactionSeat = {
   part: EnginePart;
   models: Models;
   model: Model<Api>;
-  thinkingLevel: ThinkingLevel;
+  thinkingLevel: ModelThinkingLevel;
   settings: CompactionSettings;
   retry: RetryPolicy;
   signal: AbortSignal | undefined;
@@ -99,14 +99,14 @@ export type CompactionSeat = {
 
 /** A cut that was taken: the rebuilt context to send, and the two numbers the log line reports. */
 export type Cut = {
-  messages: AgentMessage[];
+  messages: EngineMessage[];
   tokensBefore: number;
   tokensAfter: number;
 };
 
 /**
  * Take a Compaction if the engine part's context crosses the reserve, and answer with the rebuilt
- * context — or `undefined` when nothing was cut, which is every ordinary step. Called before a
+ * context — or `undefined` when nothing was cut, which is every ordinary request. Called before a
  * request, so the request that NOTICED is already compacted and no round-trip is spent on a full
  * window. The estimate is of the engine part's context, without the leading system message: the
  * system prompt was never counted.
@@ -117,7 +117,7 @@ export type Cut = {
  */
 export async function compactIfOver(seat: CompactionSeat): Promise<Cut | undefined> {
   // A run that has ended asks for no summary: the loop calls the request hook once more after an
-  // abort that landed after the step's end, and there is no request left to cut for. pi-ai sends
+  // abort that landed after the step boundary, and there is no request left to cut for. pi-ai sends
   // nothing on an aborted signal, so this check is what keeps the summary call from being made at
   // all (`compaction.test.ts`).
   if (seat.signal?.aborted) return undefined;
@@ -131,7 +131,7 @@ export async function compactIfOver(seat: CompactionSeat): Promise<Cut | undefin
   // The stale-reading latch. The estimate reads the last VALID assistant usage, and a cut
   // deliberately RETAINS recent assistant messages — so the reading that triggered a cut survives
   // it. When the request after a cut ends `error` or `aborted` it contributes no usage of its own,
-  // the old number is still the newest one, and the next step would cut AGAIN on a context nothing
+  // the old number is still the newest one, and the next request would cut AGAIN on a context nothing
   // has grown since: a second summarizer round-trip, and a second summary over work the first one
   // already covered. The question is therefore about what landed AFTER the newest cut.
   let newestCut = -1;

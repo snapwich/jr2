@@ -10,8 +10,9 @@
 // already read is never said twice.
 //
 // Engine-neutral: nothing here knows the engine. The engine's part is one placement — call
-// `between()` after a step's tool results and before its next model request, and append what it
-// returns as a user message (`turn.ts` does it for pi, with a `turn_end` subscriber and `steer`).
+// `between()` after a model answer's tool results and before the next request, and append what it
+// returns as a user message (`turn.ts` does it through the seam, with a `step_boundary` listener and
+// `steer`).
 // An engine with no between-steps input never calls it, and the model learns at its next receipt.
 
 import { restatedTurnPart } from "./briefing.ts";
@@ -42,24 +43,24 @@ function key(allowed: readonly string[]): string {
  * (`readAllowed`: bounded, one attempt, every failure is silence — the next boundary asks again) and
  * says the new list only when it differs from the one the model read — then records it as read.
  *
- * THE ASK-AGAIN RULE (ADR-0016) — the Orchestrator holds its other moments, the nudge and the
- * wake: while the Turn is open, a model that STOPS is asked again once its Allowed picks are not
- * empty. Here, inside its Submission, when the list changed since it last read it: an appended
- * message keeps the engine's loop going. So when the step ended with no tool call (`stopped`) and
- * the list is now EMPTY, nothing is said — a restatement there buys a request in which the model
- * can pick nothing. The Submission ends, and the Orchestrator's wake asks the model when a pick
- * opens. A step that ran tools goes on anyway, so any change is said there, an empty list included.
+ * THE ASK-AGAIN RULE (ADR-0016) — the Orchestrator holds its other moments, the nudge and the wake:
+ * while the Turn is open, a model that STOPS is asked again once its Allowed picks are not empty.
+ * Here, inside its Submission, when the list changed since it last read it: an appended message
+ * keeps the engine's loop going. So when the model answer had no tool call (`stopped`) and the list
+ * is now EMPTY, nothing is said — a restatement there buys a request in which the model can pick
+ * nothing. The Submission ends, and the Orchestrator's wake asks the model when a pick opens. A
+ * model answer that ran tools goes on anyway, so any change is said there, an empty list included.
  */
 export async function between(
   opts: MenuOptions,
   instanceId: string,
   told: ToldPicks,
   signal?: AbortSignal,
-  step: { stopped?: boolean; briefings?: ReadonlyMap<string, string> } = {},
+  boundary: { stopped?: boolean; briefings?: ReadonlyMap<string, string> } = {},
 ): Promise<string | undefined> {
   const now = await readAllowed(opts, instanceId, signal);
   if (now === undefined || !told.differs(now)) return undefined;
-  if (step.stopped && now.length === 0) return undefined;
+  if (boundary.stopped && now.length === 0) return undefined;
   told.heard(now);
-  return restatedTurnPart(now, opts.toolName, step.briefings);
+  return restatedTurnPart(now, opts.toolName, boundary.briefings);
 }
