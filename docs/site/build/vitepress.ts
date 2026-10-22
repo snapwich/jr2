@@ -14,7 +14,7 @@
 // colons of its open: then the stack below reads a page as VitePress does.
 
 import { readFileSync } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { extname, isAbsolute, join, relative } from "node:path";
 import { codeLines, fenced, proseLines, type BuildError } from "./markdown.ts";
 
 // The labels that the format had before VitePress (Note, Caution), kept: the site shows the same ones
@@ -178,6 +178,11 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
       if (nest(m[1]!.length, i))
         stack.push({ kind: "aside", aside: m[2] as AsideKind, colons: m[1]!.length, children: [], line: i });
     } else if ((m = TABS_OPEN.exec(line))) {
+      // The one tab set of the format is the provider tabs: with no key, or another, the reader's
+      // choice would not hold across the pages (README "Provider tabs").
+      if (m[2] !== "provider") {
+        err(i, `tabs take the key provider, so that the reader's choice holds on each page: "::: tabs key:provider"`);
+      }
       if (nest(m[1]!.length, i)) stack.push({ kind: "tabs", colons: m[1]!.length, tabs: [], line: i });
     } else if ((m = GROUP_OPEN.exec(line))) {
       if (nest(m[1]!.length, i)) stack.push({ kind: "group", colons: m[1]!.length, fences: [], line: i });
@@ -243,6 +248,12 @@ function snippet(
 ): Extract<Node, { kind: "code" }> | string {
   const path = join(opts.site, file);
   const shown = relative(opts.repo, path);
+  // A page shows example code only, and `pnpm typecheck` checks what is in examples/ (README
+  // "Examples"). A path out of it, or one that climbs out with `..`, is refused before it is read.
+  const examples = join(opts.site, "examples");
+  if (relative(examples, path).startsWith("..") || isAbsolute(relative(examples, path))) {
+    return `<<< names ${shown}; a page shows only a file in docs/site/examples/`;
+  }
   let text: string;
   try {
     text = readFileSync(path, "utf8").replace(/\r\n/g, "\n").replace(/\n$/, "");

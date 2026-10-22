@@ -154,6 +154,26 @@ test("a <<< outside the format fails: a relative path, line highlights, a title 
   );
 });
 
+test("a <<< names a file in examples/ only, also through ..", async () => {
+  await mkdir(join(site, "build"), { recursive: true });
+  await writeFile(join(site, "build/x.ts"), "export const x = 1;\n");
+  for (const line of ["<<< @/build/x.ts", "<<< @/examples/../build/x.ts"]) {
+    assert.match(
+      convert(line).errors[0]!.message,
+      /names build\/x\.ts; a page shows only a file in docs\/site\/examples\//,
+    );
+  }
+});
+
+test("tabs take the key provider: no key, or a different one, fails", () => {
+  for (const open of ["::: tabs", "::: tabs key:model"]) {
+    const r = convert(`${open}\n\n== A\n\nText.\n\n:::`);
+    assert.equal(r.errors.length, 1);
+    assert.match(r.errors[0]!.message, /tabs take the key provider/);
+  }
+  assert.deepEqual(convert("::: tabs key:provider\n\n== A\n\nText.\n\n:::").errors, []);
+});
+
 test("a fence's info is its language only, outside a code group; inside, it has a title", () => {
   assert.match(convert("```ts{2}\nx\n```").errors[0]!.message, /a fence's info is its language only/);
   assert.match(convert("```ts [a.ts]\nx\n```").errors[0]!.message, /a fence's info is its language only/);
@@ -176,8 +196,8 @@ test("a container that is not closed, closes nothing, or is misspelled fails, wi
   assert.match(convert(":::tip").errors[0]!.message, /not a container of the format: ":::tip"/);
   assert.match(convert("::: details").errors[0]!.message, /not a container of the format/);
   assert.match(convert('::include{file="./fix.ts"}').errors[0]!.message, /not a container of the format/);
-  assert.match(convert("::: tabs\n\nText.\n\n:::").errors[0]!.message, /::: tabs starts with a tab/);
-  assert.match(convert("::: tabs\n\n:::").errors[0]!.message, /::: tabs holds no tab/);
+  assert.match(convert("::: tabs key:provider\n\nText.\n\n:::").errors[0]!.message, /::: tabs starts with a tab/);
+  assert.match(convert("::: tabs key:provider\n\n:::").errors[0]!.message, /::: tabs holds no tab/);
   assert.match(convert("::: code-group\n\nText.\n\n:::").errors[0]!.message, /only fences and <<< lines/);
   assert.match(convert(":::: tip\n\nHi.\n\n:::").errors[0]!.message, /opened with 4 colons/);
   assert.match(convert("  ::: info\n\n:::").errors[0]!.message, /starts at column 0/);
@@ -187,7 +207,7 @@ test("a container line needs an empty line on each side, as prettier would join 
   const r = convert("Text.\n::: info\n\nHi.\n\n:::");
   assert.equal(r.errors[0]!.line, 2);
   assert.match(r.errors[0]!.message, /needs an empty line before it and after it/);
-  const tab = convert("::: tabs\n\n== A\nText.\n\n:::");
+  const tab = convert("::: tabs key:provider\n\n== A\nText.\n\n:::");
   assert.match(tab.errors[0]!.message, /needs an empty line before it and after it: "== A"/);
 });
 

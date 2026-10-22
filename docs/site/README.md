@@ -403,7 +403,8 @@ Read this before you continue.
 ### Tabs
 
 Start the tabs with `::: tabs key:provider`. Start each tab with `== <label>`. Close the tabs with `:::`. A tab holds
-text, code, lists, and `<<<`. See [Provider tabs](#provider-tabs) for the labels.
+text, code, lists, and `<<<`. See [Provider tabs](#provider-tabs) for the labels. `docs:build` refuses tabs with no key
+or with a different key, because then the reader's choice does not hold on each page.
 
 ```md
 ::: tabs key:provider
@@ -457,8 +458,9 @@ with `@/`, which is this folder:
 VitePress shows the whole file when the region does not exist, and does not fail. When the file does not exist, the site
 build fails. `docs:build` fails in both cases, so `pnpm --filter @jr2/docs-site test` finds the problem.
 
-Put the file in `examples/<page-slug>/`, or in `examples/shared/` when two or more pages import it. `pnpm typecheck`
-checks every `.ts` file in `examples/` against `@jr2/orchestrator` and `@jr2/machines`. See [Examples](#examples).
+Put the file in `examples/<page-slug>/`, or in `examples/shared/` when two or more pages import it. `docs:build` refuses
+a `<<<` of a file outside `examples/`. `pnpm typecheck` checks every `.ts` file in `examples/` against
+`@jr2/orchestrator` and `@jr2/machines`. See [Examples](#examples).
 
 ### Diagrams
 
@@ -529,7 +531,8 @@ It also changes each relative link:
 - an H1 in a page
 - a container, a tab line or a `<<<` that is not a form of [The source format](#the-source-format), that is not closed,
   that has as many colons as its parent, or that has no empty line before it and after it
-- a `<<<` of a file that does not exist, or of a region that is not in the file
+- a `<<<` of a file that does not exist, of a file outside `examples/`, or of a region that is not in the file
+- tabs with no key, or with a key other than `provider`
 - frontmatter that YAML does not read as the text that it shows
 - a form in [What not to use](#what-not-to-use)
 - a TSDoc `@see` that is not a sitemap page (`docs/<slug>.md`) or an ADR (`docs/reference/decisions/<file>`). A `@see`
