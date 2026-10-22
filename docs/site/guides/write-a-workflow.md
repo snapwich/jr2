@@ -106,6 +106,9 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
 - `jr2 up` changes nothing when the Instance does not typecheck. It prints
   `refusing: this instance does not typecheck — nothing was built and nothing was applied`, then each line of the output
   of the compiler. Run `npm run typecheck` to see the same errors without `jr2 up`.
+- The name of a Workflow file has lower-case letters, digits and `-`, such as `release-notes.ts`. `jr2 up` refuses a
+  different name, and gives the name to use:
+  ``error: <folder>/workflows/<file>.ts: a Workflow is named by its filename stem, in lowercase letters, digits and "-", so that `jr2 run` and a `dispatch` slot name it the same way — rename it to <name>.ts (ADR-0071)``
 - `jr2 up` refuses a module with no `machine` export. It prints the error and exits with `1`:
   ``error: workflow "<name>" (<file>) has no `machine` named export (module contract, ADR-0011/0015: `export const machine`)``
 - `defineEvent` refuses a name with a character other than a letter, a digit, `_` or `-`:

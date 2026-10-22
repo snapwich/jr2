@@ -25,7 +25,8 @@ a run continues after a restart. [Durable runs](durable-runs.md) tells how.
 
 Each `.ts` file in the `workflows/` folder of the Instance is a Workflow. The name of the file, without `.ts`, is the
 name of the Workflow. Thus `workflows/refund.ts` is the Workflow `refund`, and you start it with `jr2 run refund`. The
-file exports its Machine as `machine`. jr2 reads no other export.
+name has only lower-case letters, digits and `-`, so `jr2 run` and a `dispatch` Effect write it the same way. The file
+exports its Machine as `machine`. jr2 reads no other export.
 
 A Workflow is only a name. The Machine holds all that it needs: its events, its Agents, its
 [Effects](../reference/glossary.md#effect) and its [Sandbox Image](../reference/glossary.md#sandbox-image). Thus one
@@ -130,8 +131,8 @@ moves a Machine.
 
 ## Rules
 
-- A Workflow is a `.ts` file in `workflows/`, and its name is the name of the file without `.ts`. A named Chart is a
-  Workflow too, with the name `<wrapper>/<name>`.
+- A Workflow is a `.ts` file in `workflows/`, and its name is the name of the file without `.ts`. The name has only
+  lower-case letters, digits and `-`. A named Chart is a Workflow too, with the name `<wrapper>/<name>`.
 - jr2 does not register a file whose name starts with `_`, or a `.d.ts` file. Put a Machine that only other Machines
   import in such a file. A file in `workflows/` that a different Workflow imports is also a Workflow of its own.
 - A Workflow file must export `machine`. jr2 refuses a file without it.
