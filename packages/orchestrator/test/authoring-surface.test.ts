@@ -105,6 +105,8 @@ const AUTHOR_FOLDERS = [
   "docs/intro/instance",
   "features/kind-instance",
   "features/model-instance",
+  // The code that the docs pages show (ADR-0072): an Instance can import only the root.
+  "docs/site/examples",
 ];
 
 /** The source files under `dir`, outside node_modules (its links loop through the workspace). */
