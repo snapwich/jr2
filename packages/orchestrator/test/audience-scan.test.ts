@@ -31,9 +31,18 @@ const FILES = [
   ...["guarded", "guarded-reshaped", "intake", "loop", "nested", "review", "workspaced"].map(
     (f) => `features/fixtures/${f}.ts`,
   ),
-  ...["_body", "advised", "consulted", "handoff", "perrun", "sandboxed", "seated", "task", "unsynced"].map(
-    (f) => `features/kind-instance/workflows/${f}.ts`,
-  ),
+  ...[
+    "_body",
+    "advised",
+    "consulted",
+    "handoff",
+    "interrupted",
+    "perrun",
+    "sandboxed",
+    "seated",
+    "task",
+    "unsynced",
+  ].map((f) => `features/kind-instance/workflows/${f}.ts`),
 ];
 
 type Node = AnyStateMachine["root"];

@@ -292,6 +292,8 @@ matter:
 - **Rest reads xstate internals**: the timer table (`system.getSnapshot()._scheduledEvents`, as ADR-0007's re-arm does)
   and the seat lookup's active nodes. The raw-xstate tests are the canary for a bump.
 - **Non-determinism dictates how this is tested.** "Did it stop calling?" proves nothing when a well-behaved agent stops
-  on its own. The `@kind` tier asserts the **settlement outcome**: after a settling delivery the submission must settle
-  `aborted`, and a `continue` re-invocation must settle `completed` rather than being swallowed by its predecessor's
-  abort.
+  on its own. The `@kind` tier asserts the **settlement outcome**, in two scenarios. In the `handoff` scenario, the
+  Agent's pick ends its Turn, and that Turn settles `aborted`, with or without the Harness's own message. The next
+  `continue` Turn, which `shipping` asked for, is not swept: the count of `aborted` settlements stays 1 while `shipping`
+  is active. In the `interrupted` scenario, a Gate's answer, not a pick, ends the Turn while the scripted model holds
+  its request. That Turn settles `aborted` through the sweep, with no message, and the abort cuts the model's request.

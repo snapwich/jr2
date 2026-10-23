@@ -75,6 +75,12 @@ export type FakeProvider = {
    * `mcp__jr2__` prefix is matched and emitted for you. Waits for such a request to arrive.
    */
   release(tool: string, args: Record<string, unknown>): Promise<void>;
+  /** Wait until a turn request that was offered `tool` is parked here, and leave it parked: the
+   * model is still writing its answer. `tool` is named as in `release`. */
+  holding(tool: string): Promise<void>;
+  /** Wait until a parked turn request that was offered `tool` closed with no answer: the Harness cut
+   * it, which is what an ADR-0024 abort does to the request it ends. */
+  cut(tool: string): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -84,6 +90,8 @@ type Held = {
   res: ServerResponse;
   keepalive: NodeJS.Timeout;
   done: boolean;
+  /** `release` answered it; a request that is `done` and not `released` was cut by the caller. */
+  released?: boolean;
 };
 
 /** Every model this endpoint claims to serve. The id is committed in the instance config's
@@ -212,8 +220,27 @@ export async function startFakeProvider(opts: {
           `${calls.length} request(s) ever received, ${calls.filter((c) => c.stream).length} streaming)`,
       );
       const name = wanted.find((w) => entry.call.tools.includes(w))!;
+      entry.released = true;
       streamToolCall(entry.res, name, JSON.stringify(args));
       finish(entry);
+    },
+    holding: async (tool) => {
+      const wanted = [`mcp__jr2__${tool}`, tool];
+      await until(
+        () => held.find((h) => !h.done && h.call.tools.some((t) => wanted.includes(t))),
+        () =>
+          `a parked turn request offering "${tool}" (menus seen: ${JSON.stringify(held.map((h) => h.call.tools))}; ` +
+          `${calls.length} request(s) ever received)`,
+      );
+    },
+    cut: async (tool) => {
+      const wanted = [`mcp__jr2__${tool}`, tool];
+      await until(
+        () => held.find((h) => h.done && !h.released && h.call.tools.some((t) => wanted.includes(t))),
+        () =>
+          `a parked turn request offering "${tool}" that the Harness closed with no answer ` +
+          `(held: ${JSON.stringify(held.map((h) => ({ tools: h.call.tools, done: h.done, released: h.released ?? false })))})`,
+      );
     },
     close: async () => {
       for (const entry of held) finish(entry);

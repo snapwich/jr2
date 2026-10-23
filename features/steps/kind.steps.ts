@@ -227,15 +227,17 @@ const continuedIid = (runId: string, machine: "root" | "body", agent: string): s
  * construction (ADR-0024 — the actor is stopped before the abort fires), so the only honest place
  * to observe the end of a turn is the Harness that ran it.
  */
-async function settlements(world: E2EWorld, iid: string): Promise<Array<{ submissionId: string; outcome: string }>> {
+/** One settled Submission, as the Harness's history view reports it (ADR-0027). */
+type HarnessSettlement = { submissionId: string; outcome: string; error?: { type: string; message?: string } };
+
+async function settlements(world: E2EWorld, iid: string): Promise<HarnessSettlement[]> {
   const pod = (await waitForReadySandbox(world)).metadata.name;
   const headers = await harnessAuth(world, pod);
-  let found: Array<{ submissionId: string; outcome: string }> = [];
+  let found: HarnessSettlement[] = [];
   await withPodForward(world, pod, 8080, async (localUrl) => {
     const res = await fetch(`${localUrl}/agents/coder/${encodeURIComponent(iid)}?view=history`, { headers });
     assert.equal(res.status, 200, "the Harness serves the conversation history");
-    found =
-      ((await res.json()) as { settlements?: Array<{ submissionId: string; outcome: string }> }).settlements ?? [];
+    found = ((await res.json()) as { settlements?: HarnessSettlement[] }).settlements ?? [];
   });
   return found;
 }
@@ -1050,6 +1052,55 @@ Then(
     assert.ok(
       last.every((s) => s.outcome === outcome),
       `every ended turn settled "${outcome}" (got: ${JSON.stringify(last)})`,
+    );
+  },
+);
+
+/**
+ * The model is still writing its answer (ADR-0038): the Turn's request is parked at the scripted
+ * model, which this step does not release. A state exit from here on can reach the Harness only as
+ * the Orchestrator's abort.
+ */
+Then(
+  "the scripted model is holding the Agent's request offering {string}",
+  async function (this: E2EWorld, tool: string) {
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    await this.provider.holding(tool);
+  },
+);
+
+/**
+ * The abort ended the request, not only the settlement (ADR-0024): `Conversation.abort()` settles
+ * the Submission `aborted` at once, before the engine stops, so the settlement alone does not show
+ * that the model's request was cut.
+ */
+Then(
+  "the scripted model's request offering {string} was cut with no answer",
+  async function (this: E2EWorld, tool: string): Promise<void> {
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    await this.provider.cut(tool);
+  },
+);
+
+/**
+ * The turn the Orchestrator's abort ended (ADR-0024): settled `aborted` with the sweep's type and
+ * no message. A Turn that the Harness ended itself, because a pick's answer ended it, carries a
+ * message ("a pick's answer ended the Turn: …"), so this tells the two causes apart.
+ */
+Then(
+  "the Harness reports the Agent's turn settled by the Orchestrator's abort",
+  async function (this: E2EWorld): Promise<void> {
+    const iid = continuedIid(this.runId!, "body", "coder");
+    let last: HarnessSettlement[] = [];
+    for (let i = 0; i < 60; i++) {
+      last = await settlements(this, iid);
+      if (last.length > 0) break;
+      await sleep(500);
+    }
+    assert.deepEqual(
+      last.map((s) => ({ outcome: s.outcome, error: s.error })),
+      [{ outcome: "aborted", error: { type: "submission_aborted" } }],
+      `settlements: ${JSON.stringify(last)}`,
     );
   },
 );

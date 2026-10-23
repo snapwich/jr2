@@ -478,6 +478,22 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the Harness reports 2 of the Agent's turns settled as "aborted"
       And the run's Sandbox is still there
 
+    # The pick's own answer ends the turn above, and the Harness settles it `aborted` itself. Here
+    # nothing is picked: the Gate's answer leaves `coding` while the model is still writing its
+    # answer, so the Orchestrator's abort is the only cause. The Harness's settlement carries no
+    # message of its own, and the abort cut the model's request.
+    Scenario: a state that stops waiting for a cause other than the Agent's pick aborts the turn mid-request
+      Given the kind instance is serving
+      When I start the "interrupted" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's body is in "coding"
+      And the scripted model is holding the Agent's request offering "finish"
+      When I send "halt" to the Gate
+      Then the run's body is in "parked"
+      And the scripted model's request offering "finish" was cut with no answer
+      And the Harness reports the Agent's turn settled by the Orchestrator's abort
+      And the run's Sandbox is still there
+
   Rule: a write from the review worktree cannot reach the branch or the coder's worktree
     ADR-0028. The tool layer (`workspace: "read"`) states intent and stops the honest path; the
     detached review worktree is the containment. It sits beside the branch worktree at the sha
