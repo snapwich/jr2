@@ -6,11 +6,34 @@
 //
 // A run that is killed never reaches teardown, so setup also removes the root of any earlier run
 // whose process is gone. The pid in the name is how it knows; a reused pid only keeps a root longer.
+//
+// Setup also removes git's repository-local variables (`git rev-parse --local-env-vars`) from the
+// run's env. git sets them for a hook and for `git rebase -x`, and a test's git then works on that
+// repository and not on the fixture the test made: under `rebase -x` the harness's sync and attach
+// tests made commits, branches and a worktree in the developer's own repository.
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PREFIX = "jr2-test-";
+/** `git rev-parse --local-env-vars` (git 2.5x), plus the `-c` pairs that `GIT_CONFIG_COUNT` counts. */
+const GIT_LOCAL_ENV = [
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CONFIG",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_COUNT",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_IMPLICIT_WORK_TREE",
+  "GIT_GRAFT_FILE",
+  "GIT_INDEX_FILE",
+  "GIT_NO_REPLACE_OBJECTS",
+  "GIT_REPLACE_REF_BASE",
+  "GIT_PREFIX",
+  "GIT_SHALLOW_FILE",
+  "GIT_COMMON_DIR",
+];
 let root: string | undefined;
 
 export function globalSetup(): void {
@@ -21,6 +44,9 @@ export function globalSetup(): void {
   }
   root = mkdtempSync(join(base, `${PREFIX}${process.pid}-`));
   process.env.TMPDIR = root;
+  for (const name of Object.keys(process.env)) {
+    if (GIT_LOCAL_ENV.includes(name) || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(name)) delete process.env[name];
+  }
 }
 
 export function globalTeardown(): void {
