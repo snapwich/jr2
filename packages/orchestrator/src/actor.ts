@@ -101,6 +101,12 @@ export type AgentAdmission = {
    */
   killMark?: string;
   /**
+   * The Turn's task, its Frame's prompt — stamped by the ACTOR on every admission of the Turn,
+   * because a restore drops `prompt` from the input: a re-admission onto a conversation the
+   * Harness lost must send the task again, and has no other copy of it (ADR-0062).
+   */
+  task?: string;
+  /**
    * The Agent and the Harness base URL this admission was answered by — stamped by the ACTOR at
    * ledger time, like `instanceId`. Together with `instanceId` they name the conversation on its
    * Harness, which is what the live set is built from (ADR-0031): the host states the Instance
@@ -349,6 +355,10 @@ const guardSource = (sandbox: string, id: string): string => `${sandbox}@guard:$
 /** How long the read of the pod's kills may take before it counts as none. */
 const MEMORY_KILLS_READ_MS = 5_000;
 
+/** How long "does the Harness still hold this conversation?" is asked again before the answer is
+ * taken as "held" — unknown is never loss, but a container that is starting is not unknown yet. */
+const HOLDS_READ_MS = 30_000;
+
 /** A `killMark` for a list that was empty: every kill read after it is the Turn's. Kill ids start
  * `k-`, so it is never one. */
 export const NO_KILLS = "none";
@@ -396,6 +406,12 @@ export type AgentRunOptions = {
    * the Turn is admitted without it. Default 5000 ms; a seam for tests, never an author dial.
    */
   memoryKillsReadMs?: number;
+  /**
+   * How long the actor asks whether a restarted Harness still holds a conversation before it
+   * takes "held" for an answer: the new container may not listen yet (ADR-0062). Default 30 s; a
+   * seam for tests, never an author dial.
+   */
+  holdsReadMs?: number;
 };
 
 /**
@@ -571,6 +587,7 @@ export function agentActorWith(
   const nudgeBudget = options.nudgeBudget ?? 2;
   const runawayBudget = options.runawayBudget ?? 1;
   const memoryKillsReadMs = options.memoryKillsReadMs ?? MEMORY_KILLS_READ_MS;
+  const holdsReadMs = options.holdsReadMs ?? HOLDS_READ_MS;
   // Typed as the union so BOTH shapes typecheck on an invoke: jr2Setup machines write
   // AgentTurnInput (and the config wrapper finalizes it before the actor ever runs); plain
   // setup() machines must pass the finalized shape themselves — checked loudly below.
@@ -877,16 +894,27 @@ export function agentActorWith(
     // What the last carrying admission took, and under which iid: delivered is not HEARD. If this
     // actor ends the Turn before the Harness reads that iid's surface, the Harness finds the Turn
     // over and settles it with no model asked (ADR-0026) — so `abandon` raises them again.
-    let carried: { iid: string; raised: Array<{ notice: Notice; source?: string }> } | undefined;
+    // Per conversation the Turn admitted on: the notices its admissions carried — `unheard` since
+    // the Harness last read its surface, `heard` before that — and whether an unheard one carried
+    // the Turn's task. Collected across the Turn, so a re-admission onto a lost conversation tells
+    // the Agent all of them again.
+    type Raised = { notice: Notice; source?: string };
+    // `fresh`: a fresh Turn's "this conversation is new", which rides an admission as `extra` and so
+    // is kept in no ledger — an unread one is carried again by the next re-admission.
+    const carriedBy = new Map<string, { heard: Raised[]; unheard: Raised[]; task: boolean; fresh: Notice[] }>();
     // `notices`: "turn" takes every notice in scope; "same-turn" too, but the guard kills the Turn's own
     // conversation was told (a re-admission after a cut continues the same Turn); "nudge" takes the
     // guard kills this conversation was not told alone.
-    // `include`: sources restored for this admission, taken whatever the scope leaves out.
+    // `include`: sources restored for this admission, taken whatever the scope leaves out. `task`:
+    // this admission's prompt holds the Turn's task.
     const admitTurn = async (
       turn: AgentRunInput,
-      opts: { notices: "turn" | "same-turn" | "nudge"; extra?: Notice[]; include?: readonly string[] } = {
-        notices: "turn",
-      },
+      opts: {
+        notices: "turn" | "same-turn" | "nudge";
+        extra?: Notice[];
+        include?: readonly string[];
+        task?: boolean;
+      } = { notices: "turn", task: true },
     ) => {
       const { known, unsaid, said } = await hearPodKills();
       // A read that could not tell leaves the same Turn no way to know which kills its own `bash`
@@ -905,10 +933,7 @@ export function agentActorWith(
             : unsaid.length > 0
               ? { workspace: noticeWorkspace, only: unsaid }
               : undefined;
-      const none: { ids: string[]; notices: Notice[]; raised?: Array<{ notice: Notice; source?: string }> } = {
-        ids: [],
-        notices: [],
-      };
+      const none = { ids: [] as string[], notices: [] as Notice[], raised: [] as Raised[] };
       const restored =
         opts.include && opts.include.length > 0
           ? (binding.takeNotices?.({ ...noticeScope, only: opts.include }) ?? none)
@@ -923,13 +948,20 @@ export function agentActorWith(
         ],
       };
       // `extra`: a notice this admission carries straight from the actor, never kept — the answer a
-      // cut pick never got (ADR-0031), whose one path to the model is this admission.
-      const notices = [...taken.notices, ...(opts.extra ?? [])];
+      // cut pick never got (ADR-0031), whose one path to the model is this admission. One "this
+      // conversation is new" is enough, whichever path brought it.
+      let fresh = false;
+      const notices = [...taken.notices, ...(opts.extra ?? [])].filter((n) => {
+        if (n.kind !== "conversation-new") return true;
+        if (fresh) return false;
+        fresh = true;
+        return true;
+      });
       // `served` is per Instance ID, and a nudge or a wake reuses the Turn's: it must be read again
-      // before this admission's notices count as heard (`reraiseUnheard`). An admission that fails
-      // puts the mark back — the notices an earlier one carried were heard.
+      // before this admission counts as heard (`reraiseUnheard`). An admission that fails puts the
+      // mark back — what an earlier one carried was heard.
       const heard = served.has(turn.instanceId);
-      if (taken.notices.length > 0) served.delete(turn.instanceId);
+      served.delete(turn.instanceId);
       let admission: AgentAdmission;
       try {
         admission = await client.admit(turn, {
@@ -948,6 +980,9 @@ export function agentActorWith(
       admitted = true;
       restartMark = heardRestarts?.restartCount;
       if (restartMark !== undefined) admission = { ...admission, harnessRestarts: restartMark };
+      // The Turn's task rides every ledgered admission: a restore drops `prompt`.
+      const task = input.prompt ?? input.attach?.task;
+      if (task !== undefined) admission = { ...admission, task };
       // A Turn in a Workspace keeps its start and its kill mark across a restore.
       if (noticeWorkspace !== undefined) {
         admission = {
@@ -957,24 +992,40 @@ export function agentActorWith(
         };
       }
       ledger(admission, taken.ids);
-      if (taken.notices.length) carried = { iid: turn.instanceId, raised: taken.raised };
+      const bucket = carriedBy.get(turn.instanceId) ?? { heard: [], unheard: [], task: false, fresh: [] };
+      if (heard) {
+        bucket.heard.push(...bucket.unheard);
+        bucket.unheard = [];
+        bucket.task = false;
+        bucket.fresh = [];
+      }
+      bucket.unheard.push(...taken.raised);
+      if (opts.task) bucket.task = true;
+      if (!input.continuation) bucket.fresh.push(...(opts.extra ?? []).filter((n) => n.kind === "conversation-new"));
+      carriedBy.set(turn.instanceId, bucket);
       return admission;
     };
-    // The notices an unheard admission carried, pending again for the next Turn in their scope —
+    // The notices unheard admissions carried, pending again for the next Turn in their scope —
     // each WITH the source it was raised with, so a take by source finds it and no equal notice of
-    // another source swallows it. Answers the sources restored, which a re-admission of the same
-    // Turn takes whatever else it leaves out.
-    const reraiseUnheard = (): string[] => {
-      if (carried === undefined || served.has(carried.iid)) return [];
+    // another source swallows it. `lost`: the current conversation, which heard the rest, is gone,
+    // so they are unheard too. Answers the sources restored, which a re-admission of the same Turn
+    // takes whatever else it leaves out.
+    const reraiseUnheard = (lost = false): string[] => {
       const restored: string[] = [];
-      for (const { notice, source } of carried.raised) {
-        const to = notice.scope === "conversation" ? conversation : noticeWorkspace;
-        if (to === undefined) continue;
-        if (binding.restoreNotice) binding.restoreNotice(notice, to, source);
-        else binding.raiseNotice?.(notice, to);
-        if (source !== undefined) restored.push(source);
+      for (const [iid, bucket] of carriedBy) {
+        const gone = lost && iid === currentIid;
+        const read = served.has(iid) && !gone;
+        const again = [...(gone ? bucket.heard : []), ...(read ? [] : bucket.unheard)];
+        if (gone) bucket.heard = [];
+        if (!read) bucket.unheard = [];
+        for (const { notice, source } of again) {
+          const to = notice.scope === "conversation" ? conversation : noticeWorkspace;
+          if (to === undefined) continue;
+          if (binding.restoreNotice) binding.restoreNotice(notice, to, source);
+          else binding.raiseNotice?.(notice, to);
+          if (source !== undefined) restored.push(source);
+        }
       }
-      carried = undefined;
       return restored;
     };
 
@@ -1093,6 +1144,27 @@ export function agentActorWith(
               },
             ]
           : [];
+      // Kept until the re-admission is sure: a Turn that faults below still names the restart.
+      const cutBy = restarted;
+      restarted = undefined;
+      controller = new AbortController();
+      // The rebuilt Harness may not read the conversation back: then this Turn lands on a new one,
+      // and is told (ADR-0062). Asked again while the new container may not listen yet, and taken
+      // as "held" only when the time is over.
+      const kept = await client.holds(input.agentName, currentIid, {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(holdsReadMs)]),
+      });
+      if (stopped) return "stopped";
+      // The task: a restore dropped `prompt`, and the ledgered admission kept it. A new
+      // conversation with no task to send cannot be asked to "continue your task": the Turn faults.
+      const task = input.prompt ?? input.attach?.task;
+      if (!kept && task === undefined) {
+        // The fault names the restart that cut the Turn, and asks whether it was a memory kill.
+        restarted = cutBy;
+        return undefined;
+      }
+      // Whether the cut admission, never read, carried the task: then the model never read it.
+      const taskUnheard = !served.has(currentIid) && carriedBy.get(currentIid)?.task === true;
       cuts++;
       binding.telemetry?.({
         kind: "retry",
@@ -1100,25 +1172,40 @@ export function agentActorWith(
         attempt: cuts,
         reason: "re-admitted after a Harness restart",
       });
-      restarted = undefined;
-      controller = new AbortController();
-      // The notices the cut admission carried, if the Harness never read its surface, are pending
-      // again before this one takes, and it takes them whatever its scope leaves out: the cut
-      // Submission's model never heard them.
-      const restored = reraiseUnheard();
-      // The rebuilt Harness may not read the conversation back: then this Turn lands on a new one,
-      // and is told (ADR-0062), as the continue path tells it below.
-      if (!(await client.holds(input.agentName, currentIid, { signal: controller.signal }))) {
-        binding.raiseNotice?.(
-          { kind: "conversation-new", scope: "conversation", reason: "the Harness no longer holds it" },
-          conversation,
-        );
+      // What the cut admissions carried is pending again before this one takes, if the Harness never
+      // read their surface — or all of it, if the conversation that heard it is gone. Those sources
+      // ride this re-admission whatever its scope leaves out.
+      const restored = reraiseUnheard(!kept);
+      // A continued Turn is told its conversation is new as the continue path tells it below — the
+      // notice is kept for its conversation, which this re-admission takes. A fresh Turn's
+      // conversation is its own: the notice rides this admission alone, so no later continued Turn
+      // of another conversation is told its context is gone.
+      // A fresh Turn's "this conversation is new" that an unread re-admission carried rides this
+      // one again: it is kept nowhere else.
+      const lost: Notice[] = served.has(currentIid) ? [] : [...(carriedBy.get(currentIid)?.fresh ?? [])];
+      if (!kept) {
+        const fresh: Notice = {
+          kind: "conversation-new",
+          scope: "conversation",
+          reason: "the Harness no longer holds it",
+        };
+        if (input.continuation) binding.raiseNotice?.(fresh, conversation);
+        else lost.push(fresh);
       }
-      if (stopped) return "stopped";
-      // The notices pending for this Turn ride the re-admission, with the cut pick's answer after them.
+      // The notices pending for this Turn ride the re-admission, with the cut pick's answer after
+      // them. On a conversation the Harness still holds it continues the same Turn. On a new one
+      // nothing of the Turn is left: it is admitted as a Turn — every notice in scope. The task
+      // follows the re-admit text whenever the model never read it: a new conversation, or a cut
+      // admission that carried it and was never read.
+      const withTask = (!kept || taskUnheard) && task !== undefined;
       const admission = await admitTurn(
-        { ...framed, attach: undefined, instanceId: currentIid, prompt: READMIT_PROMPT },
-        { notices: "same-turn", extra: notice, include: restored },
+        {
+          ...framed,
+          attach: undefined,
+          instanceId: currentIid,
+          prompt: withTask ? `${READMIT_PROMPT}\n\n${task}` : READMIT_PROMPT,
+        },
+        { notices: kept ? "same-turn" : "turn", extra: [...lost, ...notice], include: restored, task: withTask },
       );
       binding.heldAnswerDelivered?.(currentIid);
       return admission;
@@ -1173,7 +1260,9 @@ export function agentActorWith(
           if (
             input.continuation &&
             binding.admissionOf?.(instanceId) !== undefined &&
-            !(await client.holds(input.agentName, instanceId, { signal: controller.signal }))
+            !(await client.holds(input.agentName, instanceId, {
+              signal: AbortSignal.any([controller.signal, AbortSignal.timeout(holdsReadMs)]),
+            }))
           ) {
             binding.raiseNotice?.(
               { kind: "conversation-new", scope: "conversation", reason: "the Harness no longer holds it" },
@@ -1261,7 +1350,7 @@ export function agentActorWith(
               instanceId: currentIid,
               prompt: NUDGE_PROMPT,
             },
-            { notices: "nudge" },
+            { notices: "nudge", task: false },
           );
         }
       } catch (err) {

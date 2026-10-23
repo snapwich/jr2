@@ -445,14 +445,30 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
     async holds(agentName, instanceId, opts) {
       const url = new URL(conversationUrl(agentName, instanceId));
       url.searchParams.set("view", VIEW_HISTORY);
-      try {
-        const res = await fetchImpl(url.toString(), { headers: authorization, signal: opts?.signal });
-        // Drain the body so the socket is released; the snapshot itself is not the question.
-        await res.body?.cancel().catch(() => undefined);
-        return res.status !== 404;
-      } catch (err) {
-        if (opts?.signal?.aborted) throw err;
-        return true;
+      // Asked as a restart is seen, when the new container may not listen yet: a request that
+      // never left this host, and a draining Harness's 503, are sent again until the caller's
+      // signal ends the wait — then, and on any other failure, unknown is never loss.
+      let backoffMs = backoffInitialMs;
+      for (;;) {
+        let again = false;
+        try {
+          const res = await fetchImpl(url.toString(), { headers: authorization, signal: opts?.signal });
+          // Drain the body so the socket is released; the snapshot itself is not the question.
+          await res.body?.cancel().catch(() => undefined);
+          if (res.status !== DRAINING) return res.status !== 404;
+          again = true;
+        } catch (err) {
+          if (opts?.signal?.aborted && !isTimeout(opts.signal.reason)) throw err;
+          again = !opts?.signal?.aborted && neverDelivered(err);
+        }
+        if (!again || opts?.signal === undefined) return true;
+        try {
+          await sleep(jittered(backoffMs), opts.signal);
+        } catch (err) {
+          if (opts.signal.aborted && !isTimeout(opts.signal.reason)) throw err;
+          return true;
+        }
+        backoffMs = Math.min(backoffMs * 2, backoffMaxMs);
       }
     },
 

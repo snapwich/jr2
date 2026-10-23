@@ -61,10 +61,12 @@ function heldMachine(
   coder: ReturnType<typeof agentActorWith>,
   reviewer: ReturnType<typeof agentActorWith>,
   tests: ReturnType<typeof controllable>["logic"],
+  /** Whether `work`'s Turn continues the coder's conversation; false, it is a fresh Turn. */
+  continueWork = true,
 ) {
   const endpoint = "http://harness.invalid";
   return jr2Setup({
-    types: {} as { context: Record<string, never> },
+    types: {} as { context: { fault?: string } },
     events: [
       run_tests,
       ask,
@@ -88,8 +90,17 @@ function heldMachine(
     initial: "work",
     states: {
       work: {
-        invoke: { src: "coder", input: { prompt: "Fix the ticket.", endpoint, sandbox: "ws-1", continue: true } },
-        on: { finish: "#wf.done", "agent.fault": "#wf.faulted" },
+        invoke: {
+          src: "coder",
+          input: { prompt: "Fix the ticket.", endpoint, sandbox: "ws-1", ...(continueWork ? { continue: true } : {}) },
+        },
+        on: {
+          finish: "#wf.done",
+          "agent.fault": {
+            target: "#wf.faulted",
+            actions: assign({ fault: ({ event }) => (event as { reason?: string }).reason }),
+          },
+        },
         initial: "rest",
         states: {
           rest: {
@@ -129,7 +140,13 @@ function heldMachine(
       },
       next: {
         invoke: { src: "coder", input: { prompt: "Carry on.", endpoint, continue: true } },
-        on: { finish: "#wf.done", "agent.fault": "#wf.faulted" },
+        on: {
+          finish: "#wf.done",
+          "agent.fault": {
+            target: "#wf.faulted",
+            actions: assign({ fault: ({ event }) => (event as { reason?: string }).reason }),
+          },
+        },
       },
       done: { type: "final" },
       faulted: { type: "final" },
@@ -150,6 +167,7 @@ type Rig = {
 function heldDef(
   rig: { coders: MockFlueClient[]; reviewers: MockFlueClient[] },
   tests: ReturnType<typeof controllable>,
+  continueWork = true,
 ): WorkflowDef {
   return {
     name: "held",
@@ -157,6 +175,7 @@ function heldDef(
       agentActorWith(() => new MockFlueClient(), coderDefinition),
       agentActorWith(() => new MockFlueClient(), reviewerDefinition),
       tests.logic,
+      continueWork,
     ),
     provide: () => {
       const coder = new MockFlueClient();
@@ -174,12 +193,12 @@ function heldDef(
   };
 }
 
-async function started(store?: SnapshotStore, sandbox?: SandboxPort): Promise<Rig> {
+async function started(store?: SnapshotStore, sandbox?: SandboxPort, continueWork = true): Promise<Rig> {
   const s = store ?? (await mkStore());
   const host = new RunHost({ store: s, ...(sandbox ? { sandbox } : {}) });
   const clients = { coders: [] as MockFlueClient[], reviewers: [] as MockFlueClient[] };
   const tests = controllable();
-  host.register(heldDef(clients, tests));
+  host.register(heldDef(clients, tests, continueWork));
   const { runId } = await host.start("held");
   const coder = clients.coders[0]!;
   await waitFor(() => coder.admits.length > 0);
@@ -678,6 +697,29 @@ test("a kill a nudge carried, cut before the Harness read its surface, rides the
   assert.deepEqual(
     rig.coder.notices[2]!.map((n) => n.kind),
     ["memory-limit", "pick-answer"],
+  );
+});
+
+test("a fresh Turn whose conversation the rebuilt Harness lost is told so on its re-admission, and no other conversation is (ADR-0031, ADR-0062)", async () => {
+  const rig = await started(undefined, undefined, false);
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  rig.coder.held = false;
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(
+    rig.coder.notices[1]!.map((n) => n.kind),
+    ["conversation-new", "pick-answer"],
+    "the Turn's context is gone, and it is told",
+  );
+  // Nothing is kept for the coder's continued conversation, which this fresh Turn never was.
+  const pending =
+    ((await rig.store.load(rig.runId))?.snapshot as { notices?: { pending?: Array<{ notice: { kind: string } }> } })
+      ?.notices?.pending ?? [];
+  assert.deepEqual(
+    pending.filter((p) => p.notice.kind === "conversation-new"),
+    [],
   );
 });
 
@@ -1881,13 +1923,45 @@ test("a re-admission does not repeat a notice the cut admission's model heard (A
   );
 });
 
+test("a re-admission onto a conversation the rebuilt Harness lost is a Turn: every notice its last admission carried, heard or not, and the task (ADR-0031, ADR-0062)", async () => {
+  const rig = await started();
+  // The coder's own `bash` reported k-1 (on its stream); its nudge carried k-2, and the Harness read
+  // that nudge's surface — k-2 was heard, in a conversation the restart then loses.
+  rig.coder.guardKill({ id: "k-1", peak: "1.9Gi", limit: "2Gi" });
+  const at = new Date().toISOString();
+  rig.coder.podKills = [
+    { id: "k-1", at, peak: "1.9Gi", limit: "2Gi", told: [{ agent: "coder", instanceId: rig.iid }] },
+    { id: "k-2", at, peak: "1.7Gi", limit: "2Gi", told: [] },
+  ];
+  rig.coder.complete();
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(
+    rig.coder.notices[1]!.map((n) => n.kind === "memory-limit" && n.peak),
+    ["1.7Gi"],
+  );
+  rig.host.agentSurfaceServed(rig.iid);
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  rig.coder.held = false;
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 3);
+  const readmit = rig.coder.admits[2]!;
+  assert.match(readmit.prompt ?? "", /^Your previous turn was cut[\s\S]*\n\nFix the ticket\.$/, "the task follows");
+  assert.deepEqual(
+    rig.coder.notices[2]!.map((n) => (n.kind === "memory-limit" ? `memory ${n.peak}` : n.kind)).sort(),
+    ["conversation-new", "memory 1.7Gi", "memory 1.9Gi", "pick-answer"],
+    "the conversation that heard them is gone: k-1 and k-2 are told again, with the task",
+  );
+});
+
 /** The held rig, with the coder's first read of the pod's kills answering `kills` — a kill from
  * before the Turn — and the run's store, for a restore. */
 async function startedWithKills(kills: MockFlueClient["podKills"], store?: SnapshotStore) {
   const s = store ?? (await mkStore());
   const host = new RunHost({ store: s });
   const clients = { coders: [] as MockFlueClient[], reviewers: [] as MockFlueClient[] };
-  const def = heldDef(clients, controllable());
+  const def = heldDef(clients, controllable(), true);
   const provide = def.provide!;
   def.provide = (...args: Parameters<typeof provide>) => {
     const out = provide(...args);
@@ -1909,14 +1983,14 @@ const kill0 = () => ({
   told: [] as Array<{ agent: string; instanceId: string }>,
 });
 
-test("a kill the cut first admission carried, unheard, reaches the re-admission on a kept conversation (ADR-0026, ADR-0031, ADR-0062)", async () => {
+test("a kill the cut first admission carried, unheard, reaches the re-admission on a kept conversation, with the task (ADR-0026, ADR-0031, ADR-0062)", async () => {
   const { host, runId, coder, iid } = await startedWithKills([kill0()]);
   assert.deepEqual(
     coder.notices[0]!.map((n) => n.kind),
     ["memory-limit"],
     "the first admission carries k-0",
   );
-  // The Harness never read the first admission's surface: k-0 never reached a model.
+  // The Harness never read the first admission's surface: neither k-0 nor the task reached a model.
   assert.equal(host.sendToAgent(iid, { type: "ask" }).outstanding, true);
   coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
   await new Promise((r) => setTimeout(r, 20));
@@ -1926,5 +2000,187 @@ test("a kill the cut first admission carried, unheard, reaches the re-admission 
     coder.notices[1]!.map((n) => n.kind),
     ["memory-limit", "pick-answer"],
   );
+  assert.match(coder.admits[1]!.prompt ?? "", /^Your previous turn was cut[\s\S]*\n\nFix the ticket\.$/);
   await host.close();
+});
+
+test("a re-admission onto a lost conversation tells every notice the Turn's admissions carried (ADR-0031, ADR-0062)", async () => {
+  const { host, runId, coder, iid } = await startedWithKills([kill0()]);
+  // The first admission carried k-0 and was read; a nudge carried k-1 and was read too.
+  host.agentSurfaceServed(iid);
+  coder.podKills = [kill0(), { id: "k-1", at: new Date().toISOString(), peak: "1.7Gi", limit: "2Gi", told: [] }];
+  coder.complete();
+  await waitFor(() => coder.admits.length === 2);
+  host.agentSurfaceServed(iid);
+  assert.equal(host.sendToAgent(iid, { type: "ask" }).outstanding, true);
+  coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  coder.held = false;
+  await new Promise((r) => setTimeout(r, 20));
+  host.sendToGate(runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => coder.admits.length === 3);
+  assert.deepEqual(coder.notices[2]!.map((n) => (n.kind === "memory-limit" ? `memory ${n.peak}` : n.kind)).sort(), [
+    "conversation-new",
+    "memory 1.7Gi",
+    "memory 1.9Gi",
+    "pick-answer",
+  ]);
+  await host.close();
+});
+
+test("a re-admission onto a conversation lost twice says once that it is new (ADR-0062)", async () => {
+  const { host, runId, coder, iid } = await startedWithKills([]);
+  for (const [round, admits] of [
+    [0, 2],
+    [1, 3],
+  ] as const) {
+    assert.equal(host.sendToAgent(iid, { type: "ask" }).outstanding, true, `round ${round}`);
+    coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+    coder.held = false;
+    await new Promise((r) => setTimeout(r, 20));
+    host.sendToGate(runId, "review", { type: "approve", note: "lgtm" });
+    await waitFor(() => coder.admits.length === admits);
+    host.agentSurfaceServed(iid);
+    coder.held = true;
+  }
+  assert.deepEqual(coder.notices[2]!.filter((n) => n.kind === "conversation-new").length, 1);
+  await host.close();
+});
+
+test("after an Orchestrator restore, a lost conversation is sent the task the ledger kept — and with no task, the Turn faults (ADR-0007, ADR-0062)", async () => {
+  for (const keepTask of [true, false]) {
+    const store = await mkStore();
+    const first = await startedWithKills([], store);
+    await waitFor(() => first.coder.settled.length > 0);
+    assert.equal(first.host.sendToAgent(first.iid, { type: "ask" }).outstanding, true);
+    await new Promise((r) => setTimeout(r, 5));
+    await first.host.stop(first.runId);
+    if (!keepTask) {
+      // A ledger written before the task rode it.
+      const loaded = await store.load(first.runId);
+      const blob = loaded!.snapshot as { agents: Record<string, { task?: string }> };
+      for (const admission of Object.values(blob.agents)) delete admission.task;
+      await store.save(first.runId, blob, "live");
+    }
+    const host = new RunHost({ store });
+    const clients = { coders: [] as MockFlueClient[], reviewers: [] as MockFlueClient[] };
+    host.register(heldDef(clients, controllable(), true));
+    assert.deepEqual((await host.restore()).reattached, [first.runId]);
+    const coder = clients.coders[0]!;
+    await waitFor(() => coder.settled.length > 0);
+    coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+    coder.held = false;
+    await new Promise((r) => setTimeout(r, 20));
+    host.sendToGate(first.runId, "review", { type: "approve", note: "lgtm" });
+    if (keepTask) {
+      await waitFor(() => coder.admits.length === 1);
+      assert.match(coder.admits[0]!.prompt ?? "", /\n\nFix the ticket\.$/, "the ledger's task");
+      // …and the re-admission's own ledger entry keeps it, for a restore after this one.
+      let task: string | undefined;
+      await waitFor(() => {
+        void store.load(first.runId).then((l) => {
+          const agents = (l?.snapshot as { agents?: Record<string, { task?: string }> })?.agents ?? {};
+          task = agents[first.iid]?.task;
+        });
+        return task !== undefined;
+      });
+      assert.equal(task, "Fix the ticket.");
+    } else {
+      await waitFor(
+        () =>
+          JSON.stringify(host.status(first.runId)?.value ?? "").includes("faulted") ||
+          host.status(first.runId) === undefined,
+      );
+      assert.equal(coder.admits.length, 0, "no new conversation is asked to continue a task it never had");
+    }
+    await host.close();
+  }
+});
+
+test("a lost conversation with no task, cut by a restart the watch saw, faults naming the restart and asks for the memory kill (ADR-0021, ADR-0061, ADR-0062)", async () => {
+  const listeners = new Set<(seen: HarnessRestarts) => void>();
+  let seen: HarnessRestarts = { restartCount: 0 };
+  let asked = 0;
+  const port = {
+    harnessRestarts: (_name: string, listener: (seen: HarnessRestarts) => void) => {
+      listeners.add(listener);
+      queueMicrotask(() => listeners.has(listener) && listener(seen));
+      return () => listeners.delete(listener);
+    },
+    memoryFault: async () => {
+      asked++;
+      return {
+        reason: "memory limit (OOMKilled, limit 1920Mi): the kernel killed the container",
+        limit: "1920Mi",
+        at: "2026-10-23T10:00:00Z",
+      };
+    },
+  } as unknown as SandboxPort;
+  const store = await mkStore();
+  // A run admitted and ledgered with no task (a ledger written before the task rode it), restored.
+  const firstHost = new RunHost({ store, sandbox: port });
+  const firstClients = { coders: [] as MockFlueClient[], reviewers: [] as MockFlueClient[] };
+  firstHost.register(heldDef(firstClients, controllable(), true));
+  const { runId } = await firstHost.start("held");
+  await waitFor(() => (firstClients.coders[0]?.admits.length ?? 0) > 0);
+  const iid = firstClients.coders[0]!.admits[0]!.instanceId;
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(firstHost.sendToAgent(iid, { type: "ask" }).outstanding, true);
+  await new Promise((r) => setTimeout(r, 5));
+  await firstHost.stop(runId);
+  const loaded = await store.load(runId);
+  const blob = loaded!.snapshot as { agents: Record<string, { task?: string }> };
+  for (const admission of Object.values(blob.agents)) delete admission.task;
+  await store.save(runId, blob, "live");
+
+  const host = new RunHost({ store, sandbox: port });
+  const clients = { coders: [] as MockFlueClient[], reviewers: [] as MockFlueClient[] };
+  host.register(heldDef(clients, controllable(), true));
+  assert.deepEqual((await host.restore()).reattached, [runId]);
+  const coder = clients.coders[0]!;
+  await waitFor(() => coder.settled.length > 0);
+  await new Promise((r) => setTimeout(r, 5));
+  // The kernel's group kill: the watch sees the Harness container end OOMKilled while the pick is
+  // out, and the rebuilt Harness has lost the conversation.
+  coder.held = false;
+  seen = {
+    restartCount: 1,
+    lastTerminated: { reason: "OOMKilled", exitCode: 137, finishedAt: "2026-10-23T10:00:00Z" },
+  };
+  for (const l of listeners) l(seen);
+  await new Promise((r) => setTimeout(r, 20));
+  host.sendToGate(runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => host.status(runId) === undefined);
+  const ended = await host.read(runId);
+  const fault = String((ended?.context as { fault?: string } | undefined)?.fault ?? "");
+  assert.match(fault, /^memory limit \(OOMKilled/);
+  assert.match(fault, /Turn lost \(Harness restarted: OOMKilled, exit 137\)/);
+  assert.equal(asked, 1, "the Sandbox was asked whether it was a memory kill");
+  assert.equal(coder.admits.length, 0, "no new conversation is asked to continue a task it never had");
+  const pending =
+    ((await store.load(runId))?.snapshot as { notices?: { pending?: Array<{ notice: { kind: string } }> } })?.notices
+      ?.pending ?? [];
+  assert.ok(
+    pending.some((p) => p.notice.kind === "memory-limit"),
+    "the next Turn in the Workspace is told",
+  );
+});
+
+test("a fresh Turn's 'this conversation is new', unread when a second cut comes, rides the next re-admission too (ADR-0031, ADR-0062)", async () => {
+  const rig = await started(undefined, undefined, false);
+  for (const [round, lose] of [
+    [1, true],
+    [2, false],
+  ] as const) {
+    assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true, `round ${round}`);
+    rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+    rig.coder.held = !lose;
+    await new Promise((r) => setTimeout(r, 20));
+    rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+    await waitFor(() => rig.coder.admits.length === round + 1);
+  }
+  // No surface read between: the second re-admission still tells the Agent its context is gone.
+  assert.deepEqual(
+    rig.coder.notices[2]!.map((n) => n.kind),
+    ["conversation-new", "pick-answer"],
+  );
 });

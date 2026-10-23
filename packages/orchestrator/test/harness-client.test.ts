@@ -797,6 +797,32 @@ test("memoryKills: one line for each fault — said when it starts, and again on
   assert.equal(lines.length, 2, "a new fault after a read that worked");
 });
 
+test("holds: a Harness that does not listen yet, or drains, is asked again until the caller's limit; then held (ADR-0062)", async () => {
+  // Refused, then draining, then the answer: the new container came up and has lost it.
+  const { calls, fetch } = scriptedFetch([
+    () => Promise.reject(transportError("ECONNREFUSED", "connect")),
+    () => new Response("{}", { status: 503 }),
+    () => new Response("{}", { status: 404 }),
+  ]);
+  const asked = createHarnessClient({ baseUrl: "http://h.test", fetch, backoffInitialMs: 1, backoffMaxMs: 2 });
+  assert.equal(await asked.holds("coder", "iid", { signal: AbortSignal.timeout(5_000) }), false);
+  assert.equal(calls.length, 3);
+  // Never up within the limit: unknown is never loss.
+  const down = scriptedFetch([() => Promise.reject(transportError("ECONNREFUSED", "connect"))]);
+  const never = createHarnessClient({
+    baseUrl: "http://h.test",
+    fetch: down.fetch,
+    backoffInitialMs: 1,
+    backoffMaxMs: 2,
+  });
+  assert.equal(await never.holds("coder", "iid", { signal: AbortSignal.timeout(20) }), true);
+  assert.ok(down.calls.length > 1);
+  // A local abandon propagates.
+  const stopped = new AbortController();
+  stopped.abort();
+  await assert.rejects(never.holds("coder", "iid", { signal: stopped.signal }));
+});
+
 test("memoryKills: an answer larger than 256 KiB is no list to act on (ADR-0062)", async () => {
   const big = JSON.stringify({
     kills: [{ id: "k-1", at: "2026-10-22T10:00:00.000Z", told: [], pad: "x".repeat(300_000) }],

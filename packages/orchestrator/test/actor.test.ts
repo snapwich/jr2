@@ -120,9 +120,11 @@ test("admits the run over a port built from input.endpoint and ledgers the admis
     instanceId: "inst-42",
     agent: "coder",
     endpoint: "http://sandbox-7.harness.local:8080",
+    // The Turn's task rides the ledger: a restore drops `prompt` (ADR-0062).
+    task: "do the thing",
   });
   // …and the actor is now following that admission to settlement.
-  assert.deepEqual(mock.settled, [mock.minted]);
+  assert.deepEqual(mock.settled, [{ ...mock.minted, task: "do the thing" }]);
 });
 
 test("input.attach (set by the host on restore) re-attaches without re-admitting", async () => {
@@ -781,7 +783,13 @@ test("no-signal: a completed turn with no menu call is re-prompted on the SAME i
   assert.match(mock.admits[1]!.prompt ?? "", /allowed/i);
   assert.deepEqual(
     ledger["inst-42"],
-    { ...mock.minted, instanceId: "inst-42", agent: "coder", endpoint: "http://sandbox-7.harness.local:8080" },
+    {
+      ...mock.minted,
+      task: "do the thing",
+      instanceId: "inst-42",
+      agent: "coder",
+      endpoint: "http://sandbox-7.harness.local:8080",
+    },
     "the nudge's admission is ledgered like any other",
   );
   // `child` is the invoking parent's actor id — meaningful in real trees ("F-1", "body"); the
@@ -920,6 +928,8 @@ test("runaway: a FRESH turn is rerolled ONCE — fresh conversation, IDENTICAL p
     instanceId: "inst-42-r1",
     agent: "coder",
     endpoint: "http://sandbox-7.harness.local:8080",
+    // The Turn's task rides the ledger: a restore drops `prompt` (ADR-0062).
+    task: "do the thing",
   });
   assert.equal(ledger["inst-42-r1"], undefined);
   // …and the reroll's surface is live at the DERIVED address: its conversation's Menu reads

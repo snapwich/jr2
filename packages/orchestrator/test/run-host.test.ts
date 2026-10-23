@@ -317,7 +317,7 @@ test("the admission is ledgered host-side and persisted beside the snapshot (ADR
   });
   assert.deepEqual(
     agents?.[iid],
-    { ...minted, instanceId: iid, agent: "coder", endpoint: "http://harness.invalid" },
+    { ...minted, task: "do work", instanceId: iid, agent: "coder", endpoint: "http://harness.invalid" },
     "the durable handle rides RunBlob.agents",
   );
 });
@@ -390,7 +390,7 @@ test("a second host restores an in-flight run and re-attaches by persisted admis
   assert.equal(reattachedClient!.admitted, undefined, "re-attach must not re-POST the prompt");
   assert.deepEqual(
     reattachedClient!.settled,
-    [{ ...minted, instanceId: iid, agent: "coder", endpoint: "http://harness.invalid" }],
+    [{ ...minted, task: "do work", instanceId: iid, agent: "coder", endpoint: "http://harness.invalid" }],
     "settlement follows the PERSISTED admission",
   );
 });
