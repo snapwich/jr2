@@ -77,15 +77,17 @@ recover, finish — are exercised only one scripted tool call at a time.
 - **Not in CI. Run by whoever changed what the model reads, before calling the change done.** Not in `pnpm -r test`, not
   in the release job: it needs a cluster and an endpoint, it is nondeterministic by nature, and a gate that flakes is a
   gate everyone re-runs. `just e2e-model` probes the profile's endpoint first and, when nothing answers, exits 0 with
-  one line — `skipped: no model endpoint at <url>` — so it can always be invoked and a skip is never silent. It skips
-  with one line in two more cases. A profile with `key` and no `JR2_MODEL_API_KEY` prints
-  `skipped: JR2_MODEL_API_KEY is not set, and profile <name> needs it`. An endpoint that answers with a status other
-  than 2xx prints `skipped: the model endpoint at <url> answered HTTP <code>`. The trigger is a change to any text or
-  tool the model reads or is offered: the Briefing, the Menu's rendering and the refusal, the nudge, the Working tools
-  and their descriptions, Compaction's summary, the admit body's notices, the pi pin, a provider adapter, or an
-  authoring surface that changes a Frame. An agent reviewing a feature or refactor that touched one of these runs the
-  tier and reports the scorecard's floors and drift, or the skip, in its handoff. CLAUDE.md states the rule. One
-  scenario runs alone by its title, which is the scenario filter:
+  one line — `skipped: no model endpoint at <url> (profile <name>) — the @model tier did not run` — so it can always be
+  invoked and a skip is never silent. It skips with one line in two more cases. A profile with `key` and no
+  `JR2_MODEL_API_KEY` prints
+  `skipped: JR2_MODEL_API_KEY is not set, and profile <name> needs it (<key>) — the @model tier did not run`, where
+  `<key>` is the profile's `key`. An endpoint that answers with a status other than 2xx prints
+  `skipped: the model endpoint at <url> answered HTTP <code> (profile <name>) — the @model tier did not run`. The
+  trigger is a change to any text or tool the model reads or is offered: the Briefing, the Menu's rendering and the
+  refusal, the nudge, the Working tools and their descriptions, Compaction's summary, the admit body's notices, the pi
+  pin, a provider adapter, or an authoring surface that changes a Frame. An agent reviewing a feature or refactor that
+  touched one of these runs the tier and reports the scorecard's floors and drift, or the skip, in its handoff.
+  CLAUDE.md states the rule. One scenario runs alone by its title, which is the scenario filter:
   `cucumber-js --profile model --name "a Gate's answer during a command is followed"`.
 - **A third pi canary.** Conformance and `@kind` drive the turn loop against a script; this tier drives it against a
   model that can misread. Run all three before bumping the pin.
