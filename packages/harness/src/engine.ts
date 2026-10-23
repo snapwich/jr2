@@ -81,7 +81,13 @@ export type EngineEvent =
   /** A model answer and every tool result of it are complete: the step boundary (GLOSSARY.md,
    * ADR-0029). A message that is steered here is the next request's newest message. */
   | { type: "step_boundary"; message: EngineMessage; toolResults: ToolResultMessage[] }
-  | { type: "tool_start"; toolCallId: string }
+  /** A tool call starts. The engine tells it for EVERY call of a model answer that it handles, in
+   * the model's order, before it checks the tool or the arguments: a call of an unknown tool, or
+   * with arguments that do not validate, starts too. `args` are the arguments as the model wrote
+   * them. A listener may `abort` the run here: the call then does not run. A call of a tool the run
+   * has, with valid arguments, then reads `Operation aborted`; a call of an unknown tool, or with
+   * invalid arguments, reads the engine's own error for it. */
+  | { type: "tool_start"; toolCallId: string; name: string; args: unknown }
   | { type: "tool_end"; toolCallId: string };
 
 /** A listener gets the run's abort signal. The engine awaits each listener, in subscription order,

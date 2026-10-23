@@ -135,7 +135,7 @@ export function engineEvent(event: AgentEvent): EngineEvent | undefined {
     case "turn_end":
       return { type: "step_boundary", message: event.message, toolResults: event.toolResults };
     case "tool_execution_start":
-      return { type: "tool_start", toolCallId: event.toolCallId };
+      return { type: "tool_start", toolCallId: event.toolCallId, name: event.toolName, args: event.args };
     case "tool_execution_end":
       return { type: "tool_end", toolCallId: event.toolCallId };
     default:

@@ -318,37 +318,21 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
             ]);
             return cut.messages;
           },
-          // The runaway watch (ADR-0035): steps are the tool calls this Submission observed; K
-          // consecutive byte-identical calls is the early exit, the step budget the unconditional
-          // backstop. Identity is name + JSON arguments — the engine hands the VALIDATED args, and
-          // stringify keeps the wire's key order, so byte-identical provider frames compare equal.
-          // Tripping aborts the run (`abortRun`), so the tripping call never executes and answers
-          // `Operation aborted`. The engine runs one model answer's calls in order (`engine.ts`): the
-          // calls before the trip have run, and the engine runs no call after it. Were it to ask about
-          // one, the block below stops it with the reason.
+          // The runaway watch (ADR-0035) counts at `tool_start`, below. A tripped watch blocks every
+          // call the engine still asks about, and aborts the run (`abortRun`) if the trip's own abort
+          // has not.
           //
           // A pick's answer that ended the Turn (`turn.over`) blocks every later call of the
-          // Submission, before the watch counts it: the engine runs a model answer's calls in order,
-          // so a call after that pick comes after the Turn is over (`turnOverResult`).
+          // Submission: the engine runs a model answer's calls in order, so a call after that pick
+          // comes after the Turn is over (`turnOverResult`).
           //
           // A second pick of one model answer is blocked (ADR-0024): the model wrote it before it
           // read the first pick's answer, so it is stale by construction (`stalePickResult`). The
           // first pick is the first that reached THIS hook in the model answer (`turn.answerPick`):
           // the engine asks the hook only about a call of a tool the run has, with valid arguments,
-          // so a call of an unknown tool or with invalid arguments is never the first pick. The
-          // blocked pick is still a step, so a model that repeats it is still a Runaway (ADR-0035).
-          beforeToolCall: ({ name, args }) => {
+          // so a call of an unknown tool or with invalid arguments is never the first pick.
+          beforeToolCall: ({ name }) => {
             if (turn.over) return { block: turnOverResult() };
-            if (watch.tripped) return { block: watch.tripped };
-            watch.steps += 1;
-            const signature = `${name} ${JSON.stringify(args)}`;
-            watch.streak = signature === watch.signature ? watch.streak + 1 : 1;
-            watch.signature = signature;
-            if (watch.streak >= identicalCallLimit) {
-              watch.tripped = `repeated an identical tool call ${identicalCallLimit} times`;
-            } else if (watch.steps > stepBudget) {
-              watch.tripped = `exceeded ${stepBudget} steps`;
-            }
             if (watch.tripped) return { block: watch.tripped, abortRun: true };
             if (!name.startsWith(MENU_TOOL_PREFIX)) return undefined;
             if (turn.answerPick !== undefined) return { block: stalePickResult(turn.answerPick) };
@@ -415,6 +399,29 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         }).catch(() => undefined);
         if (text === undefined || !live()) return;
         engine.steer(text);
+      });
+      // The runaway watch (ADR-0035): a step is every tool call that starts while the Turn is live —
+      // a call of an unknown tool or with invalid arguments too, which the engine answers with its
+      // own error and asks `beforeToolCall` nothing about, and a pick blocked as the second of its
+      // model answer. A call after a pick ended the Turn is no step: the Turn it would count for is
+      // over, so a trip cannot make an ended Turn a Runaway. K consecutive identical calls is the
+      // early exit, the step budget the unconditional backstop. Identity is the name and the JSON of
+      // the arguments as the model wrote them, so byte-identical provider frames compare equal.
+      // Tripping aborts the run here: the tripping call does not run (it reads `Operation aborted`,
+      // or the engine's own error for an unknown tool or invalid arguments), the calls before it
+      // have run, and the engine runs no call after it (`engine.ts`).
+      engine.subscribe((event) => {
+        if (event.type !== "tool_start" || turn.over || watch.tripped) return;
+        watch.steps += 1;
+        const signature = `${event.name} ${JSON.stringify(event.args)}`;
+        watch.streak = signature === watch.signature ? watch.streak + 1 : 1;
+        watch.signature = signature;
+        if (watch.streak >= identicalCallLimit) {
+          watch.tripped = `repeated an identical tool call ${identicalCallLimit} times`;
+        } else if (watch.steps > stepBudget) {
+          watch.tripped = `exceeded ${stepBudget} steps`;
+        }
+        if (watch.tripped) engine.abort();
       });
       // What is executing (`work`): every tool call between its start and its end.
       engine.subscribe((event) => {
