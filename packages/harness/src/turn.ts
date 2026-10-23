@@ -65,7 +65,7 @@ import {
 import type { Engine, EngineAdapter, EngineMessage, EngineTool } from "./engine.ts";
 import { ENGINE_ADAPTER } from "./engine-choice.ts";
 import type { EnginePart } from "./transcript.ts";
-import { lacksLevel, mapThinkingLevel, providerLimit, ranAt, resolveModel } from "./provider.ts";
+import { lacksLevel, mapThinkingLevel, PROVIDER_RETRIES, providerLimit, ranAt, resolveModel } from "./provider.ts";
 import type { EngineSeat } from "./record.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage } from "./wire.ts";
@@ -121,11 +121,6 @@ const STEP_BUDGET = 256;
 /** K consecutive byte-identical tool calls (same name, same JSON arguments) — the early exit.
  * Healthy max observed: 2. */
 const IDENTICAL_CALL_LIMIT = 4;
-/** The provider retries of each request (ADR-0016, ADR-0064): a 429, a 503 or an overload is
- * retried twice, with backoff, and a server's `retry-after` is honored up to 60 s. pi-ai runs them,
- * but only when the Harness states a number: it reads `maxRetries ?? 0`. 2 is the summarizer's
- * number too (`compaction.ts`), and the SDKs' own default. */
-const PROVIDER_RETRIES = 2;
 // Compaction's numbers (ADR-0036) live in `compaction.ts`, beside the derivation that reads them:
 // `reserve = max(16384, maxTokens)` with the small-window floor, and a 20000-token retained tail.
 

@@ -13,6 +13,7 @@ import {
   ranAt,
   resolveModel,
   mapThinkingLevel,
+  probeBusy,
   providerLimit,
   PROVIDER_LIMIT,
 } from "../src/provider.ts";
@@ -197,6 +198,28 @@ test("providerLimit: a refusal of the load after the Harness's retries is named,
     assert.ok(reason?.startsWith(`${PROVIDER_LIMIT} (vllm/Qwen/Qwen3-32B): ${error}`), `${error} → ${reason}`);
   }
   assert.equal(PROVIDER_LIMIT, "provider limit");
+});
+
+test("probeBusy: the preflight calls a named limit busy, and a 503 alone a fault (ADR-0019)", () => {
+  for (const error of [
+    "429 Too Many Requests",
+    "529 overloaded_error: Overloaded",
+    "Rate limit reached for requests",
+    "ResourceExhausted: try later",
+    'Server requested 600s retry delay (max: 20s). 429 {"error":"slow down"}',
+  ]) {
+    assert.ok(probeBusy(failed(error))?.startsWith(PROVIDER_LIMIT), error);
+  }
+  // A gateway with no backend, a server still loading its model: a Turn there fails, so the converge does.
+  assert.equal(probeBusy(failed("503 Service Unavailable")), undefined);
+  // Not a limit at all, in the forms the apis write: the probe sends such a forced call again unforced.
+  for (const error of [
+    "Validation error: This model doesn't support the toolConfig.toolChoice.tool field.",
+    "OpenAI API error (400): tool_choice is not supported",
+    '{"error":{"code":400,"message":"Function calling config is set without function_declarations.","status":"INVALID_ARGUMENT"}}',
+  ]) {
+    assert.equal(probeBusy(failed(error)), undefined, error);
+  }
 });
 
 test("providerLimit: quota exhaustion is not a provider limit — pi does not call it retryable (ADR-0064)", () => {
