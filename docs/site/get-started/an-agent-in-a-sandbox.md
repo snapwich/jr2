@@ -237,7 +237,8 @@ git log --oneline v<version>..HEAD
 <commit id> <message>
 ```
 
-Each line is one commit. The commit ids and the messages come from the model. Then leave the Sandbox:
+Each line is one commit. The commit ids and the messages come from the model. The author of each commit is
+`jr2 Agent <agent@jr2.invalid>`, the default git author that jr2 gives a Sandbox. Then leave the Sandbox:
 
 ```sh
 exit

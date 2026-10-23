@@ -95,6 +95,12 @@ The image must have these, or the Sandbox does not start:
   The `harness` container does not run as root.
 - Nothing at `/opt/jr2` or `/work`, and nothing that listens on port `8080`.
 
+The image does not need a git author. When the image sets none, a commit in the `harness` container has the author
+`jr2 Agent <agent@jr2.invalid>`. jr2 puts this default at git's system level, under the image's own `/etc/gitconfig`, so
+each git author that the image sets is used in its place: in `/etc/gitconfig`, in the `HOME` of its `USER`, or in
+`GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`. When the image sets `GIT_CONFIG_SYSTEM` or `GIT_CONFIG_NOSYSTEM`, or its git
+reads another system file than `/etc/gitconfig`, jr2 does not set the default.
+
 Before the Harness starts, a `preflight` step in the pod checks the image. When the check fails, the run faults. Read
 the log of the step with `kubectl -n <namespace> logs <sandbox> -c preflight`. `<namespace>` is the namespace of the
 Instance, such as `my-instance`. [Look inside a Sandbox](look-inside-a-sandbox.md) tells how to find `<sandbox>`.
