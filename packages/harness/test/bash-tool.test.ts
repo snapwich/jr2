@@ -125,13 +125,28 @@ test("control characters and U+FFF9 to U+FFFB are removed; tab, newline and carr
   assert.equal(sanitizeBinaryOutput("a\u0000b\u0007c\td\ne\rf￹g￻h"), "abc\td\ne\rfgh");
 });
 
-test("when the memory guard fired during the call, its verdict is the call's answer", async () => {
+test("when the memory guard fired during the call, its verdict is the call's answer, and the watch is told (ADR-0062)", async () => {
   const verdict = "killed: memory limit (peak 1.9Gi of 2Gi); use fewer workers or a larger Size";
   let ended = 0;
+  let told = 0;
   const guard = {
-    watch: (): GuardWatch => ({ end: () => void ended++, verdict: () => verdict }),
+    watch: (): GuardWatch => ({ end: () => void ended++, verdict: () => verdict, told: () => void told++ }),
   };
   const message = await failure(bashTool({ cwd, guard }), "echo partial");
   assert.equal(message, `partial\n\n${verdict}`);
   assert.equal(ended, 1, "the watch ended with the call");
+  assert.equal(told, 1, "the answer that carries the verdict tells its conversation");
+});
+
+test("a call is watched as its conversation's, so a kill knows whose call it told (ADR-0062)", async () => {
+  const owners: unknown[] = [];
+  const guard = {
+    watch: (owner?: unknown): GuardWatch => (
+      owners.push(owner),
+      { end: () => {}, verdict: () => undefined, told: () => {} }
+    ),
+  };
+  const owner = { agent: "coder", instanceId: "run/body/coder" };
+  await run(bashTool({ cwd, guard, owner }), "true");
+  assert.deepEqual(owners, [owner]);
 });

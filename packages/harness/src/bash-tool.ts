@@ -21,7 +21,7 @@ import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { EngineTool } from "./engine.ts";
-import type { MemoryGuard } from "./memory-guard.ts";
+import type { GuardOwner, MemoryGuard } from "./memory-guard.ts";
 import { exec, isExecError, MAX_TIMEOUT_SECONDS, type ExecError, type ExecExit } from "./shell.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateTail, type TruncationResult } from "./truncate.ts";
 
@@ -55,10 +55,12 @@ function validateTimeout(timeout: number | undefined): void {
 }
 
 /** The `bash` Working tool, rooted at `cwd`. `guard` is the process's memory guard (`main.ts`);
- * omitted, no guard watches — a host run, or a test. */
+ * omitted, no guard watches — a host run, or a test. `owner` is the conversation the tool serves,
+ * so a kill knows whose call answered its verdict (ADR-0062). */
 export function bashTool(opts: {
   cwd: string;
   guard?: Pick<MemoryGuard, "watch"> | undefined;
+  owner?: GuardOwner | undefined;
 }): EngineTool<typeof bashSchema> {
   return {
     name: "bash",
@@ -66,7 +68,7 @@ export function bashTool(opts: {
     parameters: bashSchema,
     async execute(_toolCallId, { command, timeout }, signal) {
       validateTimeout(timeout);
-      const watch = opts.guard?.watch();
+      const watch = opts.guard?.watch(opts.owner);
       let capture: Capture;
       try {
         capture = await executeShellWithCapture(WRAPPER, {
@@ -101,6 +103,8 @@ export function bashTool(opts: {
       if (verdict) {
         const seen =
           !status || status.exit ? outputText : status.alone ? status.text : withStatus(outputText, status.text);
+        // The answer is the model's now: its conversation was told of the kill (ADR-0062).
+        watch?.told();
         throw new Error(withStatus(seen.trimEnd(), verdict));
       }
       if (status === undefined) return { content: [{ type: "text", text: outputText || "(no output)" }] };

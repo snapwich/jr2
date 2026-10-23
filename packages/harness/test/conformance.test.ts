@@ -30,7 +30,8 @@ import { menuToolName } from "../src/menu-tools.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
 import { runSubmissionFor } from "../src/turn.ts";
-import type { HistoryView, Notice, Settlement, StreamEvent } from "../src/wire.ts";
+import { MemoryGuard } from "../src/memory-guard.ts";
+import type { HistoryView, MemoryKillsResponse, Notice, Settlement, StreamEvent } from "../src/wire.ts";
 import { startAnthropicGateway, type AnthropicGateway } from "./support/anthropic-gateway.ts";
 import {
   SANDBOX_STAND_IN,
@@ -118,6 +119,24 @@ let serverOver: (conversationsDir: string) => HarnessServer;
 /** The same composition with the Harness's own provider retries (no `maxRetries` seam): what
  * production runs (ADR-0016, ADR-0064). */
 let retryApp: Hono;
+/** The same composition with a memory guard that fires as a `bash` call starts (ADR-0061): a
+ * scripted cgroup and recorded effects, so nothing is really killed. */
+let guardedApp: Hono;
+const firing = { on: false };
+const firingGuard = new MemoryGuard(
+  { limit: () => 2 * 1024 ** 3, usage: () => (firing.on ? 1.95 * 1024 ** 3 : 100 * 1024 ** 2) },
+  { killAgentProcesses: () => 1, clearShm: () => {}, log: () => {} },
+);
+{
+  const watch = firingGuard.watch.bind(firingGuard);
+  firingGuard.watch = (owner) => {
+    const watched = watch(owner);
+    firing.on = true;
+    firingGuard.check();
+    firing.on = false;
+    return watched;
+  };
+}
 /** The same custom provider reached at a base URL that names `openrouter.ai`, where pi-ai would
  * add its attribution headers. */
 let openRouterApp: Hono;
@@ -156,7 +175,13 @@ before(async () => {
     },
   };
   const models = modelsFor(harness, {});
-  type Seams = { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number; retries?: "harness" };
+  type Seams = {
+    stepBudget?: number;
+    identicalCallLimit?: number;
+    keepRecentTokens?: number;
+    retries?: "harness";
+    guard?: MemoryGuard;
+  };
   const serverWith = (seams?: Seams, conversationsDir?: string, registry = models): HarnessServer =>
     harnessServer({
       ...(conversationsDir ? { conversationsDir } : {}),
@@ -166,8 +191,14 @@ before(async () => {
       // The real composition (`main.ts`): admission rejects a definition (or dial) the turn
       // could not run.
       checkAdmission: (resolved) => admissionFault(registry, resolved),
+      ...(seams?.guard
+        ? {
+            memoryKills: (listener) => seams.guard!.onKill(listener),
+            memoryTold: (teller) => seams.guard!.onTold(teller),
+          }
+        : {}),
       runSubmissionFor: (seat) => {
-        const { retries, ...turnSeams } = seams ?? {};
+        const { retries, guard, ...turnSeams } = seams ?? {};
         return runSubmissionFor({
           models: registry,
           menu: { url: sandbox.url, token: SANDBOX_STAND_IN, retryWindowMs: 50, retryInitialMs: 1 },
@@ -178,6 +209,7 @@ before(async () => {
             write: (chunk) => printed.set(seat.instanceId, (printed.get(seat.instanceId) ?? "") + chunk),
           },
           ...turnSeams,
+          ...(guard ? { guard } : {}),
           ...seat,
         });
       },
@@ -190,6 +222,7 @@ before(async () => {
   appOver = (conversationsDir) => appWith(undefined, conversationsDir);
   serverOver = (conversationsDir) => serverWith(undefined, conversationsDir);
   retryApp = appWith({ retries: "harness" });
+  guardedApp = appWith({ guard: firingGuard });
   const openRouter = modelsFor(
     { provider: { ...harness.provider!, baseUrl: `${provider.url.replace(/\/v1$/, "")}/openrouter.ai/v1` } },
     {},
@@ -533,6 +566,25 @@ test("a bash command killed by a signal reaches the model as an error naming the
   const result = JSON.stringify(provider.calls[1]?.messages.at(-1) ?? {});
   assert.match(result, /started/);
   assert.match(result, /Command killed by signal SIGKILL \(exit 137\)/);
+});
+
+test("a guard kill during a bash call is told to that conversation: the pod's list names it in `told` (ADR-0061, ADR-0062)", async () => {
+  // The production path that fills `told`: the turn hands its conversation to the Working tools,
+  // and the `bash` call is watched as that conversation's.
+  provider.reset([
+    { toolCall: { id: "call_1", name: "bash", args: JSON.stringify({ command: "echo started" }) } },
+    { text: "The processes were killed." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/guard-told";
+  const admission = await admit(iid, "Run the tests.", undefined, AGENT, guardedApp, { cwd: tmpdir() });
+  assert.equal((await settled(iid, admission, AGENT, guardedApp)).outcome, "completed");
+  assert.match(JSON.stringify(provider.calls[1]?.messages.at(-1) ?? {}), /killed: memory limit/);
+  const { kills } = (await (await guardedApp.request("/memory-kills")).json()) as MemoryKillsResponse;
+  assert.deepEqual(
+    kills.map((kill) => kill.told),
+    [[{ agent: AGENT, instanceId: iid }]],
+  );
 });
 
 test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018)", async () => {

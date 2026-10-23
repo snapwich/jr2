@@ -12,6 +12,7 @@
 // Plus ADR-0031's lifetime: each conversation persisted to a directory and rebuilt from it on boot,
 // the Orchestrator's live set (`PUT /agents`) freeing the rest, and a drain that stops admitting.
 // Plus ADR-0067's exec (`/exec/:id`): a Machine's `command` Effect, run as a child of this process.
+// Plus ADR-0062's `GET /memory-kills`: the pod's guard kills.
 // Turn execution and the attach are injected, so this module owns routing alone — wire tests drive it socket-free via `app.request()` and never touch
 // pi.
 
@@ -21,6 +22,7 @@ import { AttachFault, attachFault } from "./attach.ts";
 import { syncFault } from "./sync.ts";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
 import { Execs } from "./exec.ts";
+import { KEPT_KILLS, killId, PodKills } from "./pod-kills.ts";
 import { renderEchoEvent, type PrinterOut } from "./printer.ts";
 import {
   conversationDir,
@@ -58,6 +60,7 @@ import {
   type HistoryMessage,
   type LiveConversation,
   type LiveSetResponse,
+  type MemoryKillsResponse,
   type Notice,
   type PickAnswer,
 } from "./wire.ts";
@@ -120,8 +123,12 @@ export type HarnessAppDeps = {
   execs?: Execs;
   /** Hear the memory guard's kills (ADR-0061, layer 4) — `MemoryGuard.onKill` in production. Each
    * lands on the stream of every conversation whose Submission is running, where the Orchestrator
-   * reads it and keeps a workspace notice (ADR-0062). Omitted, no kill is reported. */
-  memoryKills?: (listener: (kill: { peak: string; limit: string }) => void) => () => void;
+   * reads it and keeps a workspace notice (ADR-0062). Every kill is also kept for
+   * `GET /memory-kills`, under the same id. Omitted, no kill is reported. */
+  memoryKills?: (listener: (kill: { seq?: number; peak: string; limit: string }) => void) => () => void;
+  /** Hear when a `bash` call returned a kill's verdict to its model — `MemoryGuard.onTold` in
+   * production: the conversation goes into that kill's `told` (ADR-0062). */
+  memoryTold?: (teller: (seq: number, owner: LiveConversation) => void) => () => void;
   /**
    * The directory every conversation is persisted under (ADR-0031) — `JR2_CONVERSATIONS_DIR`: the
    * Instance Harness's own PersistentVolumeClaim, a Sandbox Harness's emptyDir. Read once, when the
@@ -222,9 +229,32 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     }
   }
   // One guard per process, one subscription per app: a kill is the whole container's, so every
-  // conversation hears it, and each says it only if its Submission was running.
+  // conversation hears it, and each says it only if its Submission was running. The kill gets ONE
+  // id here, and the pod keeps every kill under it for `GET /memory-kills`: a wait that stopped
+  // before it read the event (its Agent's state exited) must not lose it, and the id makes a kill
+  // read on both paths one notice. A conversation goes into the kill's `told` when its `bash` call
+  // RETURNS the verdict to the model — not when the guard fires, since a call cut short told no
+  // one (ADR-0062). The Instance Harness keeps none: it holds no Workspace, and a Menu-only Agent
+  // hears conversation notices alone.
+  const kills = deps.menuOnly ? undefined : new PodKills(root);
+  /** The guard's number for each recent kill, to its id — as many as the pod keeps. */
+  const idOfSeq = new Map<number, string>();
   deps.memoryKills?.((kill) => {
-    for (const conversation of conversations.values()) conversation.reportMemoryLimit(kill);
+    const at = new Date();
+    const id = killId(at);
+    if (kill.seq !== undefined) {
+      idOfSeq.set(kill.seq, id);
+      for (const seq of idOfSeq.keys()) if (idOfSeq.size > KEPT_KILLS) idOfSeq.delete(seq);
+    }
+    // Kept first: a reader that sees the event on a stream can then always find it in the list.
+    kills?.keep({ id, at: at.toISOString(), peak: kill.peak, limit: kill.limit, told: [] });
+    for (const conversation of conversations.values()) {
+      conversation.reportMemoryLimit({ id, peak: kill.peak, limit: kill.limit });
+    }
+  });
+  deps.memoryTold?.((seq, owner) => {
+    const id = idOfSeq.get(seq);
+    if (id !== undefined) kills?.tell(id, owner);
   });
 
   const app = new Hono();
@@ -242,6 +272,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   app.use("/attach", gate);
   app.use("/sync", gate);
   app.use("/exec/*", gate);
+  app.use("/memory-kills", gate);
 
   /** The process's execs, or the refusal a Harness that runs none answers. */
   const execsOrRefusal = (c: Context): Execs | Response => {
@@ -485,6 +516,19 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     return c.body(null, 204);
   });
 
+  // The pod's guard kills (ADR-0061, ADR-0062): the Orchestrator reads them before it admits a Turn
+  // into this Workspace, and keeps a notice for each id it has not seen. A read changes nothing, so
+  // a read again after a restart of either side is safe.
+  app.get("/memory-kills", (c) => {
+    if (!kills) {
+      return c.json(
+        { error: "this is the Instance Harness, which holds no Workspace — it keeps no memory kill (ADR-0031)" },
+        403,
+      );
+    }
+    return c.json<MemoryKillsResponse>({ kills: kills.list() });
+  });
+
   // Registered after the handlers, so only methods the wire does not speak land here (the
   // stub's 405). Not on the abort path: the stub answers a GET there 404, and so does this.
   app.all("/agents/:name/:id", (c) => c.json({ error: `harness: ${c.req.method} not supported` }, 405));
@@ -545,7 +589,13 @@ function noticesOf(value: unknown): { notices?: Notice[] } {
     if (typeof n !== "object" || n === null) return false;
     const { kind, scope, agent, peak, limit, reason } = n as Record<string, unknown>;
     if (kind === "memory-limit") {
-      return scope === "workspace" && str(agent) && str(limit) && (peak === undefined || str(peak));
+      // No `agent`: every kill read from the pod's list names no Turn.
+      return (
+        scope === "workspace" &&
+        (agent === undefined || str(agent)) &&
+        (limit === undefined ? peak === undefined : str(limit)) &&
+        (peak === undefined || str(peak))
+      );
     }
     if (kind === "pick-answer") {
       const { pick, cut, answer, stopped } = n as Record<string, unknown>;

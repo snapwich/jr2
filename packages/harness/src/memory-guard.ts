@@ -50,17 +50,24 @@ export type GuardEffects = {
 };
 
 /** One `bash` call under the guard: `end()` when it settles, then `verdict()` — the kill text
- * when the guard fired while it ran. */
-export type GuardWatch = { end(): void; verdict(): string | undefined };
+ * when the guard fired while it ran — and `told()` once the call has returned that text to the
+ * model, which puts its conversation in the kill's `told` (ADR-0062). */
+export type GuardWatch = { end(): void; verdict(): string | undefined; told(): void };
 
-/** One kill, as the updates stream reports it (ADR-0062): sizes written the way a Size is. */
-export type GuardKill = { peak: string; limit: string };
+/** Whose `bash` call a watch is: the conversation it runs in (ADR-0062). */
+export type GuardOwner = { agent: string; instanceId: string };
+
+/** One kill, as the updates stream reports it (ADR-0062): sizes written the way a Size is, and
+ * `seq`, the guard's own number for it — what `onTold` names it by. */
+export type GuardKill = { seq: number; peak: string; limit: string };
 
 export class MemoryGuard {
   readonly #read: CgroupRead;
   readonly #effects: GuardEffects;
-  readonly #active = new Set<{ verdict?: string }>();
+  readonly #active = new Set<{ verdict?: string; seq?: number; owner?: GuardOwner }>();
   readonly #listeners = new Set<(kill: GuardKill) => void>();
+  readonly #tellers = new Set<(seq: number, owner: GuardOwner) => void>();
+  #seq = 0;
   #timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(read: CgroupRead, effects: GuardEffects) {
@@ -83,11 +90,28 @@ export class MemoryGuard {
     this.#timer = undefined;
   }
 
-  /** Watch one `bash` call, for its verdict alone — the poll does not depend on it. */
-  watch(): GuardWatch {
-    const call: { verdict?: string } = {};
+  /** Watch one `bash` call, for its verdict alone — the poll does not depend on it. `owner` is the
+   * conversation the call runs in, for the kill's `told`. */
+  watch(owner?: GuardOwner): GuardWatch {
+    const call: { verdict?: string; seq?: number; owner?: GuardOwner } = owner === undefined ? {} : { owner };
     this.#active.add(call);
-    return { end: () => void this.#active.delete(call), verdict: () => call.verdict };
+    return {
+      end: () => void this.#active.delete(call),
+      verdict: () => call.verdict,
+      // Told only when the answer reached the model: a call cut short — the container's end, a
+      // restart — never told it, and its conversation stays out of `told`.
+      told: () => {
+        if (call.seq === undefined || call.owner === undefined) return;
+        for (const teller of this.#tellers) teller(call.seq, call.owner);
+      },
+    };
+  }
+
+  /** Hear when a `bash` call returned a kill's verdict to its model: the kill's `seq`, and the
+   * conversation it told. Returns the unsubscribe. */
+  onTold(teller: (seq: number, owner: GuardOwner) => void): () => void {
+    this.#tellers.add(teller);
+    return () => void this.#tellers.delete(teller);
   }
 
   /** Hear every kill — how the conversations whose Submissions run put it on their streams, so
@@ -102,7 +126,7 @@ export class MemoryGuard {
   check(): void {
     const limit = this.#read.limit();
     const peak = this.#read.usage();
-    if (limit === undefined || peak === undefined || peak < limit * THRESHOLD) return;
+    if (limit === undefined || peak === undefined || !Number.isFinite(peak) || peak < limit * THRESHOLD) return;
     const killed = this.#effects.killAgentProcesses();
     if (killed === 0) {
       // Nothing of the Agent's runs: the memory is the Harness's own, or shm left behind. Clear
@@ -118,8 +142,13 @@ export class MemoryGuard {
     this.#effects.clearShm();
     const verdict = `${MEMORY_LIMIT_KILLED} (peak ${formatBytes(peak)} of ${formatBytes(limit)}); use fewer workers or a larger Size`;
     this.#effects.log(`jr2 harness: ${verdict} — killed the Agent's processes and cleared /dev/shm (ADR-0061)`);
-    for (const call of this.#active) call.verdict ??= verdict;
-    const kill = { peak: formatBytes(peak), limit: formatBytes(limit) };
+    const seq = ++this.#seq;
+    for (const call of this.#active) {
+      if (call.verdict !== undefined) continue;
+      call.verdict = verdict;
+      call.seq = seq;
+    }
+    const kill = { seq, peak: formatBytes(peak), limit: formatBytes(limit) };
     for (const listener of this.#listeners) listener(kill);
   }
 }

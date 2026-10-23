@@ -232,17 +232,37 @@ test("a Turn that was over before it started settles aborted, never failed (ADR-
 
 test("a guard kill lands on the stream of a conversation whose Submission is running, and no other (ADR-0062)", async () => {
   const { conversation, runs, admit } = scripted();
-  const kill = { peak: "1.9Gi", limit: "2Gi" };
-  // Idle: nobody's Turn was running, and no wait could read it — nothing is appended.
-  conversation.reportMemoryLimit(kill);
+  const kill = { id: "k-1", peak: "1.9Gi", limit: "2Gi" };
+  // Idle: no Submission was running, and no wait could read it — nothing is appended.
+  assert.equal(conversation.reportMemoryLimit(kill), false);
   assert.deepEqual(conversation.updatesView("0").events, []);
   const { offset } = admit("one");
-  conversation.reportMemoryLimit(kill);
+  assert.equal(conversation.reportMemoryLimit(kill), true);
   assert.deepEqual(conversation.updatesView(offset).events, [
-    { type: "memory-limit", conversationId: "iid-1", position: { batch: 0, index: 0 }, peak: "1.9Gi", limit: "2Gi" },
+    {
+      type: "memory-limit",
+      conversationId: "iid-1",
+      position: { batch: 0, index: 0 },
+      id: "k-1",
+      peak: "1.9Gi",
+      limit: "2Gi",
+    },
   ]);
   runs[0]!.resolve();
   await flush();
   // …and it is not in the history view: that view is what was SAID, and the settlement.
   assert.deepEqual(conversation.historyView().messages, []);
+});
+
+test("a guard kill after the sweep settled the running Submission is not on its stream: no wait reads past a Settlement (ADR-0062)", async () => {
+  const { conversation, admit } = scripted();
+  const { offset } = admit("one");
+  conversation.abort();
+  // The run still winds down — `active` stays set until it returns — but its Settlement is on the
+  // stream, and the wait that followed it has stopped reading.
+  assert.equal(conversation.reportMemoryLimit({ id: "k-1", peak: "1.9Gi", limit: "2Gi" }), false);
+  assert.deepEqual(
+    conversation.updatesView(offset).events.map((event) => event.type),
+    ["submission-settled"],
+  );
 });

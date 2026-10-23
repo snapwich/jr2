@@ -187,10 +187,39 @@ test("a kill is reported to every listener, with the peak and limit as a Size is
   const kills: unknown[] = [];
   const off = guard.onKill((kill) => kills.push(kill));
   guard.check();
-  assert.deepEqual(kills, [{ peak: "1.9Gi", limit: "2Gi" }]);
+  assert.deepEqual(kills, [{ seq: 1, peak: "1.9Gi", limit: "2Gi" }]);
   off();
   guard.check();
   assert.equal(kills.length, 1, "an unsubscribed listener hears nothing more");
+});
+
+test("a conversation is told a kill when its `bash` call returns the verdict, not when the guard fires (ADR-0062)", () => {
+  const { guard } = rig(2 * Gi, [Math.floor(1.9 * Gi), 200 * Mi]);
+  const kills: Array<{ seq: number }> = [];
+  const told: Array<{ seq: number; owner: unknown }> = [];
+  guard.onKill((kill) => kills.push(kill));
+  guard.onTold((seq, owner) => told.push({ seq, owner }));
+  const coder = { agent: "coder", instanceId: "run/body/coder" };
+  const tester = { agent: "tester", instanceId: "run/body/tester" };
+  // The coder's call and the tester's run when the guard fires; a third call has no owner (a test,
+  // a host run); a fourth ended before the kill and gets no verdict.
+  const coderCall = guard.watch(coder);
+  const testerCall = guard.watch(tester);
+  const ownerless = guard.watch();
+  const before = guard.watch({ agent: "reviewer", instanceId: "run/body/reviewer" });
+  before.end();
+  guard.check();
+  assert.deepEqual(told, [], "the guard fired; no answer has reached a model yet");
+  assert.equal(before.verdict(), undefined);
+  // The coder's call returns its verdict. The tester's is cut short — its answer never returns.
+  assert.match(coderCall.verdict()!, /^killed: memory limit/);
+  coderCall.told();
+  ownerless.told();
+  assert.match(testerCall.verdict()!, /^killed: memory limit/);
+  assert.deepEqual(told, [{ seq: kills[0]!.seq, owner: coder }]);
+  // A call that got no verdict tells nothing.
+  before.told();
+  assert.equal(told.length, 1);
 });
 
 test("a pass that finds nothing of the Agent's to kill reports nothing", () => {
@@ -201,5 +230,14 @@ test("a pass that finds nothing of the Agent's to kill reports nothing", () => {
   const kills: unknown[] = [];
   guard.onKill((kill) => kills.push(kill));
   guard.check();
+  assert.deepEqual(kills, []);
+});
+
+test("a usage that is no number never fires the guard (ADR-0061)", () => {
+  const { guard, effects } = rig(2 * Gi, [Number.NaN]);
+  const kills: unknown[] = [];
+  guard.onKill((kill) => kills.push(kill));
+  guard.check();
+  assert.deepEqual(effects, []);
   assert.deepEqual(kills, []);
 });

@@ -175,10 +175,27 @@ export function briefedPrompt(prompt: string, part: string): string {
 export function noticeText(notice: Notice, toolName: (name: string) => string = (name) => name): string {
   switch (notice.kind) {
     case "memory-limit": {
-      const at = notice.peak === undefined ? `of ${notice.limit}` : `(peak ${notice.peak} of ${notice.limit})`;
+      // No `limit`: the sizes the Orchestrator read were not sizes, and are not said.
+      const at =
+        notice.limit === undefined
+          ? ""
+          : notice.peak === undefined
+            ? ` of ${notice.limit}`
+            : ` (peak ${notice.peak} of ${notice.limit})`;
+      // No `agent`: the kill came from the pod's list, not from a stream read while a Submission
+      // ran. The text says nothing of when or of whose process it was — the kill may have landed
+      // inside an open Turn while it waited at a Gate, or ended an attach or a command (ADR-0062).
+      if (notice.agent === undefined) {
+        return (
+          `Notice: the Sandbox's processes were killed at its memory limit${at}; /dev/shm was cleared. ` +
+          "Anything that was running in the Sandbox at that time is gone."
+        );
+      }
+      // Every process in the Sandbox died, whoever's Turn it was: a shared Workspace's too. Past
+      // tense: a process started since the kill is not gone.
       return (
-        `Notice: the Sandbox's processes were killed at its memory limit ${at} during \`${notice.agent}\`'s Turn; ` +
-        "/dev/shm was cleared. Anything that Turn left running is gone."
+        `Notice: the Sandbox's processes were killed at its memory limit${at} during \`${notice.agent}\`'s Turn; ` +
+        "/dev/shm was cleared. Anything that was running in the Sandbox at that time is gone."
       );
     }
     case "conversation-new":

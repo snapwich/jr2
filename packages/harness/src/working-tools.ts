@@ -15,7 +15,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { bashTool } from "./bash-tool.ts";
 import type { EngineTool, EngineToolResult } from "./engine.ts";
 import { fileTools } from "./file-tools.ts";
-import type { MemoryGuard } from "./memory-guard.ts";
+import type { GuardOwner, MemoryGuard } from "./memory-guard.ts";
 import type { AgentDefinition } from "./spec.ts";
 
 /** A Working tool, in the shape the engine runs (`engine.ts`). */
@@ -31,16 +31,17 @@ const MAX_LINES = 200;
  * `workspace: "read"` withholds write and edit; `workspace: "none"` withholds everything — the
  * Agent converses and picks from its Menu alone (ADR-0028). That field IS the definition's own
  * (`spec.ts`, mirroring the Orchestrator's `AgentDefinition`): what an Agent may do is identity.
- * `guard` is the process's memory guard, which watches every `bash` call (ADR-0061).
+ * `guard` is the process's memory guard, which watches every `bash` call (ADR-0061); `owner` is
+ * the conversation the tools serve (ADR-0062).
  */
 export function workingToolsFor(
   definition: AgentDefinition,
   cwd: string,
-  opts: { guard?: MemoryGuard | undefined } = {},
+  opts: { guard?: MemoryGuard | undefined; owner?: GuardOwner | undefined } = {},
 ): WorkingTool[] {
   if (definition.workspace === "none") return [];
   const search: WorkingTool[] = [grepTool(cwd), globTool(cwd)];
-  const bash = bashTool({ cwd, guard: opts.guard }) as WorkingTool;
+  const bash = bashTool({ cwd, guard: opts.guard, owner: opts.owner }) as WorkingTool;
   return [...fileTools(cwd, { readOnly: definition.workspace === "read" }), bash, ...search];
 }
 

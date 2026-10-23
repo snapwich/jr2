@@ -240,20 +240,25 @@ export class Conversation {
 
   /**
    * The Harness's guard killed the Agent's processes at the memory limit (ADR-0061, layer 4). Put
-   * on the stream only while a Submission runs: the Orchestrator reads a stream from an Admission's
-   * offset, so a running Submission's wait is the one reader that can see it, and the notice it
-   * keeps names THIS conversation's Agent as the one whose Turn it was (ADR-0062). Not history:
-   * the history view is what was said.
+   * on the stream only while a Submission runs and is not yet settled: the Orchestrator reads a
+   * stream from an Admission's offset while it waits on that Submission, so that wait is the one
+   * reader that can see it, and the notice it keeps names THIS conversation's Agent as the one whose
+   * Turn it was (ADR-0062). The wait can stop before the Settlement — when the Agent's state exits,
+   * before its abort lands — so the stream is not the kill's only path: the pod keeps every kill
+   * (`pod-kills.ts`), under the same `id`. Not history: the history view is what was said. Returns
+   * whether it was put on the stream.
    */
-  reportMemoryLimit(kill: { peak: string; limit: string }): void {
-    if (!this.active) return;
+  reportMemoryLimit(kill: { id: string; peak: string; limit: string }): boolean {
+    if (!this.active || this.active.record.settled) return false;
     this.append({
       type: "memory-limit",
       conversationId: this.instanceId,
       position: this.nextPosition(),
+      id: kill.id,
       peak: kill.peak,
       limit: kill.limit,
     });
+    return true;
   }
 
   /** `GET ?view=updates`: every event from `offset` to the end of the log. */

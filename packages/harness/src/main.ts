@@ -79,8 +79,10 @@ const standing = standingBriefing(seatFacts(process.env));
 
 const harnessWire = harnessServer({
   runSubmissionFor: (seat) => runSubmissionFor({ models, menu, guard, standing, ...seat }),
-  // A guard kill lands on the running conversations' streams, for the Orchestrator's notice (ADR-0062).
+  // A guard kill lands on the running conversations' streams and on `GET /memory-kills`, under one
+  // id, for the Orchestrator's notice (ADR-0062).
   memoryKills: (listener) => guard.onKill(listener),
+  memoryTold: (teller) => guard.onTold(teller),
   // The attach (ADR-0063): the Workspace's Repos into `/work`, on the Orchestrator's call.
   attach: attacher(),
   // The sync (ADR-0067): the Agent's branch to the published commits, when they are not its own.

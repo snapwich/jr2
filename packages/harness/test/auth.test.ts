@@ -135,3 +135,20 @@ test("the sync takes the same bearer, and a refused sync moves nothing (ADR-0067
   assert.equal((await sync(BEARER)).status, 200);
   assert.equal(synced.length, 1);
 });
+
+test("the pod's memory kills are gated: 401 with no bearer and with a wrong one, and 401 before the Instance Harness's 403 (ADR-0058, ADR-0062)", async () => {
+  const { app } = gated();
+  for (const bearer of [undefined, "wrong"]) {
+    assert.equal((await app.request("/memory-kills", { headers: auth(bearer) })).status, 401, `bearer ${bearer}`);
+  }
+  assert.equal((await app.request("/memory-kills", { headers: auth(BEARER) })).status, 200);
+  // The Instance Harness keeps none; a caller without the bearer does not learn even that.
+  const instance = harnessApp({
+    checkBearer: (bearer) => bearer === BEARER,
+    menuOnly: true,
+    runSubmissionFor: () => () => new Promise<void>(() => {}),
+  });
+  assert.equal((await instance.request("/memory-kills")).status, 401);
+  assert.equal((await instance.request("/memory-kills", { headers: auth("wrong") })).status, 401);
+  assert.equal((await instance.request("/memory-kills", { headers: auth(BEARER) })).status, 403);
+});

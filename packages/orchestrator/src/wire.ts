@@ -59,10 +59,16 @@ export type SubmissionSettledEvent = StreamChunk<"submission-settled"> & Settlem
 /**
  * The Harness's memory guard killed the Agent's processes (ADR-0061, layer 4), on the stream of the
  * conversation whose Turn was running. The Agent heard it in its `bash` answer; this is how the
- * Orchestrator hears it, so the next Turn in the Workspace is told (ADR-0062). `peak` and `limit`
- * are the guard's own spellings — carried to the notice as they are, never parsed.
+ * Orchestrator hears it, so the next Turn in the Workspace is told (ADR-0062). `id` is the kill's:
+ * the same on every stream that carries it and in `GET /memory-kills`, so one kill is one notice.
+ * `peak` and `limit` are the guard's own spellings — carried to the notice as they are, never parsed.
  */
-export type MemoryLimitEvent = StreamChunk<"memory-limit"> & { peak: string; limit: string };
+export type MemoryLimitEvent = StreamChunk<"memory-limit"> & {
+  /** Absent from an older Harness's event, which had none. */
+  id?: string;
+  peak: string;
+  limit: string;
+};
 
 /** One event on the durable stream (`GET ?offset=…&view=updates` → 200 JSON array). */
 export type StreamEvent = MessageAppendedEvent | SubmissionSettledEvent | MemoryLimitEvent;
@@ -73,14 +79,16 @@ export type StreamEvent = MessageAppendedEvent | SubmissionSettledEvent | Memory
 // Harness writes every word of the Briefing's Turn part from them.
 
 /** The Sandbox's processes were killed at its memory limit during `agent`'s Turn — by the
- * Harness's guard (`peak` known) or by the kernel (`peak` unknown). Workspace scope: the next Turn
- * of any Agent in that Workspace. */
+ * Harness's guard (`peak` known) or by the kernel (`peak` unknown). `agent` is absent for every
+ * kill read from the pod's list, which cannot say whose Turn a kill ended. Workspace scope: the next
+ * Turn of any Agent in that Workspace. */
 export type MemoryLimitNotice = {
   kind: "memory-limit";
   scope: "workspace";
-  agent: string;
+  agent?: string;
   peak?: string;
-  limit: string;
+  /** Absent with `peak` when the sizes read were not sizes: the notice says no sizes. */
+  limit?: string;
 };
 
 /** This conversation is new; earlier context is gone. Conversation scope: that Agent's next
@@ -146,6 +154,28 @@ export type LiveSetRequest = { live: LiveConversation[] };
 
 /** What `PUT /agents` answers (200): how many conversations this statement freed. */
 export type LiveSetResponse = { freed: number };
+
+// ---- The pod's guard kills (`GET /memory-kills` — ADR-0061, ADR-0062) -------------------------
+// Every guard kill, kept by the Harness pod-scoped. A stream is read only while the Agent actor
+// waits on a Submission, and that wait stops when the Agent's state exits — so a kill while no
+// Submission runs, or after the wait stopped, has no reader there. The actor reads this list before
+// it admits a Turn into the Workspace. The read is idempotent: the notice ledger keeps each `id` it
+// raised (`seen`), whichever path it came by.
+
+/** One guard kill: `id` unique for the pod's life and the stream events' `id`, `at` when the guard
+ * fired, the guard's own `peak` and `limit`, and `told` — the conversations with a `bash` call
+ * running then, whose answer told the Agent of the kill. None when no call ran. */
+export type PodMemoryKill = {
+  id: string;
+  at: string;
+  /** Absent, with `limit`, when the pod could not keep the sizes as sizes. */
+  peak?: string;
+  limit?: string;
+  told: LiveConversation[];
+};
+
+/** What `GET /memory-kills` answers (200): the newest kills, oldest first. */
+export type MemoryKillsResponse = { kills: PodMemoryKill[] };
 
 // ---- The run-narrative echo (`POST /echo` — ADR-0023) ------------------------------------------
 // "Print these events": the Orchestrator — the observation feed's one subscriber (ADR-0022) — tees

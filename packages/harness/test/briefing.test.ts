@@ -90,7 +90,7 @@ test("the Turn part follows the prompt, delimited: working directory, Allowed pi
   assert.match(block, /Allowed now: `mcp__jr2__finish`, `mcp__jr2__dispute`\./);
   assert.match(
     block,
-    /killed at its memory limit \(peak 1\.9Gi of 2Gi\) during `coder`'s Turn; \/dev\/shm was cleared/,
+    /killed at its memory limit \(peak 1\.9Gi of 2Gi\) during `coder`'s Turn; \/dev\/shm was cleared\. Anything that was running in the Sandbox at that time is gone\./,
   );
   assert.match(
     block,
@@ -110,6 +110,20 @@ test("a kernel memory kill has no peak — the notice says the limit alone", () 
   });
   assert.match(part, /killed at its memory limit of 2Gi during `tester`'s Turn/);
   assert.match(part, /Allowed now: none/);
+});
+
+test("a guard kill while no Submission ran names no Turn and says nothing of when, and keeps the fixed words (ADR-0062)", () => {
+  const part = turnPart({
+    workspace: "write",
+    cwd: "/work",
+    allowed: [],
+    notices: [{ kind: "memory-limit", scope: "workspace", peak: "1.9Gi", limit: "2Gi" }],
+  });
+  assert.match(
+    part,
+    /Notice: the Sandbox's processes were killed at its memory limit \(peak 1\.9Gi of 2Gi\); \/dev\/shm was cleared\. Anything that was running in the Sandbox at that time is gone\./,
+  );
+  assert.doesNotMatch(part, /during|while/);
 });
 
 test("a Chart pick's briefing is said right before the Allowed picks, only on a Turn that may make it (ADR-0070)", () => {
@@ -141,4 +155,21 @@ test("the seat's facts: JR2_CPUS from the Downward API, the Size from memory.max
   await writeFile(join(cgroup, "memory.max"), "max\n");
   assert.deepEqual(seatFacts({}, cgroup), {});
   assert.deepEqual(seatFacts({ JR2_CPUS: "zero" }, join(cgroup, "absent")), {});
+});
+
+test("a guard kill whose sizes were not sizes is worded with no sizes (ADR-0062)", () => {
+  const part = turnPart({
+    workspace: "write",
+    cwd: "/work",
+    allowed: [],
+    notices: [
+      { kind: "memory-limit", scope: "workspace" },
+      { kind: "memory-limit", scope: "workspace", agent: "coder" },
+    ],
+  });
+  assert.match(
+    part,
+    /Notice: the Sandbox's processes were killed at its memory limit; \/dev\/shm was cleared\. Anything that was running in the Sandbox at that time is gone\./,
+  );
+  assert.match(part, /killed at its memory limit during `coder`'s Turn; \/dev\/shm was cleared\./);
 });

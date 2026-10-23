@@ -30,8 +30,12 @@ const error: Mutual<client.SettlementError, harness.SettlementError> = agree;
 const position: Mutual<client.StreamPosition, harness.StreamPosition> = agree;
 const appended: Mutual<client.MessageAppendedEvent, harness.MessageAppendedEvent> = agree;
 const settled: Mutual<client.SubmissionSettledEvent, harness.SubmissionSettledEvent> = agree;
-const stream: Mutual<client.StreamEvent, harness.StreamEvent> = agree;
-const memoryLimit: Mutual<client.MemoryLimitEvent, harness.MemoryLimitEvent> = agree;
+// One way only for the guard kill's event: the client also reads an older Harness's, with no `id`
+// (ADR-0062), so its view is wider by that field; everything this Harness sends, it reads.
+type Reads<Server, Client> = [Server] extends [Client] ? true : false;
+const stream: Reads<harness.StreamEvent, client.StreamEvent> = true;
+const memoryLimit: Reads<harness.MemoryLimitEvent, client.MemoryLimitEvent> = true;
+const memoryLimitTail: Mutual<Omit<client.MemoryLimitEvent, "id">, Omit<harness.MemoryLimitEvent, "id">> = agree;
 const notice: Mutual<client.Notice, harness.Notice> = agree;
 const memoryLimitNotice: Mutual<client.MemoryLimitNotice, harness.MemoryLimitNotice> = agree;
 const conversationNew: Mutual<client.ConversationNewNotice, harness.ConversationNewNotice> = agree;
@@ -54,6 +58,8 @@ const execRead: Mutual<client.ExecRead, harness.ExecRead> = agree;
 const liveConversation: Mutual<client.LiveConversation, harness.LiveConversation> = agree;
 const liveSetRequest: Mutual<client.LiveSetRequest, harness.LiveSetRequest> = agree;
 const liveSetResponse: Mutual<client.LiveSetResponse, harness.LiveSetResponse> = agree;
+const podKill: Mutual<client.PodMemoryKill, harness.PodMemoryKill> = agree;
+const memoryKills: Mutual<client.MemoryKillsResponse, harness.MemoryKillsResponse> = agree;
 // The Settlement types the Agent actor switches on are literals, so they are held the same way: a
 // renamed type on either side would otherwise read as an unknown failure, not a restart.
 const runawayType: Mutual<typeof client.SUBMISSION_RUNAWAY, typeof harness.SUBMISSION_RUNAWAY> = agree;
@@ -63,6 +69,7 @@ const restartedType: Mutual<typeof client.SUBMISSION_HARNESS_RESTARTED, typeof h
 test("the client's wire shapes and the Harness's are one contract", () => {
   // The type-level claims above are already asserted by `tsc`; this reads them so the file has no
   // unused bindings, and states out loud that a green typecheck is the real assertion.
+  assert.ok(stream && memoryLimit);
   for (const pair of [
     settlement,
     outcome,
@@ -70,8 +77,7 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     position,
     appended,
     settled,
-    stream,
-    memoryLimit,
+    memoryLimitTail,
     notice,
     memoryLimitNotice,
     conversationNew,
@@ -94,6 +100,8 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     liveConversation,
     liveSetRequest,
     liveSetResponse,
+    podKill,
+    memoryKills,
     runawayType,
     restartedType,
   ]) {

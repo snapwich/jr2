@@ -5,9 +5,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { harnessApp, type HarnessAppDeps } from "../src/app.ts";
 import type { AgentDefinition } from "../src/spec.ts";
-import type { AdmissionRequest, Settlement, StreamEvent } from "../src/wire.ts";
+import type { AdmissionRequest, MemoryKillsResponse, PodMemoryKill, Settlement, StreamEvent } from "../src/wire.ts";
 
 /** The definition every admission here carries (ADR-0049) — the Machine's slot, on the wire. */
 const CODER: AgentDefinition = { model: "faux/model", instructions: "code" };
@@ -278,6 +281,9 @@ test("a Frame cwd that is not an absolute path is a 400 — never a silent /work
 test("the notices ride the admit body to the turn, typed; one this Harness cannot word is dropped (ADR-0062)", async () => {
   const { app, runs } = scripted();
   const memory = { kind: "memory-limit", scope: "workspace", agent: "coder", peak: "1.9Gi", limit: "2Gi" };
+  // A guard kill while no Submission ran names no Agent; one whose sizes were not sizes has none.
+  const idle = { kind: "memory-limit", scope: "workspace", peak: "1.9Gi", limit: "2Gi" };
+  const unsized = { kind: "memory-limit", scope: "workspace" };
   const fresh = { kind: "conversation-new", scope: "conversation", reason: "the last one was lost" };
   // A pick's answer that never reached its call (ADR-0024, ADR-0031): with a Gate's event, with a
   // child's output, and with no reply at all.
@@ -306,6 +312,9 @@ test("the notices ride the admit body to the turn, typed; one this Harness canno
       // A newer Orchestrator's kind, and a known kind missing its facts: neither can be worded.
       notices: [
         memory,
+        idle,
+        unsized,
+        { kind: "memory-limit", scope: "workspace", peak: "1Gi" },
         { kind: "disk-full", scope: "workspace" },
         { kind: "memory-limit", agent: "x" },
         fresh,
@@ -324,7 +333,7 @@ test("the notices ride the admit body to the turn, typed; one this Harness canno
   assert.deepEqual(runs[0]!.submission, {
     definition: CODER,
     message: "go",
-    notices: [memory, fresh, cut, left, silent, stopped],
+    notices: [memory, idle, unsized, fresh, cut, left, silent, stopped],
   });
   // Garbage in the slot is no notices, as a garbage dial is no dial.
   await app.request("/agents/coder/i2", {
@@ -366,22 +375,108 @@ test("a pick's answer rides the admit body as a notice — the cut call's, and a
   assert.deepEqual(runs[0]!.submission.notices, [cut, left, shaped]);
 });
 
-test("a guard kill lands on the stream of the conversation whose Submission runs (ADR-0061/0062)", async () => {
-  let report: ((kill: { peak: string; limit: string }) => void) | undefined;
-  const { app, runs } = scripted({
+/** A Harness over `root` whose guard the test fires by hand. */
+type Fired = { seq?: number; peak: string; limit: string };
+type Owner = { agent: string; instanceId: string };
+
+function guarded(root?: string) {
+  let report: ((kill: Fired) => void) | undefined;
+  let tell: ((seq: number, owner: Owner) => void) | undefined;
+  const harness = scripted({
+    ...(root === undefined ? {} : { conversationsDir: root }),
     memoryKills: (listener) => {
       report = listener;
       return () => {};
     },
+    memoryTold: (teller) => {
+      tell = teller;
+      return () => {};
+    },
   });
-  await admit(app, "/agents/coder/i1");
-  report!({ peak: "1.9Gi", limit: "2Gi" });
-  const events = (await (await app.request("/agents/coder/i1?offset=0")).json()) as StreamEvent[];
-  assert.deepEqual(
-    events.map((event) => event.type === "memory-limit" && { peak: event.peak, limit: event.limit }),
-    [{ peak: "1.9Gi", limit: "2Gi" }],
+  return { ...harness, kill: (kill: Fired) => report!(kill), told: (seq: number, owner: Owner) => tell!(seq, owner) };
+}
+
+async function kills(app: ReturnType<typeof harnessApp>): Promise<PodMemoryKill[]> {
+  const res = await app.request("/memory-kills");
+  assert.equal(res.status, 200);
+  return ((await res.json()) as MemoryKillsResponse).kills;
+}
+
+const memoryEvents = async (app: ReturnType<typeof harnessApp>, path: string) =>
+  ((await (await app.request(`${path}?offset=0`)).json()) as StreamEvent[]).flatMap((event) =>
+    event.type === "memory-limit" ? [event] : [],
   );
+
+test("a guard kill lands on the stream of every conversation whose Submission runs, and in the pod's list, under ONE id (ADR-0061/0062)", async () => {
+  const { app, runs, kill, told } = guarded();
+  await admit(app, "/agents/coder/i1");
+  await admit(app, "/agents/tester/i2");
+  await admit(app, "/agents/idle/i3");
+  runs[2]!.resolve();
+  await flush();
+  // The coder's `bash` call was running when the guard fired; the tester's model was writing text.
+  kill({ seq: 1, peak: "1.9Gi", limit: "2Gi" });
+  const [onCoder] = await memoryEvents(app, "/agents/coder/i1");
+  const [onTester] = await memoryEvents(app, "/agents/tester/i2");
+  assert.deepEqual(await memoryEvents(app, "/agents/idle/i3"), [], "no Submission runs there");
+  assert.equal(onCoder!.peak, "1.9Gi");
+  assert.equal(onCoder!.limit, "2Gi");
+  // One kill, one id: the Orchestrator's ledger makes it one notice, whichever path it reads first.
+  const [kept, ...more] = await kills(app);
+  assert.deepEqual(more, []);
+  assert.equal(onTester!.id, onCoder!.id);
+  assert.equal(kept!.id, onCoder!.id);
+  assert.deepEqual(kept!.told, [], "no answer has reached a model yet");
+  // The coder's call returns its verdict: now its conversation is told, and the list says so.
+  told(1, { agent: "coder", instanceId: "i1" });
+  told(1, { agent: "coder", instanceId: "i1" });
+  told(9, { agent: "tester", instanceId: "i2" }); // a kill the pod never had
+  assert.deepEqual((await kills(app))[0]!.told, [{ agent: "coder", instanceId: "i1" }]);
   runs[0]!.resolve();
+  runs[1]!.resolve();
+});
+
+test("a guard kill while no Submission runs is kept for GET /memory-kills, told to no one, and is on no stream (ADR-0061/0062)", async () => {
+  const { app, runs, kill } = guarded();
+  await admit(app, "/agents/coder/i1");
+  runs[0]!.resolve();
+  await flush();
+  // The workflow waits at a Gate, and a dev server the Turn left passes the limit.
+  kill({ peak: "1.9Gi", limit: "2Gi" });
+  assert.deepEqual(await memoryEvents(app, "/agents/coder/i1"), [], "no wait reads this stream now");
+  const [kept, ...more] = await kills(app);
+  assert.deepEqual(more, []);
+  assert.equal(kept!.peak, "1.9Gi");
+  assert.equal(kept!.limit, "2Gi");
+  assert.deepEqual(kept!.told, []);
+  assert.ok(kept!.id.length > 0 && !Number.isNaN(Date.parse(kept!.at)));
+  // A read changes nothing: the Orchestrator keeps the ids it has raised.
+  assert.deepEqual(await kills(app), [kept]);
+});
+
+test("a guard kill outlives a Harness restart on the same volume (ADR-0031, ADR-0062)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jr2-kills-"));
+  try {
+    const first = guarded(root);
+    first.kill({ peak: "1.9Gi", limit: "2Gi" });
+    const before = await kills(first.app);
+    // The restarted process reads it back with its id, so the Orchestrator's `seen` still knows it.
+    const second = guarded(root);
+    assert.deepEqual(await kills(second.app), before);
+    second.kill({ peak: "1.8Gi", limit: "2Gi" });
+    const after = await kills(second.app);
+    assert.equal(after.length, 2);
+    assert.notEqual(after[1]!.id, after[0]!.id);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the Instance Harness keeps no memory kill: it holds no Workspace (ADR-0031, ADR-0062)", async () => {
+  const { app } = scripted({ menuOnly: true });
+  const res = await app.request("/memory-kills");
+  assert.equal(res.status, 403);
+  assert.match(((await res.json()) as { error: string }).error, /Instance Harness/);
 });
 
 test("a dial-less admission is unchanged — no keys invented for the turn", async () => {

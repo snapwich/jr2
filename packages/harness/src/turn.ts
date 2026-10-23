@@ -450,7 +450,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     // said in the Turn part below, and enforced at delivery.
     const menu = seat ? read.menu.map((item) => cutWith(item, seat.cut)) : read.menu;
     const tools: EngineTool[] = [
-      ...workingToolsFor(definition, definition.cwd, { guard: deps.guard }),
+      ...workingToolsFor(definition, definition.cwd, {
+        guard: deps.guard,
+        owner: { agent: deps.agentName, instanceId: deps.instanceId },
+      }),
       ...(menuTools(menu) as EngineTool[]),
     ];
     // The context the model reads after the system prompt: the engine part's context — the
