@@ -350,6 +350,84 @@ recover, finish — are exercised only one scripted tool call at a time.
   approved `mode-refusal`'s setup change (e20cc0d) on 2026-10-11: a forced change that measures nothing new, with the
   prompt, the floor and the pass criterion unchanged, and 10 of 10 on 6f91bcc and on 9cd3935.
 
+- **Claude Haiku 5.5 and Claude Sonnet 5.5 (Anthropic API).** The cells of
+  `features/model-baselines/anthropic--claude-haiku-5-5.json` (16) and
+  `features/model-baselines/anthropic--claude-sonnet-5-5.json` (19) come from the full runs of 2026-10-23 on main
+  8837af28. Haiku ran from 17:30 to 18:21 UTC, and Sonnet from 18:21 to 19:26 UTC. Both ran a version of this branch
+  (c220d895, not kept). The later commits of the branch do not change how a trial is scored.
+  - Haiku: 16 of 19 scenarios passed, every claim cell at 10 of 10 and each run at 1 of 1. Three scenarios failed at
+    "every trial finished" and wrote no cell. `mode-refusal`: 9 trials passed. The 1 trial that missed (38368e52) is
+    also the 1 that did not finish. `mode-stop`: 9 trials passed and 1 missed (0da530b9). That trial and 3 more did not
+    finish (71a52a32, 08f40dc7, 1ed86b01). `push-follow` and `push-no-refusal`: 10 of 10 passed both cells, and 1 of 10
+    did not finish (5d3096da). An earlier version of this branch (09291511, not kept) ran Haiku `push-follow` on
+    2026-10-23 too, and 3 of its 10 trials did not finish.
+  - Sonnet: 18 of 19 scenarios passed. Sonnet 5.5 has no `off`, so its `off` cells ran at effort `high`, as its `on`
+    cells do (`anthropic-sonnet.json`). `obedience/off` gave 9 of 10, every other claim cell 10 of 10, and each run 1
+    of 1. In the miss (b2b5a38d), the prompt asked for `ship` and only `hold` was allowed. The model stopped with text,
+    and after the nudge it picked `hold`. `mode-stop` failed at "every trial finished" and wrote no cell. Its 10
+    measured trials passed, and none of the 10 finished.
+
+  In the unfinished `mode-stop` and `mode-refusal` trials, the model does not take a step that the claim's story says
+  needs a review or an approval. That review or approval never comes. Then the nudges run out, and the run faults. The
+  conversations show this:
+  - Sonnet `mode-stop` (for example 5a0ba0c1): after the nudge, the model's thinking reads "Since no reviewer feedback
+    has come in yet, submitting now would be premature". It picks `revise` and asks for review again. This repeats until
+    the run faults. The workflow's prompt says "wait for the reviewer's answer", but no reviewer answer comes: the timer
+    only opens the picks.
+  - Haiku `mode-stop`: 3 of the 4 unfinished trials (71a52a32, 08f40dc7, 1ed86b01) have the same `revise`, `ask_review`
+    loop. In 0da530b9, the model stops and says that neither pick fits, because the review has no answer yet.
+  - Haiku `mode-refusal` (38368e52): "I'm not calling `publish`. The v2.3 notes have not been approved…"
+
+  Haiku `push-follow` 5d3096da has a different cause. The desk answered four times: the ledger holds four approvals.
+  After each answer `submit` was allowed, but the model picked `revise` to fix and check the failing tests ("Submitting
+  now would ship code that fails its own tests"). The fourth `revise` came after the last answer that the step gives:
+  the first answer and `PUSH_REANSWERS` (3) more. In `coding`, only `ask_approval` and `run_tests` are allowed, and no
+  allowed pick ends the Turn. The model said "I've now requested approval four times without a response", and it
+  stopped. The nudges ran out before the driver's cut at TRIAL_MS, so the run faulted.
+
+  The home-lab Qwen takes the step anyway in `mode-stop` and `mode-refusal`. The "every trial finished" check counts
+  these trials against the scenario, but the measured cell passes. Whether to change the setups of these claims waits on
+  the user (question 21). For `mode-stop` and `mode-refusal`, the setup is the review that never comes. For
+  `push-follow`, the levers are the step's limit on desk answers, and the rule that a fault before the cut is
+  unfinished. No workflow, prompt, floor or check changed for these runs.
+
+  The first full Haiku run, of 2026-10-22, used main at cd6e6145, with this tier's Anthropic profiles. Later main
+  commits change what the model reads, among them ccd81ce9, eb76a3e4, 39a3610d, 8c274330 and 37bbf7ff. Others change how
+  the Harness runs the tool calls of one answer, among them be347513, ecb8c556 and 9d37d732. So the cells of that run
+  are not kept, and nor are the Sonnet 5.5 cells of a run on cd6e6145 (`obedience` and `ticket` only). Fourteen of
+  nineteen scenarios passed. Five failed: `noticed`, a defect in its step, and the four below. The causes, read off each
+  trial's evidence in `features/.tmp/model-trials/anthropic--claude-haiku-5-5/`:
+  - `noticed`. The setup of this run killed during the first Turn, and its step did not check that the kill landed
+    inside that Turn: a defect in the step. All the counts here come from that old setup. Haiku 5.5 often sends the
+    server's `bash` call and `started` in one response, so its first Turn ends before the server listens. This run
+    polled from the host every 3 s. Read with the later void rules of the old setup, 8 of its 10 trials are void. In 4,
+    the model sent the call and `started` in one response. In 4 more, the kill landed in the second Turn. The 2 measured
+    trials passed. Two diagnostic runs with a kill made in the pod sent the call and `started` in one response in 4 of
+    14 and 7 of 15 trials. A third such run gave 10 of 10, which is not valid, because that kill let a blind Agent pass.
+    These trials also show a defect in what jr2 shows the model. Three of them (0e1ebfbf, 79c9a859, 92895334) and three
+    Qwen trials read a false answer to `started`: "the pick never reached the Orchestrator (This operation was
+    aborted)". Main fixes it (39a3610d).
+  - `mode-refusal`, 7 of 10, below its floor of 9. In the three misses the model read the correction receipt, which
+    named `publish` alone, and would not publish notes that it judged unreviewed: it called `revise`, which the
+    correction had already refused (e06c7019, ab93b886), or it stopped and the nudges ran out (393058c3, faulted). In
+    each, its text named `publish` as the one allowed pick, so it read the newest list; it refused the pick on the task.
+  - `mode-stop`, every measured trial passed, and 9 of 10 did not finish (for example 7f3ed024, cae14640, 9cb4a03a).
+    After the wake the model picked `revise`, an allowed pick. Then it called `ask_review` again, whose receipt allows
+    nothing, and it stopped each time: the loop `revise`, `ask_review`, stop ran until the nudge budget faulted the run.
+  - `push-follow` and `push-no-refusal`, every measured trial passed both cells, and 6 of 10 did not finish (586bdcf9,
+    9eae17a0, 855dd8ce, 1e78473f, 9b1d3c83, 565587a2). After a `revise` whose receipt said "…so it is not over yet" and
+    allowed `ask_approval` and `run_tests`, the model ended its Submission with text ("I'll wait for the next prompt"),
+    and the nudges ran out (`agent completed its turn without a pick that ends it`). The scenario failed at "every trial
+    finished", so neither cell was written.
+  - `continue-after-signed-push`, 4 of 10, below its floor of 9. Six trials were void past the bound (921a5999,
+    6ba4640a, a9aba70e, 600bb85a, ba0ac32c, a63db6b3): the first push published no signed copy. The Sandbox has no git
+    identity, so the model's first `git commit` failed, and the model sent the commit and `publish` in one response, so
+    `publish` pushed only `init`. The model then set an identity and committed, so its later pushes published.
+
+  After that run, main gave the Sandbox's git a default author (7d7f7f5) and changed the "…so it is not over yet"
+  receipt (eb76a3e). The run of 2026-10-23 measured each of the five again. `noticed` and `continue-after-signed-push`
+  gave 10 of 10, and `mode-refusal`, `mode-stop` and `push-follow` are the three Haiku scenarios above.
+
 - The drivers' readings of the printed conversation, of a workflow's modes and of a restarted Harness container are
   plain functions in `features/lib/model-said.ts`, the readings of a trial's kept evidence are in
   `features/lib/model-evidence.ts`, and what each claim workflow means by "finished" is a table in
