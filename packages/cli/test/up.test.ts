@@ -25,13 +25,35 @@ import {
   sandboxToken,
   workspaceHeldPod,
   type HeldManifest,
+  type PlacementWalk,
 } from "@jr2/orchestrator/internal";
 import { linkKit } from "./_kit.ts";
-import { heldDigest, MAP_PROPAGATION, up } from "../src/commands/up.ts";
-import { instanceObjects, type HeldObjects } from "../src/deploy.ts";
-import type { KubeAdmin, KubeObject } from "../src/kube.ts";
+import {
+  catalogProbes,
+  heldDigest,
+  MAP_PROPAGATION,
+  podFault,
+  PROBE_MODEL_SECONDS,
+  probeVerdicts,
+  up,
+} from "../src/commands/up.ts";
+import { catalogProbeObjects, instanceObjects, type HeldObjects } from "../src/deploy.ts";
+// The Harness's own result-line writer, from beside it, so the CLI's parser is held to its format.
+// Loaded at run time: it is another package's source, outside this one's compiled tree.
+type PreflightVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
+const { preflightLine, PREFLIGHT_MODEL_BUDGET_SECONDS } = (await import(
+  new URL("../../harness/src/preflight-line.ts", import.meta.url).href
+)) as {
+  preflightLine: (specifier: string, verdict: PreflightVerdict) => string;
+  PREFLIGHT_MODEL_BUDGET_SECONDS: number;
+};
+import type { KubeAdmin, KubeObject, PodEnd } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
 import type { Io } from "../src/output.ts";
+
+/** The instance List of a converge: the one that carries the Orchestrator's Deployment — not the
+ * apply of the provider preflight's inputs before it, nor a probe pod's own List (ADR-0019). */
+const isInstanceList = (m: string): boolean => m.includes(`"kind":"List"`) && m.includes(`"kind":"Deployment"`);
 
 /** A scriptable cluster: `objects` keyed "namespace/kind/name" ("" namespace for cluster-scoped). */
 class FakeCluster implements KubeAdmin {
@@ -57,10 +79,17 @@ class FakeCluster implements KubeAdmin {
   }
   /** The names of the objects applied server-side (ADR-0059's trust bundles). */
   serverSide: string[] = [];
+  /** An apply this answers true for is refused, as a quota or an admission webhook refuses it. */
+  refuseApply?: (manifest: string) => boolean | string;
   async apply(opts: { manifest: string; serverSide?: boolean }): Promise<void> {
+    const refused = this.refuseApply?.(opts.manifest);
+    if (refused) throw new Error(typeof refused === "string" ? refused : 'pods "x" is forbidden: exceeded quota');
     this.applied.push(opts.manifest);
-    if (opts.serverSide)
-      this.serverSide.push((JSON.parse(opts.manifest) as { metadata: { name: string } }).metadata.name);
+    // A probe pod's List is applied server-side too (ADR-0019); this records the named objects.
+    const doc = opts.serverSide
+      ? (JSON.parse(opts.manifest) as { kind: string; metadata?: { name: string } })
+      : undefined;
+    if (doc && doc.kind !== "List") this.serverSide.push(doc.metadata!.name);
   }
   async label(opts: Record<string, unknown>): Promise<void> {
     this.labeled.push(opts);
@@ -129,6 +158,10 @@ class FakeCluster implements KubeAdmin {
     if (opts.kind.startsWith("sandboxes")) {
       if (this.sandboxListFails) throw new Error("the server doesn't have a resource type sandboxes");
       return this.sandboxes as T[];
+    }
+    if (opts.selector?.startsWith("jr2.dev/provider-preflight")) {
+      this.leftoverSelectors.push(opts.selector);
+      return (this.probeLeftovers[opts.kind] ?? []) as T[];
     }
     if (opts.kind === "node") return this.nodes as T[];
     if (opts.kind === "namespace") return this.instanceNamespaces as T[];
@@ -203,6 +236,56 @@ class FakeCluster implements KubeAdmin {
     if (this.probeFails) throw new Error("no tool_calls in the completion");
     return "PROVIDER OK";
   }
+  /** The provider preflight's probe pods (ADR-0019), as applied when each was waited on, with the
+   * rollouts waited on and the manifests applied by then. `probeAnswers` scripts a model's line
+   * after its name (`fault=…`, `busy=…`, `warn=…`; default `ok`); `probeEnd` a pod that never
+   * ran its probe. */
+  probePods: Array<{
+    pod: Record<string, any>;
+    rolloutsBefore: string[];
+    appliedBefore: string[];
+    labeledBefore: Array<Record<string, unknown>>;
+  }> = [];
+  probeAnswers: Record<string, string> = {};
+  probeEnd?: PodEnd;
+  /** A log the pod's wait reads while it runs, when `probeEnd` scripts the end. */
+  probeLive?: string;
+  /** Lines the pod says while it waits to start, handed to `onPending` as the real wait does. */
+  probePending: string[] = [];
+  async awaitPodEnd(opts: {
+    name: string;
+    onPending?: (line: string) => void;
+    onLog?: (log: string) => void;
+  }): Promise<PodEnd> {
+    for (const line of this.probePending) opts.onPending?.(line);
+    if (this.probeLive !== undefined) opts.onLog?.(this.probeLive);
+    const list = [...this.applied].reverse().find((m) => m.includes(`"name":"${opts.name}"`))!;
+    const pod = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find((i) => i.kind === "Pod")!;
+    this.probePods.push({
+      pod,
+      rolloutsBefore: [...this.rollouts],
+      appliedBefore: [...this.applied],
+      labeledBefore: [...this.labeled],
+    });
+    if (this.probeEnd) return this.probeEnd;
+    const models = (pod.spec.containers[0].command as string[]).slice(4);
+    const said = (m: string) => this.probeAnswers[m] ?? "ok";
+    const lines = models.flatMap((m) => [`jr2.preflight model=${m} start`, `jr2.preflight model=${m} ${said(m)}`]);
+    // While the pod runs: the log so far, with the first model's result, as the real wait reads it.
+    opts.onLog?.(lines.slice(0, 2).join("\n"));
+    const failed = models.some((m) => said(m).startsWith("fault="));
+    return {
+      phase: failed ? "Failed" : "Succeeded",
+      started: true,
+      output: lines.join("\n"),
+      custodian: "",
+      reasons: [],
+    };
+  }
+  /** The selectors the leftover sweep listed with. */
+  leftoverSelectors: string[] = [];
+  /** Probe objects of earlier runs, as `jr2 up`'s leftover sweep lists them by label. */
+  probeLeftovers: Record<string, Array<Record<string, any>>> = { pod: [], configmap: [], secret: [] };
 }
 
 /** A build port that records instead of building. `files` is what `pnpm deploy` would have
@@ -592,7 +675,7 @@ function mkWorld(
 
 /** The Orchestrator Deployment this converge applied. */
 function deploymentOf(w: World): Record<string, any> {
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   return items.find((i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator")!;
 }
@@ -600,7 +683,7 @@ function deploymentOf(w: World): Record<string, any> {
 /** The `jr2-images` map this converge applied — the ConfigMap the Orchestrator reads per provision
  * and, byte-identical, the annotation the next converge diffs (ADR-0038). */
 function imagesOf(w: World): Record<string, any> {
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-images")!;
   return JSON.parse(cm.data["images.json"]);
@@ -938,7 +1021,7 @@ test("the Deployment's image annotation makes a second converge spend zero docke
 
   // The cluster now records what was converged — on the Deployment's OWN metadata, so re-resolving
   // a ref never rolls the Orchestrator and never restores a live run's snapshot (ADR-0038/0007).
-  const list = first.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = first.kube.applied.find(isInstanceList)!;
   const deployment = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
   )!;
@@ -1564,7 +1647,7 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
   );
   assert.match(w.err.join("\n"), /cache agent clones on first need/);
 
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
   for (const name of ["GH_TOKEN", "JR2_GIT_TOKEN", "GL_TOKEN", "STRAY"]) {
@@ -1822,7 +1905,7 @@ test("the Orchestrator's Role reaches the Repo resources it creates", async () =
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   const role = items.find((i) => i.kind === "Role" && i.metadata.name === "jr2-orchestrator")!;
   const crds = role.rules.find((r: { apiGroups: string[] }) => r.apiGroups.includes("core.jr2.dev"));
@@ -1926,7 +2009,7 @@ test("the Deployment runs the Orchestrator Kit image and carries no content hash
   next.orchestrator.current = { hash: stagedHash(w), kitVersion: KIT_VERSION };
   // The Instance Secret the first converge wrote, kept: a minted one would roll the pod by design.
   const kept = (
-    JSON.parse(w.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as {
+    JSON.parse(w.kube.applied.find(isInstanceList)!) as {
       items: Array<Record<string, any>>;
     }
   ).items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
@@ -1950,7 +2033,7 @@ test("the publish token is minted into the Instance Secret and read back from it
   const env = { JR2_PUBLISH_TOKEN: "from-env", JR2_TOKEN: "from-env", JR2_URL: "http://elsewhere.test" };
   const first = mkWorld(root, { env });
   assert.equal(await up(["--yes"], first.io), 0);
-  const list = first.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = first.kube.applied.find(isInstanceList)!;
   const secret = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
   )!;
@@ -1968,7 +2051,7 @@ test("the publish token is minted into the Instance Secret and read back from it
     data: { JR2_PUBLISH_TOKEN: Buffer.from("pub-kept").toString("base64") },
   });
   assert.equal(await up(["--yes"], kept.io), 0);
-  const keptList = kept.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const keptList = kept.kube.applied.find(isInstanceList)!;
   const keptSecret = (JSON.parse(keptList) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
   )!;
@@ -1998,7 +2081,7 @@ test("the publish token is minted into the Instance Secret and read back from it
   });
   assert.equal(await up(["--yes"], again.io), 0);
   assert.equal(
-    digestOf(again.kube.applied.find((m) => m.includes(`"kind":"List"`))!),
+    digestOf(again.kube.applied.find(isInstanceList)!),
     digestOf(keptList),
     "the same Secret is the same pod template: a steady converge rolls nothing",
   );
@@ -2087,7 +2170,7 @@ test("a publish waits until the Orchestrator reads the mounted ConfigMaps this c
   // period. The PUT waits for the digests `GET /assembly` reports to be the applied ones.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const applied = (w: World): Record<string, string> => {
-    const list = JSON.parse(w.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as {
+    const list = JSON.parse(w.kube.applied.find(isInstanceList)!) as {
       items: Array<{ kind: string; metadata: { name: string }; data?: Record<string, string> }>;
     };
     return Object.fromEntries(
@@ -2253,7 +2336,7 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   });
 
   assert.equal(await up(["--yes"], w.io), 0);
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
   assert.equal(instance.stringData.JR2_INSTANCE_TOKEN, "tok-old", "an existing token is kept (Sandboxes hold it)");
@@ -2286,7 +2369,7 @@ test("provider apiKey is a held secret: the Custodian's Secret holds it, the Har
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   const harnessEnv = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-harness-env")!;
   assert.equal(harnessEnv.stringData.JR2_PROVIDER_API_KEY, undefined, "the Agent can read that Secret");
@@ -2354,9 +2437,7 @@ test("the CA is kept, a leaf that still fits is reused, and a converge holding n
   const root = await mkInstance(config, "myinst", VLLM_ADVISOR);
   const first = mkWorld(root);
   assert.equal(await up(["--yes"], first.io), 0);
-  const items = (
-    JSON.parse(first.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as { items: Array<Record<string, any>> }
-  ).items;
+  const items = (JSON.parse(first.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
   const ca = items.find((i) => i.metadata.name === "jr2-held-ca")!;
   const tls = items.find((i) => i.metadata.name === "jr2-held-tls")!;
 
@@ -2367,9 +2448,7 @@ test("the CA is kept, a leaf that still fits is reused, and a converge holding n
   second.kube.set("myinst", "secret", "jr2-held-ca", { data: b64(ca.stringData) } as never);
   second.kube.set("myinst", "secret", "jr2-held-tls", { data: b64(tls.stringData) } as never);
   assert.equal(await up(["--yes"], second.io), 0);
-  const again = (
-    JSON.parse(second.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as { items: Array<Record<string, any>> }
-  ).items;
+  const again = (JSON.parse(second.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items;
   assert.deepEqual(again.find((i) => i.metadata.name === "jr2-held-ca")!.stringData, ca.stringData);
   assert.deepEqual(again.find((i) => i.metadata.name === "jr2-held-tls")!.stringData, tls.stringData);
 
@@ -2382,9 +2461,9 @@ test("the CA is kept, a leaf that still fits is reused, and a converge holding n
   assert.ok(none.kube.deleted.includes("myinst/secret/jr2-held-secrets-instance"));
   assert.ok(none.kube.deleted.includes("myinst/secret/jr2-held-tls"));
   assert.ok(!none.kube.deleted.includes("myinst/secret/jr2-held-ca"));
-  const cm = (
-    JSON.parse(none.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as { items: Array<Record<string, any>> }
-  ).items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+  const cm = (JSON.parse(none.kube.applied.find(isInstanceList)!) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held",
+  )!;
   assert.deepEqual(
     cm.data,
     { "program.lua": CUSTODIAN_PROGRAM },
@@ -2434,9 +2513,8 @@ test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a m
   assert.equal(cm.kind, "ConfigMap");
   assert.equal(cm.data["ca.crt"], pem);
   assert.ok(
-    w.kube.applied.findIndex((m) => m.includes(`"name":"jr2-ca"`)) <
-      w.kube.applied.findIndex((m) => m.includes(`"kind":"List"`)),
-    "the trust exists before any pod that mounts it",
+    w.kube.applied.findIndex((m) => m.includes(`"name":"jr2-ca"`)) < w.kube.applied.findIndex(isInstanceList),
+    "the trust exists before any pod of the Instance that mounts it",
   );
   // The preflight pod trusts the same bundle the Harness will — else it fails where pods succeed.
   assert.deepEqual(w.kube.probeCaPems, [pem]);
@@ -2465,7 +2543,7 @@ test("converge applies the instance objects and waits for the rollout", async ()
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const kinds = (JSON.parse(list) as { items: Array<{ kind: string }> }).items.map((i) => i.kind);
   for (const k of ["PersistentVolumeClaim", "ServiceAccount", "ConfigMap", "Secret", "Deployment", "Service"]) {
     assert.ok(kinds.includes(k), `applies a ${k}`);
@@ -2531,6 +2609,771 @@ test("provider preflight: configured but no carried Agent names its models → s
   assert.equal(await up(["--yes"], w.io), 0);
   assert.equal(w.kube.probes.length, 0);
   assert.match(w.err.join("\n"), /no carried Agent names a "vllm\/…" model/);
+});
+
+// --- the catalog provider preflight (ADR-0019, ADR-0059) -----------------------------------------
+
+/** A held pod as `resolveHeld` makes it: its key, and the bindings of the names it holds. */
+function heldPod(pod: string, names: string[], hosts: Record<string, string> = {}) {
+  return {
+    pod,
+    manifest: {
+      version: 1 as const,
+      secrets: names.map((name) => ({
+        name,
+        source: { kind: "literal" as const },
+        hosts: [{ host: hosts[name] ?? "api.anthropic.com", port: 443, leaf: "l" }],
+        headers: ["x-api-key"],
+      })),
+    },
+    values: {},
+  };
+}
+
+/** The walk as `placementWalkOf` reads it: one Workspace's models, and the Instance Harness's. */
+function walkOf(workspace: string[] | undefined, instance: string[] | undefined): PlacementWalk {
+  return {
+    effects: [],
+    workspaces: workspace
+      ? [{ workflow: "w", pod: { path: undefined, route: [], secrets: [], models: workspace } as never }]
+      : [],
+    ...(instance ? { instanceHarness: { models: instance } } : {}),
+  };
+}
+
+const WS_POD = workspaceHeldPod({ workflow: "w", route: [] });
+
+test("catalogProbes: every model a Harness pod runs, in a probe with its pod's placement, with the keys a pod there holds", () => {
+  const config = {
+    sandbox: { nodeSelector: { pool: "sandbox" } },
+    harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } },
+  } as const;
+  const probes = catalogProbes(
+    config,
+    walkOf(
+      ["anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5", "openai/gpt-x", "vllm/qwen-x", "antropic/typo"],
+      ["anthropic/claude-haiku-5-5"],
+    ),
+    [heldPod(WS_POD, ["ANTHROPIC_API_KEY"]), heldPod("instance", ["ANTHROPIC_API_KEY"])],
+  );
+  assert.deepEqual(
+    probes.map((p) => [p.where, p.placement, p.manifest.secrets.map((b) => b.name)]),
+    [
+      ["the Sandbox nodes", { nodeSelector: { pool: "sandbox" } }, ["ANTHROPIC_API_KEY"]],
+      ["the Instance Harness", undefined, ["ANTHROPIC_API_KEY"]],
+    ],
+  );
+  assert.deepEqual(
+    probes[0]!.providers.map((v) => [v.id, v.models, v.keys, v.hosts]),
+    [
+      // Each model: a typo, a retired model or a model the key cannot reach is per model.
+      [
+        "anthropic",
+        ["anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5"],
+        ["ANTHROPIC_API_KEY"],
+        ["api.anthropic.com"],
+      ],
+      // No pod holds a key of these: probed with none, as a Turn there would run. The custom provider keeps its own probe.
+      ["openai", ["openai/gpt-x"], [], ["api.openai.com"]],
+      ["antropic", ["antropic/typo"], [], []],
+    ],
+  );
+});
+
+test("catalogProbes: one probe when the Sandbox nodes have no predicate of their own, and a gateway is the host", () => {
+  const probes = catalogProbes(
+    { harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } } },
+    walkOf(["anthropic/claude-sonnet-5-5"], ["anthropic/claude-haiku-5-5"]),
+    [],
+  );
+  assert.equal(probes.length, 1);
+  assert.equal(probes[0]!.where, "the Sandbox nodes and the Instance Harness");
+  const [p] = probes[0]!.providers;
+  assert.deepEqual(p!.models, ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"]);
+  assert.deepEqual([p!.keys, p!.hosts, p!.gateway], [[], ["litellm.corp.example"], "https://litellm.corp.example"]);
+});
+
+test("probeVerdicts reads every line provider-preflight.ts writes: the format is the Harness's (preflight-line.ts)", () => {
+  const verdicts: PreflightVerdict[] = [
+    { kind: "ok" },
+    { kind: "fault", reason: "HTTP 401\ninvalid key" },
+    { kind: "busy", reason: "provider limit (anthropic/m): Overloaded" },
+    { kind: "warn", reason: "no tool call" },
+  ];
+  const output = ["noise", ...verdicts.map((v, i) => preflightLine(`p/m${i}`, v))].join("\n");
+  assert.deepEqual(
+    [...probeVerdicts(output)],
+    [
+      ["p/m0", { kind: "ok" }],
+      ["p/m1", { kind: "fault", reason: "HTTP 401 invalid key" }],
+      ["p/m2", { kind: "busy", reason: "provider limit (anthropic/m): Overloaded" }],
+      ["p/m3", { kind: "warn", reason: "no tool call" }],
+    ],
+  );
+});
+
+test("podFault: the hint follows the kubelet's reason, and quotes the Custodian's refusal", () => {
+  const images = { harnessImage: "ghcr.io/x/jr2-harness:1", custodianImage: "envoyproxy/envoy@sha256:abc" };
+  const where = { where: "the Sandbox nodes" };
+  const end = (over: Partial<PodEnd>): PodEnd => ({
+    phase: "stuck",
+    started: false,
+    output: "",
+    custodian: "",
+    reasons: [],
+    ...over,
+  });
+  const pull = podFault(end({ stuck: "custodian: ImagePullBackOff" }), where, images);
+  assert.match(pull, /cannot pull envoyproxy\/envoy@sha256:abc/);
+  assert.ok(!/held value/.test(pull), "no Custodian-value hint for an image a node cannot pull");
+  assert.match(
+    podFault(end({ stuck: "probe: ErrImagePull" }), where, images),
+    /cannot pull ghcr\.io\/x\/jr2-harness:1/,
+  );
+  assert.match(
+    podFault(
+      end({
+        stuck: "custodian: restarted",
+        custodian: "[critical] script load error: jr2.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value",
+      }),
+      where,
+      images,
+    ),
+    /Custodian did not start: jr2\.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value — .*missing, empty/,
+  );
+  assert.match(podFault(end({ stuck: "probe: CreateContainerConfigError" }), where, images), /harness\.envFrom/);
+  const oom = podFault(end({ stuck: "custodian: restarted (last ended OOMKilled)" }), where, images);
+  assert.match(oom, /ran out of memory: custodian: restarted \(last ended OOMKilled\).*64Mi/);
+  assert.ok(!/held value/.test(oom), "an OOMKilled Custodian is not a held value it refused");
+  assert.match(
+    podFault(end({ phase: "Failed", reasons: ["probe: terminated OOMKilled"] }), where, images),
+    /the check container's limit is 512Mi/,
+  );
+  assert.match(
+    podFault(end({ phase: "timeout" }), where, images),
+    /did not start in 300s .*no node on the Sandbox nodes fits it/,
+  );
+});
+
+test("catalogProbeObjects: the probe pod takes its placement, and labels that select no Harness pod", () => {
+  const list = JSON.parse(
+    catalogProbeObjects({
+      name: "myinst",
+      namespace: "myinst",
+      object: "jr2-provider-preflight-ab12cd34-0",
+      run: "ab12cd34",
+      harnessImage: "h",
+      custodianImage: "c",
+      held: { version: 1, secrets: [] },
+      values: {},
+      leaves: {},
+      trust: {},
+      custodian: { bootstrap: "{}", script: "" },
+      token: "t",
+      harnessEnvData: {},
+      models: ["anthropic/m"],
+      priorityClassName: "jr2-sandbox",
+      placement: {
+        nodeSelector: { pool: "sandbox" },
+        tolerations: [{ key: "k", operator: "Exists", effect: "NoSchedule" }],
+      },
+      deadlineSeconds: 500,
+    }),
+  ) as { items: Array<Record<string, any>> };
+  const pod = list.items.find((i) => i.kind === "Pod")!;
+  assert.deepEqual(pod.spec.nodeSelector, { pool: "sandbox" });
+  assert.equal(pod.spec.tolerations.length, 1);
+  assert.equal(pod.spec.activeDeadlineSeconds, 500);
+  assert.equal(pod.spec.priorityClassName, "jr2-sandbox", "the Sandbox tier's class, as the pods it stands for");
+  assert.deepEqual(pod.metadata.labels, {
+    "jr2.dev/instance": "myinst",
+    "app.kubernetes.io/managed-by": "jr2",
+    "jr2.dev/provider-preflight": "ab12cd34",
+    app: "jr2-provider-preflight",
+  });
+  // No key held: the Custodian mounts its token alone, and the probe's HTTPS goes direct.
+  const values = pod.spec.volumes.find((v: { name: string }) => v.name === "custodian-values");
+  assert.deepEqual(
+    values.projected.sources.map((s: { secret: { name: string } }) => s.secret.name),
+    ["jr2-provider-preflight-ab12cd34-0"],
+  );
+  assert.ok(!pod.spec.containers[0].env.some((e: { name: string }) => e.name === "HTTPS_PROXY"));
+});
+
+const CATALOG_CONFIG = `export default { name: "myinst", secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-real-value" }] };\n`;
+
+/** Every object an apply put in `namespace`, by name, off the manifests a fake cluster recorded. */
+function namespaced(applied: readonly string[], namespace: string): string[] {
+  return applied.flatMap((m) => {
+    if (!m.trimStart().startsWith("{")) return [];
+    const doc = JSON.parse(m) as { kind: string; items?: Array<Record<string, any>>; metadata?: Record<string, any> };
+    const items = doc.kind === "List" ? (doc.items ?? []) : [doc as Record<string, any>];
+    return items.filter((i) => i.metadata?.namespace === namespace).map((i) => `${i.kind}/${i.metadata.name}`);
+  });
+}
+
+test("provider preflight: a Harness-shaped pod with its own objects, before anything the Instance reads is written", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(w.kube.probePods.length, 1, "one probe pod for one placement");
+  const { pod, rolloutsBefore, appliedBefore } = w.kube.probePods[0]!;
+  const o = pod.metadata.name as string;
+  assert.match(o, /^jr2-provider-preflight-[0-9a-f]{8}-0$/, "a name for this run alone");
+  assert.deepEqual(
+    rolloutsBefore.filter((r) => r.startsWith("myinst/")),
+    [],
+    "before the instance's rollout waits, so before the publish",
+  );
+  // A failed probe writes no object the Instance reads: before it, the namespace holds the probe's own.
+  assert.deepEqual(namespaced(appliedBefore, "myinst").sort(), [
+    `ConfigMap/${o}`,
+    `ConfigMap/${o}-ca`,
+    `Pod/${o}`,
+    `Secret/${o}`,
+    `Secret/${o}-env`,
+    `Secret/${o}-tls`,
+  ]);
+
+  // The probe: the stock Harness image's provider-preflight.ts, EVERY carried model in argv, the Harness's env.
+  const [probe] = pod.spec.containers;
+  assert.deepEqual(probe.command, [
+    "/opt/jr2/bin/tini",
+    "--",
+    "/opt/jr2/bin/node",
+    "/opt/jr2/src/provider-preflight.ts",
+    "anthropic/claude-haiku-5-5",
+    "anthropic/claude-sonnet-5-5",
+  ]);
+  const harnessPod = findInstanceHarness(w).statefulSet!.spec.template.spec;
+  assert.equal(probe.image, harnessPod.containers[0].image);
+  const env = probe.env as Array<{ name: string; value?: string; valueFrom?: any }>;
+  assert.equal(env.find((e) => e.name === "ANTHROPIC_API_KEY")?.value, "jr2-held-ANTHROPIC_API_KEY");
+  assert.equal(env.find((e) => e.name === "HTTPS_PROXY")?.value, "http://127.0.0.1:15001");
+  assert.equal(env.find((e) => e.name === "NODE_EXTRA_CA_CERTS")?.value, "/etc/jr2/ca/extra.crt");
+  assert.equal(env.find((e) => e.name === "JR2_HARNESS_JSON")?.valueFrom.configMapKeyRef.name, o);
+  assert.deepEqual(probe.envFrom, [{ secretRef: { name: `${o}-env` } }]);
+
+  // The Custodian is the Instance Harness's, but for the startup probe that gates the probe.
+  const [custodian] = pod.spec.initContainers;
+  const { startupProbe, ...same } = custodian;
+  assert.ok(startupProbe?.httpGet, "the probe starts once Envoy serves");
+  assert.deepEqual(same, harnessPod.initContainers[0]);
+  // …and reads the probe's own copies, by the same paths.
+  const volumes = JSON.stringify(pod.spec.volumes);
+  for (const shared of ['"jr2-held"', '"jr2-held-tls"', '"jr2-ca"', '"jr2-held-secrets-instance"', '"jr2-harness"']) {
+    assert.ok(!volumes.includes(shared) && !JSON.stringify(probe).includes(shared), `the probe reads no ${shared}`);
+  }
+  assert.equal(pod.spec.restartPolicy, "Never");
+  assert.equal(pod.spec.automountServiceAccountToken, false);
+
+  // The literal value is in the probe's own Secret alone, and only for the probe's life.
+  const list = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"${o}"`))!) as {
+    items: Array<Record<string, any>>;
+  };
+  const withValue = list.items.filter((i) => JSON.stringify(i).includes("sk-ant-real-value"));
+  assert.deepEqual(
+    withValue.map((i) => `${i.kind}/${i.metadata.name}`),
+    [`Secret/${o}`],
+  );
+  for (const { kind, name } of [
+    { kind: "pod", name: o },
+    { kind: "configmap", name: o },
+    { kind: "configmap", name: `${o}-ca` },
+    { kind: "secret", name: o },
+    { kind: "secret", name: `${o}-tls` },
+    { kind: "secret", name: `${o}-env` },
+  ]) {
+    assert.ok(w.kube.deleted.includes(`myinst/${kind}/${name}`), `the probe's ${kind} ${name} is deleted`);
+  }
+  const said = w.err.join("\n");
+  assert.match(
+    said,
+    /provider: checking anthropic\/claude-haiku-5-5, anthropic\/claude-sonnet-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for api\.anthropic\.com/,
+  );
+  assert.match(said, /provider: anthropic\/claude-sonnet-5-5 reachable, and it completed a tool call/);
+});
+
+test("provider preflight: before the first check, only the namespace, the PriorityClasses and the check's own objects are written — no operator, no deploy key", async () => {
+  const { home } = await mkSshHome();
+  const root = await withWorkspace(
+    await mkInstance(
+      `export default { name: "myinst", git: { credentials: [{ match: "*", sshKey: "jr2-git-ssh" }] }, ` +
+        `secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-real-value" }] };\n`,
+      "myinst",
+      { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } },
+    ),
+    SSH_URL,
+  );
+  const w = mkWorld(root, { choose: 0, env: { HOME: home } });
+  w.io.prompt = async () => "";
+  w.io.sshKeygen = async () => ({ privateKey: PRIVATE_KEY, publicKey: `${PUBLIC_KEY}\n` });
+  assert.equal(await up([], w.io), 0);
+  const { pod, appliedBefore, labeledBefore } = w.kube.probePods[0]!;
+  const kinds = appliedBefore.map((m) => {
+    if (!m.trimStart().startsWith("{")) return `yaml: ${m.slice(0, 40)}`;
+    const doc = JSON.parse(m) as { kind: string; metadata?: { name: string }; items?: Array<Record<string, any>> };
+    return doc.kind === "List"
+      ? `List ${doc.items!.map((i) => `${i.kind}/${i.metadata.name}`).join(",")}`
+      : `${doc.kind}/${doc.metadata!.name}`;
+  });
+  const o = pod.metadata.name as string;
+  assert.deepEqual(kinds, [
+    "Namespace/myinst",
+    "PriorityClass/jr2-control",
+    "PriorityClass/jr2-sandbox",
+    `List ConfigMap/${o},ConfigMap/${o}-ca,Secret/${o},Secret/${o}-tls,Secret/${o}-env,Pod/${o}`,
+  ]);
+  assert.deepEqual(labeledBefore, [], "no label either: the operator's comes after the check");
+  // …and both come after it.
+  assert.ok(
+    w.kube.applied.some((m) => m.includes('"name":"jr2-git-ssh"')),
+    "the deploy key, after the check",
+  );
+  assert.ok(
+    w.kube.applied.some((m) => /^\s*image:/m.test(m)),
+    "the operator, after the check",
+  );
+});
+
+test("provider preflight: every failure in one error, and the Instance as it was — nothing of it applied, no publish, no sweep", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  w.kube.set("myinst", "secret", "jr2-held-secrets-gone", {
+    metadata: { name: "x", labels: { "jr2.dev/held-pod": "gone" } },
+  });
+  w.kube.probeAnswers["anthropic/claude-haiku-5-5"] = "fault=anthropic-messages call failed: 401 invalid x-api-key";
+  w.kube.probeAnswers["anthropic/claude-sonnet-5-5"] = "fault=404 model not found";
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      assert.match(
+        err.message,
+        /^provider preflight failed for model "anthropic\/claude-haiku-5-5" toward api\.anthropic\.com \(from a pod on the Instance Harness/,
+      );
+      assert.match(err.message, /401 invalid x-api-key/);
+      assert.match(err.message, /no egress to api\.anthropic\.com/);
+      assert.match(err.message, /held secret ANTHROPIC_API_KEY may be empty, wrong/);
+      assert.match(err.message, /model "anthropic\/claude-sonnet-5-5".*404 model not found/s, "the second failure too");
+      assert.ok(!/harness\.catalog/.test(err.message), "no gateway, so no gateway cause");
+      return true;
+    },
+  );
+  const o = w.kube.probePods[0]!.pod.metadata.name as string;
+  assert.ok(
+    namespaced(w.kube.applied, "myinst").every((n) => n.split("/")[1]!.startsWith(o)),
+    `only the probe's own objects were applied: ${namespaced(w.kube.applied, "myinst").join(", ")}`,
+  );
+  assert.ok(!w.kube.applied.some((m) => m.includes('"name":"jr2-ca"')), "no trust bundle either");
+  assert.equal(w.orchestrator.requests.length, 0, "no Assembly is published");
+  assert.equal(w.kube.rollouts.filter((r) => r.startsWith("myinst/")).length, 0);
+  assert.ok(!w.kube.deleted.some((d) => d.includes("jr2-held-secrets-")), "no stale held Secret is deleted");
+  assert.ok(w.kube.deleted.includes(`myinst/pod/${o}`), "the pod goes, pass or fail");
+});
+
+test("provider preflight: a probe pod the cluster refuses is that probe's fault; the other probes still run", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", sandbox: { nodeSelector: { pool: "sandbox" } }, ` +
+      `secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-real-value" }] };\n`,
+    "myinst",
+    { reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" } },
+  );
+  await writeFile(
+    join(root, "workflows", "ws.ts"),
+    `import { agent, jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [], actors: { coder: agent({ model: "anthropic/claude-haiku-5-5", instructions: "i" }) } })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  const w = mkWorld(root);
+  w.kube.refuseApply = (m) => m.includes('"kind":"Pod"') && m.includes('"pool":"sandbox"');
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      assert.match(
+        err.message,
+        /model "anthropic\/claude-haiku-5-5" .*on the Sandbox nodes.*the cluster refused the check pod's objects: .*exceeded quota/s,
+      );
+      assert.ok(!/claude-sonnet-5-5/.test(err.message), "the Instance Harness's probe ran, and passed");
+      return true;
+    },
+  );
+  assert.equal(w.kube.probePods.length, 1, "the second probe ran after the first was refused");
+  assert.equal(w.kube.probePods[0]!.pod.spec.nodeSelector, undefined);
+});
+
+test("catalog provider preflight: a busy provider and an unforced answer in text warn, and the converge goes on", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  w.kube.probeAnswers["anthropic/claude-haiku-5-5"] = "busy=provider limit (anthropic/claude-haiku-5-5): Overloaded";
+  w.kube.probeAnswers["anthropic/claude-sonnet-5-5"] = "warn=the answer carried no tool call";
+  assert.equal(await up(["--yes"], w.io), 0);
+  const said = w.err.join("\n");
+  assert.match(
+    said,
+    /warning: provider: anthropic\/claude-haiku-5-5 answered with the key, but is busy — provider limit/,
+  );
+  assert.match(
+    said,
+    /warning: provider: anthropic\/claude-sonnet-5-5 answered with the key — the answer carried no tool call/,
+  );
+});
+
+test("catalog provider preflight: a provider no pod holds a key for is probed with none, and its failure names the key to add", async () => {
+  const w = mkWorld(
+    await mkInstance(`export default { name: "myinst" };\n`, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      typo: { model: "antropic/claude-haiku-5-5", workspace: "none" },
+    }),
+  );
+  w.kube.probeAnswers["anthropic/claude-haiku-5-5"] = "fault=Provider is not configured: anthropic";
+  w.kube.probeAnswers["antropic/claude-haiku-5-5"] = 'fault=model "antropic/claude-haiku-5-5" resolves to nothing';
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      assert.match(
+        err.message,
+        /not configured: anthropic\n.*\n {2}- no Harness pod on the Instance Harness holds a key of "anthropic": add its key to `secrets` \(ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY\)/,
+      );
+      assert.match(
+        err.message,
+        /resolves to nothing\n.*jr2 knows no key name of "antropic" \(when pi does not know the id either/s,
+      );
+      return true;
+    },
+  );
+  const { pod } = w.kube.probePods[0]!;
+  assert.ok(
+    !pod.spec.containers[0].env.some((e: { name: string }) => e.name === "HTTPS_PROXY"),
+    "nothing held: direct",
+  );
+});
+
+test("catalog provider preflight: a pod that never ran says why, from the kubelet's reason", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
+  );
+  w.kube.probeEnd = {
+    phase: "stuck",
+    started: false,
+    stuck: "probe: ErrImagePull",
+    output: "",
+    custodian: "",
+    reasons: [],
+  };
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    /the check pod cannot start: probe: ErrImagePull — a node on the Instance Harness cannot pull/,
+  );
+});
+
+test("catalogProbes: a probe stands for one class of pod — its nodes, and whether it holds a secret (its proxy)", () => {
+  // A Workspace that holds a workspace() secret calls a keyless provider through its Custodian's
+  // tunnel; the probe holds that pod's set, so it has the proxy too.
+  const tunnel = catalogProbes({}, walkOf(["openai/gpt-x"], undefined), [
+    heldPod(WS_POD, ["JIRA_TOKEN"], { JIRA_TOKEN: "jira.example" }),
+  ]);
+  assert.deepEqual(
+    tunnel.map((p) => [p.manifest.secrets.map((b) => b.name), p.providers.map((v) => [v.id, v.keys])]),
+    [[["JIRA_TOKEN"], [["openai", []]]]],
+  );
+  // The same nodes, a Workspace that holds a key and an Instance Harness that holds nothing: two
+  // probes, one through a Custodian, one direct.
+  const split = catalogProbes({}, walkOf(["anthropic/claude-haiku-5-5"], ["openai/gpt-x"]), [
+    heldPod(WS_POD, ["ANTHROPIC_API_KEY"]),
+    heldPod("instance", []),
+  ]);
+  assert.deepEqual(
+    split.map((p) => [p.where, p.manifest.secrets.map((b) => b.name), p.providers.map((v) => v.id)]),
+    [
+      ["the Sandbox nodes", ["ANTHROPIC_API_KEY"], ["anthropic"]],
+      ["the Instance Harness", [], ["openai"]],
+    ],
+  );
+});
+
+test("catalogProbeObjects: a binding with no leaf is a jr2 defect, thrown before anything is applied", () => {
+  assert.throws(
+    () =>
+      catalogProbeObjects({
+        name: "myinst",
+        namespace: "myinst",
+        object: "o",
+        run: "r",
+        harnessImage: "h",
+        custodianImage: "c",
+        held: heldPod("instance", ["ANTHROPIC_API_KEY"]).manifest,
+        values: { ANTHROPIC_API_KEY: "v" },
+        leaves: {},
+        trust: {},
+        custodian: { bootstrap: "{}", script: "" },
+        token: "t",
+        harnessEnvData: {},
+        models: ["anthropic/m"],
+        priorityClassName: "jr2-sandbox",
+        deadlineSeconds: 500,
+      }),
+    /no leaf .* a jr2 defect/,
+  );
+});
+
+test("provider preflight: a new namespace's missing default ServiceAccount is waited for, and a pod that waits to start says why", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
+  );
+  let refusals = 1;
+  w.kube.refuseApply = (m) =>
+    m.includes('"kind":"Pod"') && refusals-- > 0
+      ? 'pods "jr2-provider-preflight-x" is forbidden: error looking up service account myinst/default: serviceaccount "default" not found'
+      : false;
+  w.kube.probePending = ["Unschedulable: 0/3 nodes are available"];
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(w.kube.probePods.length, 1, "applied on the second try");
+  assert.match(
+    w.err.join("\n"),
+    /provider: the check pod is not running yet — Unschedulable: 0\/3 nodes are available/,
+  );
+});
+
+test("provider preflight: each result is said as it comes, with the worst-case time first; a pod that stops names the models it never reached", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  assert.equal(await up(["--yes"], w.io), 0);
+  const said = w.err.join("\n");
+  assert.match(said, /provider: the check pod has up to 5 min to start, then up to 6 min for each of its 2 models/);
+  assert.equal(said.split("provider: anthropic/claude-haiku-5-5 reachable").length - 1, 1, "said once, as it came");
+
+  const stopped = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  stopped.kube.probeEnd = {
+    phase: "Failed",
+    started: true,
+    output: "jr2.preflight model=anthropic/claude-haiku-5-5 start",
+    custodian: "",
+    reasons: ["probe: terminated DeadlineExceeded"],
+  };
+  await assert.rejects(
+    () => up(["--yes"], stopped.io),
+    (err: Error) => {
+      assert.match(
+        err.message,
+        /model "anthropic\/claude-haiku-5-5".*the check pod stopped while it checked this model/s,
+      );
+      assert.match(
+        err.message,
+        /model "anthropic\/claude-sonnet-5-5".*not checked: the check pod stopped before it reached this model/s,
+      );
+      return true;
+    },
+  );
+});
+
+test("provider preflight: no answer in time gets the hint that a model loads on first use — behind a gateway, not at pi's own host", async () => {
+  const gateway = mkWorld(
+    await mkInstance(
+      `export default { name: "myinst", harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } }, ` +
+        `secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-litellm" }] };\n`,
+      "myinst",
+      { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } },
+    ),
+  );
+  gateway.kube.probeAnswers["anthropic/claude-haiku-5-5"] = "fault=no answer in 120 s";
+  await assert.rejects(
+    () => up(["--yes"], gateway.io),
+    /no answer in 120 s\n {2}- a model that loads on first use can take longer than the check waits: run `jr2 up` again/,
+  );
+  const direct = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
+  );
+  direct.kube.probeAnswers["anthropic/claude-haiku-5-5"] = "fault=no answer in 120 s";
+  await assert.rejects(
+    () => up(["--yes"], direct.io),
+    (err: Error) => !/loads on first use/.test(err.message),
+  );
+});
+
+test("provider preflight: a refused key lists the key first and no egress; a connection failure lists the egress first", async () => {
+  const run = async (fault: string) => {
+    const w = mkWorld(
+      await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
+    );
+    w.kube.probeAnswers["anthropic/claude-haiku-5-5"] = `fault=${fault}`;
+    return up(["--yes"], w.io).then(
+      () => assert.fail("the converge failed"),
+      (err: Error) => err.message.split("\n").slice(1),
+    );
+  };
+  const refused = await run(
+    'anthropic-messages call to https://api.anthropic.com failed: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+  );
+  assert.match(refused[0]!, /^ {2}- the held secret ANTHROPIC_API_KEY may be empty, wrong/);
+  assert.ok(!refused.some((l) => /no egress/.test(l)), "the provider answered: not the egress");
+  const unreachable = await run("anthropic-messages call to https://api.anthropic.com failed: Connection error.");
+  assert.match(unreachable[0]!, /^ {2}- the pods may have no egress to api\.anthropic\.com/);
+  assert.match(unreachable[1]!, /^ {2}- the held secret ANTHROPIC_API_KEY/);
+  const silent = await run("no answer in 120 s");
+  assert.match(silent[0]!, /no egress/);
+});
+
+test("PROBE_MODEL_SECONDS is the check's own budget for a model (PREFLIGHT_MODEL_BUDGET_SECONDS in @jr2/harness)", () => {
+  assert.equal(PROBE_MODEL_SECONDS, PREFLIGHT_MODEL_BUDGET_SECONDS);
+});
+
+test("provider preflight: an empty last log read still knows which model the check was on, from the log read while it ran", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  w.kube.probeEnd = { phase: "Failed", started: true, output: "", custodian: "", reasons: [] };
+  w.kube.probeLive = "jr2.preflight model=anthropic/claude-haiku-5-5 start";
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      assert.match(err.message, /"anthropic\/claude-haiku-5-5".*stopped while it checked this model/s);
+      assert.match(err.message, /"anthropic\/claude-sonnet-5-5".*not checked/s);
+      return true;
+    },
+  );
+});
+
+test("provider preflight: a result said while the pod ran stands when the last log read comes back empty", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
+  );
+  w.kube.probeEnd = { phase: "Succeeded", started: true, output: "", custodian: "", reasons: [] };
+  w.kube.probeLive =
+    "jr2.preflight model=anthropic/claude-haiku-5-5 start\njr2.preflight model=anthropic/claude-haiku-5-5 ok";
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join("\n"), /provider: anthropic\/claude-haiku-5-5 reachable/);
+});
+
+test("provider preflight: a check pod whose log cannot be read says so, and is not called a check that did not run", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
+  );
+  w.kube.probeEnd = { phase: "Succeeded", started: true, output: "", custodian: "", reasons: [] };
+  await assert.rejects(() => up(["--yes"], w.io), /the check pod ended Succeeded, and jr2 up could not read its log/);
+});
+
+test("provider preflight: an earlier run's leftovers go even when this converge has nothing to check", async () => {
+  const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`, "myinst"));
+  const ago = new Date(Date.now() - 7200 * 1000).toISOString();
+  w.kube.probeLeftovers = {
+    pod: [
+      {
+        metadata: { name: "jr2-provider-preflight-old00000-0", creationTimestamp: ago },
+        spec: { activeDeadlineSeconds: 510 },
+        status: { phase: "Pending" },
+      },
+    ],
+    configmap: [],
+    secret: [],
+  };
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(w.kube.probePods.length, 0, "no check to run");
+  assert.ok(
+    w.kube.deleted.includes("myinst/secret/jr2-provider-preflight-old00000-0"),
+    "its Secret, which can hold a key, goes",
+  );
+});
+
+test("provider preflight: this Instance's probe pods that ended over 10 minutes ago, and old orphans, go first; the rest stay", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", { coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" } }),
+  );
+  const ago = (s: number) => new Date(Date.now() - s * 1000).toISOString();
+  const ended = (name: string, s: number) => ({
+    metadata: { name, creationTimestamp: ago(s + 60) },
+    status: { phase: "Failed", containerStatuses: [{ name: "probe", state: { terminated: { finishedAt: ago(s) } } }] },
+  });
+  w.kube.probeLeftovers = {
+    pod: [
+      ended("jr2-provider-preflight-dead0000-0", 11 * 60),
+      // Ended a short time ago: its run may still be reading its log.
+      ended("jr2-provider-preflight-just0000-0", 60),
+      { metadata: { name: "jr2-provider-preflight-live0000-0" }, status: { phase: "Running" } },
+      // No node took it: no start time, so its deadline never fired, and its Secret holds a key.
+      {
+        metadata: { name: "jr2-provider-preflight-stuck000-0", creationTimestamp: ago(7200) },
+        spec: { activeDeadlineSeconds: 510 },
+        status: { phase: "Pending" },
+      },
+    ],
+    configmap: [
+      { metadata: { name: "jr2-provider-preflight-live0000-0-ca", creationTimestamp: ago(7200) } },
+      { metadata: { name: "jr2-provider-preflight-orphan00-0-ca", creationTimestamp: ago(7200) } },
+      { metadata: { name: "jr2-provider-preflight-young000-0", creationTimestamp: ago(10) } },
+    ],
+    secret: [],
+  };
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.deepEqual(
+    w.kube.leftoverSelectors,
+    [
+      "jr2.dev/provider-preflight,jr2.dev/instance=myinst",
+      "jr2.dev/provider-preflight,jr2.dev/instance=myinst",
+      "jr2.dev/provider-preflight,jr2.dev/instance=myinst",
+    ],
+    "this Instance's alone",
+  );
+  const mine = w.kube.probePods[0]!.pod.metadata.name as string;
+  const gone = w.kube.deleted.filter((d) => d.includes("jr2-provider-preflight-") && !d.includes(mine));
+  assert.deepEqual(
+    gone.sort(),
+    [
+      "myinst/configmap/jr2-provider-preflight-dead0000-0",
+      "myinst/configmap/jr2-provider-preflight-dead0000-0-ca",
+      "myinst/configmap/jr2-provider-preflight-orphan00-0-ca",
+      "myinst/pod/jr2-provider-preflight-dead0000-0",
+      "myinst/secret/jr2-provider-preflight-dead0000-0",
+      "myinst/secret/jr2-provider-preflight-dead0000-0-env",
+      "myinst/secret/jr2-provider-preflight-dead0000-0-tls",
+      "myinst/configmap/jr2-provider-preflight-stuck000-0",
+      "myinst/configmap/jr2-provider-preflight-stuck000-0-ca",
+      "myinst/pod/jr2-provider-preflight-stuck000-0",
+      "myinst/secret/jr2-provider-preflight-stuck000-0",
+      "myinst/secret/jr2-provider-preflight-stuck000-0-env",
+      "myinst/secret/jr2-provider-preflight-stuck000-0-tls",
+    ].sort(),
+  );
+});
+
+test("catalog provider preflight: behind a gateway, the gateway is a cause", async () => {
+  const w = mkWorld(
+    await mkInstance(
+      `export default { name: "myinst", harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } }, ` +
+        `secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-litellm" }] };\n`,
+      "myinst",
+      { reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" } },
+    ),
+  );
+  w.kube.probeAnswers["anthropic/claude-sonnet-5-5"] = "fault=model not found";
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    /model "anthropic\/claude-sonnet-5-5" toward litellm\.corp\.example.*harness\.catalog\.anthropic\.baseUrl \(https:\/\/litellm\.corp\.example\) may not answer, or may not serve "claude-sonnet-5-5"/s,
+  );
 });
 
 // --- git over ssh: the key source is the user's choice (ADR-0047) --------------------------------
@@ -2896,7 +3739,7 @@ test("the Instance Harness checks the bearer derived for ITS placement — a dig
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-instance"`))!;
+  const list = w.kube.applied.find((m) => isInstanceList(m) && m.includes(`"jr2-instance"`))!;
   const secret = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
   )!;
@@ -2915,7 +3758,7 @@ test("the Instance Harness checks the bearer derived for ITS placement — a dig
 
 /** The NetworkPolicies the instance List carries, by name. */
 function policiesOf(w: World): Record<string, Record<string, any>> {
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-orchestrator"`))!;
+  const list = w.kube.applied.find((m) => isInstanceList(m) && m.includes(`"jr2-orchestrator"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   return Object.fromEntries(items.filter((i) => i.kind === "NetworkPolicy").map((i) => [i.metadata.name, i]));
 }
@@ -2966,7 +3809,7 @@ test("both readiness probes set a period — a ~1s boot must not be billed as a 
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const list = w.kube.applied.find((m) => m.includes(`"jr2-orchestrator"`) && m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const orchestrator = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
   )!;
@@ -2993,7 +3836,7 @@ test("the Orchestrator carries a liveness probe that restarts only a process sil
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const list = w.kube.applied.find((m) => m.includes(`"jr2-orchestrator"`) && m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find(isInstanceList)!;
   const orchestrator = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
   )!;
@@ -3249,7 +4092,7 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
   w.kube.set("myinst", "secret", "team", { data: { openai: "c2stb3Blbg==" } } as never);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-held"`))!;
+  const list = w.kube.applied.find((m) => isInstanceList(m) && m.includes(`"jr2-held"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
   const manifest = JSON.parse(
     items.find((i) => i.metadata.name === "jr2-held")!.data["held-instance.json"],
@@ -3283,7 +4126,8 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
     values.projected.sources.map((s: { secret: { name: string } }) => s.secret.name),
     ["jr2-instance", "jr2-held-secrets-instance", "team"],
   );
-  const everything = w.kube.applied.join("\n");
+  // The provider preflight's probe holds its own copy for its life (ADR-0019); it is left out here.
+  const everything = w.kube.applied.filter((m) => !m.includes(`"jr2.dev/provider-preflight"`)).join("\n");
   const caMentions = everything.split('"jr2-held-ca"').length - 1;
   assert.equal(caMentions, 1, "jr2-held-ca is named once: by its own Secret, and by no pod");
   assert.ok(
@@ -3528,7 +4372,7 @@ test("an http Effect places its secret in the Instance Effector: the four object
   const [secret, deployment, service, policy] = items;
   assert.equal(secret!.stringData["secret.jira"], "jira-token-value-0123");
   assert.equal(secret!.stringData.orphan, undefined, "a secret nothing names goes nowhere");
-  const instanceList = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-instance"`))!;
+  const instanceList = w.kube.applied.find((m) => isInstanceList(m) && m.includes(`"jr2-instance"`))!;
   const instanceSecret = (JSON.parse(instanceList) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
   )!;
@@ -3721,7 +4565,7 @@ test("a value edited in the user's Secret behind a valueFrom rolls the Instance 
     assert.equal(await up(["--yes"], w.io), 0);
     // The cluster keeps the CA and the leaves this converge applied, as a real one does.
     const items = (
-      JSON.parse(w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-held-ca"`))!) as {
+      JSON.parse(w.kube.applied.find((m) => isInstanceList(m) && m.includes(`"jr2-held-ca"`))!) as {
         items: Array<Record<string, any>>;
       }
     ).items;

@@ -57,10 +57,129 @@ loudly narrated, safe to re-run:
   in-cluster deploy keypair (the recommended default, public key printed to register), a local key, or one pasted on
   stdin ([ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)) — declining bails. A personal key never enters
   a cluster silently: only by that explicit, warned choice.
-- **Provider preflight**: when a custom model provider is configured (ADR-0018's `harness` section), `up` probes the
-  `baseUrl` _from inside the cluster_ — including one trivial tool-call completion — so an unreachable endpoint or a
-  vLLM missing `--enable-auto-tool-choice` fails at converge time, not as `agent.fault` mid-run. Reachability itself is
-  the user's concern (`localhost` never works from a pod; a LAN address does on kind).
+- **Provider preflight**: `up` checks each provider that a carried model names. It checks from inside the cluster, with
+  one trivial tool-call completion. An endpoint that the pods cannot reach, a wrong or missing key, or a vLLM without
+  `--enable-auto-tool-choice` then fails at converge time, not as `agent.fault` in a run. Reachability is the user's
+  concern (`localhost` never works from a pod; a LAN address does on kind). The check must take the path that the
+  Harness takes. If it does not, a pass means nothing.
+  - **The custom provider** (`harness.provider`, ADR-0018). A `kubectl run` pod calls its `baseUrl` once for each
+    distinct model. The pod trusts `caBundle` as the Harness does. The script of that pod holds
+    `harness.provider.apiKey` as a literal, so the key is in the pod spec. This does not agree with ADR-0059.
+  - **A catalog provider** (pi's catalog, for example `anthropic/…`). Its key is a held secret, and only a Custodian can
+    use it ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
+  - **The check pod.** It is a Harness pod with no Harness in it. It has a Custodian and the stock Harness image's
+    `provider-preflight.ts`. The function that composes the Custodian of every Harness pod composes this Custodian too.
+    Its token is a value that the Orchestrator never signed. `provider-preflight.ts` gets the env of the Harness
+    container: the harness config, `harness.env`, `harness.envFrom`, the Stand-ins, the proxy and the trust. pi resolves
+    each model and uses its api, as in a Turn. The `harness.catalog` gateway applies. The key never enters the check
+    container, its argv or its log.
+  - **Its own objects.** The check pod reads no object of the Instance. `up` writes copies from the values on the host:
+    - a ConfigMap with the Custodian's files, the program and the harness config;
+    - a ConfigMap with the trust bundles;
+    - a Secret with the token and the literal values of the held secrets;
+    - a Secret with the leaves;
+    - a Secret with the literal `harness.env` values.
+
+    A held secret from `valueFrom` stays a reference to the user's Secret. A literal value is thus in a second Secret
+    while the check pod lives. `up` deletes that Secret after the check.
+
+  - **What it checks.** It checks every carried model that a Harness pod runs. A typo, a retired model and a model that
+    the key cannot use are each per model. One check pod stands for one class of Harness pod. A class is a placement and
+    a held set:
+    - The placement: a Workspace's model runs on the Sandbox nodes (`config.sandbox`, ADR-0052). A `"none"` Agent's
+      model runs where the Instance Harness runs.
+    - The held set: a pod that holds a secret sends its HTTPS through its Custodian, and a tunnel carries a host that no
+      secret is bound to. A pod that holds no secret sends its HTTPS direct. So the check pod holds the held set of the
+      first pod of its class, and the keys that the other pods of the class hold. A class that holds nothing gets a
+      check pod that holds nothing.
+
+    When no pod of the class holds a key of the provider, the check pod holds none. Then pi refuses the call
+    (`not configured`), and the converge fails. A signing credential in `harness.env` reaches the check pod, as it
+    reaches a Turn. An id that pi does not know (a typo) fails, because pi resolves no model for it. An id that pi
+    knows, and for which jr2 knows no key name, is checked with no held key, as a Turn runs it. The check pod has the
+    priority class of the Sandbox tier, as the Harness pods have (ADR-0060).
+
+  - **The request.** The check's request shares these with a Turn's: the model, its api, its endpoint and key, the
+    completion limit (what pi-ai sends for a Turn), the retries, no forced tool, and the level of a definition with no
+    `thinkingLevel` (`off`: no `reasoning` is sent). It does not share these: it has no system prompt, one tool, no
+    session id, and a one-line prompt (one text part, as a Turn's user message has parts). These are limits of the
+    check:
+    - An endpoint whose context is too small for a Turn's prompt can pass the check.
+    - A definition with a `thinkingLevel` is checked at the default level, because `up` knows the models of the
+      definitions and not their levels.
+  - **The call.** The first call is the request that a Turn sends. So a pass always means that the Turn's request works.
+    Its answer decides:
+    - A tool call: the check passes.
+    - An error: the check fails, or it is busy (below). A forced tool could pass where a Turn fails: a vLLM behind a
+      `harness.catalog` gateway, with no `--enable-auto-tool-choice`, answers a named tool by guided decoding and
+      refuses the Turn's request.
+    - Text from any other model: a warning. When the model is of pi's catalog, has `off`, is not moved to a gateway, and
+      its api has a form for a forced tool, a second call forces the tool. It does not change the verdict, only the
+      words of the warning: with a tool call, the model answered in text when the tool was not forced; with text or an
+      error, the model gave no tool call either way. Anthropic refuses a forced tool while the model thinks, so a model
+      with no `off` gets no second call.
+  - **Busy.** A provider that is busy after the retries of a Turn ([ADR-0064](0064-a-workspace-waits-for-capacity.md))
+    is a warning: it answered, and it took the key. Busy is a 429, a 529, an overload, a rate limit or
+    `ResourceExhausted`. A 503 alone is a failure, because a gateway with no backend and a server that still loads its
+    model answer 503, and a Turn there fails. The check waits at most 20 s for one `retry-after`. When a provider asks
+    for more, the call stops with its 429, and that is busy.
+  - **Time.** A call waits 120 s for its first event (text, thinking, a tool call or the end), and then 60 s for each
+    gap between two events. An Ollama endpoint loads the model on the first request, and a llama.cpp on a CPU reads the
+    prompt before it writes: both are slow to start, and then they stream. An endpoint that stops for a minute in the
+    middle of an answer is one that a Turn cannot use either. Each model has 360 s for all its calls: two calls, each
+    with 120 s to its first event and 60 s of the gaps that follow. Each model has its own 360 s, so one slow model does
+    not use the time of the others. Two literals set it, `PREFLIGHT_MODEL_BUDGET_SECONDS` in `preflight-line.ts` for the
+    check and `PROBE_MODEL_SECONDS` in `up.ts` for the pod, and a test holds them equal. A call or a model that runs out
+    fails. For a gateway, the error adds that a model that loads on first use can take longer.
+  - **Busy, when a call runs out.** The rule: the last status that any try of the call got was a 429 or a 529, and then
+    the call ran out. A later 200 or 503 clears it. pi-ai sends each retry as a new request. The check sees each try
+    through a `fetch` wrapper of its own. It sees Bedrock's tries through `onResponse`, because Bedrock's retries are
+    the AWS SDK's own (pi-ai's `maxRetries` does not reach them). Google's and Vertex's adapters refuse a `fetch` that
+    is not `globalThis.fetch`, so the check passes them none and does not replace the global one. For them only the
+    final error counts: a 429 followed by a retry that never answers fails the check, where for the other apis it is
+    busy. A second call that runs out does not change the verdict of the first.
+  - **The order.** The checks run before `up` writes an object that the Instance or the operator reads. Only these come
+    before them, because the check pod needs them: the namespace and its label, the PriorityClasses, and the images that
+    `up` builds and delivers. The operator (its CRDs, RBAC and Deployment, its label and its rollout), a deploy key and
+    the wait for its registration (ADR-0047), the trust bundles, the held objects and the instance List come after every
+    check passes.
+  - **When a check fails.** The converge stops. `up` applied only the items above and the check pods with their own
+    objects, and it deleted the check pods and their objects. It also deleted the leftovers of earlier runs (below). The
+    operator, the Orchestrator, its Assembly and every pod of the Instance continue to run as before. Nothing else is
+    deleted, and no Assembly is published.
+  - **The pods.** `up` runs the check pods in series, one at a time, and reports every failure in one error. When the
+    cluster refuses a check pod (a quota, a Pod Security level, a webhook), that check fails, and the other checks still
+    run. In a new namespace, `up` waits up to 10 s for the `default` ServiceAccount before it calls a refusal a refusal.
+    The check container writes a start line and a result line for each model. `up` reads its log while it runs, and
+    writes each result as it comes. When the pod stops before the end, the error names the model that the check was on,
+    and each model that it never reached. The name of each pod is unique to the run
+    (`jr2-provider-preflight-<run>-<n>`), so two runs in one namespace do not touch each other's pods. `up` deletes the
+    objects of each check after it. `up` waits up to 300 s for the check container to start (two cold image pulls), and
+    it writes each new reason that the pod gives for the wait. Then it waits 360 s for each model (the model's own
+    budget in the check), and 30 s more for the Node.js process, which runs under tini as the Harness does, to start. It
+    stops at once in these cases:
+    - A container cannot start: a crash loop, a missing Secret or key in the env (`CreateContainerConfigError`), or a
+      pull that the registry refuses (not found, manifest unknown, unauthorized, denied). A slow or limited pull, and a
+      `CreateContainerError`, can pass by themselves, so the wait goes on.
+    - A volume cannot mount: the Secret or the key of a held secret's `valueFrom` is missing. The kubelet says so in a
+      `FailedMount` event. It counts when the kubelet says it again (its count or its last time goes up), because the
+      first can be a race with the objects of the same apply.
+    - The Custodian restarts. The error then quotes the Custodian's refusal line, or the reason of its last end
+      (`OOMKilled`).
+  - **Leftovers.** `up` has no signal handler. If `up` stops (Ctrl-C), the kubelet stops a running pod at its
+    `activeDeadlineSeconds`. A pod that no node took has no start time, and that deadline never applies to it. So a
+    later `up` of the same Instance deletes these objects:
+    - each check pod that ended more than 10 minutes before: in that time, the run that made the pod can still read its
+      log;
+    - each check pod, in any phase, that is older than its `activeDeadlineSeconds` and 10 minutes;
+    - the objects of those pods, and each object of a check that is more than one hour old and whose pod is gone.
+
+    It never deletes the objects of another Instance.
+
+  - **A limit.** The check pod has labels of its own. It does not get the labels of a Harness pod: the Instance Harness
+    Service selects its pods by label, and would send Turns to the check pod. So a NetworkPolicy that selects Harness
+    pods by label does not select the check pod. When such a policy closes the egress of the Harness pods, the check can
+    pass while a Turn fails.
 
 **`jr2 down`** removes the instance from the cluster. It asks for confirmation unless `--yes` is given (for CI). `--all`
 takes the operator too.

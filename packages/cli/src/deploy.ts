@@ -163,6 +163,8 @@ export const KIT_POD_SIZES = {
   repoCache: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "1Gi" } },
   /** The Instance Effector (ADR-0068): one http call at a time per Effect, its text body bounded. */
   instanceEffector: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "128Mi" } },
+  /** The provider preflight's check container (ADR-0019): one Node.js process, pi-ai, one call at a time. */
+  providerProbe: { requests: { cpu: "100m", memory: "512Mi" }, limits: { memory: "512Mi" } },
 } as const;
 
 /** A fresh copy, so no manifest shares an object with another (or with the constant). */
@@ -366,28 +368,7 @@ export function instanceObjects(opts: {
       kind: "ConfigMap",
       metadata: meta(HARNESS_CONFIGMAP),
       data: {
-        [HARNESS_CONFIG_KEY]: JSON.stringify(
-          {
-            // apiKey is deliberately dropped: it is a held secret (ADR-0059) — the Custodian holds
-            // it, the Harness's env holds its Stand-in, and a ConfigMap is no place for either.
-            provider: opts.harness?.provider
-              ? {
-                  id: opts.harness.provider.id,
-                  api: opts.harness.provider.api,
-                  baseUrl: opts.harness.provider.baseUrl,
-                  // Token limits are model properties, not credentials — they ride the ConfigMap
-                  // so the Harness can register the provider with them.
-                  contextWindow: opts.harness.provider.contextWindow,
-                  maxTokens: opts.harness.provider.maxTokens,
-                  models: opts.harness.provider.models,
-                }
-              : undefined,
-            // Where pi's catalog providers send their calls (ADR-0059): endpoints, not keys.
-            catalog: opts.harness?.catalog,
-          },
-          null,
-          2,
-        ),
+        [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness),
       },
     },
     {
@@ -1059,6 +1040,225 @@ export function instanceHarnessObjects(opts: {
     },
   ];
 
+  return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/** What the Instance can REACH (ADR-0018), as the `jr2-harness` ConfigMap carries it to every
+ * Harness container: the custom provider without its key and the catalog gateways. The provider
+ * preflight's pod carries the same text in its own ConfigMap (ADR-0019). */
+export function harnessConfigJson(harness: HarnessConfig | undefined): string {
+  return JSON.stringify(
+    {
+      // apiKey is deliberately dropped: it is a held secret (ADR-0059) — the Custodian holds
+      // it, the Harness's env holds its Stand-in, and a ConfigMap is no place for either.
+      provider: harness?.provider
+        ? {
+            id: harness.provider.id,
+            api: harness.provider.api,
+            baseUrl: harness.provider.baseUrl,
+            // Token limits are model properties, not credentials — they ride the ConfigMap
+            // so the Harness can register the provider with them.
+            contextWindow: harness.provider.contextWindow,
+            maxTokens: harness.provider.maxTokens,
+            models: harness.provider.models,
+          }
+        : undefined,
+      // Where pi's catalog providers send their calls (ADR-0059): endpoints, not keys.
+      catalog: harness?.catalog,
+    },
+    null,
+    2,
+  );
+}
+
+/** The provider preflight's objects (ADR-0019): a probe pod and its own copies of what it reads,
+ * each named `jr2-provider-preflight-<run>-<n>` or that name and a suffix, unique to one `jr2 up`. */
+export const PROVIDER_PREFLIGHT = "jr2-provider-preflight";
+/** The label every one of them carries, its value the `jr2 up` run: how a later run finds the
+ * leftovers of a run that did not end, and leaves another run's objects alone. */
+export const LABEL_PROVIDER_PREFLIGHT = "jr2.dev/provider-preflight";
+/** The probe's container in that pod, whose output `jr2 up` reads. */
+export const PROVIDER_PREFLIGHT_CONTAINER = "probe";
+
+/** Every object of one probe (`catalogProbeObjects`), for its deletion. */
+export function catalogProbeObjectNames(object: string): Array<{ kind: string; name: string }> {
+  return [
+    { kind: "pod", name: object },
+    { kind: "configmap", name: object },
+    { kind: "configmap", name: `${object}-ca` },
+    { kind: "secret", name: object },
+    { kind: "secret", name: `${object}-tls` },
+    { kind: "secret", name: `${object}-env` },
+  ];
+}
+
+/**
+ * One probe pod of the provider preflight (ADR-0019, ADR-0059): a Harness pod with no Harness in
+ * it, and its own copies of every object a Harness pod reads. So a probe writes nothing that a
+ * running pod of the Instance reads, and a probe that fails leaves the Instance as it was.
+ *
+ * - `<object>` (ConfigMap): the Custodian's bootstrap and script, the program and the harness config
+ *   (`harnessConfigJson`).
+ * - `<object>-ca` (ConfigMap): the trust bundles, as `jr2-ca` would carry them.
+ * - `<object>` (Secret): the Custodian's token, a value the Orchestrator never signed (the probe
+ *   reads no Menu), and the LITERAL values of the keys it holds, from the host. A `valueFrom` key
+ *   stays a reference to the user's Secret. The values are in this Secret for the probe's life.
+ * - `<object>-tls` (Secret): the leaves of the bound hosts. `<object>-env` (Secret): the literal
+ *   `harness.env` values, which `jr2-harness-env` would carry.
+ *
+ * The Custodian is composed by the function every Harness pod's is (`custodianComposition`). With
+ * no binding, it holds nothing and the probe's HTTPS goes direct, as in a Harness pod that holds no
+ * secret. The probe container runs the stock Harness image's `provider-preflight.ts` with the Harness
+ * container's env, so the call is the one a Turn makes, and the key never enters that container,
+ * its argv or its log. The argv is the model specifiers alone.
+ *
+ * The pod has the placement and the priority class of the Harness pods it stands for (ADR-0052,
+ * ADR-0060). Its labels are its own and match no Harness pod's: the Instance Harness Service
+ * selects by label, and would send Turns to it. The Custodian is a native sidecar with a startup
+ * probe, so the probe starts only once Envoy serves and the pod ends when the probe does.
+ */
+export function catalogProbeObjects(opts: {
+  name: string;
+  namespace: string;
+  /** This probe's object name (`jr2-provider-preflight-<run>-<n>`) and its run, for the label. */
+  object: string;
+  run: string;
+  /** The resolved stock Harness ref: the image a Turn's Harness runs, with pi-ai at the pin. */
+  harnessImage: string;
+  custodianImage: string;
+  /** The bindings of the keys this probe holds: each a part of a held pod's manifest. */
+  held: HeldManifest;
+  /** The literal values of those keys, by name, from the host. */
+  values: Record<string, string>;
+  /** The leaves of their bound hosts, by file stem. */
+  leaves: Record<string, Pem>;
+  /** The trust bundles (`ca.crt`, `extra.crt`, `bundle.crt`, `upstream.crt`), as `jr2-ca` has them. */
+  trust: Record<string, string>;
+  /** The Custodian's two files, rendered from `held`. */
+  custodian: CustodianFiles;
+  token: string;
+  /** The literal `harness.env` values. */
+  harnessEnvData: Record<string, string>;
+  /** The `<provider>/<model>` specifiers to probe, in order. */
+  models: readonly string[];
+  /** The node predicate of the Harness pods this probe stands for. */
+  placement?: SandboxPlacement;
+  priorityClassName: string;
+  harness?: HarnessConfig;
+  caBundle?: boolean;
+  /** The pod's whole budget: the kubelet ends it at this deadline, even when `jr2 up` is gone. */
+  deadlineSeconds: number;
+}): string {
+  const labels = {
+    [LABEL_INSTANCE]: opts.name,
+    "app.kubernetes.io/managed-by": "jr2",
+    [LABEL_PROVIDER_PREFLIGHT]: opts.run,
+  };
+  const meta = (name: string) => ({ name, namespace: opts.namespace, labels });
+  const o = opts.object;
+  const custodian = custodianComposition(opts.held, {
+    image: opts.custodianImage,
+    pod: o,
+    shared: { literals: o, tls: `${o}-tls`, trust: `${o}-ca`, program: o },
+    config: o,
+    token: { secret: o, key: "token" },
+    caBundle: opts.caBundle === true,
+    resources: sized(KIT_POD_SIZES.instanceCustodian),
+  });
+  const ready = custodian.custodianContainer.readinessProbe as { httpGet: unknown };
+  const pod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { ...meta(o), labels: { ...labels, app: PROVIDER_PREFLIGHT } },
+    spec: {
+      restartPolicy: "Never",
+      activeDeadlineSeconds: opts.deadlineSeconds,
+      automountServiceAccountToken: false,
+      priorityClassName: opts.priorityClassName,
+      ...(opts.placement?.nodeSelector ? { nodeSelector: opts.placement.nodeSelector } : {}),
+      ...(opts.placement?.tolerations?.length ? { tolerations: opts.placement.tolerations } : {}),
+      // The Instance Harness pod's baseline, and its `fsGroup` for the same reason: the
+      // Custodian's values are group-readable, and Envoy runs as its own uid.
+      securityContext: {
+        runAsNonRoot: true,
+        seccompProfile: { type: "RuntimeDefault" },
+        fsGroup: INSTANCE_HARNESS_FS_GROUP,
+      },
+      initContainers: [
+        {
+          ...custodian.custodianContainer,
+          restartPolicy: "Always",
+          startupProbe: { httpGet: ready.httpGet, periodSeconds: 1, failureThreshold: 60 },
+        },
+      ],
+      containers: [
+        {
+          name: PROVIDER_PREFLIGHT_CONTAINER,
+          image: opts.harnessImage,
+          imagePullPolicy: "IfNotPresent",
+          // Under tini, as the Harness runs (ADR-0061): PID 1 reaps, and forwards a stop.
+          command: [
+            "/opt/jr2/bin/tini",
+            "--",
+            "/opt/jr2/bin/node",
+            "/opt/jr2/src/provider-preflight.ts",
+            ...opts.models,
+          ],
+          // The Harness container's env, in its order (`instanceHarnessObjects`): no credential.
+          env: [
+            { name: "JR2_HARNESS_JSON", valueFrom: { configMapKeyRef: { name: o, key: HARNESS_CONFIG_KEY } } },
+            ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
+            ...custodian.harnessEnv,
+          ],
+          envFrom: [{ secretRef: { name: `${o}-env` } }, ...(opts.harness?.envFrom ?? [])],
+          volumeMounts: custodian.harnessMounts,
+          resources: sized(KIT_POD_SIZES.providerProbe),
+          securityContext: {
+            runAsNonRoot: true,
+            allowPrivilegeEscalation: false,
+            capabilities: { drop: ["ALL"] },
+            seccompProfile: { type: "RuntimeDefault" },
+          },
+        },
+      ],
+      volumes: custodian.volumes,
+    },
+  };
+  const secret = (name: string, stringData: Record<string, string>): KubeManifest => ({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: meta(name),
+    type: "Opaque",
+    stringData,
+  });
+  const leaves: Record<string, string> = {};
+  for (const stem of new Set(opts.held.secrets.flatMap((s) => s.hosts.map((h) => h.leaf)))) {
+    const pem = opts.leaves[stem];
+    if (!pem) throw new Error(`no leaf for a bound host of the provider preflight (${stem}) — a jr2 defect`);
+    leaves[`${stem}.crt`] = pem.cert;
+    leaves[`${stem}.key`] = pem.key;
+  }
+  const literals = Object.fromEntries(
+    opts.held.secrets.filter((s) => s.source.kind === "literal").map((s) => [s.name, opts.values[s.name] ?? ""]),
+  );
+  const items: KubeManifest[] = [
+    {
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: meta(o),
+      data: {
+        [CUSTODIAN_BOOTSTRAP_KEY]: opts.custodian.bootstrap,
+        [CUSTODIAN_SCRIPT_KEY]: opts.custodian.script,
+        [CUSTODIAN_PROGRAM_KEY]: CUSTODIAN_PROGRAM,
+        [HARNESS_CONFIG_KEY]: harnessConfigJson(opts.harness),
+      },
+    },
+    { apiVersion: "v1", kind: "ConfigMap", metadata: meta(`${o}-ca`), data: opts.trust },
+    secret(o, { token: opts.token, ...literals }),
+    secret(`${o}-tls`, leaves),
+    secret(`${o}-env`, opts.harnessEnvData),
+    pod,
+  ];
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
 }
 

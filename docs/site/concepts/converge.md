@@ -75,16 +75,17 @@ the cluster, see [Architecture](architecture.md).
 6. It checks that the namespace is this Instance's. Before it uses a namespace for the first time, it asks you.
 7. It checks that the cluster keeps pod-level resources.
 8. It finds the platforms of the nodes, and it decides the address of each image.
-9. It applies the operator. Then it builds the Sandbox Images.
+9. It builds the Sandbox Images.
 10. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
-    For a Repo with an ssh url, it asks where the deploy key comes from.
-11. When the config sets a custom model provider, `jr2 up` checks each model of that provider that an Agent uses. For
-    each model, it starts a pod in the cluster, and the pod asks the provider for one tool call.
-12. It applies the Secrets and the Orchestrator, and waits for the rollout. When the Machines need them, it also waits
+11. It checks each model that an Agent uses: a pod in the cluster asks the provider for one tool call for each model.
+    Until each check passes, `jr2 up` writes nothing that the Instance or the operator reads. The pod has up to 5
+    minutes to start, and each model has up to 6 minutes. `jr2 up` writes each model's result as it comes.
+12. It applies the operator. For a Repo with an ssh url, it asks where the deploy key comes from.
+13. It applies the Secrets and the Orchestrator, and waits for the rollout. When the Machines need them, it also waits
     for the Repo cache, the Instance Harness and the [Instance Effector](../reference/glossary.md#instance-effector).
-13. It publishes the Assembly to the Orchestrator. When the Orchestrator already has this Assembly, it publishes
+14. It publishes the Assembly to the Orchestrator. When the Orchestrator already has this Assembly, it publishes
     nothing.
-14. It removes the images that nothing uses now.
+15. It removes the images that nothing uses now.
 
 `jr2 up` says `converged` only when each pod that it rolled out runs the image that it expected. The labels and the
 records that `jr2 up` writes help it to skip work. They do not prove that the cluster is correct. The pods do.

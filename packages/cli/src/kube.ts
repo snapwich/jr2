@@ -5,6 +5,7 @@
 // one, shelling out to the same `kubectl` a human debugging the cluster would use.
 
 import { execFile, spawn } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -157,7 +158,223 @@ export type KubeAdmin = {
     caPem?: string;
     context?: string;
   }): Promise<string>;
+  /** Wait until one pod has run to its end, and read its logs — the provider preflight's seam
+   * (ADR-0019, ADR-0059). Its pod has a Custodian beside the probe, which `kubectl run` cannot
+   * make, so `jr2 up` applies it and waits here. Two bounds: `startSeconds` until the probe
+   * container runs (the image pulls and the Custodian's start), then `runSeconds` for the probe. It
+   * stops early on a pod that cannot start (`podProgress`). Never throws. */
+  awaitPodEnd(opts: {
+    namespace: string;
+    name: string;
+    container: string;
+    startSeconds: number;
+    runSeconds: number;
+    context?: string;
+    /** Called with each new reason the pod gives for not running yet (`Unschedulable: …`). */
+    onPending?: (line: string) => void;
+    /** Called with the check container's log on each poll while it runs. */
+    onLog?: (log: string) => void;
+  }): Promise<PodEnd>;
 };
+
+/** How one pod ended (`awaitPodEnd`). `phase` is the pod's own, or `stuck` (it cannot start:
+ * `stuck` says why) or `timeout` (`started` says whether the probe ran). `output` is the probe
+ * container's whole log; `custodian` the Custodian's, its previous run's first when it restarted.
+ * `reasons` is each container's waiting or ended reason as the kubelet says it. */
+export type PodEnd = {
+  phase: "Succeeded" | "Failed" | "stuck" | "timeout";
+  started: boolean;
+  stuck?: string;
+  output: string;
+  custodian: string;
+  reasons: string[];
+};
+
+/** A container's status as the kubelet reports it: the part `podProgress` reads. */
+type ProbeContainerStatus = {
+  name?: string;
+  restartCount?: number;
+  state?: Record<string, { reason?: string; message?: string }>;
+  /** Why the run before the current one ended: where an OOMKilled sidecar says so. */
+  lastState?: { terminated?: { reason?: string; exitCode?: number } };
+};
+
+/** The pod as `podProgress` reads it. */
+export type ProbePodObject = {
+  status?: {
+    phase?: string;
+    conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
+    initContainerStatuses?: ProbeContainerStatus[];
+    containerStatuses?: ProbeContainerStatus[];
+  };
+};
+
+/** Why a pod that has not ended is not running yet, for a person who waits on it: the scheduler's
+ * reason, else the first container's waiting reason, else its phase. Undefined when it gives none,
+ * and for a pod that runs with no container waiting. */
+export function podPending(pod: ProbePodObject | undefined): string | undefined {
+  const unscheduled = pod?.status?.conditions?.find((c) => c.type === "PodScheduled" && c.status === "False");
+  if (unscheduled)
+    return `${unscheduled.reason ?? "not scheduled"}${unscheduled.message ? `: ${unscheduled.message}` : ""}`;
+  const statuses = [...(pod?.status?.initContainerStatuses ?? []), ...(pod?.status?.containerStatuses ?? [])];
+  for (const c of statuses) {
+    const waiting = c.state?.waiting;
+    if (waiting?.reason) return `${c.name ?? "?"}: ${waiting.reason}`;
+  }
+  // A pod that runs, with no container waiting, is not waiting to start: its check is on its way.
+  return pod?.status?.phase === "Running" ? undefined : pod?.status?.phase;
+}
+
+/** A volume a pod cannot mount because a Secret, a ConfigMap or a key it names is missing: the
+ * kubelet keeps the pod in ContainerCreating and says so in a FailedMount event alone — `secret "x"
+ * not found`, `references non-existent secret key: y`, `configmap references non-existent config
+ * key`. The first such event can be a race with the objects that the same apply wrote, so it counts
+ * only when the kubelet says it again: its `count` or `lastTimestamp` went up since an earlier
+ * poll. `seen` keeps each message's last value from poll to poll. */
+export function failedMount(
+  events: ReadonlyArray<{ reason?: string; message?: string; count?: number; lastTimestamp?: string }>,
+  seen: Map<string, string>,
+): string | undefined {
+  let found: string | undefined;
+  for (const e of events) {
+    if (e.reason !== "FailedMount" || !/not found|non-existent|couldn't find key|does not exist/i.test(e.message ?? ""))
+      continue;
+    const message = e.message ?? "";
+    const mark = `${e.count ?? 1}|${e.lastTimestamp ?? ""}`;
+    const before = seen.get(message);
+    if (before !== undefined && before !== mark) found ??= `FailedMount: ${message}`;
+    seen.set(message, mark);
+  }
+  return found;
+}
+
+/** The waiting reasons from which a pod does not come back by itself (ADR-0019): an image no node
+ * can pull, a Secret or ConfigMap key it names that is missing, a container that crashes at start. */
+export const TERMINAL_WAITING = new Set(["InvalidImageName", "CreateContainerConfigError", "CrashLoopBackOff"]);
+
+/** A pull that ends with one of these comes back by itself (a slow registry, a timeout, a rate
+ * limit); a pull whose message says that the image or the right to it is not there does not. */
+const PULL_WAITING = new Set(["ErrImagePull", "ImagePullBackOff"]);
+const PULL_FINAL = /not found|manifest unknown|unauthorized|denied/i;
+
+/**
+ * Where a probe pod is (`awaitPodEnd`): ended (`phase`), unable to start (`stuck`, the reason), or
+ * still on its way, with whether `container` runs yet. A restart of `sidecar` is `stuck`: the
+ * Custodian restarts only when it refused to start, and the next start refuses alike. Pure, for its
+ * test.
+ */
+export function podProgress(
+  pod: ProbePodObject | undefined,
+  container: string,
+  sidecar: string,
+): { phase?: "Succeeded" | "Failed"; stuck?: string; running: boolean; reasons: string[] } {
+  const statuses = [...(pod?.status?.initContainerStatuses ?? []), ...(pod?.status?.containerStatuses ?? [])];
+  const reasons = statuses.flatMap((c) => [
+    ...Object.entries(c.state ?? {}).flatMap(([state, s]) =>
+      s.reason || s.message ? [`${c.name ?? "?"}: ${state} ${s.reason ?? ""} ${s.message ?? ""}`.trim()] : [],
+    ),
+    ...(c.lastState?.terminated?.reason ? [`${c.name ?? "?"}: last ended ${c.lastState.terminated.reason}`] : []),
+  ]);
+  const running = statuses.some((c) => c.name === container && c.state?.running !== undefined);
+  const phase = pod?.status?.phase;
+  if (phase === "Succeeded" || phase === "Failed") return { phase, running, reasons };
+  for (const c of statuses) {
+    const waiting = c.state?.waiting?.reason;
+    const pullFinal =
+      waiting !== undefined && PULL_WAITING.has(waiting) && PULL_FINAL.test(c.state?.waiting?.message ?? "");
+    if (waiting && (TERMINAL_WAITING.has(waiting) || pullFinal)) {
+      const last = c.lastState?.terminated?.reason;
+      return { stuck: `${c.name ?? "?"}: ${waiting}${last ? ` (last ended ${last})` : ""}`, running, reasons };
+    }
+    if (c.name === sidecar && (c.restartCount ?? 0) > 0) {
+      const last = c.lastState?.terminated?.reason;
+      return { stuck: `${sidecar}: restarted${last ? ` (last ended ${last})` : ""}`, running, reasons };
+    }
+  }
+  return { running, reasons };
+}
+
+/** What `waitPodEnd` reads the pod and the clock through: kubectl and the wall clock in
+ * `kubectlAdmin`, a script and a fake clock in its test. */
+export type PodEndPorts = {
+  pod(): Promise<ProbePodObject | undefined>;
+  /** The pod's events: where a FailedMount is told. */
+  events(): Promise<Array<{ reason?: string; message?: string; count?: number; lastTimestamp?: string }>>;
+  /** Each new reason the pod gives for not running yet. */
+  pending?(line: string): void;
+  /** The container's log so far, on each poll while it runs: its results as they come. */
+  log?(output: string): void;
+  logs(container: string, opts: { tailLines: number; previous?: boolean }): Promise<string>;
+  sleep(ms: number): Promise<unknown>;
+  now(): number;
+};
+
+/**
+ * The wait of `awaitPodEnd`: poll the pod every 2 s until it ends (`podProgress`), cannot start
+ * (a terminal waiting reason, a Custodian restart, a `FailedMount` event), or runs out of time —
+ * `startSeconds` until `container` runs, then `runSeconds` from then on. While it waits to start,
+ * each new reason it gives goes to `pending`. Then it reads the logs: the probe's whole log, for
+ * every model's line, read again when a pod that ended answers nothing; and the Custodian's last
+ * 50 lines, its run before first when it restarted.
+ */
+export async function waitPodEnd(
+  ports: PodEndPorts,
+  opts: { container: string; startSeconds: number; runSeconds: number },
+): Promise<PodEnd> {
+  const startBy = ports.now() + opts.startSeconds * 1000;
+  let runBy: number | undefined;
+  let seen: ReturnType<typeof podProgress>;
+  let end: PodEnd["phase"];
+  let restarted = false;
+  let said: string | undefined;
+  const mounts = new Map<string, string>();
+  for (;;) {
+    const pod = await ports.pod();
+    seen = podProgress(pod, opts.container, "custodian");
+    restarted ||= seen.stuck?.startsWith("custodian: restarted") === true;
+    if (seen.running && runBy === undefined) runBy = ports.now() + opts.runSeconds * 1000;
+    if (seen.phase) {
+      end = seen.phase;
+      break;
+    }
+    if (!seen.stuck && !seen.running) {
+      const mount = failedMount(await ports.events(), mounts);
+      if (mount) seen = { ...seen, stuck: mount };
+    }
+    if (seen.stuck) {
+      end = "stuck";
+      break;
+    }
+    if (ports.now() >= (runBy ?? startBy)) {
+      end = "timeout";
+      break;
+    }
+    if (seen.running && ports.log) ports.log(await ports.logs(opts.container, { tailLines: -1 }));
+    const pending = seen.running ? undefined : podPending(pod);
+    if (pending && pending !== said) ports.pending?.(pending);
+    said = pending;
+    await ports.sleep(2000);
+  }
+  // The whole log: one line per model. A probe that ended always wrote one, so an empty read is a
+  // read that failed (kubectl answers nothing then): read again before calling it empty.
+  let output = await ports.logs(opts.container, { tailLines: -1 });
+  for (let n = 0; n < 3 && !output.trim() && (end === "Succeeded" || end === "Failed"); n++) {
+    await ports.sleep(1000);
+    output = await ports.logs(opts.container, { tailLines: -1 });
+  }
+  const custodian = [
+    ...(restarted ? [await ports.logs("custodian", { tailLines: 50, previous: true })] : []),
+    await ports.logs("custodian", { tailLines: 50 }),
+  ].join("\n");
+  return {
+    phase: end,
+    started: runBy !== undefined,
+    ...(seen.stuck ? { stuck: seen.stuck } : {}),
+    output,
+    custodian,
+    reasons: seen.reasons,
+  };
+}
 
 const nsArgs = (namespace?: string): string[] => (namespace ? ["--namespace", namespace] : []);
 
@@ -373,6 +590,31 @@ export const kubectlAdmin: KubeAdmin = {
     } catch (err) {
       throw oneShotFailure(err);
     }
+  },
+
+  async awaitPodEnd({ namespace, name, container, startSeconds, runSeconds, context, onPending, onLog }) {
+    const ctx = context ? { context } : {};
+    return waitPodEnd(
+      {
+        pod: () => kubectlAdmin.getJson<ProbePodObject>({ kind: "pod", name, namespace, ...ctx }),
+        // A read that fails is no event: the wait goes on, and its bounds still hold.
+        events: () =>
+          kubectlAdmin
+            .listJson<{ reason?: string; message?: string; count?: number; lastTimestamp?: string }>({
+              kind: "event",
+              fieldSelector: `involvedObject.name=${name}`,
+              namespace,
+              ...ctx,
+            })
+            .catch(() => []),
+        ...(onPending ? { pending: onPending } : {}),
+        ...(onLog ? { log: onLog } : {}),
+        logs: (c, opts) => kubectlAdmin.logs({ namespace, pod: name, container: c, ...opts, ...ctx }),
+        sleep,
+        now: Date.now,
+      },
+      { container, startSeconds, runSeconds },
+    );
   },
 };
 

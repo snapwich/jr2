@@ -2,11 +2,13 @@
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order: the
 // AGENTS.md block (ADR-0072: a file in the Instance folder, not the cluster) → typecheck → the
 // Machine walk → staging the Assembly (ADR-0069) → the Kubernetes floor (ADR-0037) → ownership →
-// image resolution → operator → Kit images (the Harness, the Orchestrator) → Sandbox Images →
-// Secret (+ preflight of referenced Secrets) → apply + rollout → the cache agent (ADR-0051: a
-// DaemonSet converged when a registered Machine composes a Sandbox, deleted when none does) →
-// Instance Harness (ADR-0031: converged by convention when a carried definition declares
-// `workspace: "none"`, deleted when none does) → Instance Effector → publishing the Assembly to the
+// image resolution → Kit images (the operator, the Harness, the Orchestrator) → Sandbox Images →
+// Secret (+ preflight of referenced Secrets) → the custom provider's preflight → the catalog
+// providers' preflight (ADR-0059: through a Custodian, in pods that read their own objects) →
+// operator → git ssh keys → apply → rollout → the cache
+// agent (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted
+// when none does) → Instance Harness (ADR-0031: converged by convention when a carried definition
+// declares `workspace: "none"`, deleted when none does) → Instance Effector → publishing the Assembly to the
 // running Orchestrator (ADR-0069) → a report of live workspaces still on an older image.
 //
 // The Assembly is staged EARLY and published LAST (ADR-0069). Early, so its refusals (a second copy
@@ -16,7 +18,7 @@
 // version the Assembly names. A Machine edit therefore rolls nothing: it is a new Assembly, not a
 // new pod template. The Orchestrator creates a Repo resource per
 // Repo the walk found bound, at boot and at each publish, and the cache agent clones it onto a node on first need
-// (ADR-0051); a configured custom provider is preflighted from inside the cluster. A bound ssh url
+// (ADR-0051); every provider a carried model names is preflighted from inside the cluster. A bound ssh url
 // asks where its deploy key comes from (ADR-0047), and a converge that GENERATED one ends by saying
 // so — the key is dead until a human registers it.
 //
@@ -56,6 +58,7 @@
 // (`--yes` for CI); objects labeled as a DIFFERENT instance → refuse.
 
 import { createHash, createHmac, randomBytes } from "node:crypto";
+import { setTimeout as sleepMs } from "node:timers/promises";
 import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, relative } from "node:path";
@@ -115,6 +118,10 @@ import {
   type HeldManifest,
   type HeldPodPlan,
   type ImageRefs,
+  MODEL_KEYS,
+  type PlacementWalk,
+  type SandboxPlacement,
+  workspaceHeldPod,
   type JR2Config,
   type ResolvedSize,
 } from "@jr2/orchestrator/internal";
@@ -151,6 +158,7 @@ import {
   effectorGraceSeconds,
   INSTANCE_EFFECTOR,
   instanceObjects,
+  KIT_POD_SIZES,
   KIT_VERSION,
   LABEL_INSTANCE,
   LABEL_VERSION,
@@ -167,6 +175,11 @@ import {
   type HeldObjects,
   type CustodianFiles,
   type HeldPodObjects,
+  catalogProbeObjects,
+  LABEL_PROVIDER_PREFLIGHT,
+  catalogProbeObjectNames,
+  PROVIDER_PREFLIGHT,
+  PROVIDER_PREFLIGHT_CONTAINER,
 } from "../deploy.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { resolveRoot } from "../instance.ts";
@@ -182,6 +195,7 @@ import {
   ORCHESTRATOR_SERVICE,
   type KubeAdmin,
   type KubeObject,
+  type PodEnd,
   type RolloutTarget,
 } from "../kube.ts";
 import { anyNodeHolds, buildNodes, sandboxNodes, type NodeObject } from "../nodes.ts";
@@ -757,55 +771,8 @@ export async function up(args: string[], io: Io): Promise<number> {
   const operatorImage =
     config.operator?.manage === false && !carried.composesSandbox ? undefined : await ensureKitImage("operator");
   if (operatorImage !== undefined) converged.operator = operatorImage;
-  if (config.operator?.manage === false) {
-    activity(
-      io,
-      "operator: skipped (operator.manage: false — run the controller loop yourself)" +
-        (operatorImage !== undefined ? `; its image ${operatorImage} still runs as the cache agent` : ""),
-    );
-  } else {
-    const image = operatorImage!;
-    const existing = await kube.getJson({
-      kind: "deployment",
-      name: OPERATOR_DEPLOYMENT,
-      namespace: OPERATOR_NAMESPACE,
-      ...ctx,
-    });
-    const deployed = existing?.metadata.labels?.[LABEL_VERSION];
-    if (deployed && compareVersions(deployed, KIT_VERSION) > 0) {
-      activity(io, `operator: leaving v${deployed} (newer than this kit's v${KIT_VERSION} — never downgraded)`);
-    } else {
-      activity(io, `operator: applying v${KIT_VERSION} (${image})${deployed ? ` over v${deployed}` : ""}`);
-      await kube.apply({
-        manifest: await operatorManifest(image, priorityClassNames(config.priorityClasses).control),
-        ...ctx,
-      });
-      await kube.label({
-        kind: "deployment",
-        name: OPERATOR_DEPLOYMENT,
-        namespace: OPERATOR_NAMESPACE,
-        labels: { [LABEL_VERSION]: KIT_VERSION },
-        ...ctx,
-      });
-      await awaitRollout(kube, {
-        name: OPERATOR_DEPLOYMENT,
-        namespace: OPERATOR_NAMESPACE,
-        selector: OPERATOR_SELECTOR,
-        ...ctx,
-      });
-      // Sound for every layer now that EVERY tag is a content address (ADR-0038): a source edit
-      // moves the ref, which moves the pod template, which rolls. The old hole — kit dev pinning a
-      // static `:local` tag, so a rebuild left the template identical and nothing rolled — closed
-      // with the `images` block that created it.
-      await verifyRunningImage(io, kube, {
-        layer: "operator",
-        namespace: OPERATOR_NAMESPACE,
-        selector: OPERATOR_SELECTOR,
-        image,
-        ...ctx,
-      });
-    }
-  }
+  // Applied after the provider preflight (below): the operator is the cluster's, and a converge
+  // whose provider check fails must not have changed it.
 
   // --- the kit's own runtime images (ADR-0038) ---------------------------------------------------
   // Built here rather than lazily beside its consumers. The Harness is the injection source
@@ -1006,6 +973,84 @@ export async function up(args: string[], io: Io): Promise<number> {
     caBundle: caPem,
   });
 
+  // --- provider preflight (ADR-0019): probe the custom endpoint FROM INSIDE the cluster ---------
+  // Its probe sends its own key and needs nothing the apply writes.
+  await preflightProvider(io, kube, config, carried.models, namespace, ctx, caPem);
+
+  // --- catalog provider preflight (ADR-0019, ADR-0059): through a Custodian, FROM INSIDE ---------
+  // BEFORE anything the Instance or the cluster reads is written — the operator, a deploy key, the
+  // trust, the held objects, the instance List: each probe pod has its own copies of what it reads,
+  // from the values on this host. So a probe that fails leaves the Instance, its Assembly and the
+  // operator as they were. Only the namespace, the PriorityClasses and the delivered images come
+  // first, because the probe pod needs them.
+  const probes = catalogProbes(config, placementWalk, held.objects.pods);
+  await preflightCatalog(io, kube, {
+    probes,
+    name,
+    namespace,
+    ctx,
+    harnessImage: refs.harness,
+    custodianImage,
+    harness: config.harness,
+    caBundle: caPem !== undefined,
+    values: Object.assign({}, ...held.objects.pods.map((p) => p.values)) as Record<string, string>,
+    leaves: held.objects.leaves,
+    trust: trustData(caPem, held.bundles),
+    harnessEnvData,
+    priorityClassName: priorityClassNames(config.priorityClasses).sandbox,
+  });
+
+  // --- operator (per-cluster, shared): after the provider preflight ------------------------------
+  if (config.operator?.manage === false) {
+    activity(
+      io,
+      "operator: skipped (operator.manage: false — run the controller loop yourself)" +
+        (operatorImage !== undefined ? `; its image ${operatorImage} still runs as the cache agent` : ""),
+    );
+  } else {
+    const image = operatorImage!;
+    const existing = await kube.getJson({
+      kind: "deployment",
+      name: OPERATOR_DEPLOYMENT,
+      namespace: OPERATOR_NAMESPACE,
+      ...ctx,
+    });
+    const deployed = existing?.metadata.labels?.[LABEL_VERSION];
+    if (deployed && compareVersions(deployed, KIT_VERSION) > 0) {
+      activity(io, `operator: leaving v${deployed} (newer than this kit's v${KIT_VERSION} — never downgraded)`);
+    } else {
+      activity(io, `operator: applying v${KIT_VERSION} (${image})${deployed ? ` over v${deployed}` : ""}`);
+      await kube.apply({
+        manifest: await operatorManifest(image, priorityClassNames(config.priorityClasses).control),
+        ...ctx,
+      });
+      await kube.label({
+        kind: "deployment",
+        name: OPERATOR_DEPLOYMENT,
+        namespace: OPERATOR_NAMESPACE,
+        labels: { [LABEL_VERSION]: KIT_VERSION },
+        ...ctx,
+      });
+      await awaitRollout(kube, {
+        name: OPERATOR_DEPLOYMENT,
+        namespace: OPERATOR_NAMESPACE,
+        selector: OPERATOR_SELECTOR,
+        ...ctx,
+      });
+      // Sound for every layer now that EVERY tag is a content address (ADR-0038): a source edit
+      // moves the ref, which moves the pod template, which rolls. The old hole — kit dev pinning a
+      // static `:local` tag, so a rebuild left the template identical and nothing rolled — closed
+      // with the `images` block that created it.
+      await verifyRunningImage(io, kube, {
+        layer: "operator",
+        namespace: OPERATOR_NAMESPACE,
+        selector: OPERATOR_SELECTOR,
+        image,
+        ...ctx,
+      });
+    }
+  }
+
   // --- git over ssh: where the key comes from (ADR-0019, ADR-0047) -------------------------------
   // Runs BEFORE the apply, because a missing key source is a converge that must not start, and the
   // notice it hands back is owed to the END of the converge — a generated key is dead until a human
@@ -1025,15 +1070,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   // --- dispatch preflight (ADR-0071): each foreign target's door, from the host ------------------
   await preflightDispatch(io, carried.effects);
 
-  // --- provider preflight (ADR-0019): probe the endpoint FROM INSIDE the cluster ----------------
-  await preflightProvider(io, kube, config, carried.models, namespace, ctx, caPem);
-
   // --- apply + rollout ---------------------------------------------------------------------------
   // The trust bundles first, and server-side: every pod that mounts them must find them, and they
   // carry every root certificate — past what client-side apply's annotation can hold.
   const trust = trustObject({ name, namespace, caBundle: caPem, bundles: held.bundles });
   if (trust) await kube.apply({ manifest: trust, serverSide: true, ...ctx });
-  activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
   const instanceList = instanceObjects({
     name,
     namespace,
@@ -1049,6 +1090,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     gitPush,
     gitClone,
   });
+  activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
   await kube.apply({ manifest: instanceList, ...ctx });
   // An entry whose clone Secret this converge did not write loses it: a dropped entry, a token
   // unset, or nothing left that clones.
@@ -1098,6 +1140,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   if (!holdsAny(held.objects)) {
     await kube.deleteObject({ kind: "secret", name: HELD_TLS_SECRET, namespace, ...ctx });
   }
+
   activity(io, "orchestrator: waiting for rollout");
   await awaitRollout(kube, {
     name: ORCHESTRATOR_SERVICE,
@@ -2431,6 +2474,548 @@ async function preflightProvider(
       );
     }
   }
+}
+
+/** One provider of one probe pod (ADR-0019, ADR-0059). */
+export type CatalogProvider = {
+  /** The provider id, the specifier's part before the first `/`. */
+  id: string;
+  /** Every carried model of it that a Harness pod of this placement runs: a typo, a retired model
+   * or a model the key has no access to is per model. */
+  models: string[];
+  /** The held secrets that are its keys in the probe's Custodian; none when no pod of this
+   * placement holds one, and the probe then shows what a Turn there meets. */
+  keys: string[];
+  /** Where the calls go: the keys' bound hosts, else the provider's host as jr2 knows it. */
+  hosts: string[];
+  /** `harness.catalog.<id>.baseUrl`, when it moves the provider. */
+  gateway?: string;
+};
+
+/** One probe pod: the providers that the Harness pods of one placement call. */
+export type CatalogProbe = {
+  /** For a human: `the Sandbox nodes`, `the Instance Harness`, or both. */
+  where: string;
+  /** The node predicate of those pods (ADR-0052); none for the Instance Harness. */
+  placement?: SandboxPlacement;
+  /** The bindings of the probed keys: each a part of a held pod's manifest. */
+  manifest: HeldManifest;
+  providers: CatalogProvider[];
+};
+
+/** One Harness pod as the walk places it: its held pod key, its class, the models it runs, and
+ * the bindings it holds (none: its HTTPS goes direct, with no proxy). */
+type Seat = { pod: string; sandbox: boolean; models: readonly string[]; held: HeldManifest["secrets"] };
+
+/**
+ * Which providers the preflight probes, and in which pod (ADR-0019, ADR-0059). Every carried model
+ * that a Harness pod runs is probed, in a pod with that pod's placement: a Workspace's model on the
+ * Sandbox nodes, a `"none"` Agent's where the Instance Harness runs, so a node class whose egress is
+ * closed fails here. The two are one probe when their placements are the same. The custom provider
+ * is not a catalog one, and keeps its own probe.
+ *
+ * In one placement, a provider's keys are the ones the first pod there that runs one of its models
+ * holds (`MODEL_KEYS`, claimed by the provider). The probe holds that pod's bindings of them and
+ * reads their values where that pod reads them. A provider no pod there holds a key for is probed
+ * all the same, with no key: a Turn there meets the same, and pi says so (`not configured`); a
+ * signing credential in `harness.env` reaches the probe as it reaches a Turn. Pure, for its test.
+ */
+export function catalogProbes(config: JR2Config, walk: PlacementWalk, pods: readonly HeldPodObjects[]): CatalogProbe[] {
+  const custom = config.harness?.provider?.id;
+  const heldOf = (pod: string) => pods.find((p) => p.pod === pod)?.manifest.secrets ?? [];
+  const seats: Seat[] = [
+    ...walk.workspaces.map((ws) => {
+      const pod = workspaceHeldPod({ workflow: ws.workflow, route: ws.pod.route });
+      return { pod, sandbox: true, models: ws.pod.models, held: heldOf(pod) };
+    }),
+    ...(walk.instanceHarness
+      ? [
+          {
+            pod: INSTANCE_HARNESS_HELD_POD,
+            sandbox: false,
+            models: walk.instanceHarness.models,
+            held: heldOf(INSTANCE_HARNESS_HELD_POD),
+          },
+        ]
+      : []),
+  ];
+  const sandbox = config.sandbox?.nodeSelector || config.sandbox?.tolerations?.length ? config.sandbox : undefined;
+  const placementOf = (seat: Seat) => (seat.sandbox ? sandbox : undefined);
+  // A probe stands for one class of Harness pod: its nodes, and whether it holds a secret. A pod
+  // that holds one sends its HTTPS through its Custodian (a tunnel for an unbound host); a pod that
+  // holds none sends it direct. So the two are two probes, even on the same nodes.
+  const keyOf = (seat: Seat) => {
+    const placement = placementOf(seat);
+    return JSON.stringify({
+      nodeSelector: placement?.nodeSelector ?? {},
+      tolerations: placement?.tolerations ?? [],
+      holds: seat.held.length > 0,
+    });
+  };
+  const groups = new Map<string, { seats: Seat[]; placement?: SandboxPlacement }>();
+  for (const seat of seats) {
+    const key = keyOf(seat);
+    const group = groups.get(key) ?? { seats: [], ...(placementOf(seat) ? { placement: placementOf(seat) } : {}) };
+    group.seats.push(seat);
+    groups.set(key, group);
+  }
+  const probes: CatalogProbe[] = [];
+  for (const group of groups.values()) {
+    const models: string[] = [];
+    for (const seat of group.seats) for (const m of seat.models) if (!models.includes(m)) models.push(m);
+    const probe: CatalogProbe = {
+      where: [
+        ...(group.seats.some((s) => s.sandbox) ? ["the Sandbox nodes"] : []),
+        ...(group.seats.some((s) => !s.sandbox) ? ["the Instance Harness"] : []),
+      ].join(" and "),
+      ...(group.placement ? { placement: group.placement } : {}),
+      // A class that holds a secret: the first pod's own held set, so the probe's env (the proxy, the
+      // Stand-ins) is that of a pod of the class; the keys the class's other pods hold join it below.
+      manifest: { version: 1, secrets: [...group.seats[0]!.held] },
+      providers: [],
+    };
+    for (const model of models) {
+      const slash = model.indexOf("/");
+      const id = slash > 0 ? model.slice(0, slash) : model;
+      if (id === custom) continue;
+      const known = probe.providers.find((p) => p.id === id);
+      if (known) {
+        known.models.push(model);
+        continue;
+      }
+      const names = Object.keys(MODEL_KEYS).filter((name) => MODEL_KEYS[name]!.providers.includes(id));
+      const runs = group.seats.filter((s) => s.models.some((m) => m.startsWith(`${id}/`)));
+      const holder = runs
+        .map((s) => pods.find((p) => p.pod === s.pod))
+        .find((p) => p?.manifest.secrets.some((b) => names.includes(b.name)));
+      const bindings = holder?.manifest.secrets.filter((b) => names.includes(b.name)) ?? [];
+      for (const b of bindings) {
+        if (probe.manifest.secrets.some((h) => h.name === b.name)) continue;
+        probe.manifest.secrets.push(b);
+      }
+      const gateway = config.harness?.catalog?.[id]?.baseUrl;
+      const fallback = gateway
+        ? [new URL(gateway).host]
+        : names.flatMap((n) => (MODEL_KEYS[n]!.host ? [MODEL_KEYS[n]!.host!] : [])).slice(0, 1);
+      probe.providers.push({
+        id,
+        models: [model],
+        keys: bindings.map((b) => b.name),
+        hosts: bindings.length ? [...new Set(bindings.flatMap((b) => b.hosts.map(hostText)))] : fallback,
+        ...(gateway ? { gateway } : {}),
+      });
+    }
+    if (probe.providers.length) probes.push(probe);
+  }
+  return probes;
+}
+
+const hostText = (h: { host: string; port: number }): string => (h.port === 443 ? h.host : `${h.host}:${h.port}`);
+
+/** How long a probe pod may take to start: two cold image pulls (the Harness and the Custodian) and
+ * Envoy's start. The probe's own bound starts when its container runs. */
+const PROBE_START_SECONDS = 300;
+/** Each model's bound in the pod: its own budget in the check (`PREFLIGHT_MODEL_BUDGET_SECONDS` in
+ * `@jr2/harness`'s `preflight-line.ts`, which a test holds this to), so one slow model never uses
+ * the time of the others. Exported for that test. */
+export const PROBE_MODEL_SECONDS = 360;
+const PROBE_RUN_MARGIN_SECONDS = 30;
+/** A leftover a run left with no pod, older than this, is a dead run's, not a live one's. */
+const PROBE_LEFTOVER_SECONDS = 3600;
+
+/**
+ * The provider preflight (ADR-0019, ADR-0059): each probe pod of `catalogProbes`, one at a time — a
+ * one-shot Harness-shaped pod, a Custodian that holds the providers' keys and the stock Harness
+ * image's `provider-preflight.ts` — that demands one tool call of each model, on the path a Turn takes. So no
+ * egress to the provider's host, a missing, wrong or empty key, a model no endpoint serves, and a
+ * gateway that does not answer each fail HERE. Every probe pod runs, a pod that cannot be applied
+ * included, and every failure is in one error. A provider still busy after the retries, and a
+ * model that answered but did not call a tool it was not forced to, are warnings (ADR-0064).
+ *
+ * Each pod reads its own objects (`catalogProbeObjects`), written from `values`, `leaves`, `trust`
+ * and `harnessEnvData` — what the apply would write — and named for this run (`<run>-<n>`), so two
+ * converges in one namespace never read or delete each other's. The ones of an earlier run of this
+ * Instance that did not end go first (`removeProbeLeftovers`). A failed cleanup is a warning and
+ * never hides the probe's own answer.
+ */
+async function preflightCatalog(
+  io: Io,
+  kube: KubeAdmin,
+  opts: {
+    probes: CatalogProbe[];
+    name: string;
+    namespace: string;
+    ctx: { context?: string };
+    harnessImage: string;
+    custodianImage: string;
+    harness?: JR2Config["harness"];
+    caBundle: boolean;
+    values: Record<string, string>;
+    leaves: Record<string, Pem>;
+    trust: Record<string, string>;
+    harnessEnvData: Record<string, string>;
+    priorityClassName: string;
+  },
+): Promise<void> {
+  const { namespace, ctx } = opts;
+  // First, and with no check to run too: the leftovers of an earlier run can hold a key.
+  await removeProbeLeftovers(io, kube, opts.name, namespace, ctx);
+  if (!opts.probes.length) return;
+  const run = randomBytes(4).toString("hex");
+  const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
+  const faults: string[] = [];
+  for (const [n, probe] of opts.probes.entries()) {
+    const object = `${PROVIDER_PREFLIGHT}-${run}-${n}`;
+    const models = probe.providers.flatMap((p) => p.models);
+    /** The models whose result is already said, while the pod ran, and what it was: a final log
+     * read that comes back empty must not turn a result already said into "not checked". */
+    const said = new Set<string>();
+    const live = new Map<string, ProbeVerdict>();
+    let lastLive = "";
+    for (const p of probe.providers) {
+      // No held key is not no credential: a credential that pi reads from `harness.env` (an AWS
+      // role for Bedrock, say) reaches the check as it reaches a Turn.
+      const why = `no Harness pod there holds a key of "${p.id}"; a credential in harness.env still reaches it`;
+      const holds = p.keys.length
+        ? `through a Custodian that holds ${p.keys.join(", ")} for ${p.hosts.join(", ")}`
+        : probe.manifest.secrets.length
+          ? `with no held key (${why}), through the Custodian's tunnel, as those pods call it`
+          : `with no held key (${why}), direct, as a pod that holds no secret calls it`;
+      activity(io, `provider: checking ${p.models.join(", ")} on ${probe.where}, ${holds}`);
+    }
+    activity(
+      io,
+      `provider: the check pod has up to ${PROBE_START_SECONDS / 60} min to start, then up to ` +
+        `${PROBE_MODEL_SECONDS / 60} min for ${models.length === 1 ? "its model" : `each of its ${models.length} models`}`,
+    );
+    const runSeconds = PROBE_MODEL_SECONDS * models.length + PROBE_RUN_MARGIN_SECONDS;
+    // Built before the apply: a fault in jr2 here is jr2's, never the cluster's refusal.
+    const manifest = catalogProbeObjects({
+      name: opts.name,
+      namespace,
+      object,
+      run,
+      harnessImage: opts.harnessImage,
+      custodianImage: opts.custodianImage,
+      held: probe.manifest,
+      values: opts.values,
+      leaves: opts.leaves,
+      trust: opts.trust,
+      custodian: {
+        bootstrap: JSON.stringify(custodianBootstrap(probe.manifest, orchestrator)),
+        script: custodianScript(probe.manifest),
+      },
+      token: randomBytes(24).toString("hex"),
+      harnessEnvData: opts.harnessEnvData,
+      models,
+      ...(probe.placement ? { placement: probe.placement } : {}),
+      priorityClassName: opts.priorityClassName,
+      ...(opts.harness ? { harness: opts.harness } : {}),
+      caBundle: opts.caBundle,
+      deadlineSeconds: PROBE_START_SECONDS + runSeconds + 60,
+    });
+    let end: PodEnd | undefined;
+    let refused: string | undefined;
+    try {
+      // Server-side: the trust bundles carry every root, past client-side apply's annotation.
+      await applyFirstContact(kube, { manifest, serverSide: true, ...ctx });
+    } catch (err) {
+      // A quota, a Pod Security level or a webhook that refuses the pod: this probe's fault alone.
+      refused = `the cluster refused the check pod's objects: ${errText(err)}`;
+    }
+    try {
+      if (refused === undefined) {
+        end = await kube.awaitPodEnd({
+          namespace,
+          name: object,
+          container: PROVIDER_PREFLIGHT_CONTAINER,
+          startSeconds: PROBE_START_SECONDS,
+          runSeconds,
+          onPending: (line) => activity(io, `provider: the check pod is not running yet — ${line}`),
+          // Each model's result as it arrives: a check of several slow models is not silence.
+          onLog: (log: string) => {
+            lastLive = log;
+            for (const [model, verdict] of probeVerdicts(log)) {
+              live.set(model, verdict);
+              if (said.has(model) || verdict.kind === "fault") continue;
+              said.add(model);
+              sayVerdict(io, model, verdict);
+            }
+          },
+          ...ctx,
+        });
+      }
+    } finally {
+      await removeProbe(io, kube, object, namespace, ctx);
+    }
+    // The last log read while the pod ran stands in for an empty final read.
+    const output = end?.output || lastLive;
+    const verdicts = probeVerdicts(output);
+    const started = probeStarts(output);
+    for (const p of probe.providers) {
+      for (const model of p.models) {
+        const verdict = verdicts.get(model) ?? live.get(model);
+        if (verdict && verdict.kind !== "fault") {
+          if (!said.has(model)) sayVerdict(io, model, verdict);
+          continue;
+        }
+        const pod = () => podFault(end!, probe, opts);
+        const why =
+          verdict?.reason ??
+          refused ??
+          (started.has(model)
+            ? `the check pod stopped while it checked this model: ${pod()}`
+            : `not checked: the check pod stopped before it reached this model: ${pod()}`);
+        faults.push(catalogFault(p, model, probe.where, why, probe.manifest.secrets.length > 0));
+      }
+    }
+  }
+  if (faults.length) throw new Error(faults.join("\n"));
+}
+
+/** How long the first apply in a new namespace waits for its `default` ServiceAccount: the
+ * controller makes it a moment after the namespace, and until then a pod is refused. */
+const FIRST_CONTACT_TRIES = 10;
+const FIRST_CONTACT_PAUSE_MS = 1000;
+
+/** `kube.apply`, tried again while the namespace has no `default` ServiceAccount yet. Any other
+ * refusal is the answer. */
+async function applyFirstContact(kube: KubeAdmin, opts: Parameters<KubeAdmin["apply"]>[0]): Promise<void> {
+  for (let n = 1; ; n++) {
+    try {
+      return await kube.apply(opts);
+    } catch (err) {
+      if (n >= FIRST_CONTACT_TRIES || !/serviceaccount "default" not found/i.test(errText(err))) throw err;
+      await sleepMs(FIRST_CONTACT_PAUSE_MS);
+    }
+  }
+}
+
+/** The trust bundles a probe pod reads (`<object>-ca`), as `trustObject` writes them to `jr2-ca`. */
+function trustData(
+  caBundle: string | undefined,
+  bundles: { extra: string; bundle: string; upstream: string } | undefined,
+) {
+  return {
+    ...(caBundle !== undefined ? { "ca.crt": caBundle } : {}),
+    ...(bundles ? { "extra.crt": bundles.extra, "bundle.crt": bundles.bundle, "upstream.crt": bundles.upstream } : {}),
+  };
+}
+
+/** How long after it ended an earlier run's probe pod is left alone: that run may still be reading
+ * its log. Exported for its test. */
+export const PROBE_ENDED_MARGIN_SECONDS = 600;
+
+/**
+ * The leftovers of earlier runs of THIS Instance (`preflightCatalog`), by label: a probe pod
+ * past its `activeDeadlineSeconds` and `PROBE_ENDED_MARGIN_SECONDS`, in any phase; a probe pod that
+ * ended more than `PROBE_ENDED_MARGIN_SECONDS` ago; each with its objects; and each object whose
+ * pod is gone and that is older than any probe lives. A live pod, a pod that ended a short time
+ * ago and another Instance's objects stay. Every failure here is a warning.
+ */
+async function removeProbeLeftovers(
+  io: Io,
+  kube: KubeAdmin,
+  name: string,
+  namespace: string,
+  ctx: { context?: string },
+) {
+  const selector = `${LABEL_PROVIDER_PREFLIGHT},${LABEL_INSTANCE}=${name}`;
+  const since = (at: string | undefined) => (Date.now() - Date.parse(at ?? "")) / 1000;
+  try {
+    type Probe = KubeObject & {
+      metadata: { creationTimestamp?: string };
+      spec?: { activeDeadlineSeconds?: number };
+      status?: {
+        phase?: string;
+        containerStatuses?: Array<{ name?: string; state?: { terminated?: { finishedAt?: string } } }>;
+      };
+    };
+    const pods = await kube.listJson<Probe>({ kind: "pod", selector, namespace, ...ctx });
+    const named = new Set(pods.map((p) => p.metadata.name));
+    for (const p of pods) {
+      // Past its deadline and the margin, in any phase: a pod no node took has no start time, so
+      // the kubelet never applies `activeDeadlineSeconds` to it, and its Secret holds a key.
+      const deadline = (p.spec?.activeDeadlineSeconds ?? 0) + PROBE_ENDED_MARGIN_SECONDS;
+      if (since(p.metadata.creationTimestamp) > deadline) {
+        await removeProbe(io, kube, p.metadata.name, namespace, ctx);
+        continue;
+      }
+      if (!["Succeeded", "Failed"].includes(p.status?.phase ?? "")) continue;
+      const finished = p.status?.containerStatuses?.find((c) => c.name === PROVIDER_PREFLIGHT_CONTAINER)?.state
+        ?.terminated?.finishedAt;
+      if (!(since(finished ?? p.metadata.creationTimestamp) > PROBE_ENDED_MARGIN_SECONDS)) continue;
+      await removeProbe(io, kube, p.metadata.name, namespace, ctx);
+    }
+    for (const kind of ["configmap", "secret"]) {
+      for (const o of await kube.listJson<Probe>({ kind, selector, namespace, ...ctx })) {
+        const owner = o.metadata.name.replace(/-(ca|tls|env)$/, "");
+        if (named.has(owner) || !(since(o.metadata.creationTimestamp) > PROBE_LEFTOVER_SECONDS)) continue;
+        await kube.deleteObject({ kind, name: o.metadata.name, namespace, wait: false, ...ctx });
+      }
+    }
+  } catch (err) {
+    activity(io, `warning: provider: the leftovers of an earlier preflight were not removed (${errText(err)})`);
+  }
+}
+
+/** One probe's objects, deleted; a failure is a warning, so it hides no probe's answer. */
+async function removeProbe(io: Io, kube: KubeAdmin, object: string, namespace: string, ctx: { context?: string }) {
+  for (const { kind, name } of catalogProbeObjectNames(object)) {
+    try {
+      await kube.deleteObject({ kind, name, namespace, wait: false, ...ctx });
+    } catch (err) {
+      activity(
+        io,
+        `warning: provider: ${kind} ${name} was not deleted (${errText(err)}) — the next \`jr2 up\` removes it`,
+      );
+    }
+  }
+}
+
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** A fault in which the provider refused the key or its rights: a 401 or a 403, in the words the
+ * apis use. The provider answered, so the key is the likely cause, and the egress is not. */
+export function refusedKey(fault: string): boolean {
+  return /\b40[13]\b|authentication|unauthori[sz]ed|permission|forbidden|invalid[ _-]?(x-)?api[ _-]?key/i.test(fault);
+}
+
+/** One model's result line (`preflight-line.ts` in `@jr2/harness`). */
+type ProbeVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
+
+/** One model's result that does not fail the converge, said as it comes. */
+function sayVerdict(
+  io: Io,
+  model: string,
+  verdict: { kind: "ok" } | { kind: "busy" | "warn" | "fault"; reason: string },
+) {
+  if (verdict.kind === "ok") activity(io, `provider: ${model} reachable, and it completed a tool call`);
+  else if (verdict.kind === "busy") {
+    activity(io, `warning: provider: ${model} answered with the key, but is busy — ${verdict.reason} (ADR-0064)`);
+  } else if (verdict.kind === "warn")
+    activity(io, `warning: provider: ${model} answered with the key — ${verdict.reason}`);
+}
+
+/** The models whose check began (`start` lines, `preflight-line.ts`): a model with a start and no
+ * verdict was on when the pod stopped; a model with neither was never reached. */
+export function probeStarts(output: string): Set<string> {
+  const started = new Set<string>();
+  for (const line of output.split("\n")) {
+    const m = /^jr2\.preflight model=(\S+) start$/.exec(line.trim());
+    if (m) started.add(m[1]!);
+  }
+  return started;
+}
+
+/** Each model's verdict, off the probe's output lines (`preflight-line.ts` in `@jr2/harness`, held
+ * to this parser by a test). A line that is not a result is not a verdict. */
+export function probeVerdicts(output: string): Map<string, ProbeVerdict> {
+  const verdicts = new Map<string, ProbeVerdict>();
+  for (const line of output.split("\n")) {
+    const m = /^jr2\.preflight model=(\S+) (?:(ok)|(fault|busy|warn)=(.*))$/.exec(line.trim());
+    if (!m) continue;
+    verdicts.set(m[1]!, m[2] ? { kind: "ok" } : { kind: m[3] as "fault" | "busy" | "warn", reason: m[4]! });
+  }
+  return verdicts;
+}
+
+/**
+ * Why a probe pod said nothing of a model, from how it ended (`PodEnd`): the hint follows the reason
+ * the kubelet gave, and the Custodian's own refusal line is quoted when it has one. Exported for its
+ * test.
+ */
+export function podFault(
+  end: PodEnd,
+  probe: Pick<CatalogProbe, "where">,
+  images: { harnessImage: string; custodianImage: string },
+): string {
+  const refusal = /jr2\.custodian refuse secret=\S+ reason=[\w-]+/.exec(end.custodian)?.[0];
+  const said = end.reasons.length ? ` (${end.reasons.join("; ")})` : "";
+  const stuck = end.stuck ?? "";
+  if (/ErrImagePull|ImagePullBackOff|InvalidImageName/.test(stuck)) {
+    return (
+      `the check pod cannot start: ${stuck}${said} — a node on ${probe.where} cannot pull ` +
+      `${stuck.startsWith("custodian") ? images.custodianImage : images.harnessImage}; check \`registry\` or ` +
+      "`kitRegistry`, and that those nodes can pull from it"
+    );
+  }
+  if (/CreateContainerConfigError/.test(stuck)) {
+    // The env of the check container: what `harness.env` and `harness.envFrom` name.
+    return (
+      `the check pod cannot start: ${stuck}${said} — a Secret, a ConfigMap or a key that the Harness env names ` +
+      "is missing (a `harness.envFrom` Secret, or a `harness.env` valueFrom)"
+    );
+  }
+  if (stuck.startsWith("FailedMount")) {
+    // A volume of the Custodian: a held secret's `valueFrom` Secret, or its key.
+    return (
+      `the check pod cannot start: ${stuck} — a Secret or a key that a \`secrets\` valueFrom names is missing ` +
+      "in the Instance's namespace"
+    );
+  }
+  const oom = [stuck, ...end.reasons].find((r) => /OOMKilled/.test(r));
+  if (oom) {
+    const custodian = oom.startsWith("custodian");
+    return (
+      `the check pod ran out of memory: ${oom}${said} — ` +
+      (custodian
+        ? `its Custodian has the Instance Harness Custodian's limit (${KIT_POD_SIZES.instanceCustodian.limits.memory})`
+        : `the check container's limit is ${KIT_POD_SIZES.providerProbe.limits.memory}`) +
+      "; a jr2 defect, not a fault of the provider"
+    );
+  }
+  if (refusal || stuck.startsWith("custodian")) {
+    return (
+      `the check pod's Custodian did not start: ${refusal ?? stuck}${said} — a Custodian stops at start on a held ` +
+      "value that is missing, empty or not printable ASCII"
+    );
+  }
+  if (end.phase === "timeout") {
+    return end.started
+      ? `the check did not end in time${said}`
+      : `the check pod did not start in ${PROBE_START_SECONDS}s${said} — no node on ${probe.where} fits it, or its image pulls are slow`;
+  }
+  if (!end.output.trim()) {
+    return `the check pod ended ${end.phase}${said}, and jr2 up could not read its log — run \`jr2 up\` again`;
+  }
+  const tail = end.output.trim().split("\n").filter(Boolean).slice(-5).join("; ");
+  return `the check pod ended ${end.phase} before it checked this model${said} — it said: ${tail}`;
+}
+
+/** One model's preflight failure: the model, the host, and the likely causes. */
+function catalogFault(p: CatalogProvider, model: string, where: string, fault: string, custodian: boolean): string {
+  const hosts = p.hosts.join(", ") || `the host of "${p.id}"`;
+  // A model that loads on first use (Ollama, a large vLLM model) can take longer than the bound.
+  // Only where jr2 cannot know the endpoint: a gateway.
+  const slow =
+    p.gateway && /no answer in \d+ s|no verdict in \d+ s|time ran out/.test(fault)
+      ? "  - a model that loads on first use can take longer than the check waits: run `jr2 up` again once it has loaded\n"
+      : "";
+  const key = p.keys.length
+    ? `  - the held secret ${p.keys.join(" or ")} may be empty, wrong, or without access to this model (\`secrets\` in jr2.config.ts)\n`
+    : `  - no Harness pod on ${where} holds a key of "${p.id}": add its key to \`secrets\`` +
+      (Object.keys(MODEL_KEYS).some((n) => MODEL_KEYS[n]!.providers.includes(p.id))
+        ? ` (${Object.keys(MODEL_KEYS)
+            .filter((n) => MODEL_KEYS[n]!.providers.includes(p.id))
+            .join(" or ")}), or set in harness.env the credential that pi reads for it\n`
+        : `, or set in harness.env the credential that pi reads for it; jr2 knows no key name of "${p.id}" ` +
+          "(when pi does not know the id either, the line above says that it resolves to nothing)\n");
+  // The likely cause first: a provider that refused the key answered, so the egress is not it.
+  const egress = `  - the pods may have no egress to ${hosts} (a NetworkPolicy, a firewall, no route out of the cluster)\n`;
+  const causes = refusedKey(fault) ? key : egress + key;
+  return (
+    `provider preflight failed for model "${model}" toward ${hosts} (from a pod on ${where}, ` +
+    `${custodian ? "through a Custodian" : "direct"}, ` +
+    `as a Turn calls it): ${fault}\n` +
+    slow +
+    causes +
+    (p.gateway
+      ? `  - harness.catalog.${p.id}.baseUrl (${p.gateway}) may not answer, or may not serve "${model.slice(p.id.length + 1)}" ` +
+        "(a LiteLLM model_name alias)\n"
+      : "") +
+    "  - a private CA on that path must be in harness.caBundle"
+  );
 }
 
 /**

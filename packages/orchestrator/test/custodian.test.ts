@@ -283,6 +283,31 @@ test("a pod's Harness gets a Stand-in for its own manifest's names only — a pr
   }
 });
 
+test("shared: a Custodian reads the Instance's objects by default, and the preflight's own copies by name", () => {
+  const literal = (name: string) => ({ ...TWO.secrets[0]!, name, source: { kind: "literal" as const } });
+  const held: HeldManifest = { version: 1, secrets: [literal("ANTHROPIC_API_KEY")] };
+  const opts = { image: "envoy:c1", caBundle: false, pod: "instance", config: "c", token: { secret: "t", key: "k" } };
+  const names = (c: ReturnType<typeof custodianComposition>) =>
+    JSON.stringify(c.volumes)
+      .match(/"(?:name|secretName)":"[^"]+"/g)!
+      .map((m) => m.split(":")[1]!.replaceAll('"', ""))
+      .filter((n) => !n.startsWith("custodian-") && n !== "ca");
+  assert.deepEqual(names(custodianComposition(held, opts)), [
+    "t",
+    "jr2-held-secrets-instance",
+    "c",
+    "jr2-held",
+    "jr2-held-tls",
+    "jr2-ca",
+    "jr2-ca",
+  ]);
+  const own = custodianComposition(held, {
+    ...opts,
+    shared: { literals: "p", tls: "p-tls", trust: "p-ca", program: "p" },
+  });
+  assert.deepEqual(names(own), ["t", "p", "c", "p", "p-tls", "p-ca", "p-ca"]);
+});
+
 test("the rendered config is JSON a ConfigMap can carry, and names no value", () => {
   const text = JSON.stringify(custodianBootstrap(TWO, ORCH));
   assert.ok(text.length < 64 * 1024);

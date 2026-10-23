@@ -323,5 +323,11 @@ decision generalizes that container. It holds every credential the Harness in it
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses a Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.
+- **The provider preflight crosses a Custodian.** A provider's key is held. So `jr2 up` checks the provider from a pod
+  with a Custodian that holds its keys, and the stock Harness's `provider-preflight.ts`
+  ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). The check pod reads its own copies of the
+  held objects. The check runs before `jr2 up` writes an object that the Instance or the operator reads. A literal key
+  is in the check pod's own Secret while the pod lives. A wrong or missing key, no egress to the bound host, and a
+  gateway that does not answer fail the converge, not a Turn.
 - **The CA has no name constraints.** Constraints would force a new CA whenever the bound hosts change, and that breaks
   a live pod whose Custodian restarts.

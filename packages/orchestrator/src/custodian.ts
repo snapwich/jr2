@@ -796,6 +796,11 @@ export type CustodianCompositionOptions = {
   /** This pod's Sandbox — the name the ask is addressed by (ADR-0053). Absent on the Instance
    * Harness, which mounts no Repo and answers an ask by saying so. */
   sandbox?: string;
+  /** The Instance's objects this Custodian reads, by another name. Default: the Instance's own —
+   * `pod`'s literal values (`heldSecretsSecret(pod)`), `jr2-held-tls`, `jr2-ca`, and the program in
+   * `jr2-held`. The provider preflight's pod (ADR-0019) reads its own copies, so a probe writes
+   * nothing that a running pod of the Instance reads. */
+  shared?: { literals: string; tls: string; trust: string; program: string };
   /** The Instance ships a `harness.caBundle` (ADR-0020). */
   caBundle: boolean;
   /** The Custodian container's resources (ADR-0060) — the placement's to choose: a Sandbox's fixed
@@ -839,6 +844,12 @@ const CUSTODIAN_SECURITY = {
 export function custodianComposition(manifest: HeldManifest, opts: CustodianCompositionOptions): CustodianComposition {
   const held = manifest.secrets.length > 0;
   const literal = manifest.secrets.filter((s) => s.source.kind === "literal").map((s) => s.name);
+  const {
+    literals = heldSecretsSecret(opts.pod),
+    tls = HELD_TLS_SECRET,
+    trust: trustMap = CA_CONFIGMAP,
+    program = HELD_CONFIGMAP,
+  } = opts.shared ?? {};
 
   const harnessEnv: HarnessEnvVar[] = [
     { name: "JR2_CUSTODIAN_URL", value: CUSTODIAN_URL },
@@ -872,9 +883,7 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
         defaultMode: 0o440,
         sources: [
           { secret: { name: opts.token.secret, items: [{ key: opts.token.key, path: SANDBOX_TOKEN_NAME }] } },
-          ...(literal.length
-            ? [{ secret: { name: heldSecretsSecret(opts.pod), items: literal.map((n) => ({ key: n, path: n })) } }]
-            : []),
+          ...(literal.length ? [{ secret: { name: literals, items: literal.map((n) => ({ key: n, path: n })) } }] : []),
           ...manifest.secrets.flatMap((s) =>
             s.source.kind === "secret"
               ? [{ secret: { name: s.source.secret, items: [{ key: s.source.key, path: s.name }] } }]
@@ -898,20 +907,20 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
               ],
             },
           },
-          { configMap: { name: HELD_CONFIGMAP, items: [{ key: CUSTODIAN_PROGRAM_KEY, path: CUSTODIAN_PROGRAM_KEY }] } },
+          { configMap: { name: program, items: [{ key: CUSTODIAN_PROGRAM_KEY, path: CUSTODIAN_PROGRAM_KEY }] } },
         ],
       },
     },
     ...(held
       ? [
-          { name: "custodian-tls", secret: { secretName: HELD_TLS_SECRET, defaultMode: 0o440 } },
+          { name: "custodian-tls", secret: { secretName: tls, defaultMode: 0o440 } },
           {
             name: "custodian-trust",
-            configMap: { name: CA_CONFIGMAP, items: [{ key: "upstream.crt", path: "upstream.crt" }] },
+            configMap: { name: trustMap, items: [{ key: "upstream.crt", path: "upstream.crt" }] },
           },
         ]
       : []),
-    ...(trust ? [{ name: "ca", configMap: { name: CA_CONFIGMAP } }] : []),
+    ...(trust ? [{ name: "ca", configMap: { name: trustMap } }] : []),
   ];
 
   const custodianContainer: Container = {

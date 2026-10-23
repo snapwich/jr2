@@ -16,6 +16,11 @@ import {
   rolloutFailure,
   rolloutStatusArgs,
   type KubeAdmin,
+  failedMount,
+  podPending,
+  podProgress,
+  waitPodEnd,
+  type PodEndPorts,
 } from "../src/kube.ts";
 
 /** What `promisify(execFile)` rejects with: a message built from stderr, plus both streams. */
@@ -108,6 +113,7 @@ function mkKube(opts: {
     deleteManifest: async () => assert.fail("a diagnosis changes nothing"),
     waitRollout: async () => assert.fail("the wait already failed"),
     runOneShot: async () => assert.fail("a diagnosis runs no pods") as never,
+    awaitPodEnd: async () => assert.fail("a diagnosis runs no pods") as never,
     serverVersion: async () => assert.fail("a diagnosis reads no version") as never,
     dryRunCreate: async () => assert.fail("a diagnosis dry-runs nothing") as never,
     getJson: async <T>(o: { kind: string; name: string }): Promise<T | undefined> => {
@@ -431,4 +437,258 @@ test("a version the floor cannot read is refused by name, never passed", () => {
   const said = kubeFloorRefusal("devel");
   assert.ok(said);
   assert.match(said, /"devel"/);
+});
+
+test("podProgress: a pod that cannot start stops the wait; a pulling one does not; the probe's start is seen", () => {
+  const pod = (
+    phase: string,
+    init: Record<string, unknown>,
+    main: Record<string, unknown>,
+  ): Parameters<typeof podProgress>[0] => ({
+    status: {
+      phase,
+      initContainerStatuses: [{ name: "custodian", ...init }],
+      containerStatuses: [{ name: "probe", ...main }],
+    },
+  });
+  const pulling = podProgress(
+    pod(
+      "Pending",
+      { state: { waiting: { reason: "PodInitializing" } } },
+      { state: { waiting: { reason: "ContainerCreating" } } },
+    ),
+    "probe",
+    "custodian",
+  );
+  assert.deepEqual([pulling.phase, pulling.stuck, pulling.running], [undefined, undefined, false]);
+  for (const reason of ["CreateContainerConfigError", "CrashLoopBackOff", "InvalidImageName"]) {
+    const seen = podProgress(pod("Pending", {}, { state: { waiting: { reason } } }), "probe", "custodian");
+    assert.equal(seen.stuck, `probe: ${reason}`);
+  }
+  // A pull is final only when the registry says the image, or the right to it, is not there.
+  const waiting = (reason: string, message?: string) =>
+    podProgress(
+      pod("Pending", {}, { state: { waiting: { reason, ...(message ? { message } : {}) } } }),
+      "probe",
+      "custodian",
+    );
+  for (const message of ["manifest unknown", "pull access denied", "401 Unauthorized", "not found"]) {
+    assert.equal(waiting("ErrImagePull", message).stuck, "probe: ErrImagePull", message);
+  }
+  for (const message of ["i/o timeout", "429 Too Many Requests", "context deadline exceeded"]) {
+    assert.equal(
+      waiting("ImagePullBackOff", message).stuck,
+      undefined,
+      `a slow or limited pull comes back: ${message}`,
+    );
+  }
+  // CreateContainerError can pass by itself (a runtime that is slow to start a container).
+  assert.equal(waiting("CreateContainerError").stuck, undefined);
+  const restarted = podProgress(pod("Pending", { restartCount: 1, state: { running: {} } }, {}), "probe", "custodian");
+  assert.equal(restarted.stuck, "custodian: restarted", "the Custodian refused to start, and will again");
+  const running = podProgress(
+    pod("Running", { state: { running: {} } }, { state: { running: {} } }),
+    "probe",
+    "custodian",
+  );
+  assert.deepEqual([running.stuck, running.running], [undefined, true]);
+  assert.equal(podProgress(pod("Failed", {}, {}), "probe", "custodian").phase, "Failed");
+});
+
+test("podProgress: a Custodian that restarted says how its run before ended", () => {
+  const seen = podProgress(
+    {
+      status: {
+        phase: "Pending",
+        initContainerStatuses: [
+          {
+            name: "custodian",
+            restartCount: 1,
+            lastState: { terminated: { reason: "OOMKilled" } },
+            state: { running: {} },
+          },
+        ],
+      },
+    },
+    "probe",
+    "custodian",
+  );
+  assert.equal(seen.stuck, "custodian: restarted (last ended OOMKilled)");
+  assert.ok(seen.reasons.includes("custodian: last ended OOMKilled"));
+});
+
+/** `waitPodEnd`'s ports over a scripted pod and a fake clock: each `pod()` read is the next state,
+ * the last repeated, and each sleep moves the clock. */
+function scripted(
+  states: Array<Parameters<typeof podProgress>[0]>,
+  logs: Record<string, string | string[]> = {},
+  events: Array<{ reason?: string; message?: string }> = [],
+) {
+  let t = 0;
+  let n = 0;
+  const reads: string[] = [];
+  const pending: string[] = [];
+  const asked: Record<string, number> = {};
+  const ports: PodEndPorts = {
+    pod: async () => states[Math.min(n++, states.length - 1)],
+    events: async () => events,
+    pending: (line) => void pending.push(line),
+    logs: async (container, opts) => {
+      const key = `${container}${opts.previous ? " previous" : ""}`;
+      reads.push(`${key} ${opts.tailLines}`);
+      const answer = logs[key] ?? "";
+      // A list answers each read in turn: a read that fails first, then one that does not.
+      const i = (asked[key] = (asked[key] ?? -1) + 1);
+      return Array.isArray(answer) ? (answer[Math.min(i, answer.length - 1)] ?? "") : answer;
+    },
+    sleep: async (ms) => void (t += ms),
+    now: () => t,
+  };
+  return { ports, reads, pending, clock: () => t };
+}
+
+const statusOf = (probe: Record<string, unknown>, phase = "Pending") => ({
+  status: {
+    phase,
+    initContainerStatuses: [{ name: "custodian", state: { running: {} } }],
+    containerStatuses: [{ name: "probe", ...probe }],
+  },
+});
+
+test("waitPodEnd: the run bound starts when the probe runs, and the probe's whole log is read", async () => {
+  const pulling = statusOf({ state: { waiting: { reason: "ContainerCreating" } } });
+  const running = statusOf({ state: { running: {} } }, "Running");
+  const { ports, reads, clock } = scripted(
+    [...Array(100).fill(pulling), running, statusOf({ state: { terminated: { reason: "Completed" } } }, "Succeeded")],
+    { probe: "jr2.preflight model=a/b ok" },
+  );
+  // 200 s of pulls is past no bound: the start bound is 300 s, and the run bound starts later.
+  const end = await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 10 });
+  assert.deepEqual([end.phase, end.started, end.output], ["Succeeded", true, "jr2.preflight model=a/b ok"]);
+  assert.equal(clock(), 101 * 2000);
+  assert.deepEqual(reads, ["probe -1", "custodian 50"], "the whole probe log, every model's line");
+});
+
+test("waitPodEnd: a pod that never starts times out at the start bound; one that runs too long at the run bound", async () => {
+  const never = scripted([statusOf({ state: { waiting: { reason: "ContainerCreating" } } })]);
+  const late = await waitPodEnd(never.ports, { container: "probe", startSeconds: 10, runSeconds: 999 });
+  assert.deepEqual([late.phase, late.started, never.clock()], ["timeout", false, 10_000]);
+  const slow = scripted([statusOf({ state: { running: {} } }, "Running")]);
+  const long = await waitPodEnd(slow.ports, { container: "probe", startSeconds: 999, runSeconds: 6 });
+  assert.deepEqual([long.phase, long.started, slow.clock()], ["timeout", true, 6000]);
+});
+
+test("waitPodEnd: a Custodian restart stops the wait at once, and its run before is read for the refusal", async () => {
+  const restarted = {
+    status: {
+      phase: "Pending",
+      initContainerStatuses: [
+        { name: "custodian", restartCount: 1, state: { waiting: { reason: "PodInitializing" } } },
+      ],
+    },
+  };
+  const { ports, reads, clock } = scripted([restarted], {
+    "custodian previous": "jr2.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value",
+  });
+  const end = await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  assert.deepEqual([end.phase, end.stuck, clock()], ["stuck", "custodian: restarted", 0]);
+  assert.match(end.custodian, /reason=empty-value/);
+  assert.deepEqual(reads, ["probe -1", "custodian previous 50", "custodian 50"]);
+});
+
+test("failedMount: the kubelet's texts for a missing Secret, Secret key or ConfigMap key, counted when said again", () => {
+  const texts = [
+    'MountVolume.SetUp failed for volume "custodian-values" : secret "team" not found',
+    'MountVolume.SetUp failed for volume "custodian-values" : references non-existent secret key: anthropic',
+    'MountVolume.SetUp failed for volume "config" : configmap references non-existent config key: harness.json',
+  ];
+  for (const message of texts) {
+    const seen = new Map<string, string>();
+    // The first sight, whatever its count: it can be a race with the objects of the same apply.
+    assert.equal(failedMount([{ reason: "FailedMount", message, count: 3 }], seen), undefined, message);
+    // The same event, not said again: still nothing.
+    assert.equal(failedMount([{ reason: "FailedMount", message, count: 3 }], seen), undefined);
+    // Said again: its count went up.
+    assert.equal(failedMount([{ reason: "FailedMount", message, count: 4 }], seen), `FailedMount: ${message}`);
+  }
+  const seen = new Map<string, string>();
+  const message = texts[0]!;
+  failedMount([{ reason: "FailedMount", message, lastTimestamp: "2026-10-23T08:00:00Z" }], seen);
+  assert.equal(
+    failedMount([{ reason: "FailedMount", message, lastTimestamp: "2026-10-23T08:00:08Z" }], seen),
+    `FailedMount: ${message}`,
+    "or its lastTimestamp moved",
+  );
+  assert.equal(
+    failedMount([{ reason: "FailedMount", message: "timed out waiting for the condition", count: 5 }], new Map()),
+    undefined,
+  );
+});
+
+test("waitPodEnd: a volume that cannot mount stops the wait once the kubelet says it again", async () => {
+  const creating = statusOf({ state: { waiting: { reason: "ContainerCreating" } } });
+  const message =
+    'MountVolume.SetUp failed for volume "custodian-values" : references non-existent secret key: anthropic';
+  let polls = 0;
+  const { ports, clock } = scripted([creating]);
+  ports.events = async () => [{ reason: "FailedMount", message, count: ++polls > 2 ? 2 : 1 }];
+  const end = await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  assert.equal(end.phase, "stuck");
+  assert.match(end.stuck ?? "", /^FailedMount: .*non-existent secret key/);
+  assert.equal(clock(), 4000, "two polls of the same count, then the poll on which it went up");
+});
+
+test("waitPodEnd: each new reason a pod gives for not running is said once, for the person who waits", async () => {
+  const unscheduled = {
+    status: {
+      phase: "Pending",
+      conditions: [
+        { type: "PodScheduled", status: "False", reason: "Unschedulable", message: "0/3 nodes are available" },
+      ],
+    },
+  };
+  const creating = statusOf({ state: { waiting: { reason: "ContainerCreating" } } });
+  const { ports, pending } = scripted([unscheduled, unscheduled, creating, statusOf({}, "Succeeded")], {
+    probe: "jr2.preflight model=a/b ok",
+  });
+  await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  assert.deepEqual(pending, ["Unschedulable: 0/3 nodes are available", "probe: ContainerCreating"]);
+});
+
+test("waitPodEnd: a log read that answers nothing after the pod ended is read again", async () => {
+  const { ports, reads } = scripted([statusOf({}, "Succeeded")], { probe: ["", "", "jr2.preflight model=a/b ok"] });
+  const end = await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  assert.equal(end.output, "jr2.preflight model=a/b ok");
+  assert.deepEqual(
+    reads.filter((r) => r.startsWith("probe")),
+    ["probe -1", "probe -1", "probe -1"],
+  );
+});
+
+test("waitPodEnd: while the check container runs, its log goes to `log` on each poll", async () => {
+  const running = statusOf({ state: { running: {} } }, "Running");
+  const { ports } = scripted([running, running, statusOf({}, "Succeeded")], { probe: "jr2.preflight model=a/b ok" });
+  const logs: string[] = [];
+  ports.log = (output) => void logs.push(output);
+  await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  assert.deepEqual(logs, ["jr2.preflight model=a/b ok", "jr2.preflight model=a/b ok"]);
+});
+
+test('podPending: a pod that runs with no container waiting says nothing — not "not running yet"', () => {
+  assert.equal(
+    podPending({
+      status: { phase: "Running", initContainerStatuses: [{ name: "custodian", state: { running: {} } }] },
+    }),
+    undefined,
+  );
+  assert.equal(podPending({ status: { phase: "Pending" } }), "Pending");
+  assert.equal(
+    podPending({
+      status: {
+        phase: "Pending",
+        containerStatuses: [{ name: "probe", state: { waiting: { reason: "PodInitializing" } } }],
+      },
+    }),
+    "probe: PodInitializing",
+  );
 });
