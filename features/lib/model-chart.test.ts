@@ -1,8 +1,9 @@
 // The chart-refusal reading (ADR-0066, ADR-0070), pinned without a cluster or a model.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { readChartRefusal } from "./model-chart.ts";
+import { NOT_KNOWN, readChartRefusal, STALE } from "./model-chart.ts";
 import type { Answered } from "./model-said.ts";
 
 const door = (answer: string): Answered => ({ call: "run_chart", input: "{}", answer });
@@ -67,4 +68,23 @@ test("a run_chart answer that was lost (not known) at or after the door's refusa
     assert.equal(r.measured, false);
     assert.match(r.void ?? "", /^void: /);
   }
+});
+
+test("the two answers it reads by their start are the Harness's words (menu.ts)", () => {
+  // The words are the Menu's (packages/harness/src/menu.ts `stalePickResult`, `unknownPickResult`):
+  // a black-box tier cannot import them, so this pins the copy against the source.
+  const menu = readFileSync(new URL("../../packages/harness/src/menu.ts", import.meta.url), "utf8");
+  const body = (name: string): string => {
+    const start = menu.indexOf(`export function ${name}(`);
+    assert.notEqual(start, -1, `menu.ts still has ${name}`);
+    return menu.slice(start, menu.indexOf("\n}\n", start));
+  };
+  assert.ok(body("stalePickResult").includes(`return \`${STALE}\\\``), "a stale pick's answer starts with STALE");
+  const unknown = body("unknownPickResult");
+  assert.ok(
+    unknown.includes(`const unknown = ${JSON.stringify(NOT_KNOWN)};`),
+    "the unknown answer's start is NOT_KNOWN",
+  );
+  // Both branches of the answer start with it.
+  assert.equal(unknown.split("`${unknown}: ").length - 1, 2);
 });

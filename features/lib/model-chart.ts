@@ -24,10 +24,10 @@ export type ChartRefusalReading = { measured: boolean; void?: string; note: stri
 const ADMITTED = new Set(["admitted", "errored"]);
 
 /** The start of the Harness's answer to a second pick of one model answer (`stalePickResult`). */
-const STALE = "This pick did not run: you sent it before you read the answer to ";
+export const STALE = "This pick did not run: you sent it before you read the answer to ";
 
 /** The start of the Harness's answer to a pick it may have delivered (`unknownPickResult`). */
-const NOT_KNOWN = "It is not known whether this pick reached the workflow";
+export const NOT_KNOWN = "It is not known whether this pick reached the workflow";
 
 /**
  * Read a trial from the Machine's door verdicts, in order, and the planner's `run_chart` calls with
