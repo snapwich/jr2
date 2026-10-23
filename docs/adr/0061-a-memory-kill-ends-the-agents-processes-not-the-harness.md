@@ -26,7 +26,10 @@ Layers, each a backstop for the one before:
    (never `memory.current`, which counts reclaimable page cache). Near the limit it kills all of the Agent's processes,
    checks usage again, clears `/dev/shm`, and the running `bash` call returns
    `killed: memory limit (peak X of Y); use fewer workers or a larger Size`. The Agent hears it in the same Turn and
-   conversation, and can retry smaller.
+   conversation, and can retry smaller. The guard polls from the Harness's start, not only during a call. A process that
+   an earlier Turn left running (a dev server, a watcher) can pass the limit while no Submission runs. For example, the
+   workflow waits at a human's Gate. Then no call returns the text. The Harness keeps every kill for the Orchestrator to
+   read, and a read removes nothing. The next Agent that works in that Workspace is told (ADR-0062).
 5. **The kernel's group kill is the last backstop.** The Orchestrator reads `lastState.terminated.reason: OOMKilled` and
    the fault reason starts with the fixed prefix `memory limit`, not `Turn lost` (any other restart, ADR-0021) or
    "conversation lost" (a 404). The fault reaches the Machine (ADR-0016); the next Agent in that Workspace is told
@@ -65,6 +68,11 @@ at v1.38. When it is enabled by default, jr2 sets the field on the Harness conta
 
 - The guard's threshold comes from the Harness container's limit, so it needs ADR-0060's limits first; layer 1 does not
   and is fixed at once.
-- The kill set includes a human's exec session open at that moment; the group kill would end it too.
+- The kill set includes a human's exec session open at that moment; the group kill would end it too. On the Instance
+  Harness that session is the only process the guard can kill, because a Menu-only Agent has no Working tools. No notice
+  follows: that pod holds no Workspace (ADR-0031, ADR-0062).
+- A kernel kill (layer 5) while no Submission runs is not told to the next Turn. The Orchestrator reads `lastState` only
+  when a Turn faults on it, and the restarted Harness rebuilds its conversations, so no Turn faults. The guard fires at
+  90% of the limit, before the kernel, so this window is the guard's misses alone.
 - A memory fault is named in `jr2 status` and on the feed, not `Turn lost` (a restart for any other reason) or
   "conversation lost" (a 404).
