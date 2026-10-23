@@ -267,10 +267,17 @@ function finish(entry: Held): void {
   clearInterval(entry.keepalive);
 }
 
+/** The one tool `jr2 up`'s provider preflight offers (`PROBE_TOOL`, `packages/harness/src/provider.ts`).
+ * A black-box tier cannot import it: `features/lib/fake-provider.test.ts` pins the copy. */
+export const PREFLIGHT_TOOL = "ping";
+
+/** The preflight's prompt (`probeModel`, `packages/harness/src/provider.ts`), pinned as `PREFLIGHT_TOOL` is. */
+export const PREFLIGHT_PROMPT = "Call the ping tool.";
+
 /** `jr2 up`'s provider preflight (`probeModel` in `@jr2/harness`): it offers the `ping` tool alone
  * and asks for it by name. No Menu has a `ping`: a Menu tool is `mcp__jr2__<event>`. */
-function isPreflight(tools: string[], raw: string): boolean {
-  return tools.length === 1 && tools[0] === "ping" && raw.includes("Call the ping tool.");
+export function isPreflight(tools: string[], raw: string): boolean {
+  return tools.length === 1 && tools[0] === PREFLIGHT_TOOL && raw.includes(PREFLIGHT_PROMPT);
 }
 
 /** The non-streaming answer shape of a completion: `choices[0].message.tool_calls`. */
