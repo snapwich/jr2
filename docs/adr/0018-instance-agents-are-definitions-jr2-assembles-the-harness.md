@@ -39,11 +39,11 @@ holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of 
   `secrets` list (below). It moved out of `sandbox` deliberately: `sandbox` is pod-transport (it still _carries_ this
   env to the Harness container), but model concerns are Harness semantics and users configure them here. `jr2 up`
   preflights every model the definitions name, from inside the cluster (ADR-0019). A model of pi's catalog whose
-  provider no pod holds a key for fails the preflight. An instance-wide default model was tried and removed: it was
-  reached through `.env` (`JR2_MODEL`), which put a design decision in the file reserved for deployment-varying values
-  (ADR-0019) — and split one fact in two, since the endpoint's per-model token limits were already committed in
-  `jr2.config.ts` keyed by the very model id `.env` was choosing. The honest split: **`harness` declares reach; the
-  definition makes the choice.**
+  provider no pod holds a key for fails the preflight, unless a credential in `harness.env` (an AWS role for Bedrock,
+  say) reaches it. An instance-wide default model was tried and removed: it was reached through `.env` (`JR2_MODEL`),
+  which put a design decision in the file reserved for deployment-varying values (ADR-0019) — and split one fact in two,
+  since the endpoint's per-model token limits were already committed in `jr2.config.ts` keyed by the very model id
+  `.env` was choosing. The honest split: **`harness` declares reach; the definition makes the choice.**
 - **Credentials are held, not handed over**
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Agent executes code in the
   Harness container, so a key there is a key it can take away. The top-level `secrets` list declares each credential
