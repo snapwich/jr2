@@ -10,7 +10,7 @@ import { z } from "zod";
 import { defineEvent, doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
-import { agent } from "../src/harness-client.ts";
+import { agent, ConversationNotKept } from "../src/harness-client.ts";
 import type {
   AgentAdmission,
   AgentAdmitOptions,
@@ -43,6 +43,14 @@ export class MockFlueClient implements AgentRunPort {
   held = true;
   /** Every conversation `holds()` was asked about. */
   heldAsked: string[] = [];
+  /** What a `kept` admission finds (ADR-0062): false refuses it, as a Harness that keeps no such
+   * conversation does, so a test can make `holds()` answer "held" — a timeout's answer — while the
+   * Harness keeps nothing. */
+  keeps = true;
+  /** Whether each of `admits` was for a kept conversation. */
+  kept: boolean[] = [];
+  /** Every `kept` admission this port refused (see {@link keeps}); none of them is in `admits`. */
+  refused: AgentRunInput[] = [];
   /** What `memoryKills()` answers (ADR-0062): the pod's guard kills, as the Harness keeps them — a
    * read removes nothing. */
   podKills: PodMemoryKill[] = [];
@@ -70,7 +78,12 @@ export class MockFlueClient implements AgentRunPort {
   }
 
   admit(input: AgentRunInput, opts: AgentAdmitOptions): Promise<AgentAdmission> {
+    if (opts.kept && !this.keeps) {
+      this.refused.push(input);
+      return Promise.reject(new ConversationNotKept(`no conversation "${input.instanceId}" (mock)`));
+    }
     this.admits.push(input);
+    this.kept.push(opts.kept === true);
     this.definitions.push(opts.definition);
     this.notices.push(opts.notices ?? []);
     const minted: AgentAdmission = {

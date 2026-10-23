@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ConversationNotKept,
   SettlementFault,
   createEchoPush,
   createHarnessClient,
@@ -582,6 +583,46 @@ test("the admission's notices ride the admit body; with none, the body is as it 
     notices,
   });
   assert.deepEqual(JSON.parse(calls[1]!.init?.body as string), { message: "do the thing", definition: coder });
+});
+
+test("an admission for a kept conversation says so on the body; a 404 with the not-kept marker is ConversationNotKept, and any other 404 is a failed admission (ADR-0062)", async () => {
+  const refused = () =>
+    new Response(JSON.stringify({ error: 'no conversation "inst-1"', kept: false }), { status: 404 });
+  const unmarked = () => new Response(JSON.stringify({ error: "no route" }), { status: 404 });
+  const { calls, fetch } = scriptedFetch([
+    () => new Response(JSON.stringify(admission), { status: 200 }),
+    refused,
+    refused,
+    unmarked,
+  ]);
+  const port = harnessAgentRunPort(client(fetch));
+
+  await port.admit(baseInput, { definition: coder, kept: true });
+  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
+    message: "do the thing",
+    definition: coder,
+    kept: true,
+  });
+  await assert.rejects(port.admit(baseInput, { definition: coder, kept: true }), (err: unknown) => {
+    assert.ok(err instanceof ConversationNotKept);
+    assert.equal(err.notKept, true);
+    assert.match(err.message, /404.*no conversation "inst-1".*ADR-0062/s);
+    return true;
+  });
+  await assert.rejects(port.admit(baseInput, { definition: coder }), (err: unknown) => {
+    assert.ok(!(err instanceof ConversationNotKept));
+    assert.match((err as Error).message, /^harness admission failed \(404\)/);
+    return true;
+  });
+  assert.equal("kept" in JSON.parse(calls[2]!.init?.body as string), false);
+  // A 404 to a kept admission without the Harness's marker — a proxy, a route that moved — is a
+  // failed admission, as before.
+  await assert.rejects(port.admit(baseInput, { definition: coder, kept: true }), (err: unknown) => {
+    assert.ok(!(err instanceof ConversationNotKept));
+    assert.match((err as Error).message, /^harness admission failed \(404\): no route$/);
+    return true;
+  });
+  assert.equal(calls.length, 4, "a 404 is not sent again");
 });
 
 test("a guard kill on the updates stream is handed to the settle's listener with its id (ADR-0061)", async () => {

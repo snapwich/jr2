@@ -131,10 +131,12 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
     Harness is the order; the client-side pending-abort await (ADR-0024) stays as the cross-request guarantee.
   - **Settlement is `completed | failed | aborted`**, with `aborted` carrying `{type: "submission_aborted"}` —
     continuity with what ADR-0024/0025 recorded.
-  - **An unknown conversation is 404**, on both views. `POST` creates (that is admission); abort answers
-    `{aborted: false}`. This is a deliberate divergence from the stub, which answers every read with an empty stream:
-    the stub is inert by design, but a real Harness that answered a lost conversation with silence would park a
-    re-attached `wait` forever. Honesty about loss beats an endless poll.
+  - **An unknown conversation is 404**, on both views. `POST` creates (that is admission), except an admission with
+    `kept: true`, which is 404 (with `kept: false` in the body) on an unknown conversation and creates nothing
+    ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)); abort answers `{aborted: false}`. This is
+    a deliberate divergence from the stub, which answers every read with an empty stream: the stub is inert by design,
+    but a real Harness that answered a lost conversation with silence would park a re-attached `wait` forever. Honesty
+    about loss beats an endless poll.
   - **The durability contract is explicit: a conversation lives as long as its Sandbox, and on the Instance Harness as
     long as its run** (ADR-0031). The Harness persists each conversation to a directory as it goes and rebuilds it on
     boot, so a Harness restart inside a living pod keeps it; a Submission in flight at the restart settles `failed`.

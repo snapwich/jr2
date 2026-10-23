@@ -183,6 +183,28 @@ test("no directory, no persistence: the engine keeps its part in memory, and a r
   assert.equal((await harnessOver(undefined).app.request("/agents/decider/i1")).status, 404);
 });
 
+test("after a restart, an admission for a kept conversation admits on one the rebuild read back, and is 404 on one it lost (ADR-0062)", async () => {
+  const dir = scratch();
+  const before = harnessOver(dir);
+  await admitted(before.app, "/agents/decider/good");
+  await admitted(before.app, "/agents/decider/bad");
+  await flush();
+  writeFileSync(join(conversationDir(dir, "decider", "bad"), "record", "stream.jsonl"), "{not json\n");
+
+  const after = harnessOver(dir);
+  const kept = (path: string) =>
+    after.app.request(path, {
+      method: "POST",
+      body: JSON.stringify({ message: "continue", definition: DECISIONER, kept: true }),
+      headers: { "content-type": "application/json" },
+    });
+  assert.equal((await kept("/agents/decider/good")).status, 200);
+  assert.equal((await kept("/agents/decider/bad")).status, 404);
+  assert.equal((await after.app.request("/agents/decider/bad")).status, 404, "the lost one is not seated");
+  // An admission that is not for a kept conversation seats a new one, as before.
+  await admitted(after.app, "/agents/decider/bad", "fresh");
+});
+
 test("an unreadable record is said and skipped; the rest rebuild; a new admission starts it over", async () => {
   const dir = scratch();
   const before = harnessOver(dir);

@@ -10,7 +10,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harnessApp, type HarnessAppDeps } from "../src/app.ts";
 import type { AgentDefinition } from "../src/spec.ts";
-import type { AdmissionRequest, MemoryKillsResponse, PodMemoryKill, Settlement, StreamEvent } from "../src/wire.ts";
+import type {
+  AdmissionRequest,
+  MemoryKillsResponse,
+  NotKeptResponse,
+  PodMemoryKill,
+  Settlement,
+  StreamEvent,
+} from "../src/wire.ts";
 
 /** The definition every admission here carries (ADR-0049) — the Machine's slot, on the wire. */
 const CODER: AgentDefinition = { model: "faux/model", instructions: "code" };
@@ -178,6 +185,32 @@ test("POST creates: the same path 404s before admission and streams after", asyn
   assert.equal((await app.request("/agents/coder/i9")).status, 404);
   await admit(app, "/agents/coder/i9");
   assert.equal((await app.request("/agents/coder/i9")).status, 200);
+});
+
+test("an admission for a kept conversation is 404 on an unknown one and creates nothing; on a known one it admits (ADR-0062)", async () => {
+  const { app, runs } = scripted();
+  const kept = (path: string) =>
+    app.request(path, {
+      method: "POST",
+      body: JSON.stringify({ message: "Your previous turn was cut", definition: CODER, kept: true }),
+      headers: { "content-type": "application/json" },
+    });
+  const refused = await kept("/agents/coder/gone");
+  assert.equal(refused.status, 404);
+  const body = (await refused.json()) as NotKeptResponse;
+  assert.equal(body.kept, false, "the marker the Orchestrator requires");
+  assert.match(body.error, /no conversation "gone".*kept conversation/);
+  assert.equal((await app.request("/agents/coder/gone")).status, 404, "no conversation was seated");
+  assert.equal(runs.length, 0, "nothing ran");
+
+  await admit(app, "/agents/coder/here", "one");
+  runs[0]!.resolve();
+  await flush();
+  const admitted = await kept("/agents/coder/here");
+  assert.equal(admitted.status, 200);
+  await flush();
+  assert.equal(runs[1]?.message, "Your previous turn was cut");
+  assert.equal("kept" in runs[1]!.submission, false, "the Turn gets the Frame, not the wire's flag");
 });
 
 test("an admission with no definition is a 400 naming the slot (ADR-0049)", async () => {

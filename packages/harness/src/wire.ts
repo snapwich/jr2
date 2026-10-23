@@ -2,9 +2,11 @@
 // endpoint. The stub Harness (`packages/orchestrator/src/stub-harness.ts`) is normative for the
 // five conversation endpoints, headers, and status codes; this module is those shapes as types,
 // exported as `@jr2/harness/wire` so wire consumers (the Orchestrator client, tests) depend on
-// shapes, never on the server. The one documented divergence from the stub: a GET (either view)
-// on an unknown conversation is 404 — POST creates, abort answers `{ aborted: false }`
-// (ADR-0027). The echo endpoint (`POST /echo` — the run-narrative shapes at the bottom of this
+// shapes, never on the server. Two documented divergences from the stub. First, a GET (either
+// view) on an unknown conversation is 404 — POST creates, abort answers `{ aborted: false }`
+// (ADR-0027). Second, a POST with `kept: true` on an unknown conversation is 404 and creates
+// nothing (ADR-0062); the stub keeps every conversation (its history view answers each one), so
+// it admits it. The echo endpoint (`POST /echo` — the run-narrative shapes at the bottom of this
 // file) is the real Harness's alone: the stub hosts turns for tests, and nothing ever narrates
 // to it. So is the live set (`PUT /agents`, ADR-0031) and the drain's 503 on admission: the stub
 // keeps nothing to free and never shuts down under a Turn.
@@ -23,10 +25,28 @@ import type { AgentDefinition, TurnDials, TurnFrame } from "./spec.ts";
  * the slot), not settled `failed` mid-run. */
 export type AdmissionRequest = { definition: AgentDefinition } & TurnFrame & TurnDials & TurnNotices;
 
+/** The body of `POST /agents/:name/:id` as the wire carries it: the Submission, and the flag that
+ * only the route reads (`TurnKept`). The engine gets the `AdmissionRequest` alone. */
+export type AdmissionBody = AdmissionRequest & TurnKept;
+
 /** What the Orchestrator keeps for the next Turn in a scope (ADR-0062), typed — the Harness writes
  * every word of the Briefing, so the wire carries facts, never text. Delivered once: the admission
  * that carries a notice is the one that clears it. */
 export type TurnNotices = { notices?: Notice[] };
+
+/** The Orchestrator admits onto a conversation that it was told this Harness keeps (ADR-0062): the
+ * re-admission after a restart cut the Turn, and a continued Turn. Its "kept" can be a guess: the
+ * question times out while a Harness in CrashLoopBackOff does not answer, and then the answer is
+ * "kept". So with `kept: true` a Harness that keeps no such conversation refuses with 404 and seats
+ * none. A new conversation must be told that it is new and be given its task again, and only the
+ * Orchestrator can do that. Absent, POST seats a new conversation for an unknown Instance ID. */
+export type TurnKept = { kept?: boolean };
+
+/** What a Harness answers (404) to an admission with `kept: true` when it keeps no such
+ * conversation (ADR-0062). `kept: false` is the marker: the Orchestrator takes a 404 as "not kept"
+ * only when it carries it, so a 404 from anything else (a proxy, a route that moved) is a failed
+ * admission, as before. */
+export type NotKeptResponse = { error: string; kept: false };
 
 /** The Sandbox's processes were killed at its memory limit (ADR-0061) during `agent`'s Turn —
  * stated to the next Turn of ANY Agent in that Workspace. `agent` is absent for every kill read from

@@ -7,8 +7,10 @@
 //
 // Wire (ADR-0027 — the normative model of the conversation endpoints; `@jr2/harness` serves it for
 // real), and the pod's memory kills, which a stub never has (ADR-0062):
-//   POST /agents/:name/:id  {message, cwd?, definition, model?, thinkingLevel?} → 200 { streamUrl, offset, submissionId }
-//     (`message` and `cwd` are the Turn's Frame — what it is about and where it works, ADR-0057)
+//   POST /agents/:name/:id  {message, cwd?, definition, model?, thinkingLevel?, notices?, kept?} → 200 { streamUrl, offset, submissionId }
+//     (`message` and `cwd` are the Turn's Frame — what it is about and where it works, ADR-0057;
+//     `kept` admits as any POST does, because the stub keeps every conversation — the real Harness
+//     answers 404 when it keeps none, ADR-0062)
 //   GET  /agents/:name/:id?offset=…[&view=updates] → 200 `[]` + Stream-Next-Offset/Up-To-Date
 //   GET  /agents/:name/:id?…&live=long-poll        → parked; 204 + same headers on timeout
 //   POST /agents/:name/:id/abort                   → 200 { aborted }

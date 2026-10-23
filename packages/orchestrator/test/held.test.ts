@@ -738,6 +738,7 @@ test("a Harness restart while a pick is outstanding is no agent.fault: at Rest, 
   const readmit = rig.coder.admits[1]!;
   assert.equal(readmit.instanceId, rig.iid, "the same conversation: the rebuilt Harness holds it");
   assert.match(readmit.prompt ?? "", /^Your previous turn was cut: the process that ran you restarted/);
+  assert.deepEqual(rig.coder.kept, [false, true], "the re-admission is for a kept conversation (ADR-0062)");
   assert.deepEqual(rig.coder.notices[1], [
     {
       kind: "pick-answer",
@@ -1923,6 +1924,36 @@ test("a re-admission does not repeat a notice the cut admission's model heard (A
   );
 });
 
+test("a Harness that answers nothing in time is taken as keeping the conversation; when the kept re-admission is refused, the Turn is admitted with its task and told the conversation is new (ADR-0031, ADR-0062)", async () => {
+  const rig = await started();
+  // The model read the task: a re-admission onto the kept conversation would not send it again.
+  rig.host.agentSurfaceServed(rig.iid);
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  // CrashLoopBackOff: `holds` times out and answers "held", but the rebuilt Harness keeps nothing.
+  rig.coder.held = true;
+  rig.coder.keeps = false;
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.equal(rig.coder.refused.length, 1, "the kept re-admission was refused, and seated nothing");
+  assert.equal(
+    rig.coder.refused[0]!.prompt?.includes("Fix the ticket."),
+    false,
+    "it continued the same Turn, with no task",
+  );
+  const readmit = rig.coder.admits[1]!;
+  assert.equal(readmit.instanceId, rig.iid);
+  assert.equal(rig.coder.kept[1], false, "the second admission is a Turn's, on a new conversation");
+  assert.match(readmit.prompt ?? "", /^Your previous turn was cut[\s\S]*\n\nFix the ticket\.$/, "the task follows");
+  assert.deepEqual(
+    rig.coder.notices[1]!.map((n) => n.kind),
+    ["conversation-new", "pick-answer"],
+    "the model is told its context is gone, then the cut pick's answer",
+  );
+  assert.equal(rig.host.status(rig.runId)?.status, "active", "no fault");
+});
+
 test("a re-admission onto a conversation the rebuilt Harness lost is a Turn: every notice its last admission carried, heard or not, and the task (ADR-0031, ADR-0062)", async () => {
   const rig = await started();
   // The coder's own `bash` reported k-1 (on its stream); its nudge carried k-2, and the Harness read
@@ -2047,7 +2078,14 @@ test("a re-admission onto a conversation lost twice says once that it is new (AD
 });
 
 test("after an Orchestrator restore, a lost conversation is sent the task the ledger kept — and with no task, the Turn faults (ADR-0007, ADR-0062)", async () => {
-  for (const keepTask of [true, false]) {
+  // The loss is seen by `holds`, or — when `holds` timed out and said "held" — by the Harness's
+  // refusal of the kept re-admission.
+  for (const [keepTask, seen] of [
+    [true, "holds"],
+    [false, "holds"],
+    [true, "refusal"],
+    [false, "refusal"],
+  ] as const) {
     const store = await mkStore();
     const first = await startedWithKills([], store);
     await waitFor(() => first.coder.settled.length > 0);
@@ -2065,10 +2103,15 @@ test("after an Orchestrator restore, a lost conversation is sent the task the le
     const clients = { coders: [] as MockFlueClient[], reviewers: [] as MockFlueClient[] };
     host.register(heldDef(clients, controllable(), true));
     assert.deepEqual((await host.restore()).reattached, [first.runId]);
+    const retries: string[] = [];
+    host.subscribe(first.runId, (e) => {
+      if (e.kind === "retry") retries.push(e.reason);
+    });
     const coder = clients.coders[0]!;
     await waitFor(() => coder.settled.length > 0);
     coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
-    coder.held = false;
+    if (seen === "holds") coder.held = false;
+    else coder.keeps = false;
     await new Promise((r) => setTimeout(r, 20));
     host.sendToGate(first.runId, "review", { type: "approve", note: "lgtm" });
     if (keepTask) {
@@ -2084,6 +2127,7 @@ test("after an Orchestrator restore, a lost conversation is sent the task the le
         return task !== undefined;
       });
       assert.equal(task, "Fix the ticket.");
+      assert.deepEqual(retries, ["re-admitted after a Harness restart"], "said once the admission worked");
     } else {
       await waitFor(
         () =>
@@ -2091,6 +2135,8 @@ test("after an Orchestrator restore, a lost conversation is sent the task the le
           host.status(first.runId) === undefined,
       );
       assert.equal(coder.admits.length, 0, "no new conversation is asked to continue a task it never had");
+      assert.equal(coder.refused.length, seen === "refusal" ? 1 : 0);
+      assert.deepEqual(retries, [], "nothing was re-admitted, so no re-admission is said");
     }
     await host.close();
   }

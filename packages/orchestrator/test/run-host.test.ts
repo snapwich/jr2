@@ -899,6 +899,26 @@ test("a continued conversation the Harness no longer holds is told it is new", a
   ]);
 });
 
+test("a continued conversation that `holds` took as held, but that the Harness refuses to admit as kept, is told it is new (ADR-0062)", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(continuedDef(clients));
+  const { runId, instanceId } = await host.start("continued");
+  const flue = clients.get(instanceId)!;
+  await waitFor(() => flue.admits.length === 1);
+  assert.deepEqual(flue.kept, [false], "a conversation never admitted is not for a kept one");
+
+  // The Harness restarted between the Turns, and `holds` timed out: "held". The Harness keeps none.
+  flue.keeps = false;
+  host.sendToAgent(continuedIidOf(runId), { type: "request_review", summary: "PR up" });
+  await waitFor(() => flue.admits.length === 2);
+  assert.equal(flue.refused.length, 1, "the kept admission was refused");
+  assert.deepEqual(flue.kept, [false, false]);
+  assert.deepEqual(flue.notices[1], [
+    { kind: "conversation-new", scope: "conversation", reason: "the Harness no longer holds it" },
+  ]);
+});
+
 test("a guard kill is told to the next Turn in that Workspace, and only once (ADR-0061, ADR-0062)", async () => {
   const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });

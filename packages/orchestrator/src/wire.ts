@@ -155,6 +155,11 @@ export type LiveSetRequest = { live: LiveConversation[] };
 /** What `PUT /agents` answers (200): how many conversations this statement freed. */
 export type LiveSetResponse = { freed: number };
 
+/** What a Harness answers (404) to an admission with `kept: true` when it keeps no such
+ * conversation (ADR-0062). The client takes a 404 as "not kept" only with `kept: false` on it: a
+ * 404 from anything else is a failed admission. */
+export type NotKeptResponse = { error: string; kept: false };
+
 // ---- The pod's guard kills (`GET /memory-kills` — ADR-0061, ADR-0062) -------------------------
 // Every guard kill, kept by the Harness pod-scoped. A stream is read only while the Agent actor
 // waits on a Submission, and that wait stops when the Agent's state exits — so a kill while no

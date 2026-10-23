@@ -674,6 +674,35 @@ test("a conversation survives the Harness's restart: the engine part reopens (AD
   assert.match(lastUserText(provider.calls[0]), /Decide the second thing\./);
 });
 
+test("a re-admission for a kept conversation: on one the restart read back the model gets the earlier Turn; on one it lost no model is asked (ADR-0031, ADR-0062)", async () => {
+  const iid = "conf/restart-kept";
+  const dir = await firstTurnPersisted(iid);
+  const keptAdmit = (via: Hono, id: string) =>
+    via.request(conversationPath(id, DECISIONER), {
+      method: "POST",
+      body: JSON.stringify({ message: "Continue.", definition: definitions[DECISIONER], kept: true }),
+      headers: { "content-type": "application/json" },
+    });
+  // A restart over an empty directory lost the conversation: refused, and the provider never called.
+  provider.reset([{ text: "never" }]);
+  const lost = appOver(await mkdtemp(join(tmpdir(), "jr2-conversations-")));
+  assert.equal((await keptAdmit(lost, iid)).status, 404);
+  assert.equal(provider.calls.length, 0, "no model reads a prompt to continue on an empty context");
+  // A restart over the same directory read it back: admitted, with the first Turn in the context.
+  provider.reset([
+    { toolCall: { id: "call_2", name: "mcp__jr2__review_verdict", args: '{"verdict":"beta"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const after = appOver(dir);
+  const res = await keptAdmit(after, iid);
+  assert.equal(res.status, 200);
+  const next = (await res.json()) as { offset: string; submissionId: string };
+  assert.equal((await settled(iid, next, DECISIONER, after)).outcome, "aborted");
+  assert.match(JSON.stringify(provider.calls[0]?.messages ?? []), /Decide the first thing\./);
+  assert.match(lastUserText(provider.calls[0]), /Continue\./);
+});
+
 test("an engine part that does not open: the conversation continues from the record's messages (ADR-0031)", async () => {
   const iid = "conf/restart-unreadable";
   const dir = await firstTurnPersisted(iid);

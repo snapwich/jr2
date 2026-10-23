@@ -4,7 +4,8 @@
 // Orchestrator derives for this placement, checked before anything else, so a refusal says nothing
 // about which conversations exist — the stub is a host-side test fixture and checks nothing.
 // Second, a GET (either view) on an unknown conversation is 404. POST creates
-// (that is admission), abort answers `{ aborted: false }`: the stub is inert by design, but a
+// (that is admission) — except an admission for a kept conversation (`kept`, ADR-0062), which is
+// 404 on an unknown one and creates nothing — and abort answers `{ aborted: false }`: the stub is inert by design, but a
 // real Harness that answered a lost conversation with silence would park a re-attached wait
 // forever. Plus ADR-0023's echo (`POST /echo`): the run-narrative events the Orchestrator tees
 // here, rendered to this pod's stdout in the printer's idiom. Plus ADR-0063's attach
@@ -50,6 +51,7 @@ import {
   STREAM_NEXT_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
   VIEW_HISTORY,
+  type AdmissionBody,
   type AdmissionRequest,
   type AttachError,
   type AttachRequest,
@@ -61,6 +63,7 @@ import {
   type LiveConversation,
   type LiveSetResponse,
   type MemoryKillsResponse,
+  type NotKeptResponse,
   type Notice,
   type PickAnswer,
 } from "./wire.ts";
@@ -342,7 +345,23 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     // (and therefore a live turn factory) behind for an iid that never ran.
     const badRun = deps.checkAdmission?.(resolved);
     if (badRun) return c.json({ error: `agent "${agentName}": ${badRun}` }, 400);
-    const conversation = conversations.get(key(agentName, instanceId)) ?? seat(agentName, instanceId);
+    const known = conversations.get(key(agentName, instanceId));
+    // An admission onto a conversation the Orchestrator was told this Harness keeps (ADR-0062).
+    // When it keeps none (the restart did not read it back), a new one seated here would run a
+    // prompt that says "continue" on an empty context. The 404 seats nothing: the Orchestrator then
+    // admits a Turn with its task and the notice that the conversation is new.
+    if ((sent as Partial<AdmissionBody> | undefined)?.kept === true && known === undefined) {
+      return c.json<NotKeptResponse>(
+        {
+          kept: false,
+          error:
+            `no conversation "${instanceId}" for agent "${agentName}" — this Harness does not keep it, and the ` +
+            `admission was for a kept conversation (ADR-0062)`,
+        },
+        404,
+      );
+    }
+    const conversation = known ?? seat(agentName, instanceId);
     const admission = conversation.admit(submission);
     // The Conversation mints a relative streamUrl; the wire's is absolute (the stub's shape).
     return c.json({ ...admission, streamUrl: `${new URL(c.req.url).origin}${admission.streamUrl}` });

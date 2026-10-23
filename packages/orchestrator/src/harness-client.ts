@@ -74,6 +74,7 @@ import {
   type LiveSetRequest,
   type LiveSetResponse,
   type MemoryKillsResponse,
+  type NotKeptResponse,
   MAX_KILL_NAME,
   MAX_KILL_STAMP,
   MAX_KILLS_BODY,
@@ -87,8 +88,8 @@ import {
 /** The three-verb wire client (the injectable seam — structurally what `@flue/sdk`'s
  * `agents.{send,wait,abort}` was, minus the SDK). */
 export type HarnessClient = {
-  /** `POST /agents/:name/:id {message, cwd?, definition, model?, thinkingLevel?}` → the Admission,
-   * with `streamUrl` resolved absolute. The FRAME is `message` and `cwd` — what this Turn is about
+  /** `POST /agents/:name/:id {message, cwd?, definition, model?, thinkingLevel?, notices?, kept?}`
+   * → the Admission, with `streamUrl` resolved absolute. The FRAME is `message` and `cwd` — what this Turn is about
    * and where it works (ADR-0057), flat siblings on the body. The DEFINITION is the slot's,
    * carried by the Machine and sent with every admission (ADR-0049) — the Harness keeps no roster,
    * so `:name` alone would name nothing there — and it travels as IDENTITY alone, because this
@@ -107,6 +108,10 @@ export type HarnessClient = {
       thinkingLevel?: ThinkingLevel;
       /** The pending notices in this admission's scope (ADR-0062). Omitted when there are none. */
       notices?: Notice[];
+      /** The admission is for a conversation this process was told the Harness keeps (ADR-0062).
+       * The Harness that keeps none answers 404 and seats none: this verb throws
+       * {@link ConversationNotKept}. */
+      kept?: boolean;
       signal?: AbortSignal;
     },
   ): Promise<AgentAdmission>;
@@ -179,6 +184,17 @@ export class SettlementFault extends Error {
     this.name = "SettlementFault";
     this.settlement = settlement;
     this.lost = opts.lost === true;
+  }
+}
+
+/** An admission for a kept conversation (`kept`) that the Harness refused with 404: it keeps no
+ * such conversation, and it seated none (ADR-0062). `notKept` is what the Agent actor reads, as it
+ * reads `lost`: that module is wire-free. */
+export class ConversationNotKept extends Error {
+  readonly notKept = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "ConversationNotKept";
   }
 }
 
@@ -360,11 +376,26 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             // The Briefing's news (ADR-0062): typed data, the Harness writes the words. Omitted
             // when there is none, so an admission without notices is byte-identical to before.
             ...(sendOptions.notices?.length ? { notices: sendOptions.notices } : {}),
+            // Omitted when unset, so an admission that is not for a kept conversation is
+            // byte-identical to before.
+            ...(sendOptions.kept ? { kept: true } : {}),
           }),
           signal: sendOptions.signal,
         },
         sendOptions.signal,
       );
+      if (sendOptions.kept && res.status === 404) {
+        // "Not kept" only with the Harness's marker: a 404 from anything else — a proxy, a route
+        // that moved — is a failed admission, as before.
+        const body = (await res.json().catch(() => undefined)) as Partial<NotKeptResponse> | undefined;
+        const detail = typeof body?.error === "string" ? body.error : res.statusText || "no detail";
+        if (body?.kept === false) {
+          throw new ConversationNotKept(
+            `harness admission refused (404): ${detail} — the Harness does not keep this conversation (ADR-0062)`,
+          );
+        }
+        throw new Error(`harness admission failed (404): ${detail}`);
+      }
       if (!res.ok) {
         throw new Error(`harness admission failed (${res.status}): ${await errorDetail(res)}`);
       }
@@ -584,6 +615,7 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
         model: input.model,
         thinkingLevel: input.thinkingLevel,
         ...(opts.notices?.length ? { notices: opts.notices } : {}),
+        ...(opts.kept ? { kept: true } : {}),
         signal: opts.signal,
       });
     },
