@@ -3,7 +3,8 @@
 // `jr2 up` per scenario into a FRESH namespace; the workflows bind the seed Repo the suite serves
 // in-cluster, and the fence admits that host alone (ADR-0051).
 //
-// The provider is REAL. Everything about it comes from `model-endpoint.json`, which the fixture
+// The provider is REAL — a custom `harness.provider` (the home-lab vLLM) or a pi catalog provider
+// (`anthropic`), as the profile says. Everything about it comes from `model-endpoint.json`, which the fixture
 // materializes from the selected `features/model-endpoints/<name>.json` before the converge
 // (`workflows/_profile.ts` says why a file and not env). The one deployment-varying value that
 // stays on env is the key: a Held secret (ADR-0059) the Custodian alone receives, never a file.
@@ -33,19 +34,27 @@ export default defineConfig({
   // The @kind Size (ADR-0060): small enough for several trials in flight on one node, and the
   // ceiling the `noticed` claim's memory kill is measured against (ADR-0061).
   sandbox: { resources: { limits: { memory: "1Gi", cpu: "500m" } } },
+  // The key is a Held secret either way (ADR-0059). A catalog provider (`profile.key`) reads a known
+  // model key, so the key goes in `secrets` under that name, exactly as a user's instance holds it;
+  // a custom provider's key is its `apiKey`.
+  ...(profile.key === undefined ? {} : { secrets: [{ name: profile.key, value: process.env.JR2_MODEL_API_KEY }] }),
   harness: {
-    provider: {
-      id: profile.id,
-      api: profile.api,
-      baseUrl: profile.baseUrl,
-      apiKey: process.env.JR2_MODEL_API_KEY,
-      models: {
-        [profile.model]: {
-          ...(profile.contextWindow === undefined ? {} : { contextWindow: profile.contextWindow }),
-          ...(profile.maxTokens === undefined ? {} : { maxTokens: profile.maxTokens }),
-        },
-      },
-    },
+    ...(profile.key !== undefined
+      ? {}
+      : {
+          provider: {
+            id: profile.id,
+            api: profile.api,
+            baseUrl: profile.baseUrl,
+            apiKey: process.env.JR2_MODEL_API_KEY,
+            models: {
+              [profile.model]: {
+                ...(profile.contextWindow === undefined ? {} : { contextWindow: profile.contextWindow }),
+                ...(profile.maxTokens === undefined ? {} : { maxTokens: profile.maxTokens }),
+              },
+            },
+          },
+        }),
     ...(profile.caBundle === undefined ? {} : { caBundle: profile.caBundle }),
   },
 });

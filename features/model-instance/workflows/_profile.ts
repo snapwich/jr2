@@ -18,7 +18,8 @@ import type { ThinkingLevel } from "@jr2/orchestrator";
 export type ThinkingCell = "off" | "on";
 
 export type EndpointProfile = {
-  /** The provider id model specifiers use — `<id>/<model>` (ADR-0018). */
+  /** The provider id model specifiers use — `<id>/<model>` (ADR-0018). With `key`, a pi catalog
+   * provider id (`anthropic`); without, the custom `harness.provider`'s own id. */
   id: string;
   /** The wire protocol pi registers the provider under (`openai-completions`, `anthropic-messages`). */
   api: string;
@@ -26,6 +27,12 @@ export type EndpointProfile = {
   baseUrl: string;
   /** The model id AFTER the provider prefix — exactly what the endpoint serves. */
   model: string;
+  /** The known model key (ADR-0059) the catalog provider `id` reads, e.g. `ANTHROPIC_API_KEY`.
+   * Present → the instance names a catalog provider and holds the key in `secrets` under this
+   * name, as a user's instance does; the catalog holds the limits and thinking levels. Absent →
+   * the profile is a custom `harness.provider`. */
+  key?: string;
+  /** A custom provider's limits. With `key` the Harness reads the catalog's, and these only record them. */
   contextWindow?: number;
   maxTokens?: number;
   /** A private CA for the endpoint, as a path relative to the instance folder (ADR-0020). */

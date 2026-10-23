@@ -320,10 +320,15 @@ e2e-model:
     name="${JR2_MODEL_ENDPOINT:-homelab}"
     profile="features/model-endpoints/${name}.json"
     [ -f "$profile" ] || { echo "error: no endpoint profile ${profile} (JR2_MODEL_ENDPOINT=${name})" >&2; exit 1; }
-    base="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).baseUrl.replace(/\/+$/,""))' "$profile")"
-    auth=()
-    [ -n "${JR2_MODEL_API_KEY:-}" ] && auth=(-H "Authorization: Bearer ${JR2_MODEL_API_KEY}")
-    if ! curl -fs --max-time 10 "${auth[@]}" "${base}/models" -o /dev/null; then
+    read -r api base < <(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(p.api, p.baseUrl.replace(/\/+$/,""))' "$profile")
+    # The probe lists the models, the way each api does: Anthropic's base has no `/v1` and wants
+    # `x-api-key` with a version, an OpenAI-compatible base ends in `/v1` and takes a bearer. The key
+    # goes to curl on a pipe, never in its argv (ADR-0066: env alone).
+    case "$api" in
+        anthropic-messages) url="${base}/v1/models"; headers="anthropic-version: 2023-06-01"$'\n'"x-api-key: ${JR2_MODEL_API_KEY:-}" ;;
+        *) url="${base}/models"; headers="${JR2_MODEL_API_KEY:+Authorization: Bearer ${JR2_MODEL_API_KEY}}" ;;
+    esac
+    if ! curl -fs --max-time 10 -H @<(printf '%s\n' "$headers") "$url" -o /dev/null; then
         echo "skipped: no model endpoint at ${base} (profile ${name}) — the @model tier did not run"
         exit 0
     fi

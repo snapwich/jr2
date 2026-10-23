@@ -1,0 +1,13 @@
+{
+  "//": "Claude Haiku 5.5 on the Anthropic API (ADR-0066), named the way a user names it: pi's catalog provider `anthropic`, and the key as the known model key `ANTHROPIC_API_KEY` in `secrets` (ADR-0059) — a Held secret the Custodian puts into `x-api-key` toward api.anthropic.com alone. `key` names that secret, and so says the profile is a catalog provider, not a `harness.provider`: the catalog holds the model's limits and thinking levels, and `contextWindow`/`maxTokens` here are its values at pi-ai 1.4.0, for the reader. `api` and `baseUrl` are the catalog's too; the recipe's probe reads them. Haiku 5.5 has `off`, so the cells are those the home lab runs.",
+  "id": "anthropic",
+  "api": "anthropic-messages",
+  "baseUrl": "https://api.anthropic.com",
+  "model": "claude-haiku-5-5",
+  "key": "ANTHROPIC_API_KEY",
+  "contextWindow": 1000000,
+  "maxTokens": 128000,
+  "thinking": { "off": "off", "on": "medium" },
+  "trials": 10,
+  "parallel": 2
+}
