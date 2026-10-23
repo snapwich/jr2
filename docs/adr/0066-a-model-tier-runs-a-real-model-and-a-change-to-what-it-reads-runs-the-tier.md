@@ -174,13 +174,14 @@ recover, finish — are exercised only one scripted tool call at a time.
   deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
   (home-lab vLLM, 2026-10-07) confirmed both, 10 of 10, now baselines.
 - **The refusal of a second pick while one is outstanding is not a claim.** It is jr2's mechanism, not something a model
-  does with what it reads: the Harness claims picks in message order and refuses the second before it leaves, and
-  nothing of it reaches the Machine (ADR-0024). Harness conformance proves it with a scripted provider that sends two
-  picks in one message: the second is refused with the outstanding text, and only the first is delivered. A claim for it
-  (`refused-outstanding`: the refused pick is picked again once the answer comes) ran once, on 2026-10-07: in all 15
-  trials of that run the model called `book_room`, read its answer, then called `send_invite`, so no call was ever
-  refused and its setup never happened. It left the tier with no cell; no floor was lowered. A model that makes parallel
-  calls would need a claim of its own: what it does after the refusal.
+  does with what it reads. The Orchestrator refuses it from the Machine (ADR-0024). The Harness runs only the first pick
+  of one model answer (ADR-0024, [ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)).
+  Harness conformance proves it with a scripted provider that sends two picks in one message. Only the first is
+  delivered, and the second reads that it did not run. A claim for it (`refused-outstanding`: the refused pick is picked
+  again once the answer comes) ran once, on 2026-10-07: in all 15 trials of that run the model called `book_room`, read
+  its answer, then called `send_invite`, so no call was ever refused and its setup never happened. It left the tier with
+  no cell; no floor was lowered. A model that sends two picks in one model answer would need a claim of its own: what it
+  does after its second pick did not run.
 - The command-Effect claims of ADR-0067 — `answered` (the next pick follows a command's output), `allowed-after-route`
   (the next call is one the route allows, not one allowed before the pick) and `unknown-outcome` (after a Harness
   restart killed the command, the Agent checks before it announces; the step restarts the Sandbox's Harness container) —

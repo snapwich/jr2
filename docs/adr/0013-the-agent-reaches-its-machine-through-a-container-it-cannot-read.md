@@ -44,12 +44,13 @@ is needed either (ADR-0006).
 
 - **The Harness presents the Menu to its model itself.** There is no MCP server and no MCP client. `menu.ts` turns each
   accepted event into a Menu item, with the event's JSON Schema as its parameters, and turns a pick into one
-  `POST …/events` — and, for an outstanding pick, the polls of its delivery, inside the same tool call. It holds one
-  pick at a time per Submission, claimed in message order. It imports nothing from pi: `menu-tools.ts` gives each item
-  to pi as a tool. A harness that only speaks MCP would get a second presenter over the same `menu.ts`, not a second
-  Menu. The receipt comes back as prose ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A
-  404 on the surface is a Turn that is over, and it is never prompted
-  ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)).
+  `POST …/events` — and, for an outstanding pick, the polls of its delivery, inside the same tool call. The engine runs
+  one model answer's calls in the model's order
+  ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)), and only the first pick of a model
+  answer runs. It imports nothing from pi: `menu-tools.ts` gives each item to pi as a tool. A harness that only speaks
+  MCP would get a second presenter over the same `menu.ts`, not a second Menu. The receipt comes back as prose
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A 404 on the surface is a Turn that is
+  over, and it is never prompted ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)).
 - **The Orchestrator hosts no MCP, and judges every pick.** The registration table stays the one internal primitive; it
   keeps two thin HTTP surfaces, neither of them MCP:
 

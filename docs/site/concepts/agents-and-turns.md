@@ -188,10 +188,11 @@ jr2 tries to recover a Turn before it tells the Machine. When it cannot recover 
 
 A Runaway is a Turn that does not end by itself. The Harness ends a Turn when it makes the same tool call four times in
 sequence, with the same arguments. It also ends a Turn of more than 256 [steps](../reference/glossary.md#step) on one
-prompt. A step is one tool call: a call of a Working tool, or a pick. Then jr2 starts the Turn again one time, with the
-same prompt, on a new conversation. When that Turn is also a Runaway, jr2 sends `agent.fault`. jr2 does not start the
-Turn again when it continues a conversation, or when the Agent already made a pick in it. Then it sends `agent.fault`
-immediately.
+prompt. A step is one tool call that starts while the Turn is live: a call of a Working tool, or a pick. A call that
+does not run is a step too, for example a call of a tool that does not exist. A call after a pick that ended the Turn is
+not a step. Then jr2 starts the Turn again one time, with the same prompt, on a new conversation. When that Turn is also
+a Runaway, jr2 sends `agent.fault`. jr2 does not start the Turn again when it continues a conversation, or when the
+Agent already made a pick in it. Then it sends `agent.fault` immediately.
 
 You cannot change these limits. They are a part of jr2.
 

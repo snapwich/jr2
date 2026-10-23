@@ -63,9 +63,26 @@ single-threaded.
   take the pick, and one the Agent's state handles would exit the child state and stop the work running there, so the
   refusal is jr2's. The Orchestrator decides it from the Machine (Rest) and the run's saved holds, so it holds after a
   restart, and answers `409 { refused: "outstanding", outstanding?, allowed: [] }`. The Allowed picks are empty while
-  the Agent's state is not at Rest (ADR-0029): the Rest rule and the payload-blind selection give one list. The Harness
-  also claims one pick at a time in MESSAGE order — pi starts one message's calls in that order, each up to its first
-  `await` — because a socket race does not keep it (measured: `finish` arrived first in 1 of 50).
+  the Agent's state is not at Rest (ADR-0029): the Rest rule and the payload-blind selection give one list. The engine
+  runs a model answer's calls one at a time, in the model's order
+  ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)). Only the FIRST pick of a model
+  answer runs. A later pick of the same model answer does not run, whatever its name. The model reads "This pick did not
+  run: you sent it before you read the answer to `<first pick>`." The model wrote that pick before it read the first
+  pick's answer, so it is stale by construction. The first pick is the first pick of the model answer that the engine
+  asks `beforeToolCall` about. The engine reports each model answer before it asks about its calls, and it asks them in
+  the model's order (ADR-0027). It asks only about a call of a tool the run has, with valid arguments, so a call of an
+  unknown tool, or with invalid arguments, is never the first pick. So the Harness keeps no claim and has no race. The
+  blocked pick is still a step for the Runaway watch
+  ([ADR-0035](0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md)). A call after a pick whose answer ended the
+  Turn (`turnComplete`, or a 404) does not run either, a Working-tool call or a pick. The Harness blocks it, and the
+  model reads "This call did not run: a pick before it in your answer ended your turn." Under `continue: true`, the next
+  state registers the same address, so such a pick would reach the NEXT Turn. The run then ends at the step boundary
+  (`endsRun`). The Harness sends no further model request for a Turn that is over, whether or not the Orchestrator's
+  abort has landed. So the model reads that text, and the Turn-ending receipt, only in the NEXT Turn of a continued
+  conversation. They give no order to stop, because that order is false in a later Turn. The Submission settles
+  `aborted` every time, with the type `submission_aborted`, so its outcome and type do not follow that race (see
+  Consequences). Its `error.message` does: a swept Submission has none, and a Submission that the Harness ends itself
+  says why ("a pick's answer ended the Turn: …").
 - **The answer, in order:** the work settles, the Machine's route runs (guards, assign), then the Agent is answered with
   the Allowed picks read AFTER the route. The answer is the last reply since the pick from below the Agent's state — a
   Gate's event and payload, another Agent's pick, a child's output — and the Harness writes the words. With an `answer`
@@ -136,17 +153,17 @@ single-threaded.
   (a Turn timeout `after`, a named delay, a delayed `raise` or `sendTo(self)`), an event from outside the states below,
   a Gate's event, the Agent's own end. The exit stops that work (an invoke is stopped when its state exits), and the
   answer says so (`stopped`): the poll reads "The workflow left the state that asked for this turn while it ran your
-  pick, and that stopped the pick's work before it finished: your turn is over." with the receipts' stop instruction,
-  and the next continued Turn's notice reads "Your pick `X` did not finish: the workflow left the state that asked for
-  your last turn while it ran, and that stopped it." Both keep the last reply an earlier link gave, if any, and state
-  it: an earlier link's reply is never dropped because a later link was stopped. The run host tells a fired timer from
-  an event sent at once by the scheduler's own table: it watches what the actor system arms, cancels and fires
-  (`timers.ts`, the same xstate internals as the timer table, ADR-0007). Back at Rest INSIDE the Agent's state — a
-  per-step timeout `after` on the child state that exits the work — the answer is the last reply since the pick, with
-  the Allowed picks; with no reply since the pick, the answer carries none. A restored hold is the Turn of the first
-  registration of its address in the restored tree: a restore that ends that Turn and starts another at the same address
-  before anything settles answers the pick with `turnComplete`. There is no default time bound on a held Turn; the
-  Console shows each outstanding pick "held since".
+  pick, and that stopped the pick's work before it finished: your turn is over.", and the next continued Turn's notice
+  reads "Your pick `X` did not finish: the workflow left the state that asked for your last turn while it ran, and that
+  stopped it." Both keep the last reply an earlier link gave, if any, and state it: an earlier link's reply is never
+  dropped because a later link was stopped. The run host tells a fired timer from an event sent at once by the
+  scheduler's own table: it watches what the actor system arms, cancels and fires (`timers.ts`, the same xstate
+  internals as the timer table, ADR-0007). Back at Rest INSIDE the Agent's state — a per-step timeout `after` on the
+  child state that exits the work — the answer is the last reply since the pick, with the Allowed picks; with no reply
+  since the pick, the answer carries none. A restored hold is the Turn of the first registration of its address in the
+  restored tree: a restore that ends that Turn and starts another at the same address before anything settles answers
+  the pick with `turnComplete`. There is no default time bound on a held Turn; the Console shows each outstanding pick
+  "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,
@@ -189,7 +206,9 @@ single-threaded.
   the workflow consumed it, the turn is over.
 - **The Agent instructions gain the stop half.** "You MUST finish by calling `review_verdict`" is half a contract — it
   says how to finish and never that finishing is finished. The Agent definitions a Machine carries (an Agent is a slot
-  on the Machine that carries it — ADR-0049) say to call it **once**, then stop.
+  on the Machine that carries it — ADR-0049) say to call it **once**, then stop. The receipt of a pick that ends the
+  Turn says that the turn is over and gives no order: the run ends at that step boundary, so the model reads the receipt
+  only in a later Turn of a continued conversation (ADR-0027).
 
 ## The Harness queues, and the queue is load-bearing here
 
@@ -236,9 +255,19 @@ matter:
   states. Rejected for the one-path shape jr2 builds: the footprint needs a per-pick record that a restore must carry,
   and a tag makes a forgotten mark hang the Turn. A footprint is the natural rule for the shape jr2 reserves — picks the
   Agent does not wait for, in parallel regions (ADR-0015) — if that is ever built.
-- **Let the Orchestrator alone refuse a second pick.** Rejected as the only refusal: it sees arrival order, and two
-  calls of one message race over two sockets. The Orchestrator's refusal is the authority; the Harness's claim is what
-  makes the result the same every time.
+- **A Harness claim beside the Orchestrator's refusal.** The first pick of a model answer held it. The Harness refused
+  every other pick of that model answer while the first was out. It was needed while pi started the calls of one model
+  answer at the same time. Two sockets did not keep the model's order (measured: `finish` arrived first in 1 of 50).
+  Rejected: it is state that a race decides. Since the engine runs the calls one at a time (ADR-0027), the Harness finds
+  the first pick from the model answer instead.
+- **Deliver a second pick of one model answer after the first is answered, and let the Orchestrator judge it** by the
+  Allowed picks after the first pick's route. Rejected: the model wrote the second pick before it read the first pick's
+  answer, so the pick is stale by construction. An Allowed pick can still be the wrong one, for example `finish` after a
+  `run_tests` whose answer is a failure.
+- **End a Turn that is over with pi's `terminate` flag on the pick's result**, not with `endsRun`. Rejected: pi stops
+  only when every result of the batch sets it, so a model answer `[bash, pick]` would go on to another request.
+- **Let a Turn-ending pick settle `completed` when the run ends before the abort lands.** Rejected: the outcome would
+  follow a race. The `@kind` tier counts exact `aborted` settlements (see Consequences).
 
 ## Consequences
 

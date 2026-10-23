@@ -27,9 +27,20 @@ collapses into repetition.
   on a trivial task, and an honest live bug-hunt burned 161 steps before exhausting its context) as the unconditional
   backstop, and **K consecutive byte-identical tool calls** (initial K=4; healthy max observed 2, the production loop
   ~100) as the early exit. If a surface is ever demanded, note it would be a Dial question (ADR-0018) — how hard to run
-  this one Turn — but no workflow has needed one. Both count tool calls alone: a Turn part the Harness restates at a
-  step boundary ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)) is not a
-  step and neither breaks nor extends an identical-call streak. An outstanding pick
+  this one Turn — but no workflow has needed one. Both count tool calls alone. A step is a tool call that starts while
+  the Turn is live: the Harness counts it at the engine's `tool_start` event
+  ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)), before the engine checks the tool or
+  the arguments. So these calls are steps: a call that runs; a call of an unknown tool, or with arguments that do not
+  validate, which gets the engine's own error; a pick that the Harness blocks as the second pick of its model answer
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)); each call of a model answer that hit the
+  output limit, which the engine answers with an error and does not run; and the tripping call itself, which is counted
+  and does not run. A tripping call of a tool the run has, with valid arguments, reads `Operation aborted`. A tripping
+  call of an unknown tool, or with invalid arguments, reads the engine's own error for it. A model that repeats any of
+  them is a Runaway. Only one kind of call is not a step: a call after a pick that ended the Turn, which the Harness
+  blocks. The Turn that it would count for is over, so a trip cannot make an ended Turn a Runaway. A Turn part the
+  Harness restates at a step boundary
+  ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)) is not a step and
+  neither breaks nor extends an identical-call streak. An outstanding pick
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)) is one call however long the workflow runs
   it — the guard has no clock, so a held Turn is never a Runaway for waiting — and its answer **resets the
   identical-call streak**: the world moved, so the same pick again is a new question. Four `run_tests` in a row, each

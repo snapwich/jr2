@@ -220,7 +220,10 @@ it will end. It is a fault class, named for what jr2 observed and not for what t
 _Avoid_: degeneration (the model behavior, not the fault class), loop, hang, stall
 
 **step**:
-One tool call that a Turn makes: a call of a Working tool, or a pick. The Harness counts steps to find a Runaway. A
+One tool call of a model answer that the engine starts while a Turn is live, whether or not it runs: a call of a
+Working tool or a pick, a call of an unknown tool or with invalid arguments, a pick that the Harness blocks as the
+second pick of its model answer, each call of a model answer that hit the output limit, and the call that trips the
+Runaway watch. A call after a pick that ended the Turn is not a step. The Harness counts steps to find a Runaway. A
 **step boundary** is the point after a model answer and the results of all its calls, and before the next model
 request; there the Harness can restate the Turn part.
 _Avoid_: turn (a Turn is the Agent's whole answer to its Frame), round, iteration, request

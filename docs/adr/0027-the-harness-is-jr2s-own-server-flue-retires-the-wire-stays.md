@@ -39,12 +39,46 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
 - **pi is the engine, not the contract.** The Harness keeps its contract in jr2's own shapes. One seam (`Engine`,
   `engine.ts`) is the interface between the Turn and the engine. The Turn gives the engine one Submission's run: the
   model, the thinking level, the system prompt, the tools, the context and the prompt. It hears the run as events
-  (`message_end`, `step_boundary`, `tool_start`, `tool_end`), and it can `steer` and `abort` the run. Inside the run,
-  the Turn decides through four hooks:
+  (`message_end`, `step_boundary`, `tool_start`, `tool_end`), and it can `steer` and `abort` the run. It counts the
+  Runaway watch's steps at `tool_start` (ADR-0035): the engine sends `tool_start` for every call of a model answer, in
+  order, before it checks the tool or the arguments, and the event carries the call's name and arguments. A listener can
+  abort the run there. Inside the run, the Turn decides through four hooks:
   - `convertToLlm`: the messages that the provider gets.
   - `beforeRequest`: Compaction (ADR-0036).
-  - `beforeToolCall`: the runaway watch (ADR-0035). A block can also abort the run.
-  - `endsRun`: the end of the run at the step boundary.
+  - `beforeToolCall`: the blocks of ADR-0024 (a second pick of one model answer, and a call after a pick that ended the
+    Turn), and the block of a tripped runaway watch (ADR-0035). A block can also abort the run.
+  - `endsRun`: the end of the run at the step boundary, after a trip or when the Turn is over.
+
+  The engine runs the tool calls of one model answer one at a time, in the order the model wrote them. A call's
+  `beforeToolCall` comes after the result of the call before it is complete. This rule is part of the seam, not a choice
+  of pi's. pi's own default is `parallel`, which starts each call before the call ahead of it ends. So the pi adapter
+  sets `toolExecution: "sequential"`. The reason is a measurement on the real Anthropic API (Haiku 5.5, 2026-10-22), in
+  the `@model` claim `continue-after-signed-push`
+  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). The model sent
+  `bash` with `git add … && git commit …` and the pick `publish` in one model answer. In 3 of 10 trials, `publish`
+  pushed before the commit existed. A `write` and a `bash` test run in one model answer had the same race. The rule is
+  for all tools, the Working tools and the Menu. The cost is that independent reads of one model answer do not run at
+  the same time. Four facts follow:
+  - Only the first pick of a model answer runs
+    ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). The model wrote a later one before it
+    read the first one's answer. The seam states two more facts, so that the Turn can find the first pick by itself. The
+    engine tells a model answer (`message_end`) before it asks `beforeToolCall` about a call of it. And it asks only
+    about a call of a tool the run has, with valid arguments. So the first pick is the first that reached
+    `beforeToolCall` in that model answer. A call of an unknown tool, or with invalid arguments, gets the engine's own
+    error, and it is never the first pick. A list of the model answer's calls would name such a call, and it would need
+    an id that some providers do not send.
+  - A call after a pick whose answer ended the Turn does not run: `beforeToolCall` blocks it. `endsRun` then ends the
+    run at the step boundary, so no model request follows. The Submission settles `aborted` every time, as when the
+    Orchestrator's abort lands first (ADR-0024).
+  - After an abort or a Runaway's trip ([ADR-0035](0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md)), the
+    calls before it have run. The engine runs no later call of that model answer and gives it no result. When the run
+    ends, the Turn writes jr2's answer for each such call in the engine part: "This call did not run: your turn ended
+    before it started." Without it, pi-ai answers "No result provided", which does not say whether the call ran.
+    [ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md) gives the restart's case.
+  - Each "did not run" result is an error result: a blocked call, and a call that the run never started. The call did
+    not do its work, and the model may make it again. A cut or unsent pick's answer (ADR-0031) is not an error, and
+    neither is the answer of a pick that the Harness may have delivered (ADR-0002), because an error reads as a failed
+    pick, and a cut pick may have run.
 
   The seam's tools, events and hooks are jr2's types. The seam's messages are pi-ai's provider messages, plus jr2's
   Compaction summary. pi-ai is the provider library, not the engine (see below), so these shapes are not the engine's.
@@ -132,6 +166,14 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
   shape, and the mechanics tier for no identified semantic gain. The wire was never the problem; the runtime behind it
   was.
 - **Fresh on pi, wire kept** — chosen.
+- **Run in order only a model answer that holds a Menu pick** (pi's per-tool `executionMode: "sequential"` on each Menu
+  tool), and the other model answers in parallel. Rejected. It is narrower, and independent reads keep their speed. But
+  it leaves the race between Working tools: a `write` and the `bash` test run that reads its file. Also, the seam would
+  have no rule of its own: the order would be a fact of which tools a model answer holds.
+- **Give `beforeToolCall` the names of the calls ahead of the call in its model answer** (`earlier`), for the first-pick
+  rule. Rejected. The list names a call that the engine did not prepare (an unknown tool, invalid arguments), so the
+  rule blocked a valid pick behind it. And the position of a call in the list needs the call's id, which a provider can
+  leave empty.
 
 ## Consequences
 
