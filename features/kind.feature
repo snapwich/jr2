@@ -468,8 +468,8 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's body is in "shipping"
       # ONE submission per state: the script rides the provider now, not a second submission, and
       # the Harness queues per conversation in admission order (ADR-0027). The turn `coding` asked
-      # for is over on the pod — not merely forgotten by the Orchestrator — and its model is still
-      # parked mid-turn, which is the shape an abort has to be able to end.
+      # for is over on the pod — not merely forgotten by the Orchestrator: the pick's answer ended its
+      # run at the step boundary, and it settled `aborted` whether or not the abort landed first.
       And the Harness reports 1 of the Agent's turns settled as "aborted"
       # …and the turn `shipping` asked for is NOT among them, on the SAME instance id. The abort was
       # ordered ahead of it, so it never settled work that had not run.

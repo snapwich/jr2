@@ -35,12 +35,19 @@ import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { compactionSummaryText } from "./compaction-summary.ts";
-import { RunawayError, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
+import {
+  RunawayError,
+  TURN_ENDED_MESSAGE,
+  TurnOverError,
+  type RunSubmission,
+  type SubmissionSeat,
+} from "./conversation.ts";
 import {
   briefingsOf,
   cutPickResult,
   readMenu,
   stalePickResult,
+  turnOverResult,
   unsentPickResult,
   type MenuItem,
   type MenuOptions,
@@ -319,6 +326,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
           // calls before the trip have run, and the engine runs no call after it. Were it to ask about
           // one, the block below stops it with the reason.
           //
+          // A pick's answer that ended the Turn (`turn.over`) blocks every later call of the
+          // Submission, before the watch counts it: the engine runs a model answer's calls in order,
+          // so a call after that pick comes after the Turn is over (`turnOverResult`).
+          //
           // A second pick of one model answer is blocked (ADR-0024): the model wrote it before it
           // read the first pick's answer, so it is stale by construction (`stalePickResult`). The
           // first pick is the first that reached THIS hook in the model answer (`turn.answerPick`):
@@ -326,6 +337,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
           // so a call of an unknown tool or with invalid arguments is never the first pick. The
           // blocked pick is still a step, so a model that repeats it is still a Runaway (ADR-0035).
           beforeToolCall: ({ name, args }) => {
+            if (turn.over) return { block: turnOverResult() };
             if (watch.tripped) return { block: watch.tripped };
             watch.steps += 1;
             const signature = `${name} ${JSON.stringify(args)}`;
@@ -342,8 +354,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
             turn.answerPick = name;
             return undefined;
           },
-          // A tripped watch ends at the step boundary: no steer, no other request.
-          endsRun: () => watch.tripped !== "",
+          // A tripped watch ends the run at the step boundary: no steer, no other request. So does a
+          // Turn that a pick's answer ended (`turn.over`, ADR-0024): no model request is sent for a
+          // Turn that is over, whether or not the Orchestrator's abort has landed.
+          endsRun: () => watch.tripped !== "" || turn.over,
         },
       });
       // Once per conversation — the subscriptions survive across Submissions; re-attaching per
@@ -478,6 +492,11 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // Checked first so the runaway reason wins over the generic mapping below; a sweep that raced
       // the trip still settles `aborted` — the pump's own signal check outranks any throw.
       if (watch.tripped) throw new RunawayError(watch.tripped);
+      // A pick's answer ended the Turn (`turn.over`), and `endsRun` ended the run at that step
+      // boundary: the Submission settles `aborted` every time, as it does when the Orchestrator's
+      // abort of the ended Turn lands first (ADR-0024). Which of the two comes first is a race, and a
+      // settlement must not follow it.
+      if (turn.over) throw new TurnOverError(TURN_ENDED_MESSAGE);
       // Read through the seat: the listener set it while the run ran.
       const last = turn.last as AssistantMessage | undefined;
       // The engine resolves its run even on abort/failure — its last message carries the outcome.

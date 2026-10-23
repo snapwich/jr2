@@ -179,8 +179,7 @@ test("an answer that left the Agent's state ends the Turn; the answer's words na
   };
   assert.equal(
     receiptProse(receipt, menuToolName),
-    'Delivered "ship" to the workflow (delivery d). The workflow took it and moved on: your turn is over. Stop here — ' +
-      "do not call this or any other tool again.",
+    'Delivered "ship" to the workflow (delivery d). The workflow took it and moved on: your turn is over.',
   );
   assert.equal(
     answerText({ kind: "event", event: "approve", sender: { party: "gate", id: "review" }, payload: { note: "ok" } }),
@@ -401,15 +400,14 @@ test("a pick whose work an exit stopped: the poll and the next Turn's notice say
     answered: true,
     stopped: true,
   };
-  const stop = "Stop here — do not call this or any other tool again.";
   const left =
     'Delivered "go" to the workflow (delivery d). The workflow left the state that asked for this turn while it ' +
     "ran your pick, and that stopped the pick's work before it finished: your turn is over.";
-  assert.equal(receiptProse(base, menuToolName), `${left} ${stop}`);
+  assert.equal(receiptProse(base, menuToolName), left);
   const built = { kind: "output" as const, actor: "build", output: { ok: true } };
   assert.equal(
     receiptProse({ ...base, answer: built }, menuToolName),
-    `${left} Its answer: the output of \`build\`: {"ok":true}. ${stop}`,
+    `${left} Its answer: the output of \`build\`: {"ok":true}.`,
   );
   const notice = {
     kind: "pick-answer" as const,

@@ -330,6 +330,18 @@ export function stalePickResult(first: string): string {
 }
 
 /**
+ * What a call answers when a pick ahead of it in the same model answer ended the Turn (ADR-0024): a
+ * receipt's `turnComplete`, or a 404. The engine runs the calls in order (ADR-0027), so this call
+ * comes after the Turn is over, and the Harness does not run it: a later pick would reach the NEXT Turn
+ * of a continued address, and a Working-tool call would act for a Turn that nobody waits on. The
+ * run ends at that step boundary, so only the NEXT Turn of a continued conversation reads this: it
+ * says what happened, and gives no order that would be false there.
+ */
+export function turnOverResult(): string {
+  return "This call did not run: a pick before it in your answer ended your turn.";
+}
+
+/**
  * What an outstanding pick's answer says, in words (ADR-0024): the last reply since the pick. With
  * none it says only that: work that a timer or an outside event stopped did run, so "nothing ran"
  * is a guard straight back's words alone (`receiptProse`).
@@ -501,12 +513,11 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
       const kept = receipt.answer === undefined ? "" : ` ${answerText(receipt.answer)}`;
       return (
         `${delivered} The workflow left the state that asked for this turn while it ran your pick, and that ` +
-        `stopped the pick's work before it finished: your turn is over.${kept} Stop here — do not call this or ` +
-        `any other tool again.`
+        `stopped the pick's work before it finished: your turn is over.${kept}`
       );
     }
     if (receipt.turnComplete) {
-      return `${delivered} The workflow took it and moved on: your turn is over. Stop here — do not call this or any other tool again.`;
+      return `${delivered} The workflow took it and moved on: your turn is over.`;
     }
     return receipt.straightBack === true
       ? `${delivered} It moved the workflow, and nothing ran: the workflow is back in the state that asked for ` +
@@ -515,7 +526,7 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
           `${answerText(receipt.answer)} Your turn is not over.${allowed}`;
   }
   return receipt.turnComplete
-    ? `${delivered} The workflow consumed it and moved on: your turn is over. Stop here — do not call this or any other tool again.`
+    ? `${delivered} The workflow consumed it and moved on: your turn is over.`
     : `${delivered} The workflow is still in the state that asked for this turn. Your turn is not over.${allowed}`;
 }
 

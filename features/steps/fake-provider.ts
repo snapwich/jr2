@@ -27,15 +27,15 @@
 //  3. Binds 0.0.0.0 and reports its PORT, so the World can publish a pod-reachable base URL
 //     (localhost never works from a pod — ADR-0019 says so in `HarnessProvider.baseUrl`). Its
 //     certificate names that address as an IP SAN, which is what the Custodian verifies.
-//  4. Holds the request that FOLLOWS a tool result too. After a pick the Harness asks the model
-//     again; if that answered, the submission could settle `completed` before the state-exit abort
-//     landed, making `completed` vs `aborted` a coin flip in the ADR-0024 scenarios. Held, the
-//     abort is the only settlement.
+//  4. Holds the request that FOLLOWS a tool result too: after a Working-tool call, or a pick that
+//     leaves the Turn open, the Harness asks the model again, and that request parks until a step
+//     releases it. After a pick that ENDS the Turn no request follows: the Harness ends the run at
+//     that step boundary and settles the submission `aborted`, whether or not the state-exit abort
+//     landed first (ADR-0024).
 //
-// Releases are matched by the OFFERED TOOL, not by arrival order, and that is load-bearing: after a
-// pick, the previous submission's post-tool-result request is still parked beside the next state's
-// fresh one. A model can only answer with a tool it was offered, so "the request offering `ship`"
-// names the turn `shipping` asked for and nothing else.
+// Releases are matched by the OFFERED TOOL, not by arrival order: a request an earlier turn left
+// parked can sit beside the next state's fresh one. A model can only answer with a tool it was
+// offered, so "the request offering `ship`" names a turn that may pick `ship`.
 
 import type { IncomingMessage, IncomingHttpHeaders, Server, ServerResponse } from "node:http";
 import { createServer } from "node:https";

@@ -321,8 +321,7 @@ When(
  * on it, and the Machine moves. Nothing on this side speaks the Menu routes or the Harness wire.
  *
  * The request is matched by the tool it was OFFERED, never by arrival order — see fake-provider.ts:
- * after a pick, the ended turn's post-tool-result request is parked beside the next state's fresh
- * one, and only the Menu tells them apart.
+ * a request an earlier turn left parked can sit beside the next state's fresh one.
  */
 When(
   "the Agent in the Sandbox calls {string} with summary {string}",

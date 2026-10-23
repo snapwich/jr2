@@ -52,11 +52,17 @@ export const SUBMISSION_CUT_MESSAGE =
  * construction: the pump's signal never fired, so `aborted` stays ADR-0024's word. */
 export class RunawayError extends Error {}
 
-/** A Turn that was over before it started (ADR-0026): its surface read answered 404, so the state
- * that asked for it has exited and the abort is on its way. `turn.ts` throws it before the model is
- * asked and before anything is written to the conversation; the pump settles it `aborted`, the
- * sweep's word — nothing is wrong, and a `failed` here would cry wolf. */
+/** A Turn that is over, so its Submission settles `aborted`, the sweep's word: nothing is wrong,
+ * and a `failed` here would cry wolf. Two cases. The Turn was over before it started (ADR-0026): its
+ * surface read answered 404, so the state that asked for it has exited and the abort is on its way;
+ * `turn.ts` throws it before the model is asked and before anything is written to the conversation.
+ * Or a pick's answer ended the Turn, and the run ended at the step boundary (ADR-0024,
+ * `TURN_ENDED_MESSAGE`): the settlement is the same whether or not the abort landed first. */
 export class TurnOverError extends Error {}
+
+/** The message of a Submission that a pick's answer ended (ADR-0024): `aborted`, typed as the sweep. */
+export const TURN_ENDED_MESSAGE =
+  "a pick's answer ended the Turn: the state that asked for it stopped waiting, so the run ended at the step boundary (ADR-0024)";
 
 /** One stream read, resolved to the end of the log. The HTTP layer carries `nextOffset` and
  * `upToDate` as the stream headers and `events` as the body. */
