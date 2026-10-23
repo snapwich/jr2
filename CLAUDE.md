@@ -71,8 +71,9 @@ JR2_MODEL_ENDPOINT=<name> just e2e-model      # another profile in features/mode
 ```
 
 The recipe probes the endpoint from the host first. With nothing answering it prints `skipped: no model endpoint at …`
-and exits 0 — report that skip in your handoff exactly as you would a result; it is never silent and never a pass. A
-key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone and never a file. Reachability from the PODS is
+and exits 0. A refusal prints its HTTP status, and a profile with `key` and no `JR2_MODEL_API_KEY` says that the
+variable is not set. Report that skip in your handoff exactly as you would a result; it is never silent and never a
+pass. A key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone and never a file. Reachability from the PODS is
 `jr2 up`'s own provider preflight, per scenario.
 
 **What it runs.** Nineteen scenarios in `features/model.feature`, serial (the endpoint is one shared capacity).

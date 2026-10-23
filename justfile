@@ -311,7 +311,9 @@ e2e-dist:
 # the model reads — the Briefing, the Menu, the Working tools, Compaction, the notices, the pi pin
 # — before calling the change done. The endpoint is PROBED first, from this host, so the recipe
 # can always be invoked: with nothing answering it says `skipped:` and exits 0, never silently.
-# Reachability from the PODS is `jr2 up`'s own preflight, per scenario.
+# Reachability from the PODS is `jr2 up`'s own provider preflight, per scenario, for every profile.
+# It checks each model from a check pod. So a pod with no egress to the API fails the converge at
+# the check pod (ADR-0019, ADR-0066).
 
 # run the @model e2e tier against the selected endpoint profile (needs `just e2e-kind-up`)
 e2e-model:
@@ -320,7 +322,12 @@ e2e-model:
     name="${JR2_MODEL_ENDPOINT:-homelab}"
     profile="features/model-endpoints/${name}.json"
     [ -f "$profile" ] || { echo "error: no endpoint profile ${profile} (JR2_MODEL_ENDPOINT=${name})" >&2; exit 1; }
-    read -r api base < <(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(p.api, p.baseUrl.replace(/\/+$/,""))' "$profile")
+    read -r api base key < <(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(p.api, p.baseUrl.replace(/\/+$/,""), p.key ?? "")' "$profile")
+    # A catalog-provider profile (`key`) cannot answer without its key: say which variable is unset.
+    if [ -n "$key" ] && [ -z "${JR2_MODEL_API_KEY:-}" ]; then
+        echo "skipped: JR2_MODEL_API_KEY is not set, and profile ${name} needs it (${key}) — the @model tier did not run"
+        exit 0
+    fi
     # The probe lists the models, the way each api does: Anthropic's base has no `/v1` and wants
     # `x-api-key` with a version, an OpenAI-compatible base ends in `/v1` and takes a bearer. The key
     # goes to curl on a pipe, never in its argv (ADR-0066: env alone).
@@ -328,8 +335,14 @@ e2e-model:
         anthropic-messages) url="${base}/v1/models"; headers="anthropic-version: 2023-06-01"$'\n'"x-api-key: ${JR2_MODEL_API_KEY:-}" ;;
         *) url="${base}/models"; headers="${JR2_MODEL_API_KEY:+Authorization: Bearer ${JR2_MODEL_API_KEY}}" ;;
     esac
-    if ! curl -fs --max-time 10 -H @<(printf '%s\n' "$headers") "$url" -o /dev/null; then
+    # `000` is no answer at all (curl failed to connect); another status is a refusal, printed.
+    code=$(curl -s --max-time 10 -H @<(printf '%s\n' "$headers") "$url" -o /dev/null -w '%{http_code}' || true)
+    if [ "${code:-000}" = "000" ]; then
         echo "skipped: no model endpoint at ${base} (profile ${name}) — the @model tier did not run"
+        exit 0
+    fi
+    if [ "${code:0:1}" != "2" ]; then
+        echo "skipped: the model endpoint at ${base} answered HTTP ${code} (profile ${name}) — the @model tier did not run"
         exit 0
     fi
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
