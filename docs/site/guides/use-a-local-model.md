@@ -69,15 +69,16 @@ See [`agent()`](../reference/authoring-surface.md#agent) for the other fields of
 jr2 up
 ```
 
-`jr2 up` starts a pod in the cluster. The pod sends `GET /models` to the endpoint, then asks for one tool call. You see
-these lines:
+`jr2 up` starts a pod in the cluster, on the nodes where the Agents that name the model run. The pod asks the endpoint
+for one tool call for each model, as a Turn asks. You see these lines when the Agent is a `workspace: "none"` Agent:
 
 <!-- output: not run -->
 
 ```text
 …
-provider: probing http://<address>:8000/v1 from inside the cluster (model qwen3.6-35b-a3b)
-provider: qwen3.6-35b-a3b reachable, and it completed a tool call
+provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), direct, as a pod that holds no secret calls it
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 ```
 
@@ -176,8 +177,9 @@ jr2 up
 …
 held secret JR2_PROVIDER_API_KEY → <address>:8000 (literal)
 …
-provider: probing https://<address>:8000/v1 from inside the cluster (model qwen3.6-35b-a3b)
-provider: qwen3.6-35b-a3b reachable, and it completed a tool call
+provider: checking local/qwen3.6-35b-a3b on the Instance Harness, through a Custodian that holds JR2_PROVIDER_API_KEY for <address>:8000
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 ```
 
@@ -190,15 +192,16 @@ Sandbox that starts after `jr2 up` gets the new key.
 
 `jr2 up` prints each refusal after `error: `.
 
-- `jr2 up` stops when the check of the endpoint fails. The first line gives the error. The other lines are the usual
-  causes:
+- `jr2 up` stops when the check of the endpoint fails. A pod in the cluster asks the endpoint for one tool call for each
+  model, as a Turn asks. The pod has a Custodian, so a key in `apiKey` is held as in a Harness pod. The first line gives
+  the error. The other lines are the usual causes:
 
   ```text
-  provider preflight failed for model "<model>" against <baseUrl> (from inside the cluster): <error>
+  provider preflight failed for model "<model>" against <host> (from a pod on <where>, as a Turn calls it): <error>
     - localhost never works from a pod; use a LAN address
     - the model id must be exactly what the endpoint serves (vLLM: GET /v1/models)
     - vLLM needs --enable-auto-tool-choice and a matching --tool-call-parser
-    - finish_reason "length" means the model ran out of tokens before the call (a thinking model reasons first)
+    - stop reason "length" means the model ran out of tokens before the call (a thinking model reasons first)
   ```
 
 - When an Agent names a model of the provider, `jr2 up` refuses a key with an endpoint that is not `https://`:
@@ -210,8 +213,8 @@ Sandbox that starts after `jr2 up` gets the new key.
   `harness.env[<i>] sets <NAME>, which the Custodian owns while a held secret exists — it cannot chain to another proxy or trust store yet. Drop the entry; put a private CA in harness.caBundle (ADR-0059).`
 - `jr2 up` warns about a key when no Agent names a model of the provider:
   `warning: harness.provider.apiKey is named by nothing; goes nowhere — no Agent names a "<id>/…" model (ADR-0059)`.
-- The Harness refuses an `api` other than `"openai-completions"` when it starts:
-  `provider "<id>" names api "<api>" — this Harness speaks: openai-completions (ADR-0018)`.
+- `jr2 up` refuses an `api` other than `"openai-completions"` before it builds or applies anything:
+  `refusing: harness.provider.api is "<api>" — the Harness speaks: openai-completions (ADR-0018)`.
 - `harness.provider.id` must not also be a key of `harness.catalog`. `jr2 up` refuses it:
   `harness.catalog.<id>: "<id>" is also harness.provider.id — a custom provider owns its own baseUrl; rename the custom provider or drop the catalog entry (ADR-0059)`.
 

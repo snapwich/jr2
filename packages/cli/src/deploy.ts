@@ -1080,8 +1080,8 @@ export const LABEL_PROVIDER_PREFLIGHT = "jr2.dev/provider-preflight";
 /** The probe's container in that pod, whose output `jr2 up` reads. */
 export const PROVIDER_PREFLIGHT_CONTAINER = "probe";
 
-/** Every object of one probe (`catalogProbeObjects`), for its deletion. */
-export function catalogProbeObjectNames(object: string): Array<{ kind: string; name: string }> {
+/** Every object of one probe (`providerProbeObjects`), for its deletion. */
+export function providerProbeObjectNames(object: string): Array<{ kind: string; name: string }> {
   return [
     { kind: "pod", name: object },
     { kind: "configmap", name: object },
@@ -1117,7 +1117,7 @@ export function catalogProbeObjectNames(object: string): Array<{ kind: string; n
  * selects by label, and would send Turns to it. The Custodian is a native sidecar with a startup
  * probe, so the probe starts only once Envoy serves and the pod ends when the probe does.
  */
-export function catalogProbeObjects(opts: {
+export function providerProbeObjects(opts: {
   name: string;
   namespace: string;
   /** This probe's object name (`jr2-provider-preflight-<run>-<n>`) and its run, for the label. */

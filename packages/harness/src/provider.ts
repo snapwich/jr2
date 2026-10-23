@@ -40,8 +40,9 @@ import type { CatalogReachSpec, ProviderSpec, HarnessSpec, ResolvedDefinition, T
 
 /** The wire protocols a custom provider may name. One entry today: the OpenAI-compatible path is
  * what `harness.provider` documents (vLLM/Ollama); an unlisted `api` throws at boot, never a
- * provider that silently cannot stream. */
-const CUSTOM_APIS: Record<string, () => ProviderStreams> = {
+ * provider that silently cannot stream. `jr2 up` refuses against `CUSTOM_PROVIDER_APIS` in
+ * `@jr2/orchestrator`, which a test holds equal to these keys. */
+export const CUSTOM_APIS: Record<string, () => ProviderStreams> = {
   "openai-completions": openAICompletionsApi,
 };
 

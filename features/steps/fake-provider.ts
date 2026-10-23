@@ -15,10 +15,11 @@
 // Ported from `packages/harness/test/support/rig.ts`'s `startFakeProvider`, with four deltas the
 // @kind placement forces:
 //
-//  1. NON-STREAMING answers. `jr2 up`'s provider preflight (ADR-0019) POSTs `/chat/completions`
-//     WITHOUT `stream` and demands `choices[0].message.tool_calls`, on every scenario's converge —
-//     a stream-only fake would fail 100% of scenarios at `Given the kind instance is serving`.
-//     `GET /models` must answer too.
+//  1. The PREFLIGHT is answered at once. `jr2 up`'s provider preflight (ADR-0019) runs the stock
+//     Harness's `provider-preflight.ts` in a pod with a Custodian, so it streams like a Turn and offers one
+//     `ping` tool with the prompt "Call the ping tool."; it demands a tool call, on every
+//     scenario's converge. A fake that parked it as a Turn would fail 100% of scenarios at `Given
+//     the kind instance is serving`. A non-streaming completion and `GET /models` are answered too.
 //  2. A HOLD/RELEASE queue instead of a fixed script array. A parked turn is a held provider
 //     request: the Machine parks because the model has not answered yet, which is exactly what a
 //     real Agent that is still thinking looks like. "The Agent calls X" is the host RELEASING that
@@ -51,7 +52,7 @@ export type RecordedCall = {
   tools: string[];
   /** The model id the request named — `<model>` after the provider prefix (ADR-0018). */
   model?: string;
-  /** True for a turn request; false for `jr2 up`'s converge-time preflight, which never streams. */
+  /** True for a turn request; false for `jr2 up`'s converge-time preflight (`isPreflight`). */
   stream: boolean;
   /** The whole body, serialized — where a tool RESULT is visible (the messages a step asserts on). */
   raw: string;
@@ -115,8 +116,8 @@ export async function startFakeProvider(opts: {
     let raw = "";
     req.on("data", (chunk: Buffer) => (raw += chunk));
     req.on("end", () => {
-      // The key or nothing (ADR-0059). The preflight pod sends it directly; a Harness pod's
-      // request carries it only if its Custodian swapped the Stand-in for it.
+      // The key or nothing (ADR-0059). A request carries it only if its Custodian swapped the
+      // Stand-in for it: a Harness pod's and the preflight pod's alike.
       if (req.headers.authorization !== `Bearer ${opts.apiKey}`) {
         unauthorized.push({ url: req.url ?? "", headers: req.headers });
         res.writeHead(401, { "content-type": "application/json" });
@@ -137,19 +138,26 @@ export async function startFakeProvider(opts: {
         tools?: Array<{ function?: { name?: string } }>;
       };
       seq += 1;
+      const tools = (body.tools ?? []).map((t) => t.function?.name ?? "?");
+      const preflight = isPreflight(tools, raw);
       const call: RecordedCall = {
-        tools: (body.tools ?? []).map((t) => t.function?.name ?? "?"),
+        tools,
         ...(body.model ? { model: body.model } : {}),
-        stream: body.stream === true,
+        stream: body.stream === true && !preflight,
         raw,
         seq,
       };
       calls.push(call);
 
+      if (preflight && body.stream === true) {
+        // `jr2 up`'s preflight (ADR-0019): one trivial completion that MUST answer with a tool call,
+        // proving the endpoint can do tool calling at all. Answered as a stream, as a Turn is.
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        streamToolCall(res, "ping", "{}");
+        return;
+      }
       if (!call.stream) {
-        // `jr2 up`'s preflight (ADR-0019): one trivial completion that MUST answer with tool_calls,
-        // proving the endpoint can do tool calling at all. It offers a single `ping` tool; answer
-        // whatever it offered, so the probe's own contract is what decides the name.
+        // A completion that does not stream: answer whatever single tool it offered.
         answerPreflight(res, call.tools[0] ?? "ping");
         return;
       }
@@ -259,7 +267,13 @@ function finish(entry: Held): void {
   clearInterval(entry.keepalive);
 }
 
-/** The non-streaming answer shape `jr2 up`'s probe reads: `choices[0].message.tool_calls`. */
+/** `jr2 up`'s provider preflight (`probeModel` in `@jr2/harness`): it offers the `ping` tool alone
+ * and asks for it by name. No Menu has a `ping`: a Menu tool is `mcp__jr2__<event>`. */
+function isPreflight(tools: string[], raw: string): boolean {
+  return tools.length === 1 && tools[0] === "ping" && raw.includes("Call the ping tool.");
+}
+
+/** The non-streaming answer shape of a completion: `choices[0].message.tool_calls`. */
 function answerPreflight(res: ServerResponse, toolName: string): void {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(

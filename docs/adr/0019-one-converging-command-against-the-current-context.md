@@ -62,11 +62,15 @@ loudly narrated, safe to re-run:
   `--enable-auto-tool-choice` then fails at converge time, not as `agent.fault` in a run. Reachability is the user's
   concern (`localhost` never works from a pod; a LAN address does on kind). The check must take the path that the
   Harness takes. If it does not, a pass means nothing.
-  - **The custom provider** (`harness.provider`, ADR-0018). A `kubectl run` pod calls its `baseUrl` once for each
-    distinct model. The pod trusts `caBundle` as the Harness does. The script of that pod holds
-    `harness.provider.apiKey` as a literal, so the key is in the pod spec. This does not agree with ADR-0059.
-  - **A catalog provider** (pi's catalog, for example `anthropic/…`). Its key is a held secret, and only a Custodian can
-    use it ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
+  - **One path for every provider.** `up` checks the custom provider (`harness.provider`, ADR-0018) and a provider of
+    pi's catalog (for example `anthropic/…`) in the same way. A key of either is a held secret, and only a Custodian can
+    use it ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). So no key enters a pod
+    spec, an argv or a script. The check calls the custom provider as a Turn calls it: it does not force the tool,
+    because a vLLM without a tool parser answers a forced tool and then fails every Turn. When the custom provider
+    answers twice with no tool call, the check fails. `up` refuses a `harness.provider.api` that the Harness does not
+    speak before it builds or applies anything: the list is the Harness's own (`CUSTOM_APIS`, held equal to
+    `CUSTOM_PROVIDER_APIS` in `@jr2/orchestrator` by a test). When the check container cannot build its registry from
+    the config, each model's result says why, in words.
   - **The check pod.** It is a Harness pod with no Harness in it. It has a Custodian and the stock Harness image's
     `provider-preflight.ts`. The function that composes the Custodian of every Harness pod composes this Custodian too.
     Its token is a value that the Orchestrator never signed. `provider-preflight.ts` gets the env of the Harness
@@ -113,6 +117,9 @@ loudly narrated, safe to re-run:
     - An error: the check fails, or it is busy (below). A forced tool could pass where a Turn fails: a vLLM behind a
       `harness.catalog` gateway, with no `--enable-auto-tool-choice`, answers a named tool by guided decoding and
       refuses the Turn's request.
+    - Text from the custom provider: a Turn there gets a nudge after text, so the check sends the same call once more. A
+      tool call then passes, an error decides as above, and text again fails, because that is how a vLLM with no tool
+      parser answers.
     - Text from any other model: a warning. When the model is of pi's catalog, has `off`, is not moved to a gateway, and
       its api has a form for a forced tool, a second call forces the tool. It does not change the verdict, only the
       words of the warning: with a tool call, the model answered in text when the tool was not forced; with text or an
@@ -130,7 +137,7 @@ loudly narrated, safe to re-run:
     with 120 s to its first event and 60 s of the gaps that follow. Each model has its own 360 s, so one slow model does
     not use the time of the others. Two literals set it, `PREFLIGHT_MODEL_BUDGET_SECONDS` in `preflight-line.ts` for the
     check and `PROBE_MODEL_SECONDS` in `up.ts` for the pod, and a test holds them equal. A call or a model that runs out
-    fails. For a gateway, the error adds that a model that loads on first use can take longer.
+    fails. For the custom provider and a gateway, the error adds that a model that loads on first use can take longer.
   - **Busy, when a call runs out.** The rule: the last status that any try of the call got was a 429 or a 529, and then
     the call ran out. A later 200 or 503 clears it. pi-ai sends each retry as a new request. The check sees each try
     through a `fetch` wrapper of its own. It sees Bedrock's tries through `onResponse`, because Bedrock's retries are

@@ -11,7 +11,6 @@ import { join } from "node:path";
 import {
   kubeFloorRefusal,
   kubectlKube,
-  oneShotFailure,
   REACH_BUDGET_MS,
   rolloutFailure,
   rolloutStatusArgs,
@@ -22,39 +21,6 @@ import {
   waitPodEnd,
   type PodEndPorts,
 } from "../src/kube.ts";
-
-/** What `promisify(execFile)` rejects with: a message built from stderr, plus both streams. */
-function execFileRejection(stdout: string, stderr: string): Error {
-  return Object.assign(new Error(`Command failed: kubectl run …\n${stderr}`), { stdout, stderr });
-}
-
-test("the pod's own output leads, and kubectl's verdict follows", () => {
-  const err = oneShotFailure(
-    execFileRejection(
-      "[TypeError: fetch failed] { cause: ENOTFOUND vllm.example }\n",
-      "pod ns/jr2-provider-preflight-1 terminated (Error)\n",
-    ),
-  );
-  const lines = err.message.split("\n");
-  assert.equal(lines[0], "[TypeError: fetch failed] { cause: ENOTFOUND vllm.example }");
-  assert.match(err.message, /terminated \(Error\)/);
-});
-
-test("a failure that attached nothing is passed through unchanged", () => {
-  const original = execFileRejection("", "error: timed out waiting for the condition\n");
-  assert.equal(oneShotFailure(original), original);
-});
-
-test("whitespace-only attached output does not add an empty line", () => {
-  const err = oneShotFailure(execFileRejection("\n  \n", "pod ns/probe terminated (Error)\n"));
-  assert.doesNotMatch(err.message, /^\s*\n/);
-});
-
-test("a non-Error rejection still yields an Error", () => {
-  const err = oneShotFailure("kubectl is not installed");
-  assert.ok(err instanceof Error);
-  assert.equal(err.message, "kubectl is not installed");
-});
 
 // --- the rollout wait's diagnosis (ADR-0046) ---------------------------------------------------
 // Same philosophy one layer up: `kubectl rollout status` says "timed out waiting for the condition"
@@ -112,7 +78,6 @@ function mkKube(opts: {
     deleteObject: async () => assert.fail("a diagnosis changes nothing"),
     deleteManifest: async () => assert.fail("a diagnosis changes nothing"),
     waitRollout: async () => assert.fail("the wait already failed"),
-    runOneShot: async () => assert.fail("a diagnosis runs no pods") as never,
     awaitPodEnd: async () => assert.fail("a diagnosis runs no pods") as never,
     serverVersion: async () => assert.fail("a diagnosis reads no version") as never,
     dryRunCreate: async () => assert.fail("a diagnosis dry-runs nothing") as never,

@@ -19,7 +19,8 @@ import {
 } from "../src/provider.ts";
 import { startFakeProvider } from "./support/rig.ts";
 import { resolveDefinition, type HarnessSpec, type ThinkingLevel } from "../src/spec.ts";
-import { unlimitedPayload } from "../src/provider.ts";
+import { CUSTOM_APIS, unlimitedPayload } from "../src/provider.ts";
+import { CUSTOM_PROVIDER_APIS } from "@jr2/orchestrator/internal";
 
 const vllm: HarnessSpec = {
   provider: {
@@ -331,4 +332,8 @@ test("unlimitedPayload: a custom model with no limit at all sends none — pi-ai
   } finally {
     await provider.close();
   }
+});
+
+test("CUSTOM_APIS is the list jr2 up refuses against (CUSTOM_PROVIDER_APIS in @jr2/orchestrator)", () => {
+  assert.deepEqual(Object.keys(CUSTOM_APIS).sort(), [...CUSTOM_PROVIDER_APIS].sort());
 });

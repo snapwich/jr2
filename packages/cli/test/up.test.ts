@@ -29,7 +29,7 @@ import {
 } from "@jr2/orchestrator/internal";
 import { linkKit } from "./_kit.ts";
 import {
-  catalogProbes,
+  providerProbes,
   heldDigest,
   MAP_PROPAGATION,
   podFault,
@@ -37,7 +37,7 @@ import {
   probeVerdicts,
   up,
 } from "../src/commands/up.ts";
-import { catalogProbeObjects, instanceObjects, type HeldObjects } from "../src/deploy.ts";
+import { providerProbeObjects, instanceObjects, type HeldObjects } from "../src/deploy.ts";
 // The Harness's own result-line writer, from beside it, so the CLI's parser is held to its format.
 // Loaded at run time: it is another package's source, outside this one's compiled tree.
 type PreflightVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
@@ -226,15 +226,6 @@ class FakeCluster implements KubeAdmin {
     const pod = JSON.parse(opts.manifest);
     if (this.podResourcesDropped) delete pod.spec.resources;
     return pod;
-  }
-  probes: string[] = [];
-  probeCaPems: Array<string | undefined> = [];
-  probeFails = false;
-  async runOneShot(opts: { script: string; caPem?: string }): Promise<string> {
-    this.probes.push(opts.script);
-    this.probeCaPems.push(opts.caPem);
-    if (this.probeFails) throw new Error("no tool_calls in the completion");
-    return "PROVIDER OK";
   }
   /** The provider preflight's probe pods (ADR-0019), as applied when each was waited on, with the
    * rollouts waited on and the manifests applied by then. `probeAnswers` scripts a model's line
@@ -2502,7 +2493,7 @@ test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a m
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.internal/v1" } } };\n`;
   const pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
 
-  const root = await mkInstance(config, "myinst", { coder: { model: "vllm/qwen-x" } });
+  const root = await mkInstance(config, "myinst", { coder: { model: "vllm/qwen-x", workspace: "none" } });
   await writeFile(join(root, "ca.crt"), pem);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
@@ -2517,7 +2508,15 @@ test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a m
     "the trust exists before any pod of the Instance that mounts it",
   );
   // The preflight pod trusts the same bundle the Harness will — else it fails where pods succeed.
-  assert.deepEqual(w.kube.probeCaPems, [pem]);
+  const probe = w.kube.probePods[0]!.pod.spec;
+  const caEnv = probe.containers[0].env.find((e: { name: string }) => e.name === "NODE_EXTRA_CA_CERTS");
+  assert.equal(caEnv?.value, "/etc/jr2/ca/ca.crt");
+  // …from its own copy of the trust, written for its life (ADR-0019).
+  assert.ok(
+    probe.volumes.some(
+      (v: { configMap?: { name: string } }) => v.configMap?.name === `${w.kube.probePods[0]!.pod.metadata.name}-ca`,
+    ),
+  );
 
   const missing = mkWorld(await mkInstance(config, "missing"));
   await assert.rejects(() => up(["--yes"], missing.io), /caBundle.*relative to the instance folder/s);
@@ -2570,44 +2569,88 @@ test("converged is claimed only of a pod observed carrying the intended image", 
   assert.match(honest.err.join("\n"), /converged/);
 });
 
-test("provider preflight: every definition's model probed from inside the cluster; a failing probe fails the converge", async () => {
+test("provider preflight: the custom provider's models go the same path, its key held and never in a pod spec", async () => {
   const config =
     `export default { name: "myinst", harness: { ` +
-    `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } } };\n`;
-  // Four slots on ONE Machine — two on the endpoint, one repeat, one on another provider. The
-  // preflight probes the DISTINCT vllm models and leaves the anthropic one alone.
+    `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.lan:8000/v1", apiKey: "sk-vllm-real" } } };\n`;
+  // Two slots on the endpoint, one repeat, one on another provider: each DISTINCT model is probed.
   const agents: Record<string, FixtureAgent> = {
-    coder: { model: "vllm/qwen-x" },
-    reviewer: { model: "vllm/qwen-small" },
-    scribe: { model: "vllm/qwen-x" },
-    judge: { model: "anthropic/claude-x" },
+    coder: { model: "vllm/qwen-x", workspace: "none" },
+    reviewer: { model: "vllm/qwen-small", workspace: "none" },
+    scribe: { model: "vllm/qwen-x", workspace: "none" },
+    judge: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
   };
-
   const ok = mkWorld(await mkInstance(config, "myinst", agents));
   assert.equal(await up(["--yes"], ok.io), 0);
-  assert.equal(ok.kube.probes.length, 2, "one probe per DISTINCT model this endpoint serves");
-  assert.ok(
-    ok.kube.probes.every((p) => /10\.0\.0\.5:8000/.test(p)),
-    "the probes target the configured baseUrl",
+  const { pod } = ok.kube.probePods[0]!;
+  // In the walk's order (sorted), each once.
+  assert.deepEqual(pod.spec.containers[0].command.slice(4), [
+    "anthropic/claude-haiku-5-5",
+    "vllm/qwen-small",
+    "vllm/qwen-x",
+  ]);
+  const env = pod.spec.containers[0].env as Array<{ name: string; value?: string }>;
+  assert.equal(env.find((e) => e.name === "JR2_PROVIDER_API_KEY")?.value, "jr2-held-JR2_PROVIDER_API_KEY");
+  const probeList = JSON.parse(ok.kube.applied.find((m) => m.includes(`"name":"${pod.metadata.name}"`))!) as {
+    items: Array<Record<string, any>>;
+  };
+  assert.deepEqual(
+    probeList.items
+      .filter((i) => JSON.stringify(i).includes("sk-vllm-real"))
+      .map((i) => `${i.kind}/${i.metadata.name}`),
+    [`Secret/${pod.metadata.name}`],
+    "the key is in the probe's own Secret alone — not in its pod spec, argv or script",
   );
-  const probed = ok.kube.probes.join("\n");
-  assert.match(probed, /qwen-x/, "…with a carried definition's model (provider prefix stripped)");
-  assert.match(probed, /qwen-small/, "…and the other one");
-  assert.ok(!/claude-x/.test(probed), "a model on another provider is not this endpoint's business");
-  assert.match(ok.kube.probes[0]!, /tool_calls/, "…and demands a tool-call completion (ADR-0019)");
+  assert.match(
+    ok.err.join("\n"),
+    /provider: checking vllm\/qwen-small, vllm\/qwen-x on the Instance Harness, through a Custodian that holds JR2_PROVIDER_API_KEY for vllm\.lan:8000/,
+  );
 
   const bad = mkWorld(await mkInstance(config, "bad", agents));
-  bad.kube.probeFails = true;
-  await assert.rejects(() => up(["--yes"], bad.io), /provider.*enable-auto-tool-choice/s);
+  bad.kube.probeAnswers["vllm/qwen-small"] = 'fault=the answer carried no tool call (stop reason "length")';
+  await assert.rejects(
+    () => up(["--yes"], bad.io),
+    (err: Error) => {
+      assert.match(err.message, /^provider preflight failed for model "vllm\/qwen-small" against vllm\.lan:8000/);
+      for (const hint of [
+        /localhost never works from a pod/,
+        /exactly what the endpoint serves/,
+        /--enable-auto-tool-choice and a matching --tool-call-parser/,
+        /stop reason "length" means the model ran out of tokens/,
+        /held secret JR2_PROVIDER_API_KEY may be wrong/,
+      ])
+        assert.match(err.message, hint);
+      assert.ok(!/add its key to `secrets`/.test(err.message), "a custom provider's key is optional");
+      return true;
+    },
+  );
+});
+
+test("provider preflight: the custom provider's refused key lists the key first, and not the reach", async () => {
+  const config =
+    `export default { name: "myinst", harness: { ` +
+    `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.lan:8000/v1", apiKey: "sk-vllm-real" } } };\n`;
+  const w = mkWorld(await mkInstance(config, "myinst", { coder: { model: "vllm/qwen-x", workspace: "none" } }));
+  w.kube.probeAnswers["vllm/qwen-x"] =
+    "fault=openai-completions call to https://vllm.lan:8000/v1 failed: 401 Unauthorized";
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      const lines = err.message.split("\n").slice(1);
+      assert.match(lines[0]!, /^ {2}- the held secret JR2_PROVIDER_API_KEY may be wrong/);
+      assert.ok(!lines.some((l) => /localhost never works/.test(l)));
+      return true;
+    },
+  );
 });
 
 test("provider preflight: configured but no carried Agent names its models → skipped, not a silent pass", async () => {
   const config =
     `export default { name: "myinst", harness: { ` +
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } } };\n`;
-  const w = mkWorld(await mkInstance(config, "myinst", { judge: { model: "anthropic/claude-x" } }));
+  const w = mkWorld(await mkInstance(config, "myinst", { judge: { model: "anthropic/claude-x", workspace: "none" } }));
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.equal(w.kube.probes.length, 0);
+  assert.ok(!w.kube.probePods[0]!.pod.spec.containers[0].command.some((m: string) => m.startsWith("vllm/")));
   assert.match(w.err.join("\n"), /no carried Agent names a "vllm\/…" model/);
 });
 
@@ -2643,12 +2686,12 @@ function walkOf(workspace: string[] | undefined, instance: string[] | undefined)
 
 const WS_POD = workspaceHeldPod({ workflow: "w", route: [] });
 
-test("catalogProbes: every model a Harness pod runs, in a probe with its pod's placement, with the keys a pod there holds", () => {
+test("providerProbes: every model a Harness pod runs, in a probe with its pod's placement, with the keys a pod there holds", () => {
   const config = {
     sandbox: { nodeSelector: { pool: "sandbox" } },
     harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } },
   } as const;
-  const probes = catalogProbes(
+  const probes = providerProbes(
     config,
     walkOf(
       ["anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5", "openai/gpt-x", "vllm/qwen-x", "antropic/typo"],
@@ -2673,15 +2716,17 @@ test("catalogProbes: every model a Harness pod runs, in a probe with its pod's p
         ["ANTHROPIC_API_KEY"],
         ["api.anthropic.com"],
       ],
-      // No pod holds a key of these: probed with none, as a Turn there would run. The custom provider keeps its own probe.
+      // No pod holds a key of these: probed with none, as a Turn there would run.
       ["openai", ["openai/gpt-x"], [], ["api.openai.com"]],
+      // The custom provider goes the same way; it has no key here (`apiKey` is optional).
+      ["vllm", ["vllm/qwen-x"], [], ["10.0.0.5:8000"]],
       ["antropic", ["antropic/typo"], [], []],
     ],
   );
 });
 
-test("catalogProbes: one probe when the Sandbox nodes have no predicate of their own, and a gateway is the host", () => {
-  const probes = catalogProbes(
+test("providerProbes: one probe when the Sandbox nodes have no predicate of their own, and a gateway is the host", () => {
+  const probes = providerProbes(
     { harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } } } },
     walkOf(["anthropic/claude-sonnet-5-5"], ["anthropic/claude-haiku-5-5"]),
     [],
@@ -2755,9 +2800,9 @@ test("podFault: the hint follows the kubelet's reason, and quotes the Custodian'
   );
 });
 
-test("catalogProbeObjects: the probe pod takes its placement, and labels that select no Harness pod", () => {
+test("providerProbeObjects: the probe pod takes its placement, and labels that select no Harness pod", () => {
   const list = JSON.parse(
-    catalogProbeObjects({
+    providerProbeObjects({
       name: "myinst",
       namespace: "myinst",
       object: "jr2-provider-preflight-ab12cd34-0",
@@ -3079,10 +3124,10 @@ test("catalog provider preflight: a pod that never ran says why, from the kubele
   );
 });
 
-test("catalogProbes: a probe stands for one class of pod — its nodes, and whether it holds a secret (its proxy)", () => {
+test("providerProbes: a probe stands for one class of pod — its nodes, and whether it holds a secret (its proxy)", () => {
   // A Workspace that holds a workspace() secret calls a keyless provider through its Custodian's
   // tunnel; the probe holds that pod's set, so it has the proxy too.
-  const tunnel = catalogProbes({}, walkOf(["openai/gpt-x"], undefined), [
+  const tunnel = providerProbes({}, walkOf(["openai/gpt-x"], undefined), [
     heldPod(WS_POD, ["JIRA_TOKEN"], { JIRA_TOKEN: "jira.example" }),
   ]);
   assert.deepEqual(
@@ -3091,7 +3136,7 @@ test("catalogProbes: a probe stands for one class of pod — its nodes, and whet
   );
   // The same nodes, a Workspace that holds a key and an Instance Harness that holds nothing: two
   // probes, one through a Custodian, one direct.
-  const split = catalogProbes({}, walkOf(["anthropic/claude-haiku-5-5"], ["openai/gpt-x"]), [
+  const split = providerProbes({}, walkOf(["anthropic/claude-haiku-5-5"], ["openai/gpt-x"]), [
     heldPod(WS_POD, ["ANTHROPIC_API_KEY"]),
     heldPod("instance", []),
   ]);
@@ -3104,10 +3149,10 @@ test("catalogProbes: a probe stands for one class of pod — its nodes, and whet
   );
 });
 
-test("catalogProbeObjects: a binding with no leaf is a jr2 defect, thrown before anything is applied", () => {
+test("providerProbeObjects: a binding with no leaf is a jr2 defect, thrown before anything is applied", () => {
   assert.throws(
     () =>
-      catalogProbeObjects({
+      providerProbeObjects({
         name: "myinst",
         namespace: "myinst",
         object: "o",
@@ -3267,6 +3312,22 @@ test("provider preflight: a result said while the pod ran stands when the last l
     "jr2.preflight model=anthropic/claude-haiku-5-5 start\njr2.preflight model=anthropic/claude-haiku-5-5 ok";
   assert.equal(await up(["--yes"], w.io), 0);
   assert.match(w.err.join("\n"), /provider: anthropic\/claude-haiku-5-5 reachable/);
+});
+
+test("refusing: a harness.provider.api the Harness does not speak, before anything is built or applied (ADR-0018)", async () => {
+  const w = mkWorld(
+    await mkInstance(
+      `export default { name: "myinst", harness: { provider: { id: "local", api: "ollama-native", baseUrl: "http://10.0.0.5:11434" } } };\n`,
+      "myinst",
+      { coder: { model: "local/qwen", workspace: "none" } },
+    ),
+  );
+  assert.equal(await up(["--yes"], w.io), 1);
+  assert.match(
+    w.err.join("\n"),
+    /refusing: harness\.provider\.api is "ollama-native" — the Harness speaks: openai-completions/,
+  );
+  assert.equal(w.kube.applied.length, 0);
 });
 
 test("provider preflight: a check pod whose log cannot be read says so, and is not called a check that did not run", async () => {

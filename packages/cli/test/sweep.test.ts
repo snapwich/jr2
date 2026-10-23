@@ -49,7 +49,6 @@ function mkKube(listing: Listing): KubeAdmin & { queries: string[] } {
     deleteManifest: async () => assert.fail("the sweep deletes no objects"),
     waitRollout: async () => assert.fail("the sweep waits for nothing"),
     logs: async () => assert.fail("the sweep reads no logs") as never,
-    runOneShot: async () => assert.fail("the sweep probes nothing") as never,
     awaitPodEnd: async () => assert.fail("the sweep probes nothing") as never,
     serverVersion: async () => assert.fail("the sweep reads no version") as never,
     dryRunCreate: async () => assert.fail("the sweep dry-runs nothing") as never,

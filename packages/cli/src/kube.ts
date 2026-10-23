@@ -146,18 +146,6 @@ export type KubeAdmin = {
   /** `kubectl create --dry-run=server -o json -f -`: the object as admission would store it,
    * stored nowhere. THROWS on a refusal, with kubectl's reason. */
   dryRunCreate(opts: { manifest: string; context?: string }): Promise<{ spec?: { resources?: unknown } }>;
-  /** Run a one-shot node script IN the cluster (`kubectl run --rm`) and return its output — the
-   * provider-preflight seam (ADR-0019: reachability must be probed from where pods live).
-   * `caPem` makes the probe trust a private CA the same way the Harness does (ADR-0020):
-   * `NODE_EXTRA_CA_CERTS`, which must be process env at node start — it cannot be set from
-   * inside the script. */
-  runOneShot(opts: {
-    namespace: string;
-    name: string;
-    script: string;
-    caPem?: string;
-    context?: string;
-  }): Promise<string>;
   /** Wait until one pod has run to its end, and read its logs — the provider preflight's seam
    * (ADR-0019, ADR-0059). Its pod has a Custodian beside the probe, which `kubectl run` cannot
    * make, so `jr2 up` applies it and waits here. Two bounds: `startSeconds` until the probe
@@ -556,42 +544,6 @@ export const kubectlAdmin: KubeAdmin = {
     return JSON.parse(out) as { spec?: { resources?: unknown } };
   },
 
-  async runOneShot({ namespace, name, script, caPem, context }) {
-    // With a CA bundle: write the PEM to a file BEFORE node starts, because NODE_EXTRA_CA_CERTS
-    // is only honored as process-start env. The PEM rides an env var base64'd (multiline values
-    // and `--env` don't mix); `"$1"` keeps the script out of shell parsing entirely (execFile
-    // passes argv verbatim, no host shell either).
-    const command = caPem
-      ? ["sh", "-ec", 'echo "$JR2_CA_B64" | base64 -d > /tmp/jr2-ca.crt && exec node -e "$1"', "sh", script]
-      : ["node", "-e", script];
-    try {
-      const { stdout } = await exec(
-        "kubectl",
-        [
-          ...ctxArgs(context),
-          ...nsArgs(namespace),
-          "run",
-          name,
-          "--rm",
-          "--attach",
-          "--restart=Never",
-          "--quiet",
-          "--image=node:24-slim",
-          ...(caPem
-            ? [`--env=JR2_CA_B64=${Buffer.from(caPem).toString("base64")}`, "--env=NODE_EXTRA_CA_CERTS=/tmp/jr2-ca.crt"]
-            : []),
-          "--command",
-          "--",
-          ...command,
-        ],
-        { timeout: 180_000 },
-      );
-      return stdout;
-    } catch (err) {
-      throw oneShotFailure(err);
-    }
-  },
-
   async awaitPodEnd({ namespace, name, container, startSeconds, runSeconds, context, onPending, onLog }) {
     const ctx = context ? { context } : {};
     return waitPodEnd(
@@ -617,22 +569,6 @@ export const kubectlAdmin: KubeAdmin = {
     );
   },
 };
-
-/**
- * A one-shot probe's failure, made readable. `kubectl run --attach` streams the POD's own output
- * on ITS stdout, and kubectl writes only its verdict ("pod … terminated (Error)") to stderr — so
- * the one line that says WHY (a stack, a DNS error, an HTTP status) is exactly what execFile's
- * error message drops, since that message carries stderr alone. The provider preflight (ADR-0019)
- * exists to be the cheapest diagnosis available; without the pod's own words it can only report
- * that something in the cluster exited non-zero, and the caller is back to reproducing the probe
- * by hand. So the attached output leads, and the kubectl verdict follows it.
- */
-export function oneShotFailure(err: unknown): Error {
-  const attached = typeof (err as { stdout?: unknown })?.stdout === "string" ? (err as { stdout: string }).stdout : "";
-  const base = err instanceof Error ? err.message : String(err);
-  const trimmed = attached.trim();
-  return trimmed ? new Error(`${trimmed}\n${base}`) : err instanceof Error ? err : new Error(base);
-}
 
 /** What a rollout wait needs to know to go looking: the workload that did not come up (a Deployment
  * unless `kind` says otherwise), and the label selector its pods carry (each converge layer already
@@ -720,8 +656,7 @@ type EventObject = {
  * A rollout's failure, made readable (ADR-0046). `kubectl rollout status` reports its verdict and
  * nothing else — `error: timed out waiting for the condition` — so the fact that says WHY (an
  * `exec format error`, a pull the kubelet gave up on, a Secret that is not there) lives in the
- * pods, which the caller then goes and reads by hand. This is `oneShotFailure()` one layer up: the
- * evidence leads, kubectl's verdict follows, and `jr2 up`'s three rollout waits share the one pair
+ * pods, which the caller then goes and reads by hand. So the evidence leads, kubectl's verdict follows, and `jr2 up`'s three rollout waits share the one pair
  * of eyes.
  *
  * Every read here is best-effort by construction. It runs only after a failure has already

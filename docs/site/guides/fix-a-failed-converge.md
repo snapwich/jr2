@@ -232,16 +232,16 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `error: secrets[<i>].valueFrom names Secret "<name>", which does not exist in the instance's namespace — create it first: kubectl create secret generic <name> --from-literal=<key>=... (ADR-0019, ADR-0059)`,
   and `error: secrets[<i>].valueFrom names key "<key>" of Secret "<name>", which has no such key (ADR-0059)`
 - When [`harness.provider`](../reference/config.md#harness-provider) is set and an
-  [Agent](../reference/glossary.md#agent) uses its models, a pod in the cluster asks the provider for one tool call.
-  When the call fails:
-  `error: provider preflight failed for model "<model>" against <url> (from inside the cluster): <error>`. Four lines
-  follow, with the usual causes:
+  [Agent](../reference/glossary.md#agent) uses its models, a pod in the cluster asks the provider for one tool call for
+  each model. When a call fails:
+  `error: provider preflight failed for model "<model>" against <host> (from a pod on <where>, as a Turn calls it): <error>`.
+  Four lines follow, with the usual causes. A fifth line follows when `apiKey` is set: the key may be wrong.
 
   ```text
     - localhost never works from a pod; use a LAN address
     - the model id must be exactly what the endpoint serves (vLLM: GET /v1/models)
     - vLLM needs --enable-auto-tool-choice and a matching --tool-call-parser
-    - finish_reason "length" means the model ran out of tokens before the call (a thinking model reasons first)
+    - stop reason "length" means the model ran out of tokens before the call (a thinking model reasons first)
   ```
 
   See [Use a local model](use-a-local-model.md).

@@ -15,8 +15,6 @@ const exec = promisify(execFile);
 
 /** The refs `jr2 up` does not deliver. Keep in step with the files named beside each. */
 export const EXTRA_IMAGES = [
-  // `jr2 up`'s provider preflight runs its probe in this (packages/cli/src/kube.ts `runOneShot`).
-  "node:24-slim",
   // seed.mjs — the git server the toy repo is served from.
   "alpine/git:v2.47.2",
   "nginx:1.27-alpine",

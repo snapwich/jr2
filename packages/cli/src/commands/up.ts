@@ -3,9 +3,8 @@
 // AGENTS.md block (ADR-0072: a file in the Instance folder, not the cluster) → typecheck → the
 // Machine walk → staging the Assembly (ADR-0069) → the Kubernetes floor (ADR-0037) → ownership →
 // image resolution → Kit images (the operator, the Harness, the Orchestrator) → Sandbox Images →
-// Secret (+ preflight of referenced Secrets) → the custom provider's preflight → the catalog
-// providers' preflight (ADR-0059: through a Custodian, in pods that read their own objects) →
-// operator → git ssh keys → apply → rollout → the cache
+// Secret (+ preflight of referenced Secrets) → the provider preflight (ADR-0019, ADR-0059: through a
+// Custodian, in pods that read their own objects) → operator → git ssh keys → apply → rollout → the cache
 // agent (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted
 // when none does) → Instance Harness (ADR-0031: converged by convention when a carried definition
 // declares `workspace: "none"`, deleted when none does) → Instance Effector → publishing the Assembly to the
@@ -119,7 +118,9 @@ import {
   type HeldPodPlan,
   type ImageRefs,
   MODEL_KEYS,
+  PROVIDER_KEY_NAME,
   type PlacementWalk,
+  CUSTOM_PROVIDER_APIS,
   type SandboxPlacement,
   workspaceHeldPod,
   type JR2Config,
@@ -175,9 +176,9 @@ import {
   type HeldObjects,
   type CustodianFiles,
   type HeldPodObjects,
-  catalogProbeObjects,
+  providerProbeObjects,
   LABEL_PROVIDER_PREFLIGHT,
-  catalogProbeObjectNames,
+  providerProbeObjectNames,
   PROVIDER_PREFLIGHT,
   PROVIDER_PREFLIGHT_CONTAINER,
 } from "../deploy.ts";
@@ -236,6 +237,16 @@ export async function up(args: string[], io: Io): Promise<number> {
   if (!checked.ok) {
     activity(io, "refusing: this instance does not typecheck — nothing was built and nothing was applied");
     for (const line of checked.output.split("\n")) activity(io, `  ${line}`);
+    return 1;
+  }
+  // A custom provider's wire protocol, from the Harness's own list (`CUSTOM_PROVIDER_APIS`): the
+  // Harness refuses any other at boot, and a check pod would only crash on it (ADR-0018).
+  const api = config.harness?.provider?.api;
+  if (api !== undefined && !CUSTOM_PROVIDER_APIS.includes(api)) {
+    activity(
+      io,
+      `refusing: harness.provider.api is "${api}" — the Harness speaks: ${CUSTOM_PROVIDER_APIS.join(", ")} (ADR-0018)`,
+    );
     return 1;
   }
 
@@ -973,18 +984,21 @@ export async function up(args: string[], io: Io): Promise<number> {
     caBundle: caPem,
   });
 
-  // --- provider preflight (ADR-0019): probe the custom endpoint FROM INSIDE the cluster ---------
-  // Its probe sends its own key and needs nothing the apply writes.
-  await preflightProvider(io, kube, config, carried.models, namespace, ctx, caPem);
-
-  // --- catalog provider preflight (ADR-0019, ADR-0059): through a Custodian, FROM INSIDE ---------
+  // --- provider preflight (ADR-0019, ADR-0059): through a Custodian, FROM INSIDE the cluster -----
   // BEFORE anything the Instance or the cluster reads is written — the operator, a deploy key, the
   // trust, the held objects, the instance List: each probe pod has its own copies of what it reads,
   // from the values on this host. So a probe that fails leaves the Instance, its Assembly and the
   // operator as they were. Only the namespace, the PriorityClasses and the delivered images come
   // first, because the probe pod needs them.
-  const probes = catalogProbes(config, placementWalk, held.objects.pods);
-  await preflightCatalog(io, kube, {
+  const probes = providerProbes(config, placementWalk, held.objects.pods);
+  const custom = config.harness?.provider;
+  if (custom && !probes.some((p) => p.providers.some((v) => v.id === custom.id))) {
+    activity(
+      io,
+      `provider: ${custom.baseUrl} configured, but no carried Agent names a "${custom.id}/…" model — skipped`,
+    );
+  }
+  await preflightProviders(io, kube, {
     probes,
     name,
     namespace,
@@ -2415,69 +2429,8 @@ async function preflightDispatch(io: Io, effects: readonly CarriedEffect[]): Pro
   }
 }
 
-/**
- * The custom-provider preflight (ADR-0019): from a pod, list models AND demand one trivial
- * tool-call completion — so an unreachable endpoint (localhost never works from a pod) or a vLLM
- * missing `--enable-auto-tool-choice` fails HERE, at converge time, not as an `agent.fault`
- * mid-run. Reachability itself stays the user's concern; this makes the answer immediate.
- */
-async function preflightProvider(
-  io: Io,
-  kube: KubeAdmin,
-  config: JR2Config,
-  carriedModels: readonly string[],
-  namespace: string,
-  ctx: { context?: string },
-  caPem?: string,
-): Promise<void> {
-  const provider = config.harness?.provider;
-  if (!provider) return;
-  // The DEFINITIONS name the models (ADR-0018) and the Machines carry the definitions (ADR-0049),
-  // so probe the ones that will actually run, not one instance-wide default.
-  // "vllm/Qwen/Qwen3-32B" → the endpoint's model id is everything after the provider prefix; a
-  // definition on a different provider is not this endpoint's business. A workflow's per-turn dial cannot be probed here — invoke `input` is a
-  // function, so it is not statically recoverable; it is checked at admission instead.
-  // An Open model is nobody's model yet (ADR-0054), so there is nothing to probe for it. The walk
-  // already refused the converge above, so this filter is the type's, not the flow's.
-  const prefix = `${provider.id}/`;
-  // An Open body's allowed models are probed too (ADR-0070): a Chart's own Agent may name one.
-  const models = [...new Set(carriedModels.filter((m) => m.startsWith(prefix)).map((m) => m.slice(prefix.length)))];
-  if (models.length === 0) {
-    activity(
-      io,
-      `provider: ${provider.baseUrl} configured, but no carried Agent names a "${provider.id}/…" model — skipped`,
-    );
-    return;
-  }
-  for (const model of models) {
-    activity(io, `provider: probing ${provider.baseUrl} from inside the cluster (model ${model})`);
-    const script = providerProbeScript(provider.baseUrl, model, provider.apiKey);
-    try {
-      // caPem: the probe trusts the instance's CA bundle exactly like the Harness will (ADR-0020) —
-      // a preflight that fails where the Harness would succeed is a broken promise, and vice versa.
-      await kube.runOneShot({
-        namespace,
-        name: `jr2-provider-preflight-${Date.now() % 100000}`,
-        script,
-        caPem,
-        ...ctx,
-      });
-      activity(io, `provider: ${model} reachable, and it completed a tool call`);
-    } catch (err) {
-      throw new Error(
-        `provider preflight failed for model "${model}" against ${provider.baseUrl} (from inside the cluster): ` +
-          `${err instanceof Error ? err.message : err}\n` +
-          `  - localhost never works from a pod; use a LAN address\n` +
-          `  - the model id must be exactly what the endpoint serves (vLLM: GET /v1/models)\n` +
-          `  - vLLM needs --enable-auto-tool-choice and a matching --tool-call-parser\n` +
-          `  - finish_reason "length" means the model ran out of tokens before the call (a thinking model reasons first)`,
-      );
-    }
-  }
-}
-
 /** One provider of one probe pod (ADR-0019, ADR-0059). */
-export type CatalogProvider = {
+export type ProbedProvider = {
   /** The provider id, the specifier's part before the first `/`. */
   id: string;
   /** Every carried model of it that a Harness pod of this placement runs: a typo, a retired model
@@ -2490,17 +2443,20 @@ export type CatalogProvider = {
   hosts: string[];
   /** `harness.catalog.<id>.baseUrl`, when it moves the provider. */
   gateway?: string;
+  /** The custom provider (`harness.provider`, ADR-0018): its key is optional, and its causes are
+   * its own. */
+  custom?: true;
 };
 
 /** One probe pod: the providers that the Harness pods of one placement call. */
-export type CatalogProbe = {
+export type ProviderProbe = {
   /** For a human: `the Sandbox nodes`, `the Instance Harness`, or both. */
   where: string;
   /** The node predicate of those pods (ADR-0052); none for the Instance Harness. */
   placement?: SandboxPlacement;
   /** The bindings of the probed keys: each a part of a held pod's manifest. */
   manifest: HeldManifest;
-  providers: CatalogProvider[];
+  providers: ProbedProvider[];
 };
 
 /** One Harness pod as the walk places it: its held pod key, its class, the models it runs, and
@@ -2512,7 +2468,8 @@ type Seat = { pod: string; sandbox: boolean; models: readonly string[]; held: He
  * that a Harness pod runs is probed, in a pod with that pod's placement: a Workspace's model on the
  * Sandbox nodes, a `"none"` Agent's where the Instance Harness runs, so a node class whose egress is
  * closed fails here. The two are one probe when their placements are the same. The custom provider
- * is not a catalog one, and keeps its own probe.
+ * (`harness.provider`) goes the same way: its key is a held secret too (`JR2_PROVIDER_API_KEY`), so
+ * the key never enters a pod spec, an argv or a script.
  *
  * In one placement, a provider's keys are the ones the first pod there that runs one of its models
  * holds (`MODEL_KEYS`, claimed by the provider). The probe holds that pod's bindings of them and
@@ -2520,8 +2477,12 @@ type Seat = { pod: string; sandbox: boolean; models: readonly string[]; held: He
  * all the same, with no key: a Turn there meets the same, and pi says so (`not configured`); a
  * signing credential in `harness.env` reaches the probe as it reaches a Turn. Pure, for its test.
  */
-export function catalogProbes(config: JR2Config, walk: PlacementWalk, pods: readonly HeldPodObjects[]): CatalogProbe[] {
-  const custom = config.harness?.provider?.id;
+export function providerProbes(
+  config: JR2Config,
+  walk: PlacementWalk,
+  pods: readonly HeldPodObjects[],
+): ProviderProbe[] {
+  const custom = config.harness?.provider;
   const heldOf = (pod: string) => pods.find((p) => p.pod === pod)?.manifest.secrets ?? [];
   const seats: Seat[] = [
     ...walk.workspaces.map((ws) => {
@@ -2559,11 +2520,11 @@ export function catalogProbes(config: JR2Config, walk: PlacementWalk, pods: read
     group.seats.push(seat);
     groups.set(key, group);
   }
-  const probes: CatalogProbe[] = [];
+  const probes: ProviderProbe[] = [];
   for (const group of groups.values()) {
     const models: string[] = [];
     for (const seat of group.seats) for (const m of seat.models) if (!models.includes(m)) models.push(m);
-    const probe: CatalogProbe = {
+    const probe: ProviderProbe = {
       where: [
         ...(group.seats.some((s) => s.sandbox) ? ["the Sandbox nodes"] : []),
         ...(group.seats.some((s) => !s.sandbox) ? ["the Instance Harness"] : []),
@@ -2577,13 +2538,15 @@ export function catalogProbes(config: JR2Config, walk: PlacementWalk, pods: read
     for (const model of models) {
       const slash = model.indexOf("/");
       const id = slash > 0 ? model.slice(0, slash) : model;
-      if (id === custom) continue;
       const known = probe.providers.find((p) => p.id === id);
       if (known) {
         known.models.push(model);
         continue;
       }
-      const names = Object.keys(MODEL_KEYS).filter((name) => MODEL_KEYS[name]!.providers.includes(id));
+      const names =
+        id === custom?.id
+          ? [PROVIDER_KEY_NAME]
+          : Object.keys(MODEL_KEYS).filter((name) => MODEL_KEYS[name]!.providers.includes(id));
       const runs = group.seats.filter((s) => s.models.some((m) => m.startsWith(`${id}/`)));
       const holder = runs
         .map((s) => pods.find((p) => p.pod === s.pod))
@@ -2594,11 +2557,15 @@ export function catalogProbes(config: JR2Config, walk: PlacementWalk, pods: read
         probe.manifest.secrets.push(b);
       }
       const gateway = config.harness?.catalog?.[id]?.baseUrl;
-      const fallback = gateway
-        ? [new URL(gateway).host]
-        : names.flatMap((n) => (MODEL_KEYS[n]!.host ? [MODEL_KEYS[n]!.host!] : [])).slice(0, 1);
+      const fallback =
+        id === custom?.id
+          ? [new URL(custom.baseUrl).host]
+          : gateway
+            ? [new URL(gateway).host]
+            : names.flatMap((n) => (MODEL_KEYS[n]!.host ? [MODEL_KEYS[n]!.host!] : [])).slice(0, 1);
       probe.providers.push({
         id,
+        ...(id === custom?.id ? { custom: true } : {}),
         models: [model],
         keys: bindings.map((b) => b.name),
         hosts: bindings.length ? [...new Set(bindings.flatMap((b) => b.hosts.map(hostText)))] : fallback,
@@ -2624,7 +2591,7 @@ const PROBE_RUN_MARGIN_SECONDS = 30;
 const PROBE_LEFTOVER_SECONDS = 3600;
 
 /**
- * The provider preflight (ADR-0019, ADR-0059): each probe pod of `catalogProbes`, one at a time — a
+ * The provider preflight (ADR-0019, ADR-0059): each probe pod of `providerProbes`, one at a time — a
  * one-shot Harness-shaped pod, a Custodian that holds the providers' keys and the stock Harness
  * image's `provider-preflight.ts` — that demands one tool call of each model, on the path a Turn takes. So no
  * egress to the provider's host, a missing, wrong or empty key, a model no endpoint serves, and a
@@ -2632,17 +2599,17 @@ const PROBE_LEFTOVER_SECONDS = 3600;
  * included, and every failure is in one error. A provider still busy after the retries, and a
  * model that answered but did not call a tool it was not forced to, are warnings (ADR-0064).
  *
- * Each pod reads its own objects (`catalogProbeObjects`), written from `values`, `leaves`, `trust`
+ * Each pod reads its own objects (`providerProbeObjects`), written from `values`, `leaves`, `trust`
  * and `harnessEnvData` — what the apply would write — and named for this run (`<run>-<n>`), so two
  * converges in one namespace never read or delete each other's. The ones of an earlier run of this
  * Instance that did not end go first (`removeProbeLeftovers`). A failed cleanup is a warning and
  * never hides the probe's own answer.
  */
-async function preflightCatalog(
+async function preflightProviders(
   io: Io,
   kube: KubeAdmin,
   opts: {
-    probes: CatalogProbe[];
+    probes: ProviderProbe[];
     name: string;
     namespace: string;
     ctx: { context?: string };
@@ -2675,7 +2642,9 @@ async function preflightCatalog(
     for (const p of probe.providers) {
       // No held key is not no credential: a credential that pi reads from `harness.env` (an AWS
       // role for Bedrock, say) reaches the check as it reaches a Turn.
-      const why = `no Harness pod there holds a key of "${p.id}"; a credential in harness.env still reaches it`;
+      const why = p.custom
+        ? "harness.provider has no apiKey"
+        : `no Harness pod there holds a key of "${p.id}"; a credential in harness.env still reaches it`;
       const holds = p.keys.length
         ? `through a Custodian that holds ${p.keys.join(", ")} for ${p.hosts.join(", ")}`
         : probe.manifest.secrets.length
@@ -2690,7 +2659,7 @@ async function preflightCatalog(
     );
     const runSeconds = PROBE_MODEL_SECONDS * models.length + PROBE_RUN_MARGIN_SECONDS;
     // Built before the apply: a fault in jr2 here is jr2's, never the cluster's refusal.
-    const manifest = catalogProbeObjects({
+    const manifest = providerProbeObjects({
       name: opts.name,
       namespace,
       object,
@@ -2766,7 +2735,7 @@ async function preflightCatalog(
           (started.has(model)
             ? `the check pod stopped while it checked this model: ${pod()}`
             : `not checked: the check pod stopped before it reached this model: ${pod()}`);
-        faults.push(catalogFault(p, model, probe.where, why, probe.manifest.secrets.length > 0));
+        faults.push(providerFault(p, model, probe.where, why, probe.manifest.secrets.length > 0));
       }
     }
   }
@@ -2807,7 +2776,7 @@ function trustData(
 export const PROBE_ENDED_MARGIN_SECONDS = 600;
 
 /**
- * The leftovers of earlier runs of THIS Instance (`preflightCatalog`), by label: a probe pod
+ * The leftovers of earlier runs of THIS Instance (`preflightProviders`), by label: a probe pod
  * past its `activeDeadlineSeconds` and `PROBE_ENDED_MARGIN_SECONDS`, in any phase; a probe pod that
  * ended more than `PROBE_ENDED_MARGIN_SECONDS` ago; each with its objects; and each object whose
  * pod is gone and that is older than any probe lives. A live pod, a pod that ended a short time
@@ -2861,7 +2830,7 @@ async function removeProbeLeftovers(
 
 /** One probe's objects, deleted; a failure is a warning, so it hides no probe's answer. */
 async function removeProbe(io: Io, kube: KubeAdmin, object: string, namespace: string, ctx: { context?: string }) {
-  for (const { kind, name } of catalogProbeObjectNames(object)) {
+  for (const { kind, name } of providerProbeObjectNames(object)) {
     try {
       await kube.deleteObject({ kind, name, namespace, wait: false, ...ctx });
     } catch (err) {
@@ -2927,7 +2896,7 @@ export function probeVerdicts(output: string): Map<string, ProbeVerdict> {
  */
 export function podFault(
   end: PodEnd,
-  probe: Pick<CatalogProbe, "where">,
+  probe: Pick<ProviderProbe, "where">,
   images: { harnessImage: string; custodianImage: string },
 ): string {
   const refusal = /jr2\.custodian refuse secret=\S+ reason=[\w-]+/.exec(end.custodian)?.[0];
@@ -2984,14 +2953,33 @@ export function podFault(
 }
 
 /** One model's preflight failure: the model, the host, and the likely causes. */
-function catalogFault(p: CatalogProvider, model: string, where: string, fault: string, custodian: boolean): string {
+function providerFault(p: ProbedProvider, model: string, where: string, fault: string, custodian: boolean): string {
   const hosts = p.hosts.join(", ") || `the host of "${p.id}"`;
   // A model that loads on first use (Ollama, a large vLLM model) can take longer than the bound.
-  // Only where jr2 cannot know the endpoint: a gateway.
+  // Only where jr2 cannot know the endpoint: the custom provider, or a gateway.
   const slow =
-    p.gateway && /no answer in \d+ s|no verdict in \d+ s|time ran out/.test(fault)
+    (p.custom || p.gateway) && /no answer in \d+ s|no verdict in \d+ s|time ran out/.test(fault)
       ? "  - a model that loads on first use can take longer than the check waits: run `jr2 up` again once it has loaded\n"
       : "";
+  if (p.custom) {
+    // The custom provider's own causes (ADR-0018): an endpoint jr2 knows nothing about but its url.
+    return (
+      `provider preflight failed for model "${model}" against ${hosts} (from a pod on ${where}, as a Turn calls it): ` +
+      `${fault}\n` +
+      slow +
+      // A refused key: the endpoint answered, so the key comes first and the reach is not it.
+      (refusedKey(fault)
+        ? (p.keys.length
+            ? `  - the held secret ${p.keys.join(" or ")} may be wrong (harness.provider.apiKey)\n`
+            : "  - the endpoint wants a key: set harness.provider.apiKey\n") +
+          "  - the model id must be exactly what the endpoint serves (vLLM: GET /v1/models)"
+        : "  - localhost never works from a pod; use a LAN address\n" +
+          "  - the model id must be exactly what the endpoint serves (vLLM: GET /v1/models)\n" +
+          "  - vLLM needs --enable-auto-tool-choice and a matching --tool-call-parser\n" +
+          '  - stop reason "length" means the model ran out of tokens before the call (a thinking model reasons first)' +
+          (p.keys.length ? `\n  - the held secret ${p.keys.join(" or ")} may be wrong (harness.provider.apiKey)` : ""))
+    );
+  }
   const key = p.keys.length
     ? `  - the held secret ${p.keys.join(" or ")} may be empty, wrong, or without access to this model (\`secrets\` in jr2.config.ts)\n`
     : `  - no Harness pod on ${where} holds a key of "${p.id}": add its key to \`secrets\`` +
@@ -3015,35 +3003,6 @@ function catalogFault(p: CatalogProvider, model: string, where: string, fault: s
         "(a LiteLLM model_name alias)\n"
       : "") +
     "  - a private CA on that path must be in harness.caBundle"
-  );
-}
-
-/**
- * The in-cluster probe: GET /models, then one chat completion that must answer with tool_calls. The budget
- * is generous because a thinking model (Qwen3, DeepSeek-R1) reasons BEFORE it calls the tool, and that
- * reasoning counts against max_tokens — at 64 the completion ended with finish_reason "length" and an
- * empty tool_calls, which read as "the endpoint cannot call tools" when it could.
- */
-function providerProbeScript(baseUrl: string, model: string, apiKey?: string): string {
-  const base = JSON.stringify(baseUrl.replace(/\/+$/, ""));
-  const headers = apiKey
-    ? `{ "content-type": "application/json", authorization: "Bearer " + ${JSON.stringify(apiKey)} }`
-    : `{ "content-type": "application/json" }`;
-  return (
-    `const h = ${headers};` +
-    `const m = await fetch(${base} + "/models", { headers: h });` +
-    `if (!m.ok) throw new Error("GET /models: HTTP " + m.status);` +
-    `const c = await fetch(${base} + "/chat/completions", { method: "POST", headers: h, body: JSON.stringify({` +
-    ` model: ${JSON.stringify(model)}, max_tokens: 1024,` +
-    ` messages: [{ role: "user", content: "Call the ping tool." }],` +
-    ` tools: [{ type: "function", function: { name: "ping", description: "reply with a ping", parameters: { type: "object", properties: {} } } }]` +
-    ` }) });` +
-    `const j = await c.json();` +
-    `if (!c.ok) throw new Error("POST /chat/completions: HTTP " + c.status + " " + JSON.stringify(j).slice(0, 300));` +
-    `const choice = j.choices?.[0];` +
-    `const calls = choice?.message?.tool_calls;` +
-    `if (!calls?.length) throw new Error("completion carried no tool_calls (finish_reason " + JSON.stringify(choice?.finish_reason ?? null) + ")");` +
-    `console.log("PROVIDER OK");`
   );
 }
 

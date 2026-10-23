@@ -67,9 +67,8 @@ The [Kit images](../reference/glossary.md#kit-image) do not go to `registry`. Th
 the Envoy image of the [Custodian](../reference/glossary.md#custodian) from `docker.io`. When the nodes cannot reach
 those registries, see [Mirror the Kit images](mirror-the-kit-images.md).
 
-When the Instance sets `harness.provider` and an [Agent](../reference/glossary.md#agent) names one of its models,
-`jr2 up` also checks the model from a pod in the cluster. That pod uses the image `node:24-slim`, which the nodes pull
-from `docker.io`. `kitRegistry` does not change this image.
+`jr2 up` also checks each model that an [Agent](../reference/glossary.md#agent) names, from a pod in the cluster. That
+pod uses the Harness Kit image and the Envoy image of the Custodian, so it needs no other image.
 
 ## Choose the platforms
 

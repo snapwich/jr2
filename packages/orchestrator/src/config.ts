@@ -228,6 +228,11 @@ export type HarnessProviderModel = {
   maxTokens?: number;
 };
 
+/** The wire protocols the Harness speaks for a custom provider (`harness.provider.api`, ADR-0018) —
+ * `CUSTOM_APIS` in `@jr2/harness`, whose test holds the two lists equal. `jr2 up` refuses any other
+ * value before it starts anything, as the Harness would refuse it at boot. */
+export const CUSTOM_PROVIDER_APIS: readonly string[] = ["openai-completions"];
+
 // A custom model provider (ADR-0018) — what the stock Harness registers with pi's
 // `registerProvider(id, { api, baseUrl, … })` (ADR-0027). The vLLM/Ollama path: an
 // OpenAI-compatible endpoint under an instance-chosen provider id.
@@ -239,8 +244,9 @@ export type HarnessProvider = {
    * `harness.catalog.<id>: "<id>" is also harness.provider.id — a custom provider owns its own baseUrl`. */
   id: string;
   /** The wire protocol. The only value is `"openai-completions"`, which most OpenAI-compatible
-   * endpoints speak, such as vLLM and Ollama. The Harness refuses any other value when it starts:
-   * `provider "<id>" names api "<api>" — this Harness speaks: openai-completions`. */
+   * endpoints speak, such as vLLM and Ollama. `jr2 up` refuses any other value before it builds or
+   * applies anything:
+   * `refusing: harness.provider.api is "<api>" — the Harness speaks: openai-completions (ADR-0018)`. */
   api: string;
   // Deployment-varying → resolve from env (`.env`), never hardcode (ADR-0019).
   /** The endpoint's URL. The pods must reach it: `localhost` never works, and a LAN address works
