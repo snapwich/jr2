@@ -246,12 +246,49 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
 
   See [Use a local model](use-a-local-model.md).
 
+- When an Agent uses a model of pi's catalog (for example `anthropic/claude-haiku-5-5`), a pod in the cluster asks the
+  provider for one tool call for each model. The pod has the placement of the Harness pods that run the model, and a
+  Custodian that holds the secrets of those pods. When a call fails:
+  `error: provider preflight failed for model "<model>" toward <host> (from a pod on <where>, through a Custodian, as a Turn calls it): <error>`.
+  When the pods hold no secret, the error says `direct` in place of `through a Custodian`. Each failed model has its own
+  error. Lines with the usual causes follow:
+
+  ```text
+    - the pods may have no egress to <host> (a NetworkPolicy, a firewall, no route out of the cluster)
+    - the held secret <NAME> may be empty, wrong, or without access to this model (`secrets` in jr2.config.ts)
+    - a private CA on that path must be in harness.caBundle
+  ```
+
+  When the provider refused the key (a 401 or a 403), the line about the held secret comes first, and the line about
+  egress is left out, because the provider answered. When no Harness pod holds a key of the provider, the line about the
+  key says which key to add to `secrets`. With a [`harness.catalog`](../reference/config.md#harness-catalog) gateway for
+  the provider, a line also says that the gateway may not answer, or may not serve the model. A 503 is an error: a
+  gateway with no backend, or a server that still loads its model, answers 503.
+
+  When the check pod cannot start, the error says why:
+  - a node cannot pull an image;
+  - a Secret or a key that `harness.envFrom` or a `harness.env` valueFrom names is missing;
+  - a Secret or a key that a `secrets` valueFrom names is missing (the volume does not mount);
+  - the Custodian refused a held value;
+  - a container ran out of memory.
+
+  While the check pod waits to start, `jr2 up` writes why, for example
+  `provider: the check pod is not running yet — Unschedulable: …`. A provider that is busy after the retries (a 429, a
+  529, an overload) is a warning, not an error. A model that answers the request of a Turn in text, not with a tool
+  call, is a warning too. When a model of the custom provider, or behind a `harness.catalog` gateway, gives no answer in
+  time (`no answer in 120 s`), the error adds that it can be a model that loads on first use: run `jr2 up` again once it
+  has loaded. A provider that answers 429 and then never answers a retry is a warning; for Gemini and Vertex it is an
+  error, because their tries are not seen. When the check pod stops before the end, the error says which model the check
+  was on, and `not checked` for each model that it never reached.
+
+  The check has a limit. The check pod has labels of its own, so a NetworkPolicy that selects the Harness pods by label
+  does not select the check pod. When such a policy closes the egress of the Harness pods, the check can pass while a
+  Turn fails.
+
 - Each rollout must complete. The error starts with
   `error: <part>: rollout did not complete in namespace <namespace> — the pods say:`. See
-  [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). The rollout of the operator
-  (`jr2-controller-manager`) comes before the check of the Sandbox Images. With an installed Kit, it also comes before
-  the lockfile check, the registry check of a cluster that is not kind, and the qemu check. The other rollouts come
-  after the provider check.
+  [Fix a rollout that does not complete](#fix-a-rollout-that-does-not-complete). Every rollout comes after the provider
+  check, the rollout of the operator (`jr2-controller-manager`) too.
 - When the rollout made no pod, the error says:
   `no pod matches <selector> — the ReplicaSet made none (check quota, node taints, and the selector)`. For the Repo
   cache and the [Instance Harness](../reference/glossary.md#instance-harness), it names the DaemonSet or the
