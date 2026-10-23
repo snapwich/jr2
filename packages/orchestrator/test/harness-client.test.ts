@@ -707,6 +707,17 @@ test("memoryKills: a kill with no id or time is skipped; bad sizes or told entri
     { ...good, id: "k-4", limit: "9".repeat(40) + "Gi" },
     { ...good, id: "k-5", told: [{ agent: "coder", instanceId: "i-1" }, { agent: 7 }, "x"] },
     { ...good, id: "k-6", told: undefined },
+    // The wire's bounds, the Harness's too: an id or a time past 64, a name past 128.
+    { ...good, id: "k".repeat(65) },
+    { ...good, id: "k-7", at: `${good.at}${" ".repeat(64)}` },
+    {
+      ...good,
+      id: "k-8",
+      told: [
+        { agent: "a".repeat(129), instanceId: "i-1" },
+        { agent: "coder", instanceId: "i-2" },
+      ],
+    },
   ];
   const lines: string[] = [];
   const answer = () => new Response(JSON.stringify({ kills: sent }), { status: 200 });
@@ -723,10 +734,11 @@ test("memoryKills: a kill with no id or time is skipped; bad sizes or told entri
       { id: "k-4", at, told: [] },
       { ...good, id: "k-5", told: [{ agent: "coder", instanceId: "i-1" }] },
       { ...good, id: "k-6" },
+      { ...good, id: "k-8", told: [{ agent: "coder", instanceId: "i-2" }] },
     ]);
   }
   assert.equal(lines.length, 1, "said once");
-  assert.match(lines[0]!, /6 of its memory kills are not the wire's shape/);
+  assert.match(lines[0]!, /9 of its memory kills are not the wire's shape/);
 });
 
 test("memoryKills: a kill the pod kept without sizes is used as it is, and is no fault (ADR-0062)", async () => {

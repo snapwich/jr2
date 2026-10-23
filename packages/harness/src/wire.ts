@@ -210,6 +210,22 @@ export type PodMemoryKill = {
 /** What `GET /memory-kills` answers (200): the newest kills, oldest first. */
 export type MemoryKillsResponse = { kills: PodMemoryKill[] };
 
+// The bounds of the list, the same on the two sides of the wire (ADR-0062). The Agent's uid can
+// write the file the list is read from, so the Harness keeps no kill, and no `told` entry, that the
+// Orchestrator drops. With these bounds the largest answer is 149,259 bytes, under the
+// Orchestrator's read of 256 KiB: 16 kills of 208 bytes and 32 `told` entries of 284 bytes each.
+
+/** How many kills the pod keeps. A guard kill is rare; a burst of them is one piece of news. */
+export const KEPT_KILLS = 16;
+/** The most conversations one kill's `told` holds: far more Agents than a Workspace runs. */
+export const MAX_TOLD = 32;
+/** The longest `id` and `at` of a kill. A minted id and an ISO time are less than half of it. */
+export const MAX_KILL_STAMP = 64;
+/** The longest `agent` and `instanceId` of a `told` entry. */
+export const MAX_KILL_NAME = 128;
+/** The most of `GET /memory-kills` the Orchestrator reads, in bytes. */
+export const MAX_KILLS_BODY = 256 * 1024;
+
 // ---- The run-narrative echo (`POST /echo` — ADR-0023) ------------------------------------------
 // "Print these events": the Orchestrator — the observation feed's one subscriber (ADR-0022) —
 // tees the owning run's feed to the enclosing Workspace's Harness, which renders it into its own

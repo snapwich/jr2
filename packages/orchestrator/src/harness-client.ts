@@ -74,6 +74,10 @@ import {
   type LiveSetRequest,
   type LiveSetResponse,
   type MemoryKillsResponse,
+  MAX_KILL_NAME,
+  MAX_KILL_STAMP,
+  MAX_KILLS_BODY,
+  MAX_TOLD,
   type Notice,
   type Settlement,
   type StreamEvent,
@@ -119,9 +123,10 @@ export type HarnessClient = {
    * caller owns the read's limit (the Agent actor's 5 s); with no signal, it is sent once. Any other
    * answer but a 200 that reads — a Harness that keeps none, a transport failure, the caller's
    * timeout — is `undefined`, "could not tell": the Harness still holds what it kept, and the next
-   * admission reads again. A kill with no id or time is skipped; one whose `peak` or `limit` is not
-   * a size is kept without sizes, and one whose `told` holds an entry that is not a conversation is
-   * kept without that entry — each fault said. Absent sizes are no fault: the pod left them out.
+   * admission reads again. A kill with no id or time, with an id or a time outside the wire's bounds
+   * (`wire.ts`), or with a time that does not parse, is skipped; one whose `peak` or `limit` is not
+   * a size is kept without sizes, and one whose `told` holds an entry that is not a conversation, or
+   * a name outside the bounds, is kept without that entry — each fault said. Absent sizes are no fault: the pod left them out.
    * Each fault is one line: said when it starts, and again only after a read that works. */
   memoryKills(opts?: { signal?: AbortSignal }): Promise<ListedKill[] | undefined>;
   /** `POST /agents/:name/:id/abort`. The `{ aborted }` answer is dropped (ADR-0024). */
@@ -200,25 +205,24 @@ function isSize(value: unknown): value is string {
   return typeof value === "string" && value.length <= 16 && /^\d{1,6}(\.\d{1,3})?(Ki|Mi|Gi|Ti)$/.test(value);
 }
 
-const isShortString = (v: unknown): v is string => typeof v === "string" && v.length <= 256;
+/** A string no longer than `max` characters. The bounds are the wire's (`wire.ts`), the same as
+ * the Harness's: the Harness counts the bytes of the JSON text, which are never fewer, so a kill it
+ * keeps is one this process keeps. An answer larger than `MAX_KILLS_BODY` is no list to act on:
+ * the Harness answers no list that large. */
+const fits = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
 
-/** The most of `GET /memory-kills` this process reads: 16 kills of at most 32 `told` each is far
- * less, so a larger answer is no list to act on. */
-const MAX_KILLS_BODY = 256 * 1024;
-
-/** The most `told` entries of one kill this process keeps — the Harness keeps no more. */
-const MAX_TOLD = 32;
-
-/** One kill of the list as this process can use it, or undefined when it has no id or time — the
- * only kill that is dropped. Sizes that are not sizes are left out, so the kill is kept with no
- * sizes; a `told` entry that is not a conversation is left out of `told`. */
+/** One kill of the list as this process can use it, or undefined when it has no id or time, when
+ * its id or time is outside the wire's bounds, or when its time does not parse — the only kills
+ * that are dropped. Sizes that are not sizes are left out, so the kill is kept with no sizes; a
+ * `told` entry that is not a conversation, or whose name is outside the bounds, is left out of
+ * `told`. */
 function listedKill(value: unknown): ListedKill | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const { id, at, peak, limit, told } = value as Record<string, unknown>;
-  if (!isShortString(id) || !isShortString(at) || Number.isNaN(Date.parse(at))) return undefined;
+  if (!fits(id, MAX_KILL_STAMP) || !fits(at, MAX_KILL_STAMP) || Number.isNaN(Date.parse(at))) return undefined;
   const conversations = (Array.isArray(told) ? told.slice(0, MAX_TOLD) : []).filter(
     (t): t is { agent: string; instanceId: string } =>
-      typeof t === "object" && t !== null && isShortString(t.agent) && isShortString(t.instanceId),
+      typeof t === "object" && t !== null && fits(t.agent, MAX_KILL_NAME) && fits(t.instanceId, MAX_KILL_NAME),
   );
   const sized = isSize(peak) && isSize(limit);
   return {
@@ -428,7 +432,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             // An older Harness's event has no id: keyed by its place on the stream, exactly as the
             // Orchestrator before raised it, so a replayed read is the same kill and it can never
             // mark a later kill seen. An id too long to be one is no id.
-            const kill = isShortString(id)
+            const kill = fits(id, MAX_KILL_STAMP)
               ? { id }
               : { id: `${conversationId}@${position.batch}.${position.index}`, legacy: true as const };
             opts?.onMemoryLimit?.({ ...kill, ...(sized ? { peak, limit } : {}) });
@@ -501,7 +505,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
                 badKill(
                   baseUrl,
                   log,
-                  `${flawed} of its memory kills are not the wire's shape — those with no id or time are skipped, the others are kept without the fields that were wrong`,
+                  `${flawed} of its memory kills are not the wire's shape — those with no id or time, or with one outside the wire's bounds or a time that does not parse, are skipped, the others are kept without the fields that were wrong`,
                 );
               }
               return usable;

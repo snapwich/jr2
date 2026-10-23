@@ -120,3 +120,13 @@ test("the wire's settlement-error literals are the ones the Harness stamps", () 
   assert.equal(client.VIEW_HISTORY, harness.VIEW_HISTORY);
   assert.equal(client.LIVE_LONG_POLL, harness.LIVE_LONG_POLL);
 });
+
+test("the bounds of the memory-kill list are the same on the two sides (ADR-0062)", () => {
+  // The Harness keeps no kill that the Orchestrator drops, and answers no list larger than the
+  // Orchestrator reads: the two hold one set of numbers.
+  assert.equal(client.KEPT_KILLS, harness.KEPT_KILLS);
+  assert.equal(client.MAX_TOLD, harness.MAX_TOLD);
+  assert.equal(client.MAX_KILL_STAMP, harness.MAX_KILL_STAMP);
+  assert.equal(client.MAX_KILL_NAME, harness.MAX_KILL_NAME);
+  assert.equal(client.MAX_KILLS_BODY, harness.MAX_KILLS_BODY);
+});

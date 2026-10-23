@@ -22,16 +22,39 @@
 // write the file, as it can the conversation records: what it could do there it can do to its
 // own conversation.
 
-import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
-import type { LiveConversation, PodMemoryKill } from "./wire.ts";
+import {
+  KEPT_KILLS,
+  MAX_KILL_NAME,
+  MAX_KILL_STAMP,
+  MAX_KILLS_BODY,
+  MAX_TOLD,
+  type LiveConversation,
+  type PodMemoryKill,
+} from "./wire.ts";
 
-/** How many kills the pod keeps. A guard kill is rare; a burst of them is one piece of news. */
-export const KEPT_KILLS = 16;
+export { KEPT_KILLS, MAX_TOLD };
 
-/** The most conversations one kill's `told` holds: far more Agents than a Workspace runs, and a
- * bound on the file and on the answer of `GET /memory-kills`. */
-export const MAX_TOLD = 32;
+/** The most of the file a process reads, in bytes: the kept kills are far less (`wire.ts`). */
+export const MAX_KILLS_FILE = MAX_KILLS_BODY;
+
+/** Whether a string goes on the wire in at most `max` bytes, its quotes not counted. Bytes of the
+ * JSON text, not characters: an escaped character is six bytes, and a character outside ASCII is
+ * two to four, so this is what bounds the answer of `GET /memory-kills`. The Orchestrator counts
+ * the characters of the parsed string, which are never more: every string kept here, it keeps. */
+export function fitsWire(v: unknown, max: number): v is string {
+  return typeof v === "string" && Buffer.byteLength(JSON.stringify(v)) - 2 <= max;
+}
 
 /** The file under the conversations' root. */
 export const POD_KILLS_FILE = "memory-kills.jsonl";
@@ -80,6 +103,8 @@ export class PodKills {
     const kill = this.#kills.find((k) => k.id === id);
     if (kill === undefined) return;
     if (kill.told.length >= MAX_TOLD) return;
+    // A name too long for the wire is no conversation the Orchestrator keeps: not told.
+    if (!fitsWire(owner.agent, MAX_KILL_NAME) || !fitsWire(owner.instanceId, MAX_KILL_NAME)) return;
     if (kill.told.some((t) => t.agent === owner.agent && t.instanceId === owner.instanceId)) return;
     kill.told.push({ agent: owner.agent, instanceId: owner.instanceId });
     this.#rewrite();
@@ -114,19 +139,50 @@ export class PodKills {
 /** A size as the guard writes one (`formatBytes`: `1.9Gi`, `512Mi`), short. */
 const SIZE = /^\d{1,6}(\.\d{1,3})?(Ki|Mi|Gi|Ti)$/;
 
-/** The kills a previous process kept. A missing file is none; a line that does not parse — the
- * torn last write of a restart — is dropped, as is a kill with no id or time. The Agent's uid can
- * write the file, and `peak` and `limit` go into the next Agent's Briefing as they are: sizes that
- * are not the guard's shape are left out and said — the kill is kept, so a real one is never lost,
- * and the Orchestrator words a kill with no sizes. */
-function readKills(path: string, log: (line: string) => void): PodMemoryKill[] {
-  let text: string;
+/** The file's text: all of it, or its last `MAX_KILLS_FILE` bytes from the first whole line when
+ * it is larger. The Agent's uid can write the file, so its size is not the pod's; the newest kills
+ * are at the end. A missing file is none. */
+function readTail(path: string, log: (line: string) => void): string | undefined {
+  let fd: number;
   try {
-    text = readFileSync(path, "utf8");
+    fd = openSync(path, "r");
   } catch {
-    return [];
+    return undefined;
   }
-  const str = (v: unknown): v is string => typeof v === "string" && v.length <= 256;
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, MAX_KILLS_FILE);
+    const buffer = Buffer.alloc(length);
+    let read = 0;
+    while (read < length) {
+      const n = readSync(fd, buffer, read, length - read, size - length + read);
+      if (n === 0) break;
+      read += n;
+    }
+    const text = buffer.subarray(0, read).toString("utf8");
+    if (size <= MAX_KILLS_FILE) return text;
+    log(
+      `jr2 harness: ${path} is ${size} bytes, more than the ${MAX_KILLS_FILE} the kept kills can fill — read from its last ${MAX_KILLS_FILE} bytes (ADR-0062)`,
+    );
+    // The cut is in a line: that line is not a kill.
+    return text.slice(text.indexOf("\n") + 1);
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The kills a previous process kept. A missing file is none; a line that does not parse — the
+ * torn last write of a restart — is dropped, as is a kill with no id or time, or with a time that
+ * is not a time. The Agent's uid can write the file, so the bounds are the wire's (`wire.ts`):
+ * the Harness keeps no kill and no `told` entry that the Orchestrator drops. `peak` and `limit` go
+ * into the next Agent's Briefing as they are: sizes that are not the guard's shape are left out and
+ * said — the kill is kept, so a real one is never lost, and the Orchestrator words a kill with no
+ * sizes. */
+function readKills(path: string, log: (line: string) => void): PodMemoryKill[] {
+  const text = readTail(path, log);
+  if (text === undefined) return [];
   const size = (v: unknown): v is string => typeof v === "string" && v.length <= 16 && SIZE.test(v);
   const kills: PodMemoryKill[] = [];
   let bad = 0;
@@ -139,12 +195,15 @@ function readKills(path: string, log: (line: string) => void): PodMemoryKill[] {
       // A torn write: never acknowledged, so never read.
       continue;
     }
-    if (!(str(kill.id) && str(kill.at))) continue;
+    if (!(fitsWire(kill.id, MAX_KILL_STAMP) && fitsWire(kill.at, MAX_KILL_STAMP))) continue;
+    if (Number.isNaN(Date.parse(kill.at))) continue;
     const sized = size(kill.peak) && size(kill.limit);
     // Absent sizes are a kill written without them — not a fault; wrong ones are.
     if (!sized && (kill.peak !== undefined || kill.limit !== undefined)) bad++;
     const told = (Array.isArray(kill.told) ? kill.told.slice(0, MAX_TOLD) : [])
-      .filter((c: Partial<LiveConversation>) => str(c?.agent) && str(c?.instanceId))
+      .filter(
+        (c: Partial<LiveConversation>) => fitsWire(c?.agent, MAX_KILL_NAME) && fitsWire(c?.instanceId, MAX_KILL_NAME),
+      )
       .map(({ agent, instanceId }: LiveConversation) => ({ agent, instanceId }));
     kills.push({
       id: kill.id,

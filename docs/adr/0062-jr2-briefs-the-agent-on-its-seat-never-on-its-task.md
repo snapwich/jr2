@@ -83,8 +83,8 @@ whose processes are gone, with no way to know why.
     `peak` or a `limit` that is not a size in the guard's form, or is long, is left out and logged, on the Harness's
     read of the file and on the Orchestrator's read of the list and of a stream. The kill is kept, so a real kill is
     never lost, and its notice says no sizes: "the Sandbox's processes were killed at its memory limit; /dev/shm was
-    cleared. …". Only a kill with no id or no time is dropped. A stream event from an older Harness has no id; its
-    source is then its place on the stream, exactly as the Orchestrator raised it before.
+    cleared. …". Only a kill with no id or no time, or one outside the bounds below, is dropped. A stream event from an
+    older Harness has no id; its source is then its place on the stream, exactly as the Orchestrator raised it before.
 
   Both paths raise the notice with the same source, the Workspace and the kill's id. The ledger keeps every source it
   raised (`seen`) in the run's persisted state. So a kill read on both paths, or on two streams, is one notice. Each
@@ -96,10 +96,14 @@ whose processes are gone, with no way to know why.
   restart of the Orchestrator raises no kill twice. A restart of the Harness container keeps the file, which is on the
   pod's emptyDir with its conversations (ADR-0031). A lost pod takes the file with it, but then the Workspace is lost
   (ADR-0021). The list keeps the newest 16 kills, each with at most 32 conversations in `told`, and the Orchestrator
-  reads at most 256 KiB of it. When more come between two admissions, the oldest is lost, and a newer kill tells the
-  same thing. When more than 16 come in one Turn, the Turn's mark leaves the list too, and every kill in the list then
-  counts as after the mark; a nudge or a wake of that Turn may then carry a kill from before it. The Instance Harness
-  keeps no kill, because it holds no Workspace.
+  reads at most 256 KiB of it. The Agent's uid can write the file, so the two sides hold the same bounds: an `id` and an
+  `at` of at most 64, an `agent` and an `instanceId` of at most 128, and an `at` that parses as a time. A kill outside
+  them is dropped, and a `told` entry outside them is left out. The Harness counts the bytes of the JSON text, and the
+  Orchestrator counts characters, which are never more, so the Harness keeps no kill that the Orchestrator drops. The
+  Harness reads at most the last 256 KiB of the file. With these bounds the largest list is 149,259 bytes. When more
+  come between two admissions, the oldest is lost, and a newer kill tells the same thing. When more than 16 come in one
+  Turn, the Turn's mark leaves the list too, and every kill in the list then counts as after the mark; a nudge or a wake
+  of that Turn may then carry a kill from before it. The Instance Harness keeps no kill, because it holds no Workspace.
 
   A notice counts as delivered when its admission is ledgered, so a restart before that point delivers it again and a
   restart after it does not. Delivered is not yet heard: if the Orchestrator ends the Turn before the Harness reads its
