@@ -60,13 +60,20 @@ recover, finish — are exercised only one scripted tool call at a time.
   never a floor. The run is measured once per invocation, on whichever endpoint is selected, because it costs minutes
   and its failure is a defect to read, not a rate.
 - **The endpoint is a profile, selected by env, and the key never enters a file.**
-  `features/model-endpoints/<name>.json` carries what `harness.provider` already takes — `api`, `baseUrl`, `models` with
-  their windows — plus the tier's own `thinking` cells and `trials`, and optionally a `caBundle` path for a private CA
-  ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)). `JR2_MODEL_ENDPOINT=<name>` selects it; `JR2_MODEL_API_KEY`
-  is read from env alone. Before the converge, the fixture copies the selected profile to a fixed path inside
-  `features/model-instance/`, and the instance's config and Agents import it from there — so the in-cluster Orchestrator
-  reads the same values the host did (an env read in a definition is `undefined` in the pod, as the `@kind` config
-  notes). A hosted provider is the same shape with a different `api`; nothing in the product learns the tier exists.
+  `features/model-endpoints/<name>.json` carries `id`, `api`, `baseUrl` and `model`, plus the tier's own `thinking`
+  cells and `trials`, and optionally a `caBundle` path for a private CA
+  ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)). A profile is one of two kinds, as a user's instance is. A
+  profile with `key` names one of pi's catalog providers (`anthropic`), and the catalog holds the model's limits and
+  thinking levels. Its key is a Held secret in `secrets`, under the known model key that `key` names
+  (`ANTHROPIC_API_KEY`, [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). A profile with
+  no `key` is a `harness.provider`, and carries its models' windows. `JR2_MODEL_ENDPOINT=<name>` selects it;
+  `JR2_MODEL_API_KEY` is read from env alone. Before the converge, the fixture copies the selected profile to a fixed
+  path inside `features/model-instance/`. The instance's config and Agents import it from there, so the in-cluster
+  Orchestrator reads the same values the host did. An env read in a definition is `undefined` in the pod, as the `@kind`
+  config notes. Nothing in the product learns the tier exists. Reachability from the pods is `jr2 up`'s provider
+  preflight, for both kinds of profile. It checks each model from a check pod with a Custodian before it writes anything
+  ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). So a pod with no egress to the provider
+  fails the converge at the check pod.
 - **Not in CI. Run by whoever changed what the model reads, before calling the change done.** Not in `pnpm -r test`, not
   in the release job: it needs a cluster and an endpoint, it is nondeterministic by nature, and a gate that flakes is a
   gate everyone re-runs. `just e2e-model` probes the profile's endpoint first and, when nothing answers, exits 0 with
