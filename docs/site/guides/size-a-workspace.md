@@ -100,6 +100,10 @@ Agent's processes. Then the Agent's `bash` call returns this text, and the Agent
 killed: memory limit (peak <peak> of <limit>); use fewer workers or a larger Size
 ```
 
+The Harness also watches when no `bash` call runs. A process that a Turn left running, such as a dev server, can pass
+the limit while the workflow waits at a [Gate](../reference/glossary.md#gate). Then no `bash` call returns the text. jr2
+tells the next Agent that works in the Workspace: the next Turn, or an open Turn that jr2 asks again.
+
 The Harness can miss a fast increase. Then the kernel stops the whole container, and the
 [Turn](../reference/glossary.md#turn) faults. The reason starts with `memory limit`:
 
