@@ -244,6 +244,16 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
     - stop reason "length" means the model ran out of tokens before the call (a thinking model reasons first)
   ```
 
+  When the endpoint refused the key (a 401 or a 403), the endpoint answered. So three of the four usual lines are left
+  out: the line about localhost, the line about vLLM tool calls, and the line about stop reason "length". Two lines
+  follow: the line about the key, and the line about the model id. When `apiKey` is set, the line about the key says
+  that the held secret may be wrong. When `apiKey` is not set, it says that the endpoint wants a key.
+
+  ```text
+    - the held secret <NAME> may be wrong (harness.provider.apiKey)
+    - the model id must be exactly what the endpoint serves (vLLM: GET /v1/models)
+  ```
+
   See [Use a local model](use-a-local-model.md).
 
 - When an Agent uses a model of pi's catalog (for example `anthropic/claude-haiku-5-5`), a pod in the cluster asks the
