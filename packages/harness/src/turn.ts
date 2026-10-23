@@ -36,7 +36,15 @@ import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { compactionSummaryText } from "./compaction-summary.ts";
 import { RunawayError, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
-import { briefingsOf, cutPickResult, readMenu, unsentPickResult, type MenuItem, type MenuOptions } from "./menu.ts";
+import {
+  briefingsOf,
+  cutPickResult,
+  readMenu,
+  stalePickResult,
+  unsentPickResult,
+  type MenuItem,
+  type MenuOptions,
+} from "./menu.ts";
 import { MENU_TOOL_PREFIX, menuToolName, menuTools } from "./menu-tools.ts";
 import {
   attachPrinter,
@@ -213,6 +221,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     last: undefined as AssistantMessage | undefined,
     /** The thinking level line (ADR-0023) is printed, or not needed, for this Submission. */
     levelSaid: false,
+    /** The first pick of the newest model answer that reached `beforeToolCall` (ADR-0024). The
+     * engine tells a model answer (`message_end`) before it asks about any call of it. */
+    answerPick: undefined as string | undefined,
   };
   /** The runaway watch (ADR-0035), per Submission — reset when each turn starts. The
    * once-per-conversation `beforeToolCall` hook reads it through this seat, like `current.definition`. */
@@ -233,6 +244,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     turn.over = false;
     turn.last = undefined;
     turn.levelSaid = false;
+    turn.answerPick = undefined;
     // This Submission's Frame and dials layer over the definition it carries (ADR-0018/0049/0057).
     // Read HERE, per Submission, so one `continue` conversation can queue turns at different
     // settings and in different worktrees: the model, the level and the tools (rooted at the
@@ -303,8 +315,16 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
           // backstop. Identity is name + JSON arguments — the engine hands the VALIDATED args, and
           // stringify keeps the wire's key order, so byte-identical provider frames compare equal.
           // Tripping aborts the run (`abortRun`), so the tripping call never executes and answers
-          // `Operation aborted`; a sibling call of the same model answer behind the trip is blocked with
-          // the reason.
+          // `Operation aborted`. The engine runs one model answer's calls in order (`engine.ts`): the
+          // calls before the trip have run, and the engine runs no call after it. Were it to ask about
+          // one, the block below stops it with the reason.
+          //
+          // A second pick of one model answer is blocked (ADR-0024): the model wrote it before it
+          // read the first pick's answer, so it is stale by construction (`stalePickResult`). The
+          // first pick is the first that reached THIS hook in the model answer (`turn.answerPick`):
+          // the engine asks the hook only about a call of a tool the run has, with valid arguments,
+          // so a call of an unknown tool or with invalid arguments is never the first pick. The
+          // blocked pick is still a step, so a model that repeats it is still a Runaway (ADR-0035).
           beforeToolCall: ({ name, args }) => {
             if (watch.tripped) return { block: watch.tripped };
             watch.steps += 1;
@@ -316,7 +336,11 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
             } else if (watch.steps > stepBudget) {
               watch.tripped = `exceeded ${stepBudget} steps`;
             }
-            return watch.tripped ? { block: watch.tripped, abortRun: true } : undefined;
+            if (watch.tripped) return { block: watch.tripped, abortRun: true };
+            if (!name.startsWith(MENU_TOOL_PREFIX)) return undefined;
+            if (turn.answerPick !== undefined) return { block: stalePickResult(turn.answerPick) };
+            turn.answerPick = name;
+            return undefined;
           },
           // A tripped watch ends at the step boundary: no steer, no other request.
           endsRun: () => watch.tripped !== "",
@@ -386,7 +410,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       });
       engine.subscribe((event) => {
         if (event.type !== "message_end") return;
-        if (event.message.role === "assistant") turn.last = event.message;
+        if (event.message.role === "assistant") {
+          turn.last = event.message;
+          turn.answerPick = undefined;
+        }
         const entry = historyMessage(event.message);
         if (entry) deps.appendMessage(entry);
       });

@@ -1,6 +1,6 @@
 // The outstanding pick, Harness side (ADR-0024, ADR-0013): an outstanding pick's answer is long-polled
-// inside the one tool call; the Harness claims one pick at a time in message order; a refusal while
-// one is out names it; the answer reads as prose; a cut call's history result is jr2's text.
+// inside the one tool call; the Orchestrator's refusal while one is out names it; the answer reads
+// as prose; a cut call's history result is jr2's text.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -136,43 +136,7 @@ test("a guard straight back is answered, but the Runaway guard does not hear it:
   assert.equal(answered, 0, "the identical-call streak runs on");
 });
 
-test("the Harness claims one pick at a time, in message order: the second call of a message is refused before it leaves — `finish` included", async () => {
-  let release: (() => void) | undefined;
-  const { fetch, calls } = fakeFetch(async (call) => {
-    if (call.url.endsWith("/surface")) return Response.json(SURFACE);
-    if (call.method === "POST") return Response.json(outstanding);
-    await new Promise<void>((resolve) => (release = resolve));
-    return Response.json({ ...outstanding, outstanding: undefined, answered: true, allowed: ["finish"] });
-  });
-  const read = await readMenu(opts(fetch), "run-1/coder");
-  const [runTests, finish] = read!.menu;
-  const first = runTests!.pick({});
-  const second = finish!.pick({});
-  await assert.rejects(second, (err: Error) => {
-    assert.equal(
-      err.message,
-      "`mcp__jr2__finish` was NOT delivered: your pick `mcp__jr2__run_tests` is still running in the workflow, and " +
-        "no other pick is taken until it answers. Wait for its answer, then pick again.",
-    );
-    return true;
-  });
-  await new Promise((r) => setTimeout(r, 5));
-  release?.();
-  assert.match(await first, /No reply came back for it\./);
-  assert.deepEqual(
-    calls.filter((c) => c.method === "POST").map((c) => c.url),
-    ["http://127.0.0.1:8081/agents/run-1%2Fcoder/events"],
-    "only the first pick reached the Orchestrator",
-  );
-  // Answered: the claim is free again, and the next pick leaves.
-  const third = finish!.pick({});
-  await new Promise((r) => setTimeout(r, 5));
-  assert.equal(calls.filter((c) => c.method === "POST").length, 2);
-  release?.();
-  await third;
-});
-
-test("the Orchestrator's refusal while a pick is out reads the same as the Harness's own; busy with no pick of ours says rest", async () => {
+test("the Orchestrator's refusal while a pick is out names that pick; busy with no pick of ours says rest", async () => {
   const refuse = (body: object) =>
     fakeFetch((call) =>
       call.url.endsWith("/surface") ? Response.json(SURFACE) : Response.json(body, { status: 409 }),

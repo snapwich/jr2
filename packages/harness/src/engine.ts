@@ -10,8 +10,19 @@
 // The messages, the tool declarations and the model registry are pi-ai's: that is the provider
 // library (`provider.ts`), not the engine, and every engine sends its requests through it.
 //
-// Two facts of every run that the Turn depends on:
+// Four facts of every run that the Turn depends on:
 //
+//   - The engine runs the tool calls of one model answer one at a time, in the order the model wrote
+//     them: a call's `beforeToolCall` comes after the result of the call before it is complete. So
+//     a call sees what each earlier call did (a `bash` commit before a `publish` pick, a `write`
+//     before a `bash` test run). After an abort, no later call of that model answer runs. It gets no
+//     result, except in a model answer that hit the output limit (`length`): the engine answers each
+//     call of such an answer with its own error, and runs none of them.
+//   - The engine tells a model answer (`message_end`) before it asks `beforeToolCall` about any
+//     call of it, and it asks only about a call of a tool the run has, with valid arguments. So the
+//     Turn knows the first pick of each model answer that the engine prepared, and a second pick of
+//     one model answer does not run: the model wrote it before it read the first pick's answer
+//     (ADR-0024).
 //   - The engine runs no tool call of a model answer that ended `error` or `aborted`, and makes no
 //     request after it: that model answer is the run's last (`turn.ts`, `settleCutPicks` and the
 //     step boundary).
@@ -96,7 +107,8 @@ export type ToolCallBlock = {
    * result. */
   block: string;
   /** Also abort the run, as `Engine.abort()` does: no other tool call and no other request. The
-   * model then reads `Operation aborted` as the call's error result, not `block`. */
+   * model then reads `Operation aborted` as the call's error result, not `block`. The calls before
+   * this one have run; the calls after it do not run, and get no result. */
   abortRun?: true;
 };
 
@@ -109,8 +121,10 @@ export type EngineHooks = {
    * complete. A context returned (without the system prompt) replaces the run's, for this request
    * and the next ones. A throw fails the run. */
   beforeRequest(signal: AbortSignal | undefined): Promise<EngineMessage[] | undefined>;
-  /** Before each tool call, with the validated arguments. A block returned stops the call. It must
-   * not throw. */
+  /** Before each tool call of a tool the run has, with the validated arguments, after every earlier
+   * call of the model answer has its result. A call of an unknown tool, or with arguments that do
+   * not validate, gets the engine's error result and no hook. A block returned stops the call. It
+   * must not throw. */
   beforeToolCall(call: { name: string; args: unknown }): ToolCallBlock | undefined;
   /** At each step boundary: true ends the run, with no steer and no other request. An aborted run
    * ends there too. It must not throw. */

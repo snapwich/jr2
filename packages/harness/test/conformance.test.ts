@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
 import { narrowedChartSchema } from "@jr2/orchestrator/internal";
-import { cutPickResult, unsentPickResult, type Surface } from "../src/menu.ts";
+import { cutPickResult, stalePickResult, unsentPickResult, type Surface } from "../src/menu.ts";
 import { harnessServer, type HarnessServer } from "../src/app.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
@@ -1970,12 +1970,9 @@ test("an outstanding pick through the real loop: ONE tool call long-polls the an
   assert.equal(provider.calls.length, 2, "the model was asked once more, after the answer — never mid-wait");
 });
 
-test("two picks in ONE message: the Harness claims the first in message order and refuses the second before it leaves — `finish` included", async () => {
-  // pi runs one message's calls in parallel; over separate sockets the arrival order is not the
-  // message order (measured: `finish` first in 1 of 50). The claim is taken before the first await,
-  // in message order, so the result is fixed: every trial the same. This is where the refusal of a
-  // second pick while one is outstanding is proved: it is jr2's mechanism, not a model's choice, so
-  // it is no `@model` claim (ADR-0066).
+test("two picks in ONE message: the first is delivered, and the second does not run — `finish` included (ADR-0024)", async () => {
+  // The model wrote the second pick before it read the first one's answer, so the Harness never
+  // sends it: the Orchestrator gets the first pick alone, and the model reads why.
   for (let trial = 0; trial < 5; trial++) {
     provider.reset([
       {
@@ -1992,21 +1989,78 @@ test("two picks in ONE message: the Harness claims the first in message order an
       await sleep(20);
       return answeredReceipt(deliveryId, { allowed: ["finish"] });
     });
-    const iid = `conf/claim-${trial}`;
-    const admission = await admit(iid, "Do both.");
-    assert.equal((await settled(iid, admission)).outcome, "completed");
+    const iid = `conf/second-pick-${trial}`;
+    assert.equal((await settled(iid, await admit(iid, "Do both."))).outcome, "completed");
     assert.deepEqual(
       sandbox.delivered.map((e) => e.type),
       ["run_tests"],
-      `trial ${trial}: only the first call of the message reached the Orchestrator`,
+      `trial ${trial}: only the first pick of the message reached the Orchestrator`,
     );
-    const results = (provider.calls[1]?.messages ?? []).filter((m) => m.role === "tool");
-    const finishResult = JSON.stringify(results.find((m) => m.tool_call_id === "call_b"));
-    assert.match(
-      finishResult,
-      /`mcp__jr2__finish` was NOT delivered: your pick `mcp__jr2__run_tests` is still running in the workflow, and no other pick is taken until it answers\. Wait for its answer, then pick again\./,
-    );
+    assert.equal(toolResultText(provider.calls[1], "call_b"), stalePickResult("mcp__jr2__run_tests"));
+    assert.match(toolResultText(provider.calls[1], "call_a"), /^Delivered "run_tests"/);
   }
+});
+
+test("a call the engine never prepared is no first pick: an unknown tool or invalid arguments ahead of a pick leave the pick to run (ADR-0024)", async () => {
+  // pi answers a call of an unknown tool, or one whose arguments do not validate, with its own error
+  // and asks the Harness nothing: the pick after it is the first pick of the answer.
+  for (const [n, ahead] of [
+    { id: "call_x", name: "mcp__jr2__nope", args: '{"verdict":"x"}' },
+    { id: "call_x", name: "mcp__jr2__review_verdict", args: "{}" },
+  ].entries()) {
+    provider.reset([
+      { toolCalls: [ahead, { id: "call_v", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' }] },
+    ]);
+    sandbox.reset(surfaceWith("review_verdict"));
+    const iid = `conf/unprepared-first-${n}`;
+    await settled(iid, await admit(iid, "Review it."));
+    assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
+    assert.ok(!(printed.get(iid) ?? "").includes("This pick did not run"), printed.get(iid) ?? "");
+  }
+});
+
+test("a pick blocked as the second of its answer is still a step: a model that repeats the answer is a Runaway (ADR-0035)", async () => {
+  // The review's shape: an unknown tool and a pick, repeated, under a toy budget of 3 — and two
+  // picks, repeated. Each pick that the Harness weighed is a step, run or blocked.
+  const notMoved = () => ({ moved: false, turnComplete: false, allowed: ["run_tests", "review_verdict"] });
+  const repeat = (calls: Array<{ name: string; args: string }>) =>
+    [1, 2, 3, 4].map((n) => ({ toolCalls: calls.map((call, i) => ({ id: `c${n}_${i}`, ...call })) }));
+
+  provider.reset(
+    repeat([
+      { name: "mcp__jr2__nope", args: '{"verdict":"x"}' },
+      { name: "mcp__jr2__review_verdict", args: '{"verdict":"x"}' },
+    ]),
+  );
+  sandbox.reset(surfaceWith("run_tests", "review_verdict"));
+  sandbox.answerWith(notMoved);
+  const unknown = "conf/stale-step-unknown";
+  const first = await settled(
+    unknown,
+    await admit(unknown, "Review it.", undefined, AGENT, boundedApp),
+    AGENT,
+    boundedApp,
+  );
+  assert.deepEqual(first.error, { type: "runaway", message: "repeated an identical tool call 4 times" });
+  assert.equal(provider.calls.length, 4, "the 4th request's pick trips, as on main");
+  assert.equal(sandbox.delivered.length, 3);
+
+  provider.reset(
+    repeat([
+      { name: "mcp__jr2__run_tests", args: '{"verdict":"x"}' },
+      { name: "mcp__jr2__review_verdict", args: '{"verdict":"y"}' },
+    ]),
+  );
+  sandbox.reset(surfaceWith("run_tests", "review_verdict"));
+  sandbox.answerWith(notMoved);
+  const two = "conf/stale-step-two";
+  const second = await settled(two, await admit(two, "Review it.", undefined, AGENT, boundedApp), AGENT, boundedApp);
+  assert.deepEqual(second.error, { type: "runaway", message: "exceeded 3 steps" });
+  assert.equal(provider.calls.length, 2, "the blocked pick of answer 2 is step 4");
+  assert.deepEqual(
+    sandbox.delivered.map((e) => e.type),
+    ["run_tests", "run_tests"],
+  );
 });
 
 /** The printed lines of one conversation (ADR-0023) whose label is in `labels`, without the Agent
@@ -2021,8 +2075,7 @@ function printedOrder(iid: string, agent: string, labels: RegExp): string[] {
 
 test("the print order (ADR-0023): a message's pick answers print in the order of its calls, and each before the prompt that follows them", async () => {
   // (a) Two calls of one pick in ONE message: the first is outstanding and answers after a poll,
-  // the second is refused at once. Each answer prints in the order of its call, never in the order
-  // it came back, so a reader pairs the first answer with the first call (`answersIn`'s rule).
+  // the second does not run. Each answer prints in the order of its call (`answersIn`'s rule).
   provider.reset([
     {
       toolCalls: [
@@ -2035,7 +2088,7 @@ test("the print order (ADR-0023): a message's pick answers print in the order of
   sandbox.reset(surfaceWith("run_tests", "finish"));
   sandbox.answerWith(outstandingReceipt);
   sandbox.pollWith(async (_poll, deliveryId) => {
-    await sleep(50);
+    await sleep(20);
     return answeredReceipt(deliveryId, { allowed: ["finish"] });
   });
   const twice = "conf/print-order-one-message";
@@ -2048,11 +2101,9 @@ test("the print order (ADR-0023): a message's pick answers print in the order of
   );
   assert.equal(lines[1], '[run_tests] {"verdict":"one"}');
   assert.equal(lines[2], '[run_tests] {"verdict":"two"}');
-  // The first call's answer came back after the second's refusal (a poll later), and still prints
-  // first: the text the model read for it, the poll's answer included.
   assert.match(lines[3]!, /^\[run_tests answer\] Delivered "run_tests"/);
   assert.match(printed.get(twice) ?? "", /The workflow took it and is back in the state that asked for this turn/);
-  assert.match(lines[4]!, /^\[run_tests error\] `mcp__jr2__run_tests` was NOT delivered/);
+  assert.equal(lines[4], `[run_tests error] ${stalePickResult("mcp__jr2__run_tests")}`);
   assert.equal(lines[5], "[prompt] <jr2-turn>", "the restated Turn part prints after both answers");
 
   // (b) A pick whose answer leaves the Turn open, and a Gate's answer before the next step: the
@@ -2229,7 +2280,7 @@ test("a stopping Harness cuts at once a Turn that waits only on its pick's answe
   assert.deepEqual(answerLines(), [cutAnswer], "still printed once");
 });
 
-test("a stopping Harness keeps the graceful wait for a Turn that is running a tool — beside a polled pick too (ADR-0031)", async () => {
+test("a stopping Harness keeps the graceful wait for a Turn that is running a tool — before a polled pick too (ADR-0031)", async () => {
   // A tool running alone: the Turn finishes, and settles completed.
   {
     const iid = "conf/drain-tool";
@@ -2242,15 +2293,16 @@ test("a stopping Harness keeps the graceful wait for a Turn that is running a to
     assert.equal((await settled(iid, admission, AGENT, server.app)).outcome, "completed");
     assert.equal(provider.calls.length, 2, "the model read the tool's result: nothing was cut");
   }
-  // A pick polled while a tool still runs beside it: the wait holds until the tool ends; then the
-  // poll is all that is left, and the Turn is cut.
+  // A tool, then a pick in the same model answer: the wait holds while the tool runs and while
+  // nothing runs between the two calls; then the pick's poll is all that is left, and the Turn is
+  // cut.
   {
     const iid = "conf/drain-tool-and-pick";
     provider.reset([
       {
         toolCalls: [
-          { id: "p1", name: "mcp__jr2__run_audit", args: '{"verdict":"go"}' },
           { id: "b2", name: "bash", args: JSON.stringify({ command: "sleep 0.6" }) },
+          { id: "p1", name: "mcp__jr2__run_audit", args: '{"verdict":"go"}' },
         ],
       },
     ]);
@@ -2258,11 +2310,17 @@ test("a stopping Harness keeps the graceful wait for a Turn that is running a to
     sandbox.answerWith(outstandingReceipt);
     sandbox.pollWith(() => new Promise<never>(() => {}));
     const server = serverOver(await mkdtemp(join(tmpdir(), "jr2-conversations-")));
-    const admission = await admit(iid, "Audit and sleep.", undefined, AGENT, server.app);
-    await until(() => sandbox.polls.length > 0, "the pick's answer to be polled");
+    const admission = await admit(iid, "Sleep and audit.", undefined, AGENT, server.app);
+    await until(() => provider.calls.length === 1, "the two calls to be made");
     const started = performance.now();
     await server.drain();
     assert.ok(performance.now() - started >= 300, "the drain waited for the running tool");
+    // The cut comes as the pick starts to poll: its first poll may not leave.
+    assert.deepEqual(
+      sandbox.delivered.map((e) => e.type),
+      ["run_audit"],
+      "the pick after the tool was delivered before the cut",
+    );
     const settlement = await settled(iid, admission, AGENT, server.app);
     assert.deepEqual(
       { outcome: settlement.outcome, type: settlement.error?.type },
@@ -2478,15 +2536,20 @@ test("M12: a request that a provider error ended steers nothing, and the next Su
   assert.equal(pushesIn(provider.calls[1]), 0, "no restatement rides into the next Submission");
 });
 
-test("M6: a call that pi prepared before the trip but did not start answers `Operation aborted` and does not run", async () => {
-  const marker = join(await mkdtemp(join(tmpdir(), "conf-behind-trip-")), "ran");
+test("M6: a trip in the middle of a model answer: the calls before it ran, and the calls after it do not run", async () => {
+  // The engine runs one model answer's calls in order (ADR-0027). On pi's parallel default, the
+  // call before the trip was prepared and did not start: it answered `Operation aborted`.
+  const dir = await mkdtemp(join(tmpdir(), "conf-behind-trip-"));
+  const before = join(dir, "before");
+  const behind = join(dir, "behind");
   provider.reset([
     bashCall("call_1", "echo 1"),
     bashCall("call_2", "echo 2"),
     {
       toolCalls: [
-        { id: "call_3", name: "bash", args: JSON.stringify({ command: `touch ${marker}` }) },
+        { id: "call_3", name: "bash", args: JSON.stringify({ command: `touch ${before}` }) },
         { id: "call_4", name: "bash", args: JSON.stringify({ command: "echo 4" }) },
+        { id: "call_5", name: "bash", args: JSON.stringify({ command: `touch ${behind}` }) },
       ],
     },
   ]);
@@ -2501,7 +2564,55 @@ test("M6: a call that pi prepared before the trip but did not start answers `Ope
   );
   assert.deepEqual(settlement.error, { type: "runaway", message: "exceeded 3 steps" });
   const { existsSync } = await import("node:fs");
-  assert.equal(existsSync(marker), false, "the call before the trip did not run");
+  assert.equal(existsSync(before), true, "the call before the trip ran");
+  assert.equal(existsSync(behind), false, "the call after the trip did not run");
+});
+
+test("the calls of one model answer run in the model's order: a read sees what the bash call before it wrote (ADR-0027)", async () => {
+  // The bash call writes its file only after a sleep. On pi's parallel default the read starts at
+  // once and finds no file.
+  const file = join(await mkdtemp(join(tmpdir(), "conf-in-order-")), "out.txt");
+  provider.reset([
+    {
+      toolCalls: [
+        { id: "call_w", name: "bash", args: JSON.stringify({ command: `sleep 0.3 && echo written > ${file}` }) },
+        { id: "call_r", name: "read", args: JSON.stringify({ path: file }) },
+      ],
+    },
+    { text: "Read it." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/in-order-working";
+  assert.equal((await settled(iid, await admit(iid, "Write, then read."))).outcome, "completed");
+  assert.match(toolResultText(provider.calls[1], "call_r"), /^written\b/);
+});
+
+test("the calls of one model answer run in the model's order: a pick leaves after the bash call before it ends (ADR-0027)", async () => {
+  // The measured defect (real Anthropic API, Haiku 5.5, 2026-10-22): `bash` with `git commit` and
+  // the pick `publish` in one model answer, and `publish` pushed before the commit was made.
+  const marker = join(await mkdtemp(join(tmpdir(), "conf-in-order-pick-")), "committed");
+  const { existsSync } = await import("node:fs");
+  provider.reset([
+    {
+      toolCalls: [
+        { id: "call_c", name: "bash", args: JSON.stringify({ command: `sleep 0.3 && touch ${marker}` }) },
+        { id: "call_p", name: "mcp__jr2__publish", args: '{"verdict":"go"}' },
+      ],
+    },
+  ]);
+  sandbox.reset(surfaceWith("publish"));
+  let committedFirst: boolean | undefined;
+  sandbox.answerWith(() => {
+    committedFirst = existsSync(marker);
+    return { moved: true, turnComplete: true, allowed: [] };
+  });
+  const iid = "conf/in-order-pick";
+  assert.equal((await settled(iid, await admit(iid, "Commit, then publish."))).outcome, "completed");
+  assert.deepEqual(
+    sandbox.delivered.map((e) => e.type),
+    ["publish"],
+  );
+  assert.equal(committedFirst, true, "the commit was made before the pick reached the Orchestrator");
 });
 
 test("jr2 is not pi: a request names no attribution, even to a base URL that pi-ai reads as OpenRouter", async () => {

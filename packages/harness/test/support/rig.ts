@@ -28,7 +28,7 @@ export type Turn = {
   text?: string;
   /** Emit a tool call. `partial` stops after the name — no arguments, no finish, no `[DONE]`. */
   toolCall?: { id: string; name: string; args?: string; partial?: boolean };
-  /** Several tool calls in ONE assistant message — pi runs them as one parallel batch. */
+  /** Several tool calls in ONE assistant message — the engine runs them one at a time, in this order (ADR-0027). */
   toolCalls?: Array<{ id: string; name: string; args?: string }>;
   stall?: boolean;
   /** End the stream after what came before, with no finish and no `[DONE]` — a provider that

@@ -54,6 +54,10 @@ function piEngine(options: EngineOptions): Engine {
     sessionId: options.id,
     // jr2 is not pi: no attribution headers on its requests.
     identity: { attribution: null },
+    // The seam runs the calls of one model answer one at a time, in the model's order (`engine.ts`).
+    // pi's default is `parallel`: it starts each call before the one before it ends, so a `publish`
+    // pick pushed before the `bash` commit written ahead of it in the same answer (ADR-0027).
+    toolExecution: "sequential",
     // pi's `Agent` does not forward `maxRetries`, so the stream states it.
     streamFn: (streamModel, context, streamOptions) =>
       models.streamSimple(streamModel, context, { ...streamOptions, maxRetries }),
@@ -66,9 +70,12 @@ function piEngine(options: EngineOptions): Engine {
       if (!messages) return undefined;
       return { context: { messages: lead ? [lead, ...messages] : messages, tools: request.context.tools ?? [] } };
     },
-    // pi hands the VALIDATED args. A block's text is the error result the model reads. A block
-    // that also aborts the run (the runaway watch) aborts it HERE, before pi checks the signal the
-    // moment this hook returns: pi then answers the call `Operation aborted` (`ToolCallBlock`).
+    // pi hands the VALIDATED args, and asks only about a call it prepared: a call of an unknown tool,
+    // or with arguments that do not validate, gets pi's error result and no hook (`prepareToolCall`).
+    // pi emits the model answer's `message_end` before it prepares the first call. A block's text is
+    // the error result the model reads. A block that also aborts the run (the runaway watch) aborts
+    // it HERE, before pi checks the signal the moment this hook returns: pi then answers the call
+    // `Operation aborted` (`ToolCallBlock`).
     beforeToolCall: async ({ toolCall, args }) => {
       const verdict = hooks.beforeToolCall({ name: toolCall.name, args });
       if (verdict === undefined) return undefined;

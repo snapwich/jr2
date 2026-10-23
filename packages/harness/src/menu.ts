@@ -22,11 +22,10 @@
 //                                → an outstanding pick's answer, long-polled inside the one tool
 //                                  call until the workflow is back at Rest (ADR-0013, ADR-0024)
 //
-// One pick at a time per Turn, claimed HERE in message order: pi starts the calls of one assistant
-// message in that order, each synchronously up to its first `await`, so the first Menu call of a
-// message holds the claim and every other is refused before it leaves — `finish` included. The
-// Orchestrator refuses the same picks from the Machine; only the Harness sees the message order,
-// which a socket race does not keep (measured: `finish` arrived first in 1 of 50).
+// One pick at a time per Turn: the engine runs the calls of one model answer one at a time, in the
+// model's order (ADR-0027), and the Turn sends only the first pick of a model answer — the model
+// wrote any other before it read the first one's answer (`stalePickResult`, `turn.ts`). While a pick
+// is outstanding, the Orchestrator refuses every other from the Machine (ADR-0024).
 //
 // Each Submission reads afresh, and the iid in the path is how the Orchestrator knows which turn is
 // live — no push channel, no turn index (ADR-0013's enabling fact).
@@ -222,14 +221,10 @@ export async function readMenu(
   // and a wrong "allowed" costs one refused pick where a wrong "not allowed" costs the Turn.
   const events = surface.menu ?? surface.accepts ?? [];
   const allowed = surface.allowed ?? events.map((event) => event.name);
-  const claim: PickClaim = {};
-  return { menu: events.map((event) => menuItem(opts, instanceId, event, claim)), allowed };
+  return { menu: events.map((event) => menuItem(opts, instanceId, event)), allowed };
 }
 
-/** The one pick in flight in this Submission, by event name (ADR-0024). */
-type PickClaim = { held?: string };
-
-function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent, claim: PickClaim): MenuItem {
+function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent): MenuItem {
   if (event.semantics !== "ack") {
     // ADR-0013: `poll` is reserved in the model and has room on the wire, but nothing drains a
     // steer inbox yet. Offering one as a plain tool would promise the Agent a contract nothing
@@ -245,37 +240,26 @@ function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent, cl
     description: event.description ?? "",
     parameters: parametersOf(event.input),
     ...(event.briefing === undefined ? {} : { briefing: event.briefing }),
-    pick: (params, pickSignal) => {
-      // The claim is taken before the first `await`: that is what makes it message order.
-      if (claim.held !== undefined) {
-        return Promise.reject(new Error(outstandingRefusal(event.name, claim.held, opts.toolName)));
-      }
-      claim.held = event.name;
-      return (async () => {
+    pick: async (params, pickSignal) => {
+      // The name last: an argument called `type` cannot make this pick another event.
+      const sent = await deliver(opts, instanceId, { ...((params ?? {}) as object), type: event.name }, pickSignal);
+      let receipt = sent;
+      if (sent.outstanding === true) {
+        // The pick is outstanding: from here to its answer, this call only polls (ADR-0031).
+        opts.onPolling?.(true);
         try {
-          // The name last: an argument called `type` cannot make this pick another event.
-          const sent = await deliver(opts, instanceId, { ...((params ?? {}) as object), type: event.name }, pickSignal);
-          let receipt = sent;
-          if (sent.outstanding === true) {
-            // The pick is outstanding: from here to its answer, this call only polls (ADR-0031).
-            opts.onPolling?.(true);
-            try {
-              receipt = await awaitAnswer(opts, instanceId, sent, pickSignal);
-            } finally {
-              opts.onPolling?.(false);
-            }
-          }
-          // The world moved (ADR-0035): an outstanding pick answered on its poll, or a child that
-          // replied inside the pick's own send. A guard straight back is answered too, but nothing
-          // ran and the state is where it was: the same call again is the same question.
-          if (receipt.answered === true && (sent.outstanding === true || receipt.answer !== undefined)) {
-            opts.onAnswered?.();
-          }
-          return receiptProse(receipt, opts.toolName);
+          receipt = await awaitAnswer(opts, instanceId, sent, pickSignal);
         } finally {
-          claim.held = undefined;
+          opts.onPolling?.(false);
         }
-      })();
+      }
+      // The world moved (ADR-0035): an outstanding pick answered on its poll, or a child that
+      // replied inside the pick's own send. A guard straight back is answered too, but nothing
+      // ran and the state is where it was: the same call again is the same question.
+      if (receipt.answered === true && (sent.outstanding === true || receipt.answer !== undefined)) {
+        opts.onAnswered?.();
+      }
+      return receiptProse(receipt, opts.toolName);
     },
   };
 }
@@ -286,9 +270,9 @@ function named(event: string, toolName?: (name: string) => string): string {
 }
 
 /**
- * The refusal of a pick while another is outstanding (ADR-0024) — `held` is the pick still running,
- * or undefined when the workflow is busy with work this Turn did not pick (it started busy). Said
- * the same whether the Harness's claim or the Orchestrator refused it, so the model reads one rule.
+ * The refusal of a pick while another is outstanding (ADR-0024), from the Orchestrator's 409 —
+ * `held` is the pick still running, or undefined when the workflow is busy with work this Turn did
+ * not pick (it started busy).
  */
 export function outstandingRefusal(
   refused: string,
@@ -334,6 +318,15 @@ export function unsentPickResult(tool: string): string {
     `This pick did not reach the workflow: your turn was cut while you were still writing your call to ` +
     `\`${tool}\`. Nothing ran. You may call \`${tool}\` again if the newest "Allowed now" still lists it.`
   );
+}
+
+/**
+ * What a pick answers when an earlier call of the same model answer is a pick (ADR-0024): the model
+ * wrote this one before it read the first one's answer, so it is stale by construction, and the
+ * Harness does not send it. `first` is the name the model called the first pick by.
+ */
+export function stalePickResult(first: string): string {
+  return `This pick did not run: you sent it before you read the answer to \`${first}\`.`;
 }
 
 /**
