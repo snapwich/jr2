@@ -1060,6 +1060,10 @@ async function runTrials(
         const run = ctx.evidence ? ` (run ${ctx.evidence.runId})` : "";
         trial = { runId: "?", measured: false, finished: false, note: `threw: ${(err as Error).message}${run}` };
       }
+      // A trial can end with its run still live: a driver that threw, a run that never parked, a
+      // void. Such a run is cancelled, so no Sandbox stays parked into the next trial. The kept
+      // record is the last status read, so this read makes it the run as the trial left it.
+      if (ctx.evidence) await leave(world, ctx.evidence.runId).catch(() => undefined);
       // The note opens with what the model called; the driver's note, which says how the run ended, follows.
       if (ctx.evidence) trial = { ...trial, note: [await ctx.evidence.finish(), trial.note].join("; ") };
       if (trial.void && replacements > 0) {
@@ -1073,6 +1077,13 @@ async function runTrials(
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(parallel, n)) }, worker));
   return results;
+}
+
+/** Read the run's status, cancel the run when it has not settled, and read its status until it
+ * settles (30 s at most). A run that has settled gets no CANCEL. */
+async function leave(world: E2EWorld, runId: string): Promise<void> {
+  if (!settled(await status(world, runId))) await world.runCli(["send", runId, "--event", "CANCEL"]);
+  await waitFor(world, runId, settled, 30_000);
 }
 
 /** The scenario's claim in flight, kept on the World between its steps. */
