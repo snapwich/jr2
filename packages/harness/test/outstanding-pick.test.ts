@@ -20,6 +20,7 @@ import {
   receiptProse,
   type DeliveryReceipt,
   type Surface,
+  unrunResult,
   unsentPickResult,
 } from "../src/menu.ts";
 import { menuToolName } from "../src/menu-tools.ts";
@@ -449,27 +450,38 @@ test("work that something stopped before it replied is never told it did not run
   }
 });
 
-test("a Menu call a restart cut gets jr2's result in the history; a Working-tool call is left to pi", () => {
-  const messages = [
-    { role: "user", content: "go", timestamp: 1 },
-    {
-      role: "assistant",
-      content: [
-        { type: "toolCall", id: "m1", name: "mcp__jr2__run_tests", arguments: {} },
-        { type: "toolCall", id: "b1", name: "bash", arguments: { command: "ls" } },
-      ],
-      stopReason: "toolUse",
-      timestamp: 2,
-    },
-  ] as unknown as EngineMessage[];
-  const settled = settleCutPicks(messages) as Array<{ role: string; toolCallId?: string; content?: unknown }>;
-  const results = settled.filter((m) => m.role === "toolResult");
-  assert.deepEqual(
-    results.map((m) => m.toolCallId),
-    ["m1"],
-  );
-  assert.deepEqual((results[0]!.content as Array<{ text: string }>)[0]!.text, cutPickResult("mcp__jr2__run_tests"));
-  assert.deepEqual(settleCutPicks(settled as unknown as EngineMessage[]), settled, "an answered call is left alone");
+test("a Menu call a restart cut gets jr2's result in the history; a Working-tool call is left to pi; every call after the cut one never started (ADR-0027)", () => {
+  const finished = (...calls: Array<[string, string]>) =>
+    [
+      { role: "user", content: "go", timestamp: 1 },
+      {
+        role: "assistant",
+        content: calls.map(([id, name]) => ({ type: "toolCall", id, name, arguments: {} })),
+        stopReason: "toolUse",
+        timestamp: 2,
+      },
+    ] as unknown as EngineMessage[];
+  const answers = (messages: EngineMessage[]) =>
+    (settleCutPicks(messages) as Array<{ role: string; toolCallId?: string; content?: Array<{ text: string }> }>)
+      .filter((m) => m.role === "toolResult")
+      .map((m) => [m.toolCallId, m.content![0]!.text]);
+  // The engine runs the calls in order: the first with no result is the one a restart cut while it
+  // was out, and the ones after it never started.
+  const pickFirst = finished(["m1", "mcp__jr2__run_tests"], ["b1", "bash"], ["m2", "mcp__jr2__finish"]);
+  assert.deepEqual(answers(pickFirst), [
+    ["m1", cutPickResult("mcp__jr2__run_tests")],
+    ["b1", unrunResult()],
+    ["m2", unrunResult()],
+  ]);
+  // A Working-tool call cut while it was out is pi-ai's to answer; the pick after it never started.
+  assert.deepEqual(answers(finished(["b1", "bash"], ["m1", "mcp__jr2__run_tests"])), [["m1", unrunResult()]]);
+  // A call that did not run is an error, as a blocked call is; the cut pick's answer is not.
+  const flags = (settleCutPicks(pickFirst) as Array<{ role: string; isError?: boolean }>)
+    .filter((m) => m.role === "toolResult")
+    .map((m) => m.isError);
+  assert.deepEqual(flags, [false, true, true]);
+  const settled = settleCutPicks(pickFirst);
+  assert.deepEqual(settleCutPicks(settled), settled, "an answered call is left alone");
 });
 
 test("a Menu call in a message an abort cut while the model wrote it gets the text that it never reached the workflow; a finished message's call keeps the restart's (ADR-0031)", () => {

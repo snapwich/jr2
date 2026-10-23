@@ -321,6 +321,18 @@ export function unsentPickResult(tool: string): string {
 }
 
 /**
+ * What a call answers in the history, forever after, when its Turn ended before the call started
+ * (ADR-0027): the engine runs a model answer's calls in order, and an abort, a Runaway's trip or a
+ * restart that cut a call ahead of this one ended the run first. Nothing ran — for a pick, it did
+ * not reach the workflow. Any tool: pi-ai would answer a Working-tool call "No result provided", an
+ * error that does not say whether it ran, and a pick `cutPickResult`, which says it reached the
+ * workflow.
+ */
+export function unrunResult(): string {
+  return "This call did not run: your turn ended before it started.";
+}
+
+/**
  * What a pick answers when an earlier call of the same model answer is a pick (ADR-0024): the model
  * wrote this one before it read the first one's answer, so it is stale by construction, and the
  * Harness does not send it. `first` is the name the model called the first pick by.

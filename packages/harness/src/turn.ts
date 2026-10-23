@@ -48,6 +48,7 @@ import {
   readMenu,
   stalePickResult,
   turnOverResult,
+  unrunResult,
   unsentPickResult,
   type MenuItem,
   type MenuOptions,
@@ -488,6 +489,13 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
           }),
         ),
       });
+      // The calls the run never started (ADR-0027): an abort or a trip ended it between two calls of
+      // its last model answer, and the engine runs no later call and gives it no result. Each gets
+      // jr2's answer in the engine part here, which prints once, so a later request carries the truth
+      // (`unrunResult`).
+      const unrun = unrunAnswers(part.context());
+      for (const answer of unrun) part.appendMessage(answer);
+      printLines(out, deps.agentName, unrun.flatMap(renderMessage));
       // The watch's SELF-abort (ADR-0035): the engine ended the run, but the pump's signal never fired.
       // Checked first so the runaway reason wins over the generic mapping below; a sweep that raced
       // the trip still settles `aborted` — the pump's own signal check outranks any throw.
@@ -565,10 +573,11 @@ function settleAbandonedMessage(message: EngineMessage): EngineMessage {
  * and invites a second one. Two cuts leave one, and the text tells them apart by whether the call
  * was delivered, read BEFORE the re-tag:
  *
- *   - The model finished the message, so the engine ran its calls, and a restart of this Harness
- *     cut the Turn while the call was out: the pick reached the workflow, which does not run it
- *     twice, and its answer comes in the next message (the re-admission's notice, ADR-0024) —
- *     `cutPickResult`.
+ *   - The model finished the message, so the engine ran its calls in order, and a restart of this
+ *     Harness cut the Turn while the call was out: the pick reached the workflow, which does not run
+ *     it twice, and its answer comes in the next message (the re-admission's notice, ADR-0024) —
+ *     `cutPickResult`. Only the first call with no result can have been out; every call after it,
+ *     a Working-tool call too, never started — `unrunResult`.
  *   - The message is aborted: an abort cut the Turn while the model was still writing it, and the
  *     engine runs no call of such a message. The pick did not reach the workflow, nothing ran, and
  *     the model may make it again — `unsentPickResult`.
@@ -579,8 +588,8 @@ function settleAbandonedMessage(message: EngineMessage): EngineMessage {
  * with no call before it is one the providers refuse. The pick never reached the workflow, so the
  * model is free to make it again.
  *
- * Placed before pi-ai's transform, so pi-ai finds a result and adds none. A Working-tool call is
- * pi-ai's to answer.
+ * Placed before pi-ai's transform, so pi-ai finds a result and adds none. Any other Working-tool
+ * call is pi-ai's to answer.
  */
 export function settleCutPicks(messages: EngineMessage[]): EngineMessage[] {
   return settled(messages).messages;
@@ -612,17 +621,24 @@ function settled(messages: EngineMessage[]): { messages: EngineMessage[]; added:
   let open: ToolCall[] = [];
   let delivered = true;
   const close = (): void => {
+    // The engine runs a finished message's calls in order (`engine.ts`), so a restart can cut one of
+    // them while it is out: the first with no result. Every call after that one never started.
+    let cut = false;
     for (const call of open) {
-      if (answered.has(call.id) || !call.name.startsWith(MENU_TOOL_PREFIX)) continue;
-      const text = delivered ? cutPickResult(call.name) : unsentPickResult(call.name);
-      const answer: ToolResultMessage = {
-        role: "toolResult",
-        toolCallId: call.id,
-        toolName: call.name,
-        content: [{ type: "text", text }],
-        isError: false,
-        timestamp: Date.now(),
-      };
+      if (answered.has(call.id)) continue;
+      const pick = call.name.startsWith(MENU_TOOL_PREFIX);
+      const text = !delivered
+        ? pick
+          ? unsentPickResult(call.name)
+          : undefined
+        : cut
+          ? unrunResult()
+          : pick
+            ? cutPickResult(call.name)
+            : undefined;
+      cut = true;
+      if (text === undefined) continue;
+      const answer = answerOf(call, text, text === unrunResult());
       added.add(answer);
       out.push(answer);
     }
@@ -647,6 +663,45 @@ function settled(messages: EngineMessage[]): { messages: EngineMessage[]; added:
   }
   close();
   return { messages: out, added };
+}
+
+/**
+ * jr2's answer to a call that has no result from the engine. `isError` is true for a call that did
+ * not run (`unrunResult`), as for every call the Turn blocks (the engine makes a block an error
+ * result): the call did not do its work, and the model may make it again. A cut or unsent pick's
+ * answer is no error: an error reads as a failed pick, and a cut pick may have run (ADR-0031).
+ */
+function answerOf(call: ToolCall, text: string, isError: boolean): ToolResultMessage {
+  return {
+    role: "toolResult",
+    toolCallId: call.id,
+    toolName: call.name,
+    content: [{ type: "text", text }],
+    isError,
+    timestamp: Date.now(),
+  };
+}
+
+/**
+ * jr2's answers to the calls of a run's last model answer that have no result when the run has
+ * ended (`unrunResult`). The run resolved, so no call of it is out: a call with no result is one
+ * the engine never started, after an abort or a trip (`engine.ts`). A message that ended `aborted`
+ * or `error` is `settled`'s: the engine ran none of its calls.
+ */
+function unrunAnswers(context: EngineMessage[]): ToolResultMessage[] {
+  let at = context.length - 1;
+  while (at >= 0 && (context[at] as { role?: string }).role !== "assistant") at--;
+  if (at === -1) return [];
+  const last = context[at] as AssistantMessage;
+  if (last.stopReason === "aborted" || last.stopReason === "error") return [];
+  const answered = new Set(
+    context
+      .slice(at + 1)
+      .flatMap((m) => ((m as { role?: string }).role === "toolResult" ? [(m as ToolResultMessage).toolCallId] : [])),
+  );
+  return last.content
+    .filter((block): block is ToolCall => block.type === "toolCall" && !answered.has(block.id))
+    .map((call) => answerOf(call, unrunResult(), true));
 }
 
 /** One completed message → its history entry, or none. Best-effort by contract (the history view's

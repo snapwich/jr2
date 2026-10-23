@@ -14,7 +14,14 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
 import { narrowedChartSchema } from "@jr2/orchestrator/internal";
-import { cutPickResult, stalePickResult, turnOverResult, unsentPickResult, type Surface } from "../src/menu.ts";
+import {
+  cutPickResult,
+  stalePickResult,
+  turnOverResult,
+  unrunResult,
+  unsentPickResult,
+  type Surface,
+} from "../src/menu.ts";
 import { harnessServer, type HarnessServer } from "../src/app.ts";
 import { TURN_ENDED_MESSAGE } from "../src/conversation.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
@@ -2676,6 +2683,39 @@ test("a call after a pick that ended the Turn, in the same model answer, does no
   for (const id of ["call_b", "call_f"]) {
     assert.equal(results.find((m) => m.toolCallId === id)?.content?.[0]?.text, turnOverResult());
   }
+});
+
+test("an abort between two calls of one model answer: the call after it never starts, and the history says so — for a pick too (ADR-0027)", async () => {
+  // The engine gives a call it never started no result. With none, pi-ai would answer the pick
+  // with "No result provided", and `settleCutPicks` with "This pick reached the workflow".
+  const marker = join(await mkdtemp(join(tmpdir(), "conf-abort-between-")), "ran");
+  provider.reset([
+    {
+      toolCalls: [
+        { id: "call_s", name: "bash", args: JSON.stringify({ command: "sleep 2" }) },
+        { id: "call_t", name: "bash", args: JSON.stringify({ command: `touch ${marker}` }) },
+        { id: "call_f", name: "mcp__jr2__finish", args: '{"verdict":"done"}' },
+      ],
+    },
+  ]);
+  sandbox.reset(surfaceWith("finish"));
+  const iid = "conf/abort-between";
+  const admission = await admit(iid, "Sleep, then finish.");
+  await until(() => provider.calls.length === 1, "the model answer with three calls");
+  await sleep(200);
+  assert.deepEqual(await abort(iid), { aborted: true });
+  assert.equal((await settled(iid, admission)).outcome, "aborted");
+  const { existsSync } = await import("node:fs");
+  assert.equal(existsSync(marker), false, "the call after the abort did not run");
+  assert.deepEqual(sandbox.delivered, [], "the pick after the abort never left");
+
+  provider.reset([{ text: "Next." }]);
+  sandbox.reset(surfaceWith("finish"));
+  assert.equal((await settled(iid, await admit(iid, "Next Turn."))).outcome, "completed");
+  for (const id of ["call_t", "call_f"]) assert.equal(toolResultText(provider.calls[0], id), unrunResult());
+  // A Working tool's result is never printed (ADR-0023); the pick's answer prints once.
+  const answers = (printed.get(iid) ?? "").split("\n").filter((line) => line.includes(unrunResult()));
+  assert.deepEqual(answers, [`[${AGENT}] [finish error] ${unrunResult()}`], printed.get(iid) ?? "");
 });
 
 test("jr2 is not pi: a request names no attribution, even to a base URL that pi-ai reads as OpenRouter", async () => {
