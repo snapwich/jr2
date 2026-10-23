@@ -78,13 +78,14 @@ whose processes are gone, with no way to know why.
     admission into a Workspace, the Agent actor reads the list. The actor sets the read's limit of 5 seconds, and it is
     the only limit. A read that never left the Orchestrator, or a draining Harness's 503, is sent again in that time. A
     read that fails or times out is none, and the next admission reads again: the list keeps the kill. The Orchestrator
-    logs one line when the reads from a Harness start to fail, and one more only after a read that worked. The Agent's
-    uid can write the file, as it can the conversation records: it can change only what its own Workspace is told. So a
-    `peak` or a `limit` that is not a size in the guard's form, or is long, is left out and logged, on the Harness's
-    read of the file and on the Orchestrator's read of the list and of a stream. The kill is kept, so a real kill is
-    never lost, and its notice says no sizes: "the Sandbox's processes were killed at its memory limit; /dev/shm was
-    cleared. …". Only a kill with no id or no time, or one outside the bounds below, is dropped. A stream event from an
-    older Harness has no id; its source is then its place on the stream, exactly as the Orchestrator raised it before.
+    logs one line when the reads from a Harness start to fail. It logs no line when a read works again, and it logs the
+    failure again only when a read fails after a read that worked. The Agent's uid can write the file, as it can the
+    conversation records: it can change only what its own Workspace is told. So a `peak` or a `limit` that is not a size
+    in the guard's form, or is long, is left out and logged, on the Harness's read of the file and on the Orchestrator's
+    read of the list and of a stream. The kill is kept, so a real kill is never lost, and its notice says no sizes: "the
+    Sandbox's processes were killed at its memory limit; /dev/shm was cleared. …". Only a kill with no id or no time, or
+    one outside the bounds below, is dropped. A stream event from an older Harness has no id; its source is then its
+    place on the stream, exactly as the Orchestrator raised it before.
 
   Both paths raise the notice with the same source, the Workspace and the kill's id. The ledger keeps every source it
   raised (`seen`) in the run's persisted state. So a kill read on both paths, or on two streams, is one notice. Each

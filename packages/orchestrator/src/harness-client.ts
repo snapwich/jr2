@@ -127,7 +127,8 @@ export type HarnessClient = {
    * (`wire.ts`), or with a time that does not parse, is skipped; one whose `peak` or `limit` is not
    * a size is kept without sizes, and one whose `told` holds an entry that is not a conversation, or
    * a name outside the bounds, is kept without that entry — each fault said. Absent sizes are no fault: the pod left them out.
-   * Each fault is one line: said when it starts, and again only after a read that works. */
+   * Each fault is one line, said when it starts. A read that works says nothing, and the next fault
+   * after it is said again. */
   memoryKills(opts?: { signal?: AbortSignal }): Promise<ListedKill[] | undefined>;
   /** `POST /agents/:name/:id/abort`. The `{ aborted }` answer is dropped (ADR-0024). */
   abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void>;
@@ -531,7 +532,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
         }
         backoffMs = Math.min(backoffMs * 2, backoffMaxMs);
       }
-      // One line for each fault: said when it starts, and again only after a read that works.
+      // One line for each fault: said when it starts. A read that works says nothing, and the next
+      // fault after it is said again.
       if (!killReadFaults.has(baseUrl)) {
         killReadFaults.add(baseUrl);
         log(
