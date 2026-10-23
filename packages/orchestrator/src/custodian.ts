@@ -223,7 +223,7 @@ function unreachable(target: string): Json {
   return {
     mappers: [
       {
-        filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR"] } },
+        filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR", "UPE", "UR", "LR"] } },
         status_code: 502,
         body_format_override: {
           text_format_source: {
@@ -240,7 +240,9 @@ function unreachable(target: string): Json {
 const ORCHESTRATOR_UNREACHABLE: Json = {
   mappers: [
     {
-      filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR"] } },
+      // Envoy's own 503s for a stream it reset (`UPE`, `UR`, `LR`) are said here too, so the Harness
+      // reads them as "not known" and not as a stopping Orchestrator's 503 (ADR-0002).
+      filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR", "UPE", "UR", "LR"] } },
       status_code: 502,
       headers_to_add: [
         { header: { key: "x-jr2-custodian", value: "unreachable" }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },

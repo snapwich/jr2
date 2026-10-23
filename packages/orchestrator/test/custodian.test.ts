@@ -102,6 +102,9 @@ test("the control listener forwards four routes — the Menu's two, a pick's ans
     ],
   );
   assert.deepEqual(routes[4]!.direct_response, { status: 404 }, "anything else never reaches the Orchestrator");
+  // A pick retries only a failure before it was sent: the Harness reads the retry limit (`URX`) as a
+  // pick that never reached the Orchestrator (ADR-0002), and that holds only while this is so.
+  assert.equal(routes[1]!.route.retry_policy.retry_on, "reset-before-request,connect-failure");
   // An Instance ID is ONE encoded path segment: this listener must not refuse its `%2F`.
   assert.equal(hcm.path_with_escaped_slashes_action, "KEEP_UNCHANGED");
   // The rewrite of the ask stays on the route it arrived on.
@@ -284,4 +287,11 @@ test("the rendered config is JSON a ConfigMap can carry, and names no value", ()
   const text = JSON.stringify(custodianBootstrap(TWO, ORCH));
   assert.ok(text.length < 64 * 1024);
   assert.ok(!/jr2-held-/.test(text), "no Stand-in either: the bootstrap routes; the script decides");
+});
+
+test("the Orchestrator's unreachable answer names every Envoy flag of a stream it did not complete, its own resets included (ADR-0002)", () => {
+  const control = listeners(EMPTY_HELD).find((l) => l.name === "control")!;
+  const hcm = control.filter_chains[0]!.filters[0]!.typed_config;
+  const flags = hcm.local_reply_config.mappers[0].filter.response_flag_filter.flags as string[];
+  assert.deepEqual([...flags].sort(), ["DF", "DPE", "LR", "UC", "UF", "UH", "UMSDR", "UPE", "UR", "URX"]);
 });

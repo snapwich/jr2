@@ -18,16 +18,19 @@ import {
   cutPickResult,
   stalePickResult,
   turnOverResult,
+  unreadAnswerResult,
   unrunResult,
   unsentPickResult,
   type Surface,
 } from "../src/menu.ts";
 import { harnessServer, type HarnessServer } from "../src/app.ts";
 import { TURN_ENDED_MESSAGE } from "../src/conversation.ts";
+import { noticeText } from "../src/briefing.ts";
+import { menuToolName } from "../src/menu-tools.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
 import { runSubmissionFor } from "../src/turn.ts";
-import type { HistoryView, Settlement, StreamEvent } from "../src/wire.ts";
+import type { HistoryView, Notice, Settlement, StreamEvent } from "../src/wire.ts";
 import { startAnthropicGateway, type AnthropicGateway } from "./support/anthropic-gateway.ts";
 import {
   SANDBOX_STAND_IN,
@@ -1437,6 +1440,86 @@ test("an abort mid-TOOL-CALL keeps the turn in history: the loop writes its own 
     resumed.some((m) => m.role === "assistant" && JSON.stringify(m).includes("call_1")),
     `the delivered pick survived into the next turn (got: ${JSON.stringify(resumed.map((m) => m.role))})`,
   );
+});
+
+test("a Turn-ending pick the Orchestrator took, whose Turn's abort lands before its answer: the model never reads that it did not reach the Orchestrator (ADR-0002)", async () => {
+  // Measured (real Haiku 5.5 and Qwen, `noticed`, 2026-10-22): the run moved on the pick, and the
+  // model read "the pick never reached the Orchestrator … — try it again", then said the call failed.
+  provider.reset([
+    {
+      toolCalls: [
+        { id: "call_b", name: "bash", args: JSON.stringify({ command: "true" }) },
+        { id: "call_s", name: "mcp__jr2__started", args: '{"verdict":"up"}' },
+      ],
+    },
+  ]);
+  sandbox.reset(surfaceWith("started", "report"));
+  sandbox.holdDeliveries();
+  const iid = "conf/taken-then-aborted";
+  const admission = await admit(iid, "Start it, then call started.");
+  await until(() => sandbox.delivered.length > 0, "the pick to be taken");
+  // The Orchestrator took it, the state exited, and its abort lands before the receipt.
+  sandbox.killSurface();
+  await abort(iid);
+  assert.equal((await settled(iid, admission)).outcome, "aborted");
+  assert.deepEqual(
+    sandbox.delivered.map((e) => e.type),
+    ["started"],
+  );
+
+  // The next Turn, with the pick's answer as its notice (ADR-0062).
+  provider.reset([{ text: "Reporting." }]);
+  sandbox.reset(surfaceAllowing(["started", "report"], ["report"]));
+  const notice = {
+    kind: "pick-answer",
+    scope: "conversation",
+    pick: "started",
+    cut: false,
+    answer: { kind: "output", actor: "server", output: "ok" },
+  };
+  const res = await app.request(conversationPath(iid), {
+    method: "POST",
+    body: JSON.stringify({
+      message: "Is the server still answering? Call `report`.",
+      cwd: tmpdir(),
+      definition: definitions[AGENT],
+      notices: [notice],
+    }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 200);
+  const next = (await res.json()) as { offset: string; submissionId: string };
+  assert.equal((await settled(iid, next)).outcome, "completed");
+  const read = toolResultText(provider.calls[0], "call_s");
+  assert.doesNotMatch(read, /never reached/);
+  assert.match(
+    read,
+    /^It is not known whether this pick reached the workflow: your turn ended while the call to `mcp__jr2__started` waited for the workflow's answer \(/,
+  );
+  assert.doesNotMatch(printed.get(iid) ?? "", /never reached/);
+  // An answer, not an error: an error reads as a failed pick (ADR-0002).
+  assert.match(printed.get(iid) ?? "", /\[started answer\] It is not known whether this pick reached the workflow/);
+  assert.ok(
+    lastUserText(provider.calls[0]).includes(noticeText(notice as Notice, menuToolName)),
+    lastUserText(provider.calls[0]),
+  );
+
+  // An outstanding pick whose poll the Turn's abort cuts: it reached the workflow, and only its
+  // answer went unread.
+  provider.reset([{ toolCall: { id: "call_o", name: "mcp__jr2__started", args: '{"verdict":"up"}' } }]);
+  sandbox.reset(surfaceWith("started", "report"));
+  sandbox.answerWith(outstandingReceipt);
+  sandbox.pollWith(() => new Promise<never>(() => {}));
+  const held = "conf/outstanding-then-aborted";
+  const heldAdmission = await admit(held, "Start it, then call started.");
+  await until(() => sandbox.polls.length > 0, "the pick's answer to be polled");
+  await app.request(`${conversationPath(held)}/abort`, { method: "POST" });
+  assert.equal((await settled(held, heldAdmission)).outcome, "aborted");
+  provider.reset([{ text: "Reporting." }]);
+  sandbox.reset(surfaceWith("started", "report"));
+  assert.equal((await settled(held, await admit(held, "Call `report`."))).outcome, "completed");
+  assert.equal(toolResultText(provider.calls[0], "call_o"), unreadAnswerResult("mcp__jr2__started"));
+  assert.ok((printed.get(held) ?? "").includes(`[started answer] ${unreadAnswerResult("mcp__jr2__started")}`));
 });
 
 test("ending a turn logs no error: no 404 spam, no unhandled rejection (ADR-0026)", async () => {

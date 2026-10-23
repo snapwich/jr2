@@ -3,6 +3,8 @@
 // as prose; a cut call's history result is jr2's text.
 
 import { test } from "node:test";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,6 +22,8 @@ import {
   receiptProse,
   type DeliveryReceipt,
   type Surface,
+  unknownPickResult,
+  unreadAnswerResult,
   unrunResult,
   unsentPickResult,
 } from "../src/menu.ts";
@@ -567,4 +571,128 @@ test("the cut answers a rebuilt engine part prints are those of the Menu calls i
   );
   assert.deepEqual(cutPickAnswers(later), []);
   assert.deepEqual(cutPickAnswers(settleCutPicks(cutTurn)), [], "an answered call prints nothing");
+});
+
+test('a pick\'s POST failure reads "never reached" only when no byte of it left; any other failure, an abort included, answers that the Harness does not know (ADR-0002)', async () => {
+  const failing = (cause: unknown) =>
+    fakeFetch((call) => {
+      if (call.url.endsWith("/surface")) return Response.json(SURFACE);
+      throw new TypeError("fetch failed", { cause });
+    });
+  const coded = (code: string, message: string) => Object.assign(new Error(message), { code });
+  const pickWith = async (cause: unknown, signal?: AbortSignal) =>
+    (await readMenu(opts(failing(cause).fetch), "run-1/coder"))!.menu[0]!.pick({}, signal);
+
+  for (const code of ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]) {
+    await assert.rejects(pickWith(coded(code, `connect ${code}`)), {
+      message: `the pick never reached the Orchestrator (connect ${code}) — try it again`,
+    });
+  }
+  // An unreachable network or host proves it only when the `connect` call failed.
+  for (const code of ["EHOSTUNREACH", "ENETUNREACH"]) {
+    await assert.rejects(pickWith(Object.assign(coded(code, `connect ${code}`), { syscall: "connect" })), {
+      message: `the pick never reached the Orchestrator (connect ${code}) — try it again`,
+    });
+    assert.equal(
+      await pickWith(Object.assign(coded(code, `write ${code}`), { syscall: "write" })),
+      unknownPickResult("mcp__jr2__run_tests", `write ${code}`, false),
+    );
+  }
+  // The text is the call's answer, not an error: an error reads as a failed pick.
+  for (const code of ["ECONNRESET", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT"]) {
+    assert.equal(
+      await pickWith(coded(code, `failed ${code}`)),
+      unknownPickResult("mcp__jr2__run_tests", `failed ${code}`, false),
+    );
+  }
+  const ended = new AbortController();
+  ended.abort();
+  // An abort reads "not known" even with a code that would prove the request never left: the call
+  // was the Turn's, and the Turn is over.
+  assert.equal(
+    await pickWith(coded("ECONNREFUSED", "This operation was aborted"), ended.signal),
+    unknownPickResult("mcp__jr2__run_tests", "This operation was aborted", true),
+  );
+});
+
+test("the Custodian's 502: a request it never forwarded never reached the Orchestrator; any other flag answers that the Harness does not know (ADR-0002, ADR-0059)", async () => {
+  const custodian = (flags: string) =>
+    fakeFetch((call) => {
+      if (call.url.endsWith("/surface")) return Response.json(SURFACE);
+      return Response.json(
+        { detail: "upstream connect error", flags },
+        { status: 502, headers: { "x-jr2-custodian": "unreachable" } },
+      );
+    });
+  const pickWith = async (flags: string) =>
+    (await readMenu(opts(custodian(flags).fetch), "run-1/coder"))!.menu[0]!.pick({});
+  for (const flags of ["UF", "UH", "DF", "URX", "UF,URX"]) {
+    await assert.rejects(pickWith(flags), {
+      message:
+        "the pick never reached the Orchestrator (the Custodian could not reach it (upstream connect error)) — try it again",
+    });
+  }
+  for (const flags of ["UC", "UMSDR", "DPE", "UPE", "UR", "LR", "UF,UC", ""]) {
+    assert.equal(
+      await pickWith(flags),
+      unknownPickResult("mcp__jr2__run_tests", "the Custodian could not reach it (upstream connect error)", false),
+    );
+  }
+});
+
+test("an outstanding pick whose poll the Turn's abort cuts reads that it reached the workflow (ADR-0002)", async () => {
+  const ending = new AbortController();
+  const held = fakeFetch((call) => {
+    if (call.url.endsWith("/surface")) return Response.json(SURFACE);
+    if (call.method === "POST") return Response.json(outstanding);
+    ending.abort();
+    throw new DOMException("This operation was aborted", "AbortError");
+  });
+  const heldRead = await readMenu(opts(held.fetch), "run-1/coder");
+  assert.equal(await heldRead!.menu[0]!.pick({}, ending.signal), unreadAnswerResult("mcp__jr2__run_tests"));
+});
+
+test("over a real socket: a refused connection never reached the Orchestrator; a socket closed after the request is not known; a 200 whose body the abort cuts reached the workflow (ADR-0002)", async () => {
+  const { createServer } = await import("node:http");
+  const { once } = await import("node:events");
+  let handle: (req: IncomingMessage, res: ServerResponse) => void = () => {};
+  const server = createServer((req, res) => handle(req, res));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = (server.address() as AddressInfo).port;
+  // The surface is read in process; the pick's POST goes over a real socket to `target`.
+  const pickTo = async (target: string, signal?: AbortSignal) => {
+    const fetch = ((input: string | URL | Request, init?: RequestInit) =>
+      String(input).endsWith("/surface")
+        ? Promise.resolve(Response.json(SURFACE))
+        : globalThis.fetch(`${target}${new URL(String(input)).pathname}`, init)) as typeof globalThis.fetch;
+    return (await readMenu(opts(fetch), "run-1/coder"))!.menu[0]!.pick({}, signal);
+  };
+  const live = `http://127.0.0.1:${port}`;
+  try {
+    // The request left and was read; the socket closed with no answer.
+    handle = (req) => {
+      req.resume();
+      req.on("end", () => req.socket.destroy());
+    };
+    assert.match(
+      await pickTo(live),
+      /^It is not known whether this pick reached the workflow: the call to `mcp__jr2__run_tests` failed before the workflow answered \(/,
+    );
+
+    // A 200 whose body the Turn's abort cuts: the Orchestrator took the pick.
+    const ended = new AbortController();
+    handle = (req, res) => {
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write('{"delivered":');
+      setTimeout(() => ended.abort(), 20);
+    };
+    assert.equal(await pickTo(live, ended.signal), unreadAnswerResult("mcp__jr2__run_tests"));
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+  // Nothing listens on the port now: the connection is refused, so no byte of the request left.
+  await assert.rejects(pickTo(live), /^Error: the pick never reached the Orchestrator \(connect ECONNREFUSED /);
 });

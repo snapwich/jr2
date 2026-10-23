@@ -242,13 +242,26 @@ function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent): M
     ...(event.briefing === undefined ? {} : { briefing: event.briefing }),
     pick: async (params, pickSignal) => {
       // The name last: an argument called `type` cannot make this pick another event.
-      const sent = await deliver(opts, instanceId, { ...((params ?? {}) as object), type: event.name }, pickSignal);
+      let sent: DeliveryReceipt;
+      try {
+        sent = await deliver(opts, instanceId, { ...((params ?? {}) as object), type: event.name }, pickSignal);
+      } catch (err) {
+        // What the Harness knows of a pick it may have delivered is an answer, not a failure: an
+        // error reads as a failed pick and invites a second one (ADR-0002, `cutPickResult`).
+        if (err instanceof PickNotice) return err.message;
+        throw err;
+      }
       let receipt = sent;
       if (sent.outstanding === true) {
         // The pick is outstanding: from here to its answer, this call only polls (ADR-0031).
         opts.onPolling?.(true);
         try {
           receipt = await awaitAnswer(opts, instanceId, sent, pickSignal);
+        } catch (err) {
+          // The Turn's abort cut the poll: the pick is outstanding, so it reached the workflow, and
+          // only its answer went unread (ADR-0002). An answer, as above.
+          if (pickSignal?.aborted) return unreadAnswerResult(named(event.name, opts.toolName));
+          throw err;
         } finally {
           opts.onPolling?.(false);
         }
@@ -317,6 +330,43 @@ export function unsentPickResult(tool: string): string {
   return (
     `This pick did not reach the workflow: your turn was cut while you were still writing your call to ` +
     `\`${tool}\`. Nothing ran. You may call \`${tool}\` again if the newest "Allowed now" still lists it.`
+  );
+}
+
+/**
+ * What a pick answers when its `POST` failed in a way that does not prove the request never left
+ * (ADR-0002): the Orchestrator may have taken it. So the Harness does not know whether the pick
+ * reached the workflow, and never says that it did not. `ended`: the call's own abort cut it — most
+ * often the Turn's end, because a taken pick that leaves the Agent's state ends the Turn, and its
+ * abort can land before the receipt. The next message then says where the workflow is: the next
+ * Turn's prompt and Allowed picks, and a `pick-answer` notice when the pick has an answer
+ * (ADR-0062). Otherwise the Turn goes on. The text says only that a second call can run the pick
+ * twice: no list or message tells the model for sure that the pick ran — a guard back, a
+ * self-transition and an unchanged list all look alike. `tool` is the name the model called.
+ */
+export function unknownPickResult(tool: string, detail: string, ended: boolean): string {
+  const unknown = "It is not known whether this pick reached the workflow";
+  return ended
+    ? `${unknown}: your turn ended while the call to \`${tool}\` waited for the workflow's answer (${detail}). ` +
+        `A pick that the workflow takes can end the turn in this way. Do not call \`${tool}\` again before you ` +
+        `read the next message: it tells you where the workflow is now.`
+    : `${unknown}: the call to \`${tool}\` failed before the workflow answered (${detail}). A second call to ` +
+        `\`${tool}\` can run the pick twice.`;
+}
+
+/**
+ * What a pick answers when the Orchestrator took it and its answer went unread (ADR-0002, ADR-0024):
+ * the pick is outstanding and the Turn's abort cut its poll, or the Orchestrator answered 200 and the
+ * receipt's body did not arrive. `detail` is why, when the call's own abort was not the cause. The
+ * next message says where the workflow is, with a `pick-answer` notice when the answer comes
+ * (ADR-0062). `tool` is the name the model called.
+ */
+export function unreadAnswerResult(tool: string, detail?: string): string {
+  const why =
+    detail === undefined ? "your turn ended before you read its answer" : `its answer did not reach you (${detail})`;
+  return (
+    `This pick reached the workflow, and ${why}. ` +
+    `Do not call \`${tool}\` again before you read the next message: it tells you where the workflow is now.`
   );
 }
 
@@ -639,9 +689,34 @@ async function deliver(
       ...(signal ? { signal } : {}),
     });
   } catch (err) {
-    throw new Error(`the pick never reached the Orchestrator (${transportDetail(err)}) — try it again`, { cause: err });
+    // "Never reached" only for a failure that proves no byte of the request left (ADR-0002). Any
+    // other failure — the call's own abort included (the Turn's own end, most often: the
+    // Orchestrator took this pick, the state exited, and its abort landed before the answer did) —
+    // can come after the Orchestrator took the pick. The Harness cannot know which, so it says so.
+    if (!signal?.aborted && neverLeft(err)) {
+      throw new Error(`the pick never reached the Orchestrator (${transportDetail(err)}) — try it again`, {
+        cause: err,
+      });
+    }
+    const tool = named(String(event.type), opts.toolName);
+    throw new PickNotice(unknownPickResult(tool, transportDetail(err), signal?.aborted === true));
   }
-  await unreachable(res);
+  try {
+    await unreachable(res);
+  } catch (err) {
+    if (!(err instanceof UnreachableError)) throw err;
+    // The Custodian's hop (ADR-0059): the flags of the Envoy response say whether it forwarded the
+    // request. Only a request it never forwarded never reached the Orchestrator (ADR-0002).
+    const flags = err.code
+      .replace(/^custodian:/, "")
+      .split(",")
+      .filter((flag) => flag !== "");
+    if (!signal?.aborted && flags.length > 0 && flags.every((flag) => NEVER_FORWARDED.has(flag))) {
+      throw new Error(`the pick never reached the Orchestrator (${err.message}) — try it again`, { cause: err });
+    }
+    const tool = named(String(event.type), opts.toolName);
+    throw new PickNotice(unknownPickResult(tool, err.message, signal?.aborted === true));
+  }
   if (res.status === 404) {
     opts.onTurnOver?.();
     throw new NoSurfaceError(`no live surface for agent "${instanceId}" — this turn is over`);
@@ -659,10 +734,19 @@ async function deliver(
     }
     throw new Error(body?.error ?? `the Orchestrator answered HTTP 409`);
   }
-  const receipt = (await answered(res, (allowed) => {
-    opts.onAllowed?.(allowed);
-    return allowedPicksText(allowed, opts.toolName);
-  })) as DeliveryReceipt;
+  let receipt: DeliveryReceipt;
+  try {
+    receipt = (await answered(res, (allowed) => {
+      opts.onAllowed?.(allowed);
+      return allowedPicksText(allowed, opts.toolName);
+    })) as DeliveryReceipt;
+  } catch (err) {
+    if (!res.ok) throw err;
+    // A 2xx is the Orchestrator's own word that it took the pick: a body that did not arrive leaves
+    // only its answer unread (ADR-0002).
+    const tool = named(String(event.type), opts.toolName);
+    throw new PickNotice(unreadAnswerResult(tool, signal?.aborted ? undefined : transportDetail(err)));
+  }
   // Absent is not empty (ADR-0029's skew): an older Orchestrator's receipt carries no list to hear.
   if (Array.isArray(receipt.allowed)) opts.onAllowed?.(receipt.allowed);
   if (receipt.turnComplete === true) opts.onTurnOver?.();
@@ -822,6 +906,45 @@ function transportCode(err: unknown, depth = 0): string {
   const nested = Array.isArray(errors) ? errors[0] : cause;
   return nested === undefined || nested === null ? "?" : transportCode(nested, depth + 1);
 }
+
+/** What a pick returns as its answer when `deliver` cannot give a receipt but knows something of the
+ * pick (ADR-0002): the text is the answer, and no error. */
+class PickNotice extends Error {}
+
+/** The transport failures that prove a request never left this process: no connection was made, so
+ * no byte of it was written (ADR-0002). Node's errno for a refused connection and a failed name
+ * lookup, undici's connect timeout, and an unreachable network or host when the `connect` call
+ * failed. Every other failure — a reset, a socket the other side closed, a headers timeout — can
+ * come after the request left. */
+const NEVER_LEFT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]);
+const NEVER_LEFT_ON_CONNECT = new Set(["ENETUNREACH", "EHOSTUNREACH"]);
+
+/** True when a transport failure proves the request never left (`NEVER_LEFT`). */
+function neverLeft(err: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof err !== "object" || err === null) return false;
+  const { code, syscall, cause, errors } = err as {
+    code?: unknown;
+    syscall?: unknown;
+    cause?: unknown;
+    errors?: unknown;
+  };
+  if (typeof code === "string") {
+    if (NEVER_LEFT.has(code)) return true;
+    if (NEVER_LEFT_ON_CONNECT.has(code)) return syscall === "connect";
+  }
+  const nested = Array.isArray(errors) ? errors[0] : cause;
+  return neverLeft(nested, depth + 1);
+}
+
+/** The Custodian's Envoy response flags that say it never forwarded the request upstream
+ * (ADR-0059): an upstream connection failure (`UF`), no healthy upstream (`UH`), a DNS failure
+ * (`DF`), and the upstream retry limit (`URX`). `URX` is here only because the `events` route
+ * retries on `reset-before-request,connect-failure` alone (`custodian.ts`, pinned in its test): its
+ * last attempt failed before the request was sent. Every other flag can come after the Orchestrator
+ * read the request: an upstream connection that closed (`UC`), a stream reset (`UMSDR`), an upstream
+ * protocol error (`UPE`), a remote or a local reset (`UR`, `LR`), and a downstream protocol error
+ * (`DPE`), which can come in the body after the headers went upstream. */
+const NEVER_FORWARDED = new Set(["UF", "UH", "DF", "URX"]);
 
 /** The most specific thing a transport rejection says about itself: `fetch failed` diagnoses
  * nothing, the errno one level down (`connect ECONNREFUSED 127.0.0.1:8081`) is the answer. */
