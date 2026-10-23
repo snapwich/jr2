@@ -80,20 +80,36 @@ type Status = {
 
 type SandboxCR = { metadata: { name: string }; status?: { phase?: string } };
 
-async function kubectl(world: E2EWorld, args: string[]): Promise<string> {
+/** `timeout` (ms) kills the kubectl process when it has not ended, so a hung call fails the step
+ * instead of holding it. Absent, the call may take as long as it takes. */
+async function kubectl(world: E2EWorld, args: string[], timeout?: number): Promise<string> {
   assert.ok(world.namespace, "a @model scenario has its namespace set in setupModel");
-  const { stdout } = await exec("kubectl", ["--namespace", world.namespace, ...args], { maxBuffer: 32 * 1024 * 1024 });
+  const { stdout } = await exec("kubectl", ["--namespace", world.namespace, ...args], {
+    maxBuffer: 32 * 1024 * 1024,
+    ...(timeout === undefined ? {} : { timeout }),
+  });
   return stdout;
 }
+
+/** How long one `kubectl exec` into a Harness container may take. The longest command is the run's
+ * `node --test` in the pod, which takes seconds; the memory hog ends in about a second, when the
+ * guard kills it. It fires before the 300 s Cucumber timeout of the step that runs `node --test`. */
+const IN_HARNESS_MS = 240_000;
+/** How long the read of the instance Secret may take. */
+const SECRET_READ_MS = 30_000;
+/** How long one `kubectl get pod` may take. */
+const POD_READ_MS = 30_000;
 
 /** Run a command in the run's Harness container; resolves with stdout, or the exit code when
  * the command failed — a probe's "no" is an answer, not an error. */
 async function inHarness(world: E2EWorld, pod: string, cmd: string[]): Promise<{ code: number; out: string }> {
   try {
-    const out = await kubectl(world, ["exec", `pod/${pod}`, "-c", "harness", "--", ...cmd]);
+    const out = await kubectl(world, ["exec", `pod/${pod}`, "-c", "harness", "--", ...cmd], IN_HARNESS_MS);
     return { code: 0, out };
   } catch (err) {
-    const e = err as { code?: number | string; stdout?: string };
+    const e = err as { code?: number | string; stdout?: string; killed?: boolean };
+    // A command that did not end in its time is a hung step, not a probe's "no".
+    if (e.killed) throw new Error(`kubectl exec into pod/${pod} did not end in ${IN_HARNESS_MS / 1000} s: ${cmd[0]}`);
     return { code: typeof e.code === "number" ? e.code : 1, out: e.stdout ?? "" };
   }
 }
@@ -170,11 +186,64 @@ async function sendToGate(world: E2EWorld, runId: string, gate: string, event: s
 /** The Harness bearer for one placement (ADR-0058), derived the Orchestrator's way. */
 async function harnessAuth(world: E2EWorld, placement: string): Promise<Record<string, string>> {
   const key = (
-    await kubectl(world, ["get", "secret", "jr2-instance", "-o", "jsonpath={.data.JR2_SIGNING_KEY}"])
+    await kubectl(world, ["get", "secret", "jr2-instance", "-o", "jsonpath={.data.JR2_SIGNING_KEY}"], SECRET_READ_MS)
   ).trim();
   assert.ok(key, "the instance Secret carries the signing key `jr2 up` minted");
   const signingKey = Buffer.from(Buffer.from(key, "base64").toString("utf8"), "base64");
   return { authorization: `Bearer ${harnessToken(signingKey, placement)}` };
+}
+
+/** How long one GET at a Harness pod may take, the port-forward and the request each. */
+const HARNESS_GET_MS = 30_000;
+
+/** One GET at a Harness pod, through a port-forward, with the bearer for `placement` (ADR-0058): a
+ * Sandbox's pod name, or the Instance Harness's Service. Answers the status and the JSON body; a
+ * body that is not JSON answers as `undefined`. A port-forward that does not forward in
+ * HARNESS_GET_MS, or a request that does not answer in it, rejects. */
+async function harnessGet(
+  world: E2EWorld,
+  pod: string,
+  path: string,
+  placement = pod,
+): Promise<{ status: number; body: unknown }> {
+  assert.ok(world.namespace);
+  const headers = await harnessAuth(world, placement);
+  const child = spawn("kubectl", ["--namespace", world.namespace, "port-forward", `pod/${pod}`, ":8080"]);
+  try {
+    const local = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error(`port-forward pod/${pod} did not forward in ${HARNESS_GET_MS / 1000} s`));
+      }, HARNESS_GET_MS);
+      let out = "";
+      child.stdout.on("data", (d: Buffer) => {
+        out += d.toString();
+        const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out);
+        if (m) {
+          clearTimeout(timer);
+          resolve(m[1]!);
+        }
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`port-forward pod/${pod} exited (${code})`));
+      });
+    });
+    const res = await fetch(`http://127.0.0.1:${local}${path}`, {
+      headers,
+      signal: AbortSignal.timeout(HARNESS_GET_MS),
+    });
+    const text = await res.text();
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = undefined;
+    }
+    return { status: res.status, body };
+  } finally {
+    child.kill();
+  }
 }
 
 /** How many of the conversation's Submissions have settled at a Harness pod — 0 while the first
@@ -187,31 +256,11 @@ async function settledSubmissions(
   iid: string,
   placement = pod,
 ): Promise<number | undefined> {
-  assert.ok(world.namespace);
-  const headers = await harnessAuth(world, placement);
-  const child = spawn("kubectl", ["--namespace", world.namespace, "port-forward", `pod/${pod}`, ":8080"]);
-  try {
-    const local = await new Promise<string>((resolve, reject) => {
-      let out = "";
-      child.stdout.on("data", (d: Buffer) => {
-        out += d.toString();
-        const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out);
-        if (m) resolve(m[1]!);
-      });
-      child.on("close", (code) => reject(new Error(`port-forward pod/${pod} exited (${code})`)));
-    });
-    const res = await fetch(`http://127.0.0.1:${local}/agents/${agent}/${encodeURIComponent(iid)}?view=history`, {
-      headers,
-    });
-    if (res.status === 404) {
-      await res.text();
-      return undefined;
-    }
-    assert.equal(res.status, 200, "the Harness serves the conversation history");
-    return ((await res.json()) as { settlements?: unknown[] }).settlements?.length ?? 0;
-  } finally {
-    child.kill();
-  }
+  const res = await harnessGet(world, pod, `/agents/${agent}/${encodeURIComponent(iid)}?view=history`, placement);
+  if (res.status === 404) return undefined;
+  assert.equal(res.status, 200, "the Harness serves the conversation history");
+  assert.ok(typeof res.body === "object" && res.body !== null, "the history view answers JSON");
+  return ((res.body as { settlements?: unknown[] }).settlements ?? []).length;
 }
 
 // --- the printed conversation (ADR-0023) ------------------------------------------------------------
@@ -353,7 +402,8 @@ const workdir: Driver = async (world, input) => {
 
 /** Does anything answer on the pod's loopback at `port`? Asked with the runtime's node. */
 async function portAnswers(world: E2EWorld, pod: string, port: number): Promise<boolean> {
-  const probe = `fetch("http://127.0.0.1:${port}/").then(()=>process.exit(0),()=>process.exit(1))`;
+  // A server that never answers reads as "no" in 10 s, not as a hung exec.
+  const probe = `fetch("http://127.0.0.1:${port}/",{signal:AbortSignal.timeout(10000)}).then(()=>process.exit(0),()=>process.exit(1))`;
   return (await inHarness(world, pod, [RUNTIME_NODE, "-e", probe])).code === 0;
 }
 
@@ -961,7 +1011,9 @@ const unknownOutcome: Driver = async (world, input) => {
 
 /** A pod as `kubectl get` has it; `{}` once it is gone. */
 async function podJson(world: E2EWorld, pod: string): Promise<PodLike> {
-  return JSON.parse(await kubectl(world, ["get", `pod/${pod}`, "-o", "json"]).catch(() => "{}")) as PodLike;
+  return JSON.parse(
+    await kubectl(world, ["get", `pod/${pod}`, "-o", "json"], POD_READ_MS).catch(() => "{}"),
+  ) as PodLike;
 }
 
 /** Wait until the pod's Harness container restarted past `before` and runs again; false when it
