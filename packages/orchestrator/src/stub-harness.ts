@@ -5,13 +5,15 @@
 // the durable stream open, and never act — the Machine parks exactly as it would against a
 // silent real Harness, and e2e drives it by playing the agent against `/mcp/<iid>` instead.
 //
-// Wire (ADR-0027 — the normative model of the five endpoints; `@jr2/harness` serves it for real):
+// Wire (ADR-0027 — the normative model of the conversation endpoints; `@jr2/harness` serves it for
+// real), and the pod's memory kills, which a stub never has (ADR-0062):
 //   POST /agents/:name/:id  {message, cwd?, definition, model?, thinkingLevel?} → 200 { streamUrl, offset, submissionId }
 //     (`message` and `cwd` are the Turn's Frame — what it is about and where it works, ADR-0057)
 //   GET  /agents/:name/:id?offset=…[&view=updates] → 200 `[]` + Stream-Next-Offset/Up-To-Date
 //   GET  /agents/:name/:id?…&live=long-poll        → parked; 204 + same headers on timeout
 //   POST /agents/:name/:id/abort                   → 200 { aborted }
 //   GET  /agents/:name/:id?view=history            → 200 { …, settlements }
+//   GET  /memory-kills                             → 200 { kills: [] }
 // (the client's `wait(admission)` long-polls `streamUrl?view=updates` from the admission offset;
 // an empty stream parks it — exactly the "admitted, never settles" semantics the mechanics tier
 // needs.) The client then re-polls calmly at the long-poll cadence. `close()` severs parked polls.
@@ -113,6 +115,14 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
       settlements.set(k, settled);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ aborted: ended.length > 0 }));
+      return;
+    }
+
+    // The pod's memory kills (ADR-0062): a stub runs no process, so none. Answered, not a 404, so a
+    // Turn the stub admits logs no failed read.
+    if (req.method === "GET" && url.pathname === "/memory-kills") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ kills: [] }));
       return;
     }
 

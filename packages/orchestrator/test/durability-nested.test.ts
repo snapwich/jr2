@@ -43,6 +43,9 @@ function recordingAgent(log: Log) {
     holds() {
       return Promise.resolve(true);
     },
+    memoryKills() {
+      return Promise.resolve([]);
+    },
   };
   return agentActorWith(() => port, { model: "test/model", instructions: "i" });
 }

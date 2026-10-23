@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHarnessAgentRunClient } from "../src/harness-client.ts";
+import { createHarnessAgentRunClient, createHarnessClient, harnessAgentRunPort } from "../src/harness-client.ts";
 import { startStubHarness } from "../src/stub-harness.ts";
 
 const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
@@ -128,6 +128,18 @@ test("unknown routes 404 (only the agents surface is stubbed)", async () => {
   try {
     const res = await fetch(`${stub.url}/nope`);
     assert.equal(res.status, 404);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("the stub answers the pod's memory kills with an empty list, so a Turn it admits logs no failed read (ADR-0062)", async () => {
+  const stub = await startStubHarness({ longPollMs: 50 });
+  try {
+    const lines: string[] = [];
+    const port = harnessAgentRunPort(createHarnessClient({ baseUrl: stub.url, log: (line) => lines.push(line) }));
+    assert.deepEqual(await port.memoryKills(), []);
+    assert.deepEqual(lines, []);
   } finally {
     await stub.close();
   }

@@ -612,6 +612,75 @@ test("a delivery that was never outstanding is unknown to the poll", async () =>
 
 // --- A Harness restart while the Agent's state is busy (ADR-0031) ---------------------------------
 
+test("the re-admission after a cut continues the Turn: it repeats no guard kill the conversation's own bash call reported (ADR-0031, ADR-0062)", async () => {
+  const rig = await started();
+  // The coder's `bash` call answered k-1 (its stream carried it too); k-2 came while it waited.
+  rig.coder.guardKill({ id: "k-1", peak: "1.9Gi", limit: "2Gi" });
+  const at = new Date().toISOString();
+  rig.coder.podKills = [
+    { id: "k-1", at, peak: "1.9Gi", limit: "2Gi", told: [{ agent: "coder", instanceId: rig.iid }] },
+    { id: "k-2", at, peak: "1.7Gi", limit: "2Gi", told: [] },
+  ];
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  const kinds = rig.coder.notices[1]!.map((n) => (n.kind === "memory-limit" ? `memory ${n.peak}` : n.kind));
+  assert.deepEqual(kinds, ["memory 1.7Gi", "pick-answer"], "k-2 alone: k-1 is in the Agent's context");
+  // The next Turn in the Workspace still hears k-1.
+  assert.ok(
+    (
+      (await rig.store.load(rig.runId))?.snapshot as { notices?: { pending?: Array<{ notice: { peak?: string } }> } }
+    )?.notices?.pending?.some((p) => p.notice.peak === "1.9Gi"),
+  );
+});
+
+test("when the kill read cannot tell, the re-admission after a cut takes no guard kill: one its own bash reported stays for the next Turn (ADR-0031, ADR-0062)", async () => {
+  const rig = await started();
+  // The coder's `bash` call answered k-1; its stream carried it, so it is pending.
+  rig.coder.guardKill({ id: "k-1", peak: "1.9Gi", limit: "2Gi" });
+  rig.coder.memoryKills = () => Promise.resolve(undefined);
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(
+    rig.coder.notices[1]!.map((n) => n.kind),
+    ["pick-answer"],
+  );
+  assert.ok(
+    (
+      (await rig.store.load(rig.runId))?.snapshot as { notices?: { pending?: Array<{ notice: { peak?: string } }> } }
+    )?.notices?.pending?.some((p) => p.notice.peak === "1.9Gi"),
+    "pending for the next Agent",
+  );
+});
+
+test("a kill a nudge carried, cut before the Harness read its surface, rides the re-admission (ADR-0026, ADR-0031, ADR-0062)", async () => {
+  const rig = await started();
+  // While the coder writes text, a dev server passes the limit: its nudge carries the kill.
+  rig.coder.podKills = [{ id: "k-1", at: new Date().toISOString(), peak: "1.9Gi", limit: "2Gi", told: [] }];
+  rig.coder.complete();
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(
+    rig.coder.notices[1]!.map((n) => n.kind),
+    ["memory-limit"],
+  );
+  // The nudge's pick is outstanding; the Harness restarts before it read the nudge's surface.
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 3);
+  // No model heard the kill, so the re-admission carries it again, with the cut pick's answer.
+  assert.deepEqual(
+    rig.coder.notices[2]!.map((n) => n.kind),
+    ["memory-limit", "pick-answer"],
+  );
+});
+
 test("a Harness restart while a pick is outstanding is no agent.fault: at Rest, jr2 re-admits the same conversation with the answer", async () => {
   const rig = await started();
   const asking = rig.host.sendToAgent(rig.iid, { type: "ask" });
@@ -1757,5 +1826,105 @@ test("a pool of two workers: a child `job` one worker's timer started leaves the
   const polledA = host.awaitDelivery(a1, pa.deliveryId);
   host.sendToGate(runId, gateA, { type: "go" });
   assert.deepEqual((await polledA)?.answer, { kind: "answer", value: "the worker saw xstate.done.actor.job" });
+  await host.close();
+});
+
+test("a kill a nudge carried keeps its source when it is raised again: an equal notice of another kill does not swallow it (ADR-0031, ADR-0062)", async () => {
+  const rig = await started();
+  const at = new Date().toISOString();
+  const k0 = { id: "k-0", at, peak: "1.9Gi", limit: "2Gi", told: [{ agent: "coder", instanceId: rig.iid }] };
+  const k1 = { id: "k-1", at, peak: "1.9Gi", limit: "2Gi", told: [] };
+  // k-0, which the coder's own `bash` reported, is pending for the next Turn; its nudge takes none.
+  rig.coder.podKills = [k0];
+  rig.coder.complete();
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(rig.coder.notices[1], []);
+  // k-1, with the same words, came while the model wrote text: the second nudge carries it.
+  rig.coder.podKills = [k0, k1];
+  rig.coder.complete();
+  await waitFor(() => rig.coder.admits.length === 3);
+  assert.deepEqual(
+    rig.coder.notices[2]!.map((n) => n.kind),
+    ["memory-limit"],
+  );
+  // Cut before the Harness read that nudge's surface: k-1 is raised again, with its own source.
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 4);
+  assert.deepEqual(
+    rig.coder.notices[3]!.map((n) => n.kind),
+    ["memory-limit", "pick-answer"],
+  );
+});
+
+test("a re-admission does not repeat a notice the cut admission's model heard (ADR-0026, ADR-0031, ADR-0062)", async () => {
+  const rig = await started();
+  rig.coder.podKills = [{ id: "k-1", at: new Date().toISOString(), peak: "1.9Gi", limit: "2Gi", told: [] }];
+  rig.coder.complete();
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(
+    rig.coder.notices[1]!.map((n) => n.kind),
+    ["memory-limit"],
+  );
+  // The Harness read the nudge's surface: its model heard the kill.
+  rig.host.agentSurfaceServed(rig.iid);
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 3);
+  assert.deepEqual(
+    rig.coder.notices[2]!.map((n) => n.kind),
+    ["pick-answer"],
+  );
+});
+
+/** The held rig, with the coder's first read of the pod's kills answering `kills` — a kill from
+ * before the Turn — and the run's store, for a restore. */
+async function startedWithKills(kills: MockFlueClient["podKills"], store?: SnapshotStore) {
+  const s = store ?? (await mkStore());
+  const host = new RunHost({ store: s });
+  const clients = { coders: [] as MockFlueClient[], reviewers: [] as MockFlueClient[] };
+  const def = heldDef(clients, controllable());
+  const provide = def.provide!;
+  def.provide = (...args: Parameters<typeof provide>) => {
+    const out = provide(...args);
+    clients.coders.at(-1)!.podKills = kills;
+    return out;
+  };
+  host.register(def);
+  const { runId } = await host.start("held");
+  const coder = clients.coders[0]!;
+  await waitFor(() => coder.admits.length > 0);
+  return { host, store: s, runId, coder, clients, def, iid: coder.admits[0]!.instanceId };
+}
+
+const kill0 = () => ({
+  id: "k-0",
+  at: new Date(Date.now() - 60_000).toISOString(),
+  peak: "1.9Gi",
+  limit: "2Gi",
+  told: [] as Array<{ agent: string; instanceId: string }>,
+});
+
+test("a kill the cut first admission carried, unheard, reaches the re-admission on a kept conversation (ADR-0026, ADR-0031, ADR-0062)", async () => {
+  const { host, runId, coder, iid } = await startedWithKills([kill0()]);
+  assert.deepEqual(
+    coder.notices[0]!.map((n) => n.kind),
+    ["memory-limit"],
+    "the first admission carries k-0",
+  );
+  // The Harness never read the first admission's surface: k-0 never reached a model.
+  assert.equal(host.sendToAgent(iid, { type: "ask" }).outstanding, true);
+  coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  await new Promise((r) => setTimeout(r, 20));
+  host.sendToGate(runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => coder.admits.length === 2);
+  assert.deepEqual(
+    coder.notices[1]!.map((n) => n.kind),
+    ["memory-limit", "pick-answer"],
+  );
   await host.close();
 });

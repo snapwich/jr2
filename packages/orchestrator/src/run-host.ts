@@ -2756,8 +2756,13 @@ export class RunHost {
       },
       // The notices' other halves (ADR-0062). A raise is saved at the write, like the ledgers; a
       // take is a reservation in memory, delivered by `recordAdmission` or released on failure.
-      raiseNotice: (notice, to, source) => {
-        if (!notices.raise(notice, to, source)) return;
+      raiseNotice: (notice, to, source, older) => {
+        if (!notices.raise(notice, to, source, older)) return;
+        const run = this.runs.get(record.runId);
+        if (run && run.notices === notices) this.persist(run);
+      },
+      restoreNotice: (notice, to, source) => {
+        if (!notices.restore(notice, to, source)) return;
         const run = this.runs.get(record.runId);
         if (run && run.notices === notices) this.persist(run);
       },

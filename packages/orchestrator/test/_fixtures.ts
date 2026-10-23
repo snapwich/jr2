@@ -19,12 +19,13 @@ import type {
   AgentTurnInput,
   AgentTurnPlacement,
   GuardKill,
+  ListedKill,
 } from "../src/actor.ts";
 import type { AgentDefinition } from "../src/agent.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
-import type { Notice } from "../src/wire.ts";
+import type { Notice, PodMemoryKill } from "../src/wire.ts";
 
 /** An AgentRunPort the test drives by hand: capture admissions/attaches, settle or fault them. */
 export class MockFlueClient implements AgentRunPort {
@@ -42,6 +43,11 @@ export class MockFlueClient implements AgentRunPort {
   held = true;
   /** Every conversation `holds()` was asked about. */
   heldAsked: string[] = [];
+  /** What `memoryKills()` answers (ADR-0062): the pod's guard kills, as the Harness keeps them — a
+   * read removes nothing. */
+  podKills: PodMemoryKill[] = [];
+  /** How many times `memoryKills()` was asked. */
+  podKillsAsked = 0;
   /** The guard-kill listener of the settle in flight (ADR-0061), for `guardKill()`. */
   private onMemoryLimit: ((kill: GuardKill) => void) | undefined;
   /** The admission minted on the LATEST admit. Distinct per admit so ledgers are assertable. */
@@ -85,6 +91,11 @@ export class MockFlueClient implements AgentRunPort {
   holds(_agentName: string, instanceId: string): Promise<boolean> {
     this.heldAsked.push(instanceId);
     return Promise.resolve(this.held);
+  }
+
+  memoryKills(_opts?: { signal?: AbortSignal }): Promise<ListedKill[] | undefined> {
+    this.podKillsAsked++;
+    return Promise.resolve([...this.podKills]);
   }
 
   /** The Harness's memory guard killed the Agent's processes during the settle in flight. */

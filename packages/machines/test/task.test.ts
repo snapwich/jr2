@@ -67,6 +67,9 @@ class MockPort implements AgentRunPort {
   holds(): Promise<boolean> {
     return Promise.resolve(true);
   }
+  memoryKills(): Promise<never[]> {
+    return Promise.resolve([]);
+  }
   /** Settle the nth (0-based) admission FAILED — an infra fault after the turn's own retries, which
    * the actor absorbs into the one terminal `agent.fault` (ADR-0016/0027). */
   fail(nth: number, reason: string): void {

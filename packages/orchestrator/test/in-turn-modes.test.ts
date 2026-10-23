@@ -612,7 +612,7 @@ test("the wake spends the nudge's budget: a Machine that opens and closes picks 
 /** The `@model` mode-stop shape: `drafting` allows `ask_review`; `reviewing` allows nothing until a
  * TARGETLESS timer marks the review read (so Rest is not held), then `revise` and `submit`. A fault
  * routes to `faulted` with its reason, as the claim workflow's does. */
-function modeStopDef(clients: Map<string, MockFlueClient>): WorkflowDef {
+function modeStopDef(clients: Map<string, MockFlueClient>, sandbox?: string): WorkflowDef {
   const machineWith = (coder: ReturnType<typeof agentActorWith>) =>
     jr2Setup({
       types: {} as { context: { read: boolean; fault?: string } },
@@ -624,7 +624,10 @@ function modeStopDef(clients: Map<string, MockFlueClient>): WorkflowDef {
       initial: "notes",
       states: {
         notes: {
-          invoke: { src: "coder", input: { prompt: "go", endpoint: "http://harness.invalid" } },
+          invoke: {
+            src: "coder",
+            input: { prompt: "go", endpoint: "http://harness.invalid", ...(sandbox === undefined ? {} : { sandbox }) },
+          },
           on: {
             "agent.fault": {
               target: "#wf.faulted",
@@ -687,6 +690,75 @@ async function toTheSecondWake() {
   }
   return { host, runId, iid, client, seen };
 }
+
+/** A kill in the pod's list, at now — after the Turn under test started. */
+const idleKill = (id: string, told: Array<{ agent: string; instanceId: string }> = []) => ({
+  id,
+  at: new Date().toISOString(),
+  peak: "1.9Gi",
+  limit: "2Gi",
+  told,
+});
+const idleNotice = { kind: "memory-limit", scope: "workspace", peak: "1.9Gi", limit: "2Gi" };
+
+test("a wake carries the guard kills from the pod's list that no bash call of its conversation answered (ADR-0016, ADR-0062)", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(modeStopDef(clients, "ws-1"));
+  const { instanceId } = await host.start("mode-stop");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  assert.deepEqual(client.notices[0], []);
+
+  // The reviewer reads, nothing is allowed, and the model stops: the Turn waits for its wake. A dev
+  // server it started passes the limit then — no `bash` call ran, so the Agent was told nothing.
+  host.sendToAgent(iid, { type: "ask_review" });
+  client.podKills = [idleKill("k-1")];
+  client.complete();
+  await waitFor(() => client.admits.length === 2);
+  assert.match(client.admits[1]!.prompt ?? "", /^Your previous turn ended/, "the wake");
+  assert.deepEqual(client.notices[1], [idleNotice], "the woken Agent is the first that can act on it");
+
+  // The second wake reads the same list, and the kill is delivered: nothing again. A kill that this
+  // conversation's own `bash` call answered is in its context already, and waits for the next Turn.
+  assert.equal(host.sendToAgent(iid, { type: "revise" }).moved, true);
+  host.sendToAgent(iid, { type: "ask_review" });
+  client.podKills = [idleKill("k-1"), idleKill("k-2", [{ agent: "coder", instanceId: iid }])];
+  client.complete();
+  await waitFor(() => client.admits.length === 3);
+  assert.deepEqual(client.notices[2], []);
+});
+
+test("a kill a wake carried is raised again when the state exits before the Harness reads the surface (ADR-0026, ADR-0062)", async () => {
+  const store = await mkStore();
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store });
+  host.register(modeStopDef(clients, "ws-1"));
+  const { runId, instanceId } = await host.start("mode-stop");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  // The Turn's first Submission read its surface; the Instance ID is `served`.
+  host.agentSurfaceServed(iid);
+
+  host.sendToAgent(iid, { type: "ask_review" });
+  client.podKills = [idleKill("k-1")];
+  client.complete();
+  await waitFor(() => client.admits.length === 2);
+  assert.deepEqual(client.notices[1], [idleNotice]);
+  // The review is read and the Agent's pick ends the Turn — before the Harness read the wake's
+  // surface, so no model heard the notice. It is pending again, for the next Turn in the Workspace.
+  await waitFor(() => (host.agentSurface(iid)?.allowed ?? []).length > 0);
+  assert.equal(host.sendToAgent(iid, { type: "submit", summary: "v1" }).turnComplete, true);
+  let pending: unknown[] = [];
+  await waitFor(() => {
+    void store.load(runId).then((loaded) => {
+      const notices = (loaded?.snapshot as { notices?: { pending?: Array<{ notice: unknown }> } })?.notices;
+      pending = (notices?.pending ?? []).map((p) => p.notice);
+    });
+    return pending.length > 0 || host.status(runId) === undefined;
+  });
+  assert.deepEqual(pending, [idleNotice]);
+});
 
 test("mode-stop's sequence: two wakes, one per correct stop, then the pick that ends the Turn — no fault (ADR-0016, ADR-0024)", async () => {
   const { host, runId, iid, client, seen } = await toTheSecondWake();

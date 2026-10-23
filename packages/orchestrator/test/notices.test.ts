@@ -64,9 +64,54 @@ test("a notice with a source is raised once, even after it was delivered", () =>
   assert.deepEqual(restored.take({ workspace: "ws-1" }).notices, []);
 });
 
-test("the same news still unheard is one notice, whichever stream it was read on", () => {
+test("the same news still unheard is one notice, whichever witness raised it", () => {
   const book = new NoticeLedger(undefined, ids());
-  assert.equal(book.raise(kill, "ws-1", "coder-conv@3.0"), true);
-  assert.equal(book.raise(kill, "ws-1", "other-conv@9.0"), false, "one kill, written to two running conversations");
-  assert.deepEqual(book.take({ workspace: "ws-1" }).notices, [kill]);
+  assert.equal(book.raise(kill, "ws-1", "ws-1@guard:k-1"), true);
+  assert.equal(book.raise(kill, "ws-1", "ws-1@guard:k-1"), false, "one kill, read on a stream and in the pod's list");
+  // A second kill that tells the same thing keeps its own entry, so a take by its source finds it…
+  assert.equal(book.raise(kill, "ws-1", "ws-1@guard:k-2"), true, "a second kill that tells the same thing");
+  assert.deepEqual(book.take({ workspace: "ws-1", only: ["ws-1@guard:k-2"] }).notices, [kill]);
+  // …and an admission that takes both says it once, and delivers both.
+  const other = new NoticeLedger(JSON.parse(JSON.stringify(book.state())), ids());
+  const both = other.take({ workspace: "ws-1" });
+  assert.deepEqual(both.notices, [kill]);
+  assert.equal(both.ids.length, 2);
+  // A notice with no source merges only into a twin with none: one with a source keeps its own.
+  assert.equal(other.raise(kill, "ws-1"), true);
+  assert.equal(other.raise(kill, "ws-1"), false);
+});
+
+test("`only` narrows a take to the notices of those sources — what a nudge or a wake carries (ADR-0062)", () => {
+  const book = new NoticeLedger(undefined, ids());
+  const idle: Notice = { kind: "memory-limit", scope: "workspace", peak: "1.9Gi", limit: "2Gi" };
+  book.raise(kill, "ws-1", "ws-1@guard:k-1");
+  book.raise(idle, "ws-1", "ws-1@guard:k-2");
+  book.raise(fresh, "run/root/coder");
+  const taken = book.take({ workspace: "ws-1", only: ["ws-1@guard:k-2"] });
+  assert.deepEqual(taken.notices, [idle]);
+  assert.deepEqual(book.take({ workspace: "ws-1", only: [] }).notices, [], "no source, no notice");
+  assert.deepEqual(book.take({ workspace: "ws-1", conversation: "run/root/coder" }).notices, [kill, fresh]);
+});
+
+test("a burst is one notice: the older sources are marked raised with the newest (ADR-0062)", () => {
+  const book = new NoticeLedger(undefined, ids());
+  assert.equal(book.raise(kill, "ws-1", "ws-1@guard:k-3", ["ws-1@guard:k-1", "ws-1@guard:k-2"]), true);
+  assert.deepEqual(book.state().seen, ["ws-1@guard:k-1", "ws-1@guard:k-2", "ws-1@guard:k-3"]);
+  assert.equal(book.state().pending.length, 1);
+  assert.equal(book.raise(kill, "ws-1", "ws-1@guard:k-2"), false, "an older one, read again, adds nothing");
+});
+
+test("`restore` puts back a heard-not notice with its source, though the source is seen (ADR-0062)", () => {
+  const book = new NoticeLedger(undefined, ids());
+  book.raise(kill, "ws-1", "ws-1@guard:k-0");
+  book.raise(kill, "ws-1", "ws-1@guard:k-1");
+  const taken = book.take({ workspace: "ws-1", only: ["ws-1@guard:k-1"] });
+  assert.deepEqual(taken.raised, [{ notice: kill, source: "ws-1@guard:k-1" }]);
+  book.delivered(taken.ids);
+  // No model heard it: back, with its source — not merged into k-0, which has the same words.
+  assert.equal(book.restore(kill, "ws-1", "ws-1@guard:k-1"), true);
+  assert.equal(book.restore(kill, "ws-1", "ws-1@guard:k-1"), false, "once");
+  assert.deepEqual(book.take({ workspace: "ws-1", except: ["ws-1@guard:k-0"] }).raised, [
+    { notice: kill, source: "ws-1@guard:k-1" },
+  ]);
 });

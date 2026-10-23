@@ -507,10 +507,14 @@ export type RunBinding = {
   /**
    * The notices' write half (ADR-0062): keep a notice for the next admission in scope — `to` is a
    * continued conversation's base id or a Sandbox name, as the notice's `scope` says. Persisted at
-   * the write, like the ledgers. `source` names the event, so one event raised twice is one notice.
+   * the write, like the ledgers. `source` names the event, so one event raised twice is one notice;
+   * `older` names earlier events this one tells the same as, marked raised with it (`NoticeLedger`).
    * A burned conversation's notice is raised by `bumpEpoch` itself, in the same save.
    */
-  raiseNotice?: (notice: Notice, to: string, source?: string) => void;
+  raiseNotice?: (notice: Notice, to: string, source?: string, older?: readonly string[]) => void;
+  /** Put back a notice an admission carried that no model heard, WITH its source (`NoticeLedger.restore`):
+   * a raise would drop it, its source being seen. Persisted at the write. */
+  restoreNotice?: (notice: Notice, to: string, source?: string) => void;
   /** Reserve the pending notices in one admission's scope. They are delivered by the
    * `recordAdmission` that ledgers it (its `delivered` ids), or released if the admission fails. */
   takeNotices?: (scope: NoticeScope) => TakenNotices;

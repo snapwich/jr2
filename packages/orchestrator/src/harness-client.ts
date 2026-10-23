@@ -44,6 +44,7 @@ import type {
   AgentRunInput,
   AgentRunPort,
   AgentSettleOptions,
+  ListedKill,
 } from "./actor.ts";
 import type { AgentDeclaration, AgentDefinition, ThinkingLevel } from "./agent.ts";
 import {
@@ -72,6 +73,7 @@ import {
   type LiveConversation,
   type LiveSetRequest,
   type LiveSetResponse,
+  type MemoryKillsResponse,
   type Notice,
   type Settlement,
   type StreamEvent,
@@ -112,6 +114,16 @@ export type HarnessClient = {
    * 404 says no (ADR-0027: a GET on an unknown conversation is 404); anything else — another
    * status, a transport failure — says yes, because unknown is never loss (ADR-0062). */
   holds(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<boolean>;
+  /** `GET /memory-kills`: the pod's guard kills (ADR-0061, ADR-0062). A request that never left
+   * this host, and a draining Harness's 503, are sent again until `signal` ends the read — the
+   * caller owns the read's limit (the Agent actor's 5 s); with no signal, it is sent once. Any other
+   * answer but a 200 that reads — a Harness that keeps none, a transport failure, the caller's
+   * timeout — is `undefined`, "could not tell": the Harness still holds what it kept, and the next
+   * admission reads again. A kill with no id or time is skipped; one whose `peak` or `limit` is not
+   * a size is kept without sizes, and one whose `told` holds an entry that is not a conversation is
+   * kept without that entry — each fault said. Absent sizes are no fault: the pod left them out.
+   * Each fault is one line: said when it starts, and again only after a read that works. */
+  memoryKills(opts?: { signal?: AbortSignal }): Promise<ListedKill[] | undefined>;
   /** `POST /agents/:name/:id/abort`. The `{ aborted }` answer is dropped (ADR-0024). */
   abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void>;
 };
@@ -162,6 +174,73 @@ export class SettlementFault extends Error {
     this.settlement = settlement;
     this.lost = opts.lost === true;
   }
+}
+
+/** The Harnesses whose memory kills this process could not read, each said once (`memoryKills`).
+ * Per process, not per client: an Agent actor builds a client for each Turn. */
+const killReadFaults = new Set<string>();
+
+/** The Harnesses whose kills — on the list or on a stream — held a field this process could not
+ * use, each said once until a clean read. Per process, like `killReadFaults`. Neither set is cleaned
+ * when a Workspace goes: no hook reaches this module from the Sandbox's destroy, and an entry is
+ * one URL per Sandbox this process ever read. */
+const badKillFaults = new Set<string>();
+
+/** Say once, until a clean read, that a Harness's kills held a field this process could not use. */
+function badKill(baseUrl: string, log: (line: string) => void, what: string): void {
+  if (badKillFaults.has(baseUrl)) return;
+  badKillFaults.add(baseUrl);
+  log(`harness ${baseUrl}: ${what} (ADR-0062)`);
+}
+
+/** A size as the guard writes one (`1.9Gi`, `512Mi`), short. The Agent's uid can write the file
+ * the list is read from, and these words go into the next Agent's Briefing as they are, so
+ * nothing else passes (ADR-0062). */
+function isSize(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 16 && /^\d{1,6}(\.\d{1,3})?(Ki|Mi|Gi|Ti)$/.test(value);
+}
+
+const isShortString = (v: unknown): v is string => typeof v === "string" && v.length <= 256;
+
+/** The most of `GET /memory-kills` this process reads: 16 kills of at most 32 `told` each is far
+ * less, so a larger answer is no list to act on. */
+const MAX_KILLS_BODY = 256 * 1024;
+
+/** The most `told` entries of one kill this process keeps — the Harness keeps no more. */
+const MAX_TOLD = 32;
+
+/** One kill of the list as this process can use it, or undefined when it has no id or time — the
+ * only kill that is dropped. Sizes that are not sizes are left out, so the kill is kept with no
+ * sizes; a `told` entry that is not a conversation is left out of `told`. */
+function listedKill(value: unknown): ListedKill | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { id, at, peak, limit, told } = value as Record<string, unknown>;
+  if (!isShortString(id) || !isShortString(at) || Number.isNaN(Date.parse(at))) return undefined;
+  const conversations = (Array.isArray(told) ? told.slice(0, MAX_TOLD) : []).filter(
+    (t): t is { agent: string; instanceId: string } =>
+      typeof t === "object" && t !== null && isShortString(t.agent) && isShortString(t.instanceId),
+  );
+  const sized = isSize(peak) && isSize(limit);
+  return {
+    id,
+    at,
+    told: conversations.map(({ agent, instanceId }) => ({ agent, instanceId })),
+    ...(sized ? { peak, limit } : {}),
+  };
+}
+
+/** Whether a listed kill came through as the wire states it. */
+function whole(raw: unknown, kill: ListedKill | undefined): boolean {
+  if (kill === undefined) return false;
+  const { peak, limit, told } = raw as { peak?: unknown; limit?: unknown; told?: unknown };
+  // Sizes the pod left out are no fault; sizes it sent that are not sizes are.
+  if (kill.limit === undefined && (peak !== undefined || limit !== undefined)) return false;
+  return Array.isArray(told) && Math.min(told.length, MAX_TOLD) === kill.told.length && told.length <= MAX_TOLD;
+}
+
+/** A timeout's abort reason (`AbortSignal.timeout`): a read that ran out of time, not an abandon. */
+function isTimeout(reason: unknown): boolean {
+  return reason instanceof DOMException && reason.name === "TimeoutError";
 }
 
 /** Build the real wire client from connection options. */
@@ -340,8 +419,19 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
 
         for (const event of events) {
           if (event.type === "memory-limit") {
-            const { peak, limit, conversationId, position } = event;
-            opts?.onMemoryLimit?.({ peak, limit, source: `${conversationId}@${position.batch}.${position.index}` });
+            const { id, peak, limit, conversationId, position } = event;
+            // A size that is not one is not put in a Briefing (the Agent's uid can write the record):
+            // the kill is kept, with no sizes, and the fault is said.
+            const sized = isSize(peak) && isSize(limit);
+            if (!sized)
+              badKill(baseUrl, log, "a memory kill on a stream has sizes that are not sizes — kept without them");
+            // An older Harness's event has no id: keyed by its place on the stream, exactly as the
+            // Orchestrator before raised it, so a replayed read is the same kill and it can never
+            // mark a later kill seen. An id too long to be one is no id.
+            const kill = isShortString(id)
+              ? { id }
+              : { id: `${conversationId}@${position.batch}.${position.index}`, legacy: true as const };
+            opts?.onMemoryLimit?.({ ...kill, ...(sized ? { peak, limit } : {}) });
             continue;
           }
           if (event.type !== "submission-settled" || event.submissionId !== admission.submissionId) continue;
@@ -364,6 +454,71 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
         if (opts?.signal?.aborted) throw err;
         return true;
       }
+    },
+
+    async memoryKills(opts) {
+      const url = new URL("/memory-kills", baseUrl).toString();
+      // Idempotent, so re-sent on what `postAdmission` re-sends — a request that never left this
+      // host, a draining Harness's 503 — on the same ladder, until the caller's signal ends it. The
+      // limit is the caller's alone, so there is one clock for it.
+      let backoffMs = backoffInitialMs;
+      let why: string;
+      for (;;) {
+        let again = false;
+        try {
+          const res = await fetchImpl(url, { headers: authorization, signal: opts?.signal });
+          if (res.status === 200 && Number(res.headers.get("content-length") ?? 0) > MAX_KILLS_BODY) {
+            await res.body?.cancel().catch(() => undefined);
+            why = `the answer is larger than ${MAX_KILLS_BODY} bytes`;
+          } else if (res.status === 200) {
+            const text = await res.text();
+            const kills =
+              text.length > MAX_KILLS_BODY ? undefined : (JSON.parse(text) as Partial<MemoryKillsResponse>).kills;
+            if (Array.isArray(kills)) {
+              // A read that works ends the fault: the next fault is said again.
+              killReadFaults.delete(baseUrl);
+              const read = kills.map(listedKill);
+              const usable = read.filter((kill): kill is ListedKill => kill !== undefined);
+              const flawed = kills.filter((raw, i) => !whole(raw, read[i])).length;
+              if (flawed === 0) badKillFaults.delete(baseUrl);
+              else {
+                badKill(
+                  baseUrl,
+                  log,
+                  `${flawed} of its memory kills are not the wire's shape — those with no id or time are skipped, the others are kept without the fields that were wrong`,
+                );
+              }
+              return usable;
+            }
+            why = "the answer is not a list of kills";
+          } else {
+            why = `HTTP ${res.status}: ${await errorDetail(res)}`;
+            again = res.status === DRAINING;
+          }
+        } catch (err) {
+          // A local abandon propagates, as in every other verb; a timeout the caller set is none.
+          if (opts?.signal?.aborted && !isTimeout(opts.signal.reason)) throw err;
+          why = transportDetail(err);
+          again = !opts?.signal?.aborted && neverDelivered(err);
+        }
+        if (!again || opts?.signal === undefined) break;
+        try {
+          await sleep(jittered(backoffMs), opts?.signal);
+        } catch (err) {
+          if (opts?.signal?.aborted && !isTimeout(opts.signal.reason)) throw err;
+          why = "the read's time ran out";
+          break;
+        }
+        backoffMs = Math.min(backoffMs * 2, backoffMaxMs);
+      }
+      // One line for each fault: said when it starts, and again only after a read that works.
+      if (!killReadFaults.has(baseUrl)) {
+        killReadFaults.add(baseUrl);
+        log(
+          `harness ${baseUrl}: cannot read its memory kills (${why}) — no notice from them now; the Harness keeps them, and the next admission reads again (ADR-0062)`,
+        );
+      }
+      return undefined;
     },
 
     async abort(agentName, instanceId, opts) {
@@ -417,6 +572,10 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
 
     async holds(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<boolean> {
       return await client.holds(agentName, instanceId, opts);
+    },
+
+    async memoryKills(opts?: { signal?: AbortSignal }): Promise<ListedKill[] | undefined> {
+      return await client.memoryKills(opts);
     },
 
     async abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void> {

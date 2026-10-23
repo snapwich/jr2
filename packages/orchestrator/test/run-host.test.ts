@@ -909,8 +909,18 @@ test("a guard kill is told to the next Turn in that Workspace, and only once (AD
   const coder = flue.admits[0]!.instanceId;
 
   // The Harness's guard killed the Agent's processes during this Turn and said so on its stream.
-  flue.guardKill({ peak: "1.8Gi", limit: "1920Mi", source: "c@7.0" });
-  flue.guardKill({ peak: "1.8Gi", limit: "1920Mi", source: "c@7.0" }); // a replayed read
+  flue.guardKill({ id: "k-7", peak: "1.8Gi", limit: "1920Mi" });
+  flue.guardKill({ id: "k-7", peak: "1.8Gi", limit: "1920Mi" }); // a replayed read
+  // The Harness lists it as told to this conversation: the coder's own `bash` call answered it.
+  flue.podKills = [
+    {
+      id: "k-7",
+      at: new Date().toISOString(),
+      peak: "1.8Gi",
+      limit: "1920Mi",
+      told: [{ agent: "coder", instanceId: coder }],
+    },
+  ];
   // The Turn ends with no pick. Its nudge is a re-prompt WITHIN the Turn (ADR-0016), not the next
   // Turn: the Agent read about the kill in its `bash` answer, so the nudge carries nothing.
   flue.complete();
@@ -924,6 +934,182 @@ test("a guard kill is told to the next Turn in that Workspace, and only once (AD
   assert.deepEqual(flue.notices[2], [
     { kind: "memory-limit", scope: "workspace", agent: "coder", peak: "1.8Gi", limit: "1920Mi" },
   ]);
+});
+
+test("a read of the pod's kills that only marks older kills raised is saved at once (ADR-0007, ADR-0062)", async () => {
+  const store = await mkStore();
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store });
+  host.register(workspaceDef(clients));
+  const { runId, instanceId } = await host.start("workspace", { sandbox: "ws-1" });
+  const flue = clients.get(instanceId)!;
+  await waitFor(() => flue.settled.length === 1);
+  const seenOf = async () => ((await blobOf(store, runId)).notices as { seen?: string[] } | undefined)?.seen ?? [];
+  const kill = (id: string) => ({ id, at: new Date().toISOString(), peak: "1.8Gi", limit: "1920Mi", told: [] });
+
+  // The newest kill is raised already; this read brings an older one beside it. Nothing new is
+  // pending, and the admission it rides is held, so only the raise's own save can keep the mark.
+  flue.guardKill({ id: "k-2", peak: "1.8Gi", limit: "1920Mi" });
+  // Answered after the transition's own save, so that save cannot carry the mark.
+  const listed = [kill("k-1"), kill("k-2")];
+  flue.memoryKills = () => new Promise((resolve) => setTimeout(() => resolve(listed), 30));
+  flue.holdAdmits = true;
+  host.sendToAgent(flue.admits[0]!.instanceId, { type: "request_review", summary: "PR up" });
+  await waitFor(() => flue.admits.length === 2);
+  let seen: string[] = [];
+  await waitFor(() => {
+    void seenOf().then((s) => (seen = s));
+    return seen.includes("ws-1@guard:k-1");
+  });
+  assert.deepEqual([...seen].sort(), ["ws-1@guard:k-1", "ws-1@guard:k-2"]);
+  flue.releaseAdmits();
+});
+
+test("two reads of the same list save once: a raise that changes nothing is not saved (ADR-0007, ADR-0062)", async () => {
+  const store = await mkStore();
+  let saves = 0;
+  const save = store.save.bind(store);
+  store.save = (...args) => (saves++, save(...args));
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store });
+  host.register(workspaceDef(clients));
+  const { instanceId } = await host.start("workspace", { sandbox: "ws-1" });
+  const flue = clients.get(instanceId)!;
+  await waitFor(() => flue.settled.length === 1);
+  await tick();
+  // Each nudge reads the list and is held, so no ledger write follows its read in the window.
+  const kill = { id: "k-1", at: new Date().toISOString(), peak: "1.8Gi", limit: "1920Mi", told: [] };
+  flue.podKills = [kill];
+  const windowOf = async (admits: number): Promise<number> => {
+    const before = saves;
+    flue.holdAdmits = true;
+    flue.complete();
+    await waitFor(() => flue.admits.length === admits);
+    await tick();
+    const counted = saves - before;
+    flue.holdAdmits = false;
+    flue.releaseAdmits();
+    await waitFor(() => flue.settled.length === admits);
+    await tick();
+    return counted;
+  };
+  assert.equal(await windowOf(2), 1, "the first read raises the kill: one save");
+  assert.equal(await windowOf(3), 0, "the same list again changes nothing: no save");
+});
+
+/** THREE fresh Turns in one Workspace — `code`, `check`, `recheck` — so a restart can fall between
+ * the second and the third. */
+const threeTurnsTemplate = jr2Setup({
+  types: {} as { context: Ctx; input: { sandbox?: string } },
+  events: [doneEvent, requestReviewEvent],
+  actors: { coder: agent(coderDefinition) },
+}).createMachine({
+  id: "w3",
+  context: ({ input }) => ({ sandbox: input.sandbox }),
+  initial: "code",
+  states: {
+    code: {
+      invoke: {
+        src: "coder",
+        input: ({ context }) => ({ endpoint: "http://harness.invalid", sandbox: context.sandbox, prompt: "write it" }),
+      },
+      on: { request_review: "check" },
+    },
+    check: {
+      invoke: {
+        src: "coder",
+        input: ({ context }) => ({ endpoint: "http://harness.invalid", sandbox: context.sandbox, prompt: "check it" }),
+      },
+      on: { request_review: "recheck" },
+    },
+    recheck: {
+      invoke: {
+        src: "coder",
+        input: ({ context }) => ({ endpoint: "http://harness.invalid", sandbox: context.sandbox, prompt: "again" }),
+      },
+      on: { done: "#w3.done" },
+    },
+    done: { type: "final" },
+  },
+});
+
+/** The three-Turn Workspace workflow; `podKills` is what each new client's Harness lists. */
+function threeTurnsDef(clients: Map<string, MockFlueClient>, podKills: () => MockFlueClient["podKills"]): WorkflowDef {
+  return {
+    name: "three",
+    machine: threeTurnsTemplate,
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      client.podKills = podKills();
+      clients.set(instanceId, client);
+      return { actors: { coder: agentActorWith(() => client, coderDefinition) } };
+    },
+  };
+}
+
+test("a guard kill while no Submission ran is told to the next Turn in that Workspace — once, across Orchestrator restarts (ADR-0061, ADR-0062)", async () => {
+  const store = await mkStore();
+  // What the pod's Harness keeps for `GET /memory-kills`: a read removes nothing, so every client
+  // of this pod — each restored one too — reads the same kill once it is there.
+  const kill = { id: "k-1", at: "2026-10-22T10:00:00.000Z", peak: "1.8Gi", limit: "1920Mi", told: [] };
+  const idle = { kind: "memory-limit", scope: "workspace", peak: "1.8Gi", limit: "1920Mi" };
+  const noticesOf = async (runId: string) =>
+    ((await blobOf(store, runId)).notices ?? {}) as { pending?: unknown[]; seen?: unknown[] };
+  const clientsA = new Map<string, MockFlueClient>();
+  const hostA = new RunHost({ store });
+  hostA.register(threeTurnsDef(clientsA, () => []));
+  const { runId, instanceId } = await hostA.start("three", { sandbox: "ws-1" });
+  const flueA = clientsA.get(instanceId)!;
+  await waitFor(() => flueA.settled.length === 1);
+  assert.deepEqual(flueA.notices[0], []);
+  const coder = flueA.admits[0]!.instanceId;
+
+  // The coder's Turn ended; while no Submission ran, a process it left passed the limit. The next
+  // Turn's admission is held, so nothing is ledgered when the Orchestrator goes away.
+  flueA.podKills = [kill];
+  flueA.holdAdmits = true;
+  hostA.sendToAgent(coder, { type: "request_review", summary: "PR up" });
+  await waitFor(() => flueA.admits.length === 2);
+  assert.deepEqual(flueA.notices[1], [idle], "the next Turn in the Workspace carries it");
+  let pending: unknown[] = [];
+  await waitFor(() => {
+    void noticesOf(runId).then((n) => (pending = n.pending ?? []));
+    return pending.length === 1;
+  });
+  await hostA.stop(runId);
+
+  // Restart BEFORE the ledger write: the restored Turn reads the same kill again and carries the one
+  // notice still pending — the kill's id is in the persisted `seen`, so the read raises no second.
+  const clientsB = new Map<string, MockFlueClient>();
+  const hostB = new RunHost({ store });
+  hostB.register(threeTurnsDef(clientsB, () => [kill]));
+  assert.deepEqual((await hostB.restore()).reattached, [runId]);
+  const flueB = clientsB.get(instanceId)!;
+  await waitFor(() => flueB.admits.length === 1);
+  assert.equal(flueB.admits[0]!.prompt, "check it");
+  assert.deepEqual(flueB.notices[0], [idle], "not yet delivered, so delivered again — and once");
+  let seen: unknown[] = [];
+  await waitFor(() => {
+    void noticesOf(runId).then((n) => ((pending = n.pending ?? []), (seen = n.seen ?? [])));
+    return pending.length === 0;
+  });
+  assert.deepEqual(seen, ["ws-1@guard:k-1"]);
+  await hostB.stop(runId);
+
+  // Restart AFTER the ledger write: nothing is pending. The third Turn reads the same list, and
+  // only the persisted `seen` keeps it from raising the kill again.
+  const clientsC = new Map<string, MockFlueClient>();
+  const hostC = new RunHost({ store });
+  hostC.register(threeTurnsDef(clientsC, () => [kill]));
+  assert.deepEqual((await hostC.restore()).reattached, [runId]);
+  await tick();
+  const flueC = clientsC.get(instanceId)!;
+  assert.equal(flueC.admits.length, 0, "re-attached, not re-admitted");
+  hostC.sendToAgent(flueB.admits[0]!.instanceId, { type: "request_review", summary: "again" });
+  await waitFor(() => flueC.admits.length === 1);
+  assert.equal(flueC.admits[0]!.prompt, "again");
+  assert.ok(flueC.podKillsAsked >= 1, "it read the list");
+  assert.deepEqual(flueC.notices[0], [], "delivered once");
 });
 
 /** A fake Instance Harness's `PUT /agents` (ADR-0031): every live set stated to it, in order. */

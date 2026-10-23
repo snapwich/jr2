@@ -57,7 +57,7 @@ import { SENDER_KEY } from "@jr2/agent-protocol";
 import { agentAddress, continuedIid, allowedPicks, resolveAccepts, runBindingOf } from "./registration.ts";
 import type { NoticeScope } from "./notices.ts";
 import { restOf } from "./rest.ts";
-import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice } from "./wire.ts";
+import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice, type PodMemoryKill } from "./wire.ts";
 
 /**
  * One admitted Submission — the durable re-attach handle (ADR-0016). The wire fields are
@@ -87,6 +87,19 @@ export type AgentAdmission = {
    * mark.
    */
   harnessRestarts?: number;
+  /**
+   * When this admission's Turn started — stamped by the ACTOR on every admission of a Turn in a
+   * Workspace, so a restore reads back the real start, not the restore's: a kernel kill is held against it
+   * (ADR-0061), and a guard kill too when the Turn's first read of the pod's kills failed.
+   */
+  turnStarted?: string;
+  /**
+   * The newest guard kill in the pod's list when the Turn's first read of it was answered
+   * (ADR-0062), or {@link NO_KILLS} for an empty list — stamped by the ACTOR on every admission of
+   * a Turn in a Workspace. A nudge or a wake carries only kills after it, so it never tells the Agent of a kill
+   * from before its Turn. Absent when that first read failed.
+   */
+  killMark?: string;
   /**
    * The Agent and the Harness base URL this admission was answered by — stamped by the ACTOR at
    * ledger time, like `instanceId`. Together with `instanceId` they name the conversation on its
@@ -287,6 +300,15 @@ export interface AgentRunPort {
    */
   holds(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<boolean>;
   /**
+   * The pod's guard kills (ADR-0061, ADR-0062), every one with `told`: the conversations whose
+   * running `bash` call answered its verdict. A stream is read only while a Submission's wait
+   * runs, and a kill while none runs, or after the wait stopped, reaches no reader there. Asked before a Turn's admission into a
+   * Workspace. A read changes nothing on the Harness; the notice ledger keeps each kill's id.
+   * Answers `undefined` whenever it cannot tell — not `[]`, which says the list is empty — and the
+   * kill stays on the Harness for the next read.
+   */
+  memoryKills(opts?: { signal?: AbortSignal }): Promise<ListedKill[] | undefined>;
+  /**
    * End the instance's in-flight (and queued) work — the turn is over (ADR-0024). Resolving means
    * the intent is RECORDED, not that the submission has settled; jr2 never observes that outcome,
    * because the actor is already stopped by the time this is called. The actor passes no `signal`
@@ -309,9 +331,34 @@ export type AgentAdmitOptions = {
 };
 
 /** A memory kill by the Harness's own guard (ADR-0061, layer 4), as the updates stream reports it:
- * the guard's `peak` and `limit`, and `source` — where on which conversation's stream the event
- * sits, so a replayed read of it is the same kill. */
-export type GuardKill = { peak: string; limit: string; source: string };
+ * the guard's `peak` and `limit` — absent when what the stream said was not a size — and the
+ * kill's `id`, the same on every stream that carries it and in the pod's list
+ * (`AgentRunPort.memoryKills`), so every witness of one kill is one notice. `legacy`: an older
+ * Harness's event, which has no id; `id` is then the source the Orchestrator raised such an event
+ * with before, its place on the stream, so a replayed read is still the same kill. */
+export type GuardKill = { id: string; legacy?: true; peak?: string; limit?: string };
+
+/** A kill read from the pod's list, as the port answers it: the wire's, but `peak` and `limit` are
+ * absent when the list's were not sizes — the kill is kept, and worded with no sizes (ADR-0062). */
+export type ListedKill = Omit<PodMemoryKill, "peak" | "limit"> & { peak?: string; limit?: string };
+
+/** The source a guard kill's notice is raised with: the Workspace and the kill's id. Both paths use
+ * it — the stream and the pod's list — so the ledger's `seen` makes them one notice. */
+const guardSource = (sandbox: string, id: string): string => `${sandbox}@guard:${id}`;
+
+/** How long the read of the pod's kills may take before it counts as none. */
+const MEMORY_KILLS_READ_MS = 5_000;
+
+/** A `killMark` for a list that was empty: every kill read after it is the Turn's. Kill ids start
+ * `k-`, so it is never one. */
+export const NO_KILLS = "none";
+
+/** How far the pod's clock may run behind this one when a kill's `at` is held against a Turn's
+ * start — only when the Turn has no `killMark`: a kill stamped up to this much before the start
+ * still counts as in the Turn, so a slow pod clock does not hide a kill of this Turn. The two
+ * clocks are a node's and the Orchestrator's, both kept by the cluster's time service; one second
+ * is far more than they drift, and far less than a Turn. */
+const KILL_CLOCK_SKEW_MS = 1_000;
 
 /** What following a settlement may be told beside the settlement itself. */
 export type AgentSettleOptions = {
@@ -344,6 +391,11 @@ export type AgentRunOptions = {
    * pathological, which belongs with the workflow's fault routing.
    */
   runawayBudget?: number;
+  /**
+   * How long the read of the pod's guard kills (ADR-0062) may take before it counts as none and
+   * the Turn is admitted without it. Default 5000 ms; a seam for tests, never an author dial.
+   */
+  memoryKillsReadMs?: number;
 };
 
 /**
@@ -518,6 +570,7 @@ export function agentActorWith(
 ): AgentLogic {
   const nudgeBudget = options.nudgeBudget ?? 2;
   const runawayBudget = options.runawayBudget ?? 1;
+  const memoryKillsReadMs = options.memoryKillsReadMs ?? MEMORY_KILLS_READ_MS;
   // Typed as the union so BOTH shapes typecheck on an invoke: jr2Setup machines write
   // AgentTurnInput (and the config wrapper finalizes it before the actor ever runs); plain
   // setup() machines must pass the finalized shape themselves — checked loudly below.
@@ -666,7 +719,8 @@ export function agentActorWith(
     // When this Turn started: a memory kill that ended the Harness before it is not this Turn's
     // (ADR-0061). Undefined from a backend that cannot see the container — and never throws:
     // naming the fault is a courtesy, the fault itself lands either way.
-    const turnStarted = new Date();
+    // Read back on a restore: the start is the Turn's, not this process's.
+    const turnStarted = input.attach?.turnStarted ? new Date(input.attach.turnStarted) : new Date();
     const memoryFault = (name: string): Promise<MemoryKill | undefined> =>
       binding.sandbox?.memoryFault(name, turnStarted).catch(() => undefined) ?? Promise.resolve(undefined);
     // Replaced after a Harness restart that cut the Turn while its state was busy: the cut aborted it.
@@ -724,36 +778,158 @@ export function agentActorWith(
       ...(input.continuation ? { conversation } : {}),
       ...(noticeWorkspace !== undefined ? { workspace: noticeWorkspace } : {}),
     };
-    const memoryLimit = (limit: string, peak?: string): Notice => ({
+    // No `agent`: the notice names no Turn — what the pod's list says (below).
+    // No `limit`: the sizes read were not sizes, and the notice says none.
+    const memoryLimit = ({ limit, peak, agent }: { limit?: string; peak?: string; agent?: string }): Notice => ({
       kind: "memory-limit",
       scope: "workspace",
-      agent: input.agentName,
-      ...(peak === undefined ? {} : { peak }),
-      limit,
+      ...(agent === undefined ? {} : { agent }),
+      ...(limit === undefined ? {} : { limit, ...(peak === undefined ? {} : { peak }) }),
     });
-    // The Harness's guard killed this Workspace's processes during the Turn (ADR-0061, layer 4):
-    // the Agent heard it in its `bash` answer; the next Turn in the Workspace hears it here.
+    // The Harness's guard killed this Workspace's processes while this Turn's Submission ran
+    // (ADR-0061, layer 4), read on its stream while the wait is live — so the notice can name this
+    // Turn's Agent. A stopped actor's last poll names nothing: the state that asked for the Turn has
+    // exited, and the pod's list carries the kill. Keyed by the kill's id, so a second running
+    // conversation's stream, or the pod's list, adds nothing.
     const onMemoryLimit = (kill: GuardKill): void => {
-      if (noticeWorkspace === undefined) return;
-      binding.raiseNotice?.(memoryLimit(kill.limit, kill.peak), noticeWorkspace, kill.source);
+      if (stopped || noticeWorkspace === undefined) return;
+      binding.raiseNotice?.(
+        memoryLimit({ limit: kill.limit, peak: kill.peak, agent: input.agentName }),
+        noticeWorkspace,
+        kill.legacy ? kill.id : guardSource(noticeWorkspace, kill.id),
+      );
+    };
+    // …but a stream is not every kill's path. A kill while no Submission ran — a process an earlier
+    // Turn left running, killed while the workflow waited at a Gate — is on no stream, and a kill
+    // after a wait stopped (the Agent's state exited, its abort not yet landed) is on a stream that
+    // no one reads. The Harness keeps every kill, so the pod's list is read before notices are
+    // taken, and this admission carries what it finds. Keyed as on the stream: the ledger's `seen`,
+    // persisted with the run, makes a kill read on both paths, or read again after a restart of
+    // either side, one notice. The notice names no Turn: the list cannot say whose Turn a kill
+    // ended. One read raises at most one notice, the newest kill's; the older kills in it are only
+    // marked seen, so they never give a notice. A read that fails or times out is none: the list
+    // keeps the kill, and the next admission reads again.
+    //
+    // The Turn's first read sets its `killMark`, the newest kill it saw, ledgered with every
+    // admission of the Turn. Answers the sources a nudge or a wake of THIS conversation may carry:
+    // the kills after that mark — none from before the Turn, which would tell the Agent that
+    // processes it started in this Turn died — and after the newest kill its own `bash` call
+    // answered, whose answer said all its processes died. Those stay pending for the next Turn.
+    // Only when the first read failed is the Turn's start time the mark, held against `at`.
+    let killMark = input.attach?.killMark;
+    let firstRead = input.attach === undefined;
+    // `known: false`: the read could not tell, so which kills this conversation was told is not
+    // known either — an admission of the same Turn then takes no guard kill at all.
+    const hearPodKills = async (): Promise<{ known: boolean; unsaid: string[]; said: string[] }> => {
+      const none = { known: true, unsaid: [], said: [] };
+      if (noticeWorkspace === undefined) return none;
+      const first = firstRead;
+      firstRead = false;
+      let kills: ListedKill[] | undefined;
+      try {
+        kills = await client.memoryKills({
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(memoryKillsReadMs)]),
+        });
+      } catch (err) {
+        // Stopped while it read: nothing more is admitted, and nothing is taken.
+        if (controller.signal.aborted) throw err;
+        return { ...none, known: false };
+      }
+      // Could not tell: no mark — an empty list is not what was seen — so the clock is the mark.
+      if (kills === undefined) return { ...none, known: false };
+      if (first) killMark = kills.at(-1)?.id ?? NO_KILLS;
+      const newest = kills.at(-1);
+      if (newest === undefined) return none;
+      binding.raiseNotice?.(
+        memoryLimit({ limit: newest.limit, peak: newest.peak }),
+        noticeWorkspace,
+        guardSource(noticeWorkspace, newest.id),
+        kills.slice(0, -1).map((kill) => guardSource(noticeWorkspace, kill.id)),
+      );
+      const toldHere = (kill: ListedKill): boolean =>
+        kill.told.some((t) => t.agent === input.agentName && t.instanceId === currentIid);
+      // The first kill after the Turn's mark. A mark no longer in the bounded list is older than
+      // every kill in it.
+      let from = 0;
+      kills.forEach((kill, i) => {
+        if (kill.id === killMark || toldHere(kill)) from = i + 1;
+      });
+      const inThisTurn = (kill: ListedKill): boolean =>
+        killMark !== undefined || Date.parse(kill.at) >= turnStarted.getTime() - KILL_CLOCK_SKEW_MS;
+      const unsaid = kills.slice(from).filter(inThisTurn);
+      return {
+        known: true,
+        unsaid: unsaid.map((kill) => guardSource(noticeWorkspace, kill.id)),
+        said: kills.filter((kill) => !unsaid.includes(kill)).map((kill) => guardSource(noticeWorkspace, kill.id)),
+      };
     };
 
     // The Turn's admission and a reroll's carry the pending notices in scope — a reroll's
-    // conversation is fresh, and has heard nothing. A nudge's does not: it re-prompts the Turn
-    // within itself (ADR-0016), whose Agent read a guard kill in its own `bash` answer, and a notice
-    // spent there never reaches the next Turn in the Workspace it is for (ADR-0062). Reserved
+    // conversation is fresh, and has heard nothing. A nudge's and a wake's carry only the guard
+    // kills of this Turn that came after its own `bash` call's last kill verdict (`hearPodKills`):
+    // they re-prompt the Turn within itself (ADR-0016), so a kill that verdict covers is already in
+    // its context, and is for the next Turn in the Workspace (ADR-0062). A later kill — while its
+    // model wrote text, while it waited for its wake, or answered in another conversation — this
+    // Agent was never told. Reserved
     // first, so no concurrent admission carries them too; delivered by the ledger write; released
     // when the admission fails, for the next one to carry.
     //
     // What the last carrying admission took, and under which iid: delivered is not HEARD. If this
     // actor ends the Turn before the Harness reads that iid's surface, the Harness finds the Turn
     // over and settles it with no model asked (ADR-0026) — so `abandon` raises them again.
-    let carried: { iid: string; notices: Notice[] } | undefined;
-    const admitTurn = async (turn: AgentRunInput, opts: { notices: boolean; extra?: Notice[] } = { notices: true }) => {
-      const taken = (opts.notices ? binding.takeNotices?.(noticeScope) : undefined) ?? { ids: [], notices: [] };
+    let carried: { iid: string; raised: Array<{ notice: Notice; source?: string }> } | undefined;
+    // `notices`: "turn" takes every notice in scope; "same-turn" too, but the guard kills the Turn's own
+    // conversation was told (a re-admission after a cut continues the same Turn); "nudge" takes the
+    // guard kills this conversation was not told alone.
+    // `include`: sources restored for this admission, taken whatever the scope leaves out.
+    const admitTurn = async (
+      turn: AgentRunInput,
+      opts: { notices: "turn" | "same-turn" | "nudge"; extra?: Notice[]; include?: readonly string[] } = {
+        notices: "turn",
+      },
+    ) => {
+      const { known, unsaid, said } = await hearPodKills();
+      // A read that could not tell leaves the same Turn no way to know which kills its own `bash`
+      // reported: it takes none, as a nudge takes none then, and they stay for the next Turn.
+      const sameTurn: NoticeScope = known
+        ? { ...noticeScope, except: said }
+        : {
+            ...noticeScope,
+            ...(noticeWorkspace === undefined ? {} : { exceptPrefix: guardSource(noticeWorkspace, "") }),
+          };
+      const scope: NoticeScope | undefined =
+        opts.notices === "turn"
+          ? noticeScope
+          : opts.notices === "same-turn"
+            ? sameTurn
+            : unsaid.length > 0
+              ? { workspace: noticeWorkspace, only: unsaid }
+              : undefined;
+      const none: { ids: string[]; notices: Notice[]; raised?: Array<{ notice: Notice; source?: string }> } = {
+        ids: [],
+        notices: [],
+      };
+      const restored =
+        opts.include && opts.include.length > 0
+          ? (binding.takeNotices?.({ ...noticeScope, only: opts.include }) ?? none)
+          : none;
+      const main = (scope ? binding.takeNotices?.(scope) : undefined) ?? none;
+      const taken = {
+        ids: [...restored.ids, ...main.ids],
+        notices: [...restored.notices, ...main.notices],
+        raised: [
+          ...(restored.raised ?? restored.notices.map((notice) => ({ notice }))),
+          ...(main.raised ?? main.notices.map((notice) => ({ notice }))),
+        ],
+      };
       // `extra`: a notice this admission carries straight from the actor, never kept — the answer a
-      // cut pick never got (ADR-0031), whose one road to the model is this admission.
+      // cut pick never got (ADR-0031), whose one path to the model is this admission.
       const notices = [...taken.notices, ...(opts.extra ?? [])];
+      // `served` is per Instance ID, and a nudge or a wake reuses the Turn's: it must be read again
+      // before this admission's notices count as heard (`reraiseUnheard`). An admission that fails
+      // puts the mark back — the notices an earlier one carried were heard.
+      const heard = served.has(turn.instanceId);
+      if (taken.notices.length > 0) served.delete(turn.instanceId);
       let admission: AgentAdmission;
       try {
         admission = await client.admit(turn, {
@@ -763,6 +939,7 @@ export function agentActorWith(
         });
       } catch (err) {
         binding.releaseNotices?.(taken.ids);
+        if (heard) served.add(turn.instanceId);
         throw err;
       }
       // The mark is taken once the Harness has ANSWERED: a restart before the answer took the
@@ -771,18 +948,34 @@ export function agentActorWith(
       admitted = true;
       restartMark = heardRestarts?.restartCount;
       if (restartMark !== undefined) admission = { ...admission, harnessRestarts: restartMark };
+      // A Turn in a Workspace keeps its start and its kill mark across a restore.
+      if (noticeWorkspace !== undefined) {
+        admission = {
+          ...admission,
+          turnStarted: turnStarted.toISOString(),
+          ...(killMark === undefined ? {} : { killMark }),
+        };
+      }
       ledger(admission, taken.ids);
-      if (taken.notices.length) carried = { iid: turn.instanceId, notices: taken.notices };
+      if (taken.notices.length) carried = { iid: turn.instanceId, raised: taken.raised };
       return admission;
     };
-    // The notices an unheard admission carried, pending again for the next Turn in their scope.
-    const reraiseUnheard = (): void => {
-      if (carried === undefined || served.has(carried.iid)) return;
-      for (const notice of carried.notices) {
+    // The notices an unheard admission carried, pending again for the next Turn in their scope —
+    // each WITH the source it was raised with, so a take by source finds it and no equal notice of
+    // another source swallows it. Answers the sources restored, which a re-admission of the same
+    // Turn takes whatever else it leaves out.
+    const reraiseUnheard = (): string[] => {
+      if (carried === undefined || served.has(carried.iid)) return [];
+      const restored: string[] = [];
+      for (const { notice, source } of carried.raised) {
         const to = notice.scope === "conversation" ? conversation : noticeWorkspace;
-        if (to !== undefined) binding.raiseNotice?.(notice, to);
+        if (to === undefined) continue;
+        if (binding.restoreNotice) binding.restoreNotice(notice, to, source);
+        else binding.raiseNotice?.(notice, to);
+        if (source !== undefined) restored.push(source);
       }
       carried = undefined;
+      return restored;
     };
 
     const abandon = () => {
@@ -909,6 +1102,10 @@ export function agentActorWith(
       });
       restarted = undefined;
       controller = new AbortController();
+      // The notices the cut admission carried, if the Harness never read its surface, are pending
+      // again before this one takes, and it takes them whatever its scope leaves out: the cut
+      // Submission's model never heard them.
+      const restored = reraiseUnheard();
       // The rebuilt Harness may not read the conversation back: then this Turn lands on a new one,
       // and is told (ADR-0062), as the continue path tells it below.
       if (!(await client.holds(input.agentName, currentIid, { signal: controller.signal }))) {
@@ -921,7 +1118,7 @@ export function agentActorWith(
       // The notices pending for this Turn ride the re-admission, with the cut pick's answer after them.
       const admission = await admitTurn(
         { ...framed, attach: undefined, instanceId: currentIid, prompt: READMIT_PROMPT },
-        { notices: true, extra: notice },
+        { notices: "same-turn", extra: notice, include: restored },
       );
       binding.heldAnswerDelivered?.(currentIid);
       return admission;
@@ -1064,7 +1261,7 @@ export function agentActorWith(
               instanceId: currentIid,
               prompt: NUDGE_PROMPT,
             },
-            { notices: false },
+            { notices: "nudge" },
           );
         }
       } catch (err) {
@@ -1099,7 +1296,7 @@ export function agentActorWith(
         if (stopped) return;
         if (kill !== undefined && noticeWorkspace !== undefined) {
           binding.raiseNotice?.(
-            memoryLimit(kill.limit ?? "unknown"),
+            memoryLimit({ limit: kill.limit, agent: input.agentName }),
             noticeWorkspace,
             kill.at === undefined ? undefined : `${noticeWorkspace}@${kill.at}`,
           );
