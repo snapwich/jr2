@@ -43,6 +43,7 @@ import { FINISHED } from "../lib/model-finished.ts";
 import {
   bodyIn,
   ended,
+  gateWentFirst,
   newKill,
   nextTurnNoticed,
   noticedAsk,
@@ -844,7 +845,19 @@ async function pushFollowIn(
     last = back.last;
     if (back.hit && !settled(last)) revised = true;
     if (!back.hit || settled(last) || answers > PUSH_REANSWERS) break;
-    await sendToGate(world, runId, desk.gate, "approve");
+    // The body can leave `work` between the read above and this send — the coder's Turn faulted, its
+    // nudges spent — and the desk's Gate goes with it. Then the run is scored from its final record,
+    // as every other faulted trial is.
+    const sent = await world.runCli(["send", runId, "--gate", desk.gate, "--event", "approve"]);
+    if (sent.code === 0) continue;
+    const refused = `jr2 send approve failed: ${sent.stderr}`;
+    const after = await status(world, runId).catch((err: Error) => {
+      throw new Error(`${refused}; then jr2 status failed: ${err.message}`);
+    });
+    assert.ok(gateWentFirst(sent.stderr, after, desk.gate, "work"), refused);
+    last = settled(after) ? after : (await waitFor(world, runId, settled, 120_000)).last;
+    assert.ok(settled(last), `${refused}; the body left \`work\` and the run did not settle in 120 s`);
+    break;
   }
   // Measured, and not finished within the trial's time: cancelled, and finished (ADR-0066). The ledger
   // is the body's output, which a cancelled run has none of; the measure is what the body showed.

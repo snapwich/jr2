@@ -85,3 +85,26 @@ export function nextTurnNoticed(messages: HistoryMessage[], nextPrompt: string):
 export function newKill(before: readonly string[], after: readonly string[]): boolean {
   return after.some((id) => !before.includes(id));
 }
+
+/** The Orchestrator's refusal of a send to a Gate that is not open (`run-host.ts`). */
+export const NO_OPEN_GATE = "no open gate";
+
+/**
+ * Whether a send to a Gate that the Orchestrator refused found the Gate gone with its state, so the
+ * step scores the run from its final record (ADR-0066). Between the step's read and its send, the
+ * body can leave the state that holds the Gate. For example, the Agent's Turn faults when its
+ * nudges are spent, and the Gate goes with the state. That is so when the refusal names
+ * NO_OPEN_GATE, and the status read after it shows the run settled, or the body out of `state` with
+ * the Gate closed. Any other refusal, or a Gate gone while the body is still in `state`, is a
+ * defect: the step throws.
+ */
+export function gateWentFirst(
+  stderr: string,
+  after: { status: string; children?: RunChild[]; gates?: Array<{ gate: string }> },
+  gate: string,
+  state: string,
+): boolean {
+  if (!stderr.includes(NO_OPEN_GATE)) return false;
+  if (after.status === "done" || after.status === "error") return true;
+  return !bodyIn(after, state) && !(after.gates ?? []).some((g) => g.gate === gate);
+}

@@ -4,7 +4,9 @@ import { readFileSync } from "node:fs";
 import {
   bodyIn,
   ended,
+  gateWentFirst,
   newKill,
+  NO_OPEN_GATE,
   MEMORY_KILL_NOTICE,
   nextTurnNoticed,
   noticedAsk,
@@ -134,4 +136,34 @@ test("noticed's kill is a guard kill that was not on the pod's list before the h
   const ids = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => `k${from + i}`);
   assert.equal(newKill(ids(1, 16), ids(2, 17)), true, "a list that keeps the newest kills dropped k1 and took k17");
   assert.equal(newKill(ids(1, 16), ids(1, 16)), false, "a full list with no new kill");
+});
+
+test("a re-answer that found its Gate gone is scored from the final record; any other refusal throws", () => {
+  const gate = "body.desk";
+  const refused = `jr2 send: ${NO_OPEN_GATE} "${gate}" on run "r1"`;
+  const body = (value: unknown) => [{ id: "body", value, children: [] }];
+  assert.equal(gateWentFirst(refused, { status: "done", gates: [] }, gate, "work"), true, "the run settled");
+  assert.equal(
+    gateWentFirst(refused, { status: "active", children: body("faulted"), gates: [] }, gate, "work"),
+    true,
+    "the body left `work` and the Gate went with it; the run settles next",
+  );
+  assert.equal(
+    gateWentFirst(refused, { status: "active", children: body({ work: "coding" }), gates: [] }, gate, "work"),
+    false,
+    "the Gate went while the body is still in `work`: a defect",
+  );
+  assert.equal(
+    gateWentFirst(refused, { status: "active", children: body("faulted"), gates: [{ gate }] }, gate, "work"),
+    false,
+    "the Gate is still open",
+  );
+  assert.equal(
+    gateWentFirst("jr2 send: connection refused", { status: "done" }, gate, "work"),
+    false,
+    "another refusal",
+  );
+  // The words are the Orchestrator's: a black-box tier cannot import them, so this pins the copy.
+  const host = readFileSync(new URL("../../packages/orchestrator/src/run-host.ts", import.meta.url), "utf8");
+  assert.ok(host.includes(`\`${NO_OPEN_GATE} "\${gate}" on run`), "the Orchestrator still refuses so");
 });
