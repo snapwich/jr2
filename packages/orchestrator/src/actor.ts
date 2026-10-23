@@ -1146,6 +1146,9 @@ export function agentActorWith(
           : [];
       // Kept until the re-admission is sure: a Turn that faults below still names the restart.
       const cutBy = restarted;
+      // The restart that cut the Turn is the new mark at once: the watch may tell it again before
+      // the re-admission is answered, and it must not cut the re-admission too.
+      if (restarted !== undefined) restartMark = restarted.restartCount;
       restarted = undefined;
       controller = new AbortController();
       // The rebuilt Harness may not read the conversation back: then this Turn lands on a new one,

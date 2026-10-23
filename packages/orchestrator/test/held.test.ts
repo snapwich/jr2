@@ -2184,3 +2184,32 @@ test("a fresh Turn's 'this conversation is new', unread when a second cut comes,
     ["conversation-new", "pick-answer"],
   );
 });
+
+test("the restart that cut the Turn, told again by the watch before the re-admission is answered, does not cut it too (ADR-0021, ADR-0031)", async () => {
+  const listeners = new Set<(seen: HarnessRestarts) => void>();
+  let seen: HarnessRestarts = { restartCount: 0 };
+  const port = {
+    harnessRestarts: (_name: string, listener: (seen: HarnessRestarts) => void) => {
+      listeners.add(listener);
+      queueMicrotask(() => listeners.has(listener) && listener(seen));
+      return () => listeners.delete(listener);
+    },
+    memoryFault: async () => undefined,
+  } as unknown as SandboxPort;
+  const rig = await started(undefined, port);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "ask" }).outstanding, true);
+  seen = { restartCount: 1, lastTerminated: { reason: "Error", exitCode: 137, finishedAt: "2026-10-06T10:00:00Z" } };
+  for (const l of listeners) l(seen);
+  // While the re-admission asks whether the conversation is held, the watch lists again: the same count.
+  rig.coder.holds = async () => {
+    for (const l of listeners) l(seen);
+    return true;
+  };
+  await new Promise((r) => setTimeout(r, 20));
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(rig.host.status(rig.runId)?.status, "active", "no fault: one restart cut one Admission");
+  assert.equal(rig.coder.settled.length, 2, "the re-admission's wait runs; nothing re-attached or faulted");
+});
