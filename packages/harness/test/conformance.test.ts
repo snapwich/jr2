@@ -147,7 +147,12 @@ before(async () => {
       maxTokens: 8192,
       // `model-zero` declares no window of its own (per-model 0 beats the provider default,
       // `provider.ts`) — the shape ADR-0036 requires compaction to stay OFF for.
-      models: { "model-x": {}, "model-zero": { contextWindow: 0, maxTokens: 8192 } },
+      // `model-unlimited` declares neither limit: its Turns must send none (`unlimitedPayload`).
+      models: {
+        "model-x": {},
+        "model-zero": { contextWindow: 0, maxTokens: 8192 },
+        "model-unlimited": { contextWindow: 0, maxTokens: 0 },
+      },
     },
   };
   const models = modelsFor(harness, {});
@@ -1894,6 +1899,17 @@ test("a cut followed by a request that FAILS does not cut again on the stale rea
     JSON.stringify(provider.calls.at(-1)!.messages).includes("MARK_TWO"),
     "the first cut's retained tail is still in the context",
   );
+});
+
+test("a Turn on a custom model with no token limit at all sends none — not pi-ai's max_completion_tokens: 1 (ADR-0018)", async () => {
+  provider.reset([{ text: "Done." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/unlimited";
+  const admission = await admit(iid, "Answer.", { model: "fake/model-unlimited" }, AGENT);
+  assert.equal((await settled(iid, admission, AGENT)).outcome, "completed");
+  const body = provider.calls.at(-1)! as unknown as Record<string, unknown>;
+  assert.equal(body.model, "model-unlimited");
+  assert.equal("max_completion_tokens" in body || "max_tokens" in body, false, JSON.stringify(body).slice(0, 300));
 });
 
 test("a model with no declared contextWindow does not compact — inert is said out loud (ADR-0036)", async () => {

@@ -16,7 +16,9 @@ import {
   providerLimit,
   PROVIDER_LIMIT,
 } from "../src/provider.ts";
+import { startFakeProvider } from "./support/rig.ts";
 import { resolveDefinition, type HarnessSpec, type ThinkingLevel } from "../src/spec.ts";
+import { unlimitedPayload } from "../src/provider.ts";
 
 const vllm: HarnessSpec = {
   provider: {
@@ -272,4 +274,38 @@ test("ranAt: at off, an OpenAI completions model with no off gets no level, so t
 test("the custom provider keeps `strict: false` on each tool, as pi 0.82.1 sent it", () => {
   const custom = resolveModel(modelsFor(vllm, {}), "vllm/Qwen/Qwen3-32B");
   assert.deepEqual(custom.compat, { supportsDeveloperRole: false, supportsStrictMode: true });
+});
+
+test("unlimitedPayload: a custom model with no limit at all sends none — pi-ai alone would send 1 (ADR-0018)", async () => {
+  const provider = await startFakeProvider([{ text: "a" }, { text: "b" }, { text: "c" }]);
+  try {
+    const spec = { id: "local", api: "openai-completions", baseUrl: `${provider.url}/v1` };
+    const models = modelsFor({ provider: spec }, {});
+    const bare = resolveModel(models, "local/m");
+    const context = { messages: [{ role: "user" as const, content: "hi", timestamp: 0 }] };
+    // pi-ai 1.4 on its own: the clamp gives at least 1 when the context window is unknown.
+    await models.completeSimple(bare, context, {});
+    // With the Harness's hook, as every Turn sends it (`pi-engine.ts`): no limit.
+    const onPayload = unlimitedPayload(bare);
+    assert.ok(onPayload, "a model with neither limit gets the hook");
+    await models.completeSimple(bare, context, { onPayload });
+    const sized = resolveModel(modelsFor({ provider: { ...spec, contextWindow: 32768 } }, {}), "local/m");
+    assert.equal(unlimitedPayload(sized), undefined, "with a context window, pi-ai sends no limit itself");
+    const catalog = resolveModel(models, "anthropic/claude-haiku-4-5");
+    assert.equal(
+      unlimitedPayload({ ...catalog, maxTokens: 0, contextWindow: 0 }),
+      undefined,
+      "an api a custom provider cannot name",
+    );
+    await models.completeSimple(sized, context, {});
+    const limit = (n: number) => {
+      const body = provider.calls[n] as unknown as Record<string, unknown>;
+      return body.max_completion_tokens ?? body.max_tokens;
+    };
+    assert.equal(limit(0), 1, "the pi-ai behaviour the hook exists for — a pi bump that drops it fails here");
+    assert.equal(limit(1), undefined);
+    assert.equal(limit(2), undefined);
+  } finally {
+    await provider.close();
+  }
 });

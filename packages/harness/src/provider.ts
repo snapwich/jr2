@@ -233,6 +233,30 @@ function keylessAuth(env: Record<string, string | undefined>): ProviderAuth {
   };
 }
 
+/** A request's payload hook, as pi-ai takes it (`onPayload`). */
+type PayloadHook = (payload: unknown, model: Model<Api>) => unknown;
+
+/**
+ * The payload hook for a model with no completion limit at all (ADR-0018): neither `maxTokens` nor
+ * `contextWindow` set, which only a custom-provider model can be (`customModel`), on an api of
+ * `CUSTOM_APIS` (today `openai-completions`, whose fields it removes). pi-ai 1.4 sends a
+ * limit on every request — `clampMaxTokensToContext` gives at least 1 when the context window is
+ * unknown — so such a model's Turns asked for `max_completion_tokens: 1`. This hook removes the
+ * limit from the payload, so the endpoint's own applies, as `HarnessProvider.maxTokens` says ("no
+ * limit is sent"). With a context window and no `maxTokens`, pi sends none itself. `next` is a hook
+ * the caller already has, run first. Undefined when there is nothing to do.
+ */
+export function unlimitedPayload(model: Model<Api>, next?: PayloadHook): PayloadHook | undefined {
+  // Only the apis a custom provider can name (`CUSTOM_APIS`): the payload fields are theirs.
+  if (!Object.hasOwn(CUSTOM_APIS, model.api) || model.maxTokens > 0 || model.contextWindow > 0) return next;
+  return async (payload, m) => {
+    const sent = ((await next?.(payload, m)) ?? payload) as Record<string, unknown>;
+    if (typeof sent !== "object" || sent === null) return sent;
+    const { max_tokens: _a, max_completion_tokens: _b, ...rest } = sent;
+    return rest;
+  };
+}
+
 /** One custom-provider Model. Limits resolve per-model → provider-level → 0 (the order
  * `HarnessProvider` documents); `reasoning: true` because the spec carries no reasoning flag and
  * `false` would silently swallow a definition's `thinkingLevel` before the endpoint ever saw it

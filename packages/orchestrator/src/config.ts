@@ -256,9 +256,10 @@ export type HarnessProvider = {
    * `harness.provider.apiKey is set, and harness.provider.baseUrl is not https://`. Default: none,
    * for an endpoint that needs no key. */
   apiKey?: string;
-  // Flue resolves per-model → provider-level → catalog → 0, and a CUSTOM provider id has no catalog
-  // entry — unset limits resolve to 0, which leaves auto-compaction no context budget to reason
-  // about (the wire request itself is fine: a 0 `maxTokens` is omitted, never sent).
+  // Limits resolve per-model → provider-level → 0, and a CUSTOM provider id has no catalog entry —
+  // unset limits resolve to 0, which leaves auto-compaction no context budget to reason about. The
+  // wire request sends no limit for a 0 `maxTokens`: pi-ai omits it when the context window is
+  // known, and the Harness removes the 1 that pi-ai would send when neither is (`unlimitedPayload`).
   /** The context window, in tokens, of each model of this provider that `models` does not set.
    * Set it here or in `models`: a limit that nothing sets is 0, and then Compaction has no context
    * budget. */

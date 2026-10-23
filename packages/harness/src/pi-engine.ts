@@ -16,6 +16,7 @@ import type {
   EngineOptions,
   EngineTool,
 } from "./engine.ts";
+import { unlimitedPayload } from "./provider.ts";
 import { openEnginePart } from "./transcript.ts";
 
 declare module "@earendil-works/pi-agent-core" {
@@ -59,8 +60,15 @@ function piEngine(options: EngineOptions): Engine {
     // pick pushed before the `bash` commit written ahead of it in the same answer (ADR-0027).
     toolExecution: "sequential",
     // pi's `Agent` does not forward `maxRetries`, so the stream states it.
-    streamFn: (streamModel, context, streamOptions) =>
-      models.streamSimple(streamModel, context, { ...streamOptions, maxRetries }),
+    // A custom model with no limit at all sends none (`unlimitedPayload`, ADR-0018).
+    streamFn: (streamModel, context, streamOptions) => {
+      const onPayload = unlimitedPayload(streamModel, streamOptions?.onPayload);
+      return models.streamSimple(streamModel, context, {
+        ...streamOptions,
+        maxRetries,
+        ...(onPayload ? { onPayload } : {}),
+      });
+    },
     convertToLlm: (messages) => hooks.convertToLlm(messages),
     // Before EVERY provider request, the first one included: pi has appended and emitted the
     // pending messages. A context returned is what pi uses for this request and the rest of the
