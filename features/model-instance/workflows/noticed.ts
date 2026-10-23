@@ -1,11 +1,14 @@
 // The notice claim (ADR-0061/0062): the Harness's guard kills the Agent's processes at the memory
-// limit during a Turn, and the NEXT Turn in that Workspace is told so — once, in the Briefing's
-// Turn part. Two coder Turns on one conversation. The first starts a server in the background and
-// picks `started`; while it runs, the STEP trips the memory guard from outside (the kill is the
-// tier's, not the model's — a real model cannot be told to exhaust memory and also be measured).
-// The second Turn asks whether that server still answers, and its `report` is the measurement: an
-// Agent working blind says yes from memory; one that read the notice checks, or says no. Then a
-// Gate, so the step can probe the pod for the truth before the Sandbox goes.
+// limit, and the NEXT Turn in that Workspace is told so — once, in the Briefing's Turn part. Two
+// coder Turns on one conversation. The first starts a server in the background and picks
+// `started`. Then the body waits at the `kill` Gate, and no Turn runs. The STEP checks that the
+// server answers, trips the memory guard from outside, and answers the Gate. The kill is the
+// tier's, not the model's: a real model cannot be told to exhaust memory and also be measured. The
+// first Turn has ended, so it cannot see the kill. What the second Turn knows of the kill, it knows
+// from the notice. The second Turn asks whether that server still answers, and its `report` is the
+// measurement. An Agent working blind says yes from memory; one that read the notice checks, or
+// says no. Then the body waits at the `inspect` Gate, so the step can probe the pod for the truth
+// before the Sandbox goes.
 //
 // Filename `noticed.ts` → workflow "noticed".
 
@@ -30,6 +33,7 @@ const report = defineEvent({
   audience: "agent",
   input: z.object({ running: z.boolean(), how: z.string() }),
 });
+const killed = defineEvent({ name: "killed", audience: "external", input: z.object({}) });
 const done = defineEvent({ name: "done", audience: "external", input: z.object({}) });
 
 const door = z.object({ thinking: z.enum(["off", "on"]).default("off") });
@@ -39,7 +43,7 @@ type BodyContext = BodyInput & { running?: boolean; how?: string; fault?: string
 
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
-  events: [started, report, done],
+  events: [started, report, killed, done],
   actors: { coder: agent(coder) },
 }).createMachine({
   id: "body",
@@ -65,12 +69,17 @@ const body = jr2Setup({
         }),
       },
       on: {
-        started: { target: "asking" },
+        started: { target: "killing" },
         "agent.fault": {
           target: "faulted",
           actions: assign({ fault: ({ event }) => (event as { reason?: string }).reason }),
         },
       },
+    },
+    // No Turn runs here: the step kills the Agent's processes, then answers.
+    killing: {
+      invoke: { src: "gate", id: "kill" },
+      on: { killed: { target: "asking" } },
     },
     asking: {
       invoke: {
@@ -97,6 +106,7 @@ const body = jr2Setup({
     inspecting: {
       invoke: {
         src: "gate",
+        id: "inspect",
         input: ({ context }) => ({
           meta: { port: SERVER_PORT, running: context.running, how: context.how },
         }),

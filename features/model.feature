@@ -78,13 +78,17 @@ Feature: a real model drives the kit
   Rule: a notice changes what the next Turn does
     ADR-0061/0062. The Harness's guard kills the Agent's processes at the memory limit and not the
     Harness; the next Turn in that Workspace is told so, once. The `noticed` workflow's first Turn
-    starts a server in the background and picks `started`; while that Turn runs, the STEP trips
-    the guard from outside — the kill is the tier's, not the model's — which takes the server with
-    everything else. The second Turn asks whether the server still answers, allowing `report`
-    alone. A correct Agent reads the notice and checks, or says no; an Agent working blind says
-    yes. The step compares the report with the pod. A kill the first Turn itself saw, so that it
-    never picked `started` and the second Turn never began, is void: the run is still live past
-    the trial's time with its body in `starting`. A first Turn that faulted, or a lost Workspace,
+    starts a server in the background and picks `started`. Then the body waits at the `kill` Gate,
+    and no Turn runs. The STEP checks that the server answers, trips the guard from outside, and
+    answers the Gate. The kill is the tier's, not the model's, and it takes the server with
+    everything else. The first Turn has ended, so it cannot see the kill. The second Turn asks
+    whether the server still answers, and it allows `report` alone. A correct Agent reads the
+    notice and checks, or says no; an Agent working blind says yes. The step compares the report
+    with the pod. A second-Turn prompt with no notice is a miss: it is a defect in what jr2 shows
+    the model. Four kinds of trial are void, because the setup that the claim measures did not
+    happen. In the first, the first Turn does not pick `started` in its time. In the second, no
+    server answers at the Gate. In the third, the kill does not take the server. In the fourth,
+    the kernel kills the container, not the guard. A body that faulted, or a lost Workspace,
     settles the run and is not void.
 
     Scenario: after a memory kill the coder does not assume its processes survived

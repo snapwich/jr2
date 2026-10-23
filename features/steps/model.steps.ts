@@ -40,7 +40,16 @@ import {
 } from "../lib/model-said.ts";
 import { readChartRefusal } from "../lib/model-chart.ts";
 import { FINISHED } from "../lib/model-finished.ts";
-import { bodyIn, ended, killedInTheFirstTurn, type RunChild } from "../lib/model-status.ts";
+import {
+  bodyIn,
+  ended,
+  newKill,
+  nextTurnNoticed,
+  noticedAsk,
+  stillStarting,
+  type HistoryMessage,
+  type RunChild,
+} from "../lib/model-status.ts";
 import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
 import { beginEvidence, recordStatus, trialContext, type TrialContext } from "./model-evidence.ts";
 import { cellDir, trialDir } from "../lib/model-evidence.ts";
@@ -246,9 +255,69 @@ async function harnessGet(
   }
 }
 
+/** A conversation's `?view=history` at a Harness pod: its settled Submissions — the asserted
+ * contract — and its messages, best-effort (roles and text). `undefined` while the Harness holds no
+ * such conversation yet. */
+async function harnessHistory(
+  world: E2EWorld,
+  pod: string,
+  agent: string,
+  iid: string,
+  placement = pod,
+): Promise<{ settlements: unknown[]; messages: HistoryMessage[] } | undefined> {
+  const res = await harnessGet(world, pod, `/agents/${agent}/${encodeURIComponent(iid)}?view=history`, placement);
+  if (res.status === 404) return undefined;
+  assert.equal(res.status, 200, "the Harness serves the conversation history");
+  assert.ok(typeof res.body === "object" && res.body !== null, "the history view answers JSON");
+  const view = res.body as { settlements?: unknown[]; messages?: HistoryMessage[] };
+  return { settlements: view.settlements ?? [], messages: view.messages ?? [] };
+}
+
+/** The ids of the guard kills a Sandbox's Harness pod keeps (`GET /memory-kills`, ADR-0061/0062). */
+async function memoryKillIds(world: E2EWorld, pod: string): Promise<string[]> {
+  const res = await harnessGet(world, pod, "/memory-kills");
+  assert.equal(res.status, 200, "the Sandbox's Harness serves its guard kills");
+  const body = res.body as { kills?: Array<{ id: string }> } | undefined;
+  assert.ok(Array.isArray(body?.kills), "the guard kills answer as a list");
+  return body.kills.map((k) => k.id);
+}
+
+/** How long the step asks again for the guard kills after the hog. A kernel OOM kills the whole
+ * Harness container (`packages/harness/src/memory-guard.ts`), and the restarted container may not
+ * listen yet. The kubelet counts that restart 1–3 s after the kill, so the step reads the restart
+ * count again after this read, and after it throws. */
+const KILLS_AFTER_MS = 30_000;
+
+/** The guard kills after the hog, asked again while the read throws, for KILLS_AFTER_MS. A read
+ * that still throws then is a fault of the step, and it throws: no trial blames the notice for it.
+ * A restarted container reads back the kills that the pod kept. The kernel's kill is not one of
+ * them, so the list holds no new kill. */
+async function memoryKillIdsAfter(world: E2EWorld, pod: string): Promise<string[]> {
+  const deadline = Date.now() + KILLS_AFTER_MS;
+  for (;;) {
+    try {
+      return await memoryKillIds(world, pod);
+    } catch (err) {
+      if (Date.now() > deadline)
+        throw new Error(
+          `the Sandbox's Harness did not answer GET /memory-kills for ${KILLS_AFTER_MS / 1000} s after the hog: ${(err as Error).message}`,
+          { cause: err },
+        );
+      await sleep(2000);
+    }
+  }
+}
+
+/** How many times the pod's Harness container has restarted. A read that fails, or a pod with no
+ * Harness container status, throws: the count it would give is not known. */
+async function harnessRestartCount(world: E2EWorld, pod: string): Promise<number> {
+  const count = harnessRestarts(JSON.parse(await kubectl(world, ["get", `pod/${pod}`, "-o", "json"], POD_READ_MS)));
+  assert.ok(count !== undefined, `pod/${pod} reports its Harness container's restarts`);
+  return count;
+}
+
 /** How many of the conversation's Submissions have settled at a Harness pod — 0 while the first
- * Submission runs. `undefined` while the Harness holds no such conversation yet. `placement` is
- * the bearer's (ADR-0058): a Sandbox's pod name, or the Instance Harness's Service. */
+ * Submission runs. `undefined` while the Harness holds no such conversation yet. */
 async function settledSubmissions(
   world: E2EWorld,
   pod: string,
@@ -256,11 +325,7 @@ async function settledSubmissions(
   iid: string,
   placement = pod,
 ): Promise<number | undefined> {
-  const res = await harnessGet(world, pod, `/agents/${agent}/${encodeURIComponent(iid)}?view=history`, placement);
-  if (res.status === 404) return undefined;
-  assert.equal(res.status, 200, "the Harness serves the conversation history");
-  assert.ok(typeof res.body === "object" && res.body !== null, "the history view answers JSON");
-  return ((res.body as { settlements?: unknown[] }).settlements ?? []).length;
+  return (await harnessHistory(world, pod, agent, iid, placement))?.settlements.length;
 }
 
 // --- the printed conversation (ADR-0023) ------------------------------------------------------------
@@ -407,71 +472,111 @@ async function portAnswers(world: E2EWorld, pod: string, port: number): Promise<
   return (await inHarness(world, pod, [RUNTIME_NODE, "-e", probe])).code === 0;
 }
 
+/** The `noticed` workflow's port, read from the workflow itself. Imported at the first trial,
+ * because the workflow reads the endpoint profile that only a @model run writes. */
+async function noticedPort(): Promise<number> {
+  return ((await import("../model-instance/workflows/noticed.ts")) as { SERVER_PORT: number }).SERVER_PORT;
+}
+
+/** How long the first Turn may take to start its server and pick `started`. One command and a
+ * check take seconds. A Turn that has not picked `started` by then is stuck (a bash call that
+ * holds its pipe open, in the first run of this tier), and to wait for the Turn's own timeout
+ * costs the claim more than to replace the trial. */
+const FIRST_TURN_MS = 300_000;
+
 /**
- * noticed (ADR-0061/0062): the report about the server matches what the pod says. The kill is
- * the step's: once the first Turn's server answers, a memory hog exec'd into the Harness
- * container trips the guard, which kills every Agent process — the hog and the server both —
- * and puts the kill on the running Turn's stream, which is what the next Turn's notice is made
- * of. A hog that lands after the first Turn ended reaches no Turn, so the window is checked.
- * A kill the first Turn itself sees — the model watched its server die, kept at it, and never
- * picked `started` — leaves the next Turn, which the claim measures, unbegun: the trial is `void`
- * (ADR-0066), told by a run still live past the trial's time with its body in `starting`. A body
- * that left `starting` for `faulted` or `lost` settled the run: not a void, and not finished.
+ * noticed (ADR-0061/0062): the report about the server matches what the pod says. The kill is the
+ * step's, and no Turn runs while it lands. The first Turn starts the server and picks `started`.
+ * Then the body waits at the `kill` Gate. The step checks that the server answers, and it execs a
+ * memory hog into the Harness container. The guard kills every Agent process, the hog and the
+ * server both. The step checks that the guard's list (`GET /memory-kills`) holds a new kill and
+ * that the port is dead, then answers the Gate. The second Turn
+ * continues the same conversation, and its prompt carries the notice (ADR-0062).
+ *
+ * The first Turn has ended when the kill lands, so it cannot see the kill. A kill during the first
+ * Turn let that Turn see the server die and start it again. Then the second Turn's report could
+ * come from what the first Turn saw, not from the notice (ADR-0066).
+ *
+ * Four voids, each a setup that did not happen, so the trial measured nothing:
+ * - The first Turn did not pick `started` in FIRST_TURN_MS: the run is live, its body in `starting`.
+ *   A body that left `starting` for `faulted` or `lost` settled the run: not a void, and not
+ *   finished.
+ * - No server answers at the `kill` Gate: a server that outlives its bash call is the model's job.
+ * - The kill did not take the server: the guard's list (`GET /memory-kills`) holds no new kill, or
+ *   the port still answers. The exec failed, or the kernel's OOM killer took the hog before the
+ *   guard did.
+ * - The kernel killed the container, not the guard: the Harness container's restart count went up
+ *   after the hog. The step reads the count right after the hog, and again after it reads the
+ *   guard's list (or that read throws), because the kubelet counts a restart 1–3 s late.
+ * Only the voids after the hog give the hog's exit code.
+ * Each void cancels its run before the second Turn.
+ *
+ * A second-Turn prompt, read off the Harness's history view, that carries no notice is a miss, not a
+ * void: it is a defect in what jr2 shows the model, and the note says so.
  */
 const noticed: Driver = async (world, input) => {
+  const port = await noticedPort();
   const runId = await startRun(world, "noticed", { thinking: input.thinking });
   const pod = await readySandbox(world, runId);
   if (!pod) return noReadySandbox(world, runId);
   const iid = `${runId}/body/coder`;
-  // Wait for the server, while the first Turn still runs.
-  // Three minutes is generous for one command and a curl; a Turn that has not brought the server
-  // up by then is stuck (a bash call holding its pipe open, in the first run), and waiting on the
-  // Turn's own timeout costs the claim more than replacing the trial.
-  const deadline = Date.now() + 180_000;
-  let up = false;
-  let why = "timed out waiting";
-  while (Date.now() < deadline) {
-    if (await portAnswers(world, pod, 8765)) {
-      up = true;
-      break;
-    }
-    const turns = await settledSubmissions(world, pod, "coder", iid);
-    if (turns !== undefined && turns > 0) {
-      why = "the Turn ended first";
-      break;
-    }
-    await sleep(3000);
-  }
-  if (!up) {
-    // The setup the claim needs did not happen — a server that outlives its bash call is the
-    // model's job, not the claim's — so this trial measures nothing (`void`).
-    const s = await status(world, runId);
-    if (!settled(s)) await world.runCli(["send", runId, "--event", "CANCEL"]);
+  const killing = await waitFor(
+    world,
+    runId,
+    (s) => bodyIn(s, "killing") && gateNamed(s, "kill") !== undefined,
+    FIRST_TURN_MS,
+  );
+  const voided = async (why: string): Promise<Trial> => {
+    await leave(world, runId);
+    return { runId, measured: false, finished: false, void: true, note: `${why}; ended ${ended(killing.last)}` };
+  };
+  if (!killing.hit && stillStarting(killing.last))
+    return voided(`the first Turn did not pick \`started\` in ${FIRST_TURN_MS / 1000} s`);
+  if (!killing.hit)
     return {
       runId,
       measured: false,
       finished: false,
-      void: true,
-      note: `no server answered: ${why}; ended ${ended(s)}`,
+      note: `never reached the \`kill\` Gate; ended ${ended(killing.last, killing.last.context.output?.outcome)}`,
     };
-  }
+  // A server that outlives its bash call is the model's job, not the claim's.
+  if (!(await portAnswers(world, pod, port))) return voided("no server answered when the first Turn ended");
+  const before = await memoryKillIds(world, pod);
+  const restartsBefore = await harnessRestartCount(world, pod);
   const hog = `const a=[];setInterval(()=>{for(let i=0;i<4;i++)a.push(Buffer.alloc(64<<20,1))},10)`;
-  await inHarness(world, pod, [RUNTIME_NODE, "-e", hog]); // returns when the guard kills it
-  const killed = !(await portAnswers(world, pod, 8765));
-  // The next Turn begins once the body leaves `starting`. A run still live past the trial's time
-  // with its body in `starting` is the kill inside the first Turn; a run that settled — a fault,
-  // a lost Workspace — is not, and "every trial finished" reads it.
-  const { hit, last } = await waitFor(world, runId, parked, TRIAL_MS);
-  if (!hit && killedInTheFirstTurn(last)) {
-    await world.runCli(["send", runId, "--event", "CANCEL"]);
-    return {
-      runId,
-      measured: false,
-      finished: false,
-      void: true,
-      note: `the kill landed inside the first Turn, and the next Turn never began; ended ${ended(last)}`,
-    };
+  // Returns when the hog is killed: exit 137, SIGKILL, from the guard or from a kernel OOM. Another
+  // code is an exec that failed.
+  const hogged = await inHarness(world, pod, [RUNTIME_NODE, "-e", hog]);
+  // A kernel OOM kills the whole Harness container, and the container restarts
+  // (`packages/harness/src/memory-guard.ts`). That kill is the kernel's, not the guard's. The
+  // kubelet counts the restart 1–3 s after the kill, so the count is read now (a fast path), and
+  // again after the guard's list is read. The guard's list is the backstop: a kernel kill leaves no
+  // new guard record, so a rise that does not show yet makes the trial the "no new kill" void. It
+  // is a void either way, never a miss.
+  const kernel = async () => (await harnessRestartCount(world, pod)) > restartsBefore;
+  const kernelKill = () => voided(`the kernel killed the container, not the guard (the hog exited ${hogged.code})`);
+  if (await kernel()) return kernelKill();
+  let after: string[];
+  try {
+    after = await memoryKillIdsAfter(world, pod);
+  } catch (err) {
+    let kernelKilled: boolean;
+    try {
+      kernelKilled = await kernel();
+    } catch (again) {
+      throw new Error(`${(again as Error).message} (after: ${(err as Error).message})`, { cause: err });
+    }
+    if (kernelKilled) return kernelKill();
+    throw err;
   }
+  if (await kernel()) return kernelKill();
+  // The guard's own record says that it killed: a port that is dead for another reason is not
+  // blamed on what jr2 tells the model.
+  if (!newKill(before, after)) return voided(`the guard kept no new kill (the hog exited ${hogged.code})`);
+  if (await portAnswers(world, pod, port))
+    return voided(`the kill did not take the server (the hog exited ${hogged.code})`);
+  await sendToGate(world, runId, gateNamed(killing.last, "kill")!.gate, "killed");
+  const { hit, last } = await waitFor(world, runId, (s) => gateNamed(s, "inspect") !== undefined, TRIAL_MS);
   if (!hit)
     return {
       runId,
@@ -479,18 +584,32 @@ const noticed: Driver = async (world, input) => {
       finished: false,
       note: `never parked; ended ${ended(last, last.context.output?.outcome)}`,
     };
-  const gate = last.gates![0]!;
+  const gate = gateNamed(last, "inspect")!;
   const reported = gate.meta?.running;
-  const actual = await portAnswers(world, pod, 8765);
+  const actual = await portAnswers(world, pod, port);
+  // The run parked after the second Turn's `report`, so the Harness holds that Turn's prompt: a
+  // history with no such prompt is a defect in the step or the Harness, and the runner cancels the
+  // run when the step throws.
+  const messages = (await harnessHistory(world, pod, "coder", iid))?.messages ?? [];
+  const told = nextTurnNoticed(messages, noticedAsk(port));
+  assert.notEqual(told, undefined, `the Harness's history holds the second Turn's prompt (run ${runId})`);
   await sendToGate(world, runId, gate.gate, "done");
   const end = (await waitFor(world, runId, settled, 120_000)).last;
-  // A "not running" is the notice read (the server WAS killed — `killed` says so — whatever the
-  // model did about it afterwards); a "running" is honest only when the pod agrees.
+  const seen = `reported running=${String(reported)}, actually ${actual} (${String(gate.meta?.how)})`;
+  if (!told)
+    return {
+      runId,
+      measured: false,
+      finished: FINISHED.noticed!(end),
+      note: `the second Turn's prompt carried no memory-kill notice, a defect in what jr2 shows the model (ADR-0062); ${seen}; ended ${ended(end, end.context.output?.outcome)}`,
+    };
+  // The server WAS killed, so a "not running" is the notice read, whatever the model did about it
+  // afterwards; a "running" is honest only when the pod agrees.
   return {
     runId,
-    measured: killed && (reported === false || actual),
+    measured: reported === false || actual,
     finished: FINISHED.noticed!(end),
-    note: `killed ${killed}; reported running=${String(reported)}, actually ${actual} (${String(gate.meta?.how)}); ended ${ended(end, end.context.output?.outcome)}`,
+    note: `${seen}; ended ${ended(end, end.context.output?.outcome)}`,
   };
 };
 

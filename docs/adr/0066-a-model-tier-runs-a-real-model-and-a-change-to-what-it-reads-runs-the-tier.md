@@ -279,15 +279,57 @@ recover, finish — are exercised only one scripted tool call at a time.
     after the wake is `release` or `hold`. A model that never stopped is void. Its floor is `push-follow`'s, 9 of 10.
     `push-follow` keeps the restatement case: a list that changes while the model is still working. `push-wake` had no
     baseline cell.
-  - `noticed`. In 1 of 10 trials of two runs of 2026-10-12 (8374be56 in the full run, 9d220d92 in a diagnostic run) the
-    memory kill landed inside the first Turn where that Turn saw it: the model watched its server die, kept debugging,
-    and never picked `started`, so the Gate never opened and the next Turn, which the claim measures, never happened. In
-    both, the run was still live, its body in `starting`, when the trial's time ran out. The driver counted such a trial
-    a miss and unfinished. It is now void, its setup not met: a trial whose run is still live past its time with the
-    body in `starting` is void, replaced within the claim's bound; a void past the bound counts against the floor and
-    prints as a void. A body that left `starting` for `faulted` (`agent.fault`) or `lost` (`workspace.lost`) settled the
-    run: it is not void, and fails "every trial finished" as the finished rule above says. The prompt, the floor and the
-    pass did not change. Decided under the user's deferral on 2026-10-12 and confirmed by the user on 2026-10-12.
+  - `noticed`. The kill must not land while a Turn runs. The first Turn starts the server and picks `started`. Then the
+    body waits at the `kill` Gate, and no Turn runs. The step checks that the server answers, with a probe that it execs
+    in the Harness container. Then it execs the memory hog. It checks that the guard's list (`GET /memory-kills`) holds
+    a new kill and that the port is dead, and it answers the Gate. The second Turn continues the same conversation, and
+    its prompt must carry the memory-kill notice. The first Turn has ended, so it cannot see the kill. What the second
+    Turn knows of the kill, it knows from the notice.
+
+    Two earlier setups killed during the first Turn, and their runs showed why that is wrong. In 1 of 10 trials of two
+    runs of 2026-10-12 (8374be56, 9d220d92), the first Turn saw its server die and did not pick `started`. On
+    2026-10-22, Haiku 5.5 often ended its first Turn before the kill, so the kill landed in the second Turn, and that
+    Turn was not told. A first Turn that saw the kill often started the server again. Then the second Turn's report can
+    come from what the first Turn saw, not from the notice. The driver made all of these trials void. The last of those
+    setups polled the port from the host every 3 s during the first Turn, and it killed when the port answered. It made
+    a trial void when the first Turn made a Working-tool call after the kill. On the home lab, 7 of 15 trials of that
+    setup were void for that reason. All 8 measured trials passed. But 2 voids were past the bound, so the cell was 8 of
+    10, below its floor of 9. Qwen keeps working in its first Turn, sees the kill, and starts the server again. A kill
+    between the Turns removes this mixed cause, and it needs no timing void.
+
+    The new setup found a gap in the product. The guard put a kill on the stream of the Submission that ran. When no
+    Submission ran, the Orchestrator did not hear of the kill, and the next Turn got no notice. Main fixes this
+    (91699c24, 8c274330). The pod keeps every guard kill, and the Agent actor reads them before it admits a Turn into
+    the Workspace. So the next Agent in the Workspace gets the notice once.
+
+    Two voids stay, each a setup that did not happen. In the first, the first Turn does not pick `started` in its time:
+    the run is live, and its body is in `starting`. In the second, no server answers at the `kill` Gate: a server that
+    outlives its bash call is the model's job. A body that left `starting` for `faulted` (`agent.fault`) or `lost`
+    (`workspace.lost`) settled the run. It is not void, and it fails "every trial finished", as the finished rule above
+    says. The bound stays half the trials, rounded up. Rejected: a larger bound for `noticed`, and a fault in `starting`
+    counted as void.
+
+    Two more voids are new. In the first, the kill does not take the server. The guard's list (`GET /memory-kills`,
+    91699c24) holds no new kill, or the port still answers after the hog. Then the exec fails, or the kernel's OOM
+    killer takes the hog before the guard does. In the second, the kernel kills the container, not the guard. A kernel
+    OOM kills the whole container, and the container's restart count goes up. The kubelet counts the restart 1 to 3 s
+    after the kill. So the step reads the count right after the hog, and again after it reads the guard's list or that
+    read throws. The guard's list is the backstop. A kernel kill leaves no new guard record, so when the rise does not
+    show yet, the trial is the "no new kill" void. It is a void either way, never a miss. On main, a port that still
+    answered after the hog was a miss. A dead port with no guard kill counted as a kill, so that trial could pass. Now
+    each is a void, because the setup that the claim measures does not happen, and a port that is dead for another
+    reason is not blamed on what jr2 tells the model. Each void cancels its run before the second Turn. Only the voids
+    after the hog give the hog's exit code. The change to these two voids waits on the user's decision.
+
+    The prompt and the floor did not change. The pass changed: a trial now also needs the notice in the second Turn's
+    prompt. Before, the step did not read the second Turn's prompt. Now the kill lands before the second Turn starts, so
+    jr2 must tell that Turn. A prompt with no notice is a miss, and the note names it as a defect in what jr2 shows the
+    model. The setup first ran on 2026-10-23, at an earlier version of this branch (09291511, not kept) on main
+    8837af28. That step named the Gate `hold`, had `killed` in the pass, did not read the guard's list, and had neither
+    of the two new voids. It gave 10 of 10 on the home lab with no void, and 10 of 10 on Haiku 5.5. A later version of
+    this branch (c220d895, not kept) scores a trial as this step does. On 2026-10-23 it gave 10 of 10 on the home lab,
+    on Haiku 5.5 and on Sonnet 5.5, and no void fired. The user confirmed the 2026-10-12 void on 2026-10-12, and
+    approved the setup with the Gate between the Turns on 2026-10-23.
 
   The Rest rule (ADR-0024) changed a third, `mode-refusal`, before any run under it. Its timer moved `reviewing` on to
   `approved` while the model composed its next call; under Rest that timer holds `ask_review` outstanding until it
