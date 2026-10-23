@@ -42,3 +42,29 @@ test("an admitted Chart whose body failed is an admission", () => {
 test("refused twice: a miss", () => {
   assert.equal(readChartRefusal(["refused", "refused"], [door(refusedAnswer), door(refusedAnswer)]).measured, false);
 });
+
+test("a second pick of one model answer did not run: it is skipped, not the measured pick", () => {
+  const stale: Answered = {
+    call: "run_chart",
+    input: "{}",
+    answer: "This pick did not run: you sent it before you read the answer to `mcp__jr2__run_chart`.",
+    error: true,
+  };
+  const r = readChartRefusal(["refused", "admitted"], [door(refusedAnswer), stale, door("{}")]);
+  assert.equal(r.measured, true);
+  assert.equal(r.void, undefined);
+});
+
+test("a run_chart answer that was lost (not known) at or after the door's refusal voids the trial", () => {
+  const lost = door(
+    "It is not known whether this pick reached the workflow: the call to `mcp__jr2__run_chart` failed before the workflow answered (x). A second call to `mcp__jr2__run_chart` can run the pick twice.",
+  );
+  for (const answered of [
+    [lost, door("{}")],
+    [door(refusedAnswer), lost],
+  ]) {
+    const r = readChartRefusal(["refused", "admitted"], answered);
+    assert.equal(r.measured, false);
+    assert.match(r.void ?? "", /^void: /);
+  }
+});
