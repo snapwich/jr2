@@ -178,10 +178,9 @@ async function harnessAuth(world: E2EWorld, placement: string): Promise<Record<s
 }
 
 /** How many of the conversation's Submissions have settled at a Harness pod — 0 while the first
- * Turn runs, which is when a memory kill lands on its stream (ADR-0061). `undefined` while the
- * Harness holds no such conversation yet. `placement` is the bearer's (ADR-0058): a Sandbox's pod
- * name, or the Instance Harness's Service. */
-async function settledTurns(
+ * Submission runs. `undefined` while the Harness holds no such conversation yet. `placement` is
+ * the bearer's (ADR-0058): a Sandbox's pod name, or the Instance Harness's Service. */
+async function settledSubmissions(
   world: E2EWorld,
   pod: string,
   agent: string,
@@ -386,7 +385,7 @@ const noticed: Driver = async (world, input) => {
       up = true;
       break;
     }
-    const turns = await settledTurns(world, pod, "coder", iid);
+    const turns = await settledSubmissions(world, pod, "coder", iid);
     if (turns !== undefined && turns > 0) {
       why = "the Turn ended first";
       break;
@@ -575,7 +574,7 @@ const wake: Driver = async (world, input) => {
   const deadline = Date.now() + 300_000;
   let stopped = false;
   while (!stopped && Date.now() < deadline) {
-    stopped = ((await settledTurns(world, `${INSTANCE_HARNESS}-0`, "advisor", iid, INSTANCE_HARNESS)) ?? 0) > 0;
+    stopped = ((await settledSubmissions(world, `${INSTANCE_HARNESS}-0`, "advisor", iid, INSTANCE_HARNESS)) ?? 0) > 0;
     if (!stopped) await sleep(2000);
   }
   if (!stopped) {
