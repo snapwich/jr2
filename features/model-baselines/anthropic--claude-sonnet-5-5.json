@@ -1,0 +1,78 @@
+{
+  "obedience/off": {
+    "passed": 9,
+    "trials": 10
+  },
+  "obedience/on": {
+    "passed": 10,
+    "trials": 10
+  },
+  "workdir/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "advised/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "noticed/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "mode-follow/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "mode-refusal/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "wake/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "push-follow/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "push-no-refusal/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "chain-answer/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "cut-pick/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "chart-refusal/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "answered/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "allowed-after-route/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "unknown-outcome/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "continue-after-signed-push/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "ticket/on": {
+    "passed": 1,
+    "trials": 1
+  },
+  "ticket-modes/on": {
+    "passed": 1,
+    "trials": 1
+  }
+}
