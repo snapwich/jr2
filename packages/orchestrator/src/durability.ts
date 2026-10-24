@@ -84,13 +84,13 @@ export function hydrateSnapshot(
  * twin of `AgentAdmission` — kept import-free so this codec module stays a pure leaf.
  * `instanceId` is the actor's live-conversation stamp (a runaway reroll advances it past the
  * ledger key — ADR-0035); it rides the rewrite verbatim so the restored actor re-addresses the
- * live conversation. */
-type Admission = { streamUrl: string; offset: string; submissionId: string; instanceId?: string };
+ * live conversation. `turnId` is the Turn that ledgered it (see `reattachAgentRuns`). */
+type Admission = { streamUrl: string; offset: string; submissionId: string; instanceId?: string; turnId?: string };
 
 /** A persisted Agent child input: `instanceId` (the durable handle) beside `agentName` —
  * both strings by construction (machine children carry neither at top level; `endpoint` can no
  * longer identify it, being ambient-optional since ADR-0016). */
-function isAgentRunInput(input: unknown): input is { instanceId: string; agentName: string } {
+function isAgentRunInput(input: unknown): input is { instanceId: string; agentName: string; turnId?: string } {
   return (
     !!input &&
     typeof input === "object" &&
@@ -107,6 +107,12 @@ function isAgentRunInput(input: unknown): input is { instanceId: string; agentNa
  * context leg). An instanceId with no recorded admission re-admits its prompt — a run that
  * crashed before its admission was ledgered is the same first-turn at-most-once edge as before
  * (ADR-0007), narrowed to the send→record window.
+ *
+ * The key is not the Turn: two Turns that continue one conversation share the iid, and nothing
+ * removes a Turn's entry when it ends. So an admission re-attaches only the Turn that ledgered it —
+ * its `turnId` equals the input's. A crash after the next Turn's state was saved, and before its
+ * admission was ledgered, finds the earlier Turn's admission under the key; that Turn is not this
+ * one, so the input keeps its prompt and the restore admits it.
  */
 export function reattachAgentRuns(snapshot: unknown, admissions: Record<string, Admission>): unknown {
   const walk = (node: unknown): unknown => {
@@ -114,7 +120,8 @@ export function reattachAgentRuns(snapshot: unknown, admissions: Record<string, 
     const src = node as AnySnapshot & { input?: unknown };
     const out: typeof src = { ...src };
 
-    const admission = isAgentRunInput(src.input) ? admissions[src.input.instanceId] : undefined;
+    const ledgered = isAgentRunInput(src.input) ? admissions[src.input.instanceId] : undefined;
+    const admission = isAgentRunInput(src.input) && ledgered?.turnId === src.input.turnId ? ledgered : undefined;
     if (isAgentRunInput(src.input) && admission !== undefined) {
       out.input = { ...src.input, prompt: undefined, attach: admission };
     }

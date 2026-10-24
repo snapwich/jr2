@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { assign, fromPromise, setup } from "xstate";
 import { z } from "zod";
 import { doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
-import { agentActorWith } from "../src/actor.ts";
+import { agentActorWith, type AgentAdmission } from "../src/actor.ts";
 import { agent } from "../src/harness-client.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { chartSchema, ChartRefusal, type ChartText } from "../src/chart.ts";
@@ -315,9 +315,12 @@ test("the admission is ledgered host-side and persisted beside the snapshot (ADR
     void store.load(runId).then((l) => (agents = (l?.snapshot as { agents?: Record<string, unknown> })?.agents));
     return agents?.[iid] !== undefined;
   });
+  // Stamped with the Turn that ledgered it: the key alone does not name a Turn.
+  const turnId = clients.get(instanceId)!.admitted!.turnId;
+  assert.equal(typeof turnId, "string", "the mapper mints a Turn ID");
   assert.deepEqual(
     agents?.[iid],
-    { ...minted, task: "do work", instanceId: iid, agent: "coder", endpoint: "http://harness.invalid" },
+    { ...minted, task: "do work", instanceId: iid, agent: "coder", endpoint: "http://harness.invalid", turnId },
     "the durable handle rides RunBlob.agents",
   );
 });
@@ -390,9 +393,67 @@ test("a second host restores an in-flight run and re-attaches by persisted admis
   assert.equal(reattachedClient!.admitted, undefined, "re-attach must not re-POST the prompt");
   assert.deepEqual(
     reattachedClient!.settled,
-    [{ ...minted, task: "do work", instanceId: iid, agent: "coder", endpoint: "http://harness.invalid" }],
+    [
+      {
+        ...minted,
+        task: "do work",
+        instanceId: iid,
+        agent: "coder",
+        endpoint: "http://harness.invalid",
+        turnId: clientsA.get(instanceId)!.admitted!.turnId,
+      },
+    ],
     "settlement follows the PERSISTED admission",
   );
+});
+
+test("a continued Turn whose state was saved before its admission was ledgered is admitted on restore, not re-attached to the Turn before it (ADR-0016)", async () => {
+  const store = await mkStore();
+  const clientsA = new Map<string, MockFlueClient>();
+  const hostA = new RunHost({ store });
+  hostA.register(continuedDef(clientsA));
+  const { runId, instanceId } = await hostA.start("continued");
+  const iid = continuedIidOf(runId);
+  const flueA = clientsA.get(instanceId)!;
+  await waitFor(() => flueA.admits.length === 1);
+  const turnOne = flueA.admits[0]!.turnId;
+  let blob: Record<string, unknown> = {};
+  const ledgered = () => (blob.agents as Record<string, AgentAdmission> | undefined)?.[iid];
+  await waitFor(() => {
+    void blobOf(store, runId).then((b) => (blob = b));
+    return ledgered() !== undefined;
+  });
+
+  // Turn two is invoked and its state saved; its admit is sent and never answered, so the ledger
+  // still holds Turn one's admission under the key the two Turns share. Then the Orchestrator goes.
+  flueA.holdAdmits = true;
+  hostA.sendToAgent(iid, { type: "request_review", summary: "PR up" });
+  await waitFor(() => flueA.admits.length === 2);
+  const turnTwo = flueA.admits[1]!.turnId;
+  assert.notEqual(turnTwo, turnOne, "each invocation mints its own Turn ID");
+  await waitFor(() => {
+    void blobOf(store, runId).then((b) => (blob = b));
+    return (blob.snapshot as { value?: unknown } | undefined)?.value === "second";
+  });
+  assert.equal(ledgered()?.turnId, turnOne, "the ledger still holds Turn one's admission");
+  await hostA.stop(runId);
+
+  const clientsB = new Map<string, MockFlueClient>();
+  const hostB = new RunHost({ store });
+  hostB.register(continuedDef(clientsB));
+  assert.deepEqual((await hostB.restore()).reattached, [runId]);
+  const flueB = clientsB.get(instanceId)!;
+  await waitFor(() => flueB.admits.length === 1);
+  assert.equal(flueB.admits[0]!.prompt, "turn two", "Turn two is admitted with its own prompt");
+  assert.equal(flueB.admits[0]!.turnId, turnTwo);
+  await waitFor(() => flueB.settled.length === 1);
+  assert.equal(flueB.settled[0]!.submissionId, flueB.minted!.submissionId, "it follows its own Submission");
+  await waitFor(() => {
+    void blobOf(store, runId).then((b) => (blob = b));
+    return ledgered()?.turnId === turnTwo;
+  });
+  assert.deepEqual(flueB.kept, [true], "the conversation was admitted before, so the admission says kept");
+  await hostB.stop(runId);
 });
 
 test("restore marks a run lost when the live world is absent", async () => {

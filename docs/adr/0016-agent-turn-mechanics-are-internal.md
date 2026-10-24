@@ -38,6 +38,17 @@ verbatim — only the offset's location moved). The Harness wire does the heavy 
 ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)): `wait` reconnects from the admitted
 offset, and `abort` is the deliberate terminal cancel ([ADR-0002](0002-duplex-streaming-actor.md)).
 
+The ledger's key is the iid, and an iid is not a Turn. Two Turns that continue one conversation share it, and nothing
+removes a Turn's entry when the Turn ends. So the input mapper also mints a **Turn ID** (`turnId`), one per invocation,
+and it persists with the child's input. The actor stamps it on every admission that it ledgers. The restore re-attaches
+a child only to an admission with the child's own Turn ID. An admission with another Turn ID is an earlier Turn's: the
+child's admission was not ledgered, so the child keeps its prompt and is admitted again. If its admit reached the
+Harness before the crash, the prompt is then sent twice. This is ADR-0007's known durability edge, an at-most-once
+re-POST, and it now applies to a continued Turn as it does to a first one. Before the Turn ID, a crash in that window
+restored the Turn onto the earlier Turn's Submission. The Turn then followed a stream that was not its own, and its
+prompt was never sent. A plain `setup()` Machine that passes finalized input mints no Turn ID, and the key alone
+decides.
+
 ## Retries and nudges are absorbed; the workflow sees one terminal `agent.fault` (deletes the retry bookkeeping)
 
 Two fault classes, deliberately not one knob ([ADR-0035](0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md)

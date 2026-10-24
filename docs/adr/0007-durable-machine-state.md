@@ -19,6 +19,8 @@ The store's own durability — what a persist survives, and how long a finished 
 
 Durable **agent handles** do not ride Machine context at all: the host persists an `iid → admission` ledger beside the
 snapshot in the same save (ADR-0016). Iids are globally unique, so restore needs no context-tree walking to find them.
+An admission names the Turn ID of the Turn that ledgered it, because the continued Turns of one conversation share an
+iid. A restore re-attaches only that Turn (ADR-0016).
 
 **Effects** keep a **ledger** beside the snapshot in the same save (ADR-0067): one row per Effect, by its id. An
 `intent` row is written before the call — saved at the write, so the snapshot that holds the Effect and the row land

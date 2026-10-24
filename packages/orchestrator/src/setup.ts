@@ -1011,6 +1011,9 @@ function wrapAgentInput(orig: unknown, derived: string[], agentName: string, men
       // jr2 mints every id (ADR-0016, ADR-0057): the Turn's input carries no id to honor, so
       // nothing a Machine writes can address a conversation jr2 did not derive.
       instanceId: mintIid(consumer, agentName, args.self),
+      // One per invocation (ADR-0016): two Turns that continue one conversation share the iid, the
+      // admission ledger's key, and a restore must not re-attach one Turn to the other's admission.
+      turnId: randomUUID(),
       endpoint: consumer.endpoint,
       sandbox: consumer.sandbox,
       prompt: consumer.prompt,

@@ -81,6 +81,13 @@ export type AgentAdmission = {
    */
   instanceId?: string;
   /**
+   * The Turn that ledgered this admission — the input's `turnId`, stamped by the ACTOR at ledger
+   * time. The ledger is keyed by `instanceId`, which a continued Turn shares with the Turn before
+   * it, so a restore compares this with the restored input's own: a mismatch is an admission of an
+   * EARLIER Turn, and the restored Turn was not admitted yet (ADR-0016).
+   */
+  turnId?: string;
+  /**
    * The Harness container's restart count when this admission was answered (ADR-0021) — stamped by
    * the ACTOR, for a Turn in a Sandbox Workspace whose watch had spoken. A count above it means
    * the process holding the conversation died; a restore holds the re-attached Turn to the same
@@ -203,6 +210,14 @@ export type AgentRunInput = {
    * is what the Harness route, the minted iid, the markers and the telemetry all name. */
   agentName: string;
   instanceId: string;
+  /**
+   * This Turn's Turn ID — minted by the input mapper, one per invocation, and persisted with the
+   * input (ADR-0016). Two Turns that continue one conversation share `instanceId`, the ledger's
+   * key, and not this: the actor stamps it on every admission it ledgers, and a restore
+   * re-attaches only an admission that this Turn ledgered. Absent (a plain `setup()` machine that
+   * passes finalized input), the key alone decides, as before.
+   */
+  turnId?: string;
   /**
    * The Harness base URL, EXPLICIT (ADR-0016): only for a workspace-less run (the mechanics
    * tier's stub Harness, a dev endpoint — just a URL, ADR-0011). Inside a `workspace()` leave it
@@ -795,7 +810,13 @@ export function agentActorWith(
     const ledger = (admission: AgentAdmission, delivered: readonly string[]) =>
       binding.recordAdmission?.(
         instanceId,
-        { ...admission, instanceId: currentIid, agent: input.agentName, endpoint },
+        {
+          ...admission,
+          instanceId: currentIid,
+          agent: input.agentName,
+          endpoint,
+          ...(input.turnId === undefined ? {} : { turnId: input.turnId }),
+        },
         delivered,
       );
 

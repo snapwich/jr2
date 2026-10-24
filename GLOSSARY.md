@@ -200,6 +200,13 @@ continues, and one Agent has one continued conversation per Machine instance, wh
 continue until jr2 faults that conversation.
 _Avoid_: conversation id, session id, conversation pin, scope
 
+**Turn ID**:
+The identifier of one Turn, which jr2 mints through its input mapper when a Machine state invokes the Agent and no
+author names. Two Turns that
+continue one conversation share an Instance ID and never a Turn ID, so a restore can tell which Turn an admission
+belongs to.
+_Avoid_: invocation id, run id (a run is a Machine instance), submission id (a Turn can ride several Submissions)
+
 **Submission**:
 One admitted prompt on a conversation: the Harness's unit of work. A Turn rides on a Submission, and a conversation,
 which an Instance ID names, spans many Submissions.

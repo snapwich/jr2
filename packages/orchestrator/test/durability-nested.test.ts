@@ -214,3 +214,34 @@ test("reattachAgentRuns: ledgered iids re-attach at any depth; unledgered inputs
   assert.equal(body.freshAgent!.snapshot.input.attach, undefined);
   assert.equal(body.freshAgent!.snapshot.input.prompt, "go");
 });
+
+test("reattachAgentRuns: an admission re-attaches only the Turn that ledgered it — a continued Turn under the same iid keeps its prompt (ADR-0016)", () => {
+  const turn = (turnId?: string) => ({
+    agentName: "coder",
+    instanceId: "run/root/coder",
+    ...(turnId === undefined ? {} : { turnId }),
+    prompt: "turn two",
+    tools: [],
+  });
+  const adm = (turnId?: string): AgentAdmission => ({
+    streamUrl: "http://h/s",
+    offset: "A",
+    submissionId: "sub-A",
+    ...(turnId === undefined ? {} : { turnId }),
+  });
+  const restored = (input: object, ledgered: AgentAdmission) =>
+    (
+      reattachAgentRuns({ children: { coder: { snapshot: { input } } } }, { "run/root/coder": ledgered }) as {
+        children: { coder: { snapshot: { input: { prompt?: string; attach?: AgentAdmission } } } };
+      }
+    ).children.coder.snapshot.input;
+
+  // The ledgered admission is Turn one's; the saved input is Turn two's: not admitted yet.
+  const next = restored(turn("t-2"), adm("t-1"));
+  assert.equal(next.attach, undefined, "never attached to the Turn before it");
+  assert.equal(next.prompt, "turn two", "the restore admits it with its prompt");
+  // The same Turn re-attaches.
+  assert.deepEqual(restored(turn("t-2"), adm("t-2")).attach, adm("t-2"));
+  // A plain `setup()` input mints no Turn ID: the key alone decides, as before.
+  assert.deepEqual(restored(turn(), adm()).attach, adm());
+});
