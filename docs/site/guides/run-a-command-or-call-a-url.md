@@ -156,8 +156,6 @@ where. It also shows where each Effect secret goes:
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 effects: workflow "fix-and-report" — what it runs outside itself (ADR-0067)
