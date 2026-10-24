@@ -106,11 +106,15 @@ export function scheduledFor(ref: AnyActorRef): Array<{ id: string; event: Event
  * Install it before `start()` (the root's creation event is early enough): a timer armed before the
  * wrap is not seen. The same xstate internals as the rest of this module; the canary is the same.
  */
-export function watchTimers(system: AnyActorRef["system"]): (source: unknown, event: unknown) => boolean {
+export function watchTimers(
+  system: AnyActorRef["system"],
+  hooks: TimerHooks = {},
+): (source: unknown, event: unknown) => boolean {
   const scheduler = system.scheduler;
   const { schedule, cancel } = scheduler;
   const armed = new Map<string, { source: AnyActorRef; event: EventObject }>();
   scheduler.schedule = (source, target, event, delay, id = Math.random().toString(36).slice(2)) => {
+    hooks.arming?.(source);
     schedule(source, target, event, delay, id);
     armed.set(keyOf(source, id), { source, event });
   };
@@ -128,6 +132,15 @@ export function watchTimers(system: AnyActorRef["system"]): (source: unknown, ev
     return false;
   };
 }
+
+/** What `watchTimers` tells as the scheduler arms a timer: `arming` is called with the timer's
+ * source just before xstate schedules it, and xstate then arms it on the system's clock in the same
+ * call. xstate schedules in the deferred effects of the event whose actions armed the timer, so the
+ * source still takes that event. The run host keeps each timer's cause this way (`cause.ts`,
+ * ADR-0024). */
+export type TimerHooks = {
+  arming?: (source: AnyActorRef) => void;
+};
 
 /**
  * Start a restored run, then schedule each recorded timer again on it. One function, so the order

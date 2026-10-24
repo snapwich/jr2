@@ -58,6 +58,7 @@ import { agentAddress, continuedIid, allowedPicks, resolveAccepts, runBindingOf 
 import type { NoticeScope } from "./notices.ts";
 import { restOf } from "./rest.ts";
 import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice, type PodMemoryKill } from "./wire.ts";
+import type { AbortCause } from "./wire.ts";
 
 /**
  * One admitted Submission — the durable re-attach handle (ADR-0016). The wire fields are
@@ -310,7 +311,7 @@ export interface AgentRunPort {
   admit(input: AgentRunInput, opts: AgentAdmitOptions): Promise<AgentAdmission>;
   /**
    * Follow an admitted submission until it settles. Resolving means the submission completed;
-   * rejecting means it settled failed/aborted (or the conversation is gone).
+   * rejecting means it settled failed/ended/aborted (or the conversation is gone).
    */
   settle(admission: AgentAdmission, opts?: AgentSettleOptions): Promise<void>;
   /**
@@ -335,9 +336,14 @@ export interface AgentRunPort {
    * the intent is RECORDED, not that the submission has settled; jr2 never observes that outcome,
    * because the actor is already stopped by the time this is called. The actor passes no `signal`
    * for exactly that reason — its own controller is already aborted — but the option is here for
-   * parity with the other two.
+   * parity with the other two. `cause: "pick"` says the Turn's own pick ended it, so the Harness
+   * settles the Submission `ended`; with no cause it settles `aborted`.
    */
-  abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void>;
+  abort(
+    agentName: string,
+    instanceId: string,
+    opts?: { signal?: AbortSignal; cause?: AbortCause; submissionId?: string },
+  ): Promise<void>;
 }
 
 /** What every admission carries beside the input: the Agent definition this Turn runs (ADR-0049),
@@ -1100,6 +1106,8 @@ export function agentActorWith(
     const abandon = () => {
       if (stopped) return;
       stopped = true;
+      // What ended the Turn, read while its registration is still there (ADR-0024).
+      const byPick = binding.turnEndedByPick?.(currentIid) === true;
       for (const dispose of disposers.splice(0)) dispose();
       // Stop consuming the stream. The remote end of the turn is the next paragraph.
       controller.abort();
@@ -1113,7 +1121,12 @@ export function agentActorWith(
       // `agent.fault` left to raise. An orphan that survives a failed abort 404s on every tool
       // call and settles on its own.
       const iid = currentIid;
-      const aborting = client.abort(input.agentName, iid).catch(() => {});
+      // The cause names the Submission it is about: the last one ledgered for this Turn. The ledger
+      // is keyed by the invocation's iid, and stamps the live conversation (a reroll's).
+      const ledgered = binding.admissionOf?.(instanceId);
+      const submissionId = ledgered?.instanceId === iid ? ledgered.submissionId : undefined;
+      const cause = byPick ? { cause: "pick" as const, ...(submissionId ? { submissionId } : {}) } : {};
+      const aborting = client.abort(input.agentName, iid, cause).catch(() => {});
       pendingAborts.set(iid, aborting);
       void aborting.then(() => {
         if (pendingAborts.get(iid) === aborting) pendingAborts.delete(iid);

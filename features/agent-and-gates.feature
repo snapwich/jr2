@@ -27,8 +27,9 @@ Feature: Agents and gates drive a run from outside
       Then the run's status shows state "humanReview"
       And the agent's surface is gone
       # The turn ends with the state that asked for it (ADR-0024). `humanReview` is the park that
-      # keeps the Workspace, so nothing else would ever stop the Agent generating.
-      And the stub Harness reports the Agent's turn settled as "aborted"
+      # keeps the Workspace, so nothing else would ever stop the Agent generating. The Agent's own
+      # pick ended it, and the sweep says so: `ended`, not `aborted`.
+      And the stub Harness reports the Agent's turn settled as "ended"
 
   Rule: the Menu is fixed, and the Allowed picks are only what the Machine will currently accept
     ADR-0029. The Menu is the tools block, fixed for the conversation, so it never breaks the
@@ -115,4 +116,5 @@ Feature: Agents and gates drive a run from outside
       When I cancel the run
       Then the run's status shows "cancelled"
       And the agent's surface is gone
+      # The CANCEL ended the turn, not the Agent's pick: `aborted`.
       And the stub Harness reports the Agent's turn settled as "aborted"

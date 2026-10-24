@@ -32,9 +32,10 @@
 // Sandbox's Service, and a CR at `phase: Ready` is not yet routable).
 //
 // `abort` is the third verb, and ADR-0024 wires it to the END OF THE INVOCATION: a turn ends with
-// the state that asked for it. It sweeps the running Submission and everything queued behind it to
-// the distinct `aborted` Settlement — worth having for observability, though jr2 never reads it
-// (the actor is stopped by then; see actor.ts).
+// the state that asked for it. It sweeps the running Submission and everything queued behind it,
+// and says its cause: `pick` when the Turn's own pick ended it, which settles the running
+// Submission `ended`; no cause otherwise, which settles it `aborted`. The outcome is worth having for
+// observability, though jr2 never reads it (the actor is stopped by then; see actor.ts).
 
 import { agentActorWith } from "./actor.ts";
 import type {
@@ -67,6 +68,8 @@ import {
   STREAM_NEXT_OFFSET_HEADER,
   VIEW_HISTORY,
   VIEW_UPDATES,
+  type AbortCause,
+  type AbortRequest,
   type EchoEvent,
   type ExecRead,
   type ExecRequest,
@@ -138,8 +141,13 @@ export type HarnessClient = {
    * Each fault is one line, said when it starts. A read that works says nothing, and the next fault
    * after it is said again. */
   memoryKills(opts?: { signal?: AbortSignal }): Promise<ListedKill[] | undefined>;
-  /** `POST /agents/:name/:id/abort`. The `{ aborted }` answer is dropped (ADR-0024). */
-  abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void>;
+  /** `POST /agents/:name/:id/abort`, with the body `{ cause }` when a cause is given
+   * (`AbortRequest`). The `{ aborted }` answer is dropped (ADR-0024). */
+  abort(
+    agentName: string,
+    instanceId: string,
+    opts?: { signal?: AbortSignal; cause?: AbortCause; submissionId?: string },
+  ): Promise<void>;
 };
 
 export type HarnessClientOptions = {
@@ -579,9 +587,14 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
     },
 
     async abort(agentName, instanceId, opts) {
+      // No cause, no body: the request an Orchestrator from before `cause` sent, byte for byte.
+      const body: AbortRequest | undefined = opts?.cause
+        ? { cause: opts.cause, ...(opts.submissionId ? { submissionId: opts.submissionId } : {}) }
+        : undefined;
       const res = await fetchImpl(`${conversationUrl(agentName, instanceId)}/abort`, {
         method: "POST",
-        headers: authorization,
+        headers: body ? { ...authorization, "content-type": "application/json" } : authorization,
+        ...(body ? { body: JSON.stringify(body) } : {}),
         signal: opts?.signal,
       });
       if (!res.ok) {
@@ -636,11 +649,19 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
       return await client.memoryKills(opts);
     },
 
-    async abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    async abort(
+      agentName: string,
+      instanceId: string,
+      opts?: { signal?: AbortSignal; cause?: AbortCause; submissionId?: string },
+    ): Promise<void> {
       // The result (`{ aborted }` — whether there was work to end) is dropped: by the time this
       // runs the state has already moved on, and an idle instance is exactly as fine as a
       // stopped one. Settlement is asynchronous and nothing here is listening (ADR-0024).
-      await client.abort(agentName, instanceId, { signal: opts?.signal });
+      await client.abort(agentName, instanceId, {
+        signal: opts?.signal,
+        ...(opts?.cause ? { cause: opts.cause } : {}),
+        ...(opts?.submissionId ? { submissionId: opts.submissionId } : {}),
+      });
     },
   };
 }

@@ -330,6 +330,9 @@ export function agentAddress(instanceId: string): string {
 
 export class RegistrationTable {
   private readonly byAddress = new Map<string, Registration>();
+  /** The same registrations by run, so a run's are read without a scan of every run's: the run host
+   * reads them on every microstep of the run (`cause.ts`). */
+  private readonly ofRun = new Map<string, Set<Registration>>();
 
   /** Register a live surface; returns its disposer (actors call it from their stop cleanup). */
   register(reg: Registration): () => void {
@@ -339,10 +342,16 @@ export class RegistrationTable {
       );
     }
     this.byAddress.set(reg.address, reg);
+    const ofRun = this.ofRun.get(reg.runId) ?? new Set<Registration>();
+    ofRun.add(reg);
+    this.ofRun.set(reg.runId, ofRun);
     return () => {
       // Dispose only our own entry — a re-registration under the same address must not be
       // clobbered by a stale disposer running late (dev reload, restore races).
       if (this.byAddress.get(reg.address) === reg) this.byAddress.delete(reg.address);
+      const runRegs = this.ofRun.get(reg.runId);
+      runRegs?.delete(reg);
+      if (runRegs?.size === 0) this.ofRun.delete(reg.runId);
     };
   }
 
@@ -350,9 +359,10 @@ export class RegistrationTable {
     return this.byAddress.get(address);
   }
 
-  /** All live registrations for one run — the `GET /runs/:id` discovery listing. */
+  /** All live registrations for one run, in the order they registered — the `GET /runs/:id`
+   * discovery listing. */
   byRun(runId: string): Registration[] {
-    return [...this.byAddress.values()].filter((r) => r.runId === runId);
+    return [...(this.ofRun.get(runId) ?? [])];
   }
 
   /**
@@ -530,6 +540,18 @@ export type RunBinding = {
   /** The held answer reached the model by another road — a re-admission's notice — so the poll's
    * copy is spent (ADR-0031). */
   heldAnswerDelivered?: (instanceId: string) => void;
+  /**
+   * Did this Turn's own pick end it (ADR-0024)? Asked by the Agent's Actor as its invocation stops,
+   * before its registration goes, so its sweep can say so (`cause: "pick"`) and the Harness settles
+   * the Submission `ended`. True exactly when the transition that stopped the invocation came from
+   * the Turn's own pick, by the four rules of ADR-0024 (`cause.ts`): the pick in its own send; the
+   * work below the Agent's state while the pick is out; a send of an actor that takes a relay from
+   * the pick (rule 3); and a timer armed while its Machine took such a relay (rule 4) — so a timer
+   * that the pick's route armed gives true. False for every other end — a timer armed before the
+   * pick, an outside event, another party's event, the run's CANCEL, a fault. Absent outside a RunHost: the
+   * sweep then says no cause.
+   */
+  turnEndedByPick?: (instanceId: string) => boolean;
   /**
    * Surface absorbed-retry telemetry on the run feed (ADR-0016): attempts are observable, but
    * as `{ child, attempt }` — state-key-class data, never iids (ADR-0014's line holds on the

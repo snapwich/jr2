@@ -443,6 +443,20 @@ test("a server hiccup (5xx) is reconnected like a network failure", async () => 
   assert.equal(calls.length, 2);
 });
 
+test("abort sends its cause as the body, and no cause as no body — the request an older Orchestrator sent (ADR-0024)", async () => {
+  const { calls, fetch } = scriptedFetch([() => Response.json({ aborted: true })]);
+  await client(fetch).abort("coder", "inst-1", { cause: "pick", submissionId: "sub-7" });
+  await client(fetch).abort("coder", "inst-1");
+  assert.deepEqual(
+    calls.map((c) => ({ path: c.url.pathname, method: c.init?.method, body: c.init?.body })),
+    [
+      { path: "/agents/coder/inst-1/abort", method: "POST", body: '{"cause":"pick","submissionId":"sub-7"}' },
+      { path: "/agents/coder/inst-1/abort", method: "POST", body: undefined },
+    ],
+  );
+  assert.equal((calls[0]!.init?.headers as Record<string, string>)["content-type"], "application/json");
+});
+
 test("a local abort propagates untranslated — abandon is not a fault", async () => {
   const { fetch } = scriptedFetch([
     ({ init }) =>

@@ -178,8 +178,8 @@ Then("the agent's Menu is exactly {string}", async function (this: E2EWorld, too
 
 Then("the agent's surface is gone", async function (this: E2EWorld): Promise<void> {
   // The invoking state exited, so the registration — and with it the whole surface — is gone. This
-  // is what the Harness reads when a turn is over — which it settles `aborted` without asking the
-  // model (ADR-0026).
+  // is what the Harness reads when a turn is over before it starts — which it settles `aborted`
+  // without asking the model (ADR-0026).
   assert.equal((await agentSurface(this)).status, 404);
 });
 

@@ -25,7 +25,7 @@ import type { AgentDefinition } from "../src/agent.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
-import type { Notice, PodMemoryKill } from "../src/wire.ts";
+import type { AbortCause, Notice, PodMemoryKill } from "../src/wire.ts";
 
 /** An AgentRunPort the test drives by hand: capture admissions/attaches, settle or fault them. */
 export class MockFlueClient implements AgentRunPort {
@@ -65,7 +65,7 @@ export class MockFlueClient implements AgentRunPort {
   /** Set when the actor abandons an in-flight settle (stop/CANCEL). */
   abandoned = false;
   /** Every submission the actor ended remotely (ADR-0024), in order. */
-  aborts: Array<{ agentName: string; instanceId: string }> = [];
+  aborts: Array<{ agentName: string; instanceId: string; cause?: AbortCause }> = [];
   /** Hold aborts unresolved, so a test can drive the abort→next-admit ORDERING by hand. */
   holdAborts = false;
   private heldAborts: Array<() => void> = [];
@@ -143,8 +143,13 @@ export class MockFlueClient implements AgentRunPort {
     });
   }
 
-  abort(agentName: string, instanceId: string): Promise<void> {
-    this.aborts.push({ agentName, instanceId });
+  /** The `submissionId` each sweep named, in order (`undefined` when it named none). */
+  abortSubmissions: Array<string | undefined> = [];
+
+  abort(agentName: string, instanceId: string, opts?: { cause?: AbortCause; submissionId?: string }): Promise<void> {
+    this.abortSubmissions.push(opts?.submissionId);
+    // The cause rides only when the actor sends one: a sweep with no cause reads as before.
+    this.aborts.push({ agentName, instanceId, ...(opts?.cause ? { cause: opts.cause } : {}) });
     if (!this.holdAborts) return Promise.resolve();
     return new Promise<void>((resolve) => this.heldAborts.push(resolve));
   }

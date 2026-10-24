@@ -169,7 +169,14 @@ test("one conversation, two turns: the abort is ordered ahead of the next turn's
   assert.equal(receipt.turnComplete, true, "the state that asked for turn one stopped waiting");
 
   await tick();
-  assert.deepEqual(flue.aborts, [{ agentName: "coder", instanceId: iid }], "turn one's submission is ended");
+  // Its own pick ended it, and the sweep says so: the Harness settles it `ended` (ADR-0024).
+  assert.deepEqual(
+    flue.aborts,
+    [{ agentName: "coder", instanceId: iid, cause: "pick" }],
+    "turn one's submission is ended",
+  );
+  // …and the cause names the Submission it is about: the one turn one ran.
+  assert.deepEqual(flue.abortSubmissions, ["sub-1"]);
   assert.equal(flue.admits.length, 1, "turn two waits: an abort that overtook it would settle it unrun");
 
   flue.releaseAborts();
@@ -191,7 +198,8 @@ test("CANCEL ends the run: its Agents' turns end, and it does not come back (ADR
 
   await host.cancel(runId);
 
-  // The human said abandon, so the Agent stops being asked and stops answering (ADR-0024).
+  // The human said abandon, so the Agent stops being asked and stops answering (ADR-0024). Its own
+  // pick did not end the Turn, so the sweep says no cause, and the Harness settles it `aborted`.
   assert.deepEqual(clients.get(instanceId)!.aborts, [{ agentName: "coder", instanceId: iid }]);
   assert.equal(host.status(runId), undefined, "gone from the live registry");
   assert.equal(host.agentSurface(iid), undefined, "and its surface went with it");

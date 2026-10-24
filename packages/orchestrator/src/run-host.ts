@@ -36,6 +36,7 @@ import { placeAnswers, type AnswerSeat } from "./pick.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
 import { answerOf, childErrorOf, replyOf, type Hold } from "./holds.ts";
+import { PickCauses } from "./cause.ts";
 import { restOf, runningBelow } from "./rest.ts";
 import {
   acceptsNow,
@@ -1949,6 +1950,46 @@ export class RunHost {
   }
 
   /**
+   * The registrations whose Agents' picks `event` comes from (ADR-0024, `cause.ts`): the one whose
+   * pick it is, in its own send; and each one whose pick, in its own send or out, it answers — an
+   * event that the Machine invoking that Agent takes from below the Agent's state, the sources of a
+   * reply or a child's error (a nested Agent's pick, a Gate's answer, a child's output or error).
+   */
+  private pickCause(
+    runId: string,
+    holds: Map<string, Hold>,
+    target: AnyActorRef,
+    source: AnyActorRef | undefined,
+    event: AnyEventObject,
+  ): Set<Registration> | undefined {
+    const out = new Set<Registration>();
+    const sending = this.sending;
+    if (sending && sending.reg.runId === runId && sending.reg.invoker === target && event.type === sending.pick) {
+      out.add(sending.reg);
+    }
+    const picking: Registration[] = [];
+    if (sending && sending.reg.runId === runId) picking.push(sending.reg);
+    for (const hold of holds.values()) {
+      if (hold.answer !== undefined) continue;
+      const live = this.table.lookup(agentAddress(hold.instanceId));
+      const reg = this.holdRegs.get(hold) ?? live;
+      if (reg !== undefined && reg === live) picking.push(reg);
+    }
+    for (const reg of picking) {
+      if (reg.invoker !== target || !reg.invokeId) continue;
+      const seat = seatOf(target.getSnapshot() as AnyMachineSnapshot, reg.invokeId);
+      if (!seat) continue;
+      if (
+        replyOf(event, source, target, seat) !== undefined ||
+        childErrorOf(event, source, target, seat) !== undefined
+      ) {
+        out.add(reg);
+      }
+    }
+    return out.size > 0 ? out : undefined;
+  }
+
+  /**
    * Answer every outstanding pick of `run` that can be answered now (ADR-0024). Called by the persist that
    * follows every transition — a microtask after the snapshot, so the mailbox has drained — and
    * before any read of a hold, so no reader sees a hold the Machine already answered.
@@ -2702,6 +2743,9 @@ export class RunHost {
   ): AnyActor {
     const notices = new NoticeLedger(noticeState, this.newId);
     const holds = new Map(holdState.map((hold) => [hold.instanceId, hold]));
+    // What took the Machine out of each Agent's state: that Agent's own pick, or something else
+    // (ADR-0024). Read off the inspection stream below.
+    const causes = new PickCauses();
     let live: LiveRun | undefined;
     let scheduled = false;
     const schedule = () => {
@@ -2842,6 +2886,11 @@ export class RunHost {
         const hold = holds.get(instanceId);
         if (hold) hold.fetched = true;
       },
+      // Read as the invocation stops, while its registration is still there (ADR-0024).
+      turnEndedByPick: (instanceId) => {
+        const reg = this.table.lookup(agentAddress(instanceId));
+        return reg !== undefined && reg.runId === record.runId && causes.endedByPick(reg);
+      },
       // A Chart by name (ADR-0070, D-C): among the Charts of the wrapper that is the run's Workflow.
       chartNamed: (name) => this.namedChart(wrapperName(record.workflow), name)?.text,
     };
@@ -2853,7 +2902,8 @@ export class RunHost {
     const childRefsOf = (snapshot: unknown): Set<AnyActorRef> =>
       new Set(Object.values((snapshot as { children?: Record<string, AnyActorRef> } | undefined)?.children ?? {}));
     const actor = createActor(machine, {
-      clock: this.clock,
+      // Each timer keeps the cause of the relay that armed it (`cause.ts`, ADR-0024).
+      clock: causes.clockOver(this.clock),
       ...options,
       inspect: (ev) => {
         // Bind the run's actor SYSTEM on the ROOT's creation event — the first inspection event,
@@ -2866,7 +2916,10 @@ export class RunHost {
           bindRun((ev.actorRef as AnyActorRef).system, binding);
           // …and watch its scheduler before anything is armed: whether an event the Machine took
           // was a timer it set, or an event an actor sent at once, decides `cutShort` below.
-          firedTimer = watchTimers((ev.actorRef as AnyActorRef).system);
+          // The same watch keeps the cause of each timer: the relay that armed it (ADR-0024).
+          firedTimer = watchTimers((ev.actorRef as AnyActorRef).system, {
+            arming: (source) => causes.armingFrom(source),
+          });
         }
         // A restored hold is the Turn of the FIRST registration of its address in this tree: bind
         // it as soon as one exists, before an event can end that Turn and start another at the same
@@ -2982,8 +3035,27 @@ export class RunHost {
           const reply = sending && replyTo(sending.reg);
           if (sending && reply) sending.chain.push(reply);
           if (sending) errorTo(sending.reg, sending.pick);
+          // The cause of this relay (`cause.ts`, ADR-0024): read before the Machine takes it.
+          const target = ev.actorRef as AnyActorRef;
+          const source = ev.sourceRef as AnyActorRef | undefined;
+          const event = ev.event as AnyEventObject;
+          causes.relayed(source, target, event, () => this.pickCause(record.runId, holds, target, source, event));
         }
-        if (ev.type === "@xstate.snapshot") schedule();
+        // The exit of each Agent's state (`cause.ts`, ADR-0024).
+        if (ev.type === "@xstate.microstep") {
+          const machine = ev.actorRef as AnyActorRef;
+          const agents = this.table.byRun(record.runId).filter((reg) => reg.kind === "agent");
+          causes.microstep(
+            machine,
+            (ev as unknown as { snapshot: AnyMachineSnapshot }).snapshot,
+            ev.event as AnyEventObject,
+            agents,
+          );
+        }
+        if (ev.type === "@xstate.snapshot") {
+          causes.taken(ev.actorRef as AnyActorRef, ev.event as AnyEventObject);
+          schedule();
+        }
       },
     });
     live = this.track(record, actor, def, agents, epochs, notices, binding, holds, effects, startedBy);

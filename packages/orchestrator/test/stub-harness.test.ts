@@ -93,7 +93,7 @@ test("the real wire port admits against the stub, gets its admission, and parks 
   }
 });
 
-test("abort ends every unsettled submission for the instance, and history says so (ADR-0024)", async () => {
+test("abort ends every unsettled submission for the instance, its cause decides the running one's outcome, and history says so (ADR-0024)", async () => {
   const stub = await startStubHarness();
   try {
     const port = createHarnessAgentRunClient({ baseUrl: stub.url });
@@ -112,6 +112,27 @@ test("abort ends every unsettled submission for the instance, and history says s
       { submissionId: first.submissionId, outcome: "aborted" },
       { submissionId: queued.submissionId, outcome: "aborted" },
     ]);
+
+    // A sweep whose cause is the Turn's own pick: the running Submission settles `ended`, as the
+    // real Harness settles it; what is queued behind it never ran, so it settles `aborted`.
+    const ended = await port.admit({ ...input, instanceId: "iid-10" }, { definition: coder });
+    const behind = await port.admit({ ...input, instanceId: "iid-10" }, { definition: coder });
+    await port.abort("coder", "iid-10", { cause: "pick", submissionId: ended.submissionId });
+    const picked = (await (await fetch(`${stub.url}/agents/coder/iid-10?view=history`)).json()) as {
+      settlements: Array<{ submissionId: string; outcome: string }>;
+    };
+    assert.deepEqual(picked.settlements, [
+      { submissionId: ended.submissionId, outcome: "ended" },
+      { submissionId: behind.submissionId, outcome: "aborted" },
+    ]);
+
+    // The cause names another Submission than the running one: it is not about this one, `aborted`.
+    const other = await port.admit({ ...input, instanceId: "iid-11" }, { definition: coder });
+    await port.abort("coder", "iid-11", { cause: "pick", submissionId: "stub-elsewhere" });
+    const elsewhere = (await (await fetch(`${stub.url}/agents/coder/iid-11?view=history`)).json()) as {
+      settlements: Array<{ submissionId: string; outcome: string }>;
+    };
+    assert.deepEqual(elsewhere.settlements, [{ submissionId: other.submissionId, outcome: "aborted" }]);
 
     // Aborting an idle instance is not an error — it is `{ aborted: false }`, nothing to end.
     const again = (await (await fetch(`${stub.url}/agents/coder/iid-9/abort`, { method: "POST" })).json()) as {
