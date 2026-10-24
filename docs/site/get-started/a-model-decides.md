@@ -77,11 +77,10 @@ jr2 up
 
 == Anthropic
 
-The output shows where the model key goes:
-
-<!-- output: not run -->
+The output shows where the model key goes. Then `jr2 up` asks your model for one tool call, from inside the cluster:
 
 ```text
+→ .env: ANTHROPIC_API_KEY
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 seats: workflow "triage" — who may send what, per state (ADR-0015)
@@ -92,23 +91,29 @@ agents: triager (carried by 2 workflow machine(s))
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
+held secrets: minted the Instance's CA into jr2-held-ca
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for api.anthropic.com
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+…
+provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 instance harness: converging (triager declares workspace: "none")
+instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<version>
 …
 converged — `jr2 run <workflow>` when ready
 ```
 
 The warning of Connect a model, `secrets[0] (ANTHROPIC_API_KEY) is named by nothing; goes nowhere`, is gone. `triager`
 names an Anthropic model, so `jr2 up` gives the key to the [Custodian](../reference/glossary.md#custodian) of the pod
-that runs its Turns.
+that runs its Turns. Then it checks the model through a Custodian that holds the key. If the check fails, `jr2 up` stops
+and prints what to examine.
 
 == Local
 
 `jr2 up` asks your model for one tool call, from inside the cluster:
 
-<!-- output: not run -->
-
 ```text
+→ .env: LOCAL_MODEL_URL
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 seats: workflow "triage" — who may send what, per state (ADR-0015)
@@ -117,17 +122,16 @@ seats: workflow "triage" — who may send what, per state (ADR-0015)
 agents: triager (carried by 2 workflow machine(s))
 …
 the Instance Harness: Custodian holds nothing
-…
 provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), direct, as a pod that holds no secret calls it
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
+…
 provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 instance harness: converging (triager declares workspace: "none")
+instance harness: verified — 1 pod(s) running ghcr.io/snapwich/jr2-harness:<version>
 …
 converged — `jr2 run <workflow>` when ready
 ```
-
-`<address>` is the address in your `.env`.
 
 The line of Connect a model, `provider: <url> configured, but no carried Agent names a "local/…" model — skipped`, is
 gone. `triager` names a `local/…` model, so `jr2 up` checks that the endpoint completes a tool call. If the check fails,
@@ -149,18 +153,19 @@ jr2 run triage --input '{"request":"People keep asking what version they are run
 does not say where to show the version, so the Agent normally asks a question. The run goes to `clarify` and waits
 there:
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-run 6f56c5d9-23a0-4ce4-8e16-5b0323f4f924 (triage) — attached
+run 3f7047b1-abcb-4486-be80-f93c12aea165 (triage) — attached
+  → active "triaging"
   → active "triaging"
   → active "clarify"
 ```
 
-Your run id is different. The line `→ active "triaging"` can show more than one time. `jr2 run` prints a line for each
-status that the run sends. Two lines can show the same state. `jr2 run` does not return while the run waits. Keep it
-open.
+The output of each `jr2` command starts with the line `→ .env:`, with the keys that the CLI took from `.env`. From this
+step on, the output on this page shows `…` in place of that line. Your run id is different. The line
+`→ active "triaging"` can show more than one time. `jr2 run` prints a line for each status that the run sends. Two lines
+can show the same state. `jr2 run` does not return while the run waits. Keep it open.
 
 ::: info
 
@@ -192,19 +197,18 @@ The Gate holds the question of the Agent in its `meta`. In the send terminal, ru
 jr2 status <run id>
 ```
 
-`<run id>` is the run id that `jr2 run` printed. You can give its first 4 characters or more, such as `6f56c5d9`.
+`<run id>` is the run id that `jr2 run` printed. You can give its first 4 characters or more, such as `3f7047b1`.
 [`jr2 status`](../reference/cli.md#status) prints the status of the run as one line of JSON. The Gate is in `gates`, at
 the end:
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-{"runId":"6f56c5d9-23a0-4ce4-8e16-5b0323f4f924","workflow":"triage","instanceId":"610f245a-2638-4a1c-b4c9-ed56d8d9d459","status":"active","value":"clarify","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"<question>"}]},"children":[],"waiting":[],"held":[],"assembly":"7f13ac9e0b54","gates":[{"gate":"clarify","path":["clarify"],"accepts":[{"name":"answer","description":"Answer the triager's question. It triages the request again with the answer in hand.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"info":{"type":"string","description":"The answer, in prose."}},"required":["info"],"additionalProperties":false}}],"acceptsNow":["answer"],"meta":{"question":"<question>"}}]}
+{"runId":"3f7047b1-abcb-4486-be80-f93c12aea165","workflow":"triage","instanceId":"6e526cf3-6dd2-4b59-b9ea-e181d94bc0f9","status":"active","value":"clarify","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"Where should the version be shown: a CLI flag or command (e.g. `--version`), a line in the app's help or about screen, or both — and which version string should it print (the app's release version, a git commit hash, or both)?"}]},"children":[],"waiting":[],"held":[],"assembly":"35d4323fff12","gates":[{"gate":"clarify","path":["clarify"],"accepts":[{"name":"answer","description":"Answer the triager's question. It triages the request again with the answer in hand.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"info":{"type":"string","description":"The answer, in prose."}},"required":["info"],"additionalProperties":false}}],"acceptsNow":["answer"],"meta":{"question":"Where should the version be shown: a CLI flag or command (e.g. `--version`), a line in the app's help or about screen, or both — and which version string should it print (the app's release version, a git commit hash, or both)?"}}]}
 ```
 
-`<question>` is the question of the model. Your instance id is different too. The Gate `clarify` takes `answer`, with an
-`info` string.
+The `question` is in the words of the model, so your question is different. Your instance id is different too. The Gate
+`clarify` takes `answer`, with an `info` string.
 
 ## Answer from the CLI
 
@@ -216,28 +220,25 @@ jr2 send <run id> --gate clarify --event answer --input '{"info":"Add a --versio
 
 [`jr2 send`](../reference/cli.md#send) gives the event to the Gate:
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-delivered answer to gate "clarify" on 6f56c5d9-23a0-4ce4-8e16-5b0323f4f924
+delivered answer to gate "clarify" on 3f7047b1-abcb-4486-be80-f93c12aea165
 ```
 
 The run goes back to `triaging`, and the Agent reads your answer. Look at the first terminal. When the Agent picks
 `accept`, the run ends, and `jr2 run` prints the last status:
-
-<!-- output: not run -->
 
 ```text
 …
   → active "triaging"
   → active "triaging"
   → done "accepted"
-{"runId":"6f56c5d9-23a0-4ce4-8e16-5b0323f4f924","workflow":"triage","instanceId":"610f245a-2638-4a1c-b4c9-ed56d8d9d459","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"<question>","info":"Add a --version flag to the CLI. It prints the installed version and exits."}],"summary":"<summary>"},"children":[],"waiting":[],"held":[],"assembly":"7f13ac9e0b54"}
+{"runId":"3f7047b1-abcb-4486-be80-f93c12aea165","workflow":"triage","instanceId":"6e526cf3-6dd2-4b59-b9ea-e181d94bc0f9","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"Where should the version be shown: a CLI flag or command (e.g. `--version`), a line in the app's help or about screen, or both — and which version string should it print (the app's release version, a git commit hash, or both)?","info":"Add a --version flag to the CLI. It prints the installed version and exits."}],"summary":"Add a `--version` flag to the CLI that prints the installed release version string and exits with status 0 without running any other command."},"children":[],"waiting":[],"held":[],"assembly":"35d4323fff12"}
 ```
 
-`summary` is the request as the model wrote it again, in one sentence. If the Agent asks a second question, the run goes
-to `clarify` again. Read the question, and answer it in the same way.
+`summary` is the request as the model wrote it again, in one sentence. Your summary is different. If the Agent asks a
+second question, the run goes to `clarify` again. Read the question, and answer it in the same way.
 
 ## Start the second run
 
@@ -249,16 +250,16 @@ jr2 run triage --input '{"request":"The greeting looks wrong sometimes."}'
 
 This request does not say what is wrong. The run goes to `clarify` and waits, as the first run did:
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-run <run id> (triage) — attached
+run 84079cb2-3cdd-4b9a-ae39-51ab873c5f3c (triage) — attached
   → active "triaging"
   → active "clarify"
 ```
 
-`<run id>` is the id of the second run. If the Agent picks `accept` or `reject`, start the run again.
+`84079cb2-3cdd-4b9a-ae39-51ab873c5f3c` is the id of the second run. Your run id is different. If the Agent picks
+`accept` or `reject`, start the run again.
 
 ## Answer from the Console
 
@@ -286,8 +287,9 @@ Type this text in the `info` field:
 Spaces around the name show in the greeting. Trim the name.
 ```
 
-Click `send`. The card disappears, and the run goes back to `triaging`. When the Agent picks `accept`, the run ends. The
-`jr2 run` in the first terminal prints the last status.
+Click `send`. The card disappears, and the run goes back to `triaging`. If the Agent asks one more question, a new card
+shows it. Answer it in your own words, in the same way. When the Agent picks `accept`, the run ends. The `jr2 run` in
+the first terminal prints the last status.
 
 ## What happened
 
