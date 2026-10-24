@@ -78,30 +78,29 @@ jr2 up
 `jr2 up` checks the folder with the TypeScript compiler before it changes the cluster. Then it converges the cluster of
 your current kubectl context. The first time, it asks before it makes the namespace. Type `y`:
 
-<!-- output: not run -->
-
 ```text
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 agents: (none) (carried by 1 workflow machine(s))
 assembly: staging
-assembly: <hash> (kit v<version>; 1 workflow(s): ping)
+assembly: ba71fa27f37f (kit v<version>; 1 workflow(s): ping)
 kubernetes: v1.36.1 (floor 1.35, ADR-0037)
 first contact: deploy instance "my-instance" to context kind-jr2 (create namespace "my-instance")? [y/N] y
-…
+platforms: linux/amd64 (from 1 schedulable node(s))
 images: installed kit — the published v<version> Harness, operator and Orchestrator, pulled from ghcr.io/snapwich
 …
 orchestrator: waiting for rollout
 orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
-…
-assembly: publishing <hash> (no current Assembly)
-assembly: <hash> is current — workflows: ping
+instance effector: none (no Effect is placed there)
+assembly: publishing ba71fa27f37f (no current Assembly)
+assembly: ba71fa27f37f is current — workflows: ping
+swept nothing — every labeled image is named by a live root
 converged — `jr2 run <workflow>` when ready
 ```
 
-`<version>` is the Kit version, such as `0.4.1`. `<hash>` is the hash of the
-[Assembly](../reference/glossary.md#assembly) of your Instance: your Workflows and your config. It is different each
-time that they change.
+`<version>` is the Kit version, such as `0.4.1`. `ba71fa27f37f` is the hash of the
+[Assembly](../reference/glossary.md#assembly) of your Instance: your Workflows and your config. Your hash can be
+different. It changes each time that your Workflows or your config change.
 
 The namespace is `my-instance`, because `jr2.config.ts` sets no `name`. The first `jr2 up` takes longer than the next
 ones, because the cluster pulls the images of the Orchestrator and of the operator. If `jr2 up` stops with `refusing:`,
@@ -118,13 +117,11 @@ jr2 run ping --input '{"message":"hi"}'
 `jr2 run` starts a run of `ping` and stays attached to it. When the run ends, it prints the last status of the run as
 JSON:
 
-<!-- output: not run -->
-
 ```text
 → context kind-jr2 / namespace my-instance
-run 890aa503-dd65-49ab-a359-28112f390fff (ping) — attached
+run a256ff8a-f99f-42f5-975c-4f93a5008c56 (ping) — attached
   → done "done"
-{"runId":"890aa503-dd65-49ab-a359-28112f390fff","workflow":"ping","instanceId":"d7f74c70-776f-4f39-a2e0-6338e97b0970","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"d2b8e41f6c03"}
+{"runId":"a256ff8a-f99f-42f5-975c-4f93a5008c56","workflow":"ping","instanceId":"0e82cc83-7c15-426f-86ff-e7354873a429","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"ba71fa27f37f"}
 ```
 
 Your run id and your [Instance ID](../reference/glossary.md#instance-id) are not the same as the ones here. The run is
@@ -143,8 +140,6 @@ kubectl -n my-instance port-forward svc/jr2-orchestrator 4000:4000
 ```
 
 kubectl stays open while it forwards the port:
-
-<!-- output: not run -->
 
 ```text
 Forwarding from 127.0.0.1:4000 -> 4000
