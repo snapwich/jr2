@@ -280,7 +280,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // Each Chart file is admitted HERE by the door's own check (ADR-0070), so a Chart file the
   // Orchestrator would refuse is refused at the same command as `tsc`'s errors, before any
   // cluster work, with the lines the publish would answer.
-  const charts = await loadCharts(root, (line) => activity(io, `warning: ${line}`));
+  const charts = await loadCharts(root, workflows, (line) => activity(io, `warning: ${line}`));
   const chartRefusals = chartFileRefusals(charts, workflows);
   if (chartRefusals.length) {
     for (const line of chartRefusals) activity(io, `refusing: ${line}`);

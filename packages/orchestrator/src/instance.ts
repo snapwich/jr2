@@ -48,6 +48,7 @@ import {
   type ChartFile,
 } from "./charts.ts";
 import type { ImageRefs } from "./images.ts";
+import { partsOf } from "./parts.ts";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
@@ -369,7 +370,8 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // by name. No current Assembly → no Workflows, and the process still serves (ADR-0048).
   if (current) {
     const booted = current;
-    swap(await importAssembly(booted.hash, booted.root), await readChartFiles(booted.root), booted);
+    const loaded = await importAssembly(booted.hash, booted.root);
+    swap(loaded, await readChartFiles(booted.root, undefined, contextDirsOf(loaded)), booted);
   } else {
     charts.bind({ workflows: [], files: [] });
   }
@@ -407,7 +409,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       const workflows = await importWorkflows(root);
       // The Assembly's Chart files (ADR-0070): the door admits each against its wrapper, and one
       // that fails refuses the publish naming the file.
-      const files = await readChartFiles(root);
+      const files = await readChartFiles(root, undefined, contextDirsOf(workflows));
       // The runtime Charts on the volume: a dispatch of a named Chart may resolve to one (ADR-0071).
       const runtimeCharts = (await readRuntimeCharts(opts.dir)).map((c) => ({ name: chartName(c.wrapper, c.name) }));
       const refusals = await assemblyRefusals({
@@ -635,10 +637,22 @@ export async function loadWorkflows(dir: string): Promise<Array<{ name: string; 
  * `workflows/<wrapper>/<name>.chart.json`, one level below the flat `workflows/*.ts`. The sibling
  * of {@link loadWorkflows}, for `jr2 up`'s host-side walk, which admits each file against its
  * wrapper with `chartFileRefusals`, the check the door's `assemblyRefusals({ charts })` runs. Any other file in a
- * wrapper's directory is ignored and named to `warn`.
+ * wrapper's directory is ignored and named to `warn`, except in a docker context that one of
+ * `workflows` names (ADR-0037): jr2 reads that folder too.
  */
-export function loadCharts(root: string, warn?: (line: string) => void): Promise<ChartFile[]> {
-  return readChartFiles(root, warn);
+export function loadCharts(
+  root: string,
+  workflows: LoadedWorkflow[],
+  warn?: (line: string) => void,
+): Promise<ChartFile[]> {
+  return readChartFiles(root, warn, contextDirsOf(workflows));
+}
+
+/** Every docker context folder the registered Machines name (ADR-0037, ADR-0049): a Sandbox
+ * Image, a User Container image or an Effector image that jr2 builds. The Chart discovery does not
+ * name a file in one (ADR-0070). */
+function contextDirsOf(workflows: LoadedWorkflow[]): string[] {
+  return partsOf(workflows.map((w) => w.machine)).images.map((i) => i.dir);
 }
 
 /**

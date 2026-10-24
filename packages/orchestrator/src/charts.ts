@@ -12,8 +12,8 @@
 // and keeps the unrunnable ones itself, with the reason, so that a Chart whose wrapper the Assembly
 // dropped still lists and is never deleted (ADR-0070: "it is someone else's").
 
-import { mkdir, readdir, readFile, rm, rmdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, realpath, rm, rmdir } from "node:fs/promises";
+import { join, sep } from "node:path";
 import type { AnyStateMachine } from "xstate";
 import { DURABLE_TMP, fsyncPath, writeDurably } from "./assembly.ts";
 import { chartHash, ChartRefusal, isChartSchema, narrowedChartSchema, type AdmittedChart } from "./chart.ts";
@@ -85,10 +85,16 @@ export function chartNameFault(name: string): string | undefined {
  * `warn` (default: `console.warn`), because a directory named after its wrapper holds nothing
  * else jr2 reads. A Chart file whose stem is not a Chart name is still returned: the door refuses
  * it by name.
+ *
+ * `contexts` are the docker contexts the registered Machines name (`partsOf(...).images`, each
+ * `dir`): jr2 reads those too, so a file that is in one, is one, or holds one is not named. A
+ * module's own context sits beside it (ADR-0037, ADR-0049), so `import.meta.resolve("./python")`
+ * in `workflows/pytest.ts` is `workflows/python/`, one level below the flat `workflows/*.ts`.
  */
 export async function discoverChartFiles(
   root: string,
   warn: (line: string) => void = (line) => console.warn(line),
+  contexts: Iterable<string> = [],
 ): Promise<Array<{ wrapper: string; name: string; file: string }>> {
   const workflows = join(root, "workflows");
   let entries: import("node:fs").Dirent[];
@@ -98,6 +104,7 @@ export async function discoverChartFiles(
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   }
+  const read = await contextReader(workflows, contexts);
   const found: Array<{ wrapper: string; name: string; file: string }> = [];
   // A Chart file at the flat level is the easy mistake: it is in the Assembly, and no Chart is
   // registered from it. Named, as a stray file in a wrapper's directory is.
@@ -116,7 +123,7 @@ export async function discoverChartFiles(
     for (const f of (await readdir(dir)).sort()) {
       if (f.endsWith(CHART_FILE) && f.length > CHART_FILE.length) {
         found.push({ wrapper, name: f.slice(0, -CHART_FILE.length), file: join(dir, f) });
-      } else {
+      } else if (!read(wrapper, f)) {
         warn(
           `workflows/${wrapper}/${f}: ignored — a wrapper's directory holds Chart files ` +
             `(<name>${CHART_FILE}) and nothing else jr2 reads (ADR-0070)`,
@@ -125,6 +132,23 @@ export async function discoverChartFiles(
     }
   }
   return found;
+}
+
+/** Whether `workflows/<wrapper>/<file>` is in a docker context, is one, or holds one. Both sides
+ * are compared as real paths: a module's `import.meta.resolve` is a real path, and the root a
+ * caller passes need not be (a symlinked temp directory, an Assembly behind a link). */
+async function contextReader(
+  workflows: string,
+  contexts: Iterable<string>,
+): Promise<(wrapper: string, file: string) => boolean> {
+  const real = async (path: string): Promise<string> => realpath(path).catch(() => path);
+  const dirs = await Promise.all([...contexts].map(real));
+  if (dirs.length === 0) return () => false;
+  const base = await real(workflows);
+  return (wrapper, file) => {
+    const path = join(base, wrapper, file);
+    return dirs.some((d) => d === path || d.startsWith(path + sep) || path.startsWith(d + sep));
+  };
 }
 
 /** One Chart file, read: its text, or why it could not be read as JSON. */
@@ -139,10 +163,14 @@ export type ChartFile = {
 };
 
 /** Discover and read every Chart file of an Assembly root. A file that is not JSON is returned with
- * its `error`, for the door to refuse by name. */
-export async function readChartFiles(root: string, warn?: (line: string) => void): Promise<ChartFile[]> {
+ * its `error`, for the door to refuse by name. `contexts` is as {@link discoverChartFiles} has it. */
+export async function readChartFiles(
+  root: string,
+  warn?: (line: string) => void,
+  contexts?: Iterable<string>,
+): Promise<ChartFile[]> {
   const out: ChartFile[] = [];
-  for (const { wrapper, name, file } of await discoverChartFiles(root, warn)) {
+  for (const { wrapper, name, file } of await discoverChartFiles(root, warn, contexts)) {
     const path = `workflows/${wrapper}/${name}${CHART_FILE}`;
     const raw = await readFile(file, "utf8");
     try {

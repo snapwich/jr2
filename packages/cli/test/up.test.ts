@@ -1265,6 +1265,9 @@ test("a `file:` context the Machine carries is built and keyed by its content DI
   assert.match(sandbox[digest]!, new RegExp(`^jr2-sandbox-myinst-toolchain:${digest}-`));
   assert.ok(w.built.includes(`build ${sandbox[digest]}`), `the carried context was built (${w.built.join(", ")})`);
   assert.ok(w.built.includes(`inspect-user ${sandbox[digest]}`), "…and its seat recorded, like any built image");
+  // The context sits in workflows/toolchain/, where the Chart discovery also looks (ADR-0070): a
+  // folder jr2 builds is a folder jr2 reads, so its Dockerfile is not named as ignored.
+  assert.doesNotMatch(w.err.join("\n"), /workflows\/toolchain\/Dockerfile: ignored/);
 
   // Editing the Dockerfile re-addresses it — a new key AND a new tag, so nothing stale is reachable.
   await writeFile(join(root, "workflows", "toolchain", "Dockerfile"), "FROM golang:1.23\nRUN echo bye\n");

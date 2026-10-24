@@ -94,6 +94,34 @@ test("discovery: Chart files one level below workflows/, and any other file ther
   assert.deepEqual(await discoverChartFiles(await tree({})), [], "an Assembly with no workflows/ has none");
 });
 
+test("discovery: a docker context a Machine names beside its module is read by jr2, so it is not named in a warning", async () => {
+  // ADR-0037/0049: `import.meta.resolve("./python")` in workflows/pytest.ts is workflows/python/,
+  // which ADR-0070's discovery also reads as a wrapper's directory.
+  const root = await tree({
+    "workflows/pytest.ts": "",
+    "workflows/python/Dockerfile": "FROM node:24-slim",
+    "workflows/python/requirements.txt": "",
+    "workflows/images/shell/Dockerfile": "FROM node:24-slim",
+    "workflows/images/notes.md": "",
+    "workflows/charted/notes.md": "",
+  });
+  const contexts = [join(root, "workflows", "python"), join(root, "workflows", "images", "shell")];
+  const warnings: string[] = [];
+  assert.deepEqual(await discoverChartFiles(root, (line) => warnings.push(line), contexts), []);
+  // A folder that holds a context is read in part; its other files are still not a wrapper's.
+  assert.deepEqual(warnings.sort(), [
+    "workflows/charted/notes.md: ignored — a wrapper's directory holds Chart files (<name>.chart.json) and nothing else jr2 reads (ADR-0070)",
+    "workflows/images/notes.md: ignored — a wrapper's directory holds Chart files (<name>.chart.json) and nothing else jr2 reads (ADR-0070)",
+  ]);
+  // With no contexts the same tree names the context's files: the case the walk of a reader hit.
+  const named: string[] = [];
+  await discoverChartFiles(root, (line) => named.push(line));
+  assert.ok(
+    named.some((w) => w.startsWith("workflows/python/Dockerfile: ignored")),
+    named.join("\n"),
+  );
+});
+
 test("a Chart file that is not JSON is read with its error, for the door to name", async () => {
   const root = await tree({ "workflows/charted/bad.chart.json": "{ nope" });
   const [file] = await readChartFiles(root, () => {});

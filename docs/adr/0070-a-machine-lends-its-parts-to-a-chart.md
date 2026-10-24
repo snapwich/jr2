@@ -152,17 +152,21 @@ their own maintainers, and the escapes shipped in systems that used them were in
   level below the flat `workflows/*.ts` of
   [ADR-0050](0050-what-code-names-config-declares-what-the-cli-names-discovery-finds.md), in a directory named after its
   wrapper and holding nothing else jr2 reads (a `_` or `.` directory is a helper's, as ADR-0050 has it, and a
-  `.chart.json` at the flat level is a warning, never a Chart); published by `jr2 up`, which admits every Chart file on
-  the host before any cluster work, reproducible from the Instance repo, admitted by the same static door at the
-  publish. A **runtime Chart** is `PUT /workflows/<wrapper>/charts/<name>` and `DELETE` on the same path, the body the
-  Chart alone, behind the Instance token, not the publish token, because a Chart is data and cannot reach the process,
-  which is the whole point of this decision; it lives on the Orchestrator's volume at
-  `.jr2/charts/<wrapper>/<name>.chart.json` beside the Assemblies, written durably, and survives restarts. A live run
-  holds its Chart through the text in its own snapshot, so a `DELETE` while a run is live answers at once and the run
-  goes on. It lists in `jr2 runs` and the Console with its origin shown: `jr2 runs` keeps its result, the live runs, and
-  prints the listing beside it as activity, with `--workflows` to make the listing the result
-  ([ADR-0009](0009-cli-and-instance-interface.md)); there is no verb for `PUT` or `DELETE`, an MCP or `curl` is the
-  client. `GET /workflows` lists each wrapper with its Charts inside its entry, not beside it, and
+  `.chart.json` at the flat level is a warning, never a Chart). Another file in such a directory is a warning too,
+  except in a docker context that a registered Machine names: a module ships its context beside it
+  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md),
+  [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), so `import.meta.resolve("./python")` in
+  `workflows/pytest.ts` is `workflows/python/`, a folder jr2 reads, and the warning would be false. A Chart file is
+  published by `jr2 up`, which admits every Chart file on the host before any cluster work, reproducible from the
+  Instance repo, admitted by the same static door at the publish. A **runtime Chart** is
+  `PUT /workflows/<wrapper>/charts/<name>` and `DELETE` on the same path, the body the Chart alone, behind the Instance
+  token, not the publish token, because a Chart is data and cannot reach the process, which is the whole point of this
+  decision; it lives on the Orchestrator's volume at `.jr2/charts/<wrapper>/<name>.chart.json` beside the Assemblies,
+  written durably, and survives restarts. A live run holds its Chart through the text in its own snapshot, so a `DELETE`
+  while a run is live answers at once and the run goes on. It lists in `jr2 runs` and the Console with its origin shown:
+  `jr2 runs` keeps its result, the live runs, and prints the listing beside it as activity, with `--workflows` to make
+  the listing the result ([ADR-0009](0009-cli-and-instance-interface.md)); there is no verb for `PUT` or `DELETE`, an
+  MCP or `curl` is the client. `GET /workflows` lists each wrapper with its Charts inside its entry, not beside it, and
   `GET /workflows/<wrapper>` carries each Open body's declaration. So a Workflow is one of three things: a Machine from
   the Assembly, a Chart file from the Assembly, or a runtime Chart, and the last two are children of the first. **There
   is no collision rule between a Machine and a Chart**: a Machine's name is a filename stem and holds no slash, a
