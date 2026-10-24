@@ -47,17 +47,16 @@ leaves the state. Its input goes into the run's snapshot. A typo in `src` is a c
 Effect by its slot key (see [Composition](composition.md)).
 
 [`jr2 up`](../reference/cli.md#up) reads each Effect slot without running it, and prints what it found. For each
-Workflow, it lists each Effect with its kind, its argv or its method and host, its timeout, and where it runs. The list
-starts with this line:
-
-<!-- output: not run -->
+Workflow, it lists each Effect with its kind, its argv or its method and host, its timeout, and where it runs. For the
+example above, `jr2 up` prints these lines:
 
 ```text
-effects: workflow "<name>" — what it runs outside itself (ADR-0067)
-…
+effects: workflow "test-and-push" — what it runs outside itself (ADR-0067)
+  tests: command ["node","--test"] — 300s, in the Harness
+  publish: push — 300s, in the Sandbox Effector
 ```
 
-`<name>` is the name of the Workflow.
+The first line gives the name of the Workflow. Each next line gives the slot of one Effect.
 
 ## The four kinds
 
