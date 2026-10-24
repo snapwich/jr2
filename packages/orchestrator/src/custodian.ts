@@ -223,6 +223,15 @@ function unreachable(target: string): Json {
   return {
     mappers: [
       {
+        // Ten flags, one text (ADR-0059). UF, UH and DF say the request was not sent. UC, DPE, UPE, UR
+        // and LR can come after the target got it. Envoy does not set URX or UMSDR here (no retry
+        // policy, no max_stream_duration); they keep this list equal to ORCHESTRATOR_UNREACHABLE's.
+        // The text says the target did not get the request. On the tunnel that is true: the CONNECT
+        // 200 comes only after the TCP connection to the target is up. On an intercepted target it
+        // can be false after UC, DPE, UPE, UR or LR, so a POST sent again can write twice. UPE, UR
+        // and LR are here so that Envoy's own 503, whose body names no target, never reads as the
+        // target's answer. The Orchestrator route's flags go to the Harness, which tells "never
+        // reached" from "not known" (ADR-0002); no caller of this mapper reads them.
         filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR", "UPE", "UR", "LR"] } },
         status_code: 502,
         body_format_override: {
