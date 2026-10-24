@@ -72,20 +72,21 @@ jr2 up
 `jr2 up` starts a pod in the cluster, on the nodes where the Agents that name the model run. The pod asks the endpoint
 for one tool call for each model, as a Turn asks. You see these lines when the Agent is a `workspace: "none"` Agent:
 
-<!-- output: not run -->
-
 ```text
 …
 provider: checking local/qwen3.6-35b-a3b on the Instance Harness, with no held key (harness.provider has no apiKey), direct, as a pod that holds no secret calls it
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: the check pod is not running yet — custodian: PodInitializing
+provider: the check pod is not running yet — check: PodInitializing
 provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 ```
 
+While the check pod starts, `jr2 up` prints a `the check pod is not running yet` line for each change of its state. Your
+output can have fewer of these lines, or more.
+
 `jr2 up` checks each model of the provider that an Agent names. When no Agent names a model of the provider, it checks
 nothing and prints this line:
-
-<!-- output: not run -->
 
 ```text
 provider: http://<address>:8000/v1 configured, but no carried Agent names a "local/…" model — skipped
@@ -171,17 +172,20 @@ trust it. An `https://` endpoint whose certificate comes from a private CA needs
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
+the Instance Harness: Custodian holds JR2_PROVIDER_API_KEY (provider)
 held secret JR2_PROVIDER_API_KEY → <address>:8000 (literal)
-…
+held secrets: minted the Instance's CA into jr2-held-ca
 provider: checking local/qwen3.6-35b-a3b on the Instance Harness, through a Custodian that holds JR2_PROVIDER_API_KEY for <address>:8000
 provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: the check pod is not running yet — custodian: PodInitializing
 provider: local/qwen3.6-35b-a3b reachable, and it completed a tool call
 …
 ```
+
+The Custodian of the Instance Harness holds the key. `jr2 up` prints the `held secrets:` line when the namespace has no
+CA for the Custodians yet, as on the first `jr2 up` with a Held secret.
 
 To change the key, edit `.env`. Then start the server again. Then run `jr2 up` again. When a Menu-only Agent names the
 model, `jr2 up` restarts the [Instance Harness](../reference/glossary.md#instance-harness) with the new key. A live
