@@ -32,15 +32,14 @@ The label `jr2.dev/run` on each Sandbox holds the full id of its run:
 kubectl -n <namespace> get sandboxes -l jr2.dev/run=<run id>
 ```
 
-<!-- output: not run -->
-
 ```text
-NAME        PHASE   ENDPOINT                                AGE
-<sandbox>   Ready   http://<sandbox>.<namespace>.svc:8080   3m
+NAME                     PHASE   ENDPOINT                                             AGE
+ws-a1322024-x-2-h8pgwk   Ready   http://ws-a1322024-x-2-h8pgwk.my-instance.svc:8080   16s
 ```
 
-- `<sandbox>` is the name of the Sandbox. It starts with `ws-`, then the first 8 characters of the run id. The pod has
-  the same name.
+- `NAME` is the name of the Sandbox, here `ws-a1322024-x-2-h8pgwk`. Your name is different. It starts with `ws-`, then
+  the first 8 characters of the run id. The pod has the same name. In the commands below, write it in place of
+  `<sandbox>`.
 - A run that has two Workspaces at the same time has two rows.
 - `PHASE` is `Pending` until the pod is ready and its node has a fresh cache of each Repo. Then it is `Ready`. It is
   `Lost` when the pod is gone, and a `Lost` Sandbox does not get a new pod. A delete removes the Sandbox at once, so you
@@ -76,16 +75,19 @@ Replace `<Repo Slot>` with the name of a slot, such as `target`:
 git -C /work/<Repo Slot>/default worktree list
 ```
 
-<!-- output: not run -->
+For the slot `target` of a run of `task`, the output is:
 
 ```text
-/work/<Repo Slot>/default     <commit> [<default branch>]
-/work/<Repo Slot>/<worktree>  <commit> [<branch>]
+/work/target/default                                        1e40403 [main]
+/work/target/jr2-task-0cbdb607-48dc-4eab-9469-f8e41f2b0025  1e40403 [jr2/task-0cbdb607-48dc-4eab-9469-f8e41f2b0025]
 ```
 
-- `<branch>` is the name of the branch. `<worktree>` is the folder of its Worktree: the name of the branch, with each
-  `/` changed to `-`. For example, the branch `jr2/task-<instance id>` has the Worktree
-  `/work/target/jr2-task-<instance id>`.
+The first line is the clone, on the default branch of the Repo. The second line is the Worktree of the branch. Your
+commits and your instance id are different.
+
+- In the commands below, `<branch>` is the name of the branch, and `<worktree>` is the folder of its Worktree. The
+  folder is the name of the branch, with each `/` changed to `-`. For example, the branch `jr2/task-<instance id>` has
+  the Worktree `/work/target/jr2-task-<instance id>`.
 - A Workspace that has a commit to review has one more Worktree, `/work/<Repo Slot>/<worktree>-review`. It holds that
   commit, with no branch.
 - The attach makes the folders and the Worktrees after the Sandbox is `Ready`. Until then, `/work` has no folder for the
