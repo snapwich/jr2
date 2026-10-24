@@ -23,8 +23,6 @@ Run [`jr2 up`](../reference/cli.md#up). Its `effects:` lines tell where the Effe
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 effects: workflow "intake" — what it runs outside itself (ADR-0067)
@@ -63,36 +61,32 @@ back to `listening`.
 jr2 runs
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
 workflows:
   intake (machine)
-…
+  ping (machine)
   triage (machine)
-[{"runId":"3a38b31e-cc6b-488f-a133-b46bd64eb953","dispatchedBy":{"run":"9c0e7f12-5d41-4b8e-a6f3-2e7d9b1c4a05","slot":"triage","effect":"e4b1c8d2-7f30-4a96-b5e2-1d8c9a0f6b37","depth":1},"workflow":"triage","instanceId":"b7d2c6e0-41f9-4a3b-8e15-6c9d0a2f7e48","status":"active","value":"triaging","context":{"request":"The greeting looks wrong sometimes.","exchange":[]},"children":[],"waiting":[],"held":[],"assembly":"6e2d91b4c07a"},{"runId":"9c0e7f12-5d41-4b8e-a6f3-2e7d9b1c4a05","workflow":"intake","instanceId":"1f4a8c3e-9b27-4d60-a5e1-7c0b3d9f2e86","status":"active","value":"listening","context":{"started":["3a38b31e-cc6b-488f-a133-b46bd64eb953"],"request":"The greeting looks wrong sometimes.","last":{"outcome":"started","run":"3a38b31e-cc6b-488f-a133-b46bd64eb953"}},"children":[],"waiting":[],"held":[],"assembly":"6e2d91b4c07a","dispatched":[{"slot":"triage","run":"3a38b31e-cc6b-488f-a133-b46bd64eb953","at":"2026-10-22T19:55:34.225Z"}]}]
+[{"runId":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","workflow":"intake","instanceId":"e51d124b-88e5-461c-b464-6a3660ee13dc","status":"active","value":"listening","context":{"started":["45b52048-0848-4015-ad56-6ff8ae33d817"],"request":"The greeting looks wrong sometimes.","last":{"outcome":"started","run":"45b52048-0848-4015-ad56-6ff8ae33d817"}},"children":[],"waiting":[],"held":[],"assembly":"3229103a2952","dispatched":[{"slot":"triage","run":"45b52048-0848-4015-ad56-6ff8ae33d817","at":"2026-10-24T06:20:43.465Z"}]},{"runId":"45b52048-0848-4015-ad56-6ff8ae33d817","dispatchedBy":{"run":"91ca85e1-5092-4e10-9ec6-d14e37811ca1","slot":"triage","effect":"08423831-751f-41e5-9d93-1fa063faaf61","depth":1},"workflow":"triage","instanceId":"a2ad6e54-6a52-45c2-81f4-89f408a27d1f","status":"active","value":"triaging","context":{"request":"The greeting looks wrong sometimes.","exchange":[]},"children":[],"waiting":[],"held":[],"assembly":"3229103a2952"}]
 ```
 
-The lines on stderr list the Workflows of the Instance. In `dispatchedBy`, `run` is the run that started it, `slot` is
-the slot of the Effect, and `effect` is the id of that Effect in the record of the run that started it. jr2 uses it as
-the key of the start, so that a start that jr2 sends again starts no second run. `depth` is the number of runs before it
-in the chain. `dispatched` of `intake` lists each run that it started. Your ids and your hash are different.
+The first line, `…`, is the line `→ .env:`, with the keys that the CLI took from `.env`. The lines on stderr list the
+Workflows of the Instance. In `dispatchedBy`, `run` is the run that started it, `slot` is the slot of the Effect, and
+`effect` is the id of that Effect in the record of the run that started it. jr2 uses it as the key of the start, so that
+a start that jr2 sends again starts no second run. `depth` is the number of runs before it in the chain. `dispatched` of
+`intake` lists each run that it started. Your ids, your time and your hash are different.
 
 [`jr2 status`](../reference/cli.md#status) prints the link in both directions, on stderr. For the run of `intake`:
 
-<!-- output: not run -->
-
 ```text
-dispatched: 3a38b31e-cc6b-488f-a133-b46bd64eb953 (triage)
+dispatched: 45b52048-0848-4015-ad56-6ff8ae33d817 (triage)
 ```
 
 For the run of `triage`:
 
-<!-- output: not run -->
-
 ```text
-dispatched by: 9c0e7f12-5d41-4b8e-a6f3-2e7d9b1c4a05 (triage), depth 1
+dispatched by: 91ca85e1-5092-4e10-9ec6-d14e37811ca1 (triage), depth 1
 ```
 
 The two runs are independent. A `CANCEL` of `intake` does not cancel the run of `triage`. Answer the `clarify` Gate of
