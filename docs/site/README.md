@@ -621,15 +621,8 @@ The user must decide these items. Until then, obey the rule for each item.
 
 - **The fork and its tags.** No test shows that a fork with "Copy the main branch only" cleared has the release tags.
   The manual check confirms it.
-- **`git push` in `kubectl exec`.** No test shows that `git push` asks for a user name and a password inside
-  `kubectl exec -it`. The manual check confirms it.
 - **The diagram of Home.** Grill Q4 gave Home one diagram. The rule of four diagrams gives Home none. Until the user
   decides, Home has no diagram and links to Architecture.
-- **Enter in the token box.** The Console commits the token on the native `change` event of its box. The e2e step
-  commits it with a blur, so no test shows that Enter commits it. The pages tell the reader to push Enter. The manual
-  check confirms that the badge then shows `live`. If it does not, the pages say "Click outside the box."
-- **The address of vLLM.** The pages say that llama.cpp listens on its loopback address by default. The manual check
-  confirms that vLLM listens on all addresses by default.
 - **The output.** The writers of stage 3 have no cluster, no key and no model endpoint. Write the output from the code,
   and mark each output block with the comment `<!-- output: not run -->` on the line before it. The manual check runs
   each command, replaces the output, and removes the comment. `scripts/publish.sh` refuses a release while a page of the
