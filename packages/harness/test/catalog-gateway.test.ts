@@ -15,7 +15,7 @@ import type { AddressInfo } from "node:net";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { MODEL_KEYS } from "@jr2/orchestrator/internal";
 import { preflightLine, type PreflightVerdict } from "../src/preflight-line.ts";
-import { FORCED_TOOL, modelsFor, probeModel, PROVIDER_RETRIES, resolveModel } from "../src/provider.ts";
+import { FORCED_TOOL, modelsFor, checkModel, PROVIDER_RETRIES, resolveModel } from "../src/provider.ts";
 import { startAnthropicGateway, type GatewayAnswer } from "./support/anthropic-gateway.ts";
 import { startFakeProvider } from "./support/rig.ts";
 
@@ -86,14 +86,14 @@ const LEAKY_ENV = [
   "AWS_USE_DUALSTACK_ENDPOINT",
 ];
 
-// The provider preflight's probe (ADR-0019): the call `provider-preflight.ts` makes in its pod, through the
+// The provider preflight's check (ADR-0019): the call `provider-preflight.ts` makes in its pod, through the
 // same resolution and the same env key a Turn uses.
 
 /** A catalog model with `off`, so a forced call is allowed; and one without (ADR-0018). */
-const PROBE_MODEL = "anthropic/claude-haiku-5-5";
+const CHECK_MODEL = "anthropic/claude-haiku-5-5";
 const NO_OFF_MODEL = "anthropic/claude-sonnet-5-5";
 
-/** pi's catalog reads a provider's key from `process.env`, as in a pod: set it for one probe. */
+/** pi's catalog reads a provider's key from `process.env`, as in a pod: set it for one check. */
 async function withKey<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
   const saved = process.env.ANTHROPIC_API_KEY;
   if (value === undefined) delete process.env.ANTHROPIC_API_KEY;
@@ -106,10 +106,10 @@ async function withKey<T>(value: string | undefined, run: () => Promise<T>): Pro
   }
 }
 
-/** One probe against a fresh fake gateway that answers `answer`; the verdict and what it saw.
+/** One check against a fresh fake gateway that answers `answer`; the verdict and what it saw.
  * `mayForce` stands for a provider that the catalog does NOT move: the fake is a gateway, and the
- * probe never forces a gateway's model. */
-async function probeAt(
+ * check never forces a gateway's model. */
+async function checkAt(
   answer: GatewayAnswer | GatewayAnswer[],
   opts: { model?: string; key?: string | null; mayForce?: boolean; firstEventMs?: number } = {},
 ) {
@@ -117,7 +117,7 @@ async function probeAt(
   try {
     const models = modelsFor({ catalog: { anthropic: { baseUrl: gateway.url } } }, process.env);
     const verdict = await withKey(opts.key === null ? undefined : (opts.key ?? "x"), () =>
-      probeModel(models, opts.model ?? PROBE_MODEL, {
+      checkModel(models, opts.model ?? CHECK_MODEL, {
         ...(opts.mayForce !== undefined ? { mayForce: opts.mayForce } : {}),
         ...(opts.firstEventMs !== undefined ? { firstEventMs: opts.firstEventMs } : {}),
       }),
@@ -130,8 +130,8 @@ async function probeAt(
 
 const reason = (v: PreflightVerdict) => (v.kind === "ok" ? "" : v.reason);
 
-test("probeModel: the first call is the Turn's own request — no forced tool, thinking off, the probe's budget, the env's key", async () => {
-  const { verdict, seen } = await probeAt("tool", { key: "jr2-held-ANTHROPIC_API_KEY" });
+test("checkModel: the first call is the Turn's own request — no forced tool, thinking off, the check's budget, the env's key", async () => {
+  const { verdict, seen } = await checkAt("tool", { key: "jr2-held-ANTHROPIC_API_KEY" });
   assert.deepEqual(verdict, { kind: "ok" });
   assert.equal(seen.length, 1, "a tool call: one call, and no second");
   const { headers, body } = seen[0]!;
@@ -141,12 +141,12 @@ test("probeModel: the first call is the Turn's own request — no forced tool, t
   assert.equal("tool_choice" in body, false, "what a Turn sends");
   assert.deepEqual(body.thinking, { type: "disabled" });
   // The Turn's own completion limit and level: no `maxTokens` and no `reasoning` from the check.
-  const model = resolveModel(modelsFor({ catalog: { anthropic: { baseUrl: "https://x" } } }, {}), PROBE_MODEL);
+  const model = resolveModel(modelsFor({ catalog: { anthropic: { baseUrl: "https://x" } } }, {}), CHECK_MODEL);
   assert.equal(body.max_tokens, model.maxTokens);
   assert.equal("output_config" in body, false, "no effort sent: a default Turn runs at off");
 });
 
-test("probeModel: behind a gateway that refuses the Turn's request (a vLLM with no auto tool choice), the check fails — a forced call would have passed", async () => {
+test("checkModel: behind a gateway that refuses the Turn's request (a vLLM with no auto tool choice), the check fails — a forced call would have passed", async () => {
   const refused = {
     status: 400,
     body: {
@@ -154,14 +154,14 @@ test("probeModel: behind a gateway that refuses the Turn's request (a vLLM with 
       error: { type: "invalid_request_error", message: '"auto" tool choice requires --enable-auto-tool-choice' },
     },
   };
-  const { verdict, seen } = await probeAt([refused, "tool"]);
+  const { verdict, seen } = await checkAt([refused, "tool"]);
   assert.equal(verdict.kind, "fault");
   assert.match(reason(verdict), /enable-auto-tool-choice/);
   assert.equal(seen.length, 1, "no forced call after an error");
 });
 
-test("probeModel: text, then a forced call — a tool call when forced warns that the model answered in text when not forced", async () => {
-  const { verdict, seen } = await probeAt(["text", "tool"], { mayForce: true });
+test("checkModel: text, then a forced call — a tool call when forced warns that the model answered in text when not forced", async () => {
+  const { verdict, seen } = await checkAt(["text", "tool"], { mayForce: true });
   assert.equal(verdict.kind, "warn");
   assert.match(reason(verdict), /answered in text when the tool was not forced, and called it when forced/);
   assert.equal(seen.length, 2);
@@ -169,12 +169,12 @@ test("probeModel: text, then a forced call — a tool call when forced warns tha
   assert.deepEqual(seen[1]!.body.tool_choice, FORCED_TOOL["anthropic-messages"]);
 });
 
-test("probeModel: text, then a forced call that answers text or an error — a warning that it carried no tool call", async () => {
+test("checkModel: text, then a forced call that answers text or an error — a warning that it carried no tool call", async () => {
   for (const second of [
     "text",
     { status: 400, body: { type: "error", error: { type: "x", message: "no" } } },
   ] as const) {
-    const { verdict, seen } = await probeAt(["text", second], { mayForce: true });
+    const { verdict, seen } = await checkAt(["text", second], { mayForce: true });
     assert.equal(verdict.kind, "warn", JSON.stringify(second));
     assert.match(
       reason(verdict),
@@ -184,19 +184,19 @@ test("probeModel: text, then a forced call that answers text or an error — a w
   }
 });
 
-test("probeModel: a gateway's model, and a model with no off, are never forced — their text is a warning", async () => {
-  const gateway = await probeAt("text");
+test("checkModel: a gateway's model, and a model with no off, are never forced — their text is a warning", async () => {
+  const gateway = await checkAt("text");
   assert.equal(gateway.verdict.kind, "warn");
   assert.match(reason(gateway.verdict), /the tool was not forced \(anthropic-messages\)/);
   assert.equal(gateway.seen.length, 1);
-  const noOff = await probeAt("text", { model: NO_OFF_MODEL, mayForce: true });
+  const noOff = await checkAt("text", { model: NO_OFF_MODEL, mayForce: true });
   assert.match(reason(noOff.verdict), /the tool was not forced \(anthropic-messages\)/);
   assert.equal(noOff.seen.length, 1);
   assert.equal("tool_choice" in noOff.seen[0]!.body, false);
 });
 
-test("probeModel: a refused key is a fault that names the api, the endpoint and the provider's words", async () => {
-  const { verdict, seen } = await probeAt(
+test("checkModel: a refused key is a fault that names the api, the endpoint and the provider's words", async () => {
+  const { verdict, seen } = await checkAt(
     { status: 401, body: { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } } },
     { mayForce: true },
   );
@@ -205,8 +205,8 @@ test("probeModel: a refused key is a fault that names the api, the endpoint and 
   assert.equal(seen.length, 1);
 });
 
-test("probeModel: busy is a named limit after the Turn's retries, and a 503 alone is a fault (ADR-0064)", async () => {
-  const overloaded = await probeAt({
+test("checkModel: busy is a named limit after the Turn's retries, and a 503 alone is a fault (ADR-0064)", async () => {
+  const overloaded = await checkAt({
     status: 529,
     headers: { "retry-after": "0" },
     body: { type: "error", error: { type: "overloaded_error", message: "Overloaded" } },
@@ -215,15 +215,15 @@ test("probeModel: busy is a named limit after the Turn's retries, and a 503 alon
   assert.match(reason(overloaded.verdict), /^provider limit/);
   assert.equal(overloaded.seen.length, 1 + PROVIDER_RETRIES, "the Turn's retries, then the verdict");
   const started = Date.now();
-  const later = await probeAt({
+  const later = await checkAt({
     status: 429,
     headers: { "retry-after": "600" },
     body: { type: "error", error: { type: "rate_limit_error", message: "rate limited" } },
   });
   assert.equal(later.verdict.kind, "busy");
   assert.match(reason(later.verdict), /429/);
-  assert.ok(Date.now() - started < 5000, "no wait of 600 s: pi gives up past PROBE_MAX_RETRY_DELAY_MS");
-  const unavailable = await probeAt({
+  assert.ok(Date.now() - started < 5000, "no wait of 600 s: pi gives up past CHECK_MAX_RETRY_DELAY_MS");
+  const unavailable = await checkAt({
     status: 503,
     headers: { "retry-after": "0" },
     body: { type: "error", error: { type: "api_error", message: "no healthy upstream" } },
@@ -231,22 +231,22 @@ test("probeModel: busy is a named limit after the Turn's retries, and a 503 alon
   assert.equal(unavailable.verdict.kind, "fault", "a gateway with no backend fails a Turn too");
 });
 
-test("probeModel: each call has its own bound — a first call that never answers says so; a forced call that runs out keeps the first verdict", async () => {
-  const silent = await probeAt("hang", { firstEventMs: 300 });
+test("checkModel: each call has its own bound — a first call that never answers says so; a forced call that runs out keeps the first verdict", async () => {
+  const silent = await checkAt("hang", { firstEventMs: 300 });
   assert.deepEqual(silent.verdict, { kind: "fault", reason: "no answer in 0.3 s" });
-  const late = await probeAt(["text", "hang"], { firstEventMs: 300, mayForce: true });
+  const late = await checkAt(["text", "hang"], { firstEventMs: 300, mayForce: true });
   assert.equal(late.verdict.kind, "warn");
   assert.match(reason(late.verdict), /no tool call when the tool was forced either/);
 });
 
-test("probeModel: a model nothing serves is a fault, before any call", async () => {
-  const verdict = await probeModel(modelsFor({}, {}), "ghost/m");
+test("checkModel: a model nothing serves is a fault, before any call", async () => {
+  const verdict = await checkModel(modelsFor({}, {}), "ghost/m");
   assert.equal(verdict.kind, "fault");
   assert.match(reason(verdict), /resolves to nothing/);
 });
 
-test("probeModel: a provider with no key in the env is a fault, and no call leaves", async () => {
-  const { verdict, seen } = await probeAt("tool", { key: null });
+test("checkModel: a provider with no key in the env is a fault, and no call leaves", async () => {
+  const { verdict, seen } = await checkAt("tool", { key: null });
   assert.equal(verdict.kind, "fault");
   assert.match(reason(verdict), /not configured: anthropic/);
   assert.equal(seen.length, 0);
@@ -260,7 +260,7 @@ test("preflightLine: one line per model, the reason on that line", () => {
   );
 });
 
-test("probeModel: the custom provider is called as a Turn calls it — no forced tool — and text is asked again, a fault only twice", async () => {
+test("checkModel: the custom provider is called as a Turn calls it — no forced tool — and text is asked again, a fault only twice", async () => {
   const tool = { toolCall: { id: "c1", name: "ping", args: "{}" } };
   const provider = await startFakeProvider([tool, { text: "pong" }, tool, { text: "pong" }, { text: "pong" }]);
   try {
@@ -268,14 +268,14 @@ test("probeModel: the custom provider is called as a Turn calls it — no forced
       { provider: { id: "vllm", api: "openai-completions", baseUrl: `${provider.url}/v1` } },
       { JR2_PROVIDER_API_KEY: "jr2-held-JR2_PROVIDER_API_KEY" },
     );
-    assert.deepEqual(await probeModel(models, "vllm/Qwen/Qwen3-32B"), { kind: "ok" });
+    assert.deepEqual(await checkModel(models, "vllm/Qwen/Qwen3-32B"), { kind: "ok" });
     const call = provider.calls[0] as unknown as Record<string, unknown>;
     assert.equal(call.model, "Qwen/Qwen3-32B");
     assert.equal("tool_choice" in call, false, "auto, as a Turn: a forced tool would pass a vLLM no Turn can use");
     assert.equal(provider.calls[0]!.headers?.authorization, "Bearer jr2-held-JR2_PROVIDER_API_KEY");
     // A Turn gets a nudge after text: the check asks once more, the same call.
-    assert.deepEqual(await probeModel(models, "vllm/Qwen/Qwen3-32B"), { kind: "ok" }, "text, then a tool call");
-    const twice = await probeModel(models, "vllm/Qwen/Qwen3-32B");
+    assert.deepEqual(await checkModel(models, "vllm/Qwen/Qwen3-32B"), { kind: "ok" }, "text, then a tool call");
+    const twice = await checkModel(models, "vllm/Qwen/Qwen3-32B");
     assert.deepEqual(twice, { kind: "fault", reason: 'the answer carried no tool call (stop reason "stop"), twice' });
     assert.equal(provider.calls.length, 5);
     assert.ok(provider.calls.every((c) => !("tool_choice" in (c as unknown as Record<string, unknown>))));
@@ -284,22 +284,22 @@ test("probeModel: the custom provider is called as a Turn calls it — no forced
   }
 });
 
-test("probeModel: a slow first answer passes — the bounds are the first event and the gap, not the total", async () => {
+test("checkModel: a slow first answer passes — the bounds are the first event and the gap, not the total", async () => {
   // An endpoint that waits before its first byte, as an Ollama load does, then streams.
-  const slow = await probeAt({ delayMs: 400, then: "tool" }, { firstEventMs: 2000 });
+  const slow = await checkAt({ delayMs: 400, then: "tool" }, { firstEventMs: 2000 });
   assert.deepEqual(slow.verdict, { kind: "ok" });
-  const slower = await probeAt({ delayMs: 400, then: "tool" }, { firstEventMs: 100 });
+  const slower = await checkAt({ delayMs: 400, then: "tool" }, { firstEventMs: 100 });
   assert.deepEqual(slower.verdict, { kind: "fault", reason: "no answer in 0.1 s" });
 });
 
-test("probeModel: a custom model with no limit at all sends none, as its Turns do (unlimitedPayload)", async () => {
+test("checkModel: a custom model with no limit at all sends none, as its Turns do (unlimitedPayload)", async () => {
   const provider = await startFakeProvider([{ toolCall: { id: "c1", name: "ping", args: "{}" } }]);
   try {
     const models = modelsFor(
       { provider: { id: "local", api: "openai-completions", baseUrl: `${provider.url}/v1` } },
       {},
     );
-    assert.deepEqual(await probeModel(models, "local/m"), { kind: "ok" });
+    assert.deepEqual(await checkModel(models, "local/m"), { kind: "ok" });
     const body = provider.calls[0] as unknown as Record<string, unknown>;
     assert.equal(body.max_completion_tokens ?? body.max_tokens, undefined);
   } finally {
@@ -307,7 +307,7 @@ test("probeModel: a custom model with no limit at all sends none, as its Turns d
   }
 });
 
-test("probeModel: an openai-responses provider that refuses the Turn's request fails, whatever its error's form, with one call", async () => {
+test("checkModel: an openai-responses provider that refuses the Turn's request fails, whatever its error's form, with one call", async () => {
   const seen: Array<Record<string, unknown>> = [];
   const server = createServer((req, res) => {
     let raw = "";
@@ -327,7 +327,7 @@ test("probeModel: an openai-responses provider that refuses the Turn's request f
     const model = models
       .getModels("openai")
       .find((m) => m.api === "openai-responses" && getSupportedThinkingLevels(m).includes("off"))!;
-    const verdict = await probeModel(models, `openai/${model.id}`, { mayForce: true });
+    const verdict = await checkModel(models, `openai/${model.id}`, { mayForce: true });
     assert.equal(verdict.kind, "fault");
     assert.match(reason(verdict), /tools are not supported/);
     assert.equal(seen.length, 1);
@@ -340,7 +340,7 @@ test("probeModel: an openai-responses provider that refuses the Turn's request f
   }
 });
 
-test("FORCED_TOOL: each api's adapter puts the probe's form in the payload it sends", async () => {
+test("FORCED_TOOL: each api's adapter puts the check's form in the payload it sends", async () => {
   // Where each api's request carries the choice, as pi-ai 1.4 builds it. A pi bump that drops the
   // value on the way fails here, api by api.
   const expected: Record<string, string> = {
@@ -388,25 +388,25 @@ test("FORCED_TOOL: each api's adapter puts the probe's form in the payload it se
   }
 });
 
-test("probeModel: a 429 on a try and then no answer is busy — the fetch sees each try that pi-ai retries", async () => {
+test("checkModel: a 429 on a try and then no answer is busy — the fetch sees each try that pi-ai retries", async () => {
   const limited = {
     status: 429,
     headers: { "retry-after": "0" },
     body: { type: "error", error: { type: "rate_limit_error", message: "rate limited" } },
   };
-  const { verdict, seen } = await probeAt([limited, "hang"], { firstEventMs: 500 });
+  const { verdict, seen } = await checkAt([limited, "hang"], { firstEventMs: 500 });
   assert.equal(verdict.kind, "busy", JSON.stringify(verdict));
   assert.match(reason(verdict), /HTTP 429, then no answer in 0\.5 s/);
   assert.equal(seen.length, 2, "the 429, then the retry that never answered");
 });
 
-test("probeModel: the model's own budget ends every call of it", async () => {
+test("checkModel: the model's own budget ends every call of it", async () => {
   const budget = new AbortController();
   setTimeout(() => budget.abort(), 200);
   const gateway = await startAnthropicGateway("hang");
   try {
     const models = modelsFor({ catalog: { anthropic: { baseUrl: gateway.url } } }, process.env);
-    const verdict = await withKey("x", () => probeModel(models, PROBE_MODEL, { signal: budget.signal }));
+    const verdict = await withKey("x", () => checkModel(models, CHECK_MODEL, { signal: budget.signal }));
     assert.deepEqual(verdict, { kind: "fault", reason: "the model's time ran out" });
   } finally {
     await gateway.close();
@@ -442,18 +442,18 @@ test("provider-preflight.ts: a config the Harness cannot run is each model's fau
   );
 });
 
-test("probeModel: a 429 on an early try, then a 200 whose answer stops after its first line, is a fault — the last try decides", async () => {
+test("checkModel: a 429 on an early try, then a 200 whose answer stops after its first line, is a fault — the last try decides", async () => {
   const limited = {
     status: 429,
     headers: { "retry-after": "0" },
     body: { type: "error", error: { type: "rate_limit_error", message: "rate limited" } },
   };
   // The retry is answered 200, and the answer stops after its first line.
-  const { verdict } = await probeAt([limited, "stall"], { firstEventMs: 300 });
+  const { verdict } = await checkAt([limited, "stall"], { firstEventMs: 300 });
   assert.deepEqual(verdict, { kind: "fault", reason: "no answer in 0.3 s" });
 });
 
-test("probeModel: the request of each forced api, and of the custom api, arrives — no adapter refuses the check's options", async () => {
+test("checkModel: the request of each forced api, and of the custom api, arrives — no adapter refuses the check's options", async () => {
   // One local server for every api: it records what arrives and answers 400. The check's verdict
   // is a fault each time; what this holds is that the request left (pi-ai 1.4's Google adapters
   // refuse a caller's `fetch`, which made every Gemini model a fault before it sent anything).
@@ -504,7 +504,7 @@ test("probeModel: the request of each forced api, and of the custom api, arrives
         : { catalog: { [model!.provider]: { baseUrl: api === "openai-responses" ? `${url}/v1` : url } } };
       const before = arrived.length;
       const models = modelsFor(spec, process.env);
-      const verdict = await probeModel(models, custom ? "local/m" : `${model!.provider}/${model!.id}`, {
+      const verdict = await checkModel(models, custom ? "local/m" : `${model!.provider}/${model!.id}`, {
         firstEventMs: 3000,
         gapMs: 3000,
       });
@@ -523,7 +523,7 @@ test("probeModel: the request of each forced api, and of the custom api, arrives
   }
 });
 
-test("probeModel: Bedrock's tries are seen through onResponse — a throttled try, then no answer, is busy", async () => {
+test("checkModel: Bedrock's tries are seen through onResponse — a throttled try, then no answer, is busy", async () => {
   let n = 0;
   const server = createServer((req, res) => {
     req.resume();
@@ -545,7 +545,7 @@ test("probeModel: Bedrock's tries are seen through onResponse — a throttled tr
     const plain = modelsFor({}, {});
     const model = plain.getModels("amazon-bedrock").find((m) => m.api === "bedrock-converse-stream")!;
     const models = modelsFor({ catalog: { "amazon-bedrock": { baseUrl: url } } }, process.env);
-    const verdict = await probeModel(models, `amazon-bedrock/${model.id}`, { firstEventMs: 3000 });
+    const verdict = await checkModel(models, `amazon-bedrock/${model.id}`, { firstEventMs: 3000 });
     assert.equal(verdict.kind, "busy", JSON.stringify(verdict));
     assert.ok(n >= 2, "the throttled try, then the retry");
   } finally {
@@ -556,12 +556,12 @@ test("probeModel: Bedrock's tries are seen through onResponse — a throttled tr
   }
 });
 
-test("probeModel: when the model's time runs out during the forced call, the warning does not claim what the forced call said", async () => {
+test("checkModel: when the model's time runs out during the forced call, the warning does not claim what the forced call said", async () => {
   const gateway = await startAnthropicGateway([{ delayMs: 50, then: "text" }, "hang"]);
   try {
     const models = modelsFor({ catalog: { anthropic: { baseUrl: gateway.url } } }, process.env);
     const verdict = await withKey("x", () =>
-      probeModel(models, PROBE_MODEL, { mayForce: true, signal: AbortSignal.timeout(400) }),
+      checkModel(models, CHECK_MODEL, { mayForce: true, signal: AbortSignal.timeout(400) }),
     );
     assert.equal(verdict.kind, "warn");
     assert.match(reason(verdict), /the model's time ran out before a forced call could answer/);

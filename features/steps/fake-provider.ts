@@ -16,8 +16,8 @@
 // @kind placement forces:
 //
 //  1. The PREFLIGHT is answered at once. `jr2 up`'s provider preflight (ADR-0019) runs the stock
-//     Harness's `provider-preflight.ts` in a pod with a Custodian, so it streams like a Turn and offers one
-//     `ping` tool with the prompt "Call the ping tool."; it demands a tool call, on every
+//     Harness's `provider-preflight.ts` in the check pod, beside a Custodian, so it streams like a
+//     Turn and offers one `ping` tool with the prompt "Call the ping tool."; it demands a tool call, on every
 //     scenario's converge. A fake that parked it as a Turn would fail 100% of scenarios at `Given
 //     the kind instance is serving`. A non-streaming completion and `GET /models` are answered too.
 //  2. A HOLD/RELEASE queue instead of a fixed script array. A parked turn is a held provider
@@ -117,7 +117,7 @@ export async function startFakeProvider(opts: {
     req.on("data", (chunk: Buffer) => (raw += chunk));
     req.on("end", () => {
       // The key or nothing (ADR-0059). A request carries it only if its Custodian swapped the
-      // Stand-in for it: a Harness pod's and the preflight pod's alike.
+      // Stand-in for it: a Harness pod's and the check pod's alike.
       if (req.headers.authorization !== `Bearer ${opts.apiKey}`) {
         unauthorized.push({ url: req.url ?? "", headers: req.headers });
         res.writeHead(401, { "content-type": "application/json" });
@@ -267,14 +267,14 @@ function finish(entry: Held): void {
   clearInterval(entry.keepalive);
 }
 
-/** The one tool `jr2 up`'s provider preflight offers (`PROBE_TOOL`, `packages/harness/src/provider.ts`).
+/** The one tool `jr2 up`'s provider preflight offers (`CHECK_TOOL`, `packages/harness/src/provider.ts`).
  * A black-box tier cannot import it: `features/lib/fake-provider.test.ts` pins the copy. */
 export const PREFLIGHT_TOOL = "ping";
 
-/** The preflight's prompt (`probeModel`, `packages/harness/src/provider.ts`), pinned as `PREFLIGHT_TOOL` is. */
+/** The preflight's prompt (`checkModel`, `packages/harness/src/provider.ts`), pinned as `PREFLIGHT_TOOL` is. */
 export const PREFLIGHT_PROMPT = "Call the ping tool.";
 
-/** `jr2 up`'s provider preflight (`probeModel` in `@jr2/harness`): it offers the `ping` tool alone
+/** `jr2 up`'s provider preflight (`checkModel` in `@jr2/harness`): it offers the `ping` tool alone
  * and asks for it by name. No Menu has a `ping`: a Menu tool is `mcp__jr2__<event>`. */
 export function isPreflight(tools: string[], raw: string): boolean {
   return tools.length === 1 && tools[0] === PREFLIGHT_TOOL && raw.includes(PREFLIGHT_PROMPT);

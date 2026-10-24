@@ -2,13 +2,13 @@
 
 Running the jr-parity exercise against a real vLLM (2026-07-19) hit an endpoint that is HTTPS-only behind an ingress
 whose cert chains to a private CA. The host trusts that CA; pods do not — so every jr2-owned egress point fails the same
-way: the Harness's model calls, and `jr2 up`'s own provider preflight (which probes from a throwaway in-cluster pod,
-ADR-0019). The tempting fix was generic `volumes`/`volumeMounts` passthrough on `sandbox` — the CRD already carries
-both, and `harness.env`/`envFrom` set the precedent of corev1 shapes passed through verbatim. But trusting a CA is not
-pod-shaped config: it is an _intent_ ("this instance's egress must trust this CA") that jr2 alone can thread through
-every place it owns an outbound TLS connection — including the preflight pod, which no instance-authored volume can ever
-reach. A passthrough would also make the one-intent story a three-part incantation (hand-managed ConfigMap + mount +
-`NODE_EXTRA_CA_CERTS` via `harness.env`), the runbook shape ADR-0019 exists to kill.
+way: the Harness's model calls, and `jr2 up`'s own provider preflight (which checks from a one-shot in-cluster pod, the
+check pod, ADR-0019). The tempting fix was generic `volumes`/`volumeMounts` passthrough on `sandbox` — the CRD already
+carries both, and `harness.env`/`envFrom` set the precedent of corev1 shapes passed through verbatim. But trusting a CA
+is not pod-shaped config: it is an _intent_ ("this instance's egress must trust this CA") that jr2 alone can thread
+through every place it owns an outbound TLS connection — including the check pod, which no instance-authored volume can
+ever reach. A passthrough would also make the one-intent story a three-part incantation (hand-managed ConfigMap +
+mount + `NODE_EXTRA_CA_CERTS` via `harness.env`), the runbook shape ADR-0019 exists to kill.
 
 ## Decision
 
@@ -30,17 +30,17 @@ reach. A passthrough would also make the one-intent story a three-part incantati
   are the Mozilla roots of the Node that runs `jr2 up`. The ConfigMap is then applied server-side: two copies of the
   roots are more than client-side apply's annotation holds. The Custodian's control listener is plain HTTP to the
   Orchestrator's Service and trusts nothing.
-- **The provider preflight trusts the same bundle the same way** (`NODE_EXTRA_CA_CERTS` on the probe pod, the PEM riding
-  an env var). A preflight that fails where the Harness would succeed — or passes where it would fail — is a broken
-  promise; sharing the mechanism keeps the two verdicts identical. (Node 24's `fetch` honoring `NODE_EXTRA_CA_CERTS` was
-  verified live against the real endpoint before this landed.)
+- **The provider preflight trusts the same bundle the same way** (`NODE_EXTRA_CA_CERTS` on the check pod, from its own
+  copy of `jr2-ca`). A preflight that fails where the Harness would succeed — or passes where it would fail — is a
+  broken promise; sharing the mechanism keeps the two verdicts identical. (Node 24's `fetch` honoring
+  `NODE_EXTRA_CA_CERTS` was verified live against the real endpoint before this landed.)
 
 ## Considered options
 
 - **Generic `sandbox.volumes`/`volumeMounts` passthrough.** More powerful and precedent-consistent, but it cannot reach
-  the preflight pod, splits one intent across three keys, and adds a forever-surface for a need that has appeared
-  exactly once. Deferred until a second real need for arbitrary volumes shows up — the CRD support is already there when
-  it does.
+  the check pod, splits one intent across three keys, and adds a forever-surface for a need that has appeared exactly
+  once. Deferred until a second real need for arbitrary volumes shows up — the CRD support is already there when it
+  does.
 - **`NODE_TLS_REJECT_UNAUTHORIZED=0` via `harness.env`.** Zero kit change, but it disables verification for _every_ TLS
   connection the Harness makes (git, MCP, everything), and the preflight still fails — `up` would refuse to converge an
   instance whose pods would work.

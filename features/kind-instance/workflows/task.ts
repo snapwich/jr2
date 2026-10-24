@@ -19,6 +19,6 @@ export const machine = customize(task, {
   // only) slot, it is where the coder works.
   repos: { target: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
   // The one model this instance has (`jr2.config.ts`'s `fake` provider): a real Agent definition at
-  // a real model id, so `jr2 up`'s provider preflight probes it like any other.
+  // a real model id, so `jr2 up`'s provider preflight checks it like any other.
   agents: { coder: { model: "fake/model-x" } },
 });

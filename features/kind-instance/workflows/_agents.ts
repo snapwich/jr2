@@ -4,7 +4,7 @@
 // else names it.
 //
 // They are REQUIRED, not decoration: the pod runs the stock Harness (ADR-0038), which needs a
-// definition for the name it is admitted under, and `jr2 up`'s provider preflight probes exactly
+// definition for the name it is admitted under, and `jr2 up`'s provider preflight checks exactly
 // the models the definitions name — so this is also what makes the converge exercise the fake
 // endpoint.
 //

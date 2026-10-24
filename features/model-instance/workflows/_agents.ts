@@ -1,5 +1,5 @@
 // The @model tier's Agents (ADR-0018/0049/0066). Plain data a Machine carries as a slot; every
-// one names the profile's model, which is what `jr2 up`'s provider preflight probes and what a
+// one names the profile's model, which is what `jr2 up`'s provider preflight checks and what a
 // real endpoint answers for.
 //
 // The instructions are what a user would write: honest prose about the seat, nothing about the

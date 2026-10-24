@@ -147,9 +147,9 @@ export type KubeAdmin = {
    * stored nowhere. THROWS on a refusal, with kubectl's reason. */
   dryRunCreate(opts: { manifest: string; context?: string }): Promise<{ spec?: { resources?: unknown } }>;
   /** Wait until one pod has run to its end, and read its logs — the provider preflight's seam
-   * (ADR-0019, ADR-0059). Its pod has a Custodian beside the probe, which `kubectl run` cannot
-   * make, so `jr2 up` applies it and waits here. Two bounds: `startSeconds` until the probe
-   * container runs (the image pulls and the Custodian's start), then `runSeconds` for the probe. It
+   * (ADR-0019, ADR-0059). Its pod has a Custodian beside the check container, which `kubectl run` cannot
+   * make, so `jr2 up` applies it and waits here. Two bounds: `startSeconds` until the check
+   * container runs (the image pulls and the Custodian's start), then `runSeconds` for the check. It
    * stops early on a pod that cannot start (`podProgress`). Never throws. */
   awaitPodEnd(opts: {
     namespace: string;
@@ -166,7 +166,7 @@ export type KubeAdmin = {
 };
 
 /** How one pod ended (`awaitPodEnd`). `phase` is the pod's own, or `stuck` (it cannot start:
- * `stuck` says why) or `timeout` (`started` says whether the probe ran). `output` is the probe
+ * `stuck` says why) or `timeout` (`started` says whether the check ran). `output` is the check
  * container's whole log; `custodian` the Custodian's, its previous run's first when it restarted.
  * `reasons` is each container's waiting or ended reason as the kubelet says it. */
 export type PodEnd = {
@@ -179,7 +179,7 @@ export type PodEnd = {
 };
 
 /** A container's status as the kubelet reports it: the part `podProgress` reads. */
-type ProbeContainerStatus = {
+type CheckContainerStatus = {
   name?: string;
   restartCount?: number;
   state?: Record<string, { reason?: string; message?: string }>;
@@ -188,19 +188,19 @@ type ProbeContainerStatus = {
 };
 
 /** The pod as `podProgress` reads it. */
-export type ProbePodObject = {
+export type CheckPodObject = {
   status?: {
     phase?: string;
     conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
-    initContainerStatuses?: ProbeContainerStatus[];
-    containerStatuses?: ProbeContainerStatus[];
+    initContainerStatuses?: CheckContainerStatus[];
+    containerStatuses?: CheckContainerStatus[];
   };
 };
 
 /** Why a pod that has not ended is not running yet, for a person who waits on it: the scheduler's
  * reason, else the first container's waiting reason, else its phase. Undefined when it gives none,
  * and for a pod that runs with no container waiting. */
-export function podPending(pod: ProbePodObject | undefined): string | undefined {
+export function podPending(pod: CheckPodObject | undefined): string | undefined {
   const unscheduled = pod?.status?.conditions?.find((c) => c.type === "PodScheduled" && c.status === "False");
   if (unscheduled)
     return `${unscheduled.reason ?? "not scheduled"}${unscheduled.message ? `: ${unscheduled.message}` : ""}`;
@@ -246,13 +246,13 @@ const PULL_WAITING = new Set(["ErrImagePull", "ImagePullBackOff"]);
 const PULL_FINAL = /not found|manifest unknown|unauthorized|denied/i;
 
 /**
- * Where a probe pod is (`awaitPodEnd`): ended (`phase`), unable to start (`stuck`, the reason), or
+ * Where a check pod is (`awaitPodEnd`): ended (`phase`), unable to start (`stuck`, the reason), or
  * still on its way, with whether `container` runs yet. A restart of `sidecar` is `stuck`: the
  * Custodian restarts only when it refused to start, and the next start refuses alike. Pure, for its
  * test.
  */
 export function podProgress(
-  pod: ProbePodObject | undefined,
+  pod: CheckPodObject | undefined,
   container: string,
   sidecar: string,
 ): { phase?: "Succeeded" | "Failed"; stuck?: string; running: boolean; reasons: string[] } {
@@ -285,7 +285,7 @@ export function podProgress(
 /** What `waitPodEnd` reads the pod and the clock through: kubectl and the wall clock in
  * `kubectlAdmin`, a script and a fake clock in its test. */
 export type PodEndPorts = {
-  pod(): Promise<ProbePodObject | undefined>;
+  pod(): Promise<CheckPodObject | undefined>;
   /** The pod's events: where a FailedMount is told. */
   events(): Promise<Array<{ reason?: string; message?: string; count?: number; lastTimestamp?: string }>>;
   /** Each new reason the pod gives for not running yet. */
@@ -301,7 +301,7 @@ export type PodEndPorts = {
  * The wait of `awaitPodEnd`: poll the pod every 2 s until it ends (`podProgress`), cannot start
  * (a terminal waiting reason, a Custodian restart, a `FailedMount` event), or runs out of time —
  * `startSeconds` until `container` runs, then `runSeconds` from then on. While it waits to start,
- * each new reason it gives goes to `pending`. Then it reads the logs: the probe's whole log, for
+ * each new reason it gives goes to `pending`. Then it reads the logs: the check container's whole log, for
  * every model's line, read again when a pod that ended answers nothing; and the Custodian's last
  * 50 lines, its run before first when it restarted.
  */
@@ -343,7 +343,7 @@ export async function waitPodEnd(
     said = pending;
     await ports.sleep(2000);
   }
-  // The whole log: one line per model. A probe that ended always wrote one, so an empty read is a
+  // The whole log: one line per model. A check that ended always wrote one, so an empty read is a
   // read that failed (kubectl answers nothing then): read again before calling it empty.
   let output = await ports.logs(opts.container, { tailLines: -1 });
   for (let n = 0; n < 3 && !output.trim() && (end === "Succeeded" || end === "Failed"); n++) {
@@ -548,7 +548,7 @@ export const kubectlAdmin: KubeAdmin = {
     const ctx = context ? { context } : {};
     return waitPodEnd(
       {
-        pod: () => kubectlAdmin.getJson<ProbePodObject>({ kind: "pod", name, namespace, ...ctx }),
+        pod: () => kubectlAdmin.getJson<CheckPodObject>({ kind: "pod", name, namespace, ...ctx }),
         // A read that fails is no event: the wait goes on, and its bounds still hold.
         events: () =>
           kubectlAdmin

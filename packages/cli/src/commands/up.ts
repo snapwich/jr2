@@ -176,11 +176,11 @@ import {
   type HeldObjects,
   type CustodianFiles,
   type HeldPodObjects,
-  providerProbeObjects,
+  checkPodObjects,
   LABEL_PROVIDER_PREFLIGHT,
-  providerProbeObjectNames,
+  checkPodObjectNames,
   PROVIDER_PREFLIGHT,
-  PROVIDER_PREFLIGHT_CONTAINER,
+  CHECK_CONTAINER,
 } from "../deploy.ts";
 import { syncAgentsMd } from "../agents-md.ts";
 import { resolveRoot } from "../instance.ts";
@@ -986,20 +986,20 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- provider preflight (ADR-0019, ADR-0059): through a Custodian, FROM INSIDE the cluster -----
   // BEFORE anything the Instance or the cluster reads is written — the operator, a deploy key, the
-  // trust, the held objects, the instance List: each probe pod has its own copies of what it reads,
-  // from the values on this host. So a probe that fails leaves the Instance, its Assembly and the
+  // trust, the held objects, the instance List: each check pod has its own copies of what it reads,
+  // from the values on this host. So a check that fails leaves the Instance, its Assembly and the
   // operator as they were. Only the namespace, the PriorityClasses and the delivered images come
-  // first, because the probe pod needs them.
-  const probes = providerProbes(config, placementWalk, held.objects.pods);
+  // first, because the check pod needs them.
+  const checkPods = checkPodsOf(config, placementWalk, held.objects.pods);
   const custom = config.harness?.provider;
-  if (custom && !probes.some((p) => p.providers.some((v) => v.id === custom.id))) {
+  if (custom && !checkPods.some((p) => p.providers.some((v) => v.id === custom.id))) {
     activity(
       io,
       `provider: ${custom.baseUrl} configured, but no carried Agent names a "${custom.id}/…" model — skipped`,
     );
   }
   await preflightProviders(io, kube, {
-    probes,
+    checkPods,
     name,
     namespace,
     ctx,
@@ -2429,15 +2429,15 @@ async function preflightDispatch(io: Io, effects: readonly CarriedEffect[]): Pro
   }
 }
 
-/** One provider of one probe pod (ADR-0019, ADR-0059). */
-export type ProbedProvider = {
+/** One provider of one check pod (ADR-0019, ADR-0059). */
+export type CheckedProvider = {
   /** The provider id, the specifier's part before the first `/`. */
   id: string;
   /** Every carried model of it that a Harness pod of this placement runs: a typo, a retired model
    * or a model the key has no access to is per model. */
   models: string[];
-  /** The held secrets that are its keys in the probe's Custodian; none when no pod of this
-   * placement holds one, and the probe then shows what a Turn there meets. */
+  /** The held secrets that are its keys in the check pod's Custodian; none when no pod of this
+   * placement holds one, and the check then shows what a Turn there meets. */
   keys: string[];
   /** Where the calls go: the keys' bound hosts, else the provider's host as jr2 knows it. */
   hosts: string[];
@@ -2448,15 +2448,15 @@ export type ProbedProvider = {
   custom?: true;
 };
 
-/** One probe pod: the providers that the Harness pods of one placement call. */
-export type ProviderProbe = {
+/** One check pod: the providers that the Harness pods of one placement call. */
+export type CheckPod = {
   /** For a human: `the Sandbox nodes`, `the Instance Harness`, or both. */
   where: string;
   /** The node predicate of those pods (ADR-0052); none for the Instance Harness. */
   placement?: SandboxPlacement;
-  /** The bindings of the probed keys: each a part of a held pod's manifest. */
+  /** The bindings of the checked keys: each a part of a held pod's manifest. */
   manifest: HeldManifest;
-  providers: ProbedProvider[];
+  providers: CheckedProvider[];
 };
 
 /** One Harness pod as the walk places it: its held pod key, its class, the models it runs, and
@@ -2464,24 +2464,20 @@ export type ProviderProbe = {
 type Seat = { pod: string; sandbox: boolean; models: readonly string[]; held: HeldManifest["secrets"] };
 
 /**
- * Which providers the preflight probes, and in which pod (ADR-0019, ADR-0059). Every carried model
- * that a Harness pod runs is probed, in a pod with that pod's placement: a Workspace's model on the
+ * Which providers the preflight checks, and in which pod (ADR-0019, ADR-0059). Every carried model
+ * that a Harness pod runs is checked, in a pod with that pod's placement: a Workspace's model on the
  * Sandbox nodes, a `"none"` Agent's where the Instance Harness runs, so a node class whose egress is
- * closed fails here. The two are one probe when their placements are the same. The custom provider
+ * closed fails here. The two are one check pod when their placements are the same. The custom provider
  * (`harness.provider`) goes the same way: its key is a held secret too (`JR2_PROVIDER_API_KEY`), so
  * the key never enters a pod spec, an argv or a script.
  *
  * In one placement, a provider's keys are the ones the first pod there that runs one of its models
- * holds (`MODEL_KEYS`, claimed by the provider). The probe holds that pod's bindings of them and
- * reads their values where that pod reads them. A provider no pod there holds a key for is probed
+ * holds (`MODEL_KEYS`, claimed by the provider). The check pod holds that pod's bindings of them and
+ * reads their values where that pod reads them. A provider no pod there holds a key for is checked
  * all the same, with no key: a Turn there meets the same, and pi says so (`not configured`); a
- * signing credential in `harness.env` reaches the probe as it reaches a Turn. Pure, for its test.
+ * signing credential in `harness.env` reaches the check as it reaches a Turn. Pure, for its test.
  */
-export function providerProbes(
-  config: JR2Config,
-  walk: PlacementWalk,
-  pods: readonly HeldPodObjects[],
-): ProviderProbe[] {
+export function checkPodsOf(config: JR2Config, walk: PlacementWalk, pods: readonly HeldPodObjects[]): CheckPod[] {
   const custom = config.harness?.provider;
   const heldOf = (pod: string) => pods.find((p) => p.pod === pod)?.manifest.secrets ?? [];
   const seats: Seat[] = [
@@ -2502,9 +2498,9 @@ export function providerProbes(
   ];
   const sandbox = config.sandbox?.nodeSelector || config.sandbox?.tolerations?.length ? config.sandbox : undefined;
   const placementOf = (seat: Seat) => (seat.sandbox ? sandbox : undefined);
-  // A probe stands for one class of Harness pod: its nodes, and whether it holds a secret. A pod
+  // A check pod stands for one class of Harness pod: its nodes, and whether it holds a secret. A pod
   // that holds one sends its HTTPS through its Custodian (a tunnel for an unbound host); a pod that
-  // holds none sends it direct. So the two are two probes, even on the same nodes.
+  // holds none sends it direct. So the two are two check pods, even on the same nodes.
   const keyOf = (seat: Seat) => {
     const placement = placementOf(seat);
     return JSON.stringify({
@@ -2520,17 +2516,17 @@ export function providerProbes(
     group.seats.push(seat);
     groups.set(key, group);
   }
-  const probes: ProviderProbe[] = [];
+  const checkPods: CheckPod[] = [];
   for (const group of groups.values()) {
     const models: string[] = [];
     for (const seat of group.seats) for (const m of seat.models) if (!models.includes(m)) models.push(m);
-    const probe: ProviderProbe = {
+    const checkPod: CheckPod = {
       where: [
         ...(group.seats.some((s) => s.sandbox) ? ["the Sandbox nodes"] : []),
         ...(group.seats.some((s) => !s.sandbox) ? ["the Instance Harness"] : []),
       ].join(" and "),
       ...(group.placement ? { placement: group.placement } : {}),
-      // A class that holds a secret: the first pod's own held set, so the probe's env (the proxy, the
+      // A class that holds a secret: the first pod's own held set, so the check pod's env (the proxy, the
       // Stand-ins) is that of a pod of the class; the keys the class's other pods hold join it below.
       manifest: { version: 1, secrets: [...group.seats[0]!.held] },
       providers: [],
@@ -2538,7 +2534,7 @@ export function providerProbes(
     for (const model of models) {
       const slash = model.indexOf("/");
       const id = slash > 0 ? model.slice(0, slash) : model;
-      const known = probe.providers.find((p) => p.id === id);
+      const known = checkPod.providers.find((p) => p.id === id);
       if (known) {
         known.models.push(model);
         continue;
@@ -2553,8 +2549,8 @@ export function providerProbes(
         .find((p) => p?.manifest.secrets.some((b) => names.includes(b.name)));
       const bindings = holder?.manifest.secrets.filter((b) => names.includes(b.name)) ?? [];
       for (const b of bindings) {
-        if (probe.manifest.secrets.some((h) => h.name === b.name)) continue;
-        probe.manifest.secrets.push(b);
+        if (checkPod.manifest.secrets.some((h) => h.name === b.name)) continue;
+        checkPod.manifest.secrets.push(b);
       }
       const gateway = config.harness?.catalog?.[id]?.baseUrl;
       const fallback =
@@ -2563,7 +2559,7 @@ export function providerProbes(
           : gateway
             ? [new URL(gateway).host]
             : names.flatMap((n) => (MODEL_KEYS[n]!.host ? [MODEL_KEYS[n]!.host!] : [])).slice(0, 1);
-      probe.providers.push({
+      checkPod.providers.push({
         id,
         ...(id === custom?.id ? { custom: true } : {}),
         models: [model],
@@ -2572,44 +2568,44 @@ export function providerProbes(
         ...(gateway ? { gateway } : {}),
       });
     }
-    if (probe.providers.length) probes.push(probe);
+    if (checkPod.providers.length) checkPods.push(checkPod);
   }
-  return probes;
+  return checkPods;
 }
 
 const hostText = (h: { host: string; port: number }): string => (h.port === 443 ? h.host : `${h.host}:${h.port}`);
 
-/** How long a probe pod may take to start: two cold image pulls (the Harness and the Custodian) and
- * Envoy's start. The probe's own bound starts when its container runs. */
-const PROBE_START_SECONDS = 300;
+/** How long a check pod may take to start: two cold image pulls (the Harness and the Custodian) and
+ * Envoy's start. The check's own bound starts when its container runs. */
+const CHECK_START_SECONDS = 300;
 /** Each model's bound in the pod: its own budget in the check (`PREFLIGHT_MODEL_BUDGET_SECONDS` in
  * `@jr2/harness`'s `preflight-line.ts`, which a test holds this to), so one slow model never uses
  * the time of the others. Exported for that test. */
-export const PROBE_MODEL_SECONDS = 360;
-const PROBE_RUN_MARGIN_SECONDS = 30;
+export const CHECK_MODEL_SECONDS = 360;
+const CHECK_RUN_MARGIN_SECONDS = 30;
 /** A leftover a run left with no pod, older than this, is a dead run's, not a live one's. */
-const PROBE_LEFTOVER_SECONDS = 3600;
+const CHECK_LEFTOVER_SECONDS = 3600;
 
 /**
- * The provider preflight (ADR-0019, ADR-0059): each probe pod of `providerProbes`, one at a time — a
+ * The provider preflight (ADR-0019, ADR-0059): each check pod of `checkPodsOf`, one at a time — a
  * one-shot Harness-shaped pod, a Custodian that holds the providers' keys and the stock Harness
  * image's `provider-preflight.ts` — that demands one tool call of each model, on the path a Turn takes. So no
  * egress to the provider's host, a missing, wrong or empty key, a model no endpoint serves, and a
- * gateway that does not answer each fail HERE. Every probe pod runs, a pod that cannot be applied
+ * gateway that does not answer each fail HERE. Every check pod runs, a pod that cannot be applied
  * included, and every failure is in one error. A provider still busy after the retries, and a
  * model that answered but did not call a tool it was not forced to, are warnings (ADR-0064).
  *
- * Each pod reads its own objects (`providerProbeObjects`), written from `values`, `leaves`, `trust`
+ * Each pod reads its own objects (`checkPodObjects`), written from `values`, `leaves`, `trust`
  * and `harnessEnvData` — what the apply would write — and named for this run (`<run>-<n>`), so two
  * converges in one namespace never read or delete each other's. The ones of an earlier run of this
- * Instance that did not end go first (`removeProbeLeftovers`). A failed cleanup is a warning and
- * never hides the probe's own answer.
+ * Instance that did not end go first (`removeCheckLeftovers`). A failed cleanup is a warning and
+ * never hides the check's own answer.
  */
 async function preflightProviders(
   io: Io,
   kube: KubeAdmin,
   opts: {
-    probes: ProviderProbe[];
+    checkPods: CheckPod[];
     name: string;
     namespace: string;
     ctx: { context?: string };
@@ -2626,20 +2622,20 @@ async function preflightProviders(
 ): Promise<void> {
   const { namespace, ctx } = opts;
   // First, and with no check to run too: the leftovers of an earlier run can hold a key.
-  await removeProbeLeftovers(io, kube, opts.name, namespace, ctx);
-  if (!opts.probes.length) return;
+  await removeCheckLeftovers(io, kube, opts.name, namespace, ctx);
+  if (!opts.checkPods.length) return;
   const run = randomBytes(4).toString("hex");
   const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
   const faults: string[] = [];
-  for (const [n, probe] of opts.probes.entries()) {
+  for (const [n, checkPod] of opts.checkPods.entries()) {
     const object = `${PROVIDER_PREFLIGHT}-${run}-${n}`;
-    const models = probe.providers.flatMap((p) => p.models);
+    const models = checkPod.providers.flatMap((p) => p.models);
     /** The models whose result is already said, while the pod ran, and what it was: a final log
      * read that comes back empty must not turn a result already said into "not checked". */
     const said = new Set<string>();
-    const live = new Map<string, ProbeVerdict>();
+    const live = new Map<string, CheckVerdict>();
     let lastLive = "";
-    for (const p of probe.providers) {
+    for (const p of checkPod.providers) {
       // No held key is not no credential: a credential that pi reads from `harness.env` (an AWS
       // role for Bedrock, say) reaches the check as it reaches a Turn.
       const why = p.custom
@@ -2647,41 +2643,41 @@ async function preflightProviders(
         : `no Harness pod there holds a key of "${p.id}"; a credential in harness.env still reaches it`;
       const holds = p.keys.length
         ? `through a Custodian that holds ${p.keys.join(", ")} for ${p.hosts.join(", ")}`
-        : probe.manifest.secrets.length
+        : checkPod.manifest.secrets.length
           ? `with no held key (${why}), through the Custodian's tunnel, as those pods call it`
           : `with no held key (${why}), direct, as a pod that holds no secret calls it`;
-      activity(io, `provider: checking ${p.models.join(", ")} on ${probe.where}, ${holds}`);
+      activity(io, `provider: checking ${p.models.join(", ")} on ${checkPod.where}, ${holds}`);
     }
     activity(
       io,
-      `provider: the check pod has up to ${PROBE_START_SECONDS / 60} min to start, then up to ` +
-        `${PROBE_MODEL_SECONDS / 60} min for ${models.length === 1 ? "its model" : `each of its ${models.length} models`}`,
+      `provider: the check pod has up to ${CHECK_START_SECONDS / 60} min to start, then up to ` +
+        `${CHECK_MODEL_SECONDS / 60} min for ${models.length === 1 ? "its model" : `each of its ${models.length} models`}`,
     );
-    const runSeconds = PROBE_MODEL_SECONDS * models.length + PROBE_RUN_MARGIN_SECONDS;
+    const runSeconds = CHECK_MODEL_SECONDS * models.length + CHECK_RUN_MARGIN_SECONDS;
     // Built before the apply: a fault in jr2 here is jr2's, never the cluster's refusal.
-    const manifest = providerProbeObjects({
+    const manifest = checkPodObjects({
       name: opts.name,
       namespace,
       object,
       run,
       harnessImage: opts.harnessImage,
       custodianImage: opts.custodianImage,
-      held: probe.manifest,
+      held: checkPod.manifest,
       values: opts.values,
       leaves: opts.leaves,
       trust: opts.trust,
       custodian: {
-        bootstrap: JSON.stringify(custodianBootstrap(probe.manifest, orchestrator)),
-        script: custodianScript(probe.manifest),
+        bootstrap: JSON.stringify(custodianBootstrap(checkPod.manifest, orchestrator)),
+        script: custodianScript(checkPod.manifest),
       },
       token: randomBytes(24).toString("hex"),
       harnessEnvData: opts.harnessEnvData,
       models,
-      ...(probe.placement ? { placement: probe.placement } : {}),
+      ...(checkPod.placement ? { placement: checkPod.placement } : {}),
       priorityClassName: opts.priorityClassName,
       ...(opts.harness ? { harness: opts.harness } : {}),
       caBundle: opts.caBundle,
-      deadlineSeconds: PROBE_START_SECONDS + runSeconds + 60,
+      deadlineSeconds: CHECK_START_SECONDS + runSeconds + 60,
     });
     let end: PodEnd | undefined;
     let refused: string | undefined;
@@ -2689,7 +2685,7 @@ async function preflightProviders(
       // Server-side: the trust bundles carry every root, past client-side apply's annotation.
       await applyFirstContact(kube, { manifest, serverSide: true, ...ctx });
     } catch (err) {
-      // A quota, a Pod Security level or a webhook that refuses the pod: this probe's fault alone.
+      // A quota, a Pod Security level or a webhook that refuses the pod: this check pod's fault alone.
       refused = `the cluster refused the check pod's objects: ${errText(err)}`;
     }
     try {
@@ -2697,14 +2693,14 @@ async function preflightProviders(
         end = await kube.awaitPodEnd({
           namespace,
           name: object,
-          container: PROVIDER_PREFLIGHT_CONTAINER,
-          startSeconds: PROBE_START_SECONDS,
+          container: CHECK_CONTAINER,
+          startSeconds: CHECK_START_SECONDS,
           runSeconds,
           onPending: (line) => activity(io, `provider: the check pod is not running yet — ${line}`),
           // Each model's result as it arrives: a check of several slow models is not silence.
           onLog: (log: string) => {
             lastLive = log;
-            for (const [model, verdict] of probeVerdicts(log)) {
+            for (const [model, verdict] of checkVerdicts(log)) {
               live.set(model, verdict);
               if (said.has(model) || verdict.kind === "fault") continue;
               said.add(model);
@@ -2715,27 +2711,27 @@ async function preflightProviders(
         });
       }
     } finally {
-      await removeProbe(io, kube, object, namespace, ctx);
+      await removeCheckPod(io, kube, object, namespace, ctx);
     }
     // The last log read while the pod ran stands in for an empty final read.
     const output = end?.output || lastLive;
-    const verdicts = probeVerdicts(output);
-    const started = probeStarts(output);
-    for (const p of probe.providers) {
+    const verdicts = checkVerdicts(output);
+    const started = checkStarts(output);
+    for (const p of checkPod.providers) {
       for (const model of p.models) {
         const verdict = verdicts.get(model) ?? live.get(model);
         if (verdict && verdict.kind !== "fault") {
           if (!said.has(model)) sayVerdict(io, model, verdict);
           continue;
         }
-        const pod = () => podFault(end!, probe, opts);
+        const pod = () => podFault(end!, checkPod, opts);
         const why =
           verdict?.reason ??
           refused ??
           (started.has(model)
             ? `the check pod stopped while it checked this model: ${pod()}`
             : `not checked: the check pod stopped before it reached this model: ${pod()}`);
-        faults.push(providerFault(p, model, probe.where, why, probe.manifest.secrets.length > 0));
+        faults.push(providerFault(p, model, checkPod.where, why, checkPod.manifest.secrets.length > 0));
       }
     }
   }
@@ -2760,7 +2756,7 @@ async function applyFirstContact(kube: KubeAdmin, opts: Parameters<KubeAdmin["ap
   }
 }
 
-/** The trust bundles a probe pod reads (`<object>-ca`), as `trustObject` writes them to `jr2-ca`. */
+/** The trust bundles a check pod reads (`<object>-ca`), as `trustObject` writes them to `jr2-ca`. */
 function trustData(
   caBundle: string | undefined,
   bundles: { extra: string; bundle: string; upstream: string } | undefined,
@@ -2771,18 +2767,18 @@ function trustData(
   };
 }
 
-/** How long after it ended an earlier run's probe pod is left alone: that run may still be reading
+/** How long after it ended an earlier run's check pod is left alone: that run may still be reading
  * its log. Exported for its test. */
-export const PROBE_ENDED_MARGIN_SECONDS = 600;
+export const CHECK_ENDED_MARGIN_SECONDS = 600;
 
 /**
- * The leftovers of earlier runs of THIS Instance (`preflightProviders`), by label: a probe pod
- * past its `activeDeadlineSeconds` and `PROBE_ENDED_MARGIN_SECONDS`, in any phase; a probe pod that
- * ended more than `PROBE_ENDED_MARGIN_SECONDS` ago; each with its objects; and each object whose
- * pod is gone and that is older than any probe lives. A live pod, a pod that ended a short time
+ * The leftovers of earlier runs of THIS Instance (`preflightProviders`), by label: a check pod
+ * past its `activeDeadlineSeconds` and `CHECK_ENDED_MARGIN_SECONDS`, in any phase; a check pod that
+ * ended more than `CHECK_ENDED_MARGIN_SECONDS` ago; each with its objects; and each object whose
+ * pod is gone and that is older than any check pod lives. A live pod, a pod that ended a short time
  * ago and another Instance's objects stay. Every failure here is a warning.
  */
-async function removeProbeLeftovers(
+async function removeCheckLeftovers(
   io: Io,
   kube: KubeAdmin,
   name: string,
@@ -2792,7 +2788,7 @@ async function removeProbeLeftovers(
   const selector = `${LABEL_PROVIDER_PREFLIGHT},${LABEL_INSTANCE}=${name}`;
   const since = (at: string | undefined) => (Date.now() - Date.parse(at ?? "")) / 1000;
   try {
-    type Probe = KubeObject & {
+    type CheckObject = KubeObject & {
       metadata: { creationTimestamp?: string };
       spec?: { activeDeadlineSeconds?: number };
       status?: {
@@ -2800,26 +2796,27 @@ async function removeProbeLeftovers(
         containerStatuses?: Array<{ name?: string; state?: { terminated?: { finishedAt?: string } } }>;
       };
     };
-    const pods = await kube.listJson<Probe>({ kind: "pod", selector, namespace, ...ctx });
+    const pods = await kube.listJson<CheckObject>({ kind: "pod", selector, namespace, ...ctx });
     const named = new Set(pods.map((p) => p.metadata.name));
     for (const p of pods) {
       // Past its deadline and the margin, in any phase: a pod no node took has no start time, so
       // the kubelet never applies `activeDeadlineSeconds` to it, and its Secret holds a key.
-      const deadline = (p.spec?.activeDeadlineSeconds ?? 0) + PROBE_ENDED_MARGIN_SECONDS;
+      const deadline = (p.spec?.activeDeadlineSeconds ?? 0) + CHECK_ENDED_MARGIN_SECONDS;
       if (since(p.metadata.creationTimestamp) > deadline) {
-        await removeProbe(io, kube, p.metadata.name, namespace, ctx);
+        await removeCheckPod(io, kube, p.metadata.name, namespace, ctx);
         continue;
       }
       if (!["Succeeded", "Failed"].includes(p.status?.phase ?? "")) continue;
-      const finished = p.status?.containerStatuses?.find((c) => c.name === PROVIDER_PREFLIGHT_CONTAINER)?.state
+      // The check container, or `probe` in a pod that an older `jr2 up` made: the label finds both.
+      const finished = p.status?.containerStatuses?.find((c) => c.name === CHECK_CONTAINER || c.name === "probe")?.state
         ?.terminated?.finishedAt;
-      if (!(since(finished ?? p.metadata.creationTimestamp) > PROBE_ENDED_MARGIN_SECONDS)) continue;
-      await removeProbe(io, kube, p.metadata.name, namespace, ctx);
+      if (!(since(finished ?? p.metadata.creationTimestamp) > CHECK_ENDED_MARGIN_SECONDS)) continue;
+      await removeCheckPod(io, kube, p.metadata.name, namespace, ctx);
     }
     for (const kind of ["configmap", "secret"]) {
-      for (const o of await kube.listJson<Probe>({ kind, selector, namespace, ...ctx })) {
+      for (const o of await kube.listJson<CheckObject>({ kind, selector, namespace, ...ctx })) {
         const owner = o.metadata.name.replace(/-(ca|tls|env)$/, "");
-        if (named.has(owner) || !(since(o.metadata.creationTimestamp) > PROBE_LEFTOVER_SECONDS)) continue;
+        if (named.has(owner) || !(since(o.metadata.creationTimestamp) > CHECK_LEFTOVER_SECONDS)) continue;
         await kube.deleteObject({ kind, name: o.metadata.name, namespace, wait: false, ...ctx });
       }
     }
@@ -2828,9 +2825,9 @@ async function removeProbeLeftovers(
   }
 }
 
-/** One probe's objects, deleted; a failure is a warning, so it hides no probe's answer. */
-async function removeProbe(io: Io, kube: KubeAdmin, object: string, namespace: string, ctx: { context?: string }) {
-  for (const { kind, name } of providerProbeObjectNames(object)) {
+/** One check pod's objects, deleted; a failure is a warning, so it hides no check's answer. */
+async function removeCheckPod(io: Io, kube: KubeAdmin, object: string, namespace: string, ctx: { context?: string }) {
+  for (const { kind, name } of checkPodObjectNames(object)) {
     try {
       await kube.deleteObject({ kind, name, namespace, wait: false, ...ctx });
     } catch (err) {
@@ -2851,7 +2848,7 @@ export function refusedKey(fault: string): boolean {
 }
 
 /** One model's result line (`preflight-line.ts` in `@jr2/harness`). */
-type ProbeVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
+type CheckVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
 
 /** One model's result that does not fail the converge, said as it comes. */
 function sayVerdict(
@@ -2868,7 +2865,7 @@ function sayVerdict(
 
 /** The models whose check began (`start` lines, `preflight-line.ts`): a model with a start and no
  * verdict was on when the pod stopped; a model with neither was never reached. */
-export function probeStarts(output: string): Set<string> {
+export function checkStarts(output: string): Set<string> {
   const started = new Set<string>();
   for (const line of output.split("\n")) {
     const m = /^jr2\.preflight model=(\S+) start$/.exec(line.trim());
@@ -2877,10 +2874,10 @@ export function probeStarts(output: string): Set<string> {
   return started;
 }
 
-/** Each model's verdict, off the probe's output lines (`preflight-line.ts` in `@jr2/harness`, held
+/** Each model's verdict, off the check container's output lines (`preflight-line.ts` in `@jr2/harness`, held
  * to this parser by a test). A line that is not a result is not a verdict. */
-export function probeVerdicts(output: string): Map<string, ProbeVerdict> {
-  const verdicts = new Map<string, ProbeVerdict>();
+export function checkVerdicts(output: string): Map<string, CheckVerdict> {
+  const verdicts = new Map<string, CheckVerdict>();
   for (const line of output.split("\n")) {
     const m = /^jr2\.preflight model=(\S+) (?:(ok)|(fault|busy|warn)=(.*))$/.exec(line.trim());
     if (!m) continue;
@@ -2890,13 +2887,13 @@ export function probeVerdicts(output: string): Map<string, ProbeVerdict> {
 }
 
 /**
- * Why a probe pod said nothing of a model, from how it ended (`PodEnd`): the hint follows the reason
+ * Why a check pod said nothing of a model, from how it ended (`PodEnd`): the hint follows the reason
  * the kubelet gave, and the Custodian's own refusal line is quoted when it has one. Exported for its
  * test.
  */
 export function podFault(
   end: PodEnd,
-  probe: Pick<ProviderProbe, "where">,
+  checkPod: Pick<CheckPod, "where">,
   images: { harnessImage: string; custodianImage: string },
 ): string {
   const refusal = /jr2\.custodian refuse secret=\S+ reason=[\w-]+/.exec(end.custodian)?.[0];
@@ -2904,7 +2901,7 @@ export function podFault(
   const stuck = end.stuck ?? "";
   if (/ErrImagePull|ImagePullBackOff|InvalidImageName/.test(stuck)) {
     return (
-      `the check pod cannot start: ${stuck}${said} — a node on ${probe.where} cannot pull ` +
+      `the check pod cannot start: ${stuck}${said} — a node on ${checkPod.where} cannot pull ` +
       `${stuck.startsWith("custodian") ? images.custodianImage : images.harnessImage}; check \`registry\` or ` +
       "`kitRegistry`, and that those nodes can pull from it"
     );
@@ -2930,7 +2927,7 @@ export function podFault(
       `the check pod ran out of memory: ${oom}${said} — ` +
       (custodian
         ? `its Custodian has the Instance Harness Custodian's limit (${KIT_POD_SIZES.instanceCustodian.limits.memory})`
-        : `the check container's limit is ${KIT_POD_SIZES.providerProbe.limits.memory}`) +
+        : `the check container's limit is ${KIT_POD_SIZES.checkContainer.limits.memory}`) +
       "; a jr2 defect, not a fault of the provider"
     );
   }
@@ -2943,7 +2940,7 @@ export function podFault(
   if (end.phase === "timeout") {
     return end.started
       ? `the check did not end in time${said}`
-      : `the check pod did not start in ${PROBE_START_SECONDS}s${said} — no node on ${probe.where} fits it, or its image pulls are slow`;
+      : `the check pod did not start in ${CHECK_START_SECONDS}s${said} — no node on ${checkPod.where} fits it, or its image pulls are slow`;
   }
   if (!end.output.trim()) {
     return `the check pod ended ${end.phase}${said}, and jr2 up could not read its log — run \`jr2 up\` again`;
@@ -2953,7 +2950,7 @@ export function podFault(
 }
 
 /** One model's preflight failure: the model, the host, and the likely causes. */
-function providerFault(p: ProbedProvider, model: string, where: string, fault: string, custodian: boolean): string {
+function providerFault(p: CheckedProvider, model: string, where: string, fault: string, custodian: boolean): string {
   const hosts = p.hosts.join(", ") || `the host of "${p.id}"`;
   // A model that loads on first use (Ollama, a large vLLM model) can take longer than the bound.
   // Only where jr2 cannot know the endpoint: the custom provider, or a gateway.

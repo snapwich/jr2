@@ -52,7 +52,7 @@ function mkKube(listing: Listing = {}, context = "kind-jr2"): KubeAdmin & { dele
     deleteManifest: async () => assert.fail("gc deletes no manifests"),
     waitRollout: async () => assert.fail("gc waits for nothing"),
     logs: async () => assert.fail("gc reads no logs") as never,
-    awaitPodEnd: async () => assert.fail("gc probes nothing") as never,
+    awaitPodEnd: async () => assert.fail("gc runs no check pod") as never,
     serverVersion: async () => assert.fail("gc reads no version") as never,
     dryRunCreate: async () => assert.fail("gc dry-runs nothing") as never,
     listJson: async <T>(o: { kind: string; namespace?: string }): Promise<T[]> => {

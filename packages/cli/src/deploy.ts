@@ -164,7 +164,7 @@ export const KIT_POD_SIZES = {
   /** The Instance Effector (ADR-0068): one http call at a time per Effect, its text body bounded. */
   instanceEffector: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "128Mi" } },
   /** The provider preflight's check container (ADR-0019): one Node.js process, pi-ai, one call at a time. */
-  providerProbe: { requests: { cpu: "100m", memory: "512Mi" }, limits: { memory: "512Mi" } },
+  checkContainer: { requests: { cpu: "100m", memory: "512Mi" }, limits: { memory: "512Mi" } },
 } as const;
 
 /** A fresh copy, so no manifest shares an object with another (or with the constant). */
@@ -1044,8 +1044,8 @@ export function instanceHarnessObjects(opts: {
 }
 
 /** What the Instance can REACH (ADR-0018), as the `jr2-harness` ConfigMap carries it to every
- * Harness container: the custom provider without its key and the catalog gateways. The provider
- * preflight's pod carries the same text in its own ConfigMap (ADR-0019). */
+ * Harness container: the custom provider without its key and the catalog gateways. The check pod
+ * carries the same text in its own ConfigMap (ADR-0019). */
 export function harnessConfigJson(harness: HarnessConfig | undefined): string {
   return JSON.stringify(
     {
@@ -1071,17 +1071,17 @@ export function harnessConfigJson(harness: HarnessConfig | undefined): string {
   );
 }
 
-/** The provider preflight's objects (ADR-0019): a probe pod and its own copies of what it reads,
+/** The provider preflight's objects (ADR-0019): a check pod and its own copies of what it reads,
  * each named `jr2-provider-preflight-<run>-<n>` or that name and a suffix, unique to one `jr2 up`. */
 export const PROVIDER_PREFLIGHT = "jr2-provider-preflight";
 /** The label every one of them carries, its value the `jr2 up` run: how a later run finds the
  * leftovers of a run that did not end, and leaves another run's objects alone. */
 export const LABEL_PROVIDER_PREFLIGHT = "jr2.dev/provider-preflight";
-/** The probe's container in that pod, whose output `jr2 up` reads. */
-export const PROVIDER_PREFLIGHT_CONTAINER = "probe";
+/** The check container in that pod, whose output `jr2 up` reads. An older `jr2 up` named it `probe`. */
+export const CHECK_CONTAINER = "check";
 
-/** Every object of one probe (`providerProbeObjects`), for its deletion. */
-export function providerProbeObjectNames(object: string): Array<{ kind: string; name: string }> {
+/** Every object of one check pod (`checkPodObjects`), for its deletion. */
+export function checkPodObjectNames(object: string): Array<{ kind: string; name: string }> {
   return [
     { kind: "pod", name: object },
     { kind: "configmap", name: object },
@@ -1093,40 +1093,40 @@ export function providerProbeObjectNames(object: string): Array<{ kind: string; 
 }
 
 /**
- * One probe pod of the provider preflight (ADR-0019, ADR-0059): a Harness pod with no Harness in
- * it, and its own copies of every object a Harness pod reads. So a probe writes nothing that a
- * running pod of the Instance reads, and a probe that fails leaves the Instance as it was.
+ * One check pod of the provider preflight (ADR-0019, ADR-0059): a Harness pod with no Harness in
+ * it, and its own copies of every object a Harness pod reads. So a check pod writes nothing that a
+ * running pod of the Instance reads, and a check that fails leaves the Instance as it was.
  *
  * - `<object>` (ConfigMap): the Custodian's bootstrap and script, the program and the harness config
  *   (`harnessConfigJson`).
  * - `<object>-ca` (ConfigMap): the trust bundles, as `jr2-ca` would carry them.
- * - `<object>` (Secret): the Custodian's token, a value the Orchestrator never signed (the probe
+ * - `<object>` (Secret): the Custodian's token, a value the Orchestrator never signed (the check pod
  *   reads no Menu), and the LITERAL values of the keys it holds, from the host. A `valueFrom` key
- *   stays a reference to the user's Secret. The values are in this Secret for the probe's life.
+ *   stays a reference to the user's Secret. The values are in this Secret for the check pod's life.
  * - `<object>-tls` (Secret): the leaves of the bound hosts. `<object>-env` (Secret): the literal
  *   `harness.env` values, which `jr2-harness-env` would carry.
  *
  * The Custodian is composed by the function every Harness pod's is (`custodianComposition`). With
- * no binding, it holds nothing and the probe's HTTPS goes direct, as in a Harness pod that holds no
- * secret. The probe container runs the stock Harness image's `provider-preflight.ts` with the Harness
+ * no binding, it holds nothing and the check pod's HTTPS goes direct, as in a Harness pod that holds no
+ * secret. The check container runs the stock Harness image's `provider-preflight.ts` with the Harness
  * container's env, so the call is the one a Turn makes, and the key never enters that container,
  * its argv or its log. The argv is the model specifiers alone.
  *
  * The pod has the placement and the priority class of the Harness pods it stands for (ADR-0052,
  * ADR-0060). Its labels are its own and match no Harness pod's: the Instance Harness Service
  * selects by label, and would send Turns to it. The Custodian is a native sidecar with a startup
- * probe, so the probe starts only once Envoy serves and the pod ends when the probe does.
+ * probe, so the check starts only once Envoy serves and the pod ends when the check does.
  */
-export function providerProbeObjects(opts: {
+export function checkPodObjects(opts: {
   name: string;
   namespace: string;
-  /** This probe's object name (`jr2-provider-preflight-<run>-<n>`) and its run, for the label. */
+  /** This check pod's object name (`jr2-provider-preflight-<run>-<n>`) and its run, for the label. */
   object: string;
   run: string;
   /** The resolved stock Harness ref: the image a Turn's Harness runs, with pi-ai at the pin. */
   harnessImage: string;
   custodianImage: string;
-  /** The bindings of the keys this probe holds: each a part of a held pod's manifest. */
+  /** The bindings of the keys this check pod holds: each a part of a held pod's manifest. */
   held: HeldManifest;
   /** The literal values of those keys, by name, from the host. */
   values: Record<string, string>;
@@ -1139,9 +1139,9 @@ export function providerProbeObjects(opts: {
   token: string;
   /** The literal `harness.env` values. */
   harnessEnvData: Record<string, string>;
-  /** The `<provider>/<model>` specifiers to probe, in order. */
+  /** The `<provider>/<model>` specifiers to check, in order. */
   models: readonly string[];
-  /** The node predicate of the Harness pods this probe stands for. */
+  /** The node predicate of the Harness pods this check pod stands for. */
   placement?: SandboxPlacement;
   priorityClassName: string;
   harness?: HarnessConfig;
@@ -1193,7 +1193,7 @@ export function providerProbeObjects(opts: {
       ],
       containers: [
         {
-          name: PROVIDER_PREFLIGHT_CONTAINER,
+          name: CHECK_CONTAINER,
           image: opts.harnessImage,
           imagePullPolicy: "IfNotPresent",
           // Under tini, as the Harness runs (ADR-0061): PID 1 reaps, and forwards a stop.
@@ -1212,7 +1212,7 @@ export function providerProbeObjects(opts: {
           ],
           envFrom: [{ secretRef: { name: `${o}-env` } }, ...(opts.harness?.envFrom ?? [])],
           volumeMounts: custodian.harnessMounts,
-          resources: sized(KIT_POD_SIZES.providerProbe),
+          resources: sized(KIT_POD_SIZES.checkContainer),
           securityContext: {
             runAsNonRoot: true,
             allowPrivilegeEscalation: false,

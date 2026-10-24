@@ -798,7 +798,7 @@ export type CustodianCompositionOptions = {
   sandbox?: string;
   /** The Instance's objects this Custodian reads, by another name. Default: the Instance's own —
    * `pod`'s literal values (`heldSecretsSecret(pod)`), `jr2-held-tls`, `jr2-ca`, and the program in
-   * `jr2-held`. The provider preflight's pod (ADR-0019) reads its own copies, so a probe writes
+   * `jr2-held`. The provider preflight's pod (ADR-0019) reads its own copies, so a check pod writes
    * nothing that a running pod of the Instance reads. */
   shared?: { literals: string; tls: string; trust: string; program: string };
   /** The Instance ships a `harness.caBundle` (ADR-0020). */

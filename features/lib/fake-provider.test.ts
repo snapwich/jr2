@@ -10,9 +10,9 @@ import { isPreflight, PREFLIGHT_PROMPT, PREFLIGHT_TOOL } from "../steps/fake-pro
 
 test("the preflight's tool and prompt are the ones the Harness's provider preflight sends", () => {
   const provider = readFileSync(new URL("../../packages/harness/src/provider.ts", import.meta.url), "utf8");
-  const probeTool = /const PROBE_TOOL: Tool = \{\s*name: "([^"]*)"/.exec(provider);
-  assert.ok(probeTool, "provider.ts still names its probe tool in PROBE_TOOL");
-  assert.equal(probeTool[1], PREFLIGHT_TOOL);
+  const checkTool = /const CHECK_TOOL: Tool = \{\s*name: "([^"]*)"/.exec(provider);
+  assert.ok(checkTool, "provider.ts still names its check tool in CHECK_TOOL");
+  assert.equal(checkTool[1], PREFLIGHT_TOOL);
   const prompt = /content: \[\{ type: "text", text: "([^"]*)" \}\]/.exec(provider);
   assert.ok(prompt, "provider.ts still sends the preflight's prompt as one text part");
   assert.equal(prompt[1], PREFLIGHT_PROMPT);

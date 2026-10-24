@@ -321,6 +321,14 @@ The public value that the Harness holds in place of a Held secret. It means some
 toward a host that the secret is bound to; sent anywhere else, it arrives as it left.
 _Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
 
+**Check pod**:
+The one-shot pod in which the provider preflight of `jr2 up` checks the models of one class of Harness pod, before the
+converge writes an object that the Instance reads. It has a Custodian, its own copies of the objects that it reads, and
+labels that no Harness pod has. Its check container calls each model as a Turn calls it. The preflight is the step of
+`jr2 up`, and a check is what the check container does for one model: one call, and at most a second one after an
+answer in text.
+_Avoid_: probe, probe pod, preflight pod, test pod, Harness (it runs none)
+
 **Effector**:
 The container where jr2's own process runs a Machine's Effects and holds their secrets, and where the Agent executes
 nothing: a Sandbox Effector or the Instance Effector. Every Effect runs in it except a command that names no secret,

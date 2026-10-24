@@ -78,7 +78,7 @@ about and where it works — `prompt`, `cwd` — is neither identity nor a dial 
 exists only once a run does, and no more a property of the persona than the prompt is.
 
 Where a model is checked: two seats, each where the knowledge is. At **converge**, `jr2 up` walks the registered
-Machines for the definitions they carry (ADR-0049) and probes a configured provider once per distinct model they name.
+Machines for the definitions they carry (ADR-0049) and checks a configured provider once per distinct model they name.
 At **admission**, the Harness resolves the definition it was handed against its registry and 400s the invoke as its
 state is entered, rather than settling the Submission `failed` mid-run. The pod-boot seat retired with the roster it
 read: the Harness no longer knows an Agent before a Turn brings it one. A dial has only ever had the admission seat — a

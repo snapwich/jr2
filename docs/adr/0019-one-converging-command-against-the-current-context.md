@@ -136,7 +136,7 @@ loudly narrated, safe to re-run:
     middle of an answer is one that a Turn cannot use either. Each model has 360 s for all its calls: two calls, each
     with 120 s to its first event and 60 s of the gaps that follow. Each model has its own 360 s, so one slow model does
     not use the time of the others. Two literals set it, `PREFLIGHT_MODEL_BUDGET_SECONDS` in `preflight-line.ts` for the
-    check and `PROBE_MODEL_SECONDS` in `up.ts` for the pod, and a test holds them equal. A call or a model that runs out
+    check and `CHECK_MODEL_SECONDS` in `up.ts` for the pod, and a test holds them equal. A call or a model that runs out
     fails. For the custom provider and a gateway, the error adds that a model that loads on first use can take longer.
   - **Busy, when a call runs out.** The rule: the last status that any try of the call got was a 429 or a 529, and then
     the call ran out. A later 200 or 503 clears it. pi-ai sends each retry as a new request. The check sees each try

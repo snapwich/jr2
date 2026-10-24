@@ -1,11 +1,11 @@
-// The provider preflight's probe (ADR-0019, ADR-0059): `jr2 up` runs this file in the stock
-// Harness image, in a one-shot pod beside a Custodian, with the Harness container's env — the
+// The provider preflight's check (ADR-0019, ADR-0059): `jr2 up` runs this file in the stock
+// Harness image, in the check pod beside a Custodian, with the Harness container's env — the
 // harness config, `harness.env` and `harness.envFrom`, a Stand-in for each held model key, the
 // proxy and the trust. So each model resolves and is called as a Turn calls it: pi's catalog and
 // its api, the `harness.catalog` gateway, and the Custodian that swaps the key in toward the bound
 // host. The key itself never reaches this process.
 //
-// The argv is the model specifiers to probe, each one in turn. Two lines per model on stdout
+// The argv is the model specifiers to check, each one in turn. Two lines per model on stdout
 // (`preflight-line.ts`): a start, then a verdict, which `jr2 up` reads as they come. The exit is 1
 // when any model's verdict is `fault`.
 
@@ -15,7 +15,7 @@ import {
   preflightStart,
   type PreflightVerdict,
 } from "./preflight-line.ts";
-import { modelsFor, probeModel } from "./provider.ts";
+import { modelsFor, checkModel } from "./provider.ts";
 import { loadHarnessSpec } from "./spec.ts";
 
 /** Each model's whole budget (`PREFLIGHT_MODEL_BUDGET_SECONDS`): past it the model is a fault, and
@@ -43,7 +43,7 @@ for (const specifier of specifiers) {
     verdict = { kind: "fault", reason: refused! };
   } else {
     const budget = AbortSignal.timeout(MODEL_BUDGET_MS);
-    verdict = await probeModel(models, specifier, { signal: budget }).catch(
+    verdict = await checkModel(models, specifier, { signal: budget }).catch(
       (err: unknown): PreflightVerdict => ({ kind: "fault", reason: said(err) }),
     );
     if (budget.aborted && verdict.kind === "fault") {

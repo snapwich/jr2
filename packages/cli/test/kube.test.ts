@@ -1,4 +1,4 @@
-// The one-shot probe's failure message (ADR-0019). `kubectl run --attach` puts the POD's output on
+// The check pod's failure message (ADR-0019). `kubectl run --attach` puts the POD's output on
 // kubectl's stdout and kubectl's own verdict on stderr, and execFile's rejection carries only the
 // latter — so a preflight that failed inside the pod reported nothing about why. These cases pin
 // the pod's words into the message the converge throws.
@@ -404,7 +404,7 @@ test("a version the floor cannot read is refused by name, never passed", () => {
   assert.match(said, /"devel"/);
 });
 
-test("podProgress: a pod that cannot start stops the wait; a pulling one does not; the probe's start is seen", () => {
+test("podProgress: a pod that cannot start stops the wait; a pulling one does not; the check container's start is seen", () => {
   const pod = (
     phase: string,
     init: Record<string, unknown>,
@@ -413,7 +413,7 @@ test("podProgress: a pod that cannot start stops the wait; a pulling one does no
     status: {
       phase,
       initContainerStatuses: [{ name: "custodian", ...init }],
-      containerStatuses: [{ name: "probe", ...main }],
+      containerStatuses: [{ name: "check", ...main }],
     },
   });
   const pulling = podProgress(
@@ -422,23 +422,23 @@ test("podProgress: a pod that cannot start stops the wait; a pulling one does no
       { state: { waiting: { reason: "PodInitializing" } } },
       { state: { waiting: { reason: "ContainerCreating" } } },
     ),
-    "probe",
+    "check",
     "custodian",
   );
   assert.deepEqual([pulling.phase, pulling.stuck, pulling.running], [undefined, undefined, false]);
   for (const reason of ["CreateContainerConfigError", "CrashLoopBackOff", "InvalidImageName"]) {
-    const seen = podProgress(pod("Pending", {}, { state: { waiting: { reason } } }), "probe", "custodian");
-    assert.equal(seen.stuck, `probe: ${reason}`);
+    const seen = podProgress(pod("Pending", {}, { state: { waiting: { reason } } }), "check", "custodian");
+    assert.equal(seen.stuck, `check: ${reason}`);
   }
   // A pull is final only when the registry says the image, or the right to it, is not there.
   const waiting = (reason: string, message?: string) =>
     podProgress(
       pod("Pending", {}, { state: { waiting: { reason, ...(message ? { message } : {}) } } }),
-      "probe",
+      "check",
       "custodian",
     );
   for (const message of ["manifest unknown", "pull access denied", "401 Unauthorized", "not found"]) {
-    assert.equal(waiting("ErrImagePull", message).stuck, "probe: ErrImagePull", message);
+    assert.equal(waiting("ErrImagePull", message).stuck, "check: ErrImagePull", message);
   }
   for (const message of ["i/o timeout", "429 Too Many Requests", "context deadline exceeded"]) {
     assert.equal(
@@ -449,15 +449,15 @@ test("podProgress: a pod that cannot start stops the wait; a pulling one does no
   }
   // CreateContainerError can pass by itself (a runtime that is slow to start a container).
   assert.equal(waiting("CreateContainerError").stuck, undefined);
-  const restarted = podProgress(pod("Pending", { restartCount: 1, state: { running: {} } }, {}), "probe", "custodian");
+  const restarted = podProgress(pod("Pending", { restartCount: 1, state: { running: {} } }, {}), "check", "custodian");
   assert.equal(restarted.stuck, "custodian: restarted", "the Custodian refused to start, and will again");
   const running = podProgress(
     pod("Running", { state: { running: {} } }, { state: { running: {} } }),
-    "probe",
+    "check",
     "custodian",
   );
   assert.deepEqual([running.stuck, running.running], [undefined, true]);
-  assert.equal(podProgress(pod("Failed", {}, {}), "probe", "custodian").phase, "Failed");
+  assert.equal(podProgress(pod("Failed", {}, {}), "check", "custodian").phase, "Failed");
 });
 
 test("podProgress: a Custodian that restarted says how its run before ended", () => {
@@ -475,7 +475,7 @@ test("podProgress: a Custodian that restarted says how its run before ended", ()
         ],
       },
     },
-    "probe",
+    "check",
     "custodian",
   );
   assert.equal(seen.stuck, "custodian: restarted (last ended OOMKilled)");
@@ -512,34 +512,34 @@ function scripted(
   return { ports, reads, pending, clock: () => t };
 }
 
-const statusOf = (probe: Record<string, unknown>, phase = "Pending") => ({
+const statusOf = (check: Record<string, unknown>, phase = "Pending") => ({
   status: {
     phase,
     initContainerStatuses: [{ name: "custodian", state: { running: {} } }],
-    containerStatuses: [{ name: "probe", ...probe }],
+    containerStatuses: [{ name: "check", ...check }],
   },
 });
 
-test("waitPodEnd: the run bound starts when the probe runs, and the probe's whole log is read", async () => {
+test("waitPodEnd: the run bound starts when the check container runs, and its whole log is read", async () => {
   const pulling = statusOf({ state: { waiting: { reason: "ContainerCreating" } } });
   const running = statusOf({ state: { running: {} } }, "Running");
   const { ports, reads, clock } = scripted(
     [...Array(100).fill(pulling), running, statusOf({ state: { terminated: { reason: "Completed" } } }, "Succeeded")],
-    { probe: "jr2.preflight model=a/b ok" },
+    { check: "jr2.preflight model=a/b ok" },
   );
   // 200 s of pulls is past no bound: the start bound is 300 s, and the run bound starts later.
-  const end = await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 10 });
+  const end = await waitPodEnd(ports, { container: "check", startSeconds: 300, runSeconds: 10 });
   assert.deepEqual([end.phase, end.started, end.output], ["Succeeded", true, "jr2.preflight model=a/b ok"]);
   assert.equal(clock(), 101 * 2000);
-  assert.deepEqual(reads, ["probe -1", "custodian 50"], "the whole probe log, every model's line");
+  assert.deepEqual(reads, ["check -1", "custodian 50"], "the whole check log, every model's line");
 });
 
 test("waitPodEnd: a pod that never starts times out at the start bound; one that runs too long at the run bound", async () => {
   const never = scripted([statusOf({ state: { waiting: { reason: "ContainerCreating" } } })]);
-  const late = await waitPodEnd(never.ports, { container: "probe", startSeconds: 10, runSeconds: 999 });
+  const late = await waitPodEnd(never.ports, { container: "check", startSeconds: 10, runSeconds: 999 });
   assert.deepEqual([late.phase, late.started, never.clock()], ["timeout", false, 10_000]);
   const slow = scripted([statusOf({ state: { running: {} } }, "Running")]);
-  const long = await waitPodEnd(slow.ports, { container: "probe", startSeconds: 999, runSeconds: 6 });
+  const long = await waitPodEnd(slow.ports, { container: "check", startSeconds: 999, runSeconds: 6 });
   assert.deepEqual([long.phase, long.started, slow.clock()], ["timeout", true, 6000]);
 });
 
@@ -555,10 +555,10 @@ test("waitPodEnd: a Custodian restart stops the wait at once, and its run before
   const { ports, reads, clock } = scripted([restarted], {
     "custodian previous": "jr2.custodian refuse secret=ANTHROPIC_API_KEY reason=empty-value",
   });
-  const end = await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  const end = await waitPodEnd(ports, { container: "check", startSeconds: 300, runSeconds: 90 });
   assert.deepEqual([end.phase, end.stuck, clock()], ["stuck", "custodian: restarted", 0]);
   assert.match(end.custodian, /reason=empty-value/);
-  assert.deepEqual(reads, ["probe -1", "custodian previous 50", "custodian 50"]);
+  assert.deepEqual(reads, ["check -1", "custodian previous 50", "custodian 50"]);
 });
 
 test("failedMount: the kubelet's texts for a missing Secret, Secret key or ConfigMap key, counted when said again", () => {
@@ -597,7 +597,7 @@ test("waitPodEnd: a volume that cannot mount stops the wait once the kubelet say
   let polls = 0;
   const { ports, clock } = scripted([creating]);
   ports.events = async () => [{ reason: "FailedMount", message, count: ++polls > 2 ? 2 : 1 }];
-  const end = await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  const end = await waitPodEnd(ports, { container: "check", startSeconds: 300, runSeconds: 90 });
   assert.equal(end.phase, "stuck");
   assert.match(end.stuck ?? "", /^FailedMount: .*non-existent secret key/);
   assert.equal(clock(), 4000, "two polls of the same count, then the poll on which it went up");
@@ -614,28 +614,28 @@ test("waitPodEnd: each new reason a pod gives for not running is said once, for 
   };
   const creating = statusOf({ state: { waiting: { reason: "ContainerCreating" } } });
   const { ports, pending } = scripted([unscheduled, unscheduled, creating, statusOf({}, "Succeeded")], {
-    probe: "jr2.preflight model=a/b ok",
+    check: "jr2.preflight model=a/b ok",
   });
-  await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
-  assert.deepEqual(pending, ["Unschedulable: 0/3 nodes are available", "probe: ContainerCreating"]);
+  await waitPodEnd(ports, { container: "check", startSeconds: 300, runSeconds: 90 });
+  assert.deepEqual(pending, ["Unschedulable: 0/3 nodes are available", "check: ContainerCreating"]);
 });
 
 test("waitPodEnd: a log read that answers nothing after the pod ended is read again", async () => {
-  const { ports, reads } = scripted([statusOf({}, "Succeeded")], { probe: ["", "", "jr2.preflight model=a/b ok"] });
-  const end = await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  const { ports, reads } = scripted([statusOf({}, "Succeeded")], { check: ["", "", "jr2.preflight model=a/b ok"] });
+  const end = await waitPodEnd(ports, { container: "check", startSeconds: 300, runSeconds: 90 });
   assert.equal(end.output, "jr2.preflight model=a/b ok");
   assert.deepEqual(
-    reads.filter((r) => r.startsWith("probe")),
-    ["probe -1", "probe -1", "probe -1"],
+    reads.filter((r) => r.startsWith("check")),
+    ["check -1", "check -1", "check -1"],
   );
 });
 
 test("waitPodEnd: while the check container runs, its log goes to `log` on each poll", async () => {
   const running = statusOf({ state: { running: {} } }, "Running");
-  const { ports } = scripted([running, running, statusOf({}, "Succeeded")], { probe: "jr2.preflight model=a/b ok" });
+  const { ports } = scripted([running, running, statusOf({}, "Succeeded")], { check: "jr2.preflight model=a/b ok" });
   const logs: string[] = [];
   ports.log = (output) => void logs.push(output);
-  await waitPodEnd(ports, { container: "probe", startSeconds: 300, runSeconds: 90 });
+  await waitPodEnd(ports, { container: "check", startSeconds: 300, runSeconds: 90 });
   assert.deepEqual(logs, ["jr2.preflight model=a/b ok", "jr2.preflight model=a/b ok"]);
 });
 
@@ -651,9 +651,9 @@ test('podPending: a pod that runs with no container waiting says nothing — not
     podPending({
       status: {
         phase: "Pending",
-        containerStatuses: [{ name: "probe", state: { waiting: { reason: "PodInitializing" } } }],
+        containerStatuses: [{ name: "check", state: { waiting: { reason: "PodInitializing" } } }],
       },
     }),
-    "probe: PodInitializing",
+    "check: PodInitializing",
   );
 });

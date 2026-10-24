@@ -9,8 +9,8 @@
 // carries its Agent's definition and the invocation's dials together — so the retired boot-time
 // sweep of a mounted roster has nothing left to sweep.
 //
-// `probeModel` is the provider preflight's call (ADR-0019): `jr2 up` runs `provider-preflight.ts` in this
-// image, beside a Custodian, so the probe resolves and calls a model the way a Turn does.
+// `checkModel` is the provider preflight's call (ADR-0019): `jr2 up` runs `provider-preflight.ts` in this
+// image, beside a Custodian, so the check resolves and calls a model the way a Turn does.
 //
 // `providerLimit` names a Turn's end when the provider still refused the load after the Harness's
 // retries (ADR-0064): the fixed prefix `provider limit`, as a memory kill has `memory limit`
@@ -160,12 +160,12 @@ export function mapThinkingLevel(level: ThinkingLevel): ModelThinkingLevel {
  * retried twice, with backoff, and a server's `retry-after` is honored up to 60 s. pi-ai runs them,
  * but only when the Harness states a number: it reads `maxRetries ?? 0`. 2 is the summarizer's
  * number too (`compaction.ts`), and the SDKs' own default. A Turn (`turn.ts`) and the provider
- * preflight (`probeModel`) use it. */
+ * preflight (`checkModel`) use it. */
 export const PROVIDER_RETRIES = 2;
 
 /** The one tool the provider preflight offers (ADR-0019). It takes nothing, so any call of it is
  * a valid call. */
-const PROBE_TOOL: Tool = {
+const CHECK_TOOL: Tool = {
   name: "ping",
   description: "Reply with a ping.",
   parameters: { type: "object", properties: {} } as unknown as Tool["parameters"],
@@ -174,9 +174,9 @@ const PROBE_TOOL: Tool = {
 /**
  * How each api is told to call `ping` (ADR-0019). pi-ai's provider-neutral `toolChoice` says only
  * `auto` or `none`, but every one of its adapters hands the value to its api's own option as it is,
- * so the probe passes the api's own form; `catalog-gateway.test.ts` pins each one in the payload the
+ * so the check passes the api's own form; `catalog-gateway.test.ts` pins each one in the payload the
  * adapter builds. An api not here is not forced: `openai-codex-responses` signs in with OAuth alone,
- * so no test can see its payload. The probe forces only with thinking off: Anthropic, and Claude on
+ * so no test can see its payload. The check forces only with thinking off: Anthropic, and Claude on
  * Bedrock, refuse a forced tool while the model thinks.
  */
 export const FORCED_TOOL: Readonly<Record<string, unknown>> = {
@@ -192,19 +192,19 @@ export const FORCED_TOOL: Readonly<Record<string, unknown>> = {
 };
 
 /** The apis whose pi-ai adapter refuses a `fetch` that is not `globalThis.fetch` ("Custom fetch is not supported"
- * from Google's and Vertex's, pi-ai 1.4): the probe passes them none. A test runs the probe against
+ * from Google's and Vertex's, pi-ai 1.4): the check passes them none. A test runs the check against
  * a local server for each forced api and the custom one, so a pi bump that refuses another shows. */
 const FETCHLESS_APIS: ReadonlySet<string> = new Set(["google-generative-ai", "google-vertex"]);
 
-/** How long a call of the probe waits for its first event — text, thinking, a tool call or the end
- * — its retries included (each waits at most `PROBE_MAX_RETRY_DELAY_MS`). 120 s, because an Ollama
+/** How long a call of the check waits for its first event — text, thinking, a tool call or the end
+ * — its retries included (each waits at most `CHECK_MAX_RETRY_DELAY_MS`). 120 s, because an Ollama
  * endpoint loads the model on the first request and a llama.cpp on a CPU reads the prompt before it
  * writes: both are slow to start and then stream. */
-export const PROBE_FIRST_EVENT_MS = 120_000;
-/** How long a call of the probe waits between two events once the stream runs. 60 s: an endpoint
+export const CHECK_FIRST_EVENT_MS = 120_000;
+/** How long a call of the check waits between two events once the stream runs. 60 s: an endpoint
  * that stops for a minute in the middle of an answer is one that a Turn cannot use either. The
  * total is not bounded: a slow model that streams passes. */
-export const PROBE_EVENT_GAP_MS = 60_000;
+export const CHECK_EVENT_GAP_MS = 60_000;
 
 /**
  * The provider preflight's check of one model (ADR-0019): resolve `specifier` as a Turn does — the
@@ -220,7 +220,7 @@ export const PROBE_EVENT_GAP_MS = 60_000;
  *
  * The first call decides:
  * - An error is a `fault`, or `busy` when the provider still refuses the load after the Turn's
- *   retries (`probeBusy`, ADR-0064): it answered and took the key. A 503 alone is a `fault`.
+ *   retries (`checkBusy`, ADR-0064): it answered and took the key. A 503 alone is a `fault`.
  * - A tool call is `ok`.
  * - Text from the custom provider: a Turn there gets a nudge, so the same call goes once more; a
  *   tool call then is `ok`, an error decides as above, and text again is a `fault` (that is how a
@@ -234,17 +234,17 @@ export const PROBE_EVENT_GAP_MS = 60_000;
  * Beside a Turn's request, the check's options carry a `fetch` wrapper and an `onResponse` (a
  * Bedrock SDK middleware that a Turn does not have): they only read each try's status.
  *
- * A call waits `PROBE_FIRST_EVENT_MS` for its first event, then `PROBE_EVENT_GAP_MS` for each gap
+ * A call waits `CHECK_FIRST_EVENT_MS` for its first event, then `CHECK_EVENT_GAP_MS` for each gap
  * between events. A call that runs out is a `fault` ("no answer"), unless the last status that any
  * try of it got was a 429 or a 529 (a later 200 or 503 clears it): then it is `busy`. Google's and
  * Vertex's tries are not seen, so for them only the final error counts. A second call that runs
  * out keeps the first verdict.
  */
-export async function probeModel(
+export async function checkModel(
   models: Models,
   specifier: string,
   options: {
-    /** The two bounds of each call. Default `PROBE_FIRST_EVENT_MS`, `PROBE_EVENT_GAP_MS`. */
+    /** The two bounds of each call. Default `CHECK_FIRST_EVENT_MS`, `CHECK_EVENT_GAP_MS`. */
     firstEventMs?: number;
     gapMs?: number;
     /** Whether a text answer may get a second, forced call. Default: not for a provider that
@@ -254,8 +254,8 @@ export async function probeModel(
     signal?: AbortSignal;
   } = {},
 ): Promise<PreflightVerdict> {
-  const firstEventMs = options.firstEventMs ?? PROBE_FIRST_EVENT_MS;
-  const gapMs = options.gapMs ?? PROBE_EVENT_GAP_MS;
+  const firstEventMs = options.firstEventMs ?? CHECK_FIRST_EVENT_MS;
+  const gapMs = options.gapMs ?? CHECK_EVENT_GAP_MS;
   let model: Model<Api>;
   try {
     model = resolveModel(models, specifier);
@@ -296,11 +296,11 @@ export async function probeModel(
       {
         // A Turn's user message is a list of parts (`turn.ts`); the check's is one text part.
         messages: [{ role: "user", content: [{ type: "text", text: "Call the ping tool." }], timestamp: Date.now() }],
-        tools: [PROBE_TOOL],
+        tools: [CHECK_TOOL],
       },
       {
         maxRetries: PROVIDER_RETRIES,
-        maxRetryDelayMs: PROBE_MAX_RETRY_DELAY_MS,
+        maxRetryDelayMs: CHECK_MAX_RETRY_DELAY_MS,
         ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}),
         ...(onPayload ? { onPayload } : {}),
         // Each try's status, as each api tells it: pi-ai sends a fresh request on each retry. Through
@@ -337,7 +337,7 @@ export async function probeModel(
         ? { kind: "busy", reason: `${PROVIDER_LIMIT} (${specifier}): HTTP ${c.limited}, then ${c.stalled}` }
         : { kind: "fault", reason: c.stalled };
     }
-    const busy = probeBusy(c.answer);
+    const busy = checkBusy(c.answer);
     if (busy) return { kind: "busy", reason: busy };
     return {
       kind: "fault",
@@ -379,22 +379,22 @@ export async function probeModel(
   return { kind: "warn", reason: `${why}, and no tool call when the tool was forced either (${model.api})` };
 }
 
-/** The longest `retry-after` the probe waits out (pi-ai's `maxRetryDelayMs`). A provider that asks
+/** The longest `retry-after` the check waits out (pi-ai's `maxRetryDelayMs`). A provider that asks
  * for longer is busy now: pi then ends the call with the provider's 429 text, which `providerLimit`
- * reads, and the call does not reach its own bound (`PROBE_FIRST_EVENT_MS`). */
-export const PROBE_MAX_RETRY_DELAY_MS = 20_000;
+ * reads, and the call does not reach its own bound (`CHECK_FIRST_EVENT_MS`). */
+export const CHECK_MAX_RETRY_DELAY_MS = 20_000;
 
-/** What the probe calls busy (ADR-0019): a limit the provider names — a 429, a 529, an overload, a
- * rate limit, ResourceExhausted, or a `retry-after` longer than the probe waits. A 503 alone is not:
+/** What the check calls busy (ADR-0019): a limit the provider names — a 429, a 529, an overload, a
+ * rate limit, ResourceExhausted, or a `retry-after` longer than the check waits. A 503 alone is not:
  * a gateway with no backend, or a server that is still loading its model, answers 503, and a Turn
  * there fails. */
-const PROBE_BUSY = /\b429\b|\b529\b|overloaded|rate.?limit|too many requests|ResourceExhausted|retry delay/i;
+const CHECK_BUSY = /\b429\b|\b529\b|overloaded|rate.?limit|too many requests|ResourceExhausted|retry delay/i;
 
-/** The probe's busy verdict, or undefined: `providerLimit` (ADR-0064, after the retries), narrowed
- * to `PROBE_BUSY`. Exported for its test. */
-export function probeBusy(answer: AssistantMessage): string | undefined {
+/** The check's busy verdict, or undefined: `providerLimit` (ADR-0064, after the retries), narrowed
+ * to `CHECK_BUSY`. Exported for its test. */
+export function checkBusy(answer: AssistantMessage): string | undefined {
   const limit = providerLimit(answer);
-  return limit && PROBE_BUSY.test(answer.errorMessage ?? "") ? limit : undefined;
+  return limit && CHECK_BUSY.test(answer.errorMessage ?? "") ? limit : undefined;
 }
 
 /** The fixed prefix of a fault reason for a provider that still refused the load after the
