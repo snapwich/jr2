@@ -1123,6 +1123,26 @@ Then("no Sandbox was re-provisioned for the run", async function (this: E2EWorld
   assert.deepEqual(await sandboxesFor(this), [], "a lost workspace is reported, never silently re-created");
 });
 
+// ADR-0059: a client-side apply copies a whole Secret, its values too, into this annotation. Every
+// Secret `jr2 up` writes is applied server-side, so after a converge no Secret of the namespace has
+// it. The template prints each name and a mark, never a value.
+Then(
+  "no Secret in the namespace has a last-applied-configuration annotation",
+  async function (this: E2EWorld): Promise<void> {
+    const template =
+      '{{range .items}}{{.metadata.name}}{{"\\t"}}{{if .metadata.annotations}}' +
+      '{{if index .metadata.annotations "kubectl.kubernetes.io/last-applied-configuration"}}annotated{{end}}' +
+      '{{end}}{{"\\n"}}{{end}}';
+    const rows = (await kubectl(this, ["get", "secrets", "-o", `go-template=${template}`]))
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => l.split("\t"));
+    assert.ok(rows.length > 0, "the converge wrote Secrets");
+    const annotated = rows.filter(([, mark]) => mark === "annotated").map(([name]) => name);
+    assert.deepEqual(annotated, [], "a Secret with this annotation has its values in its metadata");
+  },
+);
+
 // --- the image sweep (ADR-0039) --------------------------------------------------------------------
 //
 // The one claim no socket-free test can make: a REAL node's image store got smaller. The other

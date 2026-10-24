@@ -50,6 +50,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "perrun" workflow with repo "https://github.com/nobody/x.git" detached
       Then the run faults mentioning "git.credentials"
       And no Sandbox was re-provisioned for the run
+      And no Secret in the namespace has a last-applied-configuration annotation
 
     Scenario: an admitted url is cloned onto the node the Sandbox lands on, and jr2 status says so
       Given the kind instance is serving
