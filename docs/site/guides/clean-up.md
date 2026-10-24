@@ -29,15 +29,14 @@ remove:
 jr2 gc --dry-run
 ```
 
-<!-- output: not run -->
-
 ```text
 jr2 gc — images on kind-jr2 that no live root names (dry run: nothing is removed)
-would sweep <count> image(s) (<size>)
-  <image>
-  <image>
+would sweep 1 image(s) (336.5 MB)
+  jr2-sandbox-my-instance-default:6389bdf72d50-amd64
 repos: would sweep nothing — every Repo resource is bound by a Machine or was attached within 7d
 ```
+
+Here, the image is an old Sandbox Image that the last `jr2 up` kept on the kind node.
 
 `jr2 gc` reads the cluster of the current kubectl context. It does not read an Instance folder, so you can run it from
 any folder. It reads each Instance on the cluster, so it has no `-n` option. To use a different cluster, add
@@ -49,15 +48,14 @@ any folder. It reads each Instance on the cluster, so it has no `-n` option. To 
 jr2 gc
 ```
 
-<!-- output: not run -->
-
 ```text
 jr2 gc — images on kind-jr2 that no live root names
-swept <count> image(s) (<size>)
-repos: swept <count> Repo resource(s) no Machine binds and no run attached within 7d
+swept 1 image(s) (336.5 MB)
+repos: swept nothing — every Repo resource is bound by a Machine or was attached within 7d
 ```
 
-`jr2 gc` does not ask you to confirm. It removes a Repo resource when these two conditions are true:
+In this output, `jr2 gc` removed no Repo resource. `jr2 gc` does not ask you to confirm. It removes a Repo resource when
+these two conditions are true:
 
 - No registered [Machine](../reference/glossary.md#machine) binds the Repo.
 - No run attached the Repo, and nothing made it, in the last 7 days.
@@ -65,7 +63,8 @@ repos: swept <count> Repo resource(s) no Machine binds and no run attached withi
 After jr2 removes a Repo resource, the Repo cache on each node can remove its copy of the Repo. It removes the copy when
 nothing on the node uses it. `--repo-ttl` changes the time limit of the second condition. For example, `--repo-ttl 12h`
 removes a Repo resource that no Machine binds and that no run attached in the last 12 hours. `--repo-ttl 0` removes each
-Repo resource that no Machine binds.
+Repo resource that no Machine binds. The last line then gives the count and the time limit:
+`repos: swept 1 Repo resource(s) no Machine binds and no run attached within 0`.
 
 ## Remove an Instance from the cluster
 
@@ -75,12 +74,10 @@ Run `jr2 down` in the Instance folder:
 jr2 down
 ```
 
-<!-- output: not run -->
-
 ```text
 remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance")? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
-swept <count> image(s) (<size>)
+swept 2 image(s) (317.0 MB)
 removed
 ```
 
@@ -115,13 +112,11 @@ Instance, run `jr2 down --all` in place of `jr2 down`:
 jr2 down --all
 ```
 
-<!-- output: not run -->
-
 ```text
 remove instance "my-instance" from context kind-jr2 (delete namespace "my-instance" AND the per-cluster operator)? [y/N] y
 deleting namespace "my-instance" (runs, store, and Sandboxes go with it)
 uninstalling the operator (jr2-system)
-swept <count> image(s) (<size>)
+swept 2 image(s) (259.1 MB)
 removed
 ```
 
