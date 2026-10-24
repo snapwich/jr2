@@ -718,7 +718,19 @@ async function fakeProviderCa(): Promise<Pem> {
 }
 
 async function resolveHostAddress(port: number): Promise<string> {
-  const node = (await dockerOut(["network", "inspect", "kind", "-f", "{{range .Containers}}{{.Name}}\n{{end}}"]))
+  // A kind NODE, by kind's own role label: other containers can sit on the same network (the
+  // registries of `just dist-up` do), and they have no curl, so the first name was not always a node.
+  const node = (
+    await dockerOut([
+      "ps",
+      "--filter",
+      "network=kind",
+      "--filter",
+      "label=io.x-k8s.kind.role",
+      "--format",
+      "{{.Names}}",
+    ])
+  )
     .split("\n")
     .map((n) => n.trim())
     .find(Boolean);
