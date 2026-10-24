@@ -22,14 +22,12 @@ Give each `jr2` command in the Instance folder.
 jr2 send <run id> --event CANCEL
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-sent CANCEL to <run id>
+sent CANCEL to 0a90c659-a2f4-44ed-ae03-ca711ca30ce4
 ```
 
-`jr2` prints the full run id, also when you give a prefix. Then these things occur:
+`jr2` prints the full run id, also when you give a prefix. Your run id is different. Then these things occur:
 
 - The run ends with the status `cancelled`. It does not start again when the
   [Orchestrator](../reference/glossary.md#orchestrator) restarts.
@@ -50,11 +48,9 @@ To look inside the Sandboxes after the run ends, add `--keep`:
 jr2 send <run id> --event CANCEL --keep
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-sent CANCEL to <run id>; its Workspaces are kept
+sent CANCEL to 723cf388-c1cf-4b42-a628-8b7715754ca1; its Workspaces are kept
 ```
 
 The run ends as before, but the Orchestrator does not delete its Sandboxes. To open a shell in one, see
@@ -77,11 +73,11 @@ to this command:
 kubectl -n <namespace> delete sandbox <sandbox>
 ```
 
-<!-- output: not run -->
-
 ```text
-sandbox.core.jr2.dev "<sandbox>" deleted
+sandbox.core.jr2.dev "ws-723cf388-x-12-1k4kghb" deleted from <namespace> namespace
 ```
+
+Your Sandbox name is different.
 
 ## Read how the run ended
 
@@ -89,11 +85,9 @@ sandbox.core.jr2.dev "<sandbox>" deleted
 jr2 status <run id>
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-{"runId":"<run id>",…,"status":"cancelled",…}
+{"runId":"0a90c659-a2f4-44ed-ae03-ca711ca30ce4","workflow":"task","instanceId":"19b49b58-2ea4-4d79-b100-49aad6e12013","status":"cancelled","value":"running",…}
 ```
 
 `jr2 status` prints the status of the run as one line of JSON. Its `status` is `cancelled`, and its `value` is the state
@@ -112,8 +106,6 @@ curl -X POST http://localhost:4000/runs/<run id>/events \
   -H "authorization: Bearer <Instance token>" \
   -d '{"type":"CANCEL","keep":true}'
 ```
-
-<!-- output: not run -->
 
 ```text
 {"ok":true}
