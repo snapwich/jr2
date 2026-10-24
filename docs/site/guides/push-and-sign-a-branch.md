@@ -68,8 +68,6 @@ Put the private key in a Secret, under the key `identity`. The namespace exists 
 kubectl -n <namespace> create secret generic jr2-git-sign --from-file=identity=jr2-sign
 ```
 
-<!-- output: not run -->
-
 ```text
 secret/jr2-git-sign created
 ```
@@ -126,21 +124,25 @@ Run [`jr2 up`](../reference/cli.md#up). It shows the push, and the push Secret o
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 effects: workflow "publish" — what it runs outside itself (ADR-0067)
   publish: push (sign) — 300s, in the Sandbox Effector
 …
+Workspace of workflow "publish": Sandbox Effector (image the Sandbox Image) holds no Effect secret; pushes Repo Slot "app" with git.credentials "github.com/<you>/"
+…
 git.credentials "github.com/<you>/": push Secret jr2-git-push-<hash> — pushes over https; signs with ssh
+warning: git.credentials "*": the Secret "jr2-git-ssh" does not exist in namespace <namespace> — a push that needs it is refused at provision until it exists and jr2 up runs again (ADR-0051)
+git.credentials "*": push Secret jr2-git-push-684888c0 — pushes over https
 …
 ```
 
-`<hash>` comes from the `match` of the entry. `jr2 up` reads the image of the Sandbox Effector when `jr2 up` built that
-image. When the Workspace names no image and the Instance has no `images/default`, the Sandbox Effector runs in the
-stock [Harness](../reference/glossary.md#harness) image. `jr2 up` knows what that image holds. When the image does not
-hold a program that the push needs, `jr2 up` stops. See [Rules](#rules).
+`<hash>` comes from the `match` of the entry. The entry `*` names the Secret `jr2-git-ssh` for a push over ssh. When
+that Secret does not exist, `jr2 up` gives the warning, and jr2 refuses a push over ssh under `*`. A push to your Repos
+uses the entry `github.com/<you>/`, so the warning does not stop it. `jr2 up` reads the image of the Sandbox Effector
+when `jr2 up` built that image. When the Workspace names no image and the Instance has no `images/default`, the Sandbox
+Effector runs in the stock [Harness](../reference/glossary.md#harness) image. `jr2 up` knows what that image holds. When
+the image does not hold a program that the push needs, `jr2 up` stops. See [Rules](#rules).
 
 ## Run the Workflow
 
@@ -150,15 +152,15 @@ Start the run. Write the task in place of `<task>`. Write the name of the coder'
 jr2 run publish --input '{"prompt":"<task>","branch":"<branch>"}' --detach
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context <context> / namespace <namespace>
-{"runId":"<run id>"}
+{"runId":"f000bc5a-4c4f-4cdc-be52-55bc43a5fba0"}
 ```
 
-`<context>` is your kubectl context, and `<namespace>` is the namespace of the Instance. `<run id>` is the id of the new
-run. Give `<run id>` to the next commands.
+The first line (`…`) is the `.env` line. It gives the variables that `.env` sets and your shell does not set, such as
+`JR2_GIT_TOKEN`. `<context>` is your kubectl context, and `<namespace>` is the namespace of the Instance. The `runId` is
+the id of the new run, and your run id is different. Give your run id to the next commands, in place of `<run id>`.
 
 The Machine is the body of a `workspace()`, so the id of the Gate of the state `review` is `body.review`.
 [`jr2 status <run id>`](../reference/cli.md#status) shows it under `gates`. When the run waits at this Gate, read the
@@ -169,11 +171,10 @@ branch in the [Sandbox](../reference/glossary.md#sandbox). The branch is not on 
 jr2 send <run id> --gate body.review --event approve
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context <context> / namespace <namespace>
-delivered approve to gate "body.review" on <run id>
+delivered approve to gate "body.review" on f000bc5a-4c4f-4cdc-be52-55bc43a5fba0
 ```
 
 [Answer a Gate](answer-a-gate.md) tells how to find the open Gate, and how to answer from the
