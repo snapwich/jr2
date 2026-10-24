@@ -381,20 +381,24 @@ recover, finish — are exercised only one scripted tool call at a time.
 
 - **Claude Haiku 5.5 and Claude Sonnet 5.5 (Anthropic API).** The cells of
   `features/model-baselines/anthropic--claude-haiku-5-5.json` (16) and
-  `features/model-baselines/anthropic--claude-sonnet-5-5.json` (19) come from the full runs of 2026-10-23 on main
-  8837af28. Haiku ran from 17:30 to 18:21 UTC, and Sonnet from 18:21 to 19:26 UTC. Both ran a version of this branch
-  (c220d895, not kept). The later commits of the branch do not change how a trial is scored.
+  `features/model-baselines/anthropic--claude-sonnet-5-5.json` (16 now; three are owed, below) come from the full runs
+  of 2026-10-23 on main 8837af28. Haiku ran from 17:30 to 18:21 UTC, and Sonnet from 18:21 to 19:26 UTC. Both ran a
+  version of this branch (c220d895, not kept). The later commits of the branch do not change how a trial is scored.
   - Haiku: 16 of 19 scenarios passed, every claim cell at 10 of 10 and each run at 1 of 1. Three scenarios failed at
     "every trial finished" and wrote no cell. `mode-refusal`: 9 trials passed. The 1 trial that missed (38368e52) is
     also the 1 that did not finish. `mode-stop`: 9 trials passed and 1 missed (0da530b9). That trial and 3 more did not
     finish (71a52a32, 08f40dc7, 1ed86b01). `push-follow` and `push-no-refusal`: 10 of 10 passed both cells, and 1 of 10
     did not finish (5d3096da). An earlier version of this branch (09291511, not kept) ran Haiku `push-follow` on
     2026-10-23 too, and 3 of its 10 trials did not finish.
-  - Sonnet: 18 of 19 scenarios passed. Sonnet 5.5 has no `off`, so its `off` cells ran at effort `high`, as its `on`
-    cells do (`anthropic-sonnet.json`). `obedience/off` gave 9 of 10, every other claim cell 10 of 10, and each run 1
-    of 1. In the miss (b2b5a38d), the prompt asked for `ship` and only `hold` was allowed. The model stopped with text,
-    and after the nudge it picked `hold`. `mode-stop` failed at "every trial finished" and wrote no cell. Its 10
-    measured trials passed, and none of the 10 finished.
+  - Sonnet: 18 of 19 scenarios passed. Sonnet 5.5 has no `off`, so its `off` cells ran at effort `high`, and in this run
+    its `on` cells asked for `high` too. Since 2026-10-23 the profile's `on` cell asks for `medium`, as Haiku's does
+    (`anthropic-sonnet.json`; at pi-ai 1.4.0 Sonnet's `thinkingLevelMap.medium` is `medium`), so `off` and `on` are two
+    conditions. The `obedience/on`, `ticket/on` and `ticket-modes/on` cells of this run measured `high`, so they left
+    the baseline file, and each is owed a new measurement. The user approved this on 2026-10-23 (question 23).
+    `obedience/off` gave 9 of 10, every other claim cell 10 of 10, and each run 1 of 1. In the miss (b2b5a38d), the
+    prompt asked for `ship` and only `hold` was allowed. The model stopped with text, and after the nudge it picked
+    `hold`. `mode-stop` failed at "every trial finished" and wrote no cell. Its 10 measured trials passed, and none of
+    the 10 finished.
 
   In the unfinished `mode-stop` and `mode-refusal` trials, the model does not take a step that the claim's story says
   needs a review or an approval. That review or approval never comes. Then the nudges run out, and the run faults. The
