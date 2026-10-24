@@ -23,6 +23,14 @@
     "passed": 10,
     "trials": 10
   },
+  "mode-refusal/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "mode-stop/off": {
+    "passed": 10,
+    "trials": 10
+  },
   "wake/off": {
     "passed": 10,
     "trials": 10

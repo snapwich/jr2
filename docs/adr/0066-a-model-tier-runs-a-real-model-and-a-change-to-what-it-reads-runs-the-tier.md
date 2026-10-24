@@ -293,7 +293,8 @@ recover, finish — are exercised only one scripted tool call at a time.
     answer:
     ``The workflow took it and is back in the state that asked for this turn. Its answer: the output of `reviewer`: {"verdict":"approved","comments":"Clear and accurate."}.``,
     in place of the plain receipt's "The workflow is still in the state that asked for this turn." The user approved
-    this change on 2026-10-23 (question 21: give the review a real answer). It has not run yet.
+    this change on 2026-10-23 (question 21: give the review a real answer). In the claim-setups run (below) it gave 10
+    of 10 on the home lab, on Haiku 5.5 and on Sonnet 5.5, and every trial finished.
 
   - `push-wake`, since replaced by `wake`. It measured a Menu-only Turn that started with nothing allowed and picked
     inside the same Submission once a Gate's answer was restated at a step boundary. The step first answered the board
@@ -377,13 +378,15 @@ recover, finish — are exercised only one scripted tool call at a time.
   followed by "Your turn is not over. Allowed now: `revise`, `submit`." (in the model's tool names). A model that holds
   the approval and calls `publish` before the window shut is refused, and one that calls it after the window shut is
   taken. Neither trial refused a pick from the list, so both are void, inside the claim's bound. The user approved this
-  change on 2026-10-23 (question 21). It has not run yet.
+  change on 2026-10-23 (question 21). In the claim-setups run (below) it gave 10 of 10 on the home lab, on Haiku 5.5 and
+  on Sonnet 5.5, and every trial finished.
 
 - **Claude Haiku 5.5 and Claude Sonnet 5.5 (Anthropic API).** The cells of
-  `features/model-baselines/anthropic--claude-haiku-5-5.json` (16) and
-  `features/model-baselines/anthropic--claude-sonnet-5-5.json` (16 now; three are owed, below) come from the full runs
-  of 2026-10-23 on main 8837af28. Haiku ran from 17:30 to 18:21 UTC, and Sonnet from 18:21 to 19:26 UTC. Both ran a
-  version of this branch (c220d895, not kept). The later commits of the branch do not change how a trial is scored.
+  `features/model-baselines/anthropic--claude-haiku-5-5.json` (18) and
+  `features/model-baselines/anthropic--claude-sonnet-5-5.json` (20) come from the full runs of 2026-10-23 on main
+  8837af28, except the six cells that the claim-setups run gave (below). Haiku ran from 17:30 to 18:21 UTC, and Sonnet
+  from 18:21 to 19:26 UTC. Both ran a version of this branch (c220d895, not kept). The later commits of the branch do
+  not change how a trial is scored.
   - Haiku: 16 of 19 scenarios passed, every claim cell at 10 of 10 and each run at 1 of 1. Three scenarios failed at
     "every trial finished" and wrote no cell. `mode-refusal`: 9 trials passed. The 1 trial that missed (38368e52) is
     also the 1 that did not finish. `mode-stop`: 9 trials passed and 1 missed (0da530b9). That trial and 3 more did not
@@ -394,11 +397,11 @@ recover, finish — are exercised only one scripted tool call at a time.
     its `on` cells asked for `high` too. Since 2026-10-23 the profile's `on` cell asks for `medium`, as Haiku's does
     (`anthropic-sonnet.json`; at pi-ai 1.4.0 Sonnet's `thinkingLevelMap.medium` is `medium`), so `off` and `on` are two
     conditions. The `obedience/on`, `ticket/on` and `ticket-modes/on` cells of this run measured `high`, so they left
-    the baseline file, and each is owed a new measurement. The user approved this on 2026-10-23 (question 23).
-    `obedience/off` gave 9 of 10, every other claim cell 10 of 10, and each run 1 of 1. In the miss (b2b5a38d), the
-    prompt asked for `ship` and only `hold` was allowed. The model stopped with text, and after the nudge it picked
-    `hold`. `mode-stop` failed at "every trial finished" and wrote no cell. Its 10 measured trials passed, and none of
-    the 10 finished.
+    the baseline file, and the claim-setups run (below) measured each again at `medium`. The user approved this on
+    2026-10-23 (question 23). `obedience/off` gave 9 of 10, every other claim cell 10 of 10, and each run 1 of 1. In the
+    miss (b2b5a38d), the prompt asked for `ship` and only `hold` was allowed. The model stopped with text, and after the
+    nudge it picked `hold`. `mode-stop` failed at "every trial finished" and wrote no cell. Its 10 measured trials
+    passed, and none of the 10 finished.
 
   In the unfinished `mode-stop` and `mode-refusal` trials, the model does not take a step that the claim's story says
   needs a review or an approval. That review or approval never comes. Then the nudges run out, and the run faults. The
@@ -426,6 +429,25 @@ recover, finish — are exercised only one scripted tool call at a time.
   The rule that a fault before the cut is unfinished stays. The measures (the first pick after the first answer, and the
   first Menu call after the first restatement) and what the model reads do not change. These runs came before that
   change.
+
+  **The claim-setups run** measured these changes on 2026-10-23, at snapshot 42433e48 of this branch on main 4cb2bc2e.
+  Its cells were written from 01:47 to 02:22 UTC on 2026-10-24. It ran only the scenarios that the changes touch:
+  - Home lab: `mode-stop/off` and `mode-refusal/off`, 10 of 10 each, equal to their baselines.
+  - Haiku 5.5: `mode-stop/off` and `mode-refusal/off`, 10 of 10 each, and every trial finished. Before the change, 4 and
+    1 of 10 did not finish. Both are new baseline cells. `push-follow` and `push-no-refusal` passed 10 of 10 each, but 2
+    of 10 trials did not finish (90ab1ee4, 2b068c3a), so the scenario failed at "every trial finished" and wrote no
+    cell. The desk answered each time a `revise` took the coder back to `coding`: twice in 90ab1ee4 and five times in
+    2b068c3a. Each run faulted within 30 s of the first answer, long before the cut, when the nudges ran out
+    (`agent completed its turn without a pick that ends it; still allowed: ask_approval, run_tests`). The prompt asks
+    only to run `sleep 20 && ls` and read the listing, and the Repo's tests fail. In 90ab1ee4 the model ran the tests,
+    read the 2 failures ("The work isn't done, so `submit` is wrong"), picked `revise`, did not fix them, and stopped.
+    In 2b068c3a the model made no change ("I won't call `submit` on empty work, and I won't request approval for a
+    change that doesn't exist"), and it looped on `revise` and `run_tests` until the nudges ran out. So the model will
+    not submit work that fails or that has no change, and it does not fix the tests.
+  - Sonnet 5.5: `mode-stop/off` 10 of 10, and every trial finished (before the change, none of 10 did): a new baseline
+    cell. `mode-refusal/off` 10 of 10 and `obedience/off` 9 of 10, equal to their baselines. At `medium`, `obedience/on`
+    gave 9 of 10, `ticket/on` 1 of 1 and `ticket-modes/on` 1 of 1: new baseline cells. In each `obedience` miss
+    (cfc238c8 off, b1c7a9a2 on), the model made no call before the nudge, then picked `hold`.
 
   The first full Haiku run, of 2026-10-22, used main at cd6e6145, with this tier's Anthropic profiles. Later main
   commits change what the model reads, among them ccd81ce9, eb76a3e4, 39a3610d, 8c274330 and 37bbf7ff. Others change how
