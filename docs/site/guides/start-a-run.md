@@ -25,16 +25,15 @@ Run [`jr2 run`](../reference/cli.md#run) in the Instance folder, with the name o
 jr2 run ping --input '{"message":"hi"}'
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-run 9f2e467b-5b5b-403f-8896-e795ada603bf (ping) — attached
+run e3972b4c-eef9-4e7d-9068-3556332d2ba6 (ping) — attached
   → done "done"
-{"runId":"9f2e467b-5b5b-403f-8896-e795ada603bf","workflow":"ping","instanceId":"7a348d06-7210-4e2e-a2e4-3337302116a0","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"5e0a91c3d7f2"}
+{"runId":"e3972b4c-eef9-4e7d-9068-3556332d2ba6","workflow":"ping","instanceId":"8e13475a-d325-45d4-bc64-0627086e97ba","status":"done","value":"done","context":{"message":"hi","reply":"pong: hi"},"children":[],"waiting":[],"held":[],"assembly":"16f4181d70d9"}
 ```
 
-Your run id is different.
+Your run id, your instance id and your `assembly` hash are different. When your Instance folder has a `.env` file, the
+output starts with one more line, `→ .env:`, with the keys that the CLI took from it.
 
 - `jr2 run` finds the [Orchestrator](../reference/glossary.md#orchestrator) in the current kubectl context, in the
   namespace of the Instance. The first line names the two. To use a different context or namespace, add
@@ -58,11 +57,9 @@ Add `--detach`. `jr2 run` starts the run, prints its run id on stdout, and retur
 jr2 run ping --input '{"message":"hi"}' --detach
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-{"runId":"da7c7661-63bd-49d3-b7cf-9b39a2eb9498"}
+{"runId":"fc8b82d1-bd73-498d-9057-ef13cf962240"}
 ```
 
 Use the run id, or its first 4 characters or more, with `jr2 status`, `jr2 logs` and `jr2 send`.
@@ -120,10 +117,8 @@ curl -s -X POST http://localhost:4000/workflows/ping/runs \
   -d '{"message":"hi"}'
 ```
 
-<!-- output: not run -->
-
 ```text
-{"runId":"f347ed72-275d-4345-a3d7-b4d52b44656d","instanceId":"6a67892d-1942-436c-a97e-7d07dbd658ad"}
+{"runId":"41cfa794-3501-43f3-8b0d-48c83d9fea88","instanceId":"4e334e60-c4ba-4f63-8560-d86d649675f6"}
 ```
 
 The status code is `201`. `runId` is the id of the run. `instanceId` is the
@@ -140,8 +135,6 @@ To find the input that a Workflow takes, send [`GET /workflows/:name`](../refere
 ```sh
 curl -s http://localhost:4000/workflows/ping -H "Accept: application/json"
 ```
-
-<!-- output: not run -->
 
 ```text
 {"name":"ping","machineId":"ping","input":null}
@@ -160,11 +153,9 @@ context. Give the URL in `--url`, or in `JR2_URL`. Give the Instance token in `J
 JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN jr2 run ping --input '{"message":"hi"}' --detach
 ```
 
-<!-- output: not run -->
-
 ```text
 → http://localhost:4000
-{"runId":"4b0e2c19-7f3a-4d8e-9a61-c25d3e8f0b74"}
+{"runId":"d28309a1-f8bc-4e15-b4c6-3f2b1642e826"}
 ```
 
 ## Rules
