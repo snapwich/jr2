@@ -51,16 +51,17 @@ before it changes the cluster, and publishes it in the [Assembly](../reference/g
 jr2 runs
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
 workflows:
   notes (machine, Chart wrapper: body "body", one-shot)
     notes/summary (chart file)
-…
+  ping (machine)
 []
 ```
+
+The first line, `…`, is the line `→ .env:`, with the keys that the CLI took from `.env`.
 
 `one-shot` means that the wrapper also takes a Chart in its run input. `jr2 runs --workflows` prints the same list as
 JSON on stdout.
@@ -73,18 +74,19 @@ A named Chart supplies the `chart` field. Give the other fields of the run input
 jr2 run notes/summary --input '{"topic":"the greet CLI"}'
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-run 5b7e2c90-1d4f-4a83-9e6b-0f2c8d7a3e15 (notes/summary) — attached
+run 08a1a07b-b5d8-4e8b-aec5-811eab9289ec (notes/summary) — attached
+  → active "running"
+  → active "running"
   → done "done"
 …
 ```
 
 The last line is the status of the run as JSON. Its `context.result` is the output of the
 [Open body](../reference/glossary.md#open-body): `{"outcome":"done","output":{"summary":"<summary>"}}`. Your run id is
-different, and `<summary>` is the text of the model.
+different, and `<summary>` is the text of the model. The line `→ active "running"` can show more than one time.
 
 ## Keep a Chart at run time
 
@@ -104,15 +106,13 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" -H "content-type: application/json
   --data @workflows/notes/summary.chart.json http://localhost:4000/workflows/notes/charts/brief
 ```
 
-<!-- output: not run -->
-
 ```text
-{"name":"notes/brief","origin":"runtime","hash":"<hash>"}
+{"name":"notes/brief","origin":"runtime","hash":"4685124c248a"}
 ```
 
-The status code is `201` for a new name, and `200` when the Chart replaced a runtime Chart with the same name.
-`jr2 runs` then lists `notes/brief (chart)`, and `jr2 run notes/brief` starts it. A run of the old text keeps its own
-text.
+`hash` is the hash of the Chart text. The status code is `201` for a new name, and `200` when the Chart replaced a
+runtime Chart with the same name. `jr2 runs` then lists `notes/brief (chart)`, and `jr2 run notes/brief` starts it. A
+run of the old text keeps its own text.
 
 To remove the Chart:
 
