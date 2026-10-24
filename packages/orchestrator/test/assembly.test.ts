@@ -760,3 +760,40 @@ test("the announce line names the named Charts when any exists: files, runtime, 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a docker context a registered Machine names beside its module is not named as ignored, at the door or at the boot (ADR-0037, ADR-0049, ADR-0070)", async (t) => {
+  // `import.meta.resolve("./python")` in workflows/pytest.ts is workflows/python/, the folder the
+  // Chart discovery also reads as a wrapper's directory. jr2 builds that folder, so jr2 reads it:
+  // the door and the boot give the discovery the contexts of the Machines they loaded.
+  const warned = t.mock.method(console, "warn", () => {});
+  const ignored = () =>
+    warned.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.startsWith("workflows/python/"));
+  const dir = await scratchInstance("asm-context");
+  const first = await boot(dir);
+  try {
+    await publishTree(first, dir, {
+      "workflows/pytest.ts":
+        `import { setup } from ${XSTATE};\n` +
+        `import { workspace } from ${INDEX};\n` +
+        `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+        `export const machine = workspace(body, {\n` +
+        `  repos: { app: { url: "https://e.test/a.git" } },\n` +
+        `  image: import.meta.resolve("./python"),\n` +
+        `  spec: () => ({ branch: "b" }),\n` +
+        `});\n`,
+      "workflows/python/Dockerfile": "FROM node:24-slim\n",
+      "workflows/python/requirements.txt": "pytest\n",
+    });
+    assert.deepEqual(ignored(), [], "the publish door");
+  } finally {
+    await first.close();
+  }
+  const second = await boot(dir);
+  try {
+    assert.deepEqual(second.workflows, ["pytest"], "the boot loaded the Assembly");
+    assert.deepEqual(ignored(), [], "the boot");
+  } finally {
+    await second.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
