@@ -610,6 +610,45 @@ test("the wake spends the nudge's budget: a Machine that opens and closes picks 
   assert.deepEqual(retries, [1], "one ask, counted against the nudge's budget");
 });
 
+test("the wake after a Gate says `kept`, and a Harness that lost the conversation while the Turn waited refuses it: the Turn is admitted again with its task, told its conversation is new (ADR-0016, ADR-0062)", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(gateWaitDef(clients));
+  const { runId, instanceId } = await host.start("gate-wait");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  const seen: RunFeedEvent[] = [];
+  host.subscribe(runId, (event) => seen.push(event));
+
+  host.sendToAgent(iid, { type: "ask" });
+  client.complete();
+  await new Promise((r) => setTimeout(r, 30));
+  // While the Turn waited at the Gate, its Harness restarted and lost the conversation.
+  client.keeps = false;
+  host.sendToGate(runId, "approval", { type: "approve" });
+  await waitFor(() => client.admits.length === 2);
+  assert.equal(client.refused.length, 1, "the wake was refused: no empty conversation was seated");
+  assert.match(client.refused[0]!.prompt ?? "", /^Your previous turn ended/);
+  const again = client.admits[1]!;
+  assert.equal(again.instanceId, iid);
+  assert.equal(again.prompt, "go", "the Turn's task, and no re-admit text: nothing was cut");
+  assert.deepEqual(client.notices[1], [
+    { kind: "conversation-new", scope: "conversation", reason: "the Harness no longer holds it" },
+  ]);
+  assert.deepEqual(client.kept, [false, false], "the new conversation is not a kept one");
+  const retries = seen.flatMap((event) => (event.kind === "retry" ? [`${event.attempt} ${event.reason}`] : []));
+  assert.deepEqual(retries, ["1 picks allowed again", "1 re-admitted on a new conversation"]);
+
+  // The budget is the nudge's, as before: the next stop with a pick allowed is the last ask.
+  client.keeps = true;
+  client.complete();
+  await waitFor(() => client.admits.length === 3);
+  assert.equal(client.kept[2], true, "the nudge on the new conversation says kept too");
+  client.complete();
+  await waitFor(() => host.status(runId) === undefined);
+  assert.equal(client.admits.length, 3, "two asks, then the fault");
+});
+
 /** The `@model` mode-stop shape: `drafting` allows `ask_review`; `reviewing` allows nothing until a
  * TARGETLESS timer marks the review read (so Rest is not held), then `revise` and `submit`. A fault
  * routes to `faulted` with its reason, as the claim workflow's does. */

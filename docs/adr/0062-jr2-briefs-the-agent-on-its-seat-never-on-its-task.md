@@ -143,15 +143,19 @@ whose processes are gone, with no way to know why.
   conversation is asked again for up to 30 seconds while the new container does not listen yet or drains, and only then
   is the answer taken as "held". The continue path asks the same way, so a continued Turn after a restart can wait up to
   30 seconds before its admission. A Harness in CrashLoopBackOff can take longer than that: the answer is then "held",
-  and it can be wrong. So the admission that continues a conversation the Harness was taken to keep — the re-admission
-  after a cut, and a continued Turn — says so with `kept: true`. A Harness that keeps no such conversation refuses it
-  with 404 and `kept: false` in the body, and seats none. The Orchestrator takes only that 404 as the refusal; another
-  404 is a failed admission. Without the refusal the Harness would seat a new conversation, and a model on an empty
-  context would read "continue your task" with no task. On the refusal the Turn takes the path of a lost conversation.
-  The re-admission is admitted as a Turn, with the task after the re-admit text and the notice that the conversation is
-  new, or faults when it has no task to send. A continued Turn is told that its conversation is new, and is admitted
-  again. What the Turn's admissions carried, and whether the Harness read their surface, is kept in the Orchestrator's
-  memory alone: after a restore of the Orchestrator before a surface read, nothing is raised again. A fresh Turn's "this
+  and it can be wrong. So every admission to a conversation that the Harness was taken to keep says so with
+  `kept: true`: the re-admission after a cut, a continued Turn, and a nudge or a wake. A Harness that keeps no such
+  conversation refuses it with 404 and `kept: false` in the body, and seats none. The Orchestrator takes only that 404
+  as the refusal; another 404 is a failed admission. Without the refusal the Harness would seat a new conversation, and
+  a model on an empty context would read "continue your task" with no task. On the refusal the Turn takes the path of a
+  lost conversation. The re-admission is admitted as a Turn, with the task after the re-admit text and the notice that
+  the conversation is new, or faults when it has no task to send. A continued Turn is told that its conversation is new,
+  and is admitted again. A nudge or a wake is admitted again as a Turn: its prompt is the task alone, because nothing
+  was cut, with the notice that the conversation is new and every notice in scope. Every notice that the Turn's
+  admissions carried is pending again first, as for a lost conversation after a cut. With no task to send, the Turn
+  faults. The Instance Harness's restart is on no watch, so this refusal is the only way a nudge or a wake learns of it.
+  What the Turn's admissions carried, and whether the Harness read their surface, is kept in the Orchestrator's memory
+  alone: after a restore of the Orchestrator before a surface read, nothing is raised again. A fresh Turn's "this
   conversation is new", which rides an admission alone, is carried again by the next re-admission when the Harness has
   not read the one before.
 

@@ -81,6 +81,9 @@ later adds the third: runaway):
 
   The nudge and the wake are one Submission kind and spend one budget: a Machine that opens and closes picks under a
   stopped model cannot ask it without bound. All three read one Allowed list, the one the surface serves (ADR-0029).
+  Their admission is for the conversation the Turn holds, so it says `kept` (ADR-0062). A Harness that lost the
+  conversation while the Turn waited refuses it and seats none, and the Turn is admitted again on a new conversation
+  with its task, or faults when it has no task to send. That ask was spent already, so the budget counts it once.
 
 Budgets are defaulted knobs, not Machine context. Exhaustion emits the single terminal `agent.fault { reason }`; where
 it routes (escalation, a triage/investigator state) is workflow policy. Attempts surface as run-feed/visualize telemetry

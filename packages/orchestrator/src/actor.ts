@@ -1183,6 +1183,34 @@ export function agentActorWith(
         if (sub === undefined) finish();
       });
 
+    // The Harness keeps no such conversation (ADR-0062): it lost it while the Turn waited, and a
+    // `kept` admission found none. Nothing of the Turn is left there, so the Turn is admitted as a
+    // Turn on a new conversation: every notice in scope, `include` whatever the scope leaves out,
+    // and `prompt`, which holds the Turn's task. A continued Turn is told its conversation is new as the
+    // continue path tells it — the notice is kept for its conversation, which this admission takes.
+    // A fresh Turn's conversation is its own: the notice rides this admission alone, so no later
+    // continued Turn of another conversation is told its context is gone. `before` and `after`
+    // ride beside it, in that order.
+    const admitOntoLost = async (
+      prompt: string,
+      before: Notice[],
+      after: Notice[],
+      include: readonly string[],
+    ): Promise<AgentAdmission> => {
+      const extra = [...before];
+      const fresh: Notice = {
+        kind: "conversation-new",
+        scope: "conversation",
+        reason: "the Harness no longer holds it",
+      };
+      if (input.continuation) binding.raiseNotice?.(fresh, conversation);
+      else extra.push(fresh);
+      return await admitTurn(
+        { ...framed, attach: undefined, instanceId: currentIid, prompt },
+        { notices: "turn", extra: [...extra, ...after], include, task: true },
+      );
+    };
+
     // A Harness restart cut this Turn (ADR-0031). It is NOT an `agent.fault` when the Agent's state is
     // busy — something it started runs below it — or its pick's answer has not reached the model:
     // faulting would route the Machine out of the state and stop the work the Turn did not want
@@ -1232,62 +1260,44 @@ export function agentActorWith(
       // The task: a restore dropped `prompt`, and the ledgered admission kept it. A new
       // conversation with no task to send cannot be asked to "continue your task": the Turn faults.
       const task = input.prompt ?? input.attach?.task;
-      if (!kept && task === undefined) {
-        // The fault names the restart that cut the Turn, and asks whether it was a memory kill.
-        restarted = cutBy;
-        return undefined;
-      }
       // Whether the cut admission, never read, carried the task: then the model never read it.
       const taskUnheard = !served.has(currentIid) && carriedBy.get(currentIid)?.task === true;
       // A fresh Turn's "this conversation is new" that an unread re-admission carried rides this
       // one again: it is kept nowhere else. Read before the first admission below, which can fail.
       const unreadFresh: Notice[] = served.has(currentIid) ? [] : [...(carriedBy.get(currentIid)?.fresh ?? [])];
-      const readmit = async (onto: "kept" | "lost", include: readonly string[]): Promise<AgentAdmission> => {
-        const lost = [...unreadFresh];
-        if (onto === "lost") {
-          // A continued Turn is told its conversation is new as the continue path tells it below —
-          // the notice is kept for its conversation, which this re-admission takes. A fresh Turn's
-          // conversation is its own: the notice rides this admission alone, so no later continued
-          // Turn of another conversation is told its context is gone.
-          const fresh: Notice = {
-            kind: "conversation-new",
-            scope: "conversation",
-            reason: "the Harness no longer holds it",
-          };
-          if (input.continuation) binding.raiseNotice?.(fresh, conversation);
-          else lost.push(fresh);
-        }
-        // The notices pending for this Turn ride the re-admission, with the cut pick's answer after
-        // them. On a conversation the Harness still holds it continues the same Turn. On a new one
-        // nothing of the Turn is left: it is admitted as a Turn — every notice in scope. The task
-        // follows the re-admit text whenever the model never read it: a new conversation, or a cut
-        // admission that carried it and was never read.
-        const withTask = (onto === "lost" || taskUnheard) && task !== undefined;
-        return await admitTurn(
+      // On a new conversation nothing of the Turn is left: the cut pick's answer rides after the task,
+      // and after the unread "this conversation is new" that the cut admission carried.
+      const readmitLost = (withTask: string, include: readonly string[]): Promise<AgentAdmission> =>
+        admitOntoLost(`${READMIT_PROMPT}\n\n${withTask}`, unreadFresh, notice, include);
+      // On a conversation the Harness still holds, it continues the same Turn. The task follows the
+      // re-admit text when a cut admission carried it and was never read.
+      const readmitKept = (include: readonly string[]): Promise<AgentAdmission> => {
+        const withTask = taskUnheard && task !== undefined;
+        return admitTurn(
           {
             ...framed,
             attach: undefined,
             instanceId: currentIid,
             prompt: withTask ? `${READMIT_PROMPT}\n\n${task}` : READMIT_PROMPT,
           },
-          {
-            notices: onto === "kept" ? "same-turn" : "turn",
-            extra: [...lost, ...notice],
-            include,
-            task: withTask,
-            kept: onto === "kept",
-          },
+          { notices: "same-turn", extra: [...unreadFresh, ...notice], include, task: withTask, kept: true },
         );
       };
       // What the cut admissions carried is pending again before this one takes, if the Harness never
       // read their surface — or all of it, if the conversation that heard it is gone. Those sources
       // ride this re-admission whatever its scope leaves out.
-      const restored = reraiseUnheard(!kept);
       let admission: AgentAdmission;
-      if (!kept) admission = await readmit("lost", restored);
-      else {
+      if (!kept) {
+        // The fault names the restart that cut the Turn, and asks whether it was a memory kill.
+        if (task === undefined) {
+          restarted = cutBy;
+          return undefined;
+        }
+        admission = await readmitLost(task, reraiseUnheard(true));
+      } else {
+        const restored = reraiseUnheard(false);
         try {
-          admission = await readmit("kept", restored);
+          admission = await readmitKept(restored);
         } catch (err) {
           if (!isNotKept(err)) throw err;
           // "Held" was the timeout's: the Harness keeps no such conversation, and it seated none. The
@@ -1299,7 +1309,7 @@ export function agentActorWith(
             restarted = cutBy;
             return undefined;
           }
-          admission = await readmit("lost", [...restored, ...reraiseUnheard(true)]);
+          admission = await readmitLost(task, [...restored, ...reraiseUnheard(true)]);
         }
       }
       // Said once an admission worked: a refused one that then faults re-admitted nothing.
@@ -1457,15 +1467,36 @@ export function agentActorWith(
             attempt: nudges,
             reason: woken ? "picks allowed again" : "no-signal nudge",
           });
-          admission = await admitTurn(
-            {
-              ...framed,
-              attach: undefined,
-              instanceId: currentIid,
-              prompt: NUDGE_PROMPT,
-            },
-            { notices: "nudge", task: false },
-          );
+          // The nudge and the wake ask the same conversation, so they say `kept`: the Harness can
+          // lose it while the Turn waits (the Instance Harness's restart is on no watch), and a
+          // Harness that keeps none then refuses, never seating an empty conversation whose model
+          // reads the nudge with no task. On the refusal the Turn takes the lost-conversation path,
+          // as the re-admission after a cut does: admitted as a Turn with its task, or a fault when
+          // there is no task to send. Its prompt is the task alone, as a continued Turn's is after
+          // the same refusal: nothing was cut, so the re-admit text would not be true. The ask was
+          // spent and said; the re-admission is said too.
+          try {
+            admission = await admitTurn(
+              {
+                ...framed,
+                attach: undefined,
+                instanceId: currentIid,
+                prompt: NUDGE_PROMPT,
+              },
+              { notices: "nudge", task: false, kept: true },
+            );
+          } catch (err) {
+            const task = input.prompt ?? input.attach?.task;
+            if (!isNotKept(err) || task === undefined) throw err;
+            if (stopped) return;
+            admission = await admitOntoLost(task, [], [], reraiseUnheard(true));
+            binding.telemetry?.({
+              kind: "retry",
+              child: self._parent?.id ?? self.id,
+              attempt: nudges,
+              reason: "re-admitted on a new conversation",
+            });
+          }
         }
       } catch (err) {
         if (stopped) return;

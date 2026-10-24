@@ -802,6 +802,46 @@ test("no-signal: a completed turn with no menu call is re-prompted on the SAME i
   assert.ok(!received.some((e) => e.type === "agent.fault"), "budget not exhausted — no fault yet");
 });
 
+test("the nudge says `kept`; a refusal with no task to send is the fault, never an empty conversation asked to pick (ADR-0062)", async () => {
+  // A restored Turn whose ledgered admission kept no task: there is nothing to send again.
+  const mock = new MockFlueClient();
+  const attach = { streamUrl: "http://mock/agents/coder/inst-42", offset: "adm-0", submissionId: "sub-0" };
+  const { received, ledger } = harness(mock, { ...baseInput, prompt: undefined, attach });
+  await tick();
+  mock.keeps = false;
+  mock.complete();
+  await tick();
+  await tick();
+  assert.equal(mock.refused.length, 1, "the nudge was for the kept conversation, and was refused");
+  assert.equal(mock.admits.length, 0, "no conversation was seated");
+  assert.equal(ledger["inst-42"], undefined, "nothing was ledgered");
+  const fault = received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined;
+  assert.match(String(fault?.reason), /no conversation/);
+});
+
+test("a refused nudge re-admits the Turn with its task on a new conversation, ledgered under the same Turn (ADR-0016, ADR-0062)", async () => {
+  const mock = new MockFlueClient();
+  const { received, ledger, telemetry } = harness(mock, { ...baseInput, turnId: "t-1" });
+  await tick();
+  mock.keeps = false;
+  mock.complete();
+  await tick();
+  await tick();
+  assert.equal(mock.refused.length, 1);
+  assert.equal(mock.admits.length, 2);
+  assert.equal(mock.admits[1]!.prompt, "do the thing");
+  assert.deepEqual(mock.notices[1], [
+    { kind: "conversation-new", scope: "conversation", reason: "the Harness no longer holds it" },
+  ]);
+  assert.equal(ledger["inst-42"]?.turnId, "t-1");
+  assert.equal(ledger["inst-42"]?.submissionId, mock.minted!.submissionId);
+  assert.deepEqual(
+    telemetry.map((t) => `${t.attempt} ${t.reason}`),
+    ["1 no-signal nudge", "1 re-admitted on a new conversation"],
+  );
+  assert.ok(!received.some((e) => e.type === "agent.fault"));
+});
+
 test("no-signal budget exhausted → ONE terminal agent.fault naming the menu", async () => {
   const mock = new MockFlueClient();
   const { received } = harness(mock, baseInput, { nudgeBudget: 0 });
