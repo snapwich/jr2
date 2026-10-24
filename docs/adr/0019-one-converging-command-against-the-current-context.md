@@ -40,14 +40,16 @@ loudly narrated, safe to re-run:
   ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). Each Turn carries its Agent's
   definition to the Harness in the admission (ADR-0049); `up` delivers no roster.
 - **Secrets**: values declared in config (which may read `process.env`, populated from the uncommitted `.env`) are
-  materialized into an instance-owned Secret. Referenced-but-unmanaged Secrets (`envFrom` refs, git credentials) are
-  **preflighted**: `up` fails naming the missing Secret with the exact creation hint — converting the
-  `CreateContainerConfigError` hang into an immediate error. Sealed Secrets/External Secrets ride this seam untouched:
-  jr2's contract is "a Secret named X exists", however it got there. A credential the Harness uses is a held secret
-  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): `up` writes a literal value into
-  `jr2-held-secrets-<pod>` for each pod that names it, which only that pod's Custodian mounts, and checks that a
-  referenced Secret and key exist. Like the signing key, the held-secret CA (`jr2-held-ca`) is kept across converges —
-  minted on first need, never rotated by `up` — because a live pod trusts it.
+  materialized into an instance-owned Secret, by server-side apply, so that no value is in a
+  `last-applied-configuration` annotation
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). Referenced-but-unmanaged Secrets
+  (`envFrom` refs, git credentials) are **preflighted**: `up` fails naming the missing Secret with the exact creation
+  hint — converting the `CreateContainerConfigError` hang into an immediate error. Sealed Secrets/External Secrets ride
+  this seam untouched: jr2's contract is "a Secret named X exists", however it got there. A credential the Harness uses
+  is a held secret ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): `up` writes a
+  literal value into `jr2-held-secrets-<pod>` for each pod that names it, which only that pod's Custodian mounts, and
+  checks that a referenced Secret and key exist. Like the signing key, the held-secret CA (`jr2-held-ca`) is kept across
+  converges — minted on first need, never rotated by `up` — because a live pod trusts it.
 - **Repos**: `up`'s walk of the registered Machines collects every bound Repo Slot (ADR-0049, ADR-0051) — to refuse an
   open slot nobody bound, and to see which urls need a key. The Orchestrator creates one `Repo` resource per url at
   boot, and the operator's cache agent clones each onto the nodes that need it (ADR-0004). There is no `repos` config

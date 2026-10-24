@@ -1106,7 +1106,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     gitClone,
   });
   activity(io, `orchestrator: applying (image ${refs.orchestrator})`);
-  await kube.apply({ manifest: instanceList, ...ctx });
+  await kube.apply({ manifest: instanceList, warn: (line) => activity(io, line), ...ctx });
   // An entry whose clone Secret this converge did not write loses it: a dropped entry, a token
   // unset, or nothing left that clones.
   const cloneSecrets = new Set(gitClone.map((s) => s.name));
@@ -1305,6 +1305,7 @@ export async function up(args: string[], io: Io): Promise<number> {
         caBundle: caPem !== undefined,
         ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
       }),
+      warn: (line) => activity(io, line),
       ...ctx,
     });
     await awaitRollout(kube, {
@@ -2108,7 +2109,7 @@ async function ensureGitSsh(
 
     if (source.kind === "generate") {
       const { privateKey, publicKey } = await (io.sshKeygen ?? sshKeygen)();
-      await applyGitSshSecret(kube, namespace, ctx, secret, privateKey, publicKey);
+      await applyGitSshSecret(io, kube, namespace, ctx, secret, privateKey, publicKey);
       activity(io, `generated deploy key ${sshFingerprint(publicKey)} — register this PUBLIC key (read access):`);
       activity(io, `  ${publicKey.trim()}`);
       // The pause sits exactly where the user must act anyway (ADR-0047): the printed key is useless
@@ -2139,7 +2140,7 @@ async function ensureGitSsh(
     } catch (err) {
       throw new Error(`refusing the key from ${where}: ${err instanceof Error ? err.message : err}`);
     }
-    await applyGitSshSecret(kube, namespace, ctx, secret, privateKey, publicKey);
+    await applyGitSshSecret(io, kube, namespace, ctx, secret, privateKey, publicKey);
     // The FINGERPRINT, never the material — not the private half, and not the public one either:
     // this key is the user's own, and its public half identifies them wherever it is registered.
     activity(io, `git ssh: "${secret}" applied from ${where} — ${sshFingerprint(publicKey)}`);
@@ -2237,6 +2238,7 @@ async function readSuppliedKey(path: string): Promise<string> {
  * `identity.pub` rides along so the cluster can say which key it holds without holding it up to a
  * human. Trailing newline enforced — ssh refuses a key file that lacks one. */
 async function applyGitSshSecret(
+  io: Io,
   kube: KubeAdmin,
   namespace: string,
   ctx: { context?: string },
@@ -2252,6 +2254,7 @@ async function applyGitSshSecret(
       type: "Opaque",
       stringData: { identity: newlineTerminated(privateKey), "identity.pub": newlineTerminated(publicKey) },
     }),
+    warn: (line) => activity(io, line),
     ...ctx,
   });
 }
@@ -2697,7 +2700,7 @@ async function preflightProviders(
     let refused: string | undefined;
     try {
       // Server-side: the trust bundles carry every root, past client-side apply's annotation.
-      await applyFirstContact(kube, { manifest, serverSide: true, ...ctx });
+      await applyFirstContact(kube, { manifest, serverSide: true, warn: (line) => activity(io, line), ...ctx });
     } catch (err) {
       // A quota, a Pod Security level or a webhook that refuses the pod: this check pod's fault alone.
       refused = `the cluster refused the check pod's objects: ${errText(err)}`;

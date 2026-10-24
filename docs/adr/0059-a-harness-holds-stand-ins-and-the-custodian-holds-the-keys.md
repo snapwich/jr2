@@ -194,6 +194,21 @@ decision generalizes that container. It holds every credential the Harness in it
   replaces their store), and `upstream.crt` (the roots + `caBundle`, and never the jr2 CA, for the Custodian). "Roots"
   are the Mozilla roots of the Node that runs `jr2 up`. The ConfigMap is applied server-side, because two copies of the
   roots are more than client-side apply's annotation can hold.
+- **Every Secret is applied server-side.** A client-side apply copies the whole object into its
+  `kubectl.kubernetes.io/last-applied-configuration` annotation, so the values of a Secret are then in plaintext for
+  each reader of its metadata. So `jr2 up` applies each Secret that it writes server-side: `jr2-instance`,
+  `jr2-harness-env`, `jr2-held-ca`, `jr2-held-tls`, `jr2-held-secrets-<pod>`, the Effector Secrets, the git Secrets, the
+  deploy key and the check pod's Secrets. The field manager is `jr2`, with `--force-conflicts`, because jr2 is the only
+  writer of these Secrets. A `stringData` goes as `data`, because a server-side apply owns the fields that it names, and
+  `stringData` is write-only. On a Secret that an older `jr2 up` applied client-side, the first server-side apply
+  migrates it: kubectl (1.26 and later) moves the fields of the client-side manager to `jr2`, so that apply removes the
+  annotation and each key that it does not name, and `jr2` is then the only manager (measured on kind with kubectl
+  1.35.9). When that migration fails, kubectl only writes a warning on stderr. So after each apply of Secrets, a
+  fallback removes the annotation (`kubectl annotate … last-applied-configuration-`). The removal of an annotation that
+  is not there changes nothing, so the fallback needs no record of what was removed. When the fallback fails, `jr2 up`
+  writes one warning that names the Secrets, and the converge goes on. The rule is in the apply seam
+  (`kubectlAdmin.apply`), so a Secret that a later change adds is applied in the same way. The values go on stdin, never
+  in argv. No ConfigMap holds a value.
 - **Objects, per pod.** The held manifest, the Custodian's files and the literal values are each a pod's own, from the
   one derivation that places Effect secrets. A pod is keyed `instance` for the Instance Harness, and `ws-<digest>` for a
   Workspace, the digest of its registered workflow and the placement route to its `workspace()` (the pod key below) —

@@ -5,12 +5,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   kubeFloorRefusal,
+  kubectlAdmin,
   kubectlKube,
+  LAST_APPLIED,
+  splitSecrets,
   REACH_BUDGET_MS,
   rolloutFailure,
   rolloutStatusArgs,
@@ -656,4 +659,160 @@ test('podPending: a pod that runs with no container waiting says nothing — not
     }),
     "check: PodInitializing",
   );
+});
+
+// --- a Secret is applied server-side, and loses the annotation an older apply left (ADR-0059) -----
+// A client-side apply copies the whole object, its values too, into the
+// `last-applied-configuration` annotation, in plaintext. So every Secret `jr2 up` writes is applied
+// server-side, and its old annotation is removed, because a server-side apply keeps it.
+
+const secretOf = (name: string, stringData: Record<string, string>, data?: Record<string, string>) => ({
+  apiVersion: "v1",
+  kind: "Secret",
+  metadata: { name, namespace: "ns", labels: { "jr2.dev/instance": "i" } },
+  type: "Opaque",
+  stringData,
+  ...(data ? { data } : {}),
+});
+const deployment = { apiVersion: "apps/v1", kind: "Deployment", metadata: { name: "d", namespace: "ns" } };
+
+test("splitSecrets: a List's Secrets go apart, their stringData in data, and the rest stays as it was", () => {
+  const list = JSON.stringify({
+    apiVersion: "v1",
+    kind: "List",
+    items: [secretOf("jr2-instance", { JR2_INSTANCE_TOKEN: "tok" }, { kept: "a2VwdA==" }), deployment],
+  });
+  const { secrets, identities, rest } = splitSecrets(list);
+  const [secret] = JSON.parse(secrets!).items;
+  assert.equal(secret.stringData, undefined, "stringData is write-only: a server-side apply would not own its keys");
+  assert.deepEqual(secret.data, { kept: "a2VwdA==", JR2_INSTANCE_TOKEN: Buffer.from("tok").toString("base64") });
+  assert.deepEqual(secret.metadata.labels, { "jr2.dev/instance": "i" });
+  assert.deepEqual(JSON.parse(identities!).items, [
+    { apiVersion: "v1", kind: "Secret", metadata: { name: "jr2-instance", namespace: "ns" } },
+  ]);
+  assert.ok(!identities!.includes("tok") && !identities!.includes("a2VwdA"), "the names alone, never a value");
+  assert.deepEqual(JSON.parse(rest!).items, [deployment]);
+});
+
+test("splitSecrets: a stringData key wins over the same data key, as the API server merges them", () => {
+  const { secrets } = splitSecrets(JSON.stringify(secretOf("s", { k: "new" }, { k: "b2xk" })));
+  assert.deepEqual(JSON.parse(secrets!).items[0].data, { k: Buffer.from("new").toString("base64") });
+});
+
+test("splitSecrets: a manifest with no Secret, and one that is not JSON, pass as they were", () => {
+  const json = JSON.stringify({ apiVersion: "v1", kind: "List", items: [deployment] });
+  assert.deepEqual(splitSecrets(json), { rest: json });
+  const yaml = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: x\n";
+  assert.deepEqual(splitSecrets(yaml), { rest: yaml });
+});
+
+test("the one manifest jr2 up applies as YAML, the operator's, holds no Secret", async () => {
+  const yaml = await readFile(new URL("../manifests/operator.yaml", import.meta.url), "utf8");
+  assert.ok(!/^kind:\s*Secret\s*$/m.test(yaml), "a Secret there would be applied client-side");
+});
+
+/** A shim `kubectl` that records each call's argv and stdin, then exits 0 — or 1 for the verb
+ * `failVerb`, with a reason on stderr. */
+async function recordedKubectl(
+  run: () => Promise<void>,
+  failVerb?: string,
+): Promise<Array<{ argv: string[]; stdin: string }>> {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-kube-apply-"));
+  const log = join(dir, "calls");
+  try {
+    await writeFile(
+      join(dir, "kubectl"),
+      `#!/bin/sh\n{ printf 'ARGV'; for a in "$@"; do printf '\\t%s' "$a"; done; printf '\\n'; cat; printf '\\nEND\\n'; } >> '${log}'\n` +
+        (failVerb
+          ? `for a in "$@"; do [ "$a" = '${failVerb}' ] && { echo 'forbidden: cannot patch' >&2; exit 1; }; done\nexit 0\n`
+          : ""),
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = `${dir}:${path ?? ""}`;
+    try {
+      await run();
+    } finally {
+      process.env.PATH = path;
+    }
+    const text = await readFile(log, "utf8").catch(() => "");
+    return text
+      .split("\nEND\n")
+      .filter((c) => c.startsWith("ARGV"))
+      .map((c) => {
+        const [head, ...body] = c.split("\n");
+        return { argv: head!.split("\t").slice(1), stdin: body.join("\n") };
+      });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("kubectlAdmin.apply: the Secrets go server-side as jr2, lose the old annotation, and only then the rest goes client-side", async () => {
+  const list = JSON.stringify({
+    apiVersion: "v1",
+    kind: "List",
+    items: [secretOf("jr2-held-secrets-instance", { ANTHROPIC_API_KEY: "sk-held-value" }), deployment],
+  });
+  const calls = await recordedKubectl(() => kubectlAdmin.apply({ manifest: list, context: "kind-x" }));
+  assert.deepEqual(
+    calls.map((c) => c.argv),
+    [
+      ["--context", "kind-x", "apply", "--server-side", "--force-conflicts", "--field-manager=jr2", "-f", "-"],
+      ["--context", "kind-x", "annotate", "--overwrite", "-f", "-", `${LAST_APPLIED}-`],
+      ["--context", "kind-x", "apply", "-f", "-"],
+    ],
+  );
+  const encoded = Buffer.from("sk-held-value").toString("base64");
+  assert.ok(calls[0]!.stdin.includes(encoded), "the value goes on stdin");
+  assert.ok(!calls[0]!.stdin.includes('"stringData"'));
+  assert.ok(!calls[0]!.stdin.includes('"Deployment"'), "the Secrets alone go server-side");
+  assert.ok(calls[1]!.stdin.includes('"jr2-held-secrets-instance"'), "the annotation goes from that Secret");
+  for (const c of calls.slice(1)) {
+    assert.ok(!c.stdin.includes(encoded) && !c.stdin.includes("sk-held-value"), "no value after the first call");
+  }
+  assert.ok(!calls[2]!.stdin.includes('"Secret"'), "no Secret is applied client-side");
+  for (const c of calls) {
+    assert.ok(!c.argv.some((a) => a.includes("sk-held-value") || a.includes(encoded)), "never a value in argv");
+  }
+});
+
+test("kubectlAdmin.apply: a manifest with no Secret is one apply, server-side only when asked", async () => {
+  const one = JSON.stringify(deployment);
+  const plain = await recordedKubectl(() => kubectlAdmin.apply({ manifest: one }));
+  assert.deepEqual(
+    plain.map((c) => c.argv),
+    [["apply", "-f", "-"]],
+  );
+  assert.equal(plain[0]!.stdin, one, "as it was given");
+  const server = await recordedKubectl(() => kubectlAdmin.apply({ manifest: one, serverSide: true }));
+  assert.deepEqual(
+    server.map((c) => c.argv),
+    [["apply", "--server-side", "--force-conflicts", "--field-manager=jr2", "-f", "-"]],
+  );
+});
+
+test("kubectlAdmin.apply: a fallback that cannot remove the annotation is one warning that names the Secrets, and the rest is still applied", async () => {
+  const list = JSON.stringify({
+    apiVersion: "v1",
+    kind: "List",
+    items: [
+      secretOf("jr2-instance", { JR2_INSTANCE_TOKEN: "tok" }),
+      secretOf("jr2-held-ca", { "ca.key": "k" }),
+      deployment,
+    ],
+  });
+  const warned: string[] = [];
+  const calls = await recordedKubectl(
+    () => kubectlAdmin.apply({ manifest: list, warn: (line) => warned.push(line) }),
+    "annotate",
+  );
+  assert.equal(calls.length, 3, "the apply goes on after the fallback fails");
+  assert.deepEqual(calls[2]!.argv, ["apply", "-f", "-"]);
+  assert.equal(warned.length, 1);
+  assert.match(
+    warned[0]!,
+    /^warning: the kubectl\.kubernetes\.io\/last-applied-configuration annotation was not removed from Secret jr2-instance, jr2-held-ca \(.*forbidden: cannot patch\)/,
+  );
+  assert.ok(!warned[0]!.includes("tok") && !warned[0]!.includes(Buffer.from("tok").toString("base64")), "no value");
 });

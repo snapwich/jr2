@@ -102,8 +102,23 @@ export type KubeAdmin = {
   /** `kubectl apply -f -` of a multi-doc YAML or JSON manifest string. `serverSide` is for an
    * object too large for client-side apply's `last-applied-configuration` annotation (256 KiB) —
    * the trust bundles, which carry every root certificate (ADR-0059); jr2 is its only writer, so it
-   * takes the fields it owns (`--force-conflicts`). */
-  apply(opts: { manifest: string; context?: string; serverSide?: boolean }): Promise<void>;
+   * takes the fields it owns (`--force-conflicts`).
+   *
+   * A Secret is ALWAYS applied server-side, whatever `serverSide` says (`splitSecrets`): a
+   * client-side apply copies the whole object, its values too, into that annotation, and a value
+   * there is in plaintext for every reader of the object's metadata. On a Secret that an older
+   * `jr2 up` applied client-side, the first server-side apply migrates: kubectl (1.26 and later)
+   * moves the client-side manager's fields to `jr2`, so that apply removes the annotation and each
+   * key that it does not name. A migration that fails is only a warning on kubectl's stderr. So a
+   * fallback removes the annotation from each Secret after the apply; when the fallback fails, it is
+   * one line to `warn` (default: stderr), and the apply goes on. The values go on stdin, never in
+   * argv. */
+  apply(opts: {
+    manifest: string;
+    context?: string;
+    serverSide?: boolean;
+    warn?: (line: string) => void;
+  }): Promise<void>;
   /** `kubectl label --overwrite`. */
   label(opts: {
     kind: string;
@@ -475,9 +490,30 @@ export const kubectlAdmin: KubeAdmin = {
     return (JSON.parse(stdout) as { items?: never[] }).items ?? [];
   },
 
-  async apply({ manifest, context, serverSide }) {
-    const mode = serverSide ? ["--server-side", "--force-conflicts", "--field-manager=jr2"] : [];
-    await execStdin(["kubectl", ...ctxArgs(context), "apply", ...mode, "-f", "-"], manifest);
+  async apply({ manifest, context, serverSide, warn = (line) => process.stderr.write(`${line}\n`) }) {
+    const { secrets, identities, rest } = splitSecrets(manifest);
+    if (secrets !== undefined) {
+      await execStdin(["kubectl", ...ctxArgs(context), "apply", ...SERVER_SIDE, "-f", "-"], secrets);
+      // The fallback for a migration that failed. Removing an annotation that is not there is no
+      // fault, so this changes nothing once it is gone.
+      try {
+        await execStdin(
+          ["kubectl", ...ctxArgs(context), "annotate", "--overwrite", "-f", "-", `${LAST_APPLIED}-`],
+          identities!,
+        );
+      } catch (err) {
+        const names = (JSON.parse(identities!) as { items: Array<{ metadata: { name: string } }> }).items
+          .map((o) => o.metadata.name)
+          .join(", ");
+        warn(
+          `warning: the ${LAST_APPLIED} annotation was not removed from Secret ${names} ` +
+            `(${(err as Error).message}) — the next \`jr2 up\` tries again`,
+        );
+      }
+    }
+    if (rest !== undefined) {
+      await execStdin(["kubectl", ...ctxArgs(context), "apply", ...(serverSide ? SERVER_SIDE : []), "-f", "-"], rest);
+    }
   },
 
   async label({ kind, name, namespace, labels, context }) {
@@ -949,6 +985,60 @@ function resolveRef(ref?: string): string {
   if (!ref) return "(unknown)";
   if (!isBareRef(ref)) return ref;
   return `docker.io/${ref.includes("/") ? ref : `library/${ref}`}`;
+}
+
+/** A server-side apply as jr2's own field manager. jr2 is the only writer of what it applies, so it
+ * takes the fields it names (`--force-conflicts`) from an older client-side apply. */
+const SERVER_SIDE = ["--server-side", "--force-conflicts", "--field-manager=jr2"];
+
+/** The annotation in which a client-side apply keeps a copy of the whole object it applied. */
+export const LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration";
+
+/**
+ * A manifest, split for `apply`: its Secrets as one List to apply server-side, the names of those
+ * Secrets alone (for the annotation's removal), and the other objects as they were given. A
+ * Secret's `stringData` goes into `data` (base64): a server-side apply owns the fields it names,
+ * and `stringData` is write-only, so a key that a later apply leaves out would stay in `data`. A
+ * manifest that is not JSON (the operator's YAML, which holds no Secret) is all `rest`. Pure, for
+ * its test.
+ */
+export function splitSecrets(manifest: string): { secrets?: string; identities?: string; rest?: string } {
+  let parsed: { kind?: string; items?: Array<Record<string, unknown>> } & Record<string, unknown>;
+  try {
+    parsed = JSON.parse(manifest);
+  } catch {
+    return { rest: manifest };
+  }
+  const items = parsed.kind === "List" ? (parsed.items ?? []) : [parsed];
+  const secrets = items.filter((o) => o.kind === "Secret");
+  if (!secrets.length) return { rest: manifest };
+  const others = items.filter((o) => o.kind !== "Secret");
+  const list = (objects: unknown[]) => JSON.stringify({ apiVersion: "v1", kind: "List", items: objects });
+  return {
+    secrets: list(secrets.map(serverSideSecret)),
+    identities: list(
+      secrets.map((o) => {
+        const m = o.metadata as { name: string; namespace?: string };
+        return {
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: { name: m.name, ...(m.namespace ? { namespace: m.namespace } : {}) },
+        };
+      }),
+    ),
+    ...(others.length ? { rest: list(others) } : {}),
+  };
+}
+
+/** A Secret with its `stringData` in `data`, as Kubernetes stores it: a key in both takes the
+ * `stringData` value, as the API server merges them. */
+function serverSideSecret(o: Record<string, unknown>): Record<string, unknown> {
+  const { stringData, ...secret } = o as { stringData?: Record<string, string> } & Record<string, unknown>;
+  if (stringData === undefined) return secret;
+  const encoded = Object.fromEntries(
+    Object.entries(stringData).map(([k, v]) => [k, Buffer.from(v, "utf8").toString("base64")]),
+  );
+  return { ...secret, data: { ...((secret.data as Record<string, string> | undefined) ?? {}), ...encoded } };
 }
 
 /** Run a command feeding `stdin`, surfacing stderr in the thrown error (kubectl's messages are the
