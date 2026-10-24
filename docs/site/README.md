@@ -701,9 +701,10 @@ pages do not use `--detach`.
 - Page 3's `jr2 up` cannot reach the model yet, because no Workflow names it. For Anthropic, it prints a warning that
   starts with `warning: secrets[0] (ANTHROPIC_API_KEY) is named by nothing; goes nowhere`. For Local, it prints
   `provider: <url> configured, but no carried Agent names a "local/…" model — skipped`. Page 3 shows this line and says
-  that page 4 uses the model. The claim of each tab is different:
-  - Anthropic: `jr2 up` does not check a catalog model. Page 4's `jr2 up` gives the key to the Custodian of the pod
-    where the Agent works, and the first Turn of the run is the first call to the model.
+  that page 4 uses the model. In each tab, page 4's `jr2 up` is the first `jr2 up` that reaches the model:
+  - Anthropic: page 4's `jr2 up` gives the key to the Custodian of the pod where the Agent works. Then it asks the model
+    for one tool call through a Custodian that holds the key, before it converges. It is the first `jr2 up` that reaches
+    the model.
   - Local: page 4's `jr2 up` checks the endpoint before it converges. It is the first `jr2 up` that reaches the model.
 - Page 3's `jr2 up` publishes `jr2.config.ts` in the Assembly, and the Orchestrator loads it with no restart. Thus the
   port forward stays open. Each page whose `jr2 up` changes only the Instance folder says the same.

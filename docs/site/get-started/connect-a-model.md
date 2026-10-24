@@ -135,12 +135,10 @@ From the computer that runs kind, run:
 curl http://<address>:8000/v1/models
 ```
 
-The server sends a JSON object:
-
-<!-- output: not run -->
+The server sends a JSON object. This object is from vLLM. llama.cpp sends different fields:
 
 ```text
-{"object":"list","data":[{"id":"qwen3.6-35b-a3b","object":"model",…}]}
+{"object":"list","data":[{"id":"qwen3.6-35b-a3b","object":"model","created":1792819567,"owned_by":"vllm",…,"max_model_len":65536,…}]}
 ```
 
 The `data` list in the JSON that the server sends has the id `qwen3.6-35b-a3b`. If `curl` cannot connect, make sure that
@@ -162,8 +160,6 @@ jr2 up
 
 == Anthropic
 
-<!-- output: not run -->
-
 ```text
 → .env: ANTHROPIC_API_KEY
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
@@ -177,12 +173,10 @@ The warning is correct for now. No [Workflow](../reference/glossary.md#workflow)
 model, so no pod gets the key.
 
 The next page adds a Workflow with an Agent that names the model. On the next page, `jr2 up` gives the key to the
-[Custodian](../reference/glossary.md#custodian) of the pod where the Agent works. The first
-[Turn](../reference/glossary.md#turn) of the run is the first call to the model.
+[Custodian](../reference/glossary.md#custodian) of the pod where the Agent works. Then it asks the model for one tool
+call through a Custodian that holds the key, before it converges. It is the first `jr2 up` that reaches the model.
 
 == Local
-
-<!-- output: not run -->
 
 ```text
 → .env: LOCAL_MODEL_URL
