@@ -347,7 +347,7 @@ recover, finish — are exercised only one scripted tool call at a time.
     answered after the hog was a miss. A dead port with no guard kill counted as a kill, so that trial could pass. Now
     each is a void, because the setup that the claim measures does not happen, and a port that is dead for another
     reason is not blamed on what jr2 tells the model. Each void cancels its run before the second Turn. Only the voids
-    after the hog give the hog's exit code. The change to these two voids waits on the user's decision.
+    after the hog give the hog's exit code. The user approved these two voids on 2026-10-23.
 
     The prompt and the floor did not change. The pass changed: a trial now also needs the notice in the second Turn's
     prompt. Before, the step did not read the second Turn's prompt. Now the kill lands before the second Turn starts, so
