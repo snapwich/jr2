@@ -217,31 +217,60 @@ function meta(fields: Record<string, string>): Json {
   return { filter_metadata: { [LUA_FILTER]: fields } };
 }
 
-/** An upstream that never answered, said as the Custodian's own 502 (§5.4) — the host and Envoy's
- * reason, never a retry without verification. */
+/** Envoy's flags for a request it did not send to the target (ADR-0059): the connection failed, no
+ * host was healthy, the DNS lookup failed. */
+export const NOT_SENT_FLAGS = ["UF", "UH", "DF"] as const;
+
+/** Envoy's flags for a request that may have reached the target before the stream ended (ADR-0059):
+ * the target closed the connection or reset the stream, Envoy reset it, a protocol error on either
+ * side (a body framing error can come after the headers went). `UMSDR` (the maximum stream
+ * duration) ends a stream that was sent. `URX` (the retry limit) comes with the last attempt's own
+ * flag (`UF,URX`, `UC,URX`), so alone it says nothing of the send; the mapper for
+ * {@link NOT_SENT_FLAGS} comes first, so `UF,URX` still reads "could not be reached". These routes
+ * set no retry policy and no `max_stream_duration`, so Envoy sets neither flag on them; they keep
+ * the union equal to ORCHESTRATOR_UNREACHABLE's. */
+export const MAY_HAVE_SENT_FLAGS = ["UC", "DPE", "UMSDR", "URX", "UPE", "UR", "LR"] as const;
+
+/** One of the Custodian's own 502s for a target that gave no answer (§5.4): the target, what
+ * jr2 knows about the request, and Envoy's reason — never a retry without verification. */
+function noAnswer(target: string, flags: readonly string[], words: string): Json {
+  return {
+    filter: { response_flag_filter: { flags: [...flags] } },
+    status_code: 502,
+    body_format_override: {
+      text_format_source: {
+        inline_string: `jr2 custodian: ${target} ${words}: %RESPONSE_CODE_DETAILS% %UPSTREAM_TRANSPORT_FAILURE_REASON%\n`,
+      },
+    },
+  };
+}
+
+const NOT_REACHED = "could not be reached";
+const MAY_HAVE_REACHED = "did not answer; the request may have reached it";
+
+/**
+ * An intercepted target that gave no answer (ADR-0059). Two mappers, because the words must be
+ * true: after a `NOT_SENT_FLAGS` failure the target did not get the request, and after a
+ * `MAY_HAVE_SENT_FLAGS` one it may have it — so an Agent that sends a POST again can write twice,
+ * and the text must not tell it the first one went nowhere. One reply can carry several flags,
+ * and Envoy uses the first mapper that matches, in order: the `NOT_SENT_FLAGS` mapper is first, so
+ * a reply with `UF`, `UH` or `DF` reads "could not be reached" whatever else it carries. Without
+ * the mappers, Envoy answers each of these flags itself (503 for most, 502 for `UPE`) with a body
+ * that names no target, which a caller can read as the target's answer. No caller reads the flags;
+ * the Orchestrator route's go to the Harness, which tells "never reached" from "not known"
+ * (ADR-0002).
+ */
 function unreachable(target: string): Json {
   return {
-    mappers: [
-      {
-        // Ten flags, one text (ADR-0059). UF, UH and DF say the request was not sent. UC, DPE, UPE, UR
-        // and LR can come after the target got it. Envoy does not set URX or UMSDR here (no retry
-        // policy, no max_stream_duration); they keep this list equal to ORCHESTRATOR_UNREACHABLE's.
-        // The text says the target did not get the request. On the tunnel that is true: the CONNECT
-        // 200 comes only after the TCP connection to the target is up. On an intercepted target it
-        // can be false after UC, DPE, UPE, UR or LR, so a POST sent again can write twice. UPE, UR
-        // and LR are here so that Envoy's own 503, whose body names no target, never reads as the
-        // target's answer. The Orchestrator route's flags go to the Harness, which tells "never
-        // reached" from "not known" (ADR-0002); no caller of this mapper reads them.
-        filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR", "UPE", "UR", "LR"] } },
-        status_code: 502,
-        body_format_override: {
-          text_format_source: {
-            inline_string: `jr2 custodian: ${target} could not be reached: %RESPONSE_CODE_DETAILS% %UPSTREAM_TRANSPORT_FAILURE_REASON%\n`,
-          },
-        },
-      },
-    ],
+    mappers: [noAnswer(target, NOT_SENT_FLAGS, NOT_REACHED), noAnswer(target, MAY_HAVE_SENT_FLAGS, MAY_HAVE_REACHED)],
   };
+}
+
+/** The tunnel's 502 (ADR-0059): every flag, one text. Envoy answers a `CONNECT` with 200 only after
+ * its TCP connection to the target is up, and no byte of the Agent's request goes before that 200.
+ * So a 502 on the tunnel always comes before the request reached the target, whatever its flag. */
+function tunnelUnreachable(target: string): Json {
+  return { mappers: [noAnswer(target, [...NOT_SENT_FLAGS, ...MAY_HAVE_SENT_FLAGS], NOT_REACHED)] };
 }
 
 /** The Orchestrator unreachable, said so the Harness can tell it from an answer and retry the
@@ -249,9 +278,11 @@ function unreachable(target: string): Json {
 const ORCHESTRATOR_UNREACHABLE: Json = {
   mappers: [
     {
-      // Envoy's own 503s for a stream it reset (`UPE`, `UR`, `LR`) are said here too, so the Harness
-      // reads them as "not known" and not as a stopping Orchestrator's 503 (ADR-0002).
-      filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR", "UPE", "UR", "LR"] } },
+      // Envoy's own answers for a stream it reset (`UPE`, `UR`, `LR`: 503, or 502 for `UPE`) are said
+      // here too, so the Harness reads them as "not known" and not as a stopping Orchestrator's 503
+      // (ADR-0002). One text for
+      // both lists: the Harness reads the flags, not the words.
+      filter: { response_flag_filter: { flags: [...NOT_SENT_FLAGS, ...MAY_HAVE_SENT_FLAGS] } },
       status_code: 502,
       headers_to_add: [
         { header: { key: "x-jr2-custodian", value: "unreachable" }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
@@ -344,7 +375,7 @@ function egressReplies(): Json {
           },
         },
       },
-      ...(unreachable("%REQ(:AUTHORITY)%").mappers as Json[]),
+      ...(tunnelUnreachable("%REQ(:AUTHORITY)%").mappers as Json[]),
     ],
   };
 }

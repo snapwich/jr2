@@ -98,30 +98,41 @@ decision generalizes that container. It holds every credential the Harness in it
   - Envoy opens its own TLS to the target, verifies the chain against `upstream.crt` and the name against the target's
     SAN (DNS or IP), and adds no header either way (`server`, `x-envoy-*`, `x-request-id` and `x-forwarded-*` are off).
     A failure gives 502 and a body that names the target and the reason. Redirects pass back unchanged.
-  - That 502 body is `jr2 custodian: <target> could not be reached: <details> <reason>`. The tunnel (below) gives the
-    same body. It replaces Envoy's own answer for ten Envoy response flags:
+  - When the target gives no answer, the Custodian answers 502 with a body that names the target, says what jr2 knows
+    about the request, and ends with Envoy's reason. It replaces Envoy's own answer for ten Envoy response flags, in two
+    mappers. One reply can carry several flags, and Envoy uses the first mapper that matches, in order. The first mapper
+    is for `UF`, `UH` and `DF`, so a reply with one of them gets the first text whatever else it carries:
     - `UF` (the connection to the target failed), `UH` (no healthy host) and `DF` (the DNS lookup failed) say that Envoy
-      did not send the request.
+      did not send the request. The body is `jr2 custodian: <target> could not be reached: <details> <reason>`.
     - `UC` (the target closed the connection), `DPE` (a downstream protocol error, which a body framing error can cause
       after the headers went), `UPE` (an upstream protocol error), `UR` (the target reset the stream) and `LR` (Envoy
-      reset it) can come after the request went to the target.
-    - Envoy does not set `URX` (the retry limit) or `UMSDR` (the maximum stream duration) on these routes, because they
-      set no retry policy and no `max_stream_duration`. The two flags are in the list only to keep it equal to the
-      Orchestrator route's list.
+      reset it) can come after the request went to the target. The body is
+      `jr2 custodian: <target> did not answer; the request may have reached it: <details> <reason>`. `UMSDR` (the
+      maximum stream duration) is in this mapper: it ends a stream that was sent. `URX` (the retry limit) is in it too:
+      Envoy sets it with the last attempt's own flag, so `UF,URX` gets the first text and `UC,URX` the second.
+    - Envoy does not set `URX` or `UMSDR` on these routes, because they set no retry policy and no
+      `max_stream_duration`. The two flags are in the mappers only to keep their union equal to the Orchestrator route's
+      list.
 
-    Without the mapper, Envoy answers `UPE`, `UR` and `LR` with its own 503. That body names no target, so a caller can
-    read the 503 as the target's own. With the mapper, every caller sees that the Custodian gave the answer, and for
-    which target. A reset after the target's answer started is not replaced: the caller sees its stream end.
+    The second text is there because the first would be false after those flags. The target may have the request, so a
+    `curl -X POST` or a `gh api` call to a bound host can write twice when the Agent sends it again. "Could not be
+    reached" would tell the Agent that the first call went nowhere. The status stays 502 for both, the status of a
+    gateway whose target gave no valid answer. No code reads the words. The Harness's provider adapter reads the status,
+    and no model reads its own provider's 502. The Agent's own tools show the body to the model.
 
-    The text says that the target did not get the request. On the tunnel this is true: Envoy answers a `CONNECT` with
-    200 only after its TCP connection to the target is up, so a 502 comes before any byte reached the target. On an
-    intercepted target the text can be false. After `UC`, `DPE`, `UPE`, `UR` or `LR`, the target may have the request.
-    For example, a `curl -X POST` or a `gh api` call to a bound host can then write twice when the Agent sends it again.
-    The Harness's provider adapter reads the same text, but no model reads its own provider's 502.
+    Without the mappers, Envoy answers each of the ten flags itself: 503 for most of them, and 502 for `UPE`. That body
+    names no target, so a caller can read it as the target's own answer. With them, every caller sees that the Custodian
+    gave the answer, and for which target. A reset after the target's answer started is not replaced: the caller sees
+    its stream end.
+
+    The tunnel (below) keeps one mapper for all ten flags, with the first text. Envoy answers a `CONNECT` with 200 only
+    after its TCP connection to the target is up, and no byte of the Agent's request goes before that 200. So a 502 on
+    the tunnel always comes before the request reached the target, and "could not be reached" is true for each flag.
 
     The Orchestrator route is different ([ADR-0002](0002-duplex-streaming-actor.md)). Its mapper adds the header
     `x-jr2-custodian: unreachable` and the flags, and the Harness reads them to decide whether a pick may be sent again
-    (`menu.ts`). It says "never reached" only for `UF`, `UH`, `DF` and `URX`, and "not known" for the other flags.
+    (`menu.ts`). It says "never reached" only when each flag of the reply is `UF`, `UH`, `DF` or `URX`, and "not known"
+    when any other flag is there.
 
   - Bodies stream both ways. A route has no total timeout; an idle stream has an hour; a client that goes away resets
     the upstream request.

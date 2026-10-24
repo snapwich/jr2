@@ -222,7 +222,25 @@ describe("toward a bound host", () => {
     const r = await via(d, { headers: { "x-api-key": standIn("UNTRUSTED_KEY") } });
     assert.equal(r.status, 502);
     assert.match(r.body, new RegExp(`${d.host}:${d.port}`));
+    // Never sent, so the words say so (ADR-0059).
+    assert.match(r.body, new RegExp(`^jr2 custodian: ${d.host}:${d.port} could not be reached: `));
     assert.equal(d.seen.length, 0);
+  });
+
+  test("7b. an upstream that closes the connection after it got the request → 502 that says the request may have reached it", async () => {
+    a.handler = (req) => req.socket.destroy();
+    const before = a.seen.length;
+    const r = await via(a, { method: "POST", headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") } });
+    assert.equal(r.status, 502, r.body);
+    assert.match(
+      r.body,
+      new RegExp(`^jr2 custodian: ${a.host}:${a.port} did not answer; the request may have reached it: `),
+    );
+    assert.equal(a.seen.length, before + 1, "the upstream got the request: a second send would be a second write");
+    a.handler = (_req, res) => {
+      res.writeHead(200);
+      res.end("ok");
+    };
   });
 
   test("8. SSE: each event reaches the client within 100 ms of the upstream write", async () => {

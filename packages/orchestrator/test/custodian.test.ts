@@ -15,6 +15,8 @@ import {
   custodianScript,
   CUSTODIAN_IMAGE,
   CUSTODIAN_PROGRAM,
+  MAY_HAVE_SENT_FLAGS,
+  NOT_SENT_FLAGS,
 } from "../src/custodian.ts";
 import { EMPTY_HELD, leafStem, type HeldManifest } from "../src/held-secrets.ts";
 
@@ -319,4 +321,61 @@ test("the Orchestrator's unreachable answer names every Envoy flag of a stream i
   const hcm = control.filter_chains[0]!.filters[0]!.typed_config;
   const flags = hcm.local_reply_config.mappers[0].filter.response_flag_filter.flags as string[];
   assert.deepEqual([...flags].sort(), ["DF", "DPE", "LR", "UC", "UF", "UH", "UMSDR", "UPE", "UR", "URX"]);
+});
+
+test("an intercepted target that gave no answer has two 502 texts, one per flag group, and the tunnel has one (ADR-0059)", () => {
+  type Mapper = {
+    filter: { response_flag_filter: { flags: string[] } };
+    status_code: number;
+    body_format_override: { text_format_source: { inline_string: string } };
+  };
+  const hcmOf = (name: string) =>
+    listeners(TWO).find((l) => l.name === name)!.filter_chains[0]!.filters[0]!.typed_config;
+  const leaf = TWO.secrets[0]!.hosts[0]!;
+  const target = `${leaf.host}:${leaf.port}`;
+  const intercept = hcmOf(`intercept-${leaf.leaf}`).local_reply_config.mappers as Mapper[];
+  const details = "%RESPONSE_CODE_DETAILS% %UPSTREAM_TRANSPORT_FAILURE_REASON%\n";
+  assert.deepEqual(
+    intercept.map((m) => [
+      m.status_code,
+      m.filter.response_flag_filter.flags,
+      m.body_format_override.text_format_source.inline_string,
+    ]),
+    [
+      [502, ["UF", "UH", "DF"], `jr2 custodian: ${target} could not be reached: ${details}`],
+      [
+        502,
+        ["UC", "DPE", "UMSDR", "URX", "UPE", "UR", "LR"],
+        `jr2 custodian: ${target} did not answer; the request may have reached it: ${details}`,
+      ],
+    ],
+  );
+  // One reply can carry several flags, and Envoy uses the first mapper that matches any of them, in
+  // order. `URX` comes with the last attempt's own flag: `UF,URX` was never sent, `UC,URX` may have
+  // been.
+  const textFor = (flags: string[]) =>
+    intercept
+      .find((m) => m.filter.response_flag_filter.flags.some((f) => flags.includes(f)))
+      ?.body_format_override.text_format_source.inline_string.split(": %")[0];
+  assert.equal(textFor(["UF", "URX"]), `jr2 custodian: ${target} could not be reached`);
+  assert.equal(textFor(["UC", "URX"]), `jr2 custodian: ${target} did not answer; the request may have reached it`);
+  assert.equal(textFor(["UH"]), `jr2 custodian: ${target} could not be reached`);
+  assert.equal(textFor(["UPE"]), `jr2 custodian: ${target} did not answer; the request may have reached it`);
+
+  // The tunnel: a 502 comes before its 200, so before any byte of the request. One text, every flag.
+  const egress = hcmOf("egress").local_reply_config.mappers as Mapper[];
+  const tunnel = egress.filter((m) => m.status_code === 502);
+  assert.equal(tunnel.length, 1);
+  assert.deepEqual(
+    [...tunnel[0]!.filter.response_flag_filter.flags].sort(),
+    [...NOT_SENT_FLAGS, ...MAY_HAVE_SENT_FLAGS].sort(),
+  );
+  assert.equal(
+    tunnel[0]!.body_format_override.text_format_source.inline_string,
+    `jr2 custodian: %REQ(:AUTHORITY)% could not be reached: ${details}`,
+  );
+
+  // The Orchestrator route keeps one list, the union of the two.
+  const control = hcmOf("control").local_reply_config.mappers as Mapper[];
+  assert.deepEqual(control[0]!.filter.response_flag_filter.flags, [...NOT_SENT_FLAGS, ...MAY_HAVE_SENT_FLAGS]);
 });
