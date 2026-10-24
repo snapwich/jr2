@@ -29,8 +29,6 @@ Run this command in the Instance folder:
 jr2 version --local
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 cli:       <old version>    <instance folder>/node_modules/@jr2/cli
@@ -81,8 +79,6 @@ Then check the result:
 jr2 version --local
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 cli:       <version>    <instance folder>/node_modules/@jr2/cli
@@ -118,18 +114,17 @@ is at the old version:
 jr2 version
 ```
 
-<!-- output: not run -->
-
 ```text
 …
-orchestrator:  <old version>  assembly <hash>  <image>
+orchestrator:  <old version>  assembly 87cddbde1271  ghcr.io/snapwich/jr2-orchestrator:<old version>
 operator:      <old version>  ghcr.io/snapwich/jr2-operator:<old version>
 …
 skew:          deployed <old version> predates this kit <version> — `jr2 up` converges it
 ```
 
-`<hash>` is the hash of the current [Assembly](../reference/glossary.md#assembly), and `<image>` is the image of the
-[Orchestrator](../reference/glossary.md#orchestrator) that runs in the cluster.
+`87cddbde1271` is the hash of the current [Assembly](../reference/glossary.md#assembly), and your hash is different. The
+`orchestrator` line also gives the image of the [Orchestrator](../reference/glossary.md#orchestrator) that runs in the
+cluster.
 
 When the Orchestrator in the cluster is newer than the Kit version of the Instance, the `skew` line says
 ``deployed <deployed version> is newer than this kit <version> — `jr2 up` would roll the orchestrator back; the operator is never downgraded``.
@@ -143,8 +138,6 @@ version that is not installed, the `kit` line ends in `; package.json pins <vers
 ```sh
 jr2 up
 ```
-
-<!-- output: not run -->
 
 ```text
 …
@@ -160,13 +153,14 @@ orchestrator: applying (image ghcr.io/snapwich/jr2-orchestrator:<version>)
 orchestrator: waiting for rollout
 orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
 …
-assembly: publishing <hash> (current is <old hash>)
-assembly: <hash> is current — workflows: <workflows>
+assembly: publishing 36b7afe19f88 (no current Assembly)
+assembly: 36b7afe19f88 is current — workflows: <workflows>
 converged — `jr2 run <workflow>` when ready
 ```
 
-`<context>` is the kubectl context of the cluster. `<hash>` is the hash of the Assembly for the new version, and
-`<old hash>` is the hash of the Assembly that was current.
+`<context>` is the kubectl context of the cluster. `36b7afe19f88` is the hash of the Assembly for the new version, and
+your hash is different. The new Orchestrator does not load the Assembly of the old version, so the publish line says
+`no current Assembly`.
 
 `jr2 up` does these things for the upgrade:
 
@@ -191,7 +185,9 @@ converged — `jr2 run <workflow>` when ready
 A live run holds the Assembly that it started under, and that Assembly is for the old Kit version. The new Orchestrator
 cannot load it. Thus the publish of the new Assembly marks each live run `drifted`, also a run that waits at a
 [Gate](../reference/glossary.md#gate). `jr2 status <run id>` gives the reason, with the hash of the Assembly and the two
-versions. To keep the result of a run, let it end before you converge, or cancel it. See
+versions:
+`workflow "<workflow>": Assembly <hash> was published for Kit version <old version>; this Orchestrator is <version>`. To
+keep the result of a run, let it end before you converge, or cancel it. See
 [Machine shape and drift](../concepts/durable-runs.md#machine-shape-and-drift).
 
 A [Sandbox](../reference/glossary.md#sandbox) that runs keeps its pod, with the
