@@ -453,31 +453,42 @@ test("a route back to Rest that sends itself an event back into work, queued: th
   await r.host.close();
 });
 
-test("a Machine above the Agent's Machine faults and is caught: the Agent's Machine runs on, and its later route that stops the Agent sends a sweep with no cause — the run took the Agent's state away first", async () => {
-  for (const route of ["leave", "send"] as const) {
+test("a Machine above the Agent's Machine faults and is caught: the Agent's Machine runs on, and its later route that stops the Agent sends a sweep with no cause — the run took the Agent's state away first, even when the pick's route caused the fault", async () => {
+  // `leave`: the pick's work leaves the state after the fault. `send`: an outside event does.
+  // `caused`: the pick's route sends the event that makes the Machine above throw, and an outside
+  // event leaves the state later. The fault is not the pick's, so no route makes the sweep `pick`.
+  for (const route of ["leave", "send", "caused"] as const) {
     const go = ev("go");
+    const poke = ev("poke");
+    const bad = ev("bad");
     const finish = ev("finish");
     let release = () => {};
     const released = new Promise<void>((resolve) => (release = () => resolve()));
     const work = fromPromise(() => released.then(() => ({ built: true })));
     const r = await rig({ coder: coderDefinition }, ({ coder }) => {
-      const m = jr2Setup({ events: [go, finish], actors: { coder: coder!, work } }).createMachine({
+      const m = jr2Setup({ events: [go, poke, finish], actors: { coder: coder!, work } }).createMachine({
         id: "m",
         initial: "w",
         states: {
           w: {
             invoke: { src: "coder", input: { prompt: "Fix.", endpoint, sandbox: "ws-1" } },
-            on: { finish: "#m.out" },
+            on: { finish: "#m.out", poke: { actions: sendParent({ type: "bad" }) } },
             initial: "rest",
             states: { rest: { on: { go: "running" } }, running: { invoke: { src: "work", onDone: "#m.out" } } },
           },
           out: {},
         },
       });
-      const a = jr2Setup({ events: [], actors: { m } }).createMachine({
+      const a = jr2Setup({ events: [bad], actors: { m } }).createMachine({
         id: "a",
         initial: "x",
-        states: { x: { invoke: { src: "m", id: "m" }, after: { 20: { actions: boom } } } },
+        states: {
+          x: {
+            invoke: { src: "m", id: "m" },
+            on: { bad: { actions: boom } },
+            ...(route === "caused" ? {} : { after: { 20: { actions: boom } } }),
+          },
+        },
       });
       return jr2Setup({ events: [], actors: { a } }).createMachine({
         id: "p",
@@ -490,6 +501,7 @@ test("a Machine above the Agent's Machine faults and is caught: the Agent's Mach
       await tick(60);
       release();
     } else {
+      if (route === "caused") r.host.sendToAgent(r.iid("coder"), { type: "poke" });
       await tick(60);
       r.host.sendToAgent(r.iid("coder"), { type: "finish" });
     }

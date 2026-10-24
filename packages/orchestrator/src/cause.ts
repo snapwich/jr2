@@ -18,7 +18,9 @@
 //     invocation names the cause of the macrostep it is part of. After it, the Agent's actor is no
 //     longer the child of the Machine that invokes it, a child Machine on the way up is no longer a
 //     child of the one above, or a Machine on the way up is done. A microstep that throws is never
-//     inspected, so a fault is never the exit. The stop of a run is no event of the Machine's.
+//     inspected, so a fault is never the exit. When a Machine above catches a fault on the way up,
+//     that catch is the exit, and it has no cause: a fault is never the pick's, even when the pick's
+//     route caused it. The stop of a run is no event of the Machine's.
 //
 // Which relay an actor takes now is read from the relay order: xstate relays an event (inspected as
 // `@xstate.event`) to the actor's mailbox. The mailbox takes events one at a time, in order, and
@@ -135,8 +137,12 @@ export class PickCauses {
         if (ref === undefined) continue;
         this.actors.set(reg, ref);
       }
-      if (!leaves(reg, this.actors.get(reg)!, machine, snapshot)) continue;
-      this.exits.set(reg, event.type === XSTATE_STOP ? null : (this.causeOfCurrent(machine) ?? null));
+      const exit = leaves(reg, this.actors.get(reg)!, machine, snapshot);
+      if (exit === false) continue;
+      // A fault on the way up took the Agent's state away when the Machine above caught it: that is
+      // the exit, and a fault is never the pick's, even when the pick's route caused it.
+      const none = event.type === XSTATE_STOP || exit === "fault";
+      this.exits.set(reg, none ? null : (this.causeOfCurrent(machine) ?? null));
     }
   }
 
@@ -171,11 +177,24 @@ function union(a: Cause, b: Cause): Cause {
 }
 
 /** Does this microstep of `machine` stop `reg`'s invocation: `machine` is on the way up from the
- * Agent and is done, or the actor (or child Machine) on the way down is no longer its child. */
-function leaves(reg: Registration, agent: AnyActorRef, machine: AnyActorRef, snapshot: AnyMachineSnapshot): boolean {
+ * Agent and is done, or the actor (or child Machine) on the way down is no longer its child. It is
+ * `"fault"` when a Machine on the way up below `machine` has status `error`: `machine` caught that
+ * fault. The invoker's own microstep has no Machine below it on the way up, so the error of a child
+ * of the invoker is never a fault here. */
+function leaves(
+  reg: Registration,
+  agent: AnyActorRef,
+  machine: AnyActorRef,
+  snapshot: AnyMachineSnapshot,
+): "exit" | "fault" | false {
   let below = agent;
+  let faulted = false;
   for (let at: AnyActorRef | undefined = reg.invoker; at !== undefined; below = at, at = at._parent) {
-    if (at === machine) return snapshot.status === "done" || childrenOf(snapshot)[below.id] !== below;
+    if (at === machine) {
+      if (snapshot.status !== "done" && childrenOf(snapshot)[below.id] === below) return false;
+      return faulted ? "fault" : "exit";
+    }
+    if (statusOf(at) === "error") faulted = true;
   }
   return false;
 }

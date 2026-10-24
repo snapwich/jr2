@@ -111,8 +111,9 @@ single-threaded.
     microstep, one of these is true. The Agent's actor is no longer the child of the Machine that invokes it (the state
     exited, or was re-entered). A child Machine on the way up is no longer the child of the Machine above it. Or a
     Machine on the way up is done: it reached its final state, so xstate stops every child. xstate inspects a microstep
-    only after its actions ran. So a microstep that throws is never the exit, and a fault is never the pick's. The stop
-    of a run is no event of the Machine's.
+    only after its actions ran. So a microstep that throws is never the exit, and a fault is never the pick's. When a
+    Machine above catches the fault of a Machine on the way up, that catch is the exit, and it has no cause, also when
+    the pick's route caused the fault. The stop of a run is no event of the Machine's.
 
   Which relay an actor takes now is read from the relay order. xstate relays an event to the actor's mailbox
   (`@xstate.event`). The mailbox takes events one at a time, in that order. xstate inspects `@xstate.snapshot` with the
@@ -399,8 +400,9 @@ matter:
     restore arms again has no cause, so its exit sends a sweep with no cause.
   - **A Machine above the Agent's Machine faults, and a Machine above it catches the fault.** xstate does not stop the
     errored Machine's children, so the Agent's Machine runs on. The run took the Agent's state away when it caught the
-    fault, so that is the exit, and it has no cause. A later route of the Agent's Machine that stops the Agent sends a
-    sweep with no cause, and the Submission settles `aborted`.
+    fault, so that is the exit, and it has no cause, also when the pick's route sent the event that caused the fault. A
+    later route of the Agent's Machine that stops the Agent sends a sweep with no cause, and the Submission settles
+    `aborted`.
   - **The Agent's own Machine faults, and a Machine above it catches the fault.** xstate does not stop that Machine's
     children, so the Agent's actor is never stopped. Its surface stays live, and no sweep is sent. A pick of that Agent
     finds no end of the Turn, so its Harness does not wait for a sweep, and nothing settles the Submission. This orphan
