@@ -5,6 +5,7 @@
 #   1. the four instance-facing packages → the local npm registry
 #   2. the Kit images at their PUBLISHED tags → the local image registry the nodes pull from
 #   3. the `jr2` binary → a throwaway global npm prefix
+#   4. the Custodian's pinned Envoy → the same local image registry, by that binary's `jr2 kit push`
 #
 # Both registries must already be up (scripts/dist-registry.sh up, scripts/dist-image-registry.sh
 # up). This is a script rather than lines inside `just dist-up` because the @dist e2e tier runs the
@@ -14,7 +15,7 @@
 # published `<kitRegistry>/<repo>:<kitversion>` refs (ADR-0038/0044) — so something has to play the
 # release that would have pushed them, and the push is the whole point: the node PULLS.
 #
-# `--packages-only` stops after step 1, because steps 2 and 3 are the INSTALLED kit's half and only
+# `--packages-only` stops after step 1, because steps 2 to 4 are the INSTALLED kit's half and only
 # its half: they exist so a binary that builds no image and resolves no source can still find both.
 # A CHECKOUT CLI needs neither — it builds every image it deploys (ADR-0038) and runs from the
 # checkout — but it cannot conjure `@jr2/*` for a STANDALONE instance, whose bundle is a frozen
@@ -102,3 +103,10 @@ kit_registry="$("$root/scripts/dist-image-registry.sh" address)"
 # A prefix of its own, never the real global one: a loop that installs into the developer's npm owes
 # them an uninstall, and this one should owe nothing.
 npm i -g @jr2/cli --registry "$registry" --prefix "$dir/npm-global"
+
+# The Custodian's image, by the INSTALLED binary's own mirror verb (ADR-0044, ADR-0059). Every Harness
+# pod runs it, and `kitRegistry` re-homes its ref like a Kit image's, so without it any Workflow with
+# an Agent fails the provider preflight on ErrImagePull. kit-push.sh does not carry it, because jr2
+# never builds Envoy; `jr2 kit push` copies it, finds the three Kit images above already present, and
+# so runs here as a self-hoster runs it. Instance-less, so it runs outside any Instance folder.
+(cd "$dir" && "$dir/npm-global/bin/jr2" kit push "$kit_registry")
