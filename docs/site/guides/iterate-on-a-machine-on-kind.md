@@ -94,9 +94,9 @@ the command for the port forward.
 
 ## Why a repeated jr2 up is fast
 
-`jr2 up` does the full converge each time, but it builds an image only when its inputs changed, and it publishes the
-Assembly only when its hash changed. [Converge](../concepts/converge.md#the-images) tells why. You see it in these
-lines:
+`jr2 up` does the full converge each time, but it builds a Sandbox Image only when its folder changed, and it publishes
+the Assembly only when its hash changed. It never builds a Kit image, such as the image of the Orchestrator: the cluster
+pulls each one at the Kit version. [Converge](../concepts/converge.md#the-images) tells why. You see it in these lines:
 
 - `(fresh — build skipped; --force to rebuild anyway)`: the tag of a
   [Sandbox Image](../reference/glossary.md#sandbox-image) did not change, so `jr2 up` did not build it.
