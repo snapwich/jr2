@@ -253,7 +253,7 @@ const copy = (c: Copy): string => `${c.version.padEnd(8)} ${c.path}`;
 export function render(r: VersionReport): string {
   const rows: Row[] = [["cli", copy(r.cli)]];
   if (r.global) rows.push(["global", copy(r.global)]);
-  if (r.kit) rows.push(["kit", renderKit(r.kit)]);
+  if (r.kit) rows.push(["kit", renderKit(r.kit, r.cli)]);
   if (r.instance) {
     const i = r.instance;
     const mode = i.mode === "checkout" ? `kit checkout at ${i.kitCheckout}` : `installed kit → ${i.kitRegistry}`;
@@ -268,14 +268,15 @@ export function render(r: VersionReport): string {
   return rows.map(([label, value]) => (label ? `${`${label}:`.padEnd(width)}${value}` : "")).join("\n") + "\n";
 }
 
-function renderKit(k: NonNullable<VersionReport["kit"]>): string {
+function renderKit(k: NonNullable<VersionReport["kit"]>, cli: Copy): string {
   const pinned = k.pinned !== undefined ? `; package.json pins ${k.pinned} — reinstall` : "";
   if (k.check === "unresolved") return `not installed${pinned}`;
   const head = copy({ version: k.version!, path: k.path! });
   if (k.check === "ok") return `${head}  ok${pinned}`;
+  // The CLI's own number is named: one copy at another version is a mismatch too (ADR-0056).
   const against = k.against
-    ? `this jr2 runs against ${k.against.version} (${k.against.path})`
-    : "this jr2 has no @jr2/orchestrator beside it";
+    ? `this jr2 (${cli.version}) runs against ${k.against.version} (${k.against.path})`
+    : `this jr2 (${cli.version}) has no @jr2/orchestrator beside it`;
   return `${head}  MISMATCH — ${against}${pinned}`;
 }
 

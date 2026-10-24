@@ -1,5 +1,5 @@
 // An Instance has one Kit version (ADR-0056): every Instance verb refuses unless the Instance and
-// the CLI resolve the SAME `@jr2/orchestrator` — same real path, never a version compare. The
+// the CLI resolve the SAME `@jr2/orchestrator` — same real path — at the CLI's own version. The
 // refusal names both sides and the line to edit, differently for an Instance that has no `@jr2/cli`
 // of its own (add one; the launcher hands off to it) and one that has (pin both at one number).
 
@@ -105,6 +105,32 @@ test("another orchestrator beside a local CLI → refuses, and says pin both at 
         return true;
       },
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("one hoisted copy at another version than the CLI → refuses: npm lets a root pin win over the CLI's peer", async () => {
+  // `npm install --save-exact @jr2/orchestrator@<new>` alone: npm warns ERESOLVE overriding peer
+  // dependency and hoists the one copy, so the old CLI's peer resolves to the SAME real path.
+  const root = await mkInstance();
+  try {
+    await fakeKit(root, "@jr2/orchestrator", "9.9.9");
+    const cli = { root: await fakeKit(root, "@jr2/cli", "9.9.8"), version: "9.9.8" };
+    const check = checkKitVersion(root, cli);
+    assert.equal(check.own?.root, check.instance?.root, "one copy: the CLI's peer is the Instance's");
+    assert.equal(check.ok, false, "and still a skew: the CLI is 9.9.8, the Kit is 9.9.9");
+    assert.throws(
+      () => assertKitVersion(root, cli),
+      (err: Error) => {
+        assert.match(err.message, /@jr2\/orchestrator resolves to 9\.9\.9/);
+        assert.match(err.message, /this jr2 \(9\.9\.8\) runs against 9\.9\.9/);
+        assert.match(err.message, /pin "@jr2\/orchestrator" and "@jr2\/cli" at ONE exact version/);
+        return true;
+      },
+    );
+    // The same copy at the CLI's own number passes.
+    assert.equal(checkKitVersion(root, { ...cli, version: "9.9.9" }).ok, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

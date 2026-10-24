@@ -114,7 +114,7 @@ test("a Kit mismatch is a LINE naming both copies — never the refusal every ot
     await fakeKit(root, "@jr2/orchestrator", "9.9.9");
     const { io, out } = mkIo({ cwd: root, kitDir: root });
     assert.equal(await version(["--local"], io), 0, "exit 0: a report");
-    assert.match(out(), /^kit:\s+9\.9\.9\s+\S+\s+MISMATCH — this jr2 runs against \S+ \(\S+\)$/m);
+    assert.match(out(), /^kit:\s+9\.9\.9\s+\S+\s+MISMATCH — this jr2 \(\S+\) runs against \S+ \(\S+\)$/m);
     const r = await versionReport(io, {}, { local: true });
     assert.equal(r.kit?.check, "mismatch");
     assert.equal(r.kit?.version, "9.9.9");

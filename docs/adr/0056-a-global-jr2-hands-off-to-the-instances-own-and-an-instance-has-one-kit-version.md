@@ -32,16 +32,21 @@ patched one symptom of. This ADR settles which binary runs, and what "the Instan
   ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)). Wherever the CLI loads
   an Instance (the root walk every Instance verb goes through; `--url` verbs skip the walk per ADR-0009, `jr2 init` has
   no Instance yet), it resolves `@jr2/orchestrator/package.json` from the Instance root and from itself and requires the
-  two **real paths** to be equal. Not equal — or absent — is a refusal that names both versions and the two lines to
-  edit, then says reinstall. Real-path identity rather than a version compare: same file means same version by
-  construction under npm hoisting, pnpm dedup, and checkout symlinks alike, and it is exactly the property the
-  class-identity bug needs.
+  two **real paths** to be equal, and that copy's version to be the CLI's own. Not equal — or absent — is a refusal that
+  names both versions and the two lines to edit, then says reinstall. Real-path identity first: same file means same
+  version by construction under npm hoisting, pnpm dedup, and checkout symlinks alike, and it is exactly the property
+  the class-identity bug needs. But one copy is not yet one version: when the Instance edits only the
+  `@jr2/orchestrator` line, the root's own pin wins over the CLI's peer, the one copy is hoisted, and the old CLI
+  resolves it at the same real path. So the CLI's own number must equal it too, which one release train makes true for a
+  correct pin ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)).
 - **`@jr2/orchestrator` is a peer of `@jr2/cli`, not a dependency.** `peerDependencies: workspace:*` (pnpm rewrites it
-  exact at publish) plus the same under `devDependencies` for the checkout's own tests. npm then fails a mismatched pin
-  at install (`ERESOLVE`), before anything runs; pnpm and bun warn and the check above refuses. The CLI stops carrying
-  an orchestrator of its own, so a second copy can only come from the Instance's resolution — the copy we want. The CLI
-  stays a **devDependency** of every Instance: the bundle installs `--omit=dev`/`--prod`, and the image has no use for a
-  CLI or its erasure hook; peers of a devDependency still auto-install and still `ERESOLVE`.
+  exact at publish) plus the same under `devDependencies` for the checkout's own tests. A mismatched pin is then a peer
+  conflict at install. npm does not always fail it: the root's own `@jr2/orchestrator` line wins over the peer of a
+  devDependency with `npm warn ERESOLVE overriding peer dependency`, and pnpm and bun warn too, so the check above is
+  what refuses. The CLI stops carrying an orchestrator of its own, so a second copy can only come from the Instance's
+  resolution — the copy we want. The CLI stays a **devDependency** of every Instance: the bundle installs
+  `--omit=dev`/`--prod`, and the image has no use for a CLI or its erasure hook; peers of a devDependency still
+  auto-install and still `ERESOLVE`.
 - **`jr2 init` reads the CLI's own version.** A global with no Instance around it must not need its peer resolved, so
   the scaffold's exact pin comes from `@jr2/cli`'s `package.json`. The numbers are equal by construction: one release
   train, lockstep ([ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)).

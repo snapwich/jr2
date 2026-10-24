@@ -4,9 +4,13 @@
 // one, the bundle baked the other, and the CLI's own code handled config objects built by a
 // different copy of the same classes. Now the orchestrator is the CLI's PEER (one copy can exist),
 // and every Instance verb asks this module whether the copy the CLI resolves IS the copy the
-// Instance resolves: same REAL path, never a version compare. Same file means same version by
-// construction under npm hoisting, pnpm dedup, and checkout symlinks alike — and identity is
-// exactly the property the class-identity bug needs.
+// Instance resolves: same REAL path. Same file means same version by construction under npm
+// hoisting, pnpm dedup, and checkout symlinks alike — and identity is exactly the property the
+// class-identity bug needs. One copy is not yet one Kit version: an Instance that pins only
+// `@jr2/orchestrator` at a new number gets a warning from npm (`ERESOLVE overriding peer
+// dependency`), not an error, because the root's own pin wins over a peer, and the one hoisted
+// copy is then the CLI's peer too. So the check also asks that copy's version to be the CLI's own:
+// one release train (ADR-0055) carries one number.
 //
 // Builtins only: the launcher (`bin/jr2.js`) resolves through here before any kit import.
 
@@ -59,11 +63,17 @@ export const CLI_VERSION = (JSON.parse(readFileSync(join(CLI_ROOT, "package.json
 const ORCHESTRATOR = "@jr2/orchestrator";
 const CLI = "@jr2/cli";
 
+/** The CLI a check is for: this one, unless a test names another copy. */
+export type CliCopy = { root: string; version: string };
+
+const THIS_CLI: CliCopy = { root: CLI_ROOT, version: CLI_VERSION };
+
 /**
  * The ADR-0056 question, answered rather than asserted: what the Instance at `root` resolves
- * `@jr2/orchestrator` to, what this CLI resolves it to, and whether they are one copy. `ok` is the
- * real-path identity, never a version compare. `jr2 version` prints this; every other Instance verb
- * goes through {@link assertKitVersion}, which turns a not-ok answer into the refusal.
+ * `@jr2/orchestrator` to, what this CLI resolves it to, and whether they are one copy at the CLI's
+ * own version. `ok` is the real-path identity AND that version. `jr2 version` prints this; every
+ * other Instance verb goes through {@link assertKitVersion}, which turns a not-ok answer into the
+ * refusal.
  */
 export type KitCheck = {
   /** The Instance's own resolution — its Kit version; absent when nothing resolves from `root`. */
@@ -76,14 +86,14 @@ export type KitCheck = {
   ok: boolean;
 };
 
-export function checkKitVersion(root: string): KitCheck {
+export function checkKitVersion(root: string, cli: CliCopy = THIS_CLI): KitCheck {
   const instance = resolvePackage(ORCHESTRATOR, root);
-  const own = resolvePackage(ORCHESTRATOR, CLI_ROOT);
+  const own = resolvePackage(ORCHESTRATOR, cli.root);
   return {
     instance,
     own,
     pinned: pinnedVersion(root, ORCHESTRATOR),
-    ok: instance !== undefined && own !== undefined && instance.root === own.root,
+    ok: instance !== undefined && own !== undefined && instance.root === own.root && own.version === cli.version,
   };
 }
 
@@ -106,13 +116,13 @@ export function pinnedVersion(root: string, name: string): string | undefined {
 }
 
 /**
- * Refuse unless the Instance at `root` and this CLI resolve the SAME `@jr2/orchestrator`. The
- * message names both versions and the lines to edit: an Instance with no `@jr2/cli` of its own is
- * told to add one (the launcher then hands off to it); one that has it is told to pin both lines
- * at one number.
+ * Refuse unless the Instance at `root` and this CLI resolve the SAME `@jr2/orchestrator`, at the
+ * CLI's own version. The message names the versions and the lines to edit: an Instance with no
+ * `@jr2/cli` of its own is told to add one (the launcher then hands off to it); one that has it is
+ * told to pin both lines at one number.
  */
-export function assertKitVersion(root: string): void {
-  const { instance, own, ok } = checkKitVersion(root);
+export function assertKitVersion(root: string, cli: CliCopy = THIS_CLI): void {
+  const { instance, own, ok } = checkKitVersion(root, cli);
   if (ok) return;
 
   const manifest = join(root, "package.json");
@@ -127,7 +137,7 @@ export function assertKitVersion(root: string): void {
     ? `${ORCHESTRATOR} resolves to ${instance.version} (${instance.root})`
     : `${ORCHESTRATOR} does not resolve from ${root}`;
   const self = own
-    ? `this jr2 (${CLI_VERSION}) runs against ${own.version} (${own.root})`
-    : `this jr2 (${CLI_VERSION}, at ${CLI_ROOT}) has no ${ORCHESTRATOR} beside it`;
+    ? `this jr2 (${cli.version}) runs against ${own.version} (${own.root})`
+    : `this jr2 (${cli.version}, at ${cli.root}) has no ${ORCHESTRATOR} beside it`;
   throw new Error(`Kit version mismatch — an Instance has one (ADR-0056):\n  ${have}\n  ${self}\n  ${fix}`);
 }
