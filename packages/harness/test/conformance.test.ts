@@ -1044,10 +1044,12 @@ const NUDGE =
   "Pick the one that matches the true state of your work and call it now.";
 
 test("ask-again rule: stop, wake, a pick back out of the mode and into it again, stop, a second wake, then the pick that ends the Turn — each stop completes, the ending pick settles aborted, nothing refused (ADR-0016, ADR-0024, ADR-0029)", async () => {
-  // The `@model` mode-stop sequence: drafting allows `ask_review`; `reviewing` allows nothing until
-  // a targetless timer marks the review read, then `revise` and `submit`. The Orchestrator's half
-  // (the wake, its budget) is scripted here as it answers: two wakes, each a fresh Submission of the
-  // nudge's text on the SAME conversation. What this asserts is the Harness's half.
+  // The `@model` mode-stop sequence: drafting allows `ask_review`; in `reviewing` the pick is
+  // outstanding while a reviewer reads, its answer is the reviewer's output with nothing allowed, and
+  // a targetless timer then marks the review read, which opens `revise` and `submit`. The
+  // Orchestrator's half (the hold, the wake, its budget) is scripted here as it answers: two wakes,
+  // each a fresh Submission of the nudge's text on the SAME conversation. What this asserts is the
+  // Harness's half.
   const menu = ["ask_review", "revise", "submit"];
   let mode: "drafting" | "reviewing" = "drafting";
   let read = false;
@@ -1066,7 +1068,8 @@ test("ask-again rule: stop, wake, a pick back out of the mode and into it again,
     if (mode === "drafting" && event.type === "ask_review") {
       mode = "reviewing";
       read = false; // `reviewing`'s entry
-      return { moved: true, turnComplete: false, allowed: allowed() };
+      // The reviewer reads: outstanding, answered on the poll below.
+      return { moved: true, turnComplete: false, allowed: [], outstanding: true };
     }
     if (mode === "reviewing" && read && event.type === "revise") {
       mode = "drafting";
@@ -1075,6 +1078,17 @@ test("ask-again rule: stop, wake, a pick back out of the mode and into it again,
     if (mode === "reviewing" && read && event.type === "submit") return endsTurn();
     return { moved: false, turnComplete: false, allowed: allowed() };
   });
+  const review = { verdict: "approved", comments: "Clear and accurate." };
+  sandbox.pollWith((_poll, deliveryId) => ({
+    delivered: true,
+    event: "ask_review",
+    deliveryId,
+    moved: true,
+    turnComplete: false,
+    answered: true,
+    allowed: allowed(),
+    answer: { kind: "output", actor: "reviewer", output: review },
+  }));
   const iid = "conf/mode-stop";
 
   const first = await admit(iid, "Ask for a review, then wait for the reviewer's answer.");
@@ -1098,6 +1112,11 @@ test("ask-again rule: stop, wake, a pick back out of the mode and into it again,
     results.every((r) => !/did NOT act on it/.test(r)),
     `no pick refused:\n${results.join("\n")}`,
   );
+  for (const i of [0, 2]) {
+    assert.match(results[i]!, /Its answer: the output of `reviewer`: \{"verdict":"approved"/, "the reviewer's answer");
+    assert.match(results[i]!, /Allowed now: none/, "answered while the picks are still closed");
+  }
+  assert.equal(sandbox.polls.length, 2, "each ask_review polled once for its answer");
   assert.match(results[1]!, /Allowed now: `mcp__jr2__ask_review`\./, "revise took the Turn back to drafting");
   assert.match(results[3]!, /your turn is over/);
   // Each wake's request states the Allowed picks last, in a fresh Turn part.

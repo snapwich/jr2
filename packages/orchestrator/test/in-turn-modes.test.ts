@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, createActor, fromPromise, sendTo, type AnyActorRef } from "xstate";
+import { assign, createActor, createMachine, fromPromise, sendTo, type AnyActorRef } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -649,15 +649,24 @@ test("the wake after a Gate says `kept`, and a Harness that lost the conversatio
   assert.equal(client.admits.length, 3, "two asks, then the fault");
 });
 
-/** The `@model` mode-stop shape: `drafting` allows `ask_review`; `reviewing` allows nothing until a
- * TARGETLESS timer marks the review read (so Rest is not held), then `revise` and `submit`. A fault
- * routes to `faulted` with its reason, as the claim workflow's does. */
+/** The `@model` mode-stop reviewer: it reads for a moment, then approves. Its output is the answer to
+ * the `ask_review` that started it (ADR-0024). */
+const modeStopReviewer = createMachine({
+  initial: "reading",
+  states: { reading: { after: { 5: "done" } }, done: { type: "final" } },
+  output: () => ({ verdict: "approved", comments: "Clear and accurate." }),
+});
+
+/** The `@model` mode-stop shape: `drafting` allows `ask_review`; in `reviewing` a reviewer child holds
+ * the pick until it answers, and the picks stay closed until a TARGETLESS timer marks the review
+ * read (so Rest is not held after the answer), then `revise` and `submit`. A fault routes to
+ * `faulted` with its reason, as the claim workflow's does. */
 function modeStopDef(clients: Map<string, MockFlueClient>, sandbox?: string): WorkflowDef {
   const machineWith = (coder: ReturnType<typeof agentActorWith>) =>
     jr2Setup({
       types: {} as { context: { read: boolean; fault?: string } },
       events: [ask_review, revise, submit],
-      actors: { coder },
+      actors: { coder, reviewer: modeStopReviewer },
     }).createMachine({
       id: "wf",
       context: { read: false },
@@ -679,11 +688,13 @@ function modeStopDef(clients: Map<string, MockFlueClient>, sandbox?: string): Wo
             drafting: { on: { ask_review: "reviewing" } },
             reviewing: {
               entry: assign({ read: false }),
-              after: { 20: { actions: assign({ read: true }) } },
+              after: { 40: { actions: assign({ read: true }) } },
               on: {
                 revise: { guard: ({ context }) => context.read, target: "drafting" },
                 submit: { guard: ({ context }) => context.read, target: "#wf.done" },
               },
+              initial: "reading",
+              states: { reading: { invoke: { src: "reviewer", onDone: "answered" } }, answered: {} },
             },
           },
         },
@@ -702,6 +713,22 @@ function modeStopDef(clients: Map<string, MockFlueClient>, sandbox?: string): Wo
   };
 }
 
+/** `ask_review` in the mode-stop shape: outstanding while the reviewer reads, then answered at Rest
+ * with the reviewer's output and nothing allowed — the answer a model reads before it stops. */
+async function askReview(host: RunHost, iid: string): Promise<void> {
+  const receipt = host.sendToAgent(iid, { type: "ask_review" });
+  assert.equal(receipt.moved, true);
+  assert.equal(receipt.outstanding, true, "held while the reviewer reads");
+  const answered = await host.awaitDelivery(iid, receipt.deliveryId);
+  assert.deepEqual(answered?.answer, {
+    kind: "output",
+    actor: "reviewer",
+    output: { verdict: "approved", comments: "Clear and accurate." },
+  });
+  assert.deepEqual(answered?.allowed, [], "answered while the picks are still closed");
+  assert.equal(answered?.turnComplete, false);
+}
+
 /** Drive the mode-stop sequence to its second wake: ask_review, stop, wake, revise, ask_review,
  * stop, wake. Each stop is a correct one (nothing allowed); each wake spends the one budget. */
 async function toTheSecondWake() {
@@ -714,13 +741,13 @@ async function toTheSecondWake() {
   const seen: RunFeedEvent[] = [];
   host.subscribe(runId, (event) => seen.push(event));
 
-  host.sendToAgent(iid, { type: "ask_review" });
-  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "the reviewer reads: nothing to pick");
+  await askReview(host, iid);
+  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "the reviewer answered: still nothing to pick");
   client.complete();
   await waitFor(() => client.admits.length === 2);
   assert.deepEqual(host.agentSurface(iid)?.allowed, ["revise", "submit"]);
   assert.equal(host.sendToAgent(iid, { type: "revise" }).moved, true);
-  assert.equal(host.sendToAgent(iid, { type: "ask_review" }).moved, true, "the mode re-entered");
+  await askReview(host, iid); // the mode re-entered
   assert.deepEqual(host.agentSurface(iid)?.allowed, [], "its entry closed the picks again");
   client.complete();
   await waitFor(() => client.admits.length === 3);
@@ -756,7 +783,7 @@ test("a kernel kill while a Turn waits for its wake is the fault's notice, which
 
   // The model stops with nothing allowed; while the Turn waits for its wake, the kernel kills the
   // Harness container.
-  host.sendToAgent(iid, { type: "ask_review" });
+  await askReview(host, iid);
   client.complete();
   await new Promise((r) => setTimeout(r, 5));
   seen = {
@@ -795,7 +822,7 @@ test("a wake carries the guard kills from the pod's list that no bash call of it
 
   // The reviewer reads, nothing is allowed, and the model stops: the Turn waits for its wake. A dev
   // server it started passes the limit then — no `bash` call ran, so the Agent was told nothing.
-  host.sendToAgent(iid, { type: "ask_review" });
+  await askReview(host, iid);
   client.podKills = [idleKill("k-1")];
   client.complete();
   await waitFor(() => client.admits.length === 2);
@@ -805,7 +832,7 @@ test("a wake carries the guard kills from the pod's list that no bash call of it
   // The second wake reads the same list, and the kill is delivered: nothing again. A kill that this
   // conversation's own `bash` call answered is in its context already, and waits for the next Turn.
   assert.equal(host.sendToAgent(iid, { type: "revise" }).moved, true);
-  host.sendToAgent(iid, { type: "ask_review" });
+  await askReview(host, iid);
   client.podKills = [idleKill("k-1"), idleKill("k-2", [{ agent: "coder", instanceId: iid }])];
   client.complete();
   await waitFor(() => client.admits.length === 3);
@@ -823,7 +850,7 @@ test("a kill a wake carried is raised again when the state exits before the Harn
   // The Turn's first Submission read its surface; the Instance ID is `served`.
   host.agentSurfaceServed(iid);
 
-  host.sendToAgent(iid, { type: "ask_review" });
+  await askReview(host, iid);
   client.podKills = [idleKill("k-1")];
   client.complete();
   await waitFor(() => client.admits.length === 2);

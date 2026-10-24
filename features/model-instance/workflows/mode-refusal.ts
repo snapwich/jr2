@@ -5,26 +5,29 @@
 //
 // The refusal is made to happen, not hoped for: a model obeys a list it read last (ADR-0062), so a
 // prompt that argued for a wrong pick would rarely get one. Instead the Allowed picks change under
-// the Agent. `ask_review` takes the Turn into `reviewing`, whose receipt says `revise` and `submit`
-// are allowed; a timer then closes the review window, after which only `publish` is — the shape of
-// a Gate answered while the Agent composed its next call. The timer has NO target: it only assigns
-// the window shut, and the picks' guards read it. A timer that moved the workflow to another state
+// the Agent. `ask_review` takes the Turn into `reviewing`, where a reviewer (a child Machine) reads
+// the notes and approves them. The pick is outstanding while the reviewer reads, and its answer is
+// the reviewer's output (ADR-0024), with the Allowed picks of `answered`: `revise` and `submit`. A
+// timer then closes the review window, after which only `publish` is — the shape of a Gate answered
+// while the Agent composed its next call. The model has read the approval, so a careful model has
+// what `publish` ("the approved release notes") needs. The timer has NO target: it only assigns the
+// window shut, and the picks' guards read it. A timer that moved the workflow to another state
 // inside the Agent's state would hold Rest (ADR-0024), so `ask_review` would be outstanding until it
-// fired and its answer would carry the new list: nothing stale to refuse. The timer is short enough
-// to land before any model has composed that call, and long enough to land after the step-boundary
-// read that follows the receipt (which would otherwise restate the list and spare the refusal). So
-// the Agent's next pick, from the list it just read, is refused, and the call after that is the
-// measurement.
+// fired and its answer would carry the new list: nothing stale to refuse. The timer starts when the
+// reviewer answers, as `answered` is entered. It is short enough to land before any model has
+// composed its next call, and long enough to land after the step-boundary read that follows the
+// answer (which would otherwise restate the list and spare the refusal). So the Agent's next pick,
+// from the list it just read, is refused, and the call after that is the measurement.
 //
 // Filename `mode-refusal.ts` → workflow "mode-refusal".
 
 import { z } from "zod";
-import { assign } from "xstate";
+import { assign, createMachine } from "xstate";
 import { agent, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { advisor } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
 
-/** How long `reviewing`'s window stays open, in ms — see the header. */
+/** How long the review window stays open after the reviewer's answer, in ms — see the header. */
 export const REVIEW_WINDOW_MS = 400;
 
 const askReview = defineEvent({
@@ -48,6 +51,13 @@ const publish = defineEvent({
   input: z.object({ notes: z.string() }),
 });
 
+/** The reviewer: it reads the notes for a moment, then answers. Its output is `ask_review`'s answer. */
+const reviewer = createMachine({
+  initial: "reading",
+  states: { reading: { after: { 2000: "done" } }, done: { type: "final" } },
+  output: () => ({ verdict: "approved", comments: "Clear and accurate." }),
+});
+
 const door = z.object({
   thinking: z.enum(["off", "on"]).default("off"),
   marker: z.string(),
@@ -55,13 +65,13 @@ const door = z.object({
 
 type Input = z.infer<typeof door> & HostInjectedInput;
 /** `picks`: every pick the Machine TOOK, in order — a refused pick never reaches it. `closed`: the
- * review window has shut (see the header). */
+ * review window after the reviewer's answer has shut (see the header). */
 type Ctx = Input & { picks: string[]; closed: boolean; fault?: string };
 
 export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [askReview, revise, submit, publish],
-  actors: { advisor: agent(advisor) },
+  actors: { advisor: agent(advisor), reviewer },
 }).createMachine({
   id: "mode-refusal",
   input: door,
@@ -99,24 +109,32 @@ export const machine = jr2Setup({
           },
         },
         reviewing: {
-          entry: assign({ closed: false }),
-          // No target: the window shuts and the guards below read it; Rest is not held.
-          after: { [REVIEW_WINDOW_MS]: { actions: assign({ closed: true }) } },
-          on: {
-            revise: {
-              guard: ({ context }) => !context.closed,
-              target: "drafting",
-              actions: assign({ picks: ({ context }) => [...context.picks, "revise"] }),
-            },
-            submit: {
-              guard: ({ context }) => !context.closed,
-              target: "approved",
-              actions: assign({ picks: ({ context }) => [...context.picks, "submit"] }),
-            },
-            publish: {
-              guard: ({ context }) => context.closed,
-              target: "#mode-refusal.published",
-              actions: assign({ picks: ({ context }) => [...context.picks, "publish"] }),
+          // The reviewer reads: `ask_review` is outstanding until it answers (ADR-0024), and nothing
+          // is allowed until then.
+          initial: "reading",
+          states: {
+            reading: { invoke: { src: "reviewer", onDone: "answered" } },
+            answered: {
+              entry: assign({ closed: false }),
+              // No target: the window shuts and the guards below read it; Rest is not held.
+              after: { [REVIEW_WINDOW_MS]: { actions: assign({ closed: true }) } },
+              on: {
+                revise: {
+                  guard: ({ context }) => !context.closed,
+                  target: "#mode-refusal.notes.drafting",
+                  actions: assign({ picks: ({ context }) => [...context.picks, "revise"] }),
+                },
+                submit: {
+                  guard: ({ context }) => !context.closed,
+                  target: "#mode-refusal.notes.approved",
+                  actions: assign({ picks: ({ context }) => [...context.picks, "submit"] }),
+                },
+                publish: {
+                  guard: ({ context }) => context.closed,
+                  target: "#mode-refusal.published",
+                  actions: assign({ picks: ({ context }) => [...context.picks, "publish"] }),
+                },
+              },
             },
           },
         },

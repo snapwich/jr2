@@ -124,7 +124,9 @@ test("the mode at the ask takes the timer where the Turn part was restated, not 
 });
 
 /** The mode-stop shape: `ask_review` enters a mode whose guarded picks a timer with no target opens —
- * a timer with a target would hold Rest (ADR-0024), and the model would never stop. */
+ * a timer with a target would hold Rest (ADR-0024), and the model would never stop. A reviewer below
+ * the mode answers the pick while the picks are still closed; the states that its hold adds below
+ * the mode (`reading`, `answered`) are no mode. */
 const guarded = createMachine({
   id: "g",
   context: { read: false },
@@ -141,6 +143,8 @@ const guarded = createMachine({
             revise: { guard: ({ context }) => context.read, target: "drafting" },
             submit: { guard: ({ context }) => context.read, target: "#g.submitted" },
           },
+          initial: "reading",
+          states: { reading: { invoke: { src: "reviewer", onDone: "answered" } }, answered: {} },
         },
       },
     },

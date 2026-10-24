@@ -3,22 +3,26 @@
 // Turn part stating the Allowed picks last. A correct Agent then picks one of them.
 //
 // The stop is the setup, and it must happen reliably. `ask_review` takes the Turn into `reviewing`,
-// whose picks (`revise`, `submit`) are closed while the reviewer reads, so its answer allows
-// nothing and a model that follows the Briefing ("If nothing is allowed, stop") and the prompt
-// ("wait for the reviewer's answer") stops. A timer then opens them, and the wake asks the stopped
-// model (ADR-0016). The timer has NO target: it only assigns the review read, and the picks' guards
-// read it. A timer that moved the workflow to another state inside the Agent's state would hold
-// Rest (ADR-0024): `ask_review` would be outstanding until it fired and its answer would carry the
-// Allowed picks on the same call, so no model would stop. A model still working when the timer fires
-// hears the change at a step boundary instead and is never asked, so its trial says nothing about
-// the rule (`void`). The tier reads the printed conversation (ADR-0023): the ask prints as its own
-// prompt, and the first Menu call after it is the measurement. The step reads the modes from this
-// file.
+// where a reviewer (a child Machine) reads the notes and answers. The pick is outstanding while the
+// reviewer reads, and its answer is the reviewer's output (ADR-0024), so the model reads the answer
+// that the prompt tells it to wait for. `reviewing`'s picks (`revise`, `submit`) are still closed
+// when that answer comes, so the answer allows nothing, and a model that follows the Briefing ("If
+// nothing is allowed, stop") stops. A timer then opens them, and the wake asks the stopped model
+// (ADR-0016). The timer has NO target: it only assigns `open`, and the picks' guards read it. A
+// timer that moved the workflow to another state inside the Agent's state would hold Rest
+// (ADR-0024): `ask_review` would be outstanding until it fired and its answer would carry the
+// Allowed picks on the same call, so no model would stop. The reviewer holds Rest only while it
+// reads, which ends long before the timer fires. A model still working when the timer fires hears
+// the change at a step boundary instead and is never asked, so its trial says nothing about the rule
+// (`void`). The tier reads the printed conversation (ADR-0023): the ask prints as its own prompt,
+// and the first Menu call after it is the measurement. The step reads the modes from this file: the
+// states that the reviewer's hold adds (`reading`, `answered`) are below `reviewing`, so they are no
+// mode.
 //
 // Filename `mode-stop.ts` → workflow "mode-stop".
 
 import { z } from "zod";
-import { assign } from "xstate";
+import { assign, createMachine } from "xstate";
 import { agent, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { advisor } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
@@ -39,23 +43,30 @@ const submit = defineEvent({
   input: z.object({ notes: z.string() }),
 });
 
+/** The reviewer: it reads the notes for a moment, then answers. Its output is `ask_review`'s answer. */
+const reviewer = createMachine({
+  initial: "reading",
+  states: { reading: { after: { 2000: "done" } }, done: { type: "final" } },
+  output: () => ({ verdict: "approved", comments: "Clear and accurate." }),
+});
+
 const door = z.object({
   thinking: z.enum(["off", "on"]).default("off"),
   marker: z.string(),
 });
 
 type Input = z.infer<typeof door> & HostInjectedInput;
-/** `read`: the reviewer has read the notes, so `reviewing`'s picks are open (see the header). */
-type Ctx = Input & { read: boolean; fault?: string };
+/** `open`: `reviewing`'s timer has fired, so its picks are open (see the header). */
+type Ctx = Input & { open: boolean; fault?: string };
 
 export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [askReview, revise, submit],
-  actors: { advisor: agent(advisor) },
+  actors: { advisor: agent(advisor), reviewer },
 }).createMachine({
   id: "mode-stop",
   input: door,
-  context: ({ input }) => ({ ...input, read: false }),
+  context: ({ input }) => ({ ...input, open: false }),
   initial: "notes",
   states: {
     notes: {
@@ -82,13 +93,19 @@ export const machine = jr2Setup({
       states: {
         drafting: { on: { ask_review: "reviewing" } },
         reviewing: {
-          entry: assign({ read: false }),
-          // The reviewer reads: nothing to pick, long enough that a model stops first. No target:
-          // the picks open where they are, and Rest is not held.
-          after: { 30_000: { actions: assign({ read: true }) } },
+          entry: assign({ open: false }),
+          // Nothing to pick, long enough that a model reads the reviewer's answer and stops first. No
+          // target: the picks open where they are, and Rest is not held.
+          after: { 30_000: { actions: assign({ open: true }) } },
           on: {
-            revise: { guard: ({ context }) => context.read, target: "drafting" },
-            submit: { guard: ({ context }) => context.read, target: "#mode-stop.submitted" },
+            revise: { guard: ({ context }) => context.open, target: "drafting" },
+            submit: { guard: ({ context }) => context.open, target: "#mode-stop.submitted" },
+          },
+          // The reviewer reads: `ask_review` is outstanding until it answers (ADR-0024).
+          initial: "reading",
+          states: {
+            reading: { invoke: { src: "reviewer", onDone: "answered" } },
+            answered: {},
           },
         },
       },

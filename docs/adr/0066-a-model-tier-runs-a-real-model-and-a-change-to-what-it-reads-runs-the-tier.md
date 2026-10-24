@@ -279,6 +279,21 @@ recover, finish — are exercised only one scripted tool call at a time.
     modes from the workflow, not from a copy of them, and replays the model's calls through them: a mode with a
     targetless timer has its picks closed from each entry until the timer fires; the driver takes the timer where a
     restated Turn part shows that it fired, and follows it at the ask when the wake asked with nothing allowed.
+
+    On 2026-10-23 the setup changed again. In that day's full runs on Claude Sonnet 5.5 and Haiku 5.5 (below), the timer
+    was the whole review: no reviewer answer came, and a careful model would not submit notes that no reviewer had
+    answered. Now a reviewer, a child Machine below `reviewing`, reads the notes for 2 s and approves them. `ask_review`
+    is outstanding while it reads, and its answer is the reviewer's output (ADR-0024), with the Allowed picks read at
+    Rest: none, because the timer has not fired. So the model reads the answer that the prompt tells it to wait for, and
+    it still stops with nothing allowed. The timer still has no target and starts at `reviewing`'s entry, so the
+    reviewer holds Rest only for its 2 s, and the wake still asks the stopped model. The states that the reviewer's hold
+    adds (`reviewing.reading`, `reviewing.answered`) are below `reviewing`, so the modes that the driver reads do not
+    change. The prompt, the floor and what counts are unchanged. The one new text that the model reads is `ask_review`'s
+    answer:
+    ``The workflow took it and is back in the state that asked for this turn. Its answer: the output of `reviewer`: {"verdict":"approved","comments":"Clear and accurate."}.``,
+    in place of the plain receipt's "The workflow is still in the state that asked for this turn." The user approved
+    this change on 2026-10-23 (question 21: give the review a real answer). It has not run yet.
+
   - `push-wake`, since replaced by `wake`. It measured a Menu-only Turn that started with nothing allowed and picked
     inside the same Submission once a Gate's answer was restated at a step boundary. The step first answered the board
     as soon as the Turn's prompt printed; in two runs, 8 and 9 trials had no restatement, each with one `hold` or
@@ -352,6 +367,17 @@ recover, finish — are exercised only one scripted tool call at a time.
   approved `mode-refusal`'s setup change (e20cc0d) on 2026-10-11: a forced change that measures nothing new, with the
   prompt, the floor and the pass criterion unchanged, and 10 of 10 on 6f91bcc and on 9cd3935.
 
+  On 2026-10-23 `mode-refusal`'s setup changed as `mode-stop`'s did, for the same cause: in Haiku 5.5 trial 38368e52 the
+  model would not publish notes that it saw no one approve. A reviewer below `reviewing` approves the notes, and its
+  output is `ask_review`'s answer, with `revise` and `submit` allowed. The window's timer moved to `reviewing.answered`,
+  the state that the reviewer's answer enters, so it starts when the answer is fixed, as it started at the receipt
+  before. The answer reaches the Harness on the long-poll of the outstanding pick, not on the POST of the pick. The
+  prompt, the floor and the pass are unchanged. The new text that the model reads is the same answer as `mode-stop`'s,
+  followed by "Your turn is not over. Allowed now: `revise`, `submit`." (in the model's tool names). A model that holds
+  the approval and calls `publish` before the window shut is refused, and one that calls it after the window shut is
+  taken. Neither trial refused a pick from the list, so both are void, inside the claim's bound. The user approved this
+  change on 2026-10-23 (question 21). It has not run yet.
+
 - **Claude Haiku 5.5 and Claude Sonnet 5.5 (Anthropic API).** The cells of
   `features/model-baselines/anthropic--claude-haiku-5-5.json` (16) and
   `features/model-baselines/anthropic--claude-sonnet-5-5.json` (19) come from the full runs of 2026-10-23 on main
@@ -388,10 +414,10 @@ recover, finish — are exercised only one scripted tool call at a time.
   stopped. The nudges ran out before the driver's cut at TRIAL_MS, so the run faulted.
 
   The home-lab Qwen takes the step anyway in `mode-stop` and `mode-refusal`. The "every trial finished" check counts
-  these trials against the scenario, but the measured cell passes. Whether to change the setups of these claims waits on
-  the user (question 21). For `mode-stop` and `mode-refusal`, the setup is the review that never comes. For
-  `push-follow`, the levers are the step's limit on desk answers, and the rule that a fault before the cut is
-  unfinished. No workflow, prompt, floor or check changed for these runs.
+  these trials against the scenario, but the measured cell passes. On 2026-10-23 the user decided (question 21) to
+  change the setups of these claims, and no floor or check. For `mode-stop` and `mode-refusal`, the review now has a
+  real answer (the setup notes above). For `push-follow`, the levers are the step's limit on desk answers, and the rule
+  that a fault before the cut is unfinished. These runs came before that change.
 
   The first full Haiku run, of 2026-10-22, used main at cd6e6145, with this tier's Anthropic profiles. Later main
   commits change what the model reads, among them ccd81ce9, eb76a3e4, 39a3610d, 8c274330 and 37bbf7ff. Others change how

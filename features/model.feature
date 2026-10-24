@@ -117,11 +117,13 @@ Feature: a real model drives the kit
       And the cell "mode-follow/off" is written to the scorecard
 
     Scenario: a pick the state does not allow is corrected, and the next call is allowed
-      The `mode-refusal` workflow changes the Allowed picks under the Turn (a timer with no target
-      shuts the review window, as a Gate's answer would) right after `ask_review`'s receipt named
-      `revise` and `submit`, so the pick made from that list gets the correction receipt naming
-      `publish`. The call after the correction is the measurement. A pick that landed before the
-      window shut was taken, nothing was refused, and the trial is void.
+      The `mode-refusal` workflow's reviewer approves the notes, and its approval is `ask_review`'s
+      answer, with `revise` and `submit` allowed. Right after that answer, the workflow changes the
+      Allowed picks under the Turn (a timer with no target shuts the review window, as a Gate's
+      answer would), so the pick made from that list gets the correction receipt naming `publish`.
+      The call after the correction is the measurement. A pick that landed before the window shut
+      was taken, nothing was refused, and the trial is void. A first call after `ask_review` that is
+      `publish` (or anything other than `revise` or `submit`) refused no pick from that list: void.
       Given the model instance is serving
       When I run the "mode-refusal" workflow 10 times with thinking off
       Then the call after the correction receipt was allowed in at least 9 trials
@@ -130,11 +132,12 @@ Feature: a real model drives the kit
 
     Scenario: a model that stops in an open Turn is asked again, and picks
       ADR-0016's ask-again rule. The `mode-stop` workflow's prompt asks for a review and to wait;
-      `ask_review` enters a mode whose picks are closed, so its answer allows nothing and the model
-      stops; a timer with no target then opens `revise` and `submit`, and the wake asks the model
-      with the nudge's text and a Turn part that states the Allowed picks last. The first Menu call
-      after the ask is the measurement. A model still working when the picks opened heard them at a
-      step boundary and was never asked: void.
+      `ask_review` enters a mode whose picks are closed, and its answer is the reviewer's approval,
+      which comes while they are closed, so it allows nothing and the model stops; a timer with no
+      target then opens `revise` and `submit`, and the wake asks the model with the nudge's text and
+      a Turn part that states the Allowed picks last. The first Menu call after the ask is the
+      measurement. A model still working when the picks opened heard them at a step boundary and was
+      never asked: void.
       Given the model instance is serving
       When I run the "mode-stop" workflow 10 times with thinking off
       Then the first pick after the nudge was allowed in at least 9 trials
