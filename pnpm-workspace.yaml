@@ -4,6 +4,11 @@
 # resolve that literal to the local packages rather than to npm.
 linkWorkspacePackages: true
 
+# harness and orchestrator are devDependencies of each other: each one's tests hold the other's copy
+# of a shape equal to its own (the wire, the model keys). No runtime code crosses, and the kit is
+# zero-build, so no `pnpm -r` script depends on their order.
+ignoreWorkspaceCycles: true
+
 packages:
   - packages/*
   # The folder `jr2 init` renders (ADR-0054): each member is a model Instance (ADR-0009) — an npm
