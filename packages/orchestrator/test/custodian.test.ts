@@ -283,7 +283,7 @@ test("a pod's Harness gets a Stand-in for its own manifest's names only — a pr
   }
 });
 
-test("shared: a Custodian reads the Instance's objects by default, and the preflight's own copies by name", () => {
+test("reads: a Custodian reads the Instance's objects by default, and the check pod's own copies by name", () => {
   const literal = (name: string) => ({ ...TWO.secrets[0]!, name, source: { kind: "literal" as const } });
   const held: HeldManifest = { version: 1, secrets: [literal("ANTHROPIC_API_KEY")] };
   const opts = { image: "envoy:c1", caBundle: false, pod: "instance", config: "c", token: { secret: "t", key: "k" } };
@@ -303,7 +303,7 @@ test("shared: a Custodian reads the Instance's objects by default, and the prefl
   ]);
   const own = custodianComposition(held, {
     ...opts,
-    shared: { literals: "p", tls: "p-tls", trust: "p-ca", program: "p" },
+    reads: { literals: "p", tls: "p-tls", trust: "p-ca", program: "p" },
   });
   assert.deepEqual(names(own), ["t", "p", "c", "p", "p-tls", "p-ca", "p-ca"]);
 });

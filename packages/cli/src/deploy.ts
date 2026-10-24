@@ -1159,7 +1159,7 @@ export function checkPodObjects(opts: {
   const custodian = custodianComposition(opts.held, {
     image: opts.custodianImage,
     pod: o,
-    shared: { literals: o, tls: `${o}-tls`, trust: `${o}-ca`, program: o },
+    reads: { literals: o, tls: `${o}-tls`, trust: `${o}-ca`, program: o },
     config: o,
     token: { secret: o, key: "token" },
     caBundle: opts.caBundle === true,
