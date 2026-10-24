@@ -74,7 +74,7 @@ namespace of your Instance:
 kubectl -n <namespace> logs statefulset/jr2-instance-harness -c harness | grep -F '[run_chart answer]'
 ```
 
-In a walk of this page, the first Chart of the planner gave a prompt to the Gate, with the model of each tab. The door
+For example, in one run with the model of each tab, the first Chart of the planner gave a prompt to the Gate. The door
 refused it:
 
 ```text
