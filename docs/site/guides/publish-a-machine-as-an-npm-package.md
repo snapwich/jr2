@@ -112,8 +112,6 @@ Make sure that the Instance has one copy of `@jr2/orchestrator`:
 npm ls @jr2/orchestrator
 ```
 
-<!-- output: not run -->
-
 ```text
 my-instance@0.0.0 <path>
 ├─┬ @jr2/cli@0.4.1
@@ -146,9 +144,8 @@ Run [`jr2 up`](../reference/cli.md#up):
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 jr2 up — instance "my-instance" → context <context> / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 seats: workflow "label" — who may send what, per state (ADR-0015)
@@ -156,17 +153,25 @@ seats: workflow "label" — who may send what, per state (ADR-0015)
 …
 ```
 
-`<context>` is your kubectl context. The `seats:` lines show that jr2 reads the Vocabulary of the Machine.
-[Start a run](start-a-run.md) tells how to run the Workflow `label`.
+The first line (`…`) is the `.env` line, when `.env` sets a variable that your shell does not set. `<context>` is your
+kubectl context. The `seats:` lines show that jr2 reads the Vocabulary of the Machine. [Start a run](start-a-run.md)
+tells how to run the Workflow `label`.
 
 ## Rules
 
 - Name `@jr2/orchestrator`, `xstate` and `zod` in `peerDependencies`, never in `dependencies`.
 - When the package names `@jr2/orchestrator` in `dependencies` at a different version, npm installs a second copy under
-  the package, with no error. With a second copy, `jr2 up` does not refuse the Workflow, and it shows no error. The
-  `seats:` lines of the Workflow are missing. The run stops with the status `error` when an Agent or a Gate of the
-  Machine starts, because its [Menus](../reference/glossary.md#menu) and its [Gates](../reference/glossary.md#gate) are
-  empty. The manual check confirms the fault text. Run `npm ls @jr2/orchestrator` to find the second copy.
+  the package, with no error. A Machine that loads a second copy has empty [Menus](../reference/glossary.md#menu). Thus
+  `jr2 up` refuses the Instance before it applies anything. It gives one line for each Kit package that has a second
+  copy, such as `@jr2/orchestrator` and `@jr2/agent-protocol`:
+
+  ```text
+  error: cannot stage the Assembly: it would carry a second copy of a Kit package (ADR-0069)
+    <path> is a second copy of <name>, nested by <package>@<package version> (<package path>): the Orchestrator's image ships <name> for @jr2/orchestrator <version>, and an Assembly that carries its own copy loads Machines whose Menus are empty (ADR-0054) — align that dependency with the <name> @jr2/orchestrator uses, or remove it, and reinstall
+  ```
+
+  Run `npm ls @jr2/orchestrator` to find the second copy.
+
 - Name `@jr2/orchestrator` at the exact Kit version. When the Instance has a different Kit version, npm refuses to
   install the package:
 
