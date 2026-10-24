@@ -40,17 +40,17 @@ Run [`jr2 up`](../reference/cli.md#up). It builds the image. Then it loads the i
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
-sandbox image "default": building jr2-sandbox-my-instance-default:<hash>-<arch>
+sandbox image "default": building jr2-sandbox-my-instance-default:fce23ddc3cce-amd64
   no USER declared — the pod's uid-1000 fallback applies
+  kind load → cluster "jr2"
 …
 ```
 
-- `<hash>` comes from the files in the folder. A change to a file in the folder changes it. `<arch>` is the architecture
-  of the nodes, such as `amd64`.
+- The tag is the hash of the files in the folder, then the architecture of the nodes. Your hash is different. A change
+  to a file in the folder changes it. The architecture is such as `amd64`.
+- On kind, `jr2 up` loads the image into the cluster. The next line names the cluster.
 - When no file in the folder changed, `jr2 up` does not build the image again. The line then ends with
   `(fresh — build skipped; --force to rebuild anyway)`.
 - `jr2 up` builds the Sandbox Images only when a registered [Machine](../reference/glossary.md#machine) has a
@@ -66,8 +66,6 @@ To see the tool, open a shell in a Sandbox (see [Look inside a Sandbox](look-ins
 ```sh
 pnpm --version
 ```
-
-<!-- output: not run -->
 
 ```text
 10.9.0
