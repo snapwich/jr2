@@ -42,7 +42,8 @@ node:      v24.18.0
 - `global` is your global `jr2`. In an Instance folder, it runs the Instance's own `@jr2/cli`. This is the
   [Handoff](../reference/glossary.md#handoff). Thus the version of the global `jr2` does not change what the Instance
   runs.
-- `kit` is the Kit version. `ok` means that the CLI and the Instance use the same copy of `@jr2/orchestrator`.
+- `kit` is the Kit version. `ok` means that the CLI and the Instance use the same copy of `@jr2/orchestrator`, and that
+  this copy has the version of the CLI.
 
 `<global version>` is the version of your global `jr2`. `<instance folder>` and `<global folder>` are paths on your
 computer, and `node` gives your version of Node.js. The first line (`…`) is the `.env` line, when `.env` sets a variable
@@ -69,7 +70,8 @@ npm install --save-exact @jr2/orchestrator@<version> @jr2/cli@<version> @jr2/mac
 ::: warning
 
 Do not upgrade one of the packages alone. If you upgrade only `@jr2/orchestrator`, npm shows
-`npm warn ERESOLVE overriding peer dependency` and installs it. The CLI and the Kit then have different versions.
+`npm warn ERESOLVE overriding peer dependency` and installs it. The CLI and the Kit then have different versions, and
+each command that reads the Instance, other than `jr2 version`, refuses. See the Rules.
 
 :::
 
@@ -88,7 +90,14 @@ instance:  my-instance  <instance folder>  (installed kit → ghcr.io/snapwich)
 node:      v24.18.0
 ```
 
-The `cli` line and the `kit` line must show the same version, and the `kit` line must end in `ok`.
+The `cli` line and the `kit` line must show the same version, and the `kit` line must end in `ok`. When you upgraded
+only `@jr2/orchestrator`, the `kit` line gives the version of the `jr2` that runs:
+
+```text
+kit:       <version>    <instance folder>/node_modules/@jr2/orchestrator  MISMATCH — this jr2 (<old version>) runs against <version> (<instance folder>/node_modules/@jr2/orchestrator)
+```
+
+Then install the two packages again, with one version.
 
 Your global `jr2` can stay at its version. Its version matters only for `jr2 init` and for commands outside an Instance.
 In an Instance, it runs the Instance's own `@jr2/cli`. To upgrade it too, run `npm i -g @jr2/cli@<version>`.
@@ -200,7 +209,8 @@ would lose the commits that nobody pushed. A Sandbox that starts after the conve
   lines after the refusal are the errors of the compiler:
   `refusing: this instance does not typecheck — nothing was built and nothing was applied`
 - Each verb that reads the Instance, other than `jr2 version`, refuses when the Instance and the CLI do not use the same
-  copy of `@jr2/orchestrator`. The refusal gives the two copies, and its last line gives the fix:
+  copy of `@jr2/orchestrator`, or when that copy does not have the version of the CLI. The refusal gives the two copies,
+  and its last line gives the fix:
 
   ```text
   error: Kit version mismatch — an Instance has one (ADR-0056):
