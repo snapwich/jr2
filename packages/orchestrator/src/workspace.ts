@@ -359,8 +359,10 @@ export interface SandboxPort {
    * `OOMKilled` at or after `since`, the kill — its fault reason, starting with the fixed prefix
    * `memory limit`, and the data the next Turn's notice is made of (ADR-0062) — else undefined.
    * Asked when a Turn faults on a lost conversation; it may wait a moment for the operator's word,
-   * which can trail the Harness's restart. A backend that cannot see the container answers
-   * undefined, and every lost conversation stays lost — never an optional method (ADR-0021).
+   * which can trail the Harness's restart. Asked too before an admission into the Workspace whose
+   * watch shows a last end `OOMKilled`, with `since` that end: a kill while no Turn ran (ADR-0062).
+   * A backend that cannot see the container answers undefined, and every lost conversation stays
+   * lost — never an optional method (ADR-0021).
    */
   memoryFault(name: string, since: Date): Promise<MemoryKill | undefined>;
   /** Delete the Sandbox CR. Absent is success. */

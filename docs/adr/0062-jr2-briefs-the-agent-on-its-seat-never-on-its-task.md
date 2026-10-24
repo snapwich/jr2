@@ -60,12 +60,22 @@ whose processes are gone, with no way to know why.
     again. A kill read from the pod's list names no Turn and says nothing of when or whose: "the Sandbox's processes
     were killed at its memory limit (peak X of Y); /dev/shm was cleared. Anything that was running in the Sandbox at
     that time is gone." The list cannot say whose Turn a kill ended: the kill may land after a state exits, or end an
-    attach, a sync or a command. A Menu-only Agent outside a Workspace receives conversation notices only.
+    attach, a sync or a command. A kernel kill read from the Sandbox's last end (below) says the same, with the limit
+    and no peak: "the Sandbox's processes were killed at its memory limit of Y; …". A Menu-only Agent outside a
+    Workspace receives conversation notices only.
   - A notice never replaces a fault. The Machine still receives `agent.fault` and decides (ADR-0016); the notice makes
     sure the next Agent is not working blind.
 - **The Orchestrator is the only keeper of notices**: pending notices are plain data in the run's persisted state
-  (ADR-0007). It sees kernel kills and fresh conversations itself. The Harness reports a guard kill (ADR-0061) on two
-  paths, under one id that the Harness gives the kill:
+  (ADR-0007). It sees kernel kills and fresh conversations itself. A kernel kill (ADR-0061, layer 5) has two paths,
+  under one source, the Workspace and the time the Harness container ended. A Turn that the kill ended faults on it, and
+  the fault raises the notice with the Turn's Agent. A kill while no Turn runs faults nothing, so before each admission
+  into a Workspace the Agent actor also reads the container's last end from the Sandbox watch, which the operator
+  publishes: a last end `OOMKilled` raises the notice, which names no Turn. The ledger's `seen` makes the two paths one
+  notice. An actor whose own watch saw the restart reads the last end only when it re-admits the Turn after the cut.
+  When the Turn faults, the fault's notice names the Turn's Agent. A watch that has not listed yet says nothing, and the
+  next admission reads again: the last end stays until the container ends again. A nudge and a wake take no kernel kill;
+  it stays for the next Turn. The re-admission after a cut takes it, as it takes every notice in scope that is not a
+  guard kill. The Harness reports a guard kill (ADR-0061) on two paths, under one id that the Harness gives the kill:
   - **On a stream.** While a Submission runs, the kill is an event on that conversation's updates stream. The Agent
     actor reads a stream while it waits on the Submission. It stops when the Agent's state exits, before its abort
     reaches the Harness. So a stream does not always reach a reader: a kill in that window is on a stream that no one

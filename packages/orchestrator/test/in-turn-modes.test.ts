@@ -18,6 +18,7 @@ import { RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts
 import { jr2Setup } from "../src/setup.ts";
 import { loadWarningsOf } from "../src/vocabulary.ts";
 import { admittedIid, coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
+import type { HarnessRestarts, SandboxPort } from "../src/workspace.ts";
 
 const run_tests = defineEvent({ name: "run_tests", description: "Run the test suite.", input: z.object({}) });
 const ask_review = defineEvent({ name: "ask_review", description: "Ask for a review.", input: z.object({}) });
@@ -690,6 +691,49 @@ async function toTheSecondWake() {
   }
   return { host, runId, iid, client, seen };
 }
+
+test("a kernel kill while a Turn waits for its wake is the fault's notice, which names the Turn's Agent — the wake's read of the last end raises none (ADR-0061, ADR-0062)", async () => {
+  const listeners = new Set<(seen: HarnessRestarts) => void>();
+  let seen: HarnessRestarts = { restartCount: 0 };
+  const port = {
+    harnessRestarts: (_name: string, listener: (seen: HarnessRestarts) => void) => {
+      listeners.add(listener);
+      queueMicrotask(() => listeners.has(listener) && listener(seen));
+      return () => listeners.delete(listener);
+    },
+    memoryFault: async () =>
+      seen.lastTerminated?.reason === "OOMKilled"
+        ? { reason: "memory limit (OOMKilled, limit 1920Mi): …", limit: "1920Mi", at: seen.lastTerminated.finishedAt }
+        : undefined,
+  } as unknown as SandboxPort;
+  const store = await mkStore();
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store, sandbox: port });
+  host.register(modeStopDef(clients, "ws-1"));
+  const { runId, instanceId } = await host.start("mode-stop");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  await new Promise((r) => setTimeout(r, 5));
+
+  // The model stops with nothing allowed; while the Turn waits for its wake, the kernel kills the
+  // Harness container.
+  host.sendToAgent(iid, { type: "ask_review" });
+  client.complete();
+  await new Promise((r) => setTimeout(r, 5));
+  seen = {
+    restartCount: 1,
+    lastTerminated: { reason: "OOMKilled", exitCode: 137, finishedAt: "2026-10-23T10:00:00Z" },
+  };
+  for (const l of listeners) l(seen);
+  await waitFor(() => host.status(runId) === undefined);
+  const pending =
+    ((await store.load(runId))?.snapshot as { notices?: { pending?: Array<{ notice: unknown }> } })?.notices?.pending ??
+    [];
+  assert.deepEqual(
+    pending.map((p) => p.notice),
+    [{ kind: "memory-limit", scope: "workspace", agent: "coder", limit: "1920Mi" }],
+  );
+});
 
 /** A kill in the pod's list, at now — after the Turn under test started. */
 const idleKill = (id: string, told: Array<{ agent: string; instanceId: string }> = []) => ({

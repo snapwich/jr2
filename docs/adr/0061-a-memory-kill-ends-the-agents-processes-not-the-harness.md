@@ -34,7 +34,11 @@ Layers, each a backstop for the one before:
    the fault reason starts with the fixed prefix `memory limit`, not `Turn lost` (any other restart, ADR-0021) or
    "conversation lost" (a 404). The fault reaches the Machine (ADR-0016); the next Agent in that Workspace is told
    through the Briefing ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), never through the
-   Frame (ADR-0057). The kit's Machines pass the reason into their retry Turn as the example for authors.
+   Frame (ADR-0057). The kit's Machines pass the reason into their retry Turn as the example for authors. A kernel kill
+   while no Submission runs faults no Turn, because the restarted Harness rebuilds its conversations. The operator
+   publishes the container's last end on the Sandbox all the same, so before each admission into the Workspace the
+   Orchestrator reads it from the Sandbox watch, and a last end `OOMKilled` that no notice told yet tells the next Agent
+   (ADR-0062).
 
 The guard is best-effort and says so: a fast enough spike beats any poll. The lab won 35/35 on arm64 at 50 ms, 6/6 on
 amd64 at 10 ms (0.8% of a core), and only half on amd64 at 50 ms; it fired at 90–96% of the limit. Layer 5 covers what
@@ -71,8 +75,9 @@ at v1.38. When it is enabled by default, jr2 sets the field on the Harness conta
 - The kill set includes a human's exec session open at that moment; the group kill would end it too. On the Instance
   Harness that session is the only process the guard can kill, because a Menu-only Agent has no Working tools. No notice
   follows: that pod holds no Workspace (ADR-0031, ADR-0062).
-- A kernel kill (layer 5) while no Submission runs is not told to the next Turn. The Orchestrator reads `lastState` only
-  when a Turn faults on it, and the restarted Harness rebuilds its conversations, so no Turn faults. The guard fires at
-  90% of the limit, before the kernel, so this window is the guard's misses alone.
+- A kernel kill (layer 5) while no Submission runs is told to the next Turn through the container's last end, which the
+  watch keeps until the container ends again. So two kernel kills before the next admission are told as one, and a
+  kernel kill that a later end of another kind replaces is not told. The guard fires at 90% of the limit, before the
+  kernel, so this window is the guard's misses alone.
 - A memory fault is named in `jr2 status` and on the feed, not `Turn lost` (a restart for any other reason) or
   "conversation lost" (a 404).

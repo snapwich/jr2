@@ -183,8 +183,10 @@ export function noticeText(notice: Notice, toolName: (name: string) => string = 
             ? ` of ${notice.limit}`
             : ` (peak ${notice.peak} of ${notice.limit})`;
       // No `agent`: the kill came from the pod's list, not from a stream read while a Submission
-      // ran. The text says nothing of when or of whose process it was — the kill may have landed
-      // inside an open Turn while it waited at a Gate, or ended an attach or a command (ADR-0062).
+      // ran — or it was a kernel kill read from the Harness container's last end, which no Turn
+      // faulted on (ADR-0061). The text says nothing of when or of whose process it was — the kill
+      // may have landed inside an open Turn while it waited at a Gate, or ended an attach or a
+      // command (ADR-0062).
       if (notice.agent === undefined) {
         return (
           `Notice: the Sandbox's processes were killed at its memory limit${at}; /dev/shm was cleared. ` +

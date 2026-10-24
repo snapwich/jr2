@@ -34,6 +34,7 @@ import {
 } from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
+import type { HarnessRestarts, SandboxPort } from "../src/workspace.ts";
 
 test("an Agent's delivery routes into the owning run's Machine", async () => {
   const store = await mkStore();
@@ -1191,6 +1192,97 @@ test("a guard kill while no Submission ran is told to the next Turn in that Work
   assert.equal(flueC.admits[0]!.prompt, "again");
   assert.ok(flueC.podKillsAsked >= 1, "it read the list");
   assert.deepEqual(flueC.notices[0], [], "delivered once");
+});
+
+/** A Sandbox port whose watch has the Harness container's last end, as the operator publishes it
+ * (ADR-0021): `end()` changes it, and tells no listener — the end came while no Turn listened. */
+function endedSandbox() {
+  let seen: HarnessRestarts = { restartCount: 0 };
+  const asked: Array<{ name: string; since: Date }> = [];
+  const port = {
+    harnessRestarts: (_name: string, listener: (seen: HarnessRestarts) => void) => {
+      queueMicrotask(() => listener(seen));
+      return () => {};
+    },
+    memoryFault: async (name: string, since: Date) => {
+      asked.push({ name, since });
+      const last = seen.lastTerminated;
+      return last?.reason === "OOMKilled"
+        ? { reason: "memory limit (OOMKilled, limit 1920Mi): …", limit: "1920Mi", at: last.finishedAt }
+        : undefined;
+    },
+  } as unknown as SandboxPort;
+  return {
+    port,
+    asked,
+    end(lastTerminated: HarnessRestarts["lastTerminated"]) {
+      seen = { restartCount: seen.restartCount + 1, lastTerminated };
+    },
+  };
+}
+
+test("a kernel kill while no Turn ran is told to the next Turn in that Workspace — once, across Orchestrator restarts (ADR-0061, ADR-0062)", async () => {
+  const store = await mkStore();
+  const sandbox = endedSandbox();
+  const notice = { kind: "memory-limit", scope: "workspace", limit: "1920Mi" };
+  const noticesOf = async (runId: string) =>
+    ((await blobOf(store, runId)).notices ?? {}) as { pending?: unknown[]; seen?: unknown[] };
+  const clientsA = new Map<string, MockFlueClient>();
+  const hostA = new RunHost({ store, sandbox: sandbox.port });
+  hostA.register(threeTurnsDef(clientsA, () => []));
+  const { runId, instanceId } = await hostA.start("three", { sandbox: "ws-1" });
+  const flueA = clientsA.get(instanceId)!;
+  await waitFor(() => flueA.settled.length === 1);
+  assert.deepEqual(flueA.notices[0], [], "a Harness that never ended tells nothing");
+  assert.equal(sandbox.asked.length, 0, "and the Sandbox is not asked");
+
+  // The coder's Turn ended; while no Turn ran, a process it left passed the limit, and the kernel
+  // killed the whole container. The restarted Harness rebuilt its conversations: no Turn faulted.
+  sandbox.end({ reason: "OOMKilled", exitCode: 137, finishedAt: "2026-10-23T10:00:00Z" });
+  flueA.holdAdmits = true;
+  hostA.sendToAgent(flueA.admits[0]!.instanceId, { type: "request_review", summary: "PR up" });
+  await waitFor(() => flueA.admits.length === 2);
+  assert.deepEqual(flueA.notices[1], [notice], "the next Turn in the Workspace is told, naming no Turn");
+  assert.equal(sandbox.asked.at(-1)!.name, "ws-1");
+  let pending: unknown[] = [];
+  let seen: unknown[] = [];
+  await waitFor(() => {
+    void noticesOf(runId).then((n) => ((pending = n.pending ?? []), (seen = n.seen ?? [])));
+    return pending.length === 1;
+  });
+  // Keyed as the fault of a Turn the kill ended keys it, so the two paths are one notice.
+  assert.ok(seen.includes("ws-1@2026-10-23T10:00:00Z"), JSON.stringify(seen));
+  await hostA.stop(runId);
+
+  // Restart before the ledger write: delivered again, and once.
+  const clientsB = new Map<string, MockFlueClient>();
+  const hostB = new RunHost({ store, sandbox: sandbox.port });
+  hostB.register(threeTurnsDef(clientsB, () => []));
+  assert.deepEqual((await hostB.restore()).reattached, [runId]);
+  const flueB = clientsB.get(instanceId)!;
+  await waitFor(() => flueB.admits.length === 1);
+  assert.deepEqual(flueB.notices[0], [notice], "not yet delivered, so delivered again — and once");
+  await waitFor(() => {
+    void noticesOf(runId).then((n) => (pending = n.pending ?? []));
+    return pending.length === 0;
+  });
+
+  await hostB.stop(runId);
+
+  // Restart after the ledger write: nothing is pending. The watch still says OOMKilled, and only
+  // the persisted `seen` keeps the third Turn from hearing the same end again.
+  const clientsC = new Map<string, MockFlueClient>();
+  const hostC = new RunHost({ store, sandbox: sandbox.port });
+  hostC.register(threeTurnsDef(clientsC, () => []));
+  assert.deepEqual((await hostC.restore()).reattached, [runId]);
+  await tick();
+  const flueC = clientsC.get(instanceId)!;
+  assert.equal(flueC.admits.length, 0, "re-attached, not re-admitted");
+  hostC.sendToAgent(flueB.admits[0]!.instanceId, { type: "request_review", summary: "again" });
+  await waitFor(() => flueC.admits.length === 1);
+  assert.equal(flueC.admits[0]!.prompt, "again");
+  assert.deepEqual(flueC.notices[0], [], "one end is told once");
+  await hostC.stop(runId);
 });
 
 /** A fake Instance Harness's `PUT /agents` (ADR-0031): every live set stated to it, in order. */

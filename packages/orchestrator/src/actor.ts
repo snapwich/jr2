@@ -374,6 +374,11 @@ export type ListedKill = Omit<PodMemoryKill, "peak" | "limit"> & { peak?: string
  * it — the stream and the pod's list — so the ledger's `seen` makes them one notice. */
 const guardSource = (sandbox: string, id: string): string => `${sandbox}@guard:${id}`;
 
+/** The source a kernel kill's notice is raised with (ADR-0061, layer 5): the Workspace and when the
+ * Harness container ended, which names that one end. Both paths use it — the fault of a Turn the
+ * kill ended, and the read before an admission — so the ledger's `seen` makes them one notice. */
+const kernelSource = (sandbox: string, at: string): string => `${sandbox}@${at}`;
+
 /** How long the read of the pod's kills may take before it counts as none. */
 const MEMORY_KILLS_READ_MS = 5_000;
 
@@ -867,6 +872,30 @@ export function agentActorWith(
     // processes it started in this Turn died — and after the newest kill its own `bash` call
     // answered, whose answer said all its processes died. Those stay pending for the next Turn.
     // Only when the first read failed is the Turn's start time the mark, held against `at`.
+    // A kernel kill (ADR-0061, layer 5) ends the Harness container, so no list keeps it and no
+    // stream carries it. A Turn it ended faults on it, and the fault raises its notice (below). A
+    // kill while no Turn ran faults nothing: the restarted Harness rebuilds its conversations. But
+    // the operator publishes the container's last end on the Sandbox, and the watch keeps it until
+    // the next end. So before each admission into the Workspace, a last end `OOMKilled` raises the
+    // notice, keyed by that end as the fault keys it: one notice for one kill, whichever path saw
+    // it first, and none again after a restart of either side. It names no Turn: the end cannot say
+    // whose Turn it was. A watch that has not listed yet says nothing; the next admission asks again.
+    // Not after a restart this Turn's watch saw: the Turn faults on it, or is re-admitted, and the
+    // fault's notice names this Turn's Agent — a raise here would take its source first.
+    const hearKernelKill = async (): Promise<void> => {
+      if (restarted !== undefined) return;
+      const last = heardRestarts?.lastTerminated;
+      if (noticeWorkspace === undefined || last?.reason !== OOM_KILLED || last.finishedAt === undefined) return;
+      const kill = await binding.sandbox
+        ?.memoryFault(noticeWorkspace, new Date(last.finishedAt))
+        .catch(() => undefined);
+      if (kill?.at === undefined) return;
+      binding.raiseNotice?.(
+        memoryLimit({ limit: kill.limit }),
+        noticeWorkspace,
+        kernelSource(noticeWorkspace, kill.at),
+      );
+    };
     let killMark = input.attach?.killMark;
     let firstRead = input.attach === undefined;
     // `known: false`: the read could not tell, so which kills this conversation was told is not
@@ -953,6 +982,7 @@ export function agentActorWith(
         kept?: boolean;
       } = { notices: "turn", task: true },
     ) => {
+      await hearKernelKill();
       const { known, unsaid, said } = await hearPodKills();
       // A read that could not tell leaves the same Turn no way to know which kills its own `bash`
       // reported: it takes none, as a nudge takes none then, and they stay for the next Turn.
@@ -1471,7 +1501,7 @@ export function agentActorWith(
           binding.raiseNotice?.(
             memoryLimit({ limit: kill.limit, agent: input.agentName }),
             noticeWorkspace,
-            kill.at === undefined ? undefined : `${noticeWorkspace}@${kill.at}`,
+            kill.at === undefined ? undefined : kernelSource(noticeWorkspace, kill.at),
           );
         }
         // A restart the Harness came back from keeps the conversation (ADR-0031); a 404 does not.
