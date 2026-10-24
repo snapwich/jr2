@@ -21,9 +21,10 @@ false: the Orchestrator was going away, not the Turn.
 ## Decision
 
 - **A 404 at Submission start settles the Submission `aborted`, and the model is never asked.** Nothing is written to
-  the conversation. It is not `failed`: nothing is wrong, and a signal that cries wolf cannot also be the alarm.
-  ADR-0024 already says jr2 never observes the settlement of a Turn it aborted, so the Orchestrator side does not
-  change.
+  the conversation. It is not `failed`: nothing is wrong, and a signal that cries wolf cannot also be the alarm. It is
+  not `ended` either, and it does not wait for the sweep. This Submission ran nothing, so the Orchestrator has no end of
+  it to judge ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). ADR-0024 already says jr2
+  never observes the settlement of a Turn it aborted, so the Orchestrator side does not change.
 - **Only a Turn that is over answers 404.** While its host is stopping, and while a boot with no current Assembly still
   waits for the publish that restores its runs
   ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)), the Orchestrator answers
@@ -33,7 +34,9 @@ false: the Orchestrator was going away, not the Turn.
   surface either way. A pick that gets 503 fails with "try it again", as a transport failure does — `deliver` still
   never retries on its own (ADR-0042).
 - **Acting against a Turn that is over still fails loudly.** A pick delivered after the state moved on gets 404 on
-  `POST /agents/:iid/events`, and the Harness throws it to the model as "this turn is over".
+  `POST /agents/:iid/events`, and the Harness throws it to the model as "this turn is over". The run then ends at the
+  step boundary. The Submission waits for the Orchestrator's sweep, which says how the Turn ended (ADR-0024). The
+  Harness does not read a 404 as a cause.
 - **`GET /agents/:iid/surface` on the Orchestrator stays a plain REST resource,** 404 for no registration; the mechanics
   tier asserts against it.
 

@@ -48,8 +48,11 @@ collapses into repetition.
   send resets it the same way. A guard straight back does not: it is answered, but nothing ran and the state is where it
   was, so the same pick four times is a Runaway.
 - **Tripping settles the Submission `failed` with `SettlementError.type: "runaway"`** and a legible message ("repeated
-  an identical tool call 4 times", "exceeded 256 steps"). No fourth `SettlementOutcome`: `aborted` stays the ADR-0024
-  sweep's word, and the typed error is what lets `agentRun` switch on the class without parsing prose.
+  an identical tool call 4 times", "exceeded 256 steps"). A Runaway is a kind of failure, so it stays `failed`, and the
+  typed error is what lets `agentRun` switch on the class without parsing prose. A Turn that its own pick ended is a
+  different end, not a failure. So it has an outcome of its own, `ended`. `aborted` is a Turn that something else
+  stopped ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A Runaway is neither: the Harness
+  ended a Turn that nothing had ended.
 - **`agentRun` retries once, as a fresh conversation, with the identical prompt.** The degenerate context is poisoned —
   a model that just emitted a hundred identical calls conditions on them, so a nudge into the same conversation rerolls
   loaded dice; the fresh session is ADR-0016's lossy handoff applied as recovery. The prompt carries no annotation:

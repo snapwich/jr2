@@ -40,8 +40,89 @@ single-threaded.
 ## Decision
 
 - **A turn ends when the state that asked for it stops waiting.** When an `agentRun` invocation ends, its submission is
-  aborted — `abort` on the wire (`POST /agents/:name/:id/abort`). `agentRun` is an **invoke**: leaving the state _means_
+  swept — `abort` on the wire (`POST /agents/:name/:id/abort`). `agentRun` is an **invoke**: leaving the state _means_
   "I am no longer interested in this answer", and nothing in the kit offers a detached Agent.
+- **The Orchestrator is the one judge of how a Turn ended, and the sweep says it.** A Submission settles one of four
+  outcomes ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)). `ended` and `aborted` are
+  the ends of a Turn. `completed` is a Turn that is still open, and `failed` is a fault. `ended` means that the Turn's
+  own pick ended the Turn. The pick may be from this Submission or from an earlier Submission of the same Turn: a nudge
+  or a wake starts a new Submission in the same Turn. For example, Submission 1 picks, and its route arms a timer.
+  Submission 1 completes, and the nudge admits Submission 2. Then the timer leaves the state: Submission 2 settles
+  `ended`. So the sweep carries no Submission of the pick's own. It names the running Submission:
+
+  | cause                                                                                                                    | outcome     |
+  | ------------------------------------------------------------------------------------------------------------------------ | ----------- |
+  | the Turn's own pick ended the Turn, and the sweep says `cause: "pick"`                                                   | `ended`     |
+  | something else ended it: a timer, an outside event, another party's event, the run's CANCEL                              | `aborted`   |
+  | a throw in the Machine, or an error that no state catches                                                                | `aborted`   |
+  | a pick found the Turn over, and no sweep came within the Harness's wait for it (10 s)                                    | `aborted`   |
+  | it was over before it started: the surface read answered 404 ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)) | `aborted`   |
+  | it was queued behind a swept Submission, so it never ran                                                                 | `aborted`   |
+  | the run returned, and the Turn is still open (the nudge or the wake follows, ADR-0016)                                   | `completed` |
+  | the run threw: a provider failure after the retries, a Menu that cannot be read, a Runaway (ADR-0035)                    | `failed`    |
+
+  **The Harness does not judge.** A pick can find the Turn over: a receipt with `turnComplete`, or a 404 on a pick or a
+  poll. Then the Harness ends the run at the step boundary. It sends no other model request, and it blocks every later
+  call of that model answer (below). Then the Submission waits for the sweep. The sweep's body says the cause and names
+  the Submission: `{ "cause": "pick", "submissionId": … }`. When it names the running Submission, that Submission
+  settles `ended`. Every other body settles it `aborted`: no body, a body that does not parse, an unknown cause, or a
+  `submissionId` of another Submission (or none). A sweep that lands while the run still runs settles it in the same
+  way. A Submission queued behind the running one never ran, so it settles `aborted` for every cause. So the order in
+  which the sweep and the Harness's own end land changes nothing. Only the Orchestrator's word decides.
+
+  **The wait is bounded: 10 s.** The Orchestrator sends the sweep in the macrostep that ends the Turn. That is before
+  the pick's own receipt answers, so the sweep lands within one round trip, in milliseconds. 10 s is far above that, and
+  above a slow hop or a pause of the Orchestrator's process. It is below every drain window
+  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), so a stopping Harness still settles it. While the
+  Submission waits, its run has ended and its Agent's actor has stopped. The next Turn on the conversation is admitted
+  only after the sweep (the ordered abort, below). So a lost sweep holds two things for up to 10 s: a next Submission
+  that is queued on the conversation, and a drain. When no sweep comes, the Submission settles `aborted` with a message
+  that says so. The Harness records that the run ended so, and a rebuild after a restart settles it in the same way.
+
+  **The Orchestrator attributes the exit to its cause.** The Agent's Actor asks the run host what ended the Turn
+  (`turnEndedByPick`). It asks as its invocation stops, before its registration goes. The answer is yes exactly when the
+  transition that stopped the invocation came from this Agent's own pick. The host reads this off xstate's inspection
+  stream and the actor system's scheduler (`cause.ts`). It reads what the Machines did, and never the pick's answer:
+  "was the pick's work stopped" (`stopped`) is another question. It keeps two facts:
+  - **The cause of each relay.** A cause is a set of Agents' picks. It rides each relay of an event, never the event
+    object: xstate relays one object each time a config action with an object literal runs. A relay comes from an
+    Agent's pick in four ways:
+    1. It is the pick, in its own send.
+    2. The Machine that invokes the Agent takes it from the work below the Agent's state while the pick is out. These
+       are the sources of a reply or of a child's error: a child's output or error, a Gate's answer, a nested Agent's
+       pick. A nested Agent's pick is then the cause for both Agents.
+    3. An actor sent it while it took a relay that came from the pick. Examples: a `sendTo(self)`, a `sendParent` from a
+       child Machine where the route runs, and a child that answers the route at once. A `raise` is part of the
+       macrostep that raised it.
+    4. It is a timer that its Machine armed while it took a relay that came from the pick. A timer that the pick's own
+       route armed is the work's own progress. Examples: an `after` of a state that the pick's route entered, and a
+       delayed `raise` or `sendTo` of the pick's transition or route. So inline work and the same work as a child
+       Machine give one outcome. Each timer keeps its own cause, on its own `setTimeout` of the run's clock. So two
+       timers of one id, armed by two relays with no cancel between, each keep the cause of the relay that armed it.
+
+    Nothing else has a cause. A timer armed before the pick has none, for example a Turn timeout on the Agent's state.
+    An outside event, a root Gate's answer, another Agent's pick and a CANCEL have none. A child that the pick's route
+    spawns is not the work below: Rest counts invoked children only. So its answer comes from the pick only by rules 3
+    and 4: when it answers in the route's own send, or by a timer it armed while it took a relay from the pick (a
+    spawned child Machine's own `after`, armed during its init relay). A spawned callback's own `setTimeout` is not a
+    timer of the actor system, so its later answer has no cause.
+
+  - **The exit.** The first microstep that stops the Agent's invocation names the cause of its macrostep. After that
+    microstep, one of these is true. The Agent's actor is no longer the child of the Machine that invokes it (the state
+    exited, or was re-entered). A child Machine on the way up is no longer the child of the Machine above it. Or a
+    Machine on the way up is done: it reached its final state, so xstate stops every child. xstate inspects a microstep
+    only after its actions ran. So a microstep that throws is never the exit, and a fault is never the pick's. The stop
+    of a run is no event of the Machine's.
+
+  Which relay an actor takes now is read from the relay order. xstate relays an event to the actor's mailbox
+  (`@xstate.event`). The mailbox takes events one at a time, in that order. xstate inspects `@xstate.snapshot` with the
+  event when the actor has taken it. An actor's own done or error event is the last relay that it makes with a cause: it
+  takes the cause of the relay the actor took then. After it, the actor is finished. A finished actor has no cause, and
+  a relay to it, or to a stopped actor, is not queued: xstate drops it. Status alone does not say it. A done Machine
+  makes its last deferred sends with status `done`, and a Machine done at start is `done` before its init relay. And
+  xstate never stops an errored callback, so its own later sends still reach its parent with no cause. Receipts, poll
+  answers, Allowed picks and refusals do not change: the model reads what it read before.
+
 - **Same Turn or not is the target's position, and nothing else.** A pick whose target is inside the state that invokes
   the Agent — a mode, a child that runs something, a Gate, another Agent — keeps the Turn; a pick that leaves that state
   ends it, and the next prompt carries the result. A pick with no target keeps the Turn open. So a Turn may hold many
@@ -79,10 +160,10 @@ single-threaded.
   state registers the same address, so such a pick would reach the NEXT Turn. The run then ends at the step boundary
   (`endsRun`). The Harness sends no further model request for a Turn that is over, whether or not the Orchestrator's
   abort has landed. So the model reads that text, and the Turn-ending receipt, only in the NEXT Turn of a continued
-  conversation. They give no order to stop, because that order is false in a later Turn. The Submission settles
-  `aborted` every time, with the type `submission_aborted`, so its outcome and type do not follow that race (see
-  Consequences). Its `error.message` does: a swept Submission has none, and a Submission that the Harness ends itself
-  says why ("a pick's answer ended the Turn: …").
+  conversation. They give no order to stop, because that order is false in a later Turn. The Harness does not settle
+  that Submission: it waits for the sweep (above). An `ended` Settlement carries no error object and no message. Nothing
+  went wrong, and the outcome itself names the cause. An `aborted` one that the sweep settles has no message. One whose
+  wait for the sweep ran out says so ("… no sweep came from the Orchestrator …").
 - **The answer, in order:** the work settles, the Machine's route runs (guards, assign), then the Agent is answered with
   the Allowed picks read AFTER the route. The answer is the last reply since the pick from below the Agent's state — a
   Gate's event and payload, another Agent's pick, a child's output — and the Harness writes the words. With an `answer`
@@ -183,13 +264,17 @@ single-threaded.
   | +45 s further     | +0                 | **0**                  |
 
   `{"aborted": true}`, settling to `{"outcome":"aborted","error":{"type":"submission_aborted"}}` beside the coder's
-  `{"outcome":"completed"}`. The run was untouched: still active, still parked, no transition and no `agent.fault`.
+  `{"outcome":"completed"}`. The run was untouched: still active, still parked, no transition and no `agent.fault`. That
+  sweep said no cause, because the field did not exist yet. The reviewer's own pick had ended its Turn. So today the
+  sweep says `cause: "pick"`, and the Submission settles `ended`.
 
 - **jr2 never observes that settlement, and the ADR does not pretend otherwise.** By construction the actor is already
   stopped when the abort fires — being stopped is the trigger — so `settle`'s rejection was swallowed by
-  `if (stopped) return` before the remote outcome existed. The wire's distinct `aborted` outcome is worth having for
-  **observability** (`history` reads `aborted`, not `failed`); it is not what suppresses a spurious fault. Nothing
-  suppresses it, because nothing is listening.
+  `if (stopped) return` before the remote outcome existed. The wire's distinct `ended` and `aborted` outcomes are worth
+  having for **observability**: `history` reads `ended` or `aborted`, not `failed`. They are not what suppresses a
+  spurious fault. Nothing suppresses it, because nothing is listening. The wire client's `wait` resolves on `completed`
+  alone. So a stopped actor drops an `ended` as it drops every rejection. No path reads it as a run that returned with
+  the Turn open.
 - **`AgentRunPort` gains `abort(agentName, instanceId)`**, so the port stays the injectable seam and a unit test can
   assert the abort without a live Harness — the same shape as `admit`/`settle`.
 - **An abort is ordered before the next `send` on the same instance id.** The run binding keeps `iid → pending abort`,
@@ -266,8 +351,28 @@ matter:
   `run_tests` whose answer is a failure.
 - **End a Turn that is over with pi's `terminate` flag on the pick's result**, not with `endsRun`. Rejected: pi stops
   only when every result of the batch sets it, so a model answer `[bash, pick]` would go on to another request.
-- **Let a Turn-ending pick settle `completed` when the run ends before the abort lands.** Rejected: the outcome would
-  follow a race. The `@kind` tier counts exact `aborted` settlements (see Consequences).
+- **`aborted` for every end of a Turn**, the Turn its pick ended included. Rejected: one word had three meanings. The
+  Turn's own pick ended it (a success), something else stopped it, or it was over before it started. A reader takes
+  `aborted` as "something stopped it".
+- **`completed` for a Turn its pick ended.** Rejected: `completed` would then hold two opposite cases. One is a Turn
+  that reached the end its workflow asked for. The other is a model that stopped early in a Turn that is still open,
+  which the Agent's Actor nudges. `ended` is GLOSSARY.md's own verb: a Turn "ends when that state stops waiting", by
+  "the pick that ends it".
+- **`answered` as the name.** Rejected: "answer" already means a pick's answer, a model answer, and the `answered`
+  `@model` claim.
+- **Let the outcome follow whichever end lands first:** `ended` when the Harness ends the run before the sweep lands,
+  and `aborted` when the sweep is first. Rejected: the outcome would follow a race. The `@kind` tier counts exact
+  `ended` settlements (see Consequences).
+- **Let each end judge, and make the two judgments agree.** The Harness would read the pick's answer (`turnComplete`
+  with no `stopped`), and the Orchestrator the same facts. Rejected after it was built: the two read different signals.
+  "Was the pick's work stopped" is not "what left the state". Three verifications each found ends where they disagreed.
+  One was a timer while the pick waited on a timer below. Others were a fault caught above, a CANCEL during an
+  outstanding pick, and an exit in the same tick as a Rest. One judge cannot disagree with itself.
+- **Read the Rest before the Machine takes an event, to answer a pick early.** Rejected: `rest.ts` forbids it. It also
+  gave the model wrong answers: another Agent's pick answered with no reply, and a pick answered at a Rest that a queued
+  event ended.
+- **Keep the cause on the event object.** Rejected: xstate relays one object each time a config action with an object
+  literal runs. So an object that the pick's route sent once kept that cause when a timer sent it later.
 
 ## Consequences
 
@@ -276,11 +381,37 @@ matter:
 - **`continue: true` becomes usable for the first time.** Before this ADR no workflow exercised continuation, which is
   why the queue semantics went unnoticed; `task` (ADR-0054) exercises it now.
 - **A failed abort is not reportable.** The actor is stopped, so there is no `agent.fault` to raise, and the run's
-  telemetry channel carries only `RetryTelemetry`. The call is fire-and-forget; an orphan still 404s on every tool call
-  and settles on its own. Widening telemetry is a separate decision.
+  telemetry channel carries only `RetryTelemetry`. The call is fire-and-forget. An Agent whose sweep is lost still 404s
+  on every tool call and ends its run. It settles `aborted` when its wait for the sweep runs out. Widening telemetry is
+  a separate decision.
 - **`turnComplete` fails conservatively.** It is read after `deliver` returns and depends on `sendBack` being
   synchronous. Should that stop holding, it reads `false` — today's behavior, never a false claim. The guarantee no
-  longer depends on it at all.
+  longer depends on it at all. `turnEndedByPick` rests on the same fact and fails the same way. The pick's send would
+  not stop the invocation, and the sweep would say no cause. The Turn would then settle `aborted`, never a false
+  `ended`.
+- **The limits of the one judge.** Each can give `aborted` (or, for a restart, `failed`) to a Turn that its own pick
+  ended. None gives `ended` to a Turn that something else ended:
+  - **An Orchestrator that is down when the Turn ends** sends no sweep. So the Submission settles `aborted` when the
+    Harness's wait runs out. So does an Orchestrator whose sweep fails on the way: the sweep is fire-and-forget (above).
+  - **Version skew.** An Orchestrator from before `cause` sends no body, so its Turns settle `aborted`, every time. A
+    Harness from before `cause` ignores the body, and settles every sweep `aborted`.
+  - **A restored run.** A timer's cause is kept in memory, on its `setTimeout` of the run's clock. A timer that a
+    restore arms again has no cause, so its exit sends a sweep with no cause.
+  - **A Machine above the Agent's Machine faults, and a Machine above it catches the fault.** xstate does not stop the
+    errored Machine's children, so the Agent's Machine runs on. The run took the Agent's state away when it caught the
+    fault, so that is the exit, and it has no cause. A later route of the Agent's Machine that stops the Agent sends a
+    sweep with no cause, and the Submission settles `aborted`.
+  - **The Agent's own Machine faults, and a Machine above it catches the fault.** xstate does not stop that Machine's
+    children, so the Agent's actor is never stopped. Its surface stays live, and no sweep is sent. A pick of that Agent
+    finds no end of the Turn, so its Harness does not wait for a sweep, and nothing settles the Submission. This orphan
+    is older than this rule, and it is a separate defect.
+  - **An exit while the next admission is in flight.** A nudge, a wake or a re-admission is ledgered only when the
+    Harness answers it. A Turn that its own pick ends in that window names the Submission before it. The Harness no
+    longer runs that one, so the running Submission settles `aborted`. This is conservative, and no wait is added for
+    it.
+  - **A Harness that restarts while it waits for the sweep** settles the Submission `aborted`, with the message that no
+    sweep came. It recorded that the run ended because its Turn was over. A Harness that restarts while the run still
+    runs settles it `failed`, as for every Submission that a restart cut (ADR-0031).
 - **The nudge (ADR-0016) answers the opposite failure** — a model that stops while its Turn is still open with picks
   left. It reads the Allowed picks after the Submission settles — or, if none are left then, the first time they open
   while the state is active (the wake) — so a pick that kept the Turn open can be followed by a nudge, and a pick that
@@ -293,7 +424,7 @@ matter:
   and the seat lookup's active nodes. The raw-xstate tests are the canary for a bump.
 - **Non-determinism dictates how this is tested.** "Did it stop calling?" proves nothing when a well-behaved agent stops
   on its own. The `@kind` tier asserts the **settlement outcome**, in two scenarios. In the `handoff` scenario, the
-  Agent's pick ends its Turn, and that Turn settles `aborted`, with or without the Harness's own message. The next
-  `continue` Turn, which `shipping` asked for, is not swept: the count of `aborted` settlements stays 1 while `shipping`
-  is active. In the `interrupted` scenario, a Gate's answer, not a pick, ends the Turn while the scripted model holds
-  its request. That Turn settles `aborted` through the sweep, with no message, and the abort cuts the model's request.
+  Agent's pick ends its Turn, and that Turn settles `ended`, whichever end lands first. The next `continue` Turn, which
+  `shipping` asked for, is not swept: the count of `ended` settlements stays 1 while `shipping` is active. In the
+  `interrupted` scenario, a Gate's answer, not a pick, ends the Turn while the scripted model holds its request. That
+  Turn settles `aborted` through the sweep, with no message, and the abort cuts the model's request.

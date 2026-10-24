@@ -218,8 +218,18 @@ restart.
 _Avoid_: handle, ticket
 
 **Settlement**:
-How a Submission ends: completed, failed or aborted. It is what the history view reports for each Submission.
+How a Submission ends. It is one of four: completed, ended, failed or aborted. Completed: its run returned, and its
+Turn is still open. Ended: the Turn's own pick ended the Turn, from this Submission or from an earlier one of the same
+Turn. Aborted: something else ended the Turn, or it was over before it started. The Orchestrator judges how a Turn
+ended, and the Turn's sweep says it. It is what the history view reports for each Submission.
 _Avoid_: result, status
+
+**Sweep**:
+The Turn's sweep: the Orchestrator's end of an Agent's Submissions when the state that asked for the Turn stops
+waiting. It settles the running Submission and every one queued behind it. It says how the Turn ended: by the Turn's
+own pick, or by something else. Two other sweeps are not this one: the image sweep of `jr2 up` (ADR-0039,
+"swept N image(s)"), and the Repo sweep of `jr2 gc` (ADR-0051).
+_Avoid_: abort (the wire's route, not the act), cancel (the end of a run)
 
 **Runaway**:
 A Turn that will not end on its own, which the Harness ends when the Turn runs past the point where jr2 stops believing

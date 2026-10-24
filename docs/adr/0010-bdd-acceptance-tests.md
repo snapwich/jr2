@@ -92,12 +92,12 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
 - **Harness conformance, in `@jr2/harness`, in the default gate**
   ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)). The three tiers above all reach the
   Harness through the **stub Harness**, which is a hand-written model of the _wire_ — it holds no conversation, so it
-  can report a turn settled `aborted` without ever having had a turn to settle. That is the right fixture for testing
-  jr2, and it is blind by construction to what the real runtime keeps, drops, or sends onward. Those claims are covered
-  by the conformance suite in `packages/harness/test/`, driven through the real turn loop — pi at the exact pin, the
-  Menu over a real socket to the Custodian's address, a **scripted provider** — so a turn's shape (where it stalls, what
-  it half-emits) is chosen by the test rather than by a model. The witness is the message array the provider receives on
-  the _next_ turn, which is the only place these claims are visible. Not a separate tier: it runs as part of
+  can report a turn settled `ended` or `aborted` without ever having had a turn to settle. That is the right fixture for
+  testing jr2, and it is blind by construction to what the real runtime keeps, drops, or sends onward. Those claims are
+  covered by the conformance suite in `packages/harness/test/`, driven through the real turn loop — pi at the exact pin,
+  the Menu over a real socket to the Custodian's address, a **scripted provider** — so a turn's shape (where it stalls,
+  what it half-emits) is chosen by the test rather than by a model. The witness is the message array the provider
+  receives on the _next_ turn, which is the only place these claims are visible. Not a separate tier: it runs as part of
   `pnpm -r test` (no docker, no cluster), and it is the canary for pi bumps — **run it before bumping the pin**. (A
   predecessor tier that ran the retired foreign harness runtime at its pin dissolved into this suite — ADR-0027.)
 - **The Custodian suite, opt-in, against the real engine**

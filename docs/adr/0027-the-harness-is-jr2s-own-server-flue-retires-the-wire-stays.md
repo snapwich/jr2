@@ -68,8 +68,8 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
     error, and it is never the first pick. A list of the model answer's calls would name such a call, and it would need
     an id that some providers do not send.
   - A call after a pick whose answer ended the Turn does not run: `beforeToolCall` blocks it. `endsRun` then ends the
-    run at the step boundary, so no model request follows. The Submission settles `aborted` every time, as when the
-    Orchestrator's abort lands first (ADR-0024).
+    run at the step boundary, so no model request follows. The Submission does not settle then: it waits for the
+    Orchestrator's sweep, which says how the Turn ended (ADR-0024), at most 10 s.
   - After an abort or a Runaway's trip ([ADR-0035](0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md)), the
     calls before it have run. The engine runs no later call of that model answer and gives it no result. When the run
     ends, the Turn writes jr2's answer for each such call in the engine part: "This call did not run: your turn ended
@@ -112,11 +112,14 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
   this cut read at boot. The ADR-0018 contract — stock image, user-owned plain-data definitions — survives with its
   mechanism simplified.
 - **The wire stays, and becomes normative.** The five endpoints the stub documents (`POST /agents/:name/:id`,
-  updates/history views, long-poll, `POST .../abort → {aborted}`) and the three-string admission
+  updates/history views, long-poll, `POST .../abort {cause?, submissionId?} → {aborted}`) and the three-string admission
   `{streamUrl, offset, submissionId}` (jr2 now mints its own opaque values) are jr2's protocol, not flue's. The stub
   Harness, the admission ledger ([ADR-0016](0016-agent-turn-mechanics-are-internal.md)), `AgentRunPort`, and every
-  mechanics/`@kind` assertion survive byte-identical. Long-poll is the only wait transport; the SDK's `?wait=result` and
-  SSE paths are not part of the contract. The admit body is `{message, model?, thinkingLevel?}` — the optional dials
+  mechanics/`@kind` assertion came through the move from flue byte-identical. Later decisions changed them in place. The
+  sweep's cause and the outcome `ended` ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md))
+  changed the stub's settlements, the port's `abort`, and the mechanics and `@kind` assertions of a Turn that its own
+  pick ended. Long-poll is the only wait transport; the SDK's `?wait=result` and SSE paths are not part of the contract.
+  The admit body is `{message, model?, thinkingLevel?}` — the optional dials
   ([ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)) are this Submission's override layer
   over the Agent's definition, omitted when unset, and an unresolvable one is a 400 at admission rather than a
   Submission that settles `failed` — a one-line addition precisely because the protocol is jr2's own.
@@ -126,11 +129,30 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
     conversation; admission order. [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)'s correction
     — flue queues, and the ordered abort depends on it — is now a design jr2 asserts rather than a behavior it
     discovered.
-  - **Abort sweeps.** The active Submission and everything queued at the moment the abort is processed settle `aborted`,
-    in admission order; the response answers `{aborted: boolean}` (`false` on an idle instance). Arrival order at the
-    Harness is the order; the client-side pending-abort await (ADR-0024) stays as the cross-request guarantee.
-  - **Settlement is `completed | failed | aborted`**, with `aborted` carrying `{type: "submission_aborted"}` —
-    continuity with what ADR-0024/0025 recorded.
+  - **Abort sweeps, and says its cause.** The active Submission and everything queued at the moment the abort is
+    processed settle in admission order. The response answers `{aborted: boolean}` (`false` on an idle instance).
+    Arrival order at the Harness is the order; the client-side pending-abort await (ADR-0024) stays as the cross-request
+    guarantee. The body is optional, and it is the Orchestrator's judgment of how the Turn ended:
+    - `{cause: "pick", submissionId}` says that the Turn's own pick ended it. The active Submission settles `ended` when
+      the body names it.
+    - Every other body settles it `aborted`: no body, a body that does not parse, a cause the Harness does not know, or
+      a `submissionId` of another Submission (or none).
+    - The active Submission may still be running. Or its run may have ended because a pick found the Turn over, and it
+      waits for this sweep. Either way the sweep settles it. When no sweep comes within 10 s, it settles `aborted` and
+      says so.
+    - A queued Submission never ran, so it settles `aborted` for every cause.
+    - An Orchestrator from before the field still works on the wire. But it gives no cause, so its Turns settle
+      `aborted`, every time.
+  - **Settlement is `completed | ended | failed | aborted`**, and the Orchestrator is the one judge of how a Turn ended
+    (ADR-0024). `completed`: the run returned, and the Turn is still open, so the Agent's Actor asks again (the nudge or
+    the wake, ADR-0016). `ended`: the Turn's own pick ended the Turn, and the sweep said `cause: "pick"`. The pick may
+    be from an earlier Submission of the same Turn: a nudge or a wake starts a new Submission in the same Turn.
+    `failed`: the run threw, a Runaway included
+    ([ADR-0035](0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md)). `aborted`: something else ended the Turn,
+    or no sweep came in time, or it was over before it started
+    ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)). `failed` and `aborted` carry an error, `aborted` the
+    type `{type: "submission_aborted"}` — continuity with what ADR-0024/0025 recorded. `completed` and `ended` carry
+    none: nothing went wrong.
   - **An unknown conversation is 404**, on both views. `POST` creates (that is admission), except an admission with
     `kept: true`, which is 404 (with `kept: false` in the body) on an unknown conversation and creates nothing
     ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)); abort answers `{aborted: false}`. This is
@@ -153,8 +175,11 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
     retire-the-previous idiom and ADR-0023's 404-chase existed to work around flue API gaps that are gone.
 - **The Orchestrator side shrinks.** `harness-client.ts` replaces `flue-client.ts`: a fetch client for the three verbs,
   with `wait` as a long-poll loop from the admitted offset (capped backoff, indefinite reconnect — pod death is
-  `workspace.lost`'s job) that raises a typed `SettlementFault` on `failed`/`aborted`/404. `actor.ts` does not change:
-  the port, the admission shape, the nudge loop, and the abort ordering are untouched.
+  `workspace.lost`'s job) that resolves on `completed` alone and raises a typed `SettlementFault` on
+  `failed`/`ended`/`aborted`/404 (an `ended` reaches only an actor that its own pick already stopped, and a stopped
+  actor drops it). `actor.ts` did not change in the move from flue: the port, the admission shape, the nudge loop, and
+  the abort ordering stayed as they were. ADR-0024's sweep cause later changed it in two places. The port's `abort`
+  takes the cause and the Submission it names, and the Actor's `abandon` reads the cause before its registration goes.
 
 ## Considered options
 
