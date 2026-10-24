@@ -66,17 +66,27 @@ jr2 run plan --input '{"task":"Write the release notes for the greet CLI, and as
 Open the run in the [Console](../reference/glossary.md#console). After the planner picks `run_chart`, the Console draws
 the Chart inside `running`. The Chart of each run is different, because the planner writes it.
 
-When the door refuses a Chart, the answer to the pick holds the report. For example, a Chart that invokes a `linter`
-gets this line:
+When the door refuses a Chart, the answer to the pick holds the report. The log of the
+[Instance Harness](../reference/glossary.md#instance-harness) shows each answer. Replace `<namespace>` with the
+namespace of your Instance:
 
-<!-- output: not run -->
-
-```text
-states.check.invoke.src: "linter" is not a lent actor or an Agent of this Chart; lent: writer (Agent); kit: gate; minted: none
+```sh
+kubectl -n <namespace> logs statefulset/jr2-instance-harness -c harness | grep -F '[run_chart answer]'
 ```
 
-The planner can then pick `run_chart` again with a Chart that uses `writer`, or with a Chart that adds a `linter` Agent
-of its own.
+In a walk of this page, the first Chart of the planner gave a prompt to the Gate, with the model of each tab. The door
+refused it:
+
+```text
+[planner] [run_chart answer] Delivered "run_chart" to the workflow (delivery ede62e99-7596-41fe-bda3-c6dcc194517f). The workflow took it and is back in the state that asked for this turn. Its answer: the output of `body`: {"outcome":"refused","report":["states.approve.invoke.input.prompt: a Gate's input takes gate and meta only; `gate` is the kit's Gate, which waits for an outside answer (a human, a webhook), not an Agent's Turn"]}. Your turn is not over. Allowed now: `mcp__jr2__run_chart`.
+```
+
+The planner writes a different Chart in each run. Thus your report can be different, and the door can accept the first
+Chart. Your delivery id is different. After a refusal, the planner can pick `run_chart` again with a corrected Chart.
+
+When the Chart gets to its Gate, the run waits. `jr2 status <run id>` gives the id of the Gate, such as
+`0.plan.planning.running.approve`, and the events that it takes. [Answer a Gate](answer-a-gate.md) tells how to answer
+it. Then the Chart ends, and the run ends with the status `done`.
 
 ## Rules
 
