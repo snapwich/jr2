@@ -30,14 +30,12 @@ Start a run of `release` with `--detach`. `jr2 run` prints the run id and return
 jr2 run release --input '{"version":"2.0.0"}' --detach
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b"}
+{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320"}
 ```
 
-Your run ids are different from the run ids on this page.
+Your run ids, instance ids and `assembly` hash are different from the values on this page.
 
 ## List the live runs
 
@@ -47,13 +45,12 @@ Run [`jr2 runs`](../reference/cli.md#runs):
 jr2 runs
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
 workflows:
+  ping (machine)
   release (machine)
-[{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}]
+[{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}]
 ```
 
 `jr2 runs` prints a JSON array of the runs that did not end. On stderr, it first lists the Workflows that a run can
@@ -70,14 +67,12 @@ the Effect, the id of the Effect (`effect`), and its `depth` in the chain.
 Run [`jr2 status`](../reference/cli.md#status) with the run id. It reads a run that ended too:
 
 ```sh
-jr2 status 3651
+jr2 status a2d8
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"2.0.0"}}]}
+{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"2.0.0"}}]}
 ```
 
 The status is a [`RunStatus`](../reference/http-api.md#type-runstatus), with the open Gates of the run:
@@ -105,23 +100,21 @@ and the [Repos](../reference/glossary.md#repo) of the Instance.
 Run [`jr2 logs`](../reference/cli.md#logs) with `-f`. It prints the status now, then each change, until the run ends:
 
 ```sh
-jr2 logs -f 3651
+jr2 logs -f a2d8
 ```
 
 While `jr2 logs -f` runs, send `approve` to the Gate in a second terminal:
 
 ```sh
-jr2 send 3651 --gate review --event approve
+jr2 send a2d8 --gate review --event approve
 ```
 
 The run ends. `jr2 logs -f` prints the status when it attached, then the last status, and stops:
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}
-{"runId":"3651bde0-63b6-4d05-aae2-7c3fc4bb1e2b","workflow":"release","instanceId":"3ac6d046-8398-4fa9-9008-caef68f35d40","status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}
+{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","status":"active","value":"review","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}
+{"runId":"a2d8b5b5-645c-44d2-8175-a949493e2320","workflow":"release","instanceId":"6242963e-76d0-4acd-ac86-09359a29912f","status":"done","value":"released","context":{"version":"2.0.0"},"children":[],"waiting":[],"held":[],"assembly":"28c844453c20"}
 ```
 
 When the run ended before you attach, `jr2 logs -f` prints only its last status. Without `-f`, `jr2 logs` prints the
@@ -177,11 +170,9 @@ The run of the steps above ended, and a feed of one run sends only a live run. S
 jr2 run release --input '{"version":"2.0.0"}' --detach
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-{"runId":"a9f3ab44-bd2a-41fb-966f-2f020eebbed9"}
+{"runId":"2a009f09-13d4-44ba-9e17-fd665acc7aa8"}
 ```
 
 To read its feed, forward a port to the Orchestrator, as [Start a run](start-a-run.md#start-a-run-with-the-http-api)
@@ -199,14 +190,12 @@ jr2 send <run id> --gate review --event approve
 
 The feed sends the status when you attached, then the last status, and closes:
 
-<!-- output: not run -->
-
 ```text
 event: status
-data: {"runId":"a9f3ab44-bd2a-41fb-966f-2f020eebbed9","workflow":"release","status":"active","value":"review","children":[]}
+data: {"runId":"2a009f09-13d4-44ba-9e17-fd665acc7aa8","workflow":"release","status":"active","value":"review","children":[]}
 
 event: status
-data: {"runId":"a9f3ab44-bd2a-41fb-966f-2f020eebbed9","workflow":"release","status":"done","value":"released","children":[]}
+data: {"runId":"2a009f09-13d4-44ba-9e17-fd665acc7aa8","workflow":"release","status":"done","value":"released","children":[]}
 ```
 
 The first event is the status when you attach. The feed of one run closes when the run ends. While the run waits, the
@@ -235,17 +224,29 @@ kubectl -n <namespace> get sandboxes -l jr2.dev/run=<run id>
 kubectl -n <namespace> logs -f <sandbox> -c harness
 ```
 
-<!-- output: not run -->
+For example, this is the log of a run of the `task` Workflow of
+[An Agent in a Sandbox](../get-started/an-agent-in-a-sandbox.md), with the prompt
+``In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.``:
 
 ```text
-[<agent>] [prompt] <the prompt of the Turn>
+jr2 harness serving on :8080
+[run] [status] running · body: working
+[run] [status] running · body: working
+[coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
+[coder]
+[coder] Work in /work/target/jr2-task-19b49b58-2ea4-4d79-b100-49aad6e12013, on branch jr2/task-19b49b58-2ea4-4d79-b100-49aad6e12013 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
 …
-[<agent>] [bash] node --test
+[coder] [thinking] The user wants me to run `node bin/greet.js` inside `docs/intro/repo` directory. Let me navigate there and run it.
 …
-[<agent>] [<pick>] <input>
-[<agent>] [<pick> answer] <the answer to the pick>
+[coder] [bash] cd docs/intro/repo && node bin/greet.js
+[coder] [thinking] The script printed "hello, world". I should now finish with this summary.
 …
+[coder] [finish] {"summary":"Ran `node bin/greet.js` in docs/intro/repo, which printed: hello, world"}
+[coder] [finish answer] Delivered "finish" to the workflow (delivery afe6340b-fe10-4819-b545-8ebd1b9a3964). The workflow consumed it and moved on: your turn is over.
+[run] [status] running · body: review
 ```
+
+The thinking, the calls and the text are the words of the model, so your log is different. Your ids are different too.
 
 Each line starts with the name of the Agent in brackets. The first line of each message then has a label in brackets.
 The next lines of the same message have no label:
@@ -262,9 +263,11 @@ The next lines of the same message have no label:
 | `[<agent>] [thinking level] <text>` | The model has no thinking level of the name that the Turn asked for, and the line names the level that the model ran at. The Harness prints it one time for each Turn.           |
 
 The log of a Sandbox also tells the story of its run, in lines that start with `[run]`. `[run] [status] <state>` gives
-the state of the run, or its status when it ends. `[run] [emit] <type> <payload>` gives an Emit. A Turn that runs in a
-different Harness shows only as `[<agent>] [admitted] <prompt>` and `[<agent>] [pick] <pick> <input>`. `<input>` is the
-JSON of the input of the pick, and it is absent for a pick with no input.
+the state of the run, then the state of each Machine that it invokes, separated by `·`, such as
+`running · body: working`. When the run ends, the line gives its status. `[run] [emit] <type> <payload>` gives an Emit.
+A Turn that runs in a different Harness shows only as `[<agent>] [admitted] <prompt>` and
+`[<agent>] [pick] <pick> <input>`. `<input>` is the JSON of the input of the pick, and it is absent for a pick with no
+input.
 
 The Harness does not print the result of a Working tool. For example, it does not print the text of a file that the
 Agent read, or the output of a command that the Agent ran.
