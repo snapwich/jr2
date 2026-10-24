@@ -107,16 +107,23 @@ Make the file `workflows/task.ts`. Replace `<you>` and `<version>` in it:
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
+seats: workflow "task" — who may send what, per state (ADR-0015)
+  task.working agent:coder: [finish]
+  task.review gate: [approve, request_changes]
+…
+sandbox image "default": building jr2-sandbox-my-instance-default:6389bdf72d50-amd64
+  no USER declared — the pod's uid-1000 fallback applies
+  kind load → cluster "jr2"
+…
+repos: 1 bound Repo(s) — the Orchestrator creates their Repo resources at boot and at each publish (ADR-0069); the cache agent clones on first need (`jr2 status` reports sync state)
 converged — `jr2 run <workflow>` when ready
 ```
 
 `task` is the first Workflow of the Instance that has a Workspace. Thus this `jr2 up` also builds the
-[Sandbox Image](../reference/glossary.md#sandbox-image) from `images/default/Dockerfile`. If you did not bind an Open
-part, `jr2 up` stops and prints the `customize()` line that binds it.
+[Sandbox Image](../reference/glossary.md#sandbox-image) from `images/default/Dockerfile`, and loads it into the kind
+cluster. If you did not bind an Open part, `jr2 up` stops and prints the `customize()` line that binds it.
 
 ## Start the run
 
@@ -127,16 +134,19 @@ to fix and how to check the fix:
 jr2 run task --input '{"prompt":"In docs/site/tutorial/greet, one test fails. Fix the bug in docs/site/tutorial/greet/src/greet.js. To check your fix, run node --test in docs/site/tutorial/greet. Do not change files outside that folder. Do not run the tests of the repo root."}'
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-run <run id> (task) — attached
+run 4a1d680b-a542-46f3-87e8-67e75edaf0b5 (task) — attached
+  → active "placing"
+  → active "provisioning"
+  → active "attaching"
+  → active "running"
 …
 ```
 
-The line `run <run id> (task) — attached` gives the run id. Your run id is different. Keep this terminal open. The run
-does not end until you approve the work.
+The line `run <run id> (task) — attached` gives the run id. Your run id is different. As on the last page, the first
+line of the output, `→ .env:`, shows as `…`. Keep this terminal open. The run does not end until you approve the work.
 
 ## Wait for the review Gate
 
@@ -151,22 +161,20 @@ jr2 status <run id>
 The status is one line of JSON. While the coder works, `gates` is `[]`. When the run waits at `review`, `gates` holds
 the Gate. Its `gate` is `body.review`, and the line ends with its `meta`:
 
-<!-- output: not run -->
-
 ```text
-…"gate":"body.review",…,"meta":{"summary":"<summary>","branch":"jr2/task-<instance id>","worktree":"/work/target/jr2-task-<instance id>"}}]}
+…"gate":"body.review",…,"meta":{"summary":"The failing test was \"trims the name\": greet() never trimmed the name argument, so \" ada \" came out as \"hello,  ada \". I changed the name lookup in docs/site/tutorial/greet/src/greet.js to call .trim() on the chosen name. node --test in that folder now reports 6 passing, 0 failing. The change is committed as dbc96ba on branch jr2/task-04f97b73-285c-49c5-8421-8859b6b2fc4c; nothing outside the greet folder was touched.","branch":"jr2/task-04f97b73-285c-49c5-8421-8859b6b2fc4c","worktree":"/work/target/jr2-task-04f97b73-285c-49c5-8421-8859b6b2fc4c"}}]}
 ```
 
 Run the command again until `gates` holds the Gate.
 
-- `summary` is what the coder says that it did.
+- `summary` is what the coder says that it did, in the words of the model. Your summary is different.
 - `branch` is the branch that the coder commits on.
 - `worktree` is the folder in the Sandbox that holds the branch. It is
   [the Worktree](../reference/glossary.md#worktree).
 
-Copy `branch` and `worktree` from your output. `<instance id>` is the
-[Instance ID](../reference/glossary.md#instance-id) of the run. `jr2 status` prints it as `instanceId`. It is not the
-run id. Do not make the branch name from the run id. With the Instance token, the drawer of the
+Copy `branch` and `worktree` from your output. The part after `jr2/task-`, here `04f97b73-285c-49c5-8421-8859b6b2fc4c`,
+is the [Instance ID](../reference/glossary.md#instance-id) of the run. `jr2 status` prints it as `instanceId`. It is not
+the run id. Do not make the branch name from the run id. With the Instance token, the drawer of the
 [Console](../reference/glossary.md#console) shows the same `meta`.
 
 If `meta` has a `reason` and no `summary`, the [Turn](../reference/glossary.md#turn) of the coder failed. Send
@@ -181,14 +189,13 @@ line `run <run id> (task) — attached` in the first terminal:
 kubectl -n my-instance get sandboxes -l jr2.dev/run=<run id>
 ```
 
-<!-- output: not run -->
-
 ```text
-NAME        PHASE   ENDPOINT     AGE
-<sandbox>   Ready   <endpoint>   <age>
+NAME                       PHASE   ENDPOINT                                               AGE
+ws-4a1d680b-x-27-1ccryd6   Ready   http://ws-4a1d680b-x-27-1ccryd6.my-instance.svc:8080   88s
 ```
 
-`<sandbox>` is the name of the Sandbox. It starts with `ws-`. The pod of the Sandbox has the same name.
+`ws-4a1d680b-x-27-1ccryd6` is the name of the Sandbox. Your Sandbox has a different name. It starts with `ws-` and the
+first 8 characters of the run id. The pod of the Sandbox has the same name. The commands below write it as `<sandbox>`.
 
 ## Look inside the Sandbox
 
@@ -205,15 +212,13 @@ cd <worktree>/docs/site/tutorial/greet
 node --test
 ```
 
-<!-- output: not run -->
-
 ```text
-✔ greets the world by default (0.931687ms)
-✔ greets a name (0.130595ms)
-✔ shouts (0.06902ms)
-✔ trims the name (0.052087ms)
-✔ prints help (0.222384ms)
-✔ refuses an unknown flag (0.18563ms)
+✔ greets the world by default (0.707377ms)
+✔ greets a name (0.101375ms)
+✔ shouts (0.066216ms)
+✔ trims the name (0.05463ms)
+✔ prints help (0.149125ms)
+✔ refuses an unknown flag (0.179787ms)
 ℹ tests 6
 ℹ suites 0
 ℹ pass 6
@@ -221,7 +226,7 @@ node --test
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 47.044302
+ℹ duration_ms 82.684346
 ```
 
 Your times are different. Read the commits of the coder. The branch starts at the release tag, so the commits after the
@@ -231,10 +236,8 @@ tag are the commits of the coder:
 git log --oneline v<version>..HEAD
 ```
 
-<!-- output: not run -->
-
 ```text
-<commit id> <message>
+dbc96ba greet: trim the name before greeting
 ```
 
 Each line is one commit. The commit ids and the messages come from the model. The author of each commit is
@@ -253,11 +256,10 @@ In the second terminal, send `request_changes` to the `review` Gate with [`jr2 s
 jr2 send <run id> --gate body.review --event request_changes --input '{"notes":"Also add a test that trims the name when you pass --shout."}'
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-delivered request_changes to gate "body.review" on <run id>
+delivered request_changes to gate "body.review" on 4a1d680b-a542-46f3-87e8-67e75edaf0b5
 ```
 
 The coder continues the same conversation, with your notes as its next prompt. The Sandbox and the branch stay. Run
@@ -312,21 +314,19 @@ In the second terminal, send `approve` to the `review` Gate. `approve` takes no 
 jr2 send <run id> --gate body.review --event approve
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-delivered approve to gate "body.review" on <run id>
+delivered approve to gate "body.review" on 4a1d680b-a542-46f3-87e8-67e75edaf0b5
 ```
 
 In the first terminal, `jr2 run` prints the end of the run, then the final status as one line of JSON, and stops:
 
-<!-- output: not run -->
-
 ```text
 …
+  → active "teardown"
   → done "done"
-…
+{"runId":"4a1d680b-a542-46f3-87e8-67e75edaf0b5","workflow":"task",…,"output":{"outcome":"approved","branch":"jr2/task-04f97b73-285c-49c5-8421-8859b6b2fc4c"}}
 ```
 
 ## Make sure that the Sandbox is gone
@@ -336,8 +336,6 @@ Use the full run id again:
 ```sh
 kubectl -n my-instance get sandboxes -l jr2.dev/run=<run id>
 ```
-
-<!-- output: not run -->
 
 ```text
 No resources found in my-instance namespace.
