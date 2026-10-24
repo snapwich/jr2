@@ -779,8 +779,6 @@ const wake: Driver = async (world, input) => {
 const PUSH_MENU = new Set(["ask_approval", "run_tests", "revise", "submit"]);
 const PUSH_NEW = new Set(["revise", "submit"]);
 const APPROVED = "(approved)";
-/** How many more times the desk answers a coder that picked `revise` (each `revise` → `coding`). */
-const PUSH_REANSWERS = 3;
 /** The body is back in `coding` with the desk open: the coder revised after an answer. Read off the
  * body's state — the run's own value is the `workspace()` wrapper's, which holds no `coding`. */
 const codingAgain = (s: Status): boolean => bodyIn(s, "coding") && gateNamed(s, "desk") !== undefined;
@@ -790,9 +788,9 @@ const codingAgain = (s: Status): boolean => bodyIn(s, "coding") && gateNamed(s, 
  * the coder's `sleep 20` runs. push-follow: the first pick the Machine took after the answer is
  * `revise` or `submit`. push-no-refusal: the first Menu call after the restated Turn part is one of
  * them too — no stale pick, refused, before it. A coder that picked before the answer, or never ran
- * the command, never reached the moment the claim measures (`void`). A trial whose measure is
- * recorded and that does not finish within its time (TRIAL_MS from the desk's first answer) — the
- * coder loops `ask_approval`/`run_tests` in `coding` once the desk's answers are spent — is cancelled
+ * the command, never reached the moment the claim measures (`void`). The desk answers again each
+ * time the coder is back in `coding`, until the trial's time ends (TRIAL_MS from the desk's first
+ * answer). A trial whose measure is recorded and that does not finish within that time is cancelled
  * and counts as finished (ADR-0066). One whose run faults before then is not cut: it is unfinished.
  */
 const pushFollow: Driver = async (world, input) => {
@@ -837,22 +835,26 @@ async function pushFollowIn(
   await sendToGate(world, runId, desk.gate, "approve");
   const deadline = Date.now() + TRIAL_MS;
   // The measure is the first pick after this answer. `revise` is allowed and takes the coder back to
-  // `coding`, where only the desk's answer can move it again: the desk answers again, a bounded
-  // number of times, so the trial can finish whichever reviewing pick the coder chose. In
-  // `reviewing` only `revise` leads back to `coding`, so the body seen there again after the first
-  // answer records the measure: `revise`.
+  // `coding`, where only the desk's answer can move it again: the desk answers again each time, until
+  // the trial's time ends, so the trial can finish whichever reviewing pick the coder chose and
+  // however often it revises. In `reviewing` only `revise` leads back to `coding`, so the body seen
+  // there again after the first answer records the measure: `revise`.
   let last: Status;
   let revised = false;
-  for (let answers = 1; ; answers++) {
+  let answers = 1;
+  for (;;) {
     const back = await waitFor(world, runId, (s) => settled(s) || codingAgain(s), Math.max(deadline - Date.now(), 0));
     last = back.last;
     if (back.hit && !settled(last)) revised = true;
-    if (!back.hit || settled(last) || answers > PUSH_REANSWERS) break;
+    if (!back.hit || settled(last)) break;
     // The body can leave `work` between the read above and this send — the coder's Turn faulted, its
     // nudges spent — and the desk's Gate goes with it. Then the run is scored from its final record,
     // as every other faulted trial is.
     const sent = await world.runCli(["send", runId, "--gate", desk.gate, "--event", "approve"]);
-    if (sent.code === 0) continue;
+    if (sent.code === 0) {
+      answers++;
+      continue;
+    }
     const refused = `jr2 send approve failed: ${sent.stderr}`;
     const after = await status(world, runId).catch((err: Error) => {
       throw new Error(`${refused}; then jr2 status failed: ${err.message}`);
@@ -884,7 +886,7 @@ async function pushFollowIn(
       measured: true,
       finished: true,
       also,
-      note: "revised after the answer, then not finished within its time: cancelled",
+      note: `revised after the answer, then not finished within its time: cancelled after ${answers} desk answers`,
     };
   }
   const ledger = (last.context.output?.picks ?? []) as string[];

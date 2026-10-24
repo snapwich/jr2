@@ -168,19 +168,20 @@ recover, finish — are exercised only one scripted tool call at a time.
 
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials. After
   the measured pick, a coder that picked `revise` is back in `coding`, where only the desk's answer moves it, so the
-  step answers the desk again, at most three more times, and the trial can finish; the measure is still the first pick
-  after the first answer. The driver changed for this after the claim ran once (70f9cb2); the user approved the change
-  on 2026-10-09. Those answers never reached the Machine: the driver waited for the run's own `value` to read `coding`,
-  and a `workspace()` run's value is its wrapper's, which never holds its body's state, so the step never answered
-  again. In the full run of 2026-10-12 one trial (ba79f322) recorded its measure, `revise` right after the answer, then
-  looped `ask_approval` and `run_tests` in `coding`, reading "Allowed now: ask_approval, run_tests", until the run
-  faulted, and failed "every trial finished". The driver now reads the body's state off the children `jr2 status`
-  reports (`features/lib/model-status.ts`), a defect fixed and no setup change. Then a bound of the kind of the finished
-  rule below: a trial whose measure is recorded — its first pick after the answer; the body seen back in `coding` after
-  it is `revise` — and that does not finish within its time is cancelled and counts as finished. Its time is a trial's
-  bound, 15 minutes, counted from the desk's first answer. A measured trial whose run settles before then without its
-  task's final — a fault — is not cut, and fails "every trial finished". The prompt, the floor and the measure did not
-  change. Both were decided under the user's deferral on 2026-10-12 and confirmed by the user on 2026-10-12.
+  step answers the desk again each time, until the trial's time ends, and the trial can finish; the measure is still the
+  first pick after the first answer. Until 2026-10-23 the step answered at most three more times (below, 5d3096da). The
+  driver changed for this after the claim ran once (70f9cb2); the user approved the change on 2026-10-09. Those answers
+  never reached the Machine: the driver waited for the run's own `value` to read `coding`, and a `workspace()` run's
+  value is its wrapper's, which never holds its body's state, so the step never answered again. In the full run of
+  2026-10-12 one trial (ba79f322) recorded its measure, `revise` right after the answer, then looped `ask_approval` and
+  `run_tests` in `coding`, reading "Allowed now: ask_approval, run_tests", until the run faulted, and failed "every
+  trial finished". The driver now reads the body's state off the children `jr2 status` reports
+  (`features/lib/model-status.ts`), a defect fixed and no setup change. Then a bound of the kind of the finished rule
+  below: a trial whose measure is recorded — its first pick after the answer; the body seen back in `coding` after it is
+  `revise` — and that does not finish within its time is cancelled and counts as finished. Its time is a trial's bound,
+  15 minutes, counted from the desk's first answer. A measured trial whose run settles before then without its task's
+  final — a fault — is not cut, and fails "every trial finished". The prompt, the floor and the measure did not change.
+  Both were decided under the user's deferral on 2026-10-12 and confirmed by the user on 2026-10-12.
 - The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link) and
   `cut-pick` (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step
   deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
@@ -416,8 +417,11 @@ recover, finish — are exercised only one scripted tool call at a time.
   The home-lab Qwen takes the step anyway in `mode-stop` and `mode-refusal`. The "every trial finished" check counts
   these trials against the scenario, but the measured cell passes. On 2026-10-23 the user decided (question 21) to
   change the setups of these claims, and no floor or check. For `mode-stop` and `mode-refusal`, the review now has a
-  real answer (the setup notes above). For `push-follow`, the levers are the step's limit on desk answers, and the rule
-  that a fault before the cut is unfinished. These runs came before that change.
+  real answer (the setup notes above). For `push-follow`, the step's limit on desk answers went: the desk now answers
+  each time the coder is back in `coding`, until the trial's cut, TRIAL_MS from the first answer, which stays the bound.
+  The rule that a fault before the cut is unfinished stays. The measures (the first pick after the first answer, and the
+  first Menu call after the first restatement) and what the model reads do not change. These runs came before that
+  change.
 
   The first full Haiku run, of 2026-10-22, used main at cd6e6145, with this tier's Anthropic profiles. Later main
   commits change what the model reads, among them ccd81ce9, eb76a3e4, 39a3610d, 8c274330 and 37bbf7ff. Others change how
