@@ -498,7 +498,8 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       printLines(out, deps.agentName, unrun.flatMap(renderMessage));
       // The watch's SELF-abort (ADR-0035): the engine ended the run, but the pump's signal never fired.
       // Checked first so the runaway reason wins over the generic mapping below; a sweep that raced
-      // the trip still settles `aborted` — the pump's own signal check outranks any throw.
+      // the trip still settles the Submission as the sweep says (`ended` or `aborted`), because the
+      // sweep settles it first and the pump's own signal check outranks any throw.
       if (watch.tripped) throw new RunawayError(watch.tripped);
       // A pick found the Turn over (`turn.over`: a receipt's `turnComplete`, or a 404), and `endsRun`
       // ended the run at that step boundary. The Harness does not judge how the Turn ended: the
