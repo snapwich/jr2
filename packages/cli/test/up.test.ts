@@ -37,7 +37,7 @@ import {
   checkVerdicts,
   up,
 } from "../src/commands/up.ts";
-import { checkPodObjects, instanceObjects, type HeldObjects } from "../src/deploy.ts";
+import { checkPodObjects, instanceObjects, LABEL_PROVIDER_PREFLIGHT, type HeldObjects } from "../src/deploy.ts";
 // The Harness's own result-line writer, from beside it, so the CLI's parser is held to its format.
 // Loaded at run time: it is another package's source, outside this one's compiled tree.
 type PreflightVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
@@ -3357,6 +3357,73 @@ test("provider preflight: an earlier run's leftovers go even when this converge 
   assert.ok(
     w.kube.deleted.includes("myinst/secret/jr2-provider-preflight-old00000-0"),
     "its Secret, which can hold a key, goes",
+  );
+});
+
+test("--skip-provider-preflight: a model that two check pods would check is named once", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", sandbox: { nodeSelector: { pool: "sandbox" } }, ` +
+      `secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-real-value" }] };\n`,
+    "myinst",
+    { reviewer: { model: "anthropic/claude-haiku-5-5", workspace: "none" } },
+  );
+  await writeFile(
+    join(root, "workflows", "ws.ts"),
+    `import { agent, jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [], actors: { coder: agent({ model: "anthropic/claude-haiku-5-5", instructions: "i" }) } })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes", "--skip-provider-preflight"], w.io), 0);
+  assert.deepEqual(
+    w.err.filter((l) => /preflight skipped/.test(l)),
+    [
+      "warning: provider: preflight skipped (--skip-provider-preflight) — these models were not checked: anthropic/claude-haiku-5-5\n",
+    ],
+  );
+});
+
+test("--skip-provider-preflight: no check pod runs, a check that would fail stops nothing, and one line says which models were not checked", async () => {
+  const w = mkWorld(
+    await mkInstance(CATALOG_CONFIG, "myinst", {
+      coder: { model: "anthropic/claude-haiku-5-5", workspace: "none" },
+      reviewer: { model: "anthropic/claude-sonnet-5-5", workspace: "none" },
+    }),
+  );
+  // A check that fails when the model works: without the flag, this converge stops.
+  w.kube.checkAnswers["anthropic/claude-haiku-5-5"] = "fault=no answer in 120 s";
+  w.kube.checkLeftovers = {
+    pod: [
+      {
+        metadata: { name: "jr2-provider-preflight-old00000-0", creationTimestamp: new Date(0).toISOString() },
+        spec: { activeDeadlineSeconds: 510 },
+        status: { phase: "Pending" },
+      },
+    ],
+    configmap: [],
+    secret: [],
+  };
+  assert.equal(await up(["--yes", "--skip-provider-preflight"], w.io), 0);
+  assert.equal(w.kube.checkPodsSeen.length, 0, "no check pod runs");
+  assert.ok(
+    !w.kube.applied.some((m) => m.includes(`"${LABEL_PROVIDER_PREFLIGHT}"`)),
+    "no object of a check pod is applied",
+  );
+  assert.ok(
+    w.kube.deleted.includes("myinst/secret/jr2-provider-preflight-old00000-0"),
+    "an earlier run's leftovers still go: their Secret can hold a key",
+  );
+  const skipped = w.err.filter((l) => /preflight skipped/.test(l));
+  assert.deepEqual(skipped.length, 1, "one line, never silent");
+  assert.match(
+    skipped[0]!,
+    /^warning: provider: preflight skipped \(--skip-provider-preflight\) — these models were not checked: anthropic\/claude-haiku-5-5, anthropic\/claude-sonnet-5-5\n$/,
+  );
+  assert.ok(!w.err.some((l) => /provider: checking/.test(l)), "and no line says that a model was checked");
+  assert.ok(
+    w.kube.applied.some((m) => m.includes('"name":"jr2-orchestrator"')),
+    "the converge goes on",
   );
 });
 

@@ -79,7 +79,9 @@ the cluster, see [Architecture](architecture.md).
 10. It makes the values of the Secrets, and checks each Secret that the config names but that `jr2 up` does not write.
 11. It checks each model that an Agent uses: a pod in the cluster asks the provider for one tool call for each model.
     Until each check passes, `jr2 up` writes nothing that the Instance or the operator reads. The pod has up to 5
-    minutes to start, and each model has up to 6 minutes. `jr2 up` writes each model's result as it comes.
+    minutes to start, and each model has up to 6 minutes. `jr2 up` writes each model's result as it comes. With
+    `--skip-provider-preflight`, no pod checks the models, and `jr2 up` writes a warning that names each model that it
+    did not check.
 12. It applies the operator. For a Repo with an ssh url, it asks where the deploy key comes from.
 13. It applies the Secrets and the Orchestrator, and waits for the rollout. When the Machines need them, it also waits
     for the Repo cache, the Instance Harness and the [Instance Effector](../reference/glossary.md#instance-effector).

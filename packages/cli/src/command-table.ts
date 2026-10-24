@@ -190,6 +190,11 @@ const TABLE = [
           "answer the questions non-interactively: confirm first-time setup, and take the recommended git ssh key source (for CI)",
       },
       { name: "force", description: "build every image again, even one already built or deployed" },
+      {
+        name: "skip-provider-preflight",
+        description:
+          "do not run the provider preflight: no check pod checks the models, so a check that fails when the model works does not stop the converge",
+      },
       NAMESPACE_FLAG,
       CONTEXT_FLAG,
     ],

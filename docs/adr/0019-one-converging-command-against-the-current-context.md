@@ -183,6 +183,12 @@ loudly narrated, safe to re-run:
 
     It never deletes the objects of another Instance.
 
+  - **Skipping it.** `jr2 up --skip-provider-preflight` runs no check pod. A check can fail when the model works, for
+    example when a model loads for longer than the check waits. That fault must not stop every converge until jr2 is
+    fixed. The skip is never silent: `up` writes one warning line, which names each model that it did not check. `up`
+    still deletes the leftovers of earlier runs, because their Secrets can hold a key. The flag has no config key,
+    because no flag of `up` has one (CI gives `--yes` as a flag). A model that does not work then fails in a run, as
+    `agent.fault`.
   - **A limit.** The check pod has labels of its own. It does not get the labels of a Harness pod: the Instance Harness
     Service selects its pods by label, and would send Turns to the check pod. So a NetworkPolicy that selects Harness
     pods by label does not select the check pod. When such a policy closes the egress of the Harness pods, the check can

@@ -1,4 +1,4 @@
-// `jr2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
+// `jr2 up [--yes] [--force] [--skip-provider-preflight] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order: the
 // AGENTS.md block (ADR-0072: a file in the Instance folder, not the cluster) → typecheck → the
 // Machine walk → staging the Assembly (ADR-0069) → the Kubernetes floor (ADR-0037) → ownership →
@@ -1000,6 +1000,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
   await preflightProviders(io, kube, {
     checkPods,
+    skip: values["skip-provider-preflight"] === true,
     name,
     namespace,
     ctx,
@@ -2606,6 +2607,8 @@ async function preflightProviders(
   kube: KubeAdmin,
   opts: {
     checkPods: CheckPod[];
+    /** `--skip-provider-preflight`: no check pod runs, and one warning line says so. */
+    skip: boolean;
     name: string;
     namespace: string;
     ctx: { context?: string };
@@ -2623,6 +2626,17 @@ async function preflightProviders(
   const { namespace, ctx } = opts;
   // First, and with no check to run too: the leftovers of an earlier run can hold a key.
   await removeCheckLeftovers(io, kube, opts.name, namespace, ctx);
+  if (opts.skip) {
+    // Never silent: a converge that checked nothing must not read as one that checked. A model that
+    // two check pods would check is named once.
+    const models = [...new Set(opts.checkPods.flatMap((p) => p.providers.flatMap((v) => v.models)))];
+    activity(
+      io,
+      "warning: provider: preflight skipped (--skip-provider-preflight) — " +
+        (models.length ? `these models were not checked: ${models.join(", ")}` : "no model was checked"),
+    );
+    return;
+  }
   if (!opts.checkPods.length) return;
   const run = randomBytes(4).toString("hex");
   const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };

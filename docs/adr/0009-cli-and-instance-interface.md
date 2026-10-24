@@ -123,7 +123,8 @@ events POST is ambiguous. `CANCEL` is the one reserved run-level event; everythi
 ```
 # lifecycle (instance)
 jr2 init [dir] [--name <n>]        # scaffold the minimum runnable instance
-jr2 up [--yes]                     # converge the current context to this instance (ADR-0019)
+jr2 up [--yes] [--force] [--skip-provider-preflight]
+                                   # converge the current context to this instance (ADR-0019)
 jr2 down [--all] [--yes]           # remove the instance from the cluster (--all: operator too)
 jr2 gc [--dry-run]                 # sweep unreachable labeled images — the same sweep up/down run (ADR-0039)
 
