@@ -141,7 +141,7 @@ export type HarnessClient = {
    * Each fault is one line, said when it starts. A read that works says nothing, and the next fault
    * after it is said again. */
   memoryKills(opts?: { signal?: AbortSignal }): Promise<ListedKill[] | undefined>;
-  /** `POST /agents/:name/:id/abort`, with the body `{ cause }` when a cause is given
+  /** `POST /agents/:name/:id/abort`, with the body `{ cause, submissionId }` when a cause is given
    * (`AbortRequest`). The `{ aborted }` answer is dropped (ADR-0024). */
   abort(
     agentName: string,

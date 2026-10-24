@@ -35,7 +35,8 @@ export const SUBMISSION_ABORTED = "submission_aborted";
 export type AbortCause = "pick";
 
 /** The body of `POST /agents/:name/:id/abort`. `submissionId` names the Submission the cause is
- * about: the one the Turn ran when its pick ended it. */
+ * about: the last one ledgered for the Turn, which the Harness settles `ended` only while it is the
+ * running one (ADR-0024). */
 export type AbortRequest = { cause?: AbortCause; submissionId?: string };
 
 /** `SettlementError.type` for a Turn the Harness ended as a Runaway (ADR-0035). A Runaway is a kind
