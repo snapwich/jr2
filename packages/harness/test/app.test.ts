@@ -142,6 +142,31 @@ test("abort: sweeps active + queued, history settles all aborted in admission or
   );
 });
 
+test("abort: the body's cause `pick` with the running Submission's id settles it ended; another id, no body, a body that does not parse, and an unknown cause settle aborted (ADR-0024)", async () => {
+  const outcomes: string[] = [];
+  const bodies = [
+    (id: string) => JSON.stringify({ cause: "pick", submissionId: id }),
+    () => JSON.stringify({ cause: "pick", submissionId: "s-elsewhere" }),
+    () => undefined,
+    () => "{not json",
+    () => JSON.stringify({ cause: "timer" }),
+  ];
+  for (const bodyOf of bodies) {
+    const { app } = scripted();
+    const path = `/agents/coder/c-${outcomes.length}`;
+    const { submissionId } = await admit(app, path);
+    const body = bodyOf(submissionId);
+    const res = await app.request(`${path}/abort`, {
+      method: "POST",
+      ...(body === undefined ? {} : { body, headers: { "content-type": "application/json" } }),
+    });
+    assert.deepEqual(await res.json(), { aborted: true });
+    const history = (await (await app.request(`${path}?view=history`)).json()) as { settlements: Settlement[] };
+    outcomes.push(...history.settlements.map((s) => s.outcome));
+  }
+  assert.deepEqual(outcomes, ["ended", "aborted", "aborted", "aborted", "aborted"]);
+});
+
 test("abort: answers { aborted: false } on an idle conversation and on an unknown one", async () => {
   const { app, runs } = scripted();
   await admit(app, "/agents/coder/i1");

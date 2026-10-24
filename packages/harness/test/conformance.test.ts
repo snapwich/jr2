@@ -24,7 +24,7 @@ import {
   type Surface,
 } from "../src/menu.ts";
 import { harnessServer, type HarnessServer } from "../src/app.ts";
-import { TURN_ENDED_MESSAGE } from "../src/conversation.ts";
+import { NO_SWEEP_MESSAGE } from "../src/conversation.ts";
 import { noticeText } from "../src/briefing.ts";
 import { menuToolName } from "../src/menu-tools.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
@@ -119,6 +119,9 @@ let serverOver: (conversationsDir: string) => HarnessServer;
 /** The same composition with the Harness's own provider retries (no `maxRetries` seam): what
  * production runs (ADR-0016, ADR-0064). */
 let retryApp: Hono;
+/** The same composition waiting the shipped bound for the Orchestrator's sweep (ADR-0024), so a test
+ * can send the sweep after the Harness ended the run itself. */
+let sweptApp: Hono;
 /** The same composition with a memory guard that fires as a `bash` call starts (ADR-0061): a
  * scripted cgroup and recorded effects, so nothing is really killed. */
 let guardedApp: Hono;
@@ -181,11 +184,15 @@ before(async () => {
     keepRecentTokens?: number;
     retries?: "harness";
     guard?: MemoryGuard;
+    sweepWaitMs?: number;
   };
   const serverWith = (seams?: Seams, conversationsDir?: string, registry = models): HarnessServer =>
     harnessServer({
       ...(conversationsDir ? { conversationsDir } : {}),
       longPollMs: 250,
+      // No Orchestrator sweeps here unless a test sends one: a Turn a pick found over settles
+      // `aborted` when this short wait for the sweep runs out (ADR-0024).
+      sweepWaitMs: seams?.sweepWaitMs ?? 50,
       // The turn loop is under test here; the wire's gate is `auth.test.ts`'s (ADR-0058).
       checkBearer: () => true,
       // The real composition (`main.ts`): admission rejects a definition (or dial) the turn
@@ -198,7 +205,7 @@ before(async () => {
           }
         : {}),
       runSubmissionFor: (seat) => {
-        const { retries, guard, ...turnSeams } = seams ?? {};
+        const { retries, guard, sweepWaitMs: _sweepWaitMs, ...turnSeams } = seams ?? {};
         return runSubmissionFor({
           models: registry,
           menu: { url: sandbox.url, token: SANDBOX_STAND_IN, retryWindowMs: 50, retryInitialMs: 1 },
@@ -222,6 +229,7 @@ before(async () => {
   appOver = (conversationsDir) => appWith(undefined, conversationsDir);
   serverOver = (conversationsDir) => serverWith(undefined, conversationsDir);
   retryApp = appWith({ retries: "harness" });
+  sweptApp = appWith({ sweepWaitMs: 10_000 });
   guardedApp = appWith({ guard: firingGuard });
   const openRouter = modelsFor(
     { provider: { ...harness.provider!, baseUrl: `${provider.url.replace(/\/v1$/, "")}/openrouter.ai/v1` } },
@@ -1180,11 +1188,12 @@ test("step boundary: nothing is read, said or asked after a pick's receipt ended
   const iid = "conf/push-over-live";
 
   const admission = await admit(iid, "Fix the ticket.");
-  // No abort came from the Orchestrator, and still the Submission settles `aborted` (ADR-0024).
+  // No sweep came from the Orchestrator: when the wait for it runs out, the Submission settles
+  // `aborted`, and says so (ADR-0024).
   const settlement = await settled(iid, admission);
   assert.deepEqual(
     { outcome: settlement.outcome, error: settlement.error },
-    { outcome: "aborted", error: { type: "submission_aborted", message: TURN_ENDED_MESSAGE } },
+    { outcome: "aborted", error: { type: "submission_aborted", message: NO_SWEEP_MESSAGE } },
   );
   assert.equal(provider.calls.length, 1, "no model request after the Turn-ending receipt");
   assert.deepEqual(
@@ -1625,6 +1634,87 @@ test("a Turn-ending pick the Orchestrator took, whose Turn's abort lands before 
   assert.equal((await settled(held, await admit(held, "Call `report`."))).outcome, "completed");
   assert.equal(toolResultText(provider.calls[0], "call_o"), unreadAnswerResult("mcp__jr2__started"));
   assert.ok((printed.get(held) ?? "").includes(`[started answer] ${unreadAnswerResult("mcp__jr2__started")}`));
+});
+
+// ─── the Orchestrator judges how a Turn ended (ADR-0024) ────────────────────────────────────────────
+
+/** The Orchestrator's sweep, on `via`: `cause: "pick"` about `submissionId` when the Turn's own pick
+ * ended it. */
+async function sweep(via: Hono, iid: string, cause?: "pick", submissionId?: string): Promise<{ aborted: boolean }> {
+  const res = await via.request(`${conversationPath(iid)}/abort`, {
+    method: "POST",
+    ...(cause
+      ? { body: JSON.stringify({ cause, submissionId }), headers: { "content-type": "application/json" } }
+      : {}),
+  });
+  assert.equal(res.status, 200);
+  return (await res.json()) as { aborted: boolean };
+}
+
+/** Wait until the run of `iid`'s Submission has ended — the model was asked `calls` times — with the
+ * Submission not settled: it waits for the sweep. */
+async function runEnded(via: Hono, iid: string, calls: number): Promise<void> {
+  await until(() => provider.calls.length >= calls, "the run to end");
+  await sleep(100);
+  const view = (await (await via.request(`${conversationPath(iid)}?view=history`)).json()) as HistoryView;
+  assert.deepEqual(
+    view.settlements,
+    [],
+    "the Harness does not settle a Turn a pick found over: it waits for the sweep",
+  );
+}
+
+test('the Harness ends the run when a pick finds the Turn over, and the sweep settles it: `cause: "pick"` is ended, no cause is aborted, whichever lands first', async () => {
+  // The Harness first: a receipt with `turnComplete` ends the run, and the sweep comes after.
+  for (const [cause, outcome] of [
+    ["pick", "ended"],
+    [undefined, "aborted"],
+  ] as const) {
+    provider.reset([{ toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", args: '{"verdict":"ok"}' } }]);
+    sandbox.reset(surfaceWith("review_verdict"));
+    const iid = `conf/judged-after-${cause ?? "none"}`;
+    const admission = await admit(iid, "Review the diff.", undefined, AGENT, sweptApp);
+    await runEnded(sweptApp, iid, 1);
+    assert.deepEqual(await sweep(sweptApp, iid, cause, admission.submissionId), { aborted: true });
+    const settlement = await settled(iid, admission, AGENT, sweptApp);
+    assert.deepEqual(
+      { outcome: settlement.outcome, error: settlement.error },
+      outcome === "ended"
+        ? { outcome: "ended", error: undefined }
+        : { outcome: "aborted", error: { type: "submission_aborted" } },
+    );
+  }
+
+  // The sweep first: the Orchestrator took the pick and its route left the state, and the sweep lands
+  // while the pick's receipt is still out.
+  provider.reset([{ toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", args: '{"verdict":"ok"}' } }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  sandbox.holdDeliveries();
+  const first = "conf/judged-before";
+  const admission = await admit(first, "Review the diff.", undefined, AGENT, sweptApp);
+  await until(() => sandbox.delivered.length > 0, "the pick to be taken");
+  sandbox.killSurface();
+  assert.deepEqual(await sweep(sweptApp, first, "pick", admission.submissionId), { aborted: true });
+  const settlement = await settled(first, admission, AGENT, sweptApp);
+  assert.deepEqual({ outcome: settlement.outcome, error: settlement.error }, { outcome: "ended", error: undefined });
+});
+
+test("a 404 on a pick ends the run as a receipt does, and the Harness still leaves the judgment to the sweep", async () => {
+  provider.reset([
+    bashCall("call_b", "true"),
+    { toolCall: { id: "call_p", name: "mcp__jr2__review_verdict", args: '{"verdict":"x"}' } },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  sandbox.surfaceByRead((read) => {
+    if (read > 1) sandbox.killSurface();
+    return surfaceWith("review_verdict");
+  });
+  const iid = "conf/judged-404";
+  const admission = await admit(iid, "Review the diff.", undefined, AGENT, sweptApp);
+  await runEnded(sweptApp, iid, 2);
+  assert.deepEqual(sandbox.delivered, [], "the pick found the surface gone");
+  assert.deepEqual(await sweep(sweptApp, iid, "pick", admission.submissionId), { aborted: true });
+  assert.equal((await settled(iid, admission, AGENT, sweptApp)).outcome, "ended");
 });
 
 test("ending a turn logs no error: no 404 spam, no unhandled rejection (ADR-0026)", async () => {
@@ -2131,8 +2221,8 @@ test("a healthy turn is untouched: varied calls, a sub-K repeat, then the pick (
 
   const admission = await admit(iid, "Review the diff.");
   const settlement = await settled(iid, admission);
-  // The pick ended the Turn (ADR-0024): no Runaway.
-  assert.deepEqual(settlement.error, { type: "submission_aborted", message: TURN_ENDED_MESSAGE });
+  // The pick ended the Turn (ADR-0024): no Runaway. No Orchestrator swept here, so the wait ran out.
+  assert.deepEqual(settlement.error, { type: "submission_aborted", message: NO_SWEEP_MESSAGE });
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
   assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));

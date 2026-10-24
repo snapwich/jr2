@@ -12,6 +12,7 @@ import {
   SUBMISSION_HARNESS_RESTARTED,
   SUBMISSION_RESTARTED_MESSAGE,
   SUBMISSION_RUNAWAY,
+  type AbortCause,
   type AdmissionRequest,
   type AdmissionResponse,
   type HistoryMessage,
@@ -23,11 +24,36 @@ import {
   type StreamPosition,
 } from "./wire.ts";
 
-/** Run one Submission (the turn, `turn.ts`). Resolution settles `completed`; a rejection settles
+/** Run one Submission (the turn, `turn.ts`). Resolution settles `completed` — unless it resolves
+ * `TURN_OVER`: a pick found the Turn over and the run ended at the step boundary, so the Submission
+ * waits for the Orchestrator's sweep, which says how the Turn ended (ADR-0024). A rejection settles
  * `failed` — unless the signal fired, which settles `aborted`. The signal is how an abort reaches
  * the active pi run. Takes the whole admitted request, not just its prompt: this Submission's
  * definition and dials frame the turn exactly as the prompt does (ADR-0018/0049). */
-export type RunSubmission = (submission: AdmissionRequest, signal: AbortSignal, seat?: SubmissionSeat) => Promise<void>;
+export type RunSubmission = (
+  submission: AdmissionRequest,
+  signal: AbortSignal,
+  seat?: SubmissionSeat,
+) => Promise<void | typeof TURN_OVER>;
+
+/** What a run resolves when a pick found its Turn over (ADR-0024): the Harness does not settle it,
+ * the Orchestrator's sweep does. */
+export const TURN_OVER = "turn-over";
+
+/**
+ * How long a Submission whose run ended because its Turn is over waits for the Orchestrator's sweep
+ * before it settles `aborted` itself (ADR-0024). The Orchestrator sends the sweep in the macrostep
+ * that ends the Turn, before the pick's own receipt answers, so it lands within a round trip:
+ * milliseconds. 10 s is far above that, and above a slow hop or a pause of the Orchestrator's
+ * process; it is below every drain window (ADR-0031), so a stopping Harness still settles it.
+ * Nothing waits on the Submission meanwhile: its run has ended, its actor has stopped, and the next
+ * Turn on the conversation is admitted only after the sweep (the ordered abort).
+ */
+export const SWEEP_WAIT_MS = 10_000;
+
+/** The message of a Submission whose Turn was over and no sweep came within `SWEEP_WAIT_MS`. */
+export const NO_SWEEP_MESSAGE =
+  "a pick found the Turn over, and no sweep came from the Orchestrator to say how it ended, so it settles aborted (ADR-0024)";
 
 /**
  * What a running Submission tells its Conversation, and what a stopping Harness asks of it
@@ -49,20 +75,16 @@ export const SUBMISSION_CUT_MESSAGE =
 /** A Turn the Harness itself ended because it would not conclude (ADR-0035) — a runaway trigger
  * tripped in the turn loop. `turn.ts` throws it; the pump maps it to a `failed` settlement typed
  * `"runaway"`, carrying the legible reason as the message. Distinct from the sweep by
- * construction: the pump's signal never fired, so `aborted` stays ADR-0024's word. */
+ * construction: the pump's signal never fired. A Runaway is a failure, so it is never `aborted` or
+ * `ended`, which are the ends of a Turn (ADR-0024). */
 export class RunawayError extends Error {}
 
-/** A Turn that is over, so its Submission settles `aborted`, the sweep's word: nothing is wrong,
- * and a `failed` here would cry wolf. Two cases. The Turn was over before it started (ADR-0026): its
- * surface read answered 404, so the state that asked for it has exited and the abort is on its way;
- * `turn.ts` throws it before the model is asked and before anything is written to the conversation.
- * Or a pick's answer ended the Turn, and the run ended at the step boundary (ADR-0024,
- * `TURN_ENDED_MESSAGE`): the settlement is the same whether or not the abort landed first. */
+/** A Turn that was over before it started (ADR-0026), so its Submission settles `aborted` at once,
+ * the sweep's word: nothing is wrong, and a `failed` here would cry wolf. Its surface read answered
+ * 404, so the state that asked for it has exited and the abort is on its way; `turn.ts` throws it
+ * before the model is asked and before anything is written to the conversation. It never ran, so
+ * there is nothing for the sweep to judge. */
 export class TurnOverError extends Error {}
-
-/** The message of a Submission that a pick's answer ended (ADR-0024): `aborted`, typed as the sweep. */
-export const TURN_ENDED_MESSAGE =
-  "a pick's answer ended the Turn: the state that asked for it stopped waiting, so the run ended at the step boundary (ADR-0024)";
 
 /** One stream read, resolved to the end of the log. The HTTP layer carries `nextOffset` and
  * `upToDate` as the stream headers and `events` as the body. */
@@ -96,6 +118,9 @@ export class Conversation {
         onPickOnly: boolean;
         /** Fired when a stopping Harness cuts it (`drain`). */
         cut: AbortController;
+        /** The run ended because its Turn is over, and the Submission waits for the sweep, at most
+         * `SWEEP_WAIT_MS` (ADR-0024). */
+        waiting?: ReturnType<typeof setTimeout>;
       }
     | undefined;
   /** Set by `drain`: a Turn that waits only on its pick's answer is cut, now or when it comes to. */
@@ -114,12 +139,21 @@ export class Conversation {
   private readonly recorder: ConversationRecorder | undefined;
   private admitted = 0;
   private mintedMessages = 0;
+  /** How long a Submission whose Turn is over waits for the sweep (`SWEEP_WAIT_MS`). */
+  private readonly sweepWaitMs: number;
 
-  constructor(agentName: string, instanceId: string, runSubmission: RunSubmission, recorder?: ConversationRecorder) {
+  constructor(
+    agentName: string,
+    instanceId: string,
+    runSubmission: RunSubmission,
+    recorder?: ConversationRecorder,
+    options: { sweepWaitMs?: number } = {},
+  ) {
     this.agentName = agentName;
     this.instanceId = instanceId;
     this.runSubmission = runSubmission;
     this.recorder = recorder;
+    this.sweepWaitMs = options.sweepWaitMs ?? SWEEP_WAIT_MS;
   }
 
   /**
@@ -133,16 +167,27 @@ export class Conversation {
     recorded: RecordedConversation,
     runSubmission: RunSubmission,
     recorder?: ConversationRecorder,
+    options: { sweepWaitMs?: number } = {},
   ): Conversation {
-    const conversation = new Conversation(recorded.agentName, recorded.instanceId, runSubmission, recorder);
+    const conversation = new Conversation(recorded.agentName, recorded.instanceId, runSubmission, recorder, options);
     conversation.log.push(...recorded.log);
     conversation.messages.push(...recorded.messages);
     conversation.settlements.push(...recorded.settlements);
     conversation.admitted = recorded.admitted.length;
     conversation.mintedMessages = recorded.log.filter((event) => event.type === "message-appended").length;
     const settled = new Set(recorded.settlements.map((s) => s.submissionId));
+    const over = new Set(recorded.over ?? []);
     for (const submissionId of recorded.admitted) {
       if (settled.has(submissionId)) continue;
+      // A run that ended because its Turn was over, and waited for the sweep when the process
+      // stopped: no sweep came to it, so it settles as the wait's end settles it (ADR-0024).
+      if (over.has(submissionId)) {
+        conversation.settle({ submissionId, settled: false }, "aborted", {
+          type: SUBMISSION_ABORTED,
+          message: NO_SWEEP_MESSAGE,
+        });
+        continue;
+      }
       conversation.settle({ submissionId, settled: false }, "failed", {
         type: SUBMISSION_HARNESS_RESTARTED,
         message: SUBMISSION_RESTARTED_MESSAGE,
@@ -209,14 +254,27 @@ export class Conversation {
 
   /**
    * The abort sweep (ADR-0024/0027): everything unsettled at processing time — the active
-   * Submission and the queue behind it — settles `aborted` in admission order, and the active
-   * run's signal fires. Answers `{ aborted: false }` when there is nothing to end.
+   * Submission and the queue behind it — settles in admission order, and the active run's signal
+   * fires. The Orchestrator judges how the Turn ended: with the cause `pick` (the Turn's own pick
+   * ended it) and the active Submission's id, the active Submission settles `ended`; with no cause,
+   * or a cause about another Submission (or none named), `aborted` — a cause is never read about a
+   * Submission it does not name. A queued Submission never ran, so it settles `aborted` for every
+   * cause. The active Submission may be running still, or its run may have ended because a pick
+   * found the Turn over: either way the sweep settles it. Answers `{ aborted: false }` when there is
+   * nothing to end.
    */
-  abort(): { aborted: boolean } {
+  abort(cause?: AbortCause, submissionId?: string): { aborted: boolean } {
     const swept = this.queue.splice(0);
     if (swept.length === 0) return { aborted: false };
-    this.active?.controller.abort();
-    for (const record of swept) this.settle(record, "aborted", { type: SUBMISSION_ABORTED });
+    const active = this.active;
+    active?.controller.abort();
+    for (const record of swept) {
+      const ended = cause === "pick" && record === active?.record && record.submissionId === submissionId;
+      if (ended) this.settle(record, "ended");
+      else this.settle(record, "aborted", { type: SUBMISSION_ABORTED });
+    }
+    // A run that already ended waited only for this: the seat is free.
+    if (active?.waiting !== undefined) this.release(active);
     return { aborted: true };
   }
 
@@ -246,10 +304,11 @@ export class Conversation {
    * Turn it was (ADR-0062). The wait can stop before the Settlement — when the Agent's state exits,
    * before its abort lands — so the stream is not the kill's only path: the pod keeps every kill
    * (`pod-kills.ts`), under the same `id`. Not history: the history view is what was said. Returns
-   * whether it was put on the stream.
+   * whether it was put on the stream. A Submission whose run ended and waits for its sweep runs
+   * nothing, so a kill then is not its Turn's.
    */
   reportMemoryLimit(kill: { id: string; peak: string; limit: string }): boolean {
-    if (!this.active || this.active.record.settled) return false;
+    if (!this.active || this.active.record.settled || this.active.waiting !== undefined) return false;
     this.append({
       type: "memory-limit",
       conversationId: this.instanceId,
@@ -307,7 +366,12 @@ export class Conversation {
       return;
     }
     const controller = new AbortController();
-    const active = { record, controller, onPickOnly: false, cut: new AbortController() };
+    const active: NonNullable<Conversation["active"]> = {
+      record,
+      controller,
+      onPickOnly: false,
+      cut: new AbortController(),
+    };
     this.active = active;
     const seat: SubmissionSeat = {
       waiting: (onPickOnly) => {
@@ -317,9 +381,13 @@ export class Conversation {
       cut: active.cut.signal,
     };
     void (async () => {
+      let over = false;
       try {
-        await this.runSubmission(record.submission, controller.signal, seat);
-        this.settle(record, "completed");
+        const end = await this.runSubmission(record.submission, controller.signal, seat);
+        // The Turn is over (ADR-0024): the Orchestrator's sweep says how it ended. It may have
+        // landed already; else the Submission waits for it, at most `sweepWaitMs`.
+        over = end === TURN_OVER && !record.settled;
+        if (end !== TURN_OVER) this.settle(record, "completed");
       } catch (err) {
         // A rejection caused by the signal is the swept turn winding down, not a failure. The
         // sweep normally settled it already; this arm only matters if the run rejected first.
@@ -338,11 +406,28 @@ export class Conversation {
       } finally {
         // A cut run already left the seat (`cutIfOnPick`), and another may hold it now.
         if (this.active === active) {
-          this.active = undefined;
-          this.pump();
+          if (over) {
+            this.recorder?.over?.(record.submissionId);
+            active.waiting = setTimeout(() => {
+              this.settle(record, "aborted", { type: SUBMISSION_ABORTED, message: NO_SWEEP_MESSAGE });
+              this.release(active);
+            }, this.sweepWaitMs);
+          } else {
+            this.active = undefined;
+            this.pump();
+          }
         }
       }
     })();
+  }
+
+  /** Free the seat of a Submission that waited for its sweep, and promote the next. */
+  private release(active: NonNullable<Conversation["active"]>): void {
+    clearTimeout(active.waiting);
+    active.waiting = undefined;
+    if (this.active !== active) return;
+    this.active = undefined;
+    this.pump();
   }
 
   private settle(

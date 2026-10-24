@@ -8,6 +8,8 @@
 //   <root>/<agent>/<instance id>/record/admitted.jsonl    one { submissionId } per Admission
 //   <root>/<agent>/<instance id>/record/stream.jsonl      the stream log, one StreamEvent per line
 //   <root>/<agent>/<instance id>/record/messages.jsonl    the history view's messages
+//   <root>/<agent>/<instance id>/record/over.jsonl        one { submissionId } per run that ended
+//                                                          because its Turn was over (ADR-0024)
 //   <root>/<agent>/<instance id>/engine/<engine>/         the engine part (for pi: engine/pi/transcript.jsonl)
 //
 // Append-only JSONL, written synchronously: the Conversation's appends are synchronous, and a line
@@ -37,6 +39,9 @@ export type ConversationRecorder = {
   admitted(submissionId: string): void;
   appended(event: StreamEvent): void;
   said(message: HistoryMessage): void;
+  /** The run ended because its Turn was over, and the Submission waits for the sweep (ADR-0024):
+   * a rebuild settles it as the end of that wait does. */
+  over?(submissionId: string): void;
 };
 
 /**
@@ -69,6 +74,8 @@ export type RecordedConversation = {
   agentName: string;
   instanceId: string;
   admitted: string[];
+  /** The Submissions whose run ended because their Turn was over (`over.jsonl`). */
+  over?: string[];
   log: StreamEvent[];
   messages: HistoryMessage[];
   settlements: Settlement[];
@@ -104,7 +111,7 @@ export function startRecord(
 }
 
 /** The record's files, each one JSONL. */
-const RECORD_FILES = ["admitted.jsonl", "stream.jsonl", "messages.jsonl"];
+const RECORD_FILES = ["admitted.jsonl", "stream.jsonl", "messages.jsonl", "over.jsonl"];
 
 /** Append to an existing record — the one a boot rebuilt. The torn write a restart may have left
  * at a file's end is cut first: the read dropped it, and a line appended onto it would join the
@@ -123,6 +130,7 @@ export function recorderAt(dir: string, fault: RecordFault): ConversationRecorde
     admitted: (submissionId) => line("admitted.jsonl", { submissionId }),
     appended: (event) => line("stream.jsonl", event),
     said: (message) => line("messages.jsonl", message),
+    over: (submissionId) => line("over.jsonl", { submissionId }),
   };
 }
 
@@ -164,6 +172,7 @@ export function readRecord(dir: string): RecordedConversation {
     agentName: identity.agentName,
     instanceId: identity.instanceId,
     admitted: jsonl<{ submissionId: string }>(join(dir, "record", "admitted.jsonl")).map((a) => a.submissionId),
+    over: jsonl<{ submissionId: string }>(join(dir, "record", "over.jsonl")).map((a) => a.submissionId),
     log,
     messages: jsonl<HistoryMessage>(join(dir, "record", "messages.jsonl")),
     settlements: log.flatMap((event): Settlement[] =>

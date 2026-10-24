@@ -7,7 +7,8 @@
 // picks go into the Briefing's Turn part after the prompt (ADR-0029/0062) — and the same engine
 // part carries the conversation: a later Submission is the next run of the same engine.
 // Settlement mapping: a surface read that finds the Turn over throws `TurnOverError`, which settles
-// `aborted` with the model never asked (ADR-0026); any other throw settles `failed` (the Menu
+// `aborted` with the model never asked (ADR-0026); a run that a pick found the Turn over in resolves
+// `TURN_OVER`, and the Orchestrator's sweep settles it (ADR-0024); any other throw settles `failed` (the Menu
 // read, or a provider failure after the Harness's retries — the engine RESOLVES its run even
 // then, with the outcome on the last message's `stopReason`, so this module inspects and throws,
 // and a provider's refusal of the load reads `provider limit …`, ADR-0064); the
@@ -35,13 +36,7 @@ import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { compactionSummaryText } from "./compaction-summary.ts";
-import {
-  RunawayError,
-  TURN_ENDED_MESSAGE,
-  TurnOverError,
-  type RunSubmission,
-  type SubmissionSeat,
-} from "./conversation.ts";
+import { RunawayError, TURN_OVER, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
 import {
   briefingsOf,
   cutPickResult,
@@ -505,11 +500,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // Checked first so the runaway reason wins over the generic mapping below; a sweep that raced
       // the trip still settles `aborted` — the pump's own signal check outranks any throw.
       if (watch.tripped) throw new RunawayError(watch.tripped);
-      // A pick's answer ended the Turn (`turn.over`), and `endsRun` ended the run at that step
-      // boundary: the Submission settles `aborted` every time, as it does when the Orchestrator's
-      // abort of the ended Turn lands first (ADR-0024). Which of the two comes first is a race, and a
-      // settlement must not follow it.
-      if (turn.over) throw new TurnOverError(TURN_ENDED_MESSAGE);
+      // A pick found the Turn over (`turn.over`: a receipt's `turnComplete`, or a 404), and `endsRun`
+      // ended the run at that step boundary. The Harness does not judge how the Turn ended: the
+      // Orchestrator's sweep says it, and settles the Submission (ADR-0024).
+      if (turn.over) return TURN_OVER;
       // Read through the seat: the listener set it while the run ran.
       const last = turn.last as AssistantMessage | undefined;
       // The engine resolves its run even on abort/failure — its last message carries the outcome.

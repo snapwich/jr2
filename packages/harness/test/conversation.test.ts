@@ -5,9 +5,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Conversation, TurnOverError } from "../src/conversation.ts";
+import { Conversation, NO_SWEEP_MESSAGE, TURN_OVER, TurnOverError } from "../src/conversation.ts";
 import type { TurnDials } from "../src/spec.ts";
-import { SUBMISSION_ABORTED, type AdmissionRequest, type Settlement } from "../src/wire.ts";
+import { SUBMISSION_ABORTED, type AdmissionRequest, type Settlement, type StreamEvent } from "../src/wire.ts";
 
 type ScriptedRun = {
   message: string;
@@ -15,7 +15,7 @@ type ScriptedRun = {
    * reach the turn beside the prompt. */
   submission: AdmissionRequest;
   signal: AbortSignal;
-  resolve: () => void;
+  resolve: (end?: typeof TURN_OVER) => void;
   reject: (err: unknown) => void;
 };
 
@@ -25,13 +25,19 @@ const CODER = { model: "faux/model", instructions: "code" };
 
 /** A Conversation whose turns the test settles by hand. `admit` keeps the prompt-only shape most
  * of these tests care about; dials ride the optional second argument. */
-function scripted() {
+function scripted(sweepWaitMs?: number) {
   const runs: ScriptedRun[] = [];
-  const conversation = new Conversation("coder", "iid-1", (submission, signal) => {
-    return new Promise<void>((resolve, reject) => {
-      runs.push({ message: submission.message, submission, signal, resolve, reject });
-    });
-  });
+  const conversation = new Conversation(
+    "coder",
+    "iid-1",
+    (submission, signal) => {
+      return new Promise<void | typeof TURN_OVER>((resolve, reject) => {
+        runs.push({ message: submission.message, submission, signal, resolve, reject });
+      });
+    },
+    undefined,
+    sweepWaitMs === undefined ? {} : { sweepWaitMs },
+  );
   const admit = (message: string, dials?: TurnDials) => conversation.admit({ message, definition: CODER, ...dials });
   return { conversation, runs, admit };
 }
@@ -101,6 +107,121 @@ test("abort sweeps active + queued: aborted in admission order, signal fired, no
 
   await flush();
   assert.equal(runs.length, 1, "swept Submissions never run");
+});
+
+test("a run that ends because its Turn is over settles nothing: the sweep settles it — ended for `pick`, aborted for no cause — and only then does the next Submission run (ADR-0024)", async () => {
+  for (const [cause, expected] of [
+    ["pick", { outcome: "ended" }],
+    [undefined, { outcome: "aborted", error: { type: SUBMISSION_ABORTED } }],
+  ] as const) {
+    const { conversation, runs, admit } = scripted();
+    const { submissionId } = admit("one");
+    runs[0]!.resolve(TURN_OVER);
+    await flush();
+    assert.deepEqual(conversation.historyView().settlements, [], "it waits for the sweep");
+    admit("two");
+    await flush();
+    assert.equal(runs.length, 1, "the next Submission queues behind it");
+    assert.deepEqual(conversation.abort(cause, cause && submissionId), { aborted: true });
+    await flush();
+    const [first, second] = conversation.historyView().settlements;
+    assert.deepEqual(first, { submissionId, ...expected });
+    assert.equal(second?.outcome, "aborted", "the queued one never ran: aborted for every cause");
+  }
+});
+
+test("a sweep with the cause `pick` while the run still runs: ended, and the run's later end changes nothing (ADR-0024)", async () => {
+  const { conversation, runs, admit } = scripted();
+  const { submissionId } = admit("one");
+  assert.deepEqual(conversation.abort("pick", submissionId), { aborted: true });
+  runs[0]!.resolve(TURN_OVER);
+  await flush();
+  assert.deepEqual(conversation.historyView().settlements, [{ submissionId, outcome: "ended" }]);
+  admit("again");
+  await flush();
+  assert.equal(runs.length, 2, "the seat is free");
+});
+
+test("no sweep within the wait: the Submission settles aborted, and says that no sweep came (ADR-0024)", async () => {
+  const { conversation, runs, admit } = scripted(20);
+  const { submissionId } = admit("one");
+  runs[0]!.resolve(TURN_OVER);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(conversation.historyView().settlements, [
+    { submissionId, outcome: "aborted", error: { type: SUBMISSION_ABORTED, message: NO_SWEEP_MESSAGE } },
+  ]);
+  assert.deepEqual(conversation.abort("pick", submissionId), { aborted: false }, "a late sweep finds nothing to end");
+});
+
+test("a cause `pick` that names another Submission, or none, is not about the running one: aborted (ADR-0024)", async () => {
+  for (const named of ["s-elsewhere", undefined]) {
+    const { conversation, runs, admit } = scripted();
+    const { submissionId } = admit("one");
+    runs[0]!.resolve(TURN_OVER);
+    await flush();
+    assert.deepEqual(conversation.abort("pick", named), { aborted: true });
+    assert.deepEqual(conversation.historyView().settlements, [
+      { submissionId, outcome: "aborted", error: { type: SUBMISSION_ABORTED } },
+    ]);
+  }
+});
+
+test("a memory kill while the Submission waits for its sweep is not put on the stream: its run has ended (ADR-0062)", async () => {
+  const { conversation, runs, admit } = scripted();
+  const { submissionId } = admit("one");
+  runs[0]!.resolve(TURN_OVER);
+  await flush();
+  assert.equal(conversation.reportMemoryLimit({ id: "k-1", peak: "1.9Gi", limit: "2Gi" }), false);
+  conversation.abort("pick", submissionId);
+});
+
+test("a restart while the Submission waits for its sweep: the rebuild settles it aborted, as the end of the wait does (ADR-0024, ADR-0031)", async () => {
+  const lines = { admitted: [] as string[], over: [] as string[], log: [] as StreamEvent[] };
+  const recorder = {
+    admitted: (id: string) => void lines.admitted.push(id),
+    appended: (event: StreamEvent) => void lines.log.push(event),
+    said: () => {},
+    over: (id: string) => void lines.over.push(id),
+  };
+  const runs: ScriptedRun[] = [];
+  const conversation = new Conversation(
+    "coder",
+    "iid-1",
+    (submission, signal) =>
+      new Promise<void | typeof TURN_OVER>((resolve, reject) =>
+        runs.push({ message: submission.message, submission, signal, resolve, reject }),
+      ),
+    recorder,
+    { sweepWaitMs: 60_000 },
+  );
+  const over = conversation.admit({ message: "one", definition: CODER });
+  runs[0]!.resolve(TURN_OVER);
+  await flush();
+  const cut = conversation.admit({ message: "two", definition: CODER });
+  // The process stops here: no sweep, no end of the wait.
+  const rebuilt = Conversation.rebuilt(
+    {
+      agentName: "coder",
+      instanceId: "iid-1",
+      admitted: lines.admitted,
+      over: lines.over,
+      log: lines.log,
+      messages: [],
+      settlements: [],
+    },
+    async () => {},
+  );
+  assert.deepEqual(
+    rebuilt
+      .historyView()
+      .settlements.map((s) => ({ submissionId: s.submissionId, outcome: s.outcome, type: s.error?.type })),
+    [
+      { submissionId: over.submissionId, outcome: "aborted", type: SUBMISSION_ABORTED },
+      { submissionId: cut.submissionId, outcome: "failed", type: "harness_restarted" },
+    ],
+  );
+  assert.equal(rebuilt.historyView().settlements[0]!.error?.message, NO_SWEEP_MESSAGE);
+  conversation.abort();
 });
 
 test("abort on an idle conversation answers { aborted: false }", async () => {

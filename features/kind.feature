@@ -470,19 +470,20 @@ Feature: a workspace() run drives a real Sandbox on kind
       # ONE submission per state: the script rides the provider now, not a second submission, and
       # the Harness queues per conversation in admission order (ADR-0027). The turn `coding` asked
       # for is over on the pod — not merely forgotten by the Orchestrator: the pick's answer ended its
-      # run at the step boundary, and it settled `aborted` whether or not the abort landed first.
-      And the Harness reports 1 of the Agent's turns settled as "aborted"
+      # run at the step boundary, and the Orchestrator's sweep, which says that the pick was the cause,
+      # settled it `ended`, whether it landed before the Harness's own end or after it.
+      And the Harness reports 1 of the Agent's turns settled as "ended"
       # …and the turn `shipping` asked for is NOT among them, on the SAME instance id. The abort was
       # ordered ahead of it, so it never settled work that had not run.
       When the Agent in the Sandbox calls "ship" with summary "ok"
       Then the run's body is in "parked"
-      And the Harness reports 2 of the Agent's turns settled as "aborted"
+      And the Harness reports 2 of the Agent's turns settled as "ended"
       And the run's Sandbox is still there
 
-    # The pick's own answer ends the turn above, and the Harness settles it `aborted` itself. Here
-    # nothing is picked: the Gate's answer leaves `coding` while the model is still writing its
-    # answer, so the Orchestrator's abort is the only cause. The Harness's settlement carries no
-    # message of its own, and the abort cut the model's request.
+    # The pick's own answer ends the turn above, and it settles `ended`. Here nothing is picked: the
+    # Gate's answer leaves `coding` while the model is still writing its answer, so the
+    # Orchestrator's sweep is the only end, and it says no cause. The Harness settles it `aborted`,
+    # with no message of its own, and the sweep cut the model's request.
     Scenario: a state that stops waiting for a cause other than the Agent's pick aborts the turn mid-request
       Given the kind instance is serving
       When I start the "interrupted" workflow detached

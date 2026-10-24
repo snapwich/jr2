@@ -51,6 +51,7 @@ import {
   STREAM_NEXT_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
   VIEW_HISTORY,
+  type AbortCause,
   type AdmissionBody,
   type AdmissionRequest,
   type AttachError,
@@ -95,6 +96,9 @@ export type HarnessAppDeps = {
   /** How long a live long-poll parks before 204 "nothing yet". Default 25s (the stub's
    * cadence); short in tests. */
   longPollMs?: number;
+  /** How long a Submission whose Turn is over waits for the Orchestrator's sweep before it settles
+   * `aborted` itself (ADR-0024). Default `SWEEP_WAIT_MS`; short in tests. */
+  sweepWaitMs?: number;
   /**
    * Deployed as the Instance Harness (`JR2_MENU_ONLY` — deploy.ts), this process admits Menu-only
    * Agents ALONE. The admission carries its own definition (ADR-0049), so without this gate a
@@ -208,8 +212,8 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
       engineSeat: engineSeat(dir, () => created.historyView().messages, recordFault),
     });
     created = recorded
-      ? Conversation.rebuilt(recorded, run, recorder)
-      : new Conversation(agentName, instanceId, run, recorder);
+      ? Conversation.rebuilt(recorded, run, recorder, { sweepWaitMs: deps.sweepWaitMs })
+      : new Conversation(agentName, instanceId, run, recorder, { sweepWaitMs: deps.sweepWaitMs });
     conversations.set(key(agentName, instanceId), created);
     return created;
   };
@@ -386,9 +390,15 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     return c.json(view.events, 200, streamHeaders(view));
   });
 
-  app.post("/agents/:name/:id/abort", (c) => {
+  // The body says how the Orchestrator judged the Turn's end (`AbortRequest`, ADR-0024). It is
+  // optional: no body, a body that does not parse, and a cause this Harness does not know all sweep
+  // with no cause, so an older Orchestrator's sweep settles `aborted`, as it did.
+  app.post("/agents/:name/:id/abort", async (c) => {
     const conversation = conversations.get(key(c.req.param("name"), c.req.param("id")));
-    return c.json(conversation ? conversation.abort() : { aborted: false });
+    const body = (await c.req.json().catch(() => undefined)) as { cause?: unknown; submissionId?: unknown } | undefined;
+    const cause: AbortCause | undefined = body?.cause === "pick" ? "pick" : undefined;
+    const submissionId = typeof body?.submissionId === "string" ? body.submissionId : undefined;
+    return c.json(conversation ? conversation.abort(cause, submissionId) : { aborted: false });
   });
 
   // The live set (ADR-0031): the Orchestrator names every conversation its live runs hold, and
