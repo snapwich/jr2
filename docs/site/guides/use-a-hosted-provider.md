@@ -72,10 +72,11 @@ For an Agent in a [Workspace](../reference/glossary.md#workspace), the line name
 [Workflow](../reference/glossary.md#workflow): `Workspace of workflow "<workflow>"`. For a Workspace inside a different
 Machine, the label continues with its route, such as ` → "<state>"`.
 
-Before `jr2 up` changes the cluster, it checks each catalog model that an Agent names. A pod in the cluster asks the
-provider for one tool call, through a Custodian that holds the key, as a [Turn](../reference/glossary.md#turn) asks.
-When the model id or the key is wrong, `jr2 up` stops with `error: provider preflight failed for model "<model>"`, and
-changes nothing. [Fix a failed converge](fix-a-failed-converge.md#rules) gives the full error.
+Before `jr2 up` applies the operator and the Instance, it checks each catalog model that an Agent names. A pod in the
+cluster asks the provider for one tool call, through a Custodian that holds the key, as a
+[Turn](../reference/glossary.md#turn) asks. When the model id or the key is wrong, `jr2 up` stops with
+`error: provider preflight failed for model "<model>"`. The Instance, its Assembly and the operator do not change.
+[Fix a failed converge](fix-a-failed-converge.md#rules) gives the full error.
 
 ## Send the calls through a gateway
 
