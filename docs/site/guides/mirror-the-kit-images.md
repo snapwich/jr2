@@ -11,11 +11,8 @@ An installed Kit builds none of its own images. The nodes pull the three
 [Custodian](../reference/glossary.md#custodian), from `docker.io`. Mirror these four images when the nodes cannot reach
 those registries, or when the cluster pulls from one registry only.
 
-One more image does not come from the mirror. When the [Instance](../reference/glossary.md#instance) sets
-`harness.provider` and an [Agent](../reference/glossary.md#agent) names one of its models, `jr2 up` checks the model
-from a pod in the cluster. That pod uses the image `node:24-slim`, which the nodes pull from `docker.io`. `kitRegistry`
-does not change this image, and `jr2 kit push` does not copy it. On a cluster that cannot pull from `docker.io`, this
-check fails, and `jr2 up` stops.
+`jr2 up` also checks each model that an [Agent](../reference/glossary.md#agent) names, from a pod in the cluster. That
+pod uses the Harness Kit image and the Envoy image, so the nodes also pull the images of that pod from the mirror.
 
 [`jr2 kit push`](../reference/cli.md#kit-push) copies the images. [`kitRegistry`](../reference/config.md#kitregistry)
 tells `jr2 up` where the nodes pull them from:
@@ -24,8 +21,8 @@ tells `jr2 up` where the nodes pull them from:
 
 ## Before you start
 
-- An Instance, with its dependencies installed at the [Kit version](../reference/glossary.md#kit-version) that you want
-  to mirror.
+- An [Instance](../reference/glossary.md#instance), with its dependencies installed at the
+  [Kit version](../reference/glossary.md#kit-version) that you want to mirror.
 - Docker with Buildx on your computer. `jr2 kit push` uses `docker buildx imagetools`.
 - A registry that you can push to, and that the nodes can pull from. Log in to it with `docker login`. In the commands
   on this page, `<registry>` is the registry and its path, such as `registry.example.com/jr2`.
@@ -38,8 +35,6 @@ Run `jr2 kit push` in the Instance folder:
 ```sh
 jr2 kit push <registry>
 ```
-
-<!-- output: not run -->
 
 ```text
 …
@@ -65,8 +60,6 @@ an Instance, it copies the images of the version of your global `jr2`.
 
 A version tag of jr2 never moves to different content. Thus `jr2 kit push` does not copy an image that is in the
 registry already. You can run it again at any time:
-
-<!-- output: not run -->
 
 ```text
 …
@@ -97,8 +90,6 @@ Give `kitRegistry` the same value that you gave `jr2 kit push`, with no `/` at t
 jr2 version --local
 ```
 
-<!-- output: not run -->
-
 ```text
 → .env: JR2_KIT_REGISTRY, …
 cli:       <version>    <instance folder>/node_modules/@jr2/cli
@@ -116,8 +107,6 @@ Then converge:
 ```sh
 jr2 up
 ```
-
-<!-- output: not run -->
 
 ```text
 …
@@ -157,9 +146,9 @@ jr2 sets no image pull secret on its pods. The nodes must pull from the mirror w
 - `push` is the only subcommand of `jr2 kit`. `jr2 kit` refuses any other word with `unknown kit subcommand: <word>`,
   and exits with code 2. With no word, it prints `jr2 kit: no subcommand`, and exits with code 2.
 - When the image is not at its published place, `jr2 kit push` stops:
-  `error: <image>: <source> is not there, so nothing can be mirrored to <target>`. `<image>` is `harness`, `operator` or
-  `custodian`. `<source>` is its published reference, and `<target>` is its reference in the mirror. The next lines of
-  the error say why. Check that `<version>` is a released Kit version.
+  `error: <image>: <source> is not there, so nothing can be mirrored to <target>`. `<image>` is `harness`, `operator`,
+  `orchestrator` or `custodian`. `<source>` is its published reference, and `<target>` is its reference in the mirror.
+  The next lines of the error say why. Check that `<version>` is a released Kit version.
 - When a copy fails, `jr2 kit push` stops, and exits with code 1. It gives
   `error: Command failed: docker buildx imagetools create -t <target> <source>`, then the lines of Docker. Check that
   `docker login` has logged you in to the registry, and that the registry is reachable.
