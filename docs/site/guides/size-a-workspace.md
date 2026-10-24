@@ -28,12 +28,14 @@ A larger Size is not free. The Sandbox holds all of its Size while the run waits
 [Placing](../reference/glossary.md#placing) state, with no time limit. [Workspaces](../concepts/workspaces.md#placing)
 tells how to see the wait.
 
-`jr2 up` warns when no node can hold a Size now. It does not stop, because the nodes can change:
-
-<!-- output: not run -->
+`jr2 up` warns when no node can hold a Size now. It does not stop, because the nodes can change. For example, a kind
+node with 16 cpus cannot hold a Size of memory `64Gi` and cpu `32`:
 
 ```text
-warning: no Sandbox node right now has the allocatable for a Size of memory 4Gi, cpu 2 (workflow "e2e") — its Sandbox stays Pending until one does
+…
+sandbox nodes: jr2-control-plane
+warning: no Sandbox node right now has the allocatable for a Size of memory 64Gi, cpu 32 (workflow "e2e") — its Sandbox stays Pending until one does
+…
 ```
 
 ## Where the Size comes from
