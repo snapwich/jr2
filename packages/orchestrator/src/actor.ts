@@ -342,13 +342,14 @@ export type AgentAdmitOptions = {
   kept?: boolean;
 };
 
-/** A memory kill by the Harness's own guard (ADR-0061, layer 4), as the updates stream reports it:
+/** A memory kill by the Harness's own guard (ADR-0061, layer 4), as the Orchestrator reads it on
+ * an updates stream — the twin of {@link ListedKill}, which it reads in the pod's list:
  * the guard's `peak` and `limit` — absent when what the stream said was not a size — and the
  * kill's `id`, the same on every stream that carries it and in the pod's list
  * (`AgentRunPort.memoryKills`), so every witness of one kill is one notice. `legacy`: an older
  * Harness's event, which has no id; `id` is then the source the Orchestrator raised such an event
  * with before, its place on the stream, so a replayed read is still the same kill. */
-export type GuardKill = { id: string; legacy?: true; peak?: string; limit?: string };
+export type StreamedKill = { id: string; legacy?: true; peak?: string; limit?: string };
 
 /** A kill read from the pod's list, as the port answers it: the wire's, but `peak` and `limit` are
  * absent when the list's were not sizes — the kill is kept, and worded with no sizes (ADR-0062). */
@@ -380,7 +381,7 @@ const KILL_CLOCK_SKEW_MS = 1_000;
 export type AgentSettleOptions = {
   signal?: AbortSignal;
   /** The Harness's guard killed the Agent's processes during this Submission (ADR-0061). */
-  onMemoryLimit?: (kill: GuardKill) => void;
+  onMemoryLimit?: (kill: StreamedKill) => void;
 };
 
 /** Build a port for one invocation from its serializable input (ADR-0011 static-import doctrine),
@@ -820,7 +821,7 @@ export function agentActorWith(
     // Turn's Agent. A stopped actor's last poll names nothing: the state that asked for the Turn has
     // exited, and the pod's list carries the kill. Keyed by the kill's id, so a second running
     // conversation's stream, or the pod's list, adds nothing.
-    const onMemoryLimit = (kill: GuardKill): void => {
+    const onMemoryLimit = (kill: StreamedKill): void => {
       if (stopped || noticeWorkspace === undefined) return;
       binding.raiseNotice?.(
         memoryLimit({ limit: kill.limit, peak: kill.peak, agent: input.agentName }),

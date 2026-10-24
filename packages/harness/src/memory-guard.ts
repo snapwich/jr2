@@ -57,15 +57,17 @@ export type GuardWatch = { end(): void; verdict(): string | undefined; told(): v
 /** Whose `bash` call a watch is: the conversation it runs in (ADR-0062). */
 export type GuardOwner = { agent: string; instanceId: string };
 
-/** One kill, as the updates stream reports it (ADR-0062): sizes written the way a Size is, and
- * `seq`, the guard's own number for it — what `onTold` names it by. */
-export type GuardKill = { seq: number; peak: string; limit: string };
+/** One kill as the guard fires it, in this process's memory alone (ADR-0061): sizes written the
+ * way a Size is, and `seq`, the guard's own number for it — what `onTold` names it by. It has no
+ * id yet: the Harness gives it one (`killId`) when it puts the kill on the streams and in the pod's
+ * list (ADR-0062). The Orchestrator's `StreamedKill` and `ListedKill` are what it reads of those. */
+export type FiredKill = { seq: number; peak: string; limit: string };
 
 export class MemoryGuard {
   readonly #read: CgroupRead;
   readonly #effects: GuardEffects;
   readonly #active = new Set<{ verdict?: string; seq?: number; owner?: GuardOwner }>();
-  readonly #listeners = new Set<(kill: GuardKill) => void>();
+  readonly #listeners = new Set<(kill: FiredKill) => void>();
   readonly #tellers = new Set<(seq: number, owner: GuardOwner) => void>();
   #seq = 0;
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -117,7 +119,7 @@ export class MemoryGuard {
   /** Hear every kill — how the conversations whose Submissions run put it on their streams, so
    * the Orchestrator keeps a workspace notice for the next Agent (ADR-0062). Returns the
    * unsubscribe. */
-  onKill(listener: (kill: GuardKill) => void): () => void {
+  onKill(listener: (kill: FiredKill) => void): () => void {
     this.#listeners.add(listener);
     return () => void this.#listeners.delete(listener);
   }

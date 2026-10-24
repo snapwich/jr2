@@ -18,7 +18,7 @@ import type {
   AgentRunPort,
   AgentTurnInput,
   AgentTurnPlacement,
-  GuardKill,
+  StreamedKill,
   ListedKill,
 } from "../src/actor.ts";
 import type { AgentDefinition } from "../src/agent.ts";
@@ -57,7 +57,7 @@ export class MockFlueClient implements AgentRunPort {
   /** How many times `memoryKills()` was asked. */
   podKillsAsked = 0;
   /** The guard-kill listener of the settle in flight (ADR-0061), for `guardKill()`. */
-  private onMemoryLimit: ((kill: GuardKill) => void) | undefined;
+  private onMemoryLimit: ((kill: StreamedKill) => void) | undefined;
   /** The admission minted on the LATEST admit. Distinct per admit so ledgers are assertable. */
   minted: AgentAdmission | undefined;
   /** Every admission `settle()` was asked to follow (fresh AND re-attached). */
@@ -112,13 +112,13 @@ export class MockFlueClient implements AgentRunPort {
   }
 
   /** The Harness's memory guard killed the Agent's processes during the settle in flight. */
-  guardKill(kill: GuardKill): void {
+  guardKill(kill: StreamedKill): void {
     this.onMemoryLimit?.(kill);
   }
 
   settle(
     admission: AgentAdmission,
-    opts?: { signal?: AbortSignal; onMemoryLimit?: (kill: GuardKill) => void },
+    opts?: { signal?: AbortSignal; onMemoryLimit?: (kill: StreamedKill) => void },
   ): Promise<void> {
     this.settled.push(admission);
     this.onMemoryLimit = opts?.onMemoryLimit;
