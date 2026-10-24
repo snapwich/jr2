@@ -528,7 +528,7 @@ const noticed: Driver = async (world, input) => {
     FIRST_TURN_MS,
   );
   const voided = async (why: string): Promise<Trial> => {
-    await leave(world, runId);
+    await cancelAndSettle(world, runId);
     return { runId, measured: false, finished: false, void: true, note: `${why}; ended ${ended(killing.last)}` };
   };
   if (!killing.hit && stillStarting(killing.last))
@@ -1252,7 +1252,7 @@ async function runTrials(
       // A trial can end with its run still live: a driver that threw, a run that never parked, a
       // void. Such a run is cancelled, so no Sandbox stays parked into the next trial. The kept
       // record is the last status read, so this read makes it the run as the trial left it.
-      if (ctx.evidence) await leave(world, ctx.evidence.runId).catch(() => undefined);
+      if (ctx.evidence) await cancelAndSettle(world, ctx.evidence.runId).catch(() => undefined);
       // The note opens with what the model called; the driver's note, which says how the run ended, follows.
       if (ctx.evidence) trial = { ...trial, note: [await ctx.evidence.finish(), trial.note].join("; ") };
       if (trial.void && replacements > 0) {
@@ -1270,7 +1270,7 @@ async function runTrials(
 
 /** Read the run's status, cancel the run when it has not settled, and read its status until it
  * settles (30 s at most). A run that has settled gets no CANCEL. */
-async function leave(world: E2EWorld, runId: string): Promise<void> {
+async function cancelAndSettle(world: E2EWorld, runId: string): Promise<void> {
   if (!settled(await status(world, runId))) await world.runCli(["send", runId, "--event", "CANCEL"]);
   await waitFor(world, runId, settled, 30_000);
 }
