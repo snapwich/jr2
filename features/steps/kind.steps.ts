@@ -1051,7 +1051,7 @@ Then(
     assert.equal(last.length, count, `settlements: ${JSON.stringify(last)}`);
     assert.ok(
       last.every((s) => s.outcome === outcome),
-      `every ended turn settled "${outcome}" (got: ${JSON.stringify(last)})`,
+      `every settled Turn settled "${outcome}" (got: ${JSON.stringify(last)})`,
     );
   },
 );
@@ -1083,9 +1083,10 @@ Then(
 );
 
 /**
- * The turn the Orchestrator's abort ended (ADR-0024): settled `aborted` with the sweep's type and
- * no message. A Turn that the Harness ended itself, because a pick's answer ended it, carries a
- * message ("a pick's answer ended the Turn: …"), so this tells the two causes apart.
+ * The turn the Orchestrator's sweep ended for a cause other than the Agent's pick (ADR-0024): settled
+ * `aborted` with the sweep's type and no message. A Turn that its own pick ended settles `ended`, and
+ * a Turn whose Harness waited for a sweep that never came carries a message ("… no sweep came …"),
+ * so this tells the sweep's `aborted` from both.
  */
 Then(
   "the Harness reports the Agent's turn settled by the Orchestrator's abort",

@@ -4,8 +4,9 @@
 //
 // Three properties, none of which `sandboxed` can show:
 //   - the coder's turn ENDS when `coding` is left — the pod's Harness records that submission as
-//     `aborted` (the pick's answer ends the run, and the abort may land first: either way it is
-//     `aborted`, ADR-0024), which is the only place a turn's end is observable from outside;
+//     `ended` (the pick's answer ends the run, and the Orchestrator's sweep, which says the pick was
+//     the cause, settles it, whether it lands first or not: ADR-0024), which is the only place a
+//     turn's end is observable from outside;
 //   - the next turn on the SAME instance id (what `continue: true` derives — ADR-0057) is
 //     admitted AFTER that abort, so it is not swallowed by it — the Harness queues per
 //     conversation in admission order (ADR-0027);

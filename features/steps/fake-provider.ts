@@ -31,8 +31,8 @@
 //  4. Holds the request that FOLLOWS a tool result too: after a Working-tool call, or a pick that
 //     leaves the Turn open, the Harness asks the model again, and that request parks until a step
 //     releases it. After a pick that ENDS the Turn no request follows: the Harness ends the run at
-//     that step boundary and settles the submission `aborted`, whether or not the state-exit abort
-//     landed first (ADR-0024).
+//     that step boundary, and the Orchestrator's sweep settles the submission `ended`, whether it
+//     landed first or not (ADR-0024).
 //
 // Releases are matched by the OFFERED TOOL, not by arrival order: a request an earlier turn left
 // parked can sit beside the next state's fresh one. A model can only answer with a tool it was
