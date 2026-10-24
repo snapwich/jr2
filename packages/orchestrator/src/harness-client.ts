@@ -115,9 +115,12 @@ export type HarnessClient = {
       signal?: AbortSignal;
     },
   ): Promise<AgentAdmission>;
-  /** Follow the stream to this Submission's Settlement: resolve on `completed`, reject with
-   * `SettlementFault` on `failed`/`aborted`/404. A guard kill read on the way is handed to
-   * `onMemoryLimit` (ADR-0061). */
+  /** Follow the stream to this Submission's Settlement: resolve on `completed` alone — the run
+   * returned with the Turn still open, which the Agent actor answers with the nudge or the wake —
+   * and reject with `SettlementFault` on `failed`/`ended`/`aborted`/404. `ended` is no fault, and no
+   * live actor reads it: a Submission settles `ended` only after the Turn's own pick took the
+   * Machine out of the Agent's state. That stopped the actor that waits on it (ADR-0024), and a
+   * stopped actor drops every rejection. A guard kill read on the way is handed to `onMemoryLimit` (ADR-0061). */
   wait(admission: AgentAdmission, opts?: AgentSettleOptions): Promise<void>;
   /** `GET /agents/:name/:id?view=history`: does the Harness still hold this conversation? Only a
    * 404 says no (ADR-0027: a GET on an unknown conversation is 404); anything else — another
@@ -171,8 +174,9 @@ export type HarnessClientOptions = {
   log?: (line: string) => void;
 };
 
-/** A Submission that settled `failed`/`aborted` — or whose conversation the Harness no longer
- * has (404) — surfaced to the actor as an `agent.fault`. Replaces the SDK's execution error. */
+/** A Submission that settled `failed`/`ended`/`aborted` — or whose conversation the Harness no
+ * longer has (404) — surfaced to the actor as an `agent.fault` while it still waits on the Turn.
+ * Replaces the SDK's execution error. */
 export class SettlementFault extends Error {
   /** The Settlement as the stream carried it; absent when the conversation itself was lost. */
   readonly settlement?: Settlement;

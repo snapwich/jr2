@@ -100,20 +100,42 @@ export type AdmissionResponse = {
   submissionId: string;
 };
 
-/** How a Submission ends (ADR-0024/0027): `completed` (the prompt resolved), `failed` (the turn
- * threw — provider failure after retries, or the Menu connect/list failed), `aborted` (swept, or
- * over before it started — ADR-0026). */
-export type SettlementOutcome = "completed" | "failed" | "aborted";
+/** How a Submission ends (ADR-0024/0027). The Orchestrator is the one judge of how a Turn ended:
+ *   - `completed`: the run returned, and the Turn is still open (the Agent actor then asks again —
+ *     the nudge or the wake, ADR-0016);
+ *   - `ended`: the Turn's own pick ended the Turn — the transition that took the Machine out of the
+ *     Agent's state came from it. The pick may be from an earlier Submission of the same Turn: a
+ *     nudge or a wake starts a new Submission in the same Turn. The sweep says so
+ *     (`AbortRequest.cause: "pick"`);
+ *   - `failed`: the turn threw — provider failure after retries, the Menu connect/list failed, a
+ *     Runaway (ADR-0035);
+ *   - `aborted`: something else ended the Turn — a sweep with no cause, or no sweep within the
+ *     Harness's wait for it — or it was over before it started (ADR-0026), or it was queued behind
+ *     a swept Submission. */
+export type SettlementOutcome = "completed" | "ended" | "failed" | "aborted";
 
-/** The error payload a non-`completed` Settlement carries. */
+/** The error payload a `failed` or `aborted` Settlement carries. A `completed` or an `ended` one
+ * carries none: nothing went wrong. */
 export type SettlementError = { type: string; message?: string };
 
 /** `SettlementError.type` for a swept Submission — continuity with what ADR-0024/0025 recorded. */
 export const SUBMISSION_ABORTED = "submission_aborted";
 
-/** `SettlementError.type` for a Turn the Harness ended as a Runaway (ADR-0035) — no fourth
- * `SettlementOutcome`; the typed error on a `failed` settlement is what lets the Agent actor switch on
- * the class (one fresh-conversation reroll) without parsing prose. */
+/** Why the Orchestrator sweeps a conversation (ADR-0024): `pick` — the Turn's own pick ended it, so
+ * the running Submission settles `ended`. Every other cause is unnamed: no `cause` (no body, as an
+ * Orchestrator from before this field sends), or a value this Harness does not know, settles
+ * `aborted`. A Submission queued behind the running one never ran, so it settles `aborted` for
+ * every cause. */
+export type AbortCause = "pick";
+
+/** The body of `POST /agents/:name/:id/abort`. Optional, as its fields are. `submissionId` names the
+ * Submission the cause is about: the cause `pick` settles that Submission `ended` only while it is the
+ * running one, and a sweep whose `submissionId` names another (or none) settles it `aborted`. */
+export type AbortRequest = { cause?: AbortCause; submissionId?: string };
+
+/** `SettlementError.type` for a Turn the Harness ended as a Runaway (ADR-0035). A Runaway is a kind
+ * of failure, so it has no outcome of its own: the typed error on a `failed` settlement is what lets
+ * the Agent actor switch on the class (one fresh-conversation reroll) without parsing prose. */
 export const SUBMISSION_RUNAWAY = "runaway";
 
 /** `SettlementError.type` for a Submission the Harness admitted but had not settled when it

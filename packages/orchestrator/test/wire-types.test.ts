@@ -27,6 +27,8 @@ const agree: Mutual<true, true> = [true, true];
 const settlement: Mutual<client.Settlement, harness.Settlement> = agree;
 const outcome: Mutual<client.SettlementOutcome, harness.SettlementOutcome> = agree;
 const error: Mutual<client.SettlementError, harness.SettlementError> = agree;
+const abortCause: Mutual<client.AbortCause, harness.AbortCause> = agree;
+const abortRequest: Mutual<client.AbortRequest, harness.AbortRequest> = agree;
 const position: Mutual<client.StreamPosition, harness.StreamPosition> = agree;
 const appended: Mutual<client.MessageAppendedEvent, harness.MessageAppendedEvent> = agree;
 const settled: Mutual<client.SubmissionSettledEvent, harness.SubmissionSettledEvent> = agree;
@@ -75,6 +77,8 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     settlement,
     outcome,
     error,
+    abortCause,
+    abortRequest,
     position,
     appended,
     settled,

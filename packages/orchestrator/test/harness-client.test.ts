@@ -396,6 +396,19 @@ test("an aborted settlement rejects as SettlementFault (ADR-0024's swept outcome
   await assert.rejects(() => client(fetch).wait(admission), /submission settled aborted: submission_aborted/);
 });
 
+test("an ended settlement rejects too: only `completed` resolves, so it never reads as a run that returned with the Turn open (ADR-0024)", async () => {
+  const { fetch } = scriptedFetch([() => streamResponse([settledChunk("sub-1", "ended")], "1")]);
+  await assert.rejects(
+    () => client(fetch).wait(admission),
+    (err: unknown) => {
+      assert.ok(err instanceof SettlementFault);
+      assert.equal(err.message, "submission settled ended");
+      assert.deepEqual(err.settlement, { submissionId: "sub-1", outcome: "ended" });
+      return true;
+    },
+  );
+});
+
 test("a 404 is a lost conversation — SettlementFault, never an endless poll (ADR-0027)", async () => {
   const { fetch } = scriptedFetch([() => new Response(JSON.stringify({ error: "no conversation" }), { status: 404 })]);
   await assert.rejects(
