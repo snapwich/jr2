@@ -35,30 +35,26 @@ Start a run in one terminal. `jr2 run` stays attached while the run waits at the
 jr2 run release --input '{"version":"1.4.0"}'
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-run 8c14e8f1-3bcf-4951-b400-a56973f5a38a (release) — attached
+run 3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e (release) — attached
   → active "review"
 ```
 
-Your run id is different. Give the commands in the next steps in a second terminal. [Start a run](start-a-run.md) gives
-the other ways to start a run.
+Your run id is different, and so are the instance id and the `assembly` hash in the next steps. Give the commands in the
+next steps in a second terminal. [Start a run](start-a-run.md) gives the other ways to start a run.
 
 ## Find the open Gate
 
 Run [`jr2 status`](../reference/cli.md#status) with the run id:
 
 ```sh
-jr2 status 8c14
+jr2 status 3e87
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"8c14e8f1-3bcf-4951-b400-a56973f5a38a","workflow":"release","instanceId":"8af78244-a186-43b9-a30d-cd16f9df4afe","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
+{"runId":"3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e","workflow":"release","instanceId":"8c8b8507-e569-4f2f-9f2e-497f381c5f57","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"6baf269e2cca","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
 ```
 
 `gates` holds each open Gate of the run, as a [`GateView`](../reference/http-api.md#type-gateview):
@@ -77,23 +73,19 @@ Run [`jr2 send`](../reference/cli.md#send). Give the Gate in `--gate`, the event
 event as a JSON object in `--input`:
 
 ```sh
-jr2 send 8c14 --gate review --event reject --input '{"reason":"The changelog is not ready."}'
+jr2 send 3e87 --gate review --event reject --input '{"reason":"The changelog is not ready."}'
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-delivered reject to gate "review" on 8c14e8f1-3bcf-4951-b400-a56973f5a38a
+delivered reject to gate "review" on 3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e
 ```
 
 `jr2 send` prints `delivered` only when the run took the event. In the first terminal, the run ends:
 
-<!-- output: not run -->
-
 ```text
   → done "rejected"
-{"runId":"8c14e8f1-3bcf-4951-b400-a56973f5a38a","workflow":"release","instanceId":"8af78244-a186-43b9-a30d-cd16f9df4afe","status":"done","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}
+{"runId":"3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e","workflow":"release","instanceId":"8c8b8507-e569-4f2f-9f2e-497f381c5f57","status":"done","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"assembly":"6baf269e2cca"}
 ```
 
 The run ended, so its Gate closed. Each example below answers a run that waits. Before each example, start a new run in
@@ -109,11 +101,9 @@ For an event with no input, such as `approve`, do not give `--input`:
 jr2 send <run id> --gate review --event approve
 ```
 
-<!-- output: not run -->
-
 ```text
 → context <context> / namespace <namespace>
-delivered approve to gate "review" on <run id>
+delivered approve to gate "review" on c099e2dc-6dd2-45da-9358-0723c8b83c68
 ```
 
 `jr2 send` prints the full run id, also when you give a prefix.
@@ -171,8 +161,6 @@ curl -s -X POST http://localhost:4000/runs/<run id>/gates/review/events \
   -d '{"type":"approve"}'
 ```
 
-<!-- output: not run -->
-
 ```text
 {"ok":true}
 ```
@@ -188,8 +176,6 @@ Gate. [`GET /runs`](../reference/http-api.md#get-runs) gives the live runs, and
 JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN VERSION=1.4.0 sh approve-release.sh
 ```
 
-<!-- output: not run -->
-
 ```text
 {"ok":true}
 ```
@@ -201,11 +187,9 @@ context, and it accepts a prefix of the run id:
 JR2_URL=http://localhost:4000 JR2_TOKEN=$TOKEN jr2 send <run id> --gate review --event approve
 ```
 
-<!-- output: not run -->
-
 ```text
 → http://localhost:4000
-delivered approve to gate "review" on <run id>
+delivered approve to gate "review" on c44c6e49-452d-4150-8ce4-4d036363d2a0
 ```
 
 ## Rules
