@@ -57,8 +57,6 @@ Start your Assistant in `my-instance`. It reads `AGENTS.md` when it starts. Clau
 head -3 AGENTS.md
 ```
 
-<!-- output: not run -->
-
 ```text
 <!-- jr2 up writes the text between the jr2-docs markers. Write your own instructions after the END marker. -->
 <!-- BEGIN:jr2-docs -->
@@ -92,20 +90,18 @@ jr2 up
 `jr2 up` typechecks the Instance first. Then it loads each Workflow and walks its Machine. If your Assistant wrote a
 Machine that does not compile, `jr2 up` stops before it builds anything:
 
-<!-- output: not run -->
-
 ```text
 …
+typecheck: tsc --noEmit (the instance's own compiler)
 refusing: this instance does not typecheck — nothing was built and nothing was applied
-…
+  workflows/fix.ts(69,87): error TS2339: Property 'app' does not exist on type 'Record<"target", string>'.
 ```
 
-The lines after it are the errors of `tsc`. Give them to your Assistant. Then run `jr2 up` again.
+The lines after it are the errors of `tsc`. Here, the Machine reads a Repo Slot, `app`, that its Workspace does not
+have. Give them to your Assistant. Then run `jr2 up` again.
 
 When `fix` is correct, `jr2 up` tells you what the Machine runs outside itself, and who may send each event. Your lines
 can differ when your Assistant used other names. Other Workflows of the Instance add lines too:
-
-<!-- output: not run -->
 
 ```text
 …
@@ -136,10 +132,9 @@ Read these lines as a first check:
 If `JR2_GIT_TOKEN` is not set, `jr2 up` stops before it applies the
 [Orchestrator](../reference/glossary.md#orchestrator), with this error:
 
-<!-- output: not run -->
-
 ```text
 …
+git.credentials "*": its token's variable JR2_GIT_TOKEN is not set — set it in .env
 error: Workspace of workflow "fix": the push of Repo Slot "target" (https://github.com/<you>/jr2.git): git.credentials entry "*" cannot push — its token's variable JR2_GIT_TOKEN is not set — set it in .env (ADR-0051)
 ```
 
@@ -174,9 +169,8 @@ that moves the run, and `[<name>]` is the guard that it must pass. Look for thes
 
 Open **who may send what** in the pane of the graph. It shows the same seats as `jr2 up`:
 
-<!-- output: not run -->
-
 ```text
+who may send what · 2 seats
 fix.working agent:coder finish
 fix.review gate approve, request_changes
 ```
@@ -197,13 +191,13 @@ jr2 run fix --input '{"prompt":"In docs/site/tutorial/greet, one test fails. Fix
 
 [`jr2 run`](../reference/cli.md#run) stays attached until the run ends. Your run id is different:
 
-<!-- output: not run -->
-
 ```text
-→ context kind-jr2 / namespace my-instance
-run 6b1f0c52-9a7e-4d3b-8e21-5c0d7f4a9b13 (fix) — attached
-  → active "placing"
 …
+→ context kind-jr2 / namespace my-instance
+run b22cef63-1523-45f3-9c51-36c54b79ce36 (fix) — attached
+  → active "placing"
+  → active "provisioning"
+  → active "attaching"
   → active "running"
 …
 ```
@@ -224,12 +218,13 @@ jr2 status <run id>
 Gate of `review`. Its `gate` is `body.review`. Give that value to `--gate`. The `meta` of the Gate gives the coder's
 `summary`, the `branch` and the `worktree`:
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-{…,"gates":[{"gate":"body.review",…,"meta":{"summary":"<summary>","branch":"jr2/fix-<instance id>","worktree":"<worktree>"}}]}
+{…,"gates":[{"gate":"body.review",…,"meta":{"summary":"Fixed the \"trims the name\" test failure in docs/site/tutorial/greet/src/greet.js by adding .trim() to the name parsing. The name \" ada \" was not being trimmed, causing the greeting to include extra whitespace. Changed `args.find((a) => !a.startsWith(\"-\")) ?? \"world\"` to `(args.find((a) => !a.startsWith(\"-\")) ?? \"world\").trim()`.","branch":"jr2/fix-336ae477-2a46-49c2-b142-b81e705bb3f8","worktree":"/work/target/jr2-fix-336ae477-2a46-49c2-b142-b81e705bb3f8"}}]}
 ```
+
+The `summary` is in the words of the model, so your summary is different.
 
 ## Approve
 
@@ -239,27 +234,27 @@ Send `approve` to the Gate with [`jr2 send`](../reference/cli.md#send):
 jr2 send <run id> --gate body.review --event approve
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-delivered approve to gate "body.review" on 6b1f0c52-9a7e-4d3b-8e21-5c0d7f4a9b13
+delivered approve to gate "body.review" on b22cef63-1523-45f3-9c51-36c54b79ce36
 ```
 
 The run goes to `pushing`, and the push Effect pushes the branch. Then the run ends, and jr2 removes the
 [Sandbox](../reference/glossary.md#sandbox). In the first terminal, `jr2 run` prints its last line, then the final
 status as one line of JSON:
 
-<!-- output: not run -->
-
 ```text
 …
+  → active "teardown"
   → done "done"
+{"runId":"b22cef63-1523-45f3-9c51-36c54b79ce36","workflow":"fix",…,"output":{"outcome":"pushed","branch":"jr2/fix-336ae477-2a46-49c2-b142-b81e705bb3f8","commit":"03f8800ec105c98f612bd2c55687bb92db80357a"}}
 ```
 
-In that JSON, `context.output` is the output of `fix`. In this result, it is
+In that JSON, `context.output` and `output` are the output of `fix`. In this result, it is
 `{"outcome":"pushed","branch":"jr2/fix-<instance id>","commit":"<commit>"}`. `<instance id>` is the seed
-[Instance ID](../reference/glossary.md#instance-id) of the run. It is not the run id.
+[Instance ID](../reference/glossary.md#instance-id) of the run. It is not the run id. `<commit>` is the commit on your
+fork.
 
 ## Find the branch on your fork
 
