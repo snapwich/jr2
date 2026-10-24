@@ -56,15 +56,15 @@ jr2 up
 
 For an Instance whose Agent has only the [Menu](../reference/glossary.md#menu) and uses Anthropic, you see these lines:
 
-<!-- output: not run -->
-
 ```text
 …
 secret ANTHROPIC_API_KEY: Held in the Instance Harness
-…
 the Instance Harness: Custodian holds ANTHROPIC_API_KEY (provider)
-…
 held secret ANTHROPIC_API_KEY → api.anthropic.com (literal)
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for api.anthropic.com
+provider: the check pod has up to 5 min to start, then up to 6 min for its model
+provider: the check pod is not running yet — custodian: PodInitializing
+provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 ```
 
@@ -72,8 +72,10 @@ For an Agent in a [Workspace](../reference/glossary.md#workspace), the line name
 [Workflow](../reference/glossary.md#workflow): `Workspace of workflow "<workflow>"`. For a Workspace inside a different
 Machine, the label continues with its route, such as ` → "<state>"`.
 
-`jr2 up` does not check a catalog model, and it does not send a request to the provider. A wrong model id or a wrong key
-shows when the first [Turn](../reference/glossary.md#turn) starts.
+Before `jr2 up` changes the cluster, it checks each catalog model that an Agent names. A pod in the cluster asks the
+provider for one tool call, through a Custodian that holds the key, as a [Turn](../reference/glossary.md#turn) asks.
+When the model id or the key is wrong, `jr2 up` stops with `error: provider preflight failed for model "<model>"`, and
+changes nothing. [Fix a failed converge](fix-a-failed-converge.md#rules) gives the full error.
 
 ## Send the calls through a gateway
 
@@ -116,13 +118,16 @@ jr2 up
 
 The key now goes to the gateway:
 
-<!-- output: not run -->
-
 ```text
 …
 held secret ANTHROPIC_API_KEY → <gateway> (literal)
+provider: checking anthropic/claude-haiku-5-5 on the Instance Harness, through a Custodian that holds ANTHROPIC_API_KEY for <gateway>
+…
+provider: anthropic/claude-haiku-5-5 reachable, and it completed a tool call
 …
 ```
+
+`<gateway>` is the host of `GATEWAY_URL`. When its port is not 443, the port follows the host, such as `<gateway>:8443`.
 
 A gateway that serves its own model names, or only `/v1/chat/completions`, is not a catalog provider. Declare it as a
 custom provider, with `harness.provider` and `apiKey`. The guide
