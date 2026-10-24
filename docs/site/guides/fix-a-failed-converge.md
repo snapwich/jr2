@@ -45,28 +45,35 @@ order of the steps.
 ## Fix a rollout that does not complete
 
 After `jr2 up` applies each part, it waits for the rollout of that part. When a rollout does not complete in time,
-`jr2 up` reads the pods and prints what they say:
-
-<!-- output: not run -->
+`jr2 up` reads the pods and prints what they say. In this example, the
+[`kitRegistry`](../reference/config.md#kitregistry) mirror does not hold the image of the Orchestrator:
 
 ```text
 …
+orchestrator: applying (image localhost:5001/walk/jr2-orchestrator:0.4.1)
 orchestrator: waiting for rollout
 error: jr2-orchestrator: rollout did not complete in namespace my-instance — the pods say:
 
-  pod <pod> (<phase>) on node <node> (<arch>)
-    container <container>: <reason>
-      image <image>
-      <message>
-    event <event>
-    logs (<container>, last lines):
-      | <log line>
+  pod jr2-orchestrator-5cd48ff77f-m7qhw (Pending) on node jr2-control-plane (amd64)
+    container orchestrator: ImagePullBackOff
+      image localhost:5001/walk/jr2-orchestrator:0.4.1
+      Back-off pulling image "localhost:5001/walk/jr2-orchestrator:0.4.1": ErrImagePull: rpc error: code = NotFound desc = failed to pull and unpack image "localhost:5001/walk/jr2-orchestrator:0.4.1": failed to resolve reference "localhost:5001/walk/jr2-orchestrator:0.4.1": localhost:5001/walk/jr2-orchestrator:0.4.1: not found
+    event Warning Failed: Error: ImagePullBackOff
+    event Normal Pulling: Pulling image "localhost:5001/walk/jr2-orchestrator:0.4.1"
+    event Warning Failed: Failed to pull image "localhost:5001/walk/jr2-orchestrator:0.4.1": rpc error: code = NotFound desc = failed to pull and unpack image "localhost:5001/walk/jr2-orchestrator:0.4.1": failed to resolve reference "localhost:5001/walk/jr2-orchestrator:0.4.1": localhost:5001/walk/jr2-orchestrator:0.4.1: not found
+    event Warning Failed: Error: ErrImagePull
 
-diagnosis: <the cause>
-  <the fix>
+diagnosis: the kubelet could not pull localhost:5001/walk/jr2-orchestrator:0.4.1.
+  it resolves to localhost:5001/walk/jr2-orchestrator:0.4.1
+  check the push landed there and that this cluster may pull from it (credentials, network, mirror).
 
-<the error of kubectl>
+Command failed: kubectl --namespace my-instance rollout status deployment/jr2-orchestrator --timeout=180s
+error: timed out waiting for the condition
 ```
+
+For each pod, `jr2 up` prints its phase, its node, the state of each container and the last events. When a container has
+a log, the last lines of the log come after the events. The output ends with the error of kubectl. Here, `jr2 up` waited
+180 seconds for the rollout.
 
 The first line names the part: `jr2-orchestrator`, `jr2-controller-manager` (the operator, in `jr2-system`),
 `jr2-repo-cache`, `jr2-instance-harness` or `jr2-instance-effector`. Read the reason, the events and the logs of the
