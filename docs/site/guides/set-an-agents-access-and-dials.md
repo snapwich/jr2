@@ -82,15 +82,13 @@ To give a model to the coder's Turns, add `model` to the run input:
 jr2 run review --input '{"branch":"<branch>","sha":"<commit>","model":"<provider>/<model id>"}' --detach
 ```
 
-<!-- output: not run -->
-
 ```text
-→ context <context> / namespace <namespace>
-{"runId":"<run id>"}
+→ context kind-jr2 / namespace my-instance
+{"runId":"48401e39-f8b2-4246-a24e-6ee2665ee892"}
 ```
 
-`<context>` is your kubectl context, and `<namespace>` is the namespace of the Instance. `<run id>` is the id of the new
-run.
+The first line gives your kubectl context and the namespace of the Instance. `runId` is the id of the new run. Your run
+id is different.
 
 Write a new branch name for the coder in place of `<branch>`. The branch starts from the default branch of the
 [Repo](../reference/glossary.md#repo). Thus write the full id of a commit on the default branch in place of `<commit>`,
