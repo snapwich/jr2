@@ -30,26 +30,17 @@ Register the Machine as it is. Save this file as `workflows/fix-app.ts`:
 
 <<< @/examples/guides/bind-open-parts/unbound/fix-app.ts
 
-Then run `jr2 up`. It stops before it changes the cluster, and it prints the `customize()` line that binds the part:
+Then run `jr2 up`. It stops before it changes the cluster. For each Open part, it prints the `customize()` line that
+binds the part:
 
 ```sh
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 refusing: workflow "fix-app" leaves its Repo Slots open — bind it where the Machine is registered: export const machine = customize(<import>, { repos: { <slot>: "<url>" } })  (ADR-0051)
-```
-
-`jr2 up` names one Open part each time that it runs. When you bind the Repo Slots and run it again, it names the model:
-
-<!-- output: not run -->
-
-```text
-…
 refusing: workflow "fix-app" leaves Agent "coder" open — bind it where the Machine is registered: export const machine = customize(<import>, { agents: { coder: { model: "<provider>/<model>" } } })  (ADR-0054)
 ```
 
@@ -119,13 +110,13 @@ them in one of two ways:
 - Bind them on your Machine, through the slot of the child:
   `customize(yours, { actors: { <slot>: { repos, agents } } })`.
 
-`jr2 up` names the child in the refusal, and it prints the line with `actors`:
-
-<!-- output: not run -->
+`jr2 up` names the child in the refusal, and it prints the line with `actors`. For example, a Machine `outer` puts
+`task` under `actors` as `coding`, and binds nothing:
 
 ```text
 …
-refusing: workflow "<name>" leaves Repo Slot "<slot>" open (on the Machine composed as "<child>") — bind it where the Machine is registered: export const machine = customize(<import>, { actors: { <child>: { repos: { <slot>: "<url>" } } } })  (ADR-0051)
+refusing: workflow "outer" leaves its Repo Slots open (on the Machine composed as "coding") — bind it where the Machine is registered: export const machine = customize(<import>, { actors: { coding: { repos: { <slot>: "<url>" } } } })  (ADR-0051)
+refusing: workflow "outer" leaves Agent "coder" open (on the Machine composed as "coding") — bind it where the Machine is registered: export const machine = customize(<import>, { actors: { coding: { agents: { coder: { model: "<provider>/<model>" } } } } })  (ADR-0054)
 ```
 
 When `task` is a child of your Machine, give it `branch` in its input. Only the root Machine of a run gets the id that
