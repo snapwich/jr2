@@ -55,10 +55,8 @@ jr2 --version
 
 The CLI shows its version, its folder and the version of Node.js. Outside an Instance, it shows no Instance:
 
-<!-- output: not run -->
-
 ```text
-cli:       <version>    /usr/local/lib/node_modules/@jr2/cli
+cli:       <version>    /tmp/jr2-dist/npm-global/lib/node_modules/@jr2/cli
 instance:  none — no jr2.config.ts walking up from cwd
 node:      v24.18.0
 ```
@@ -75,8 +73,6 @@ kind create cluster --name jr2
 ```
 
 kind makes a cluster with one node. It sets your current kubectl context to the new cluster:
-
-<!-- output: not run -->
 
 ```text
 Creating cluster "jr2" ...
