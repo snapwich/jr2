@@ -58,38 +58,35 @@ Start a run in one terminal. The run waits at the Gate, so `jr2 run` stays attac
 jr2 run rollout --input '{"service":"billing","version":"1.4.0"}'
 ```
 
-<!-- output: not run -->
-
 ```text
 → context kind-jr2 / namespace my-instance
-run a078c3f8-0346-4464-a768-45c44b8ac310 (rollout) — attached
+run 921d9a0a-da2d-4caf-bb32-5f95acfd3a59 (rollout) — attached
   → active "canary"
 ```
 
-Your run id is different. In a second terminal, answer the Gate. Write the run id in place of `<run id>`, or its first 4
-characters or more:
+Your run id is different. When your Instance folder has a `.env` file, the output starts with one more line, `→ .env:`,
+with the keys that the CLI took from it. In a second terminal, answer the Gate. Write the run id in place of `<run id>`,
+or its first 4 characters or more:
 
 ```sh
 jr2 send <run id> --gate canary --event roll_back --input '{"reason":"The error rate went up."}'
 ```
 
-<!-- output: not run -->
-
 ```text
 → context kind-jr2 / namespace my-instance
-delivered roll_back to gate "canary" on a078c3f8-0346-4464-a768-45c44b8ac310
+delivered roll_back to gate "canary" on 921d9a0a-da2d-4caf-bb32-5f95acfd3a59
 ```
 
 In the first terminal, the run ends. Its `context` holds the default of `canaryPercent`, the `instanceId` that jr2
 added, and the `reason`:
 
-<!-- output: not run -->
-
 ```text
   emit {"type":"decided","promoted":false}
   → done "rolledBack"
-{"runId":"a078c3f8-0346-4464-a768-45c44b8ac310","workflow":"rollout","instanceId":"dd6f251e-4d9c-40bb-ab28-ed8537837a1d","status":"done","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"dd6f251e-4d9c-40bb-ab28-ed8537837a1d","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"assembly":"0c7d4e5f9a18"}
+{"runId":"921d9a0a-da2d-4caf-bb32-5f95acfd3a59","workflow":"rollout","instanceId":"b5d9ee34-69c3-4b0f-9438-403e19898953","status":"done","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"b5d9ee34-69c3-4b0f-9438-403e19898953","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"assembly":"a44731886e21"}
 ```
+
+Your instance id and your `assembly` hash are different.
 
 [Start a run](start-a-run.md) gives the other ways to start a run. [Answer a Gate](answer-a-gate.md) gives the other
 ways to answer one.
