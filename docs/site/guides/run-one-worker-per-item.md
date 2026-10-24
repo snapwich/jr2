@@ -68,12 +68,22 @@ Run [`jr2 up`](../reference/cli.md#up) to converge the Instance with the new Wor
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
-jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 …
+jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
+typecheck: tsc --noEmit (the instance's own compiler)
+seats: workflow "issues" — who may send what, per state (ADR-0015)
+  task.working agent:coder: [finish]
+  task.review gate: [approve, request_changes]
+agents: coder (carried by 2 workflow machine(s))
+…
+sandbox nodes: jr2-control-plane
+…
+converged — `jr2 run <workflow>` when ready
 ```
+
+The first line, `…`, is the line `→ .env:`, with the keys that the CLI took from `.env`. Each `jr2` command prints it
+first. The output on this page shows `…` in its place.
 
 ## Start the run
 
@@ -85,17 +95,18 @@ Start a run in one terminal. `workers` is the largest number of issues that the 
 jr2 run issues --input '{"workers":2}'
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-run 3f9a1c2e-7b4d-4e8a-9c1f-5d2b6a8e0f13 (issues) — attached
+run 89b0cf0c-a6a1-4dcb-bfe1-101394f58801 (issues) — attached
+  → active "saturated"
+  → active "saturated"
 …
 ```
 
-The examples on this page use the Instance `my-instance` in the kubectl context `kind-jr2`. Your run id is different.
-Give each `jr2` command in the Instance folder. Give the commands in the next steps in a second terminal. In them,
-`<run id>` is the run id, or a unique prefix of it, 4 characters or more.
+The examples on this page use the Instance `my-instance` in the kubectl context `kind-jr2`. Your run id, instance id and
+`assembly` hash are different. Give each `jr2` command in the Instance folder. Give the commands in the next steps in a
+second terminal. In them, `<run id>` is the run id, or a unique prefix of it, 4 characters or more.
 
 [`jr2 run`](../reference/cli.md#run) stays attached until the run ends. The run ends when no issue is ready and no
 worker runs.
@@ -108,11 +119,10 @@ Run [`jr2 status`](../reference/cli.md#status):
 jr2 status <run id>
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-{"runId":"3f9a1c2e-…","workflow":"issues",…,"gates":[{"gate":"source",…},{"gate":"issue-12.body.review",…},…]}
+{"runId":"89b0cf0c-a6a1-4dcb-bfe1-101394f58801","workflow":"issues",…,"gates":[{"gate":"source",…},{"gate":"issue-12.body.review",…},{"gate":"issue-13.body.review",…}]}
 ```
 
 In the JSON that it prints, `gates` holds each open Gate of the run:
@@ -137,11 +147,10 @@ Then send `approve` to the Gate of the worker. This example approves issue 12:
 jr2 send <run id> --gate issue-12.body.review --event approve
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-delivered approve to gate "issue-12.body.review" on 3f9a1c2e-7b4d-4e8a-9c1f-5d2b6a8e0f13
+delivered approve to gate "issue-12.body.review" on 89b0cf0c-a6a1-4dcb-bfe1-101394f58801
 ```
 
 The Pool then calls `next` again, and starts a worker for the next issue.
@@ -159,11 +168,10 @@ the `source` Gate. The Pool then calls `next` at once:
 jr2 send <run id> --gate source --event issues_changed
 ```
 
-<!-- output: not run -->
-
 ```text
+…
 → context kind-jr2 / namespace my-instance
-delivered issues_changed to gate "source" on 3f9a1c2e-7b4d-4e8a-9c1f-5d2b6a8e0f13
+delivered issues_changed to gate "source" on 89b0cf0c-a6a1-4dcb-bfe1-101394f58801
 ```
 
 Without the event, the Pool calls `next` again when a worker finishes, or after `pollEvery`. A webhook can send the same
@@ -174,12 +182,11 @@ event with [`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#pos
 When the last worker finishes and no issue is ready, the run ends. In the first terminal, `jr2 run` prints the last
 state of the Pool, then the status of the run as JSON:
 
-<!-- output: not run -->
-
 ```text
 …
+  → active "discovering"
   → done "drained"
-…
+{"runId":"89b0cf0c-a6a1-4dcb-bfe1-101394f58801","workflow":"issues","instanceId":"1d2a83dc-1496-4d59-87d0-dcbd8547e88d","status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"1d2a83dc-1496-4d59-87d0-dcbd8547e88d"},"cap":2,"active":[],"items":{"issue-12":{"outcome":"approved","branch":"jr2/issue-12"},"issue-13":{"outcome":"approved","branch":"jr2/issue-13"},"issue-14":{"outcome":"approved","branch":"jr2/issue-14"}},"status":"drained"},"children":[],"waiting":[],"held":[],"assembly":"68243a41b295","output":{"status":"drained","items":{"issue-12":{"outcome":"approved","branch":"jr2/issue-12"},"issue-13":{"outcome":"approved","branch":"jr2/issue-13"},"issue-14":{"outcome":"approved","branch":"jr2/issue-14"}}}}
 ```
 
 In the JSON, `context.items` holds the output of each worker, by item id. For this Source, `context.status` is always
