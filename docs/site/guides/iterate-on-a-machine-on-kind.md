@@ -40,32 +40,31 @@ jr2 up
 
 For an Instance that has only `ping`, the output is:
 
-<!-- output: not run -->
-
 ```text
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
 agents: (none) (carried by 1 workflow machine(s))
 assembly: staging
-assembly: <hash> (kit v<version>; 1 workflow(s): ping)
+assembly: 0adf5bff234d (kit v<version>; 1 workflow(s): ping)
 …
 sandbox images: skipped (no registered Machine composes a Sandbox)
 …
 orchestrator: applying (image ghcr.io/snapwich/jr2-orchestrator:<version>)
 orchestrator: waiting for rollout
 orchestrator: verified — 1 pod(s) running ghcr.io/snapwich/jr2-orchestrator:<version>
-…
-assembly: publishing <hash> (current is <old hash>)
-assembly: <hash> is current — workflows: ping
+instance effector: none (no Effect is placed there)
+assembly: publishing 0adf5bff234d (current is ba71fa27f37f)
+assembly: 0adf5bff234d is current — workflows: ping
+swept nothing — every labeled image is named by a live root
 converged — `jr2 run <workflow>` when ready
 ```
 
-`<hash>` is the hash of the new [Assembly](../reference/glossary.md#assembly), and `<old hash>` is the hash of the
-Assembly that was current. `<version>` is the [Kit version](../reference/glossary.md#kit-version). The hash changed,
-because the Workflow changed. Thus `jr2 up` published the new Assembly to the
-[Orchestrator](../reference/glossary.md#orchestrator). The image of the Orchestrator did not change, so its pod did not
-start again. Your output has more lines when your Machines use a model, a [Sandbox](../reference/glossary.md#sandbox) or
-an [Effect](../reference/glossary.md#effect).
+`0adf5bff234d` is the hash of the new [Assembly](../reference/glossary.md#assembly), and `ba71fa27f37f` is the hash of
+the Assembly that was current. Your hashes can be different. `<version>` is the
+[Kit version](../reference/glossary.md#kit-version). The hash changed, because the Workflow changed. Thus `jr2 up`
+published the new Assembly to the [Orchestrator](../reference/glossary.md#orchestrator). The image of the Orchestrator
+did not change, so its pod did not start again. Your output has more lines when your Machines use a model, a
+[Sandbox](../reference/glossary.md#sandbox) or an [Effect](../reference/glossary.md#effect).
 
 `jr2 up` says `converged` only when the Orchestrator made the new Assembly current. When it stops with `refusing:`, the
 Assembly that was current stays current. In both cases, fix the cause, then run `jr2 up` again.
@@ -79,16 +78,15 @@ Run the Workflow:
 jr2 run ping --input '{"message":"hi"}'
 ```
 
-<!-- output: not run -->
-
 ```text
 → context kind-jr2 / namespace my-instance
-run 56f83075-b4eb-4095-a350-4c7428ae0bd9 (ping) — attached
+run 7df09f94-d26d-44c3-ba1e-0279f16ccacb (ping) — attached
   → done "done"
-{"runId":"56f83075-b4eb-4095-a350-4c7428ae0bd9","workflow":"ping","instanceId":"25e49524-27b0-47ae-b1c0-242cb759580f","status":"done","value":"done","context":{"message":"hi","reply":"pong, again: hi"},"children":[],"waiting":[],"held":[],"assembly":"a83f60e21b9c"}
+{"runId":"7df09f94-d26d-44c3-ba1e-0279f16ccacb","workflow":"ping","instanceId":"b2ec6504-553e-495a-a8be-62715c6d8595","status":"done","value":"done","context":{"message":"hi","reply":"pong, again: hi"},"children":[],"waiting":[],"held":[],"assembly":"0adf5bff234d"}
 ```
 
-Your run id is different. The `reply` comes from the new Machine.
+Your run id and your instance id are different. The `reply` comes from the new Machine, and `assembly` is the hash of
+the new Assembly.
 
 The pod of the Orchestrator did not start again, so the port forward of the [Console](../reference/glossary.md#console)
 stays open. Load the page again. Then the Console draws the new Machine. [Open the Console](open-the-console.md) gives
@@ -108,11 +106,10 @@ lines:
 
 A second `jr2 up` with no change builds nothing and publishes nothing:
 
-<!-- output: not run -->
-
 ```text
 …
-assembly: <hash> (current — publish skipped)
+assembly: 0adf5bff234d (current — publish skipped)
+swept nothing — every labeled image is named by a live root
 converged — `jr2 run <workflow>` when ready
 ```
 
@@ -132,16 +129,18 @@ attached. Each new run uses the new Machine.
 jr2 status
 ```
 
-<!-- output: not run -->
+In this output, a run of the Workflow `rollout` from [Write a Workflow](write-a-workflow.md) waits at its Gate. It
+started before the last `jr2 up`:
 
 ```text
 → context kind-jr2 / namespace my-instance
-assembly: <hash> (kit v<version>, current), 0 live runs hold it
-assembly: <old hash> (kit v<version>), 1 live run holds it
-…
+assembly: a44731886e21 (kit v<version>, current), 0 live runs hold it
+assembly: 3a3fa3c403f9 (kit v<version>), 1 live run holds it
+data plane: yes
 ```
 
-The Orchestrator removes the old Assembly when the last run that holds it ends.
+The Orchestrator removes the old Assembly when the last run that holds it ends. `data plane: yes` tells that the
+Orchestrator runs in a cluster, so it can make Sandboxes.
 
 A live run cannot continue when the Orchestrator cannot read its Assembly: the volume lost it, or it is for a different
 Kit version. Then the Orchestrator keeps the run with the status `drifted`, and `jr2 status <run id>` gives the reason.
