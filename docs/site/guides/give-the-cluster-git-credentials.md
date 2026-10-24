@@ -48,8 +48,6 @@ jr2 up
 When a registered Machine has a [Workspace](../reference/glossary.md#workspace), `jr2 up` writes the token into a Secret
 for its entry:
 
-<!-- output: not run -->
-
 ```text
 …
 git.credentials "github.com/<you>/": clone Secret jr2-git-<hash>
@@ -73,8 +71,6 @@ Flux uses: `identity` (the private key), and, optionally, `identity.pub` and `kn
 A Machine can bind a Repo Slot to an ssh url. When the Secret of its entry does not exist, `jr2 up` asks where the key
 comes from:
 
-<!-- output: not run -->
-
 ```text
 git@github.com:<you>/app.git bind over ssh and the "github-deploy-key" Secret their git.credentials entry names does not exist.
   whichever key you pick lands in a Secret in namespace "my-instance" — readable by anyone with
@@ -82,7 +78,7 @@ git@github.com:<you>/app.git bind over ssh and the "github-deploy-key" Secret th
   register it on; a personal key leaks everything it can reach.
 where should the git ssh key come from?
 ❯ generate a fresh in-cluster deploy keypair (recommended — one registration per repo)
-  use /home/<user>/.ssh/id_ed25519
+  use /home/<user>/.ssh/id_rsa
   use another local key (type a path)
   paste a private key (input hidden)
   (↑/↓ move · enter selects · esc cancels)
@@ -100,21 +96,21 @@ gives access to all that it can reach. Thus use a deploy key.
 
 When you select "generate", `jr2 up` shows the public key and waits:
 
-<!-- output: not run -->
-
 ```text
-generated deploy key SHA256:<fingerprint> — register this PUBLIC key (read access):
-  ssh-ed25519 <public key> jr2-git-ssh
+generated deploy key SHA256:6AcfwCiKJORn3xak1nSIVWl6AxZ0F7xzDKm6OlpAoU8 — register this PUBLIC key (read access):
+  ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGeFTbAhIVF4+h0L0T+jix9DjRb6fZJuTO+YB/TLHYyk jr2-git-ssh
 register this public key with your git host, then press enter to continue:
 ```
 
+Each run of "generate" makes a new key, so your key and its fingerprint are different.
+
 Add the public key to the repository as a deploy key. Then push Enter. At the end, `jr2 up` shows the key again:
 
-<!-- output: not run -->
-
 ```text
+…
+converged — `jr2 run <workflow>` when ready
 git ssh: a deploy key was generated into "github-deploy-key" this converge and nothing has registered it yet:
-  ssh-ed25519 <public key> jr2-git-ssh
+  ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGeFTbAhIVF4+h0L0T+jix9DjRb6fZJuTO+YB/TLHYyk jr2-git-ssh
   until it is registered, git@github.com:<you>/app.git will not sync (the Orchestrator serves anyway)
   the cache agent retries on its own — `jr2 status` reports each Repo's last error per node
 ```
