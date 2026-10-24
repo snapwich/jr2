@@ -18,8 +18,6 @@ Console.
 kubectl -n <namespace> port-forward svc/jr2-orchestrator 4000:4000
 ```
 
-<!-- output: not run -->
-
 ```text
 Forwarding from 127.0.0.1:4000 -> 4000
 Forwarding from [::1]:4000 -> 4000
