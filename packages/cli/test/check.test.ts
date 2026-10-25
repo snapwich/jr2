@@ -22,11 +22,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin", "jr2.js");
 const KIT_SRC = pathToFileURL(join(HERE, "..", "..", "orchestrator", "src", "index.ts")).href;
 
-/** A Machine whose `on` key names no listed event: `createMachine` refuses it when the module
- * loads, and the compiler does not see it. */
+/** The zod that the kit uses, for a fixture's event schema: a temp Instance resolves no bare name. */
+const ZOD = import.meta.resolve("zod");
+
+/** A Machine whose `on` key names an event that its list does not hold, next to one that it holds.
+ * `tsc` accepts it, because `on` takes the listed names and also other keys. `createMachine` refuses
+ * it when the module loads. (With `events: []`, `tsc` refuses the key itself, TS2353.) */
 const UNDECLARED_EVENT =
-  `export const machine = jr2Setup({ events: [] }).createMachine({\n` +
-  `  id: "bad",\n  initial: "a",\n  states: { a: { on: { nope: "a" } } },\n});\n`;
+  `import { defineEvent } from ${JSON.stringify(KIT_SRC)};\nimport { z } from ${JSON.stringify(ZOD)};\n` +
+  `const go = defineEvent({ name: "go", input: z.object({}) });\n` +
+  `export const machine = jr2Setup({ events: [go] }).createMachine({\n` +
+  `  id: "bad",\n  initial: "a",\n  states: { a: { on: { go: "a", nope: "a" } } },\n});\n`;
 
 /** A workflow that leaves its Repo Slot open: the walk refuses it, after the module loads. */
 const OPEN_SLOT =
@@ -116,7 +122,7 @@ test("a type error: the refusal of `jr2 up`, line for line, and exit 1", async (
   assert.deepEqual(check.kube, []);
 });
 
-test("a module that refuses to load: the error of `jr2 up`, which `npm run typecheck` does not give", async () => {
+test("a module that the compiler accepts and the load refuses: the error of `jr2 up`", async () => {
   const root = await mkInstance({ bad: UNDECLARED_EVENT });
   const check = mkIo(root);
   const up = mkIo(root);
@@ -125,7 +131,7 @@ test("a module that refuses to load: the error of `jr2 up`, which `npm run typec
   assert.deepEqual(why(check.err), why(up.err));
   assert.match(
     why(check.err).join("\n"),
-    /^error: .*handles event "nope", which no def in jr2Setup\(\{ events \}\) declares/m,
+    /^error: .*handles event "nope", which no def in jr2Setup\(\{ events \}\) declares \(declared: go\)/m,
   );
   assert.deepEqual(check.kube, []);
 });
