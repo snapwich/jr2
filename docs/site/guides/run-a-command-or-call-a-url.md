@@ -142,6 +142,12 @@ the params of the pick:
 - [`paramsOf(event, def)`](../reference/authoring-surface/paramsof.md) reads the params in a plain `input` function. Use
   it when the Machine changes a param before the Effect gets it.
 
+Each param of a pick that enters an Effect's state must go somewhere: to a key of the Effect's input, to `fill`, or to
+the context with `assign`. `createMachine` refuses a param that nothing reads, because the Agent gives it and nothing
+uses it. The compiler does not find this error. Only `jr2 up` finds it, when it loads the module. Thus when you copy
+`finished` with its `summary` into a Machine that does not send or keep the summary, drop `summary` from the `input` of
+the event. [Rules](#rules) gives the text of each refusal.
+
 TypeScript checks the keys of the pick and of `fill` against the input of the Effect. When the Agent's state holds the
 Effect, the Agent waits for the answer to its pick. [`answer(fn)`](../reference/authoring-surface/answer.md) sets that
 answer. In the `testing` state, the Agent reads one line, or the end of the test output. Without `answer`, it reads the

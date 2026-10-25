@@ -114,6 +114,12 @@ export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
  * It gives back a frozen {@link EventDef} and registers nothing. Each Machine whose `jr2Setup`
  * lists the event takes it. A Machine that does not list it does not take it.
  *
+ * Give an event only the params that the Machine reads. When a pick enters a state that invokes an
+ * Effect, `createMachine` refuses each param of the pick that nothing reads: the input of the
+ * Effect, an `assign`, or the `fill` of `fromPick`. The compiler does not find this error, and
+ * `jr2 up` finds it when it loads the module. Thus when you copy a `finish` event with a `summary`
+ * and nothing uses the summary, drop `summary` from the `input`, or store it with `assign`.
+ *
  * It refuses:
  * - a name with a character other than a letter, a digit, `_` or `-`:
  *   `defineEvent: invalid name "<name>" — must match /^[a-zA-Z0-9_-]+$/ (it becomes an MCP tool
