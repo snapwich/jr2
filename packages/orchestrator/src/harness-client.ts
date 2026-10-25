@@ -757,7 +757,10 @@ export function createLiveSetPush(options: {
  * invoked the Agent exits, usually on a pick from the Agent's Menu.
  *
  * The actor of an Agent never finishes, so an `onDone` on its invoke never runs. Give the Agent a
- * pick, such as `finish`, and route on it.
+ * pick, such as `finish`, and route on it. When a Turn fails with no pick, jr2 sends the event
+ * `agent.fault` to the Machine. It is an event, not an error of the invoke, so an `onError` does
+ * not get it. Route it on each state that invokes an Agent: `on: { "agent.fault": "failed" }`.
+ * Without the route, the run stays in that state.
  *
  * An Agent with `workspace: "write"` or `"read"` works in a Sandbox, so invoke it inside a
  * `workspace()` body. An Agent with `workspace: "none"` can run anywhere. A model can lack the

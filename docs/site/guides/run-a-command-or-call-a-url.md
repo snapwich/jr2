@@ -25,6 +25,10 @@ with a [`command`](../reference/authoring-surface/command.md) Effect. When it pi
 
 :::
 
+The `coding` state routes [`agent.fault`](../reference/mechanism-events.md#agent-fault) to `failed`. jr2 sends it when a
+Turn of the coder fails with no pick. A loop that must end routes it on each state that invokes an Agent. Without the
+route, the run stays in that state.
+
 Write your GitHub user name in place of `<you>`. The Agent uses the model of the tab. `https://hooks.example.com/jr2` is
 an example. Write the URL of your own service.
 

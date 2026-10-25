@@ -278,7 +278,8 @@ export type AgentRunInput = {
 // policy.
 /** jr2 sends `agent.fault` to the Machine when an Agent's Turn cannot go on: the Harness failed
  * the Turn, or the Agent ended its Turns with no pick after every nudge. The Machine decides what
- * to do next. Route it in the state that invokes the Agent, with `on: { "agent.fault": … }`. */
+ * to do next. Route it in the state that invokes the Agent, with `on: { "agent.fault": … }`. When
+ * no state routes it, xstate drops the event, and the run stays in the Agent's state. */
 export type FaultTelemetry = {
   type: "agent.fault";
   /** The Instance ID of the Agent's conversation that failed: the same id on each Turn that

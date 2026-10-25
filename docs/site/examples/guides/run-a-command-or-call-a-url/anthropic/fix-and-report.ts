@@ -60,7 +60,11 @@ const body = jr2Setup({
         src: "coder",
         input: ({ context }) => ({ prompt: context.prompt, cwd: context.workspace.repos.app }),
       },
-      on: { finished: "reporting" },
+      on: {
+        finished: "reporting",
+        // A Turn of the coder failed with no pick. Without this route, the run stays in `coding`.
+        "agent.fault": "failed",
+      },
       initial: "ready",
       states: {
         ready: { on: { run_test: "testing" } },
@@ -95,6 +99,7 @@ const body = jr2Setup({
     },
     done: { type: "final" },
     notReported: { type: "final" },
+    failed: { type: "final" },
   },
 });
 
