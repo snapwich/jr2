@@ -166,8 +166,8 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
   `machine "<id>": final state "<state>" declares an output, and the root has no output — xstate v5 gives a run only its root output, so this output reaches nothing and the run ends with none: write it at the root, as output: ({ context }) => ..., or keep it on the final state and pass it on with output: ({ event }) => event.output at the root`.
   With more than one such final state, the refusal names each one and puts the words in the plural:
   `final states "<state>", "<state>" declare an output`, `these outputs reach nothing`, `write one at the root` and
-  `keep them on the final states and pass them on`. `jr2 up` also refuses this in a Machine that you make with the
-  `setup()` of xstate, and in a child Machine.
+  `keep them on the final states and pass them on`. `jr2 check` and `jr2 up` also refuse this in a Machine that you make
+  with the `setup()` of xstate, and in a child Machine.
 - `workspace()` refuses a body that declares a door. Declare the door with the `input` option of `workspace()`:
   ``workspace(): the body "<id>" declares its own run input, which nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` handles, so the body's schema is not the door. Move it to the wrapper: workspace(body, { input, spec }) (ADR-0033).``
 - `jr2 up` prints each refusal of `defineEvent`, `createMachine` and `workspace()` as `error: <refusal>`, and exits with

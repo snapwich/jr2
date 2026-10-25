@@ -663,9 +663,9 @@ function inlineMachines(node: StateNode<any, any>): Array<{ machine: AnyStateMac
  * Refuse a Part written inline on an `invoke.src` — an `agent()`, an Effect or a `workspace()` that
  * is no key of the Machine's `actors` (see the module comment). Thrown at build by
  * `jr2Setup.createMachine` and at load by {@link partsOf}, so a Machine built with xstate's own
- * `createMachine` is refused where `jr2 up` and the Orchestrator read it. A plain child Machine
- * written inline is not a Part: it stays walked, with no `customize()` route (its `path` is
- * `undefined`).
+ * `createMachine` is refused where `jr2 check`, `jr2 up` and the Orchestrator read it. A plain
+ * child Machine written inline is not a Part: it stays walked, with no `customize()` route (its
+ * `path` is `undefined`).
  */
 export function refuseInlineParts(machine: AnyStateMachine): void {
   const partOf = (src: unknown): { part: string; written: string } | undefined => {

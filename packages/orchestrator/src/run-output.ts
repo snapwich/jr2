@@ -14,8 +14,8 @@ import type { AnyStateMachine, StateNode } from "xstate";
 /**
  * Refuse a Machine whose root has no `output` while a final state directly below the root declares
  * one (see the module comment). Thrown at build by `jr2Setup.createMachine` and at load by
- * `partsOf`, so a Machine built with xstate's own `createMachine` is refused where `jr2 up` and the
- * Orchestrator read it.
+ * `partsOf`, so a Machine built with xstate's own `createMachine` is refused where `jr2 check`,
+ * `jr2 up` and the Orchestrator read it.
  */
 export function refuseLostOutput(machine: AnyStateMachine): void {
   const root = machine.root as StateNode<any, any>;
