@@ -49,9 +49,10 @@ test("each root export has its own page, and the Authoring surface contents page
 });
 
 test("the contents page and each entry page are short enough for one read of a file tool", () => {
-  // The Authoring surface was one page of about 200 KB, which a file tool cuts off.
+  // The Authoring surface was one page of about 200 KB, which a file tool cuts off. The contents
+  // page gives the first sentence of each TSDoc, which is about 20 KB of lines (ADR-0072).
   const contents = Buffer.byteLength(page(SURFACE));
-  assert.ok(contents < 15 * 1024, `the contents page is ${contents} bytes`);
+  assert.ok(contents < 25 * 1024, `the contents page is ${contents} bytes`);
   const list = entries.get(SURFACE) ?? assert.fail("the Authoring surface has no entry pages");
   for (const e of list) {
     const size = Buffer.byteLength(page(e.slug));
@@ -61,7 +62,12 @@ test("the contents page and each entry page are short enough for one read of a f
 });
 
 test("a contents line is the first sentence of the TSDoc summary, as plain text", () => {
-  assert.equal(firstSentence("Make a `command` Effect: an actor slot. It runs."), "Make a `command` Effect.");
+  // A colon does not end the sentence: "An invoke." alone tells nothing.
+  assert.equal(
+    firstSentence("Make a `command` Effect: an actor slot. It runs."),
+    "Make a `command` Effect: an actor slot.",
+  );
+  assert.equal(firstSentence("An invoke: a lent Agent.\nMore."), "An invoke: a lent Agent.");
   assert.equal(firstSentence("The output `{ a: 1. b }` of x.\nMore."), "The output `{ a: 1. b }` of x.");
   assert.equal(firstSentence("See {@link Size} and [the guide](x.md) now"), "See `Size` and the guide now");
   assert.equal(firstSentence(undefined), undefined);

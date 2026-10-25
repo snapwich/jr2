@@ -602,6 +602,11 @@ The Reference shows the TSDoc of each export of the Authoring surface and of `@j
 their signatures and fields name, to any depth. Write that TSDoc for the author: what the name does, what it refuses,
 with the full text, and what to read next. Put the reasoning of a maintainer in `//` comments above it.
 
+The first sentence of the summary is the line of the name on the contents page of the Authoring surface, and the
+`description` of its entry page. It ends at the first stop (`.`, `!` or `?`) that a space follows, outside a code span.
+A colon does not end it. Thus make the first sentence tell what the name is, and keep it short: an Assistant reads the
+contents page to find the entry to open.
+
 Mark with `@internal` a type that only computes a type from other types, such as the type of a Machine's actors. An
 author never writes such a type. The Reference shows its declaration only, in the list "Type plumbing" (on the Authoring
 surface, a page with its declaration), and does not follow the types that it names. Its TSDoc is not shown, so it can

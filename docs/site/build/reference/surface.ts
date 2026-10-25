@@ -326,7 +326,8 @@ function contents(s: Surface): string {
 }
 
 /** The first sentence of a TSDoc summary, as one line of plain Markdown: a `{@link}` is its code
- * or its label, and a link is its text. `undefined` for no summary. */
+ * or its label, and a link is its text. `undefined` for no summary. A colon does not end the
+ * sentence: the words after it often tell what the name is (ADR-0072). */
 export function firstSentence(summary: string | undefined): string | undefined {
   if (!summary?.trim()) return undefined;
   const text = renderInline(summary, () => undefined)
@@ -334,8 +335,8 @@ export function firstSentence(summary: string | undefined): string | undefined {
     .replace(/\s+/g, " ")
     .trim();
   // The end of the sentence is a stop and a space, outside a code span.
-  const end = /[.!?:](?=\s)/.exec(maskCode(text));
-  return end ? text.slice(0, end.index + 1).replace(/:$/, ".") : text;
+  const end = /[.!?](?=\s)/.exec(maskCode(text));
+  return end ? text.slice(0, end.index + 1) : text;
 }
 
 /** The nodes of a declaration that its signature shows: never a function's body. */
