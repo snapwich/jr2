@@ -105,10 +105,10 @@ test("a full strict build of this repo succeeds, and writes the bundle", async (
     block.split("\n")[0]!,
     / Start with guides\/write-a-workflow\.md and with reference\/authoring-surface\.md, the contents page of the Authoring surface\. Read one page with each call of your file tool, because a file tool cuts off a long output\. /,
   );
-  // And what to run before a handoff: the check of `jr2 up`, which needs no cluster (ADR-0050).
+  // And what to run before the Assistant gives a change to the user: the check of `jr2 up`, which needs no cluster (ADR-0050).
   assert.match(
     block.split("\n")[0]!,
-    / Before you hand off a change, run `npx --no jr2 check` in the Instance folder\. It does the typecheck and the load of each Workflow that `jr2 up` does first, with no cluster, and it gives the same refusals\.$/,
+    / Before you give a change to the user, run `npx --no jr2 check` in the Instance folder\. It does the typecheck and the load of each Workflow that `jr2 up` does first, with no cluster, and it gives the same refusals\.$/,
   );
   assert.ok(r.files.has("guides/write-a-workflow.md") && r.files.has("reference/authoring-surface.md"));
   // One entry for each directory, in the order an Assistant needs the pages. A folder of entry

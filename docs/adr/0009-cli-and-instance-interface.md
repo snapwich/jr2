@@ -211,9 +211,9 @@ secret, a Size). It reads no kube context, touches no cluster, docker or registr
 cannot disagree. It exists for the Assistant that may not converge: `npm run typecheck` loads no module, and `node`
 cannot import a workflow module of an installed Instance, because the kit's `.ts` sources are under `node_modules`,
 where Node does not strip types; the `jr2` binary does. The scaffold names it as its `check` script, and the AGENTS.md
-block names it as the step before a handoff (ADR-0072). It does not stage the Assembly: staging installs the production
-dependencies from the lockfile, and its refusals are about that install. It does not write the AGENTS.md block either: a
-check that changes the folder is not one an Assistant or CI can run without a diff.
+block names it as the step before the Assistant gives a change to the user (ADR-0072). It does not stage the Assembly:
+staging installs the production dependencies from the lockfile, and its refusals are about that install. It does not
+write the AGENTS.md block either: a check that changes the folder is not one an Assistant or CI can run without a diff.
 
 **`jr2 run` — blocking, attach-by-default.** Start the run, stream activity to **stderr**, print the terminal
 `RunStatus` as JSON to **stdout**, exit — so `jr2 run … | jq` yields just the result. It **attaches to the running

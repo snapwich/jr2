@@ -35,10 +35,10 @@ a definition lives, and the gate that enforces it.
   `checkInstance`, and `jr2 up` and `jr2 check` both call it, so the two give the same refusals with the same text. The
   walk loads each registered module, so `jr2 check` also gives each refusal that a module throws when it loads (of
   `createMachine`, `defineEvent`, `workspace()`), which `npm run typecheck` cannot give. It reads no kube context, so an
-  Assistant that may not converge runs it before a handoff, in a kit checkout and in an installed Instance alike. The
-  name is the verb that a user types for "is this folder correct"; the glossary's _check_ of a Check pod is one model
-  call inside the provider preflight, a different noun in a different place, so the name stays and the glossary entry
-  says which is which.
+  Assistant that may not converge runs it before it gives a change to the user, in a kit checkout and in an installed
+  Instance alike. The name is the verb that a user types for "is this folder correct"; the glossary's _check_ of a Check
+  pod is one model call inside the provider preflight, a different noun in a different place, so the name stays and the
+  glossary entry says which is which.
 
 ## Considered options
 

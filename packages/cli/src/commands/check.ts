@@ -6,8 +6,8 @@
 // dispatch, an Effect secret, a Size. Each refusal has the text of `jr2 up`, and the exit code is 1.
 //
 // It reads no kube context and touches no cluster, no docker and no registry, so an Assistant that
-// may not converge runs it before a handoff. It writes no file: the AGENTS.md block is `jr2 up`'s
-// and `jr2 init`'s (ADR-0072). It runs in a kit checkout and in an installed Instance alike, because
+// may not converge runs it before it gives a change to the user. It writes no file: the AGENTS.md
+// block is `jr2 up`'s and `jr2 init`'s (ADR-0072). It runs in a kit checkout and in an installed Instance alike, because
 // the `jr2` binary strips the types of the kit sources under `node_modules`, which `node` alone
 // refuses to do.
 

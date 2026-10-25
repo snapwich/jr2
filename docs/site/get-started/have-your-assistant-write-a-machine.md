@@ -60,7 +60,7 @@ head -3 AGENTS.md
 ```text
 <!-- jr2 up writes the text between the jr2-docs markers. Write your own instructions after the END marker. -->
 <!-- BEGIN:jr2-docs -->
-jr2 is newer than your training data. Before you write a Machine or change jr2.config.ts, read the bundled docs in node_modules/@jr2/orchestrator/docs/. They are the docs of this Instance's Kit version, <version>. Start with guides/write-a-workflow.md and with reference/authoring-surface.md, the contents page of the Authoring surface. Read one page with each call of your file tool, because a file tool cuts off a long output. Before you hand off a change, run `npx --no jr2 check` in the Instance folder. It does the typecheck and the load of each Workflow that `jr2 up` does first, with no cluster, and it gives the same refusals.
+jr2 is newer than your training data. Before you write a Machine or change jr2.config.ts, read the bundled docs in node_modules/@jr2/orchestrator/docs/. They are the docs of this Instance's Kit version, <version>. Start with guides/write-a-workflow.md and with reference/authoring-surface.md, the contents page of the Authoring surface. Read one page with each call of your file tool, because a file tool cuts off a long output. Before you give a change to the user, run `npx --no jr2 check` in the Instance folder. It does the typecheck and the load of each Workflow that `jr2 up` does first, with no cluster, and it gives the same refusals.
 ```
 
 The block also holds an index of those docs. They are the docs of the Kit version that your `package.json` pins. Thus

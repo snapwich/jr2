@@ -132,9 +132,9 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
   refusal stops it before it changes the cluster.
 - Run [`jr2 check`](../reference/cli.md#check) (`npm run check` in the scaffold) to find these errors without a cluster.
   It runs the typecheck and the load of each module that `jr2 up` runs first, with the same code, and it gives the same
-  refusals. It exits with `1` when it refuses. Run it before you hand off a change. Do not import a workflow module with
-  `node`: in an installed Instance, `node` cannot load the Kit, because the Kit is TypeScript under `node_modules`. The
-  `jr2` binary can.
+  refusals. It exits with `1` when it refuses. Run it before you say that a change is done. Do not import a workflow
+  module with `node`: in an installed Instance, `node` cannot load the Kit, because the Kit is TypeScript under
+  `node_modules`. The `jr2` binary can.
 - The name of a Workflow file has lower-case letters, digits and `-`, such as `release-notes.ts`. `jr2 up` refuses a
   different name, and gives the name to use:
   ``error: <folder>/workflows/<file>.ts: a Workflow is named by its filename stem, in lowercase letters, digits and "-", so that `jr2 run` and a `dispatch` slot name it the same way — rename it to <name>.ts (ADR-0071)``
