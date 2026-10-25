@@ -24,6 +24,8 @@ const KIT_SRC = pathToFileURL(join(HERE, "..", "..", "orchestrator", "src", "ind
 
 /** The zod that the kit uses, for a fixture's event schema: a temp Instance resolves no bare name. */
 const ZOD = import.meta.resolve("zod");
+/** The xstate that the kit uses, for a fixture that builds its Machine with xstate's `setup()`. */
+const XSTATE = import.meta.resolve("xstate");
 
 /** A Machine whose `on` key names an event that its list does not hold, next to one that it holds.
  * `tsc` accepts it, because `on` takes the listed names and also other keys. `createMachine` refuses
@@ -33,6 +35,13 @@ const UNDECLARED_EVENT =
   `const go = defineEvent({ name: "go", input: z.object({}) });\n` +
   `export const machine = jr2Setup({ events: [go] }).createMachine({\n` +
   `  id: "bad",\n  initial: "a",\n  states: { a: { on: { go: "a", nope: "a" } } },\n});\n`;
+
+/** A Machine of xstate's own `setup()` with an `output` on a final state and none at the root
+ * (ADR-0015). `tsc` accepts it, and no jr2 code runs when the module loads. The walk refuses it. */
+const LOST_OUTPUT =
+  `import { setup } from ${JSON.stringify(XSTATE)};\n` +
+  `export const machine = setup({}).createMachine({\n` +
+  `  id: "lost",\n  initial: "done",\n  states: { done: { type: "final", output: { outcome: "done" } } },\n});\n`;
 
 /** A workflow that leaves its Repo Slot open: the walk refuses it, after the module loads. */
 const OPEN_SLOT =
@@ -145,6 +154,20 @@ test("a walk refusal (an Open Repo Slot): the lines of `jr2 up`, and nothing sta
   assert.deepEqual(why(check.err), why(up.err));
   assert.match(why(check.err).join("\n"), /^refusing: workflow "packaged" leaves Repo Slot "target" open/m);
   assert.deepEqual(up.kube, ["context"], "`jr2 up` read the context, and then the same check refused");
+  assert.deepEqual(check.kube, []);
+});
+
+test("a lost final-state output in a Machine of xstate's `setup()`: the walk refuses it, with the error of `jr2 up`", async () => {
+  const root = await mkInstance({ lost: LOST_OUTPUT });
+  const check = mkIo(root);
+  const up = mkIo(root);
+  assert.equal(await main(["check"], check.io), 1);
+  assert.equal(await main(["up", "--yes"], up.io), 1);
+  assert.deepEqual(why(check.err), why(up.err));
+  assert.match(
+    why(check.err).join("\n"),
+    /^error: .*machine "lost": final state "lost\.done" declares an output, and the root has no output/m,
+  );
   assert.deepEqual(check.kube, []);
 });
 
