@@ -57,7 +57,7 @@ export type CheckedInstance = {
  */
 export async function checkInstance(io: Io, root: string, config: JR2Config): Promise<CheckedInstance | undefined> {
   // --- typecheck (ADR-0050): the compiler agrees the folder is coherent, before anything is spent -
-  // A REFUSAL, not a warning, and it comes before the namespace apply as well as before the builds:
+  // A REFUSAL, not a warning. `jr2 up` runs it before the namespace apply and before the builds:
   // the names a Machine carries (an Agent slot, a composed Machine, a Repo Slot, a `customize()` of
   // any of them) are typed since ADR-0049/0051, so the answer here is the same answer the author's
   // editor gives — and a converge that shipped a Machine the compiler rejects would surface it as
@@ -81,17 +81,18 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
   }
 
   // --- the Machine walk (ADR-0049, ADR-0051) -----------------------------------------------------
-  // A Machine carries its parts, so this converge LOADS the instance's registered Workflows — the
-  // same discovery and module contract the Orchestrator boots with — and walks them for everything
-  // the later layers need: the Agent definitions whose models are preflighted (ADR-0018), any
-  // `workspace: "none"`, which converges the Instance Harness (ADR-0031), every `file:` docker
-  // context a `workspace()` names, which is built below (ADR-0037), every bound Repo, whose ssh
-  // key is asked for here and whose resource the Orchestrator creates at boot (ADR-0051), and
-  // whether any Machine composes a Sandbox at all — the data-plane switch. It runs right after the
-  // gate and before ownership because it holds REFUSALS the compiler cannot make: a part left
-  // Open on a registered Machine — a Repo Slot with no url, an Agent with no model (ADR-0054) —
-  // and a zod `input` on a Machine that `jr2Setup` did not make, which no door reads (ADR-0033).
-  // Nothing about Agents is published, because the definition rides each Turn.
+  // A Machine carries its parts, so the check LOADS the instance's registered Workflows — the
+  // same discovery and module contract the Orchestrator boots with — and walks them. The walk
+  // returns what `jr2 up` uses after the check: the Agent definitions whose models are preflighted
+  // (ADR-0018), any `workspace: "none"`, for which `jr2 up` converges the Instance Harness
+  // (ADR-0031), every `file:` docker context a `workspace()` names, which `jr2 up` builds
+  // (ADR-0037), every bound Repo, whose ssh key `jr2 up` asks for and whose resource the
+  // Orchestrator creates at boot (ADR-0051), and whether any Machine composes a Sandbox at all —
+  // the data-plane switch. The walk comes right after the gate, and `jr2 up` runs the check before
+  // ownership, because the walk holds REFUSALS the compiler cannot make: a part left Open on a
+  // registered Machine — a Repo Slot with no url, an Agent with no model (ADR-0054) — and a zod
+  // `input` on a Machine that `jr2Setup` did not make, which no door reads (ADR-0033). Nothing
+  // about Agents is published, because the definition rides each Turn.
   const workflows = await loadWorkflows(root);
   const carried = partsOf(workflows.map((w) => w.machine));
   const { agents } = carried;
@@ -184,8 +185,8 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
   }
   // An Effect that names a secret the `secrets` list does not hold, and a literal Effect secret too
   // short to scrub (ADR-0068), are refused HERE, off the walk and the config alone — before anything is
-  // built or applied (ADR-0050, ADR-0068). A secret read from the user's Secret is placed below,
-  // once the cluster is reached.
+  // built or applied (ADR-0050, ADR-0068). `jr2 up` places a secret read from the user's Secret
+  // after the check, once it reaches the cluster.
   // What names each secret, read off the walk (ADR-0059, ADR-0068): every Effect, every Workspace's
   // pod — its `workspace()`'s `secrets` and the models of the Agents whose Turns run there — and the
   // models of the `"none"` Agents the Instance Harness hosts.
@@ -212,8 +213,8 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
   // The Size (ADR-0060): every `workspace()` a registered Machine composes, resolved down its chain
   // (the Machine's, then `sandbox.resources`, then the kit's) and split inside the pod, exactly as
   // the provision will. A split that leaves the Harness below its floor is refused HERE, naming the
-  // Machine and the number to change, rather than at the first provision of a run. The resolved
-  // Sizes are kept for the Sandbox-node warning below.
+  // Machine and the number to change, rather than at the first provision of a run. The check
+  // returns the resolved Sizes, and `jr2 up` uses them for its Sandbox-node warning.
   const sizes: Array<{ workflow: string; size: ResolvedSize }> = [];
   for (const w of workflows) {
     for (const { path, resources, user } of partsOf([w.machine]).sizes) {
@@ -238,7 +239,7 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
   const agentNames = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
   activity(io, `agents: ${agentNames} (carried by ${workflows.length} workflow machine(s))`);
   // Each Chart wrapper (ADR-0070): what its Open body lends a Chart, how many models a Chart's own
-  // Agents may name (each gets its key placed below), and the Chart files the Assembly carries for
+  // Agents may name (`jr2 up` places a key for each), and the Chart files the Assembly carries for
   // it. The walk reads the Open body's declaration, so the keys and the Instance Harness a Chart
   // could need are placed before any run.
   const chartFiles = await chartFilesIn(root);
