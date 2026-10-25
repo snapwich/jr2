@@ -25,10 +25,14 @@ export function refuseLostOutput(machine: AnyStateMachine): void {
   );
   if (!lost.length) return;
   const names = lost.map((node) => `"${node.id}"`).join(", ");
+  const many = lost.length > 1;
+  const [states, declare, reach, write, keep, pass] = many
+    ? ["final states", "declare", "these outputs reach", "one", "them on the final states", "them"]
+    : ["final state", "declares", "this output reaches", "it", "it on the final state", "it"];
   throw new Error(
-    `machine "${machine.id}": final state${lost.length > 1 ? "s" : ""} ${names} declare${lost.length > 1 ? "" : "s"} ` +
-      `an output, and the root has no output — xstate v5 gives a run only its root output, so this output reaches ` +
-      `nothing and the run ends with none: write it at the root, as output: ({ context }) => ..., or keep it on the ` +
-      `final state and pass it on with output: ({ event }) => event.output at the root`,
+    `machine "${machine.id}": ${states} ${names} ${declare} an output, and the root has no output — xstate v5 ` +
+      `gives a run only its root output, so ${reach} nothing and the run ends with none: write ${write} at the ` +
+      `root, as output: ({ context }) => ..., or keep ${keep} and pass ${pass} on with output: ({ event }) => ` +
+      `event.output at the root`,
   );
 }

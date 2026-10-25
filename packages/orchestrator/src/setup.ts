@@ -164,7 +164,9 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  *   v5 gives a run only its root output, so this output reaches nothing and the run ends with none:
  *   write it at the root, as output: ({ context }) => ..., or keep it on the final state and pass it
  *   on with output: ({ event }) => event.output at the root``. With more than one such final state,
- *   it names each one: ``final states "<state>", "<state>" declare an output``. An `output` on a
+ *   it names each one and puts the words in the plural: ``final states "<state>", "<state>"
+ *   declare an output``, ``these outputs reach nothing``, ``write one at the root`` and ``keep
+ *   them on the final states and pass them on``. An `output` on a
  *   final state inside a compound state is legal: the `onDone` of that compound state gets it as
  *   `event.output`.
  * - a parallel state at or below a state that invokes an Agent: ``machine "<id>": state "<state>"

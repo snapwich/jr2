@@ -43,7 +43,7 @@ test("the refusal names each final state directly below the root that declares a
           quiet: { type: "final" },
         },
       }),
-    /machine "two": final states "two\.ok", "two\.bad" declare an output, and the root has no output/,
+    /machine "two": final states "two\.ok", "two\.bad" declare an output, and the root has no output — xstate v5 gives a run only its root output, so these outputs reach nothing and the run ends with none: write one at the root, as output: \(\{ context \}\) => \.\.\., or keep them on the final states and pass them on with output: \(\{ event \}\) => event\.output at the root$/,
   );
 });
 
