@@ -756,7 +756,8 @@ export function createLiveSetPush(options: {
  * in this Machine. Absent, each Turn starts a new conversation. `continue` is the literal `true`,
  * not a `boolean`. A Turn can join only a conversation that an earlier Turn started with
  * `continue: true`. Thus in a retry loop, put `continue: true` on each Turn, also on the first, so
- * that attempt 2 sees attempt 1. Spread it only when a state must start a clean conversation
+ * that attempt 2 sees attempt 1. Then a Runaway on the first Turn gets no second start, because a
+ * continued Turn gets none (ADR-0035). Spread it only when a state must start a clean conversation
  * on some Turns only: `...(context.clean ? {} : { continue: true as const })`. A clean Turn does not
  * start the continued conversation again: the next Turn with `continue: true` joins the earlier
  * one. The Turn ends when the state that invoked the Agent exits, usually on a pick from the
