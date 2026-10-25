@@ -754,8 +754,10 @@ export function createLiveSetPush(options: {
  * `continue`. `cwd` is the absolute directory where the Working tools work. Absent, it is the
  * Worktree of the Workspace's one Repo Slot. `continue: true` continues the Agent's conversation
  * in this Machine. Absent, each Turn starts a new conversation. `continue` is the literal `true`,
- * not a `boolean`. To continue on some Turns only, spread it:
- * `...(context.attempts > 0 ? { continue: true as const } : {})`. The Turn ends when the state that
+ * not a `boolean`. A Turn can join only a conversation that an earlier Turn started with
+ * `continue: true`. Thus in a retry loop, put `continue: true` on each Turn, also on the first, so
+ * that attempt 2 sees attempt 1. Spread it only for a state that must start a clean conversation:
+ * `...(context.clean ? {} : { continue: true as const })`. The Turn ends when the state that
  * invoked the Agent exits, usually on a pick from the Agent's Menu.
  *
  * The actor of an Agent never finishes, so an `onDone` on its invoke never runs. Give the Agent a
