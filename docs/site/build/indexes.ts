@@ -7,21 +7,28 @@
 
 import { posix } from "node:path";
 import type { BuildError } from "./markdown.ts";
-import { groupsOf, type Page, type Sitemap } from "./sitemap.ts";
+import { allPages, groupsOf, type Page, type Sitemap } from "./sitemap.ts";
 
 export const BUNDLE_ROOT = "node_modules/@jr2/orchestrator/docs";
 
 /** The page a sitemap entry is, with the description its frontmatter gives. */
 export type Described = Page & { description: string };
 
-/** `llms.txt`: the title, a one-line summary, then one section per sitemap section. */
-export function llmsTxt(map: Sitemap, pages: ReadonlyMap<string, Described>, version: string): string {
+/** `llms.txt`: the title, a one-line summary, then one section per sitemap section. A page's
+ * `children` (the entry pages of a contents page) are a list under its item. */
+export function llmsTxt(
+  map: Sitemap,
+  pages: ReadonlyMap<string, Described>,
+  version: string,
+  children: ReadonlyMap<string, readonly Described[]> = new Map(),
+): string {
+  const item = (d: Described) => `- [${d.title}](${d.slug}.md): ${d.description}`;
   const sections = map.sections.flatMap((s) => {
     const items = groupsOf(s)
       .flatMap((g) => g.pages)
       .flatMap((p) => {
         const d = pages.get(p.slug);
-        return d ? [`- [${d.title}](${d.slug}.md): ${d.description}`] : [];
+        return d ? [item(d), ...(children.get(p.slug) ?? []).map((c) => `  ${item(c)}`)] : [];
       });
     return items.length ? [`## ${s.title}\n\n${items.join("\n")}`] : [];
   });
@@ -61,10 +68,19 @@ function blockGroups(map: Sitemap, errors: BuildError[]): Page[][] {
   return [...first, ...rest];
 }
 
+/** A folder that the index gives as one entry, `dir:{note; dir.md lists them}`, and not as a list
+ * of its files: the folder of entry pages that a contents page `dir.md` lists. */
+export type Folder = { dir: string; note: string };
+
 /** The pipe-delimited index: `dir:{a.md,b.md}` for each directory, at the place of its first page
  * in the block's order, with the files in that order. The root's pages (Home, Why jr2) share the
- * entry `.`. */
-function compressedIndex(map: Sitemap, present: (slug: string) => boolean, errors: BuildError[]): string {
+ * entry `.`. Each folder follows the entry of the directory that holds its contents page. */
+function compressedIndex(
+  map: Sitemap,
+  present: (slug: string) => boolean,
+  errors: BuildError[],
+  folders: readonly Folder[],
+): string {
   const dirs = new Map<string, string[]>();
   for (const p of blockGroups(map, errors)
     .flat()
@@ -72,11 +88,33 @@ function compressedIndex(map: Sitemap, present: (slug: string) => boolean, error
     const dir = posix.dirname(p.slug);
     dirs.set(dir, [...(dirs.get(dir) ?? []), `${posix.basename(p.slug)}.md`]);
   }
+  const folder = (f: Folder) => `${f.dir}:{${f.note}; ${f.dir}.md lists them}`;
   return [
     `[jr2 docs index]|root: ./${BUNDLE_ROOT}`,
-    ...[...dirs].map(([dir, files]) => `${dir}:{${files.join(",")}}`),
-    "reference/decisions:{one file per ADR; reference/decisions.md lists them}",
+    ...[...dirs].flatMap(([dir, files]) => [
+      `${dir}:{${files.join(",")}}`,
+      ...folders.filter((f) => posix.dirname(f.dir) === dir).map(folder),
+    ]),
+    folder({ dir: "reference/decisions", note: "one file per ADR" }),
   ].join("|");
+}
+
+/** Where the block's instruction says to start: the guide that walks through a workflow module,
+ * and the contents page that links to each name an Assistant writes against. */
+const START = { guide: "guides/write-a-workflow", contents: "reference/authoring-surface" };
+
+/** The sentence of the instruction that says where to start. A page that sitemap.json does not
+ * have is an error, so a rename cannot leave the sentence pointing nowhere. */
+function startSentence(map: Sitemap, errors: BuildError[]): string {
+  const slugs = new Set(allPages(map).map((p) => p.slug));
+  for (const slug of Object.values(START))
+    if (!slugs.has(slug))
+      errors.push({
+        file: "docs/site/sitemap.json",
+        line: 1,
+        message: `the AGENTS.md block says to start with ${slug}.md, and sitemap.json has no such page`,
+      });
+  return `Start with ${START.guide}.md and with ${START.contents}.md, the contents page of the Authoring surface.`;
 }
 
 /** `agents-block.md`: what `jr2 up` writes between the AGENTS.md markers, without the markers. */
@@ -85,11 +123,12 @@ export function agentsBlock(
   present: (slug: string) => boolean,
   version: string,
   errors: BuildError[] = [],
+  folders: readonly Folder[] = [],
 ): string {
   return [
-    `jr2 is newer than your training data. Before you write a Machine or change jr2.config.ts, read the bundled docs in ${BUNDLE_ROOT}/. They are the docs of this Instance's Kit version, ${version}.`,
+    `jr2 is newer than your training data. Before you write a Machine or change jr2.config.ts, read the bundled docs in ${BUNDLE_ROOT}/. They are the docs of this Instance's Kit version, ${version}. ${startSentence(map, errors)}`,
     "",
-    compressedIndex(map, present, errors),
+    compressedIndex(map, present, errors, folders),
     "",
   ].join("\n");
 }

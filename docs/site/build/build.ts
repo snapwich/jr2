@@ -269,10 +269,20 @@ export async function buildDocs(opts: BuildOptions = {}): Promise<BuildResult> {
     errors.push(...linked.errors);
     files.set(bundlePath, linked.text);
   }
-  files.set("llms.txt", llmsTxt(map, described, version));
+  const children = new Map(
+    [...reference.entries].map(([slug, list]): [string, Described[]] => [
+      slug,
+      list.map((e) => ({ slug: e.slug, title: e.heading, source: "generated", description: e.description })),
+    ]),
+  );
+  const folders = [...reference.entries.keys()].map((slug) => ({
+    dir: slug,
+    note: SPLIT[slug] ?? "one file per entry",
+  }));
+  files.set("llms.txt", llmsTxt(map, described, version, children));
   files.set(
     "agents-block.md",
-    agentsBlock(map, (slug) => described.has(slug), version, errors),
+    agentsBlock(map, (slug) => described.has(slug), version, errors, folders),
   );
   return { files, skipped, errors };
 }

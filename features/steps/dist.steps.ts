@@ -12,7 +12,7 @@
 import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -487,7 +487,18 @@ Then(
     const entries = [...index.matchAll(/\|([\w./-]+):\{([^}]*)\}/g)];
     assert.ok(entries.length > 0, `the index names no file:\n${index}`);
     for (const [, dir, files] of entries) {
-      if (dir === "reference/decisions") continue; // one line for the whole folder, not a file list
+      // A folder entry (`reference/decisions`, `reference/authoring-surface`) is one line for the
+      // whole folder, not a file list: the folder and the contents page it names are packed.
+      if (files!.endsWith(" lists them")) {
+        const contents = /; (\S+) lists them$/.exec(files!)?.[1];
+        assert.ok(contents, `the folder entry ${dir} names its contents page:\n${index}`);
+        await stat(join(bundle, contents)).catch(() =>
+          assert.fail(`the index names ${contents}, and the packed bundle has no such file`),
+        );
+        const packed = await readdir(join(bundle, dir!)).catch(() => []);
+        assert.ok(packed.length > 0, `the index names the folder ${dir}, and the packed bundle has no file in it`);
+        continue;
+      }
       for (const file of files!.split(",")) {
         await stat(join(bundle, dir!, file)).catch(() =>
           assert.fail(`the index names ${dir}/${file}, and the packed bundle has no such file`),

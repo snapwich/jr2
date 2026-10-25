@@ -99,14 +99,37 @@ test("a full strict build of this repo succeeds, and writes the bundle", async (
   assert.deepEqual((await readdir(join(out, "reference/decisions"))).sort(), adrs.sort());
   const block = await readFile(join(out, "agents-block.md"), "utf8");
   assert.match(block, /node_modules\/@jr2\/orchestrator\/docs/);
-  // One entry for each directory, in the order an Assistant needs the pages.
-  assert.match(block, /\|reference:\{authoring-surface\.md,machines\.md,config\.md,cli\.md,[^}]*\}\|/);
+  // The instruction says where to start, and both pages are in the bundle.
+  assert.match(
+    block.split("\n")[0]!,
+    / Start with guides\/write-a-workflow\.md and with reference\/authoring-surface\.md, the contents page of the Authoring surface\.$/,
+  );
+  assert.ok(r.files.has("guides/write-a-workflow.md") && r.files.has("reference/authoring-surface.md"));
+  // One entry for each directory, in the order an Assistant needs the pages. A folder of entry
+  // pages is one entry, after the directory of its contents page, so the line stays short.
+  assert.match(
+    block,
+    /\|reference:\{authoring-surface\.md,machines\.md,config\.md,cli\.md,[^}]*\}\|reference\/authoring-surface:\{one file per export and type; reference\/authoring-surface\.md lists them\}\|/,
+  );
   const dirs = [...block.matchAll(/\|([\w./-]+):\{/g)].map((m) => m[1]!);
   assert.deepEqual(dirs, [...new Set(dirs)], "a directory has two entries in the block");
+  // Every Markdown file of the bundle is in the index: by its name, or in a folder entry.
+  const listed = new Set<string>();
+  const folders: string[] = [];
+  for (const [, dir, files] of block.matchAll(/\|([\w./-]+):\{([^}]*)\}/g))
+    if (files!.includes(" lists them")) folders.push(`${dir}/`);
+    else for (const f of files!.split(",")) listed.add(dir === "." ? f : `${dir}/${f}`);
+  for (const path of [...r.files.keys()].filter((p) => p.endsWith(".md") && p !== "agents-block.md"))
+    assert.ok(listed.has(path) || folders.some((f) => path.startsWith(f)), `the block does not index ${path}`);
   assert.ok(block.endsWith("\n") && !block.includes("BEGIN:jr2-docs"));
   const llms = await readFile(join(out, "llms.txt"), "utf8");
   assert.match(llms, /^# jr2\n\n> .+\n\n## /);
   assert.match(llms, /\n## Reference\n\n- \[Authoring surface\]\(reference\/authoring-surface\.md\): /);
+  // Each entry page is in llms.txt, as an item under its contents page.
+  const entries = [...r.files.keys()].filter((p) => p.startsWith("reference/authoring-surface/"));
+  assert.ok(entries.length > 90, `${entries.length} entry pages`);
+  for (const path of entries)
+    assert.match(llms, new RegExp(`\\n  - \\[[^\\]]+\\]\\(${path.replace(/\./g, "\\.")}\\): `), path);
   // A second build replaces the first; a folder that is not a bundle is refused, not emptied.
   await writeBundle(r.files, out);
   const other = join(tmp, "not-a-bundle");
