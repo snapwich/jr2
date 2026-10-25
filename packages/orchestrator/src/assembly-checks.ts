@@ -31,8 +31,8 @@ import { inputSchemaOf, isZodSchema } from "./vocabulary.ts";
 export type LoadedWorkflow = { name: string; machine: AnyStateMachine };
 
 /**
- * Every registered Machine with a zod `input` on its `createMachine` config that `jr2Setup` did not
- * make (ADR-0033). The `setup()` of xstate keeps that `input` in the config but does not read it,
+ * Every registered Machine that has a zod `input` on its `createMachine` config and that `jr2Setup`
+ * did not make (ADR-0033). The `setup()` of xstate keeps that `input` in the config but does not read it,
  * so the Machine has no door: a start with any input passes, and the Console start form is only a
  * field for JSON. TypeScript accepts the config, so only this walk finds it. One line per Workflow,
  * naming the fix.
@@ -47,9 +47,9 @@ export function doorRefusals(workflows: readonly LoadedWorkflow[]): string[] {
     if (!isZodSchema(declared) || inputSchemaOf(w.machine)) continue;
     lines.push(
       `workflow "${w.name}": machine "${w.machine.id}" has a zod \`input\` on createMachine, but jr2Setup did not ` +
-        "make it, so no door reads that input: a run starts with any input, and the Console start form is only " +
-        "a field for JSON — make the Machine with jr2Setup in place of setup() (leave out `events` if it takes no workflow event) " +
-        "(ADR-0033)",
+        "make this Machine, so no door reads that input: a run starts with any input, and the Console start form " +
+        "is only a field for JSON — make the Machine with jr2Setup in place of setup() or createMachine() (leave " +
+        "out `events` if it takes no workflow event) (ADR-0033)",
     );
   }
   return lines;

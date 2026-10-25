@@ -15,22 +15,25 @@ machine is the one piece of its vocabulary that pattern missed.
   object) and attaches it the same way event defs ride today (WeakMap-keyed on `machine.config`, so a `.provide()` clone
   keeps it — ADR-0011). `input` is deliberately xstate's own word for what a machine receives at creation — the
   authoring surface teaches nothing new.
-- **A door that no one reads is refused.** xstate's `setup()` keeps an `input` in the config of `createMachine` but does
-  not read it, and TypeScript accepts it there. So a zod `input` on a Machine that `setup()` made is no door: a run
-  starts with any input, and the Console start form is only a field for JSON. The walk that `jr2 up` and the publish
-  door share (`doorRefusals`, ADR-0069) refuses a registered Machine whose config holds a zod `input` that no door was
-  attached for, and the line names the fix: make it with `jr2Setup`, with no `events` when it takes no workflow event
-  (ADR-0015). The test is the attachment, not the factory, so a `workspace()` or `pool()` wrapper with its own door
-  passes, and a `.provide()` clone is judged as its original. A Machine with no `input` (or an `input` that is not zod)
-  can still use `setup()`: the zero-ceremony `ping` that `jr2 init` writes does, and no ADR asks more of it. The walk
-  checks the registered roots only, because a nested Machine's `input` is never the door (see below). `workspace()`
-  refuses a body with a zod `input` when you call it, also a body that `setup()` made: it reads the config, not only the
-  attached door. Considered and rejected: refusing every `setup()` Machine (it taxes the hello-world for no gain); a
-  refusal at boot (an Assembly already published would then stop the Orchestrator, where the walk refuses only the next
-  publish); and to take a zod `input` on a `setup()` Machine as the door at load. The loader can read that `input`, but
-  then one door has two ways to declare it. Also, the zod schema stays in `machine.config`, and a schema must not reach
-  the fingerprint and serialization paths that read the config. And that Machine still does not get the Vocabulary
-  checks of `jr2Setup`.
+- **A door that no one reads is refused.** The `setup()` of xstate keeps an `input` in the config of `createMachine`,
+  but it does not read it. TypeScript accepts that `input`. Thus a Machine that `setup()` made and that has a zod
+  `input` has no door. A run starts with any input, and the Console start form is only a field for JSON. `jr2 up` and
+  the publish door use the same walk (`doorRefusals`, ADR-0069). The walk refuses a registered Machine if its config has
+  a zod `input` and no door is attached to it. The refusal line gives the fix: make the Machine with `jr2Setup`. If the
+  Machine takes no workflow event, leave out `events` (ADR-0015). The walk tests the attached door, not the factory.
+  Thus a `workspace()` or `pool()` wrapper with its own door passes. A `.provide()` clone keeps the config of its
+  original, so the walk gets the same result for the clone. A Machine with no `input`, or with an `input` that is not
+  zod, can use `setup()`. The `ping` Workflow that `jr2 init` writes uses it. The walk checks the registered roots only,
+  because the `input` of a nested Machine is never the door (see below). `workspace()` refuses a body with a zod `input`
+  when you call it. It reads the config and the attached door, so it also refuses a body that `setup()` made. Considered
+  and rejected:
+  - Refuse all `setup()` Machines. This adds work to the first Workflow and gives nothing.
+  - Refuse at boot. Then an Assembly that is already published stops the Orchestrator. The walk refuses only the next
+    publish.
+  - Take a zod `input` on a `setup()` Machine as the door at load. The loader can read that `input`. But then there are
+    two ways to declare one door. Also, the zod schema stays in `machine.config`, and a schema must not go into the
+    fingerprint and serialization paths that read the config. And that Machine does not get the Vocabulary checks of
+    `jr2Setup`.
 - **A wrapper declares its own door; it never borrows its child's.** `workspace(body, { input, spec })` and
   `pool(worker, { input, … })` each take an `input` of their own, and neither propagates one upward. The reason is the
   same in both, at different strengths: a wrapper does not feed its child what a caller sent. `pool` is the sharp case —

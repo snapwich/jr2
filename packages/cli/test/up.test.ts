@@ -1439,9 +1439,9 @@ test("a zod `input` on a Machine that plain setup() made is refused before any c
   const err = w.err.join("\n");
   assert.match(
     err,
-    /refusing: workflow "lost": machine "lost" has a zod `input` on createMachine, but jr2Setup did not make it/,
+    /refusing: workflow "lost": machine "lost" has a zod `input` on createMachine, but jr2Setup did not make this Machine/,
   );
-  assert.match(err, /make the Machine with jr2Setup in place of setup\(\)/);
+  assert.match(err, /make the Machine with jr2Setup in place of setup\(\) or createMachine\(\)/);
   assert.deepEqual(w.kube.applied, [], "nothing applied");
 
   // The same Machine with no door is legal on plain setup(). A new folder: the module cache holds

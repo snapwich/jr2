@@ -147,9 +147,9 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
 - `createMachine` refuses an `agent()`, an Effect or a `workspace()` that a state writes in its `invoke.src`. Put it
   under `actors`, and invoke it by its key:
   `machine "<id>": state "<state>" invokes <part> inline — a Part is a key of actors, so it has a name that the ledger, the report and customize() share: actors: { <name>: <factory>(...) }, then invoke: { src: "<name>" }`
-- `jr2 up` refuses a registered Machine with a zod `input` that `setup()` made in place of `jr2Setup`. The compiler does
-  not find this error:
-  ``refusing: workflow "<workflow>": machine "<id>" has a zod `input` on createMachine, but jr2Setup did not make it, so no door reads that input: a run starts with any input, and the Console start form is only a field for JSON — make the Machine with jr2Setup in place of setup() (leave out `events` if it takes no workflow event) (ADR-0033)``.
+- `jr2 up` refuses a registered Machine that has a zod `input` if `setup()` or `createMachine()` of xstate made the
+  Machine in place of `jr2Setup`. The compiler does not find this error:
+  ``refusing: workflow "<workflow>": machine "<id>" has a zod `input` on createMachine, but jr2Setup did not make this Machine, so no door reads that input: a run starts with any input, and the Console start form is only a field for JSON — make the Machine with jr2Setup in place of setup() or createMachine() (leave out `events` if it takes no workflow event) (ADR-0033)``.
   The Orchestrator refuses a publish of that Machine with the same line.
 - `workspace()` refuses a body that declares a door. Declare the door with the `input` option of `workspace()`:
   ``workspace(): the body "<id>" declares its own run input, which nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` handles, so the body's schema is not the door. Move it to the wrapper: workspace(body, { input, spec }) (ADR-0033).``
