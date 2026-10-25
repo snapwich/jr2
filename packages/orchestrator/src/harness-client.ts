@@ -1029,7 +1029,6 @@ export function createExecPort(options: {
  *
  * const body = jr2Setup({
  *   types: {} as { input: BodyInput },
- *   events: [],
  *   actors: {
  *     tests: command(["node", "--test", arg("file")], { timeout: "5m" }),
  *   },

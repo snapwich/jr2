@@ -125,14 +125,15 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  * What it adds to `setup()`:
  * - `events` replaces `types.events`. The event type of the Machine comes from the
  *   `defineEvent` events you list, plus the events jr2 itself sends (`agent.fault`,
- *   `workspace.lost`). An event that a party sent has `event.sender`. `events` is required: a
- *   Machine that takes no workflow event writes `events: []`.
+ *   `workspace.lost`). An event that a party sent has `event.sender`. A Machine that takes no
+ *   workflow event leaves out `events`.
  * - The `gate` actor is ready to invoke by name: `invoke: { src: "gate" }`.
  * - Each Agent slot (`actors: { coder: agent(…) }`) gets its Menu from the states that invoke it.
  * - The `sentBy(id)` guard is ready to use.
  * - `createMachine` also takes `input`: a zod object for the input that starts a run. jr2 checks
  *   each start against it. Without it, a run can start with any input. The `setup()` of xstate
- *   does not read this `input`, so a Machine with a door uses `jr2Setup`, also with `events: []`.
+ *   does not read this `input`, so a Machine with a door uses `jr2Setup`, also when it takes no
+ *   workflow event.
  *
  * The output of a run is the root `output` of `createMachine`, beside `id` and `states`, as in
  * xstate v5. xstate does not read the `output` of a final state as the output of the Machine. It
@@ -167,7 +168,8 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  * are legal but probably not what you mean, such as a mode that nothing enters, are warnings that
  * `jr2 up` prints.
  *
- * @param def - What `setup()` takes, with `events` in place of `types.events`.
+ * @param def - What `setup()` takes, with `events` in place of `types.events`. A Machine that
+ *   needs none of it calls `jr2Setup()`.
  * @returns What `setup()` returns. Call `.createMachine(config)` on it.
  *
  * @example
@@ -218,7 +220,7 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  */
 export function jr2Setup<
   TContext extends MachineContext = MachineContext,
-  const TDefs extends readonly EventDef[] = readonly EventDef[],
+  const TDefs extends readonly EventDef[] = readonly [],
   TActors extends Record<string, UnknownActorLogic> = {},
   TActions extends Record<string, ParameterizedObject["params"] | undefined> = {},
   TGuards extends Record<string, ParameterizedObject["params"] | undefined> = {},
@@ -228,54 +230,56 @@ export function jr2Setup<
   TOutput extends NonReducibleUnknown = NonReducibleUnknown,
   TEmitted extends EventObject = EventObject,
   TMeta extends MetaObject = MetaObject,
->(def: {
-  /** The types of the Machine, as in `setup()`: `context`, `input`, `output`, `tags`, `emitted`
-   * and `meta`. Not `events`: the event type comes from `events`. */
-  types?: {
-    context?: TContext;
-    input?: TInput;
-    output?: TOutput;
-    tags?: TTag;
-    emitted?: TEmitted;
-    meta?: TMeta;
-  };
-  // The single source for types, validation and delivery.
-  /** The workflow events this Machine takes: each one made by `defineEvent`. Required; `[]` when the
-   * Machine takes none. Each listed event must be the name of an `on` key. Each `on` key must be
-   * listed, if it is not a jr2 or xstate event (an event with a `.` in its name). */
-  events: TDefs;
-  /** The actors the states invoke by name, as in `setup()`: Agent slots (`agent(…)`), Effects
-   * (`command(…)`, `http(…)`, `push(…)`), child Machines, `workspace(…)` and plain xstate logic.
-   * The key is the slot's name. An actor named `gate` replaces jr2's Gate. */
-  actors?: TActors;
-  /** Named actions, as in `setup()`. Their `event` has the type of this Machine's events. */
-  actions?: {
-    [K in keyof TActions]: ActionFunction<
-      TContext,
-      WorkflowEvent<TDefs>,
-      WorkflowEvent<TDefs>,
-      TActions[K],
-      ToProvidedActor<MergedActors<TActors>>,
-      ToParameterizedObject<TActions>,
-      ToParameterizedObject<TGuards>,
-      TDelay,
-      TEmitted
-    >;
-  };
-  /** Named guards, as in `setup()`. `sentBy` is there already; do not name a guard `jr2.sentBy`. */
-  guards?: {
-    [K in keyof TGuards]: GuardPredicate<TContext, WorkflowEvent<TDefs>, TGuards[K], ToParameterizedObject<TGuards>>;
-  };
-  /** Named delays, as in `setup()`. */
-  delays?: {
-    [K in TDelay]: DelayConfig<
-      TContext,
-      WorkflowEvent<TDefs>,
-      ToParameterizedObject<TActions>["params"],
-      WorkflowEvent<TDefs>
-    >;
-  };
-}): SetupReturn<
+>(
+  def: {
+    /** The types of the Machine, as in `setup()`: `context`, `input`, `output`, `tags`, `emitted`
+     * and `meta`. Not `events`: the event type comes from `events`. */
+    types?: {
+      context?: TContext;
+      input?: TInput;
+      output?: TOutput;
+      tags?: TTag;
+      emitted?: TEmitted;
+      meta?: TMeta;
+    };
+    // The single source for types, validation and delivery.
+    /** The workflow events this Machine takes: each one made by `defineEvent`. Leave it out when the
+     * Machine takes none. Each listed event must be the name of an `on` key. Each `on` key must be
+     * listed, if it is not a jr2 or xstate event (an event with a `.` in its name). */
+    events?: TDefs;
+    /** The actors the states invoke by name, as in `setup()`: Agent slots (`agent(…)`), Effects
+     * (`command(…)`, `http(…)`, `push(…)`), child Machines, `workspace(…)` and plain xstate logic.
+     * The key is the slot's name. An actor named `gate` replaces jr2's Gate. */
+    actors?: TActors;
+    /** Named actions, as in `setup()`. Their `event` has the type of this Machine's events. */
+    actions?: {
+      [K in keyof TActions]: ActionFunction<
+        TContext,
+        WorkflowEvent<TDefs>,
+        WorkflowEvent<TDefs>,
+        TActions[K],
+        ToProvidedActor<MergedActors<TActors>>,
+        ToParameterizedObject<TActions>,
+        ToParameterizedObject<TGuards>,
+        TDelay,
+        TEmitted
+      >;
+    };
+    /** Named guards, as in `setup()`. `sentBy` is there already; do not name a guard `jr2.sentBy`. */
+    guards?: {
+      [K in keyof TGuards]: GuardPredicate<TContext, WorkflowEvent<TDefs>, TGuards[K], ToParameterizedObject<TGuards>>;
+    };
+    /** Named delays, as in `setup()`. */
+    delays?: {
+      [K in TDelay]: DelayConfig<
+        TContext,
+        WorkflowEvent<TDefs>,
+        ToParameterizedObject<TActions>["params"],
+        WorkflowEvent<TDefs>
+      >;
+    };
+  } = {},
+): SetupReturn<
   TContext,
   WorkflowEvent<TDefs>,
   MergedActors<TActors>,
@@ -309,7 +313,7 @@ export function jr2Setup<
 
     // Resolve the defs first (duplicates and reserved semantics fail HERE, naming the machine —
     // the same loud failure `eventMap` gave the manifest, moved to machine-build time)…
-    const defs = eventMap((machineConfig as { id?: string }).id ?? "(machine)", def.events);
+    const defs = eventMap((machineConfig as { id?: string }).id ?? "(machine)", def.events ?? []);
 
     // Every Open body slot (ADR-0070), found by its brand: each name it lends resolves against THIS
     // setup's own parts, or the Machine is refused naming it. The resolved set is stamped on the slot,

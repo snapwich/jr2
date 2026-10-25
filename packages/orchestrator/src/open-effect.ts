@@ -68,7 +68,6 @@ export type OpenEffectPart = "url" | "argv" | "secret" | "target";
  * import { customize, http, jr2Setup, open, type EffectBinding } from "@jr2/orchestrator";
  *
  * const notifier = jr2Setup({
- *   events: [],
  *   actors: { notify: http({ method: "POST", url: open }) },
  * }).createMachine({
  *   id: "notifier",

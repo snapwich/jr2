@@ -265,7 +265,6 @@ export type SyncState = SyncAnswer["sync"];
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   events: [],
  *   actors: { publish: push({ pin: true }) },
  * }).createMachine({
  *   id: "release",

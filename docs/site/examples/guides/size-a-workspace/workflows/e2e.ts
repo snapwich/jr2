@@ -6,7 +6,6 @@ type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
 
 const body = jr2Setup({
   types: {} as { input: BodyInput },
-  events: [],
   actors: {
     // JR2_CPUS holds the cpu limit of the container. Playwright does not read that limit.
     e2e: command(["sh", "-c", "npx playwright test --workers=$JR2_CPUS"], { timeout: "30m" }),

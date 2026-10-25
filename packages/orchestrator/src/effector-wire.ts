@@ -266,7 +266,6 @@ export const HttpOutputShape = z.union([
  * const ok = (output: HttpOutput): boolean => output.outcome === "response" && output.status < 300;
  *
  * export const machine = jr2Setup({
- *   events: [],
  *   actors: { health: http({ method: "GET", url: "https://app.example.com/healthz" }) },
  * }).createMachine({
  *   id: "health",

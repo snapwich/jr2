@@ -82,7 +82,6 @@ export type Arg<N extends string = string> = { readonly arg: N };
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   events: [],
  *   actors: { lint: command(["npx", "eslint", arg("file")]) },
  * }).createMachine({
  *   id: "lint",
@@ -337,7 +336,6 @@ export type Unknown = { outcome: "unknown"; reason: string };
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   events: [],
  *   actors: { tests: command(["npm", "test"], { timeout: "15m" }) },
  * }).createMachine({
  *   id: "tests",

@@ -318,7 +318,6 @@ function frozen(decl: OpenBodyDeclaration): OpenBodyDeclaration {
  *
  * export const machine = jr2Setup({
  *   types: {} as { context: Context; input: Input },
- *   events: [],
  *   actors: {
  *     writer: agent({
  *       model: "anthropic/claude-haiku-5-5",

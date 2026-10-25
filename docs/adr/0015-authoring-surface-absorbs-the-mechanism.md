@@ -55,6 +55,14 @@ casts). It:
   registration, and the only other reader is the Machine doc the Console renders. ADR-0011's anti-global-registry
   argument is preserved — attribution flows through the machine, per-Machine by construction.
 
+`events` is optional, and so is the whole argument: a Machine with no Vocabulary leaves `events` out, or calls
+`jr2Setup()`, and its event type is the Mechanism events alone. Such a Machine still uses `jr2Setup` when it declares a
+door ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)), because xstate's `setup()` does not read the
+`input` of `createMachine`. An empty Vocabulary is the default, not `readonly EventDef[]`, so the type of `event` does
+not widen to every event name. A required `events` was considered and rejected: `events: []` tells the reader nothing,
+and the compiler gave a missing `events` as a large structural diff of `SetupReturn`, not as the name of the missing
+key.
+
 ## Agent menus and gate accepts derive from the machine
 
 A state that invokes an Agent slot derives the workflow events its Turn may pick: its own transitions, its ancestors'

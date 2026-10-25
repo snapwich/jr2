@@ -20,7 +20,6 @@ type Context = Input & { result?: OpenBodyOutput };
 // #region machine
 export const machine = jr2Setup({
   types: {} as { context: Context; input: Input },
-  events: [],
   actors: {
     writer: agent({
       model,

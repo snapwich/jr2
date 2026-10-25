@@ -6,7 +6,6 @@ type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
 
 const body = jr2Setup({
   types: {} as { input: BodyInput },
-  events: [],
   actors: {
     // python and pytest come from the Sandbox Image in ./python.
     tests: command(["python", "-m", "pytest"], { timeout: "15m" }),

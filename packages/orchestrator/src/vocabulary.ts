@@ -187,7 +187,6 @@ export function loadWarningsOf(machine: AnyStateMachine): string[] {
  *
  * export const machine = jr2Setup({
  *   types: {} as { input: Input; context: Input; output: { run: string; ticket: string } },
- *   events: [],
  * }).createMachine({
  *   id: "ticket",
  *   input: runInput,

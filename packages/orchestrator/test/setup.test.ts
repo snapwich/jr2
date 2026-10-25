@@ -13,7 +13,7 @@ import type { AgentDefinition } from "../src/agent.ts";
 import { agent } from "../src/harness-client.ts";
 import { bindRun, mayMove, RegistrationTable, wouldMove, type RunBinding } from "../src/registration.ts";
 import { jr2Setup } from "../src/setup.ts";
-import { loadWarningsOf, vocabularyOf } from "../src/vocabulary.ts";
+import { inputSchemaOf, loadWarningsOf, vocabularyOf } from "../src/vocabulary.ts";
 import { lentOf, openBody } from "../src/open-body.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
@@ -913,4 +913,41 @@ test("an Open body below an Agent's state is no Rest warning: it runs a Chart, a
     loadWarningsOf(machine).filter((w) => w.includes("body")),
     [],
   );
+});
+
+// --- No Vocabulary (ADR-0015, ADR-0033) -----------------------------------------------------------
+
+test("`events` is optional: a Machine with no Vocabulary leaves it out, and still declares a door", () => {
+  const door = z.object({ message: z.string() });
+  const machine = jr2Setup({ types: {} as { input: { message: string } } }).createMachine({
+    id: "quiet",
+    input: door,
+    initial: "idle",
+    states: { idle: { on: { "agent.fault": "idle" } } },
+  });
+  assert.equal(vocabularyOf(machine)?.size, 0, "no workflow event");
+  assert.equal(inputSchemaOf(machine), door, "the door is read with no `events`");
+  assert.equal("input" in machine.config, false, "the zod schema never reaches the xstate config");
+
+  // With no argument at all.
+  const bare = jr2Setup().createMachine({ id: "bare", initial: "idle", states: { idle: {} } });
+  assert.equal(vocabularyOf(bare)?.size, 0);
+
+  // No Vocabulary means no workflow event: an `on` key that is not a jr2 or xstate event is refused.
+  assert.throws(
+    () => jr2Setup().createMachine({ id: "typo", initial: "a", states: { a: { on: { aprove: "a" } as never } } }),
+    /machine "typo" handles event "aprove", which no def in jr2Setup\(\{ events \}\) declares \(declared: none\)/,
+  );
+});
+
+test("with no `events`, the event type holds the Mechanism events alone", () => {
+  jr2Setup({
+    actions: {
+      // Only a Mechanism event type checks here: a workflow event name would be a type error.
+      log: ({ event }) => {
+        const type: "agent.fault" | "workspace.lost" = event.type;
+        void type;
+      },
+    },
+  });
 });

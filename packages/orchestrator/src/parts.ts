@@ -91,7 +91,7 @@ export { open } from "./open.ts";
  *
  * const app: Binding = { url: "https://github.com/you/app.git", ref: "release-2" };
  *
- * const body = jr2Setup({ events: [] }).createMachine({
+ * const body = jr2Setup().createMachine({
  *   id: "body",
  *   initial: "done",
  *   states: { done: { type: "final" } },
@@ -146,7 +146,6 @@ export type Binding = {
  *
  * const body = jr2Setup({
  *   types: {} as { input: Workspaced<RunInput, "service" | "docs" | "config"> },
- *   events: [],
  * }).createMachine({
  *   id: "body",
  *   initial: "done",

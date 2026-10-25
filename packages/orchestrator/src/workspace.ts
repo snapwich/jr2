@@ -778,7 +778,6 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  *
  * const body = jr2Setup({
  *   types: {} as { input: BodyInput },
- *   events: [],
  *   actors: {
  *     build: command(["npm", "run", "build"], { slot: "app" }),
  *   },

@@ -175,7 +175,6 @@ const openSecretOf = new WeakMap<object, object>();
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   events: [],
  *   actors: {
  *     // The command reads the file at $KUBECONFIG. The Agent never reads the secret.
  *     deploy: command(["kubectl", "apply", "-f", "k8s/"], {
@@ -289,7 +288,6 @@ function partOf(s: Secret): TextPart {
  * import { http, jr2Setup, secret, text } from "@jr2/orchestrator";
  *
  * export const machine = jr2Setup({
- *   events: [],
  *   actors: {
  *     notify: http({
  *       method: "POST",
@@ -349,7 +347,6 @@ export function text(strings: TemplateStringsArray, ...values: Array<Secret | st
  * import { bearer, http, jr2Setup, secret } from "@jr2/orchestrator";
  *
  * export const machine = jr2Setup({
- *   events: [],
  *   actors: {
  *     status: http({
  *       method: "GET",
@@ -395,7 +392,6 @@ export function bearer(s: Secret): { readonly bearer: Secret } {
  * import { basic, http, jr2Setup, secret } from "@jr2/orchestrator";
  *
  * export const machine = jr2Setup({
- *   events: [],
  *   actors: {
  *     issue: http({
  *       method: "GET",
@@ -569,7 +565,6 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   events: [],
  *   actors: {
  *     build: command(["npm", "run", "report"]),
  *     upload: http({
@@ -1374,7 +1369,6 @@ function parseDuration(d: Duration): number {
  *
  * export const machine = jr2Setup({
  *   types: {} as { context: { key: string }; input: { key: string } },
- *   events: [],
  *   actors: { comment },
  * }).createMachine({
  *   id: "comment",
