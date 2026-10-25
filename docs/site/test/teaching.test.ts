@@ -40,3 +40,14 @@ test("fromPick says when the state of a pick is a child of the Agent's state and
   assert.ok(text.includes("A sibling state of the Agent's state, as in the second example."), "no sibling shape");
   assert.ok(text.includes('on: { post_note: "posting" },'), "the second example is not the sibling shape");
 });
+
+// A child state alone is not sufficient: a route out of the Agent's state after the Effect ends the
+// Turn, and no Agent reads the output (held.test). So the route of the first example stays in it.
+test("the first fromPick example routes back into the Agent's state after the Effect, so the Agent reads the output", () => {
+  const text = page("reference/authoring-surface/frompick").replace(/\s+/g, " ");
+  const first = text.split("```").find((block) => block.includes("fromPick(postNote)")) ?? "";
+  assert.ok(first.includes('ready: { on: { post_note: "posting", finish: "#done" } },'), "no `ready` in `writing`");
+  assert.ok(first.includes('onDone: "ready" }'), "the route after the Effect leaves the Agent's state");
+  assert.doesNotMatch(first, /onDone: "#/, "a route after the Effect leaves the Agent's state");
+  assert.ok(text.includes("only when the route after the Effect stays in the Agent's state"), "no rule for the route");
+});

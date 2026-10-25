@@ -37,9 +37,13 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   argv's input is one string per key, so the type check catches neither for it: a slot the bound argv names that the
   input does not supply faults when the Effect starts (ADR-0054). The state a pick enters is a child of the Agent's
   state when the Agent must read the Effect's output as its answer, or a sibling when the pick ends the Agent's work
-  (the Turn ends before the Effect runs, and no Agent reads the output); the `fromPick` docs show both, because one
-  shape alone left the author to guess the other. `paramsOf(event, def)` reads the same params for a plain mapper.
-  `answer(({ context, event, chain }) => …)` is an xstate action that sets what the Agent reads when its pick is
+  (the Turn ends before the Effect runs, and no Agent reads the output). A child state is necessary but not sufficient:
+  the route after the Effect must also stay in the Agent's state (`onDone: "ready"`), because a route that leaves it
+  ends the Turn when the Effect ends, and no Agent reads the output. The `fromPick` docs show both shapes, the child one
+  with a route back to `ready` and a `finish` pick, because one shape alone left the author to guess the other. The
+  alternative, a child state whose `onDone` leaves, is rejected for the example: it behaves almost as the sibling does,
+  and an author who copies it to see a result gets nothing. `paramsOf(event, def)` reads the same params for a plain
+  mapper. `answer(({ context, event, chain }) => …)` is an xstate action that sets what the Agent reads when its pick is
   answered (ADR-0024); `chain` is every reply since the pick, oldest first, each a link typed by its slot
   (`{ kind: "output", src, output }`) or by the Machine's events (`{ kind: "event", event }`); its order and length are
   not typed. A link is a reply from outside the Machine; the events it sent itself are skipped. The value is JSON on the

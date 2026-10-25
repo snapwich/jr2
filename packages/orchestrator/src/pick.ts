@@ -179,8 +179,10 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *
  * The state that the pick enters has one of two places:
  * - A child state of the Agent's state, as in the first example. The Turn stays open, and the
- *   pick is outstanding until the Effect ends. The Agent then reads the Effect's output as the
- *   answer, and it can pick again. Use this shape when the Agent must see the result.
+ *   pick is outstanding until the Effect ends. Use this shape when the Agent must see the result.
+ *   The Agent reads the Effect's output as the answer only when the route after the Effect stays
+ *   in the Agent's state, as `onDone: "ready"` does. Then the Agent can pick again. A route that
+ *   leaves the Agent's state ends the Turn when the Effect ends, and no Agent reads the output.
  * - A sibling state of the Agent's state, as in the second example. The pick leaves the Agent's
  *   state, so the Turn ends before the Effect runs, and the Agent does not see the output. Use
  *   this shape for a pick that ends the work of the Agent.
@@ -199,9 +201,15 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *   input: z.object({ text: z.string() }),
  * });
  *
+ * const finish = defineEvent({
+ *   name: "finish",
+ *   description: "The note is posted. This ends your work.",
+ *   input: z.object({}),
+ * });
+ *
  * export const machine = jr2Setup({
  *   types: {} as { context: {}; input: {} },
- *   events: [postNote],
+ *   events: [postNote, finish],
  *   actors: {
  *     writer: agent({
  *       model: "anthropic/claude-haiku-5-5",
@@ -222,14 +230,17 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *     writing: {
  *       invoke: {
  *         src: "writer",
- *         input: { prompt: "Write a note that says the release is out, and post it." },
+ *         input: {
+ *           prompt: "Write a note that says the release is out, post it, and check the reply.",
+ *         },
  *       },
  *       initial: "ready",
  *       states: {
- *         ready: { on: { post_note: "posting" } },
+ *         ready: { on: { post_note: "posting", finish: "#done" } },
  *         posting: {
- *           // The `text` of the pick goes to the input of `note` as it is.
- *           invoke: { src: "note", input: fromPick(postNote), onDone: "#done" },
+ *           // The `text` of the pick goes to the input of `note` as it is. The route goes back
+ *           // to `ready`, in `writing`: the writer reads the output and picks again.
+ *           invoke: { src: "note", input: fromPick(postNote), onDone: "ready" },
  *         },
  *       },
  *     },
