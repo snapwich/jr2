@@ -181,6 +181,8 @@ test("a scaffolded instance can typecheck: tsconfig extends the base shipped by 
 
   const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
   assert.equal(pkg.scripts.typecheck, "tsc --noEmit");
+  // And the check of `jr2 up` with no cluster (ADR-0050): the typecheck plus the load of each module.
+  assert.equal(pkg.scripts.check, "jr2 check");
   // `node:` imports in a workflow (and in the orchestrator source the program pulls in) need these.
   assert.ok(pkg.devDependencies["@types/node"]);
   // And the compiler itself — `jr2 up` RUNS it as a converge gate (ADR-0050), so a folder that

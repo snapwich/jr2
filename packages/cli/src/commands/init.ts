@@ -132,6 +132,11 @@ async function exists(path: string): Promise<boolean> {
 // with `import { z } from "zod"`. A strict node_modules (pnpm) does not let the Instance import a
 // package it does not list, so without it a Machine copied from the bundled Reference is refused by
 // `jr2 up`'s typecheck (ADR-0050). npm hoisted it, by accident. The range is the kit's own.
+//
+// `check` runs `jr2 check`: the typecheck AND the load of each Workflow, which `jr2 up` runs first
+// (ADR-0050). `typecheck` alone does not load a module, so it misses each refusal of
+// `createMachine`, `defineEvent` and `workspace()`. The `jr2` it runs is the Instance's own
+// `@jr2/cli`, which strips the types of the kit sources under `node_modules`.
 function packageJson(name: string): string {
   return `${JSON.stringify(
     {
@@ -139,7 +144,7 @@ function packageJson(name: string): string {
       version: "0.0.0",
       private: true,
       type: "module",
-      scripts: { typecheck: "tsc --noEmit" },
+      scripts: { check: "jr2 check", typecheck: "tsc --noEmit" },
       dependencies: { "@jr2/orchestrator": CLI_VERSION, xstate: "^5.18.0", zod: "^4.4.3" },
       devDependencies: { "@jr2/cli": CLI_VERSION, "@types/node": "^26.0.1", typescript: "^5.6.0" },
     },

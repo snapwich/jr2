@@ -5,6 +5,7 @@
   "type": "module",
   "description": "The default template `jr2 init` renders (ADR-0009/0054): the model of an Instance, kept byte-equal to the CLI's inline templates.",
   "scripts": {
+    "check": "jr2 check",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
