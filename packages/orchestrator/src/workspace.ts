@@ -840,7 +840,9 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
 export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMachine, TSlots extends string>(
   body: TBody & BodyAcceptsDoor<TBody, z.infer<TSchema>, TSlots>,
   options: WorkspaceOptions<TSchema, TSlots>,
-): WorkspaceMachine<z.infer<TSchema>, OutputFrom<TBody>, TBody, TSlots>;
+  // The input is the door without the empty door's `Record<string, never>` (`{}` for `z.object({})`), so
+  // a parent can give `instanceId` to a nested `spec` that reads it (ADR-0033).
+): WorkspaceMachine<WithoutEmptyIndex<z.infer<TSchema>>, OutputFrom<TBody>, TBody, TSlots>;
 /**
  * Run a body Machine in a Sandbox, with no `input` schema: the Workspace starts with any input. Use
  * it for a Workspace that a Pool or another Machine starts. {@link workspace} tells the rest, and

@@ -72,15 +72,19 @@ machine is the one piece of its vocabulary that pattern missed.
   answer: its `input` is the door plus `HostInjectedInput`, so a `spec` gives each run a branch from `instanceId` with
   no cast, and a nested wrapper whose `spec` reads it needs a parent that gives it. `Partial<HostInjectedInput>` was the
   alternative; it was rejected because each root `spec` would then write a fallback for a value that is always there.
-  The input of the wrapper stays the door alone, so no parent must send `instanceId`, and a per-run Repo Slot's mapper
-  keeps the door alone, because a url does not come from a run's id. Counting them as provided rather than subtracting
-  them from what the body demands is deliberate — subtraction would drop the keys from the comparison and with them two
-  cases the check owns: a body that mistypes `instanceId`, and a body whose input is a union, which subtraction compares
-  on its members' shared keys alone. The typed wrapper also checks the seam above it — a parent invoking a nested
-  `workspace()` has its input mapper checked against that wrapper's door, and gets the body's output typed back. With no
-  schema declared the door is permissive, so there is nothing to infer and the mapper's argument is `unknown` — an
-  honest "jr2 does not know", not `any`; a wrapper fed by something other than a caller (a pool worker) states what it
-  is fed by annotating the parameter, as `PoolSpec.cap`/`itemInput` do.
+  The input of the wrapper stays the door alone, so no parent must send `instanceId`. For the door `z.object({})` that
+  input is `{}`, the door without its `Record<string, never>`, so a parent can give `instanceId` to a nested `spec` that
+  reads it; with the raw `z.infer` it could not, and the nested Workspace then pushed each run to `fix/undefined`.
+  `z.infer<…> & Partial<HostInjectedInput>` was the alternative; it was rejected because the index signature makes
+  `instanceId` `never` there too. And a per-run Repo Slot's mapper keeps the door alone, because a url does not come
+  from a run's id. Counting them as provided rather than subtracting them from what the body demands is deliberate —
+  subtraction would drop the keys from the comparison and with them two cases the check owns: a body that mistypes
+  `instanceId`, and a body whose input is a union, which subtraction compares on its members' shared keys alone. The
+  typed wrapper also checks the seam above it — a parent invoking a nested `workspace()` has its input mapper checked
+  against that wrapper's door, and gets the body's output typed back. With no schema declared the door is permissive, so
+  there is nothing to infer and the mapper's argument is `unknown` — an honest "jr2 does not know", not `any`; a wrapper
+  fed by something other than a caller (a pool worker) states what it is fed by annotating the parameter, as
+  `PoolSpec.cap`/`itemInput` do.
 - **The schema is structure, so it is open.** Workflow-detail JSON (`GET /workflows/:name`, the address ADR-0032's
   negotiation kept) serves it as JSON Schema — same band as the Machine doc, and what drives the Console's start form
   before any token is entered. The _submit_ stays `authenticated`; schema open, trigger guarded.

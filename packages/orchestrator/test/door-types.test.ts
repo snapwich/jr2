@@ -26,7 +26,8 @@
 //  11. a door with no fields (`z.object({})`) types a body and its `spec` with no cast: `Workspaced`
 //      removes the `Record<string, never>` that `z.infer` gives it, and `spec` reads `instanceId`
 //      (HostInjectedInput) as a string, on each door; a body that writes `z.infer` of the empty door
-//      is still accepted, and one that demands a field the empty door does not carry is refused.
+//      is still accepted, and one that demands a field the empty door does not carry is refused;
+//      a parent can give `instanceId` to a nested empty-door wrapper.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -352,7 +353,16 @@ const emptyWrapped = workspace(emptyBody, {
     return { branch: `fix/${input.instanceId}` };
   },
 });
-const emptyDoorIsTheInput: Eq<InputFrom<typeof emptyWrapped>, z.infer<typeof emptyDoor>> = true;
+// The wrapper's input is the empty door without its `Record<string, never>`: `{}`, so a parent can
+// give `instanceId` to a nested `spec` that reads it.
+const emptyDoorIsTheInput: Eq<InputFrom<typeof emptyWrapped>, {}> = true;
+void setup({ types: {} as { context: HostInjectedInput }, actors: { work: emptyWrapped } }).createMachine({
+  context: { instanceId: "parent" },
+  initial: "working",
+  states: {
+    working: { invoke: { src: "work", input: ({ context }) => ({ instanceId: context.instanceId }) } },
+  },
+});
 
 // The named fields beside the empty door stay: a root body that reads `instanceId` writes the same
 // composition as for any other door.
