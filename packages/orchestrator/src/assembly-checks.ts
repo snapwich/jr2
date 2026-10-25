@@ -294,11 +294,11 @@ export type AssemblyRefusalInput = {
 /**
  * The door's walk (ADR-0069): the refusals the Orchestrator can see in an Assembly it has already
  * imported. An import error, a missing `export const machine` and a Vocabulary error are the
- * caller's: they throw at import, before this runs. Here: a zod `input` that no door reads, every Open part, a secret the config does
- * not declare (or a literal one too short to scrub), a `file:` image context whose digest the
- * mounted image map does not hold, and a Chart file that does not admit under its wrapper
- * (ADR-0070), each line naming the file. The door runs this after `jr2 up` did its cluster work, so each
- * check is true when the Assembly lands.
+ * caller's: they throw at import, before this runs. Here: a zod `input` that no door reads, every
+ * Open part, a secret the config does not declare (or a literal one too short to scrub), a `file:`
+ * image context whose digest the mounted image map does not hold, and a Chart file that does not
+ * admit under its wrapper (ADR-0070), each line naming the file. The door runs this after `jr2 up`
+ * did its cluster work, so each check is true when the Assembly lands.
  */
 export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<string[]> {
   const lines = [...doorRefusals(input.workflows), ...openPartRefusals(input.workflows)];

@@ -261,7 +261,8 @@ export async function up(args: string[], io: Io): Promise<number> {
   // whether any Machine composes a Sandbox at all — the data-plane switch. It runs right after the
   // gate and before ownership because it holds REFUSALS the compiler cannot make: a part left
   // Open on a registered Machine — a Repo Slot with no url, an Agent with no model (ADR-0054) —
-  // and a zod `input` on a Machine that `jr2Setup` did not make, which no door reads (ADR-0033). Nothing about Agents is published, because the definition rides each Turn.
+  // and a zod `input` on a Machine that `jr2Setup` did not make, which no door reads (ADR-0033).
+  // Nothing about Agents is published, because the definition rides each Turn.
   const workflows = await loadWorkflows(root);
   const carried = partsOf(workflows.map((w) => w.machine));
   const { agents, images: contexts } = carried;
