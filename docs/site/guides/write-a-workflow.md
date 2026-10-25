@@ -51,14 +51,18 @@ shows it as `output`. When a different Machine invokes this Machine, the `onDone
 `context`.
 
 xstate does not use the `output` of a final state as the output of the Machine. It gives that output to the root
-`output` as `event.output`. Thus a Machine that has an `output` only on its final states has no output, and TypeScript
-does not find this error. Write the root `output` in one of these two forms:
+`output` as `event.output`. Thus a Machine that has an `output` only on its final states has no output. TypeScript does
+not find this error, but `createMachine` refuses it when the module loads (see [the refusal](#rules)). Write the root
+`output` in one of these two forms:
 
 - From the context: `output: ({ context }) => ({ reason: context.reason })`.
 - From the final state that ended the run: `output: ({ event }) => event.output as Output`, with an `output` on each
   final state. The example of [Gates](../concepts/gates.md) does this.
 
 Give the same type to `types.output`.
+
+A final state inside a compound state can have an `output` without a root `output`. The `onDone` of that compound state
+gets it as `event.output`. A Machine with no `output`, such as `rollout`, is also correct.
 
 ## Register it and run it
 
@@ -151,6 +155,13 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
   Machine in place of `jr2Setup`. The compiler does not find this error:
   ``refusing: workflow "<workflow>": machine "<id>" has a zod `input` on createMachine, but jr2Setup did not make this Machine, so no door reads that input: a run starts with any input, and the Console start form is only a field for JSON — make the Machine with jr2Setup in place of setup() or createMachine() (leave out `events` if it takes no workflow event) (ADR-0033)``.
   The Orchestrator refuses a publish of that Machine with the same line.
+- `createMachine` refuses an `output` on a final state directly below the root when the root has no `output`, because
+  the run then has no output (see [Give the run an output](#give-the-run-an-output)). Move the `output` to the root, or
+  pass it on from the root:
+  `machine "<id>": final state "<state>" declares an output, and the root has no output — xstate v5 gives a run only its root output, so this output reaches nothing and the run ends with none: write it at the root, as output: ({ context }) => ..., or keep it on the final state and pass it on with output: ({ event }) => event.output at the root`.
+  With more than one such final state, the refusal names each one:
+  `final states "<state>", "<state>" declare an output`. `jr2 up` also refuses this in a Machine that you make with the
+  `setup()` of xstate, and in a child Machine.
 - `workspace()` refuses a body that declares a door. Declare the door with the `input` option of `workspace()`:
   ``workspace(): the body "<id>" declares its own run input, which nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` handles, so the body's schema is not the door. Move it to the wrapper: workspace(body, { input, spec }) (ADR-0033).``
 - `jr2 up` prints each refusal of `defineEvent`, `createMachine` and `workspace()` as `error: <refusal>`, and exits with

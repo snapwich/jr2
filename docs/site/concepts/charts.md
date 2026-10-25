@@ -48,7 +48,7 @@ A Chart is xstate's own JSON config, with these limits:
 - Its events, with a JSON Schema for the input of each. An Agent of the Chart picks these events.
 - Its own Agents, under `agents`, each with a model that the Open body allows.
 - Its `context`, and the `output` of its final state. A Chart reads that `output`. A Machine that you write in
-  TypeScript does not: it needs a root `output` (see
+  TypeScript does not: it needs a root `output`, and `createMachine` refuses it without one (see
   [Write a Workflow](../guides/write-a-workflow.md#give-the-run-an-output)).
 
 A Chart moves data with a [Reference](../reference/glossary.md#reference): a path that jr2 reads when the state starts.
