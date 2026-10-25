@@ -27,13 +27,13 @@ test("xstate v5 itself: a final state's output with no root output gives the run
 });
 
 test("jr2Setup's createMachine refuses a final state's output when the root has no output, and names the fix", () => {
-  assert.throws(() => jr2Setup({ events: [] }).createMachine(lostConfig), REFUSAL);
+  assert.throws(() => jr2Setup().createMachine(lostConfig), REFUSAL);
 });
 
 test("the refusal names each final state directly below the root that declares an output", () => {
   assert.throws(
     () =>
-      jr2Setup({ events: [] }).createMachine({
+      jr2Setup().createMachine({
         id: "two",
         initial: "a",
         states: {
@@ -59,7 +59,7 @@ test("the load walk refuses the same shape in a Machine built with xstate's setu
 });
 
 test("legal: a root output, a final state inside a compound state, and a Machine with no output", () => {
-  const build = jr2Setup({ events: [] });
+  const build = jr2Setup();
   // A root output, from the final state or from context.
   build.createMachine({ ...lostConfig, id: "passed", output: ({ event }) => event.output });
   build.createMachine({ ...lostConfig, id: "fromContext", output: () => ({ outcome: "done" }) });
