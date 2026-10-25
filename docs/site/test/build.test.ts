@@ -153,6 +153,21 @@ test("a group that the AGENTS.md block indexes first, renamed in sitemap.json, i
   ]);
 });
 
+test("a page that the AGENTS.md block says to start with, renamed in sitemap.json, is an error on sitemap.json", async () => {
+  const dir = await site("start-renamed", {});
+  const map = JSON.parse(await readFile(join(dir, "sitemap.json"), "utf8")) as Sitemap;
+  for (const p of allPages(map)) if (p.slug === "guides/write-a-workflow") p.slug = "guides/author-a-workflow";
+  await writeFile(join(dir, "sitemap.json"), JSON.stringify(map));
+  const r = await buildDocs({ site: dir, partial: true });
+  // The `@see` links to the page are errors too; this test is about the block.
+  assert.deepEqual(
+    r.errors.map(formatError).filter((e) => e.includes("AGENTS.md block")),
+    [
+      "docs/site/sitemap.json:1: the AGENTS.md block says to start with guides/write-a-workflow.md, and sitemap.json has no such page",
+    ],
+  );
+});
+
 test("the bundle's frontmatter quotes a value that YAML cannot read plain, such as one that starts with a backtick", () => {
   for (const description of ["`jr2 up` converges the cluster.", "Plain text.", "A: B", "(note) x"]) {
     const head = parseFrontmatter(pageHead("Title", description))!;

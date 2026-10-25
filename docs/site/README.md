@@ -555,6 +555,8 @@ It also changes each relative link:
 - two entries of a generated page with the same anchor, or two entry pages with the same path
 - a group or a page that the `AGENTS.md` block puts first (the Reference pages for an author, Write Machines, What you
   write) that `sitemap.json` does not have
+- a page that the `AGENTS.md` block says to start with (Write a workflow, the contents page of the Authoring surface)
+  that `sitemap.json` does not have
 
 ### Run docs:build
 
