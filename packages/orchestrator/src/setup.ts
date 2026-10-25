@@ -142,8 +142,8 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  * xstate v5. xstate does not read the `output` of a final state as the output of the Machine. It
  * gives that output to the root `output` as `event.output`. Write
  * `output: ({ event }) => event.output as Output` at the root, or make the output from `context`
- * there. `createMachine` refuses an `output` on a final state below the root when the root has no
- * `output` (see the list below).
+ * there. `createMachine` refuses an `output` on a final state directly below the root when the root
+ * has no `output` (see the list below).
  *
  * `createMachine` refuses a Machine that it cannot run as written. Among the refusals:
  * - an `on` key that no listed event has: ``machine "<id>" handles event "<key>", which no def in

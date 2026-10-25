@@ -1,6 +1,6 @@
 // The output of a run (ADR-0015): xstate v5 gives a run only its root `output`, so the load walk
-// refuses a Machine that writes an `output` on a final state below its root and has no root
-// `output`. A final state inside a compound state feeds that state's `onDone` and stays legal, as
+// refuses a Machine that writes an `output` on a final state directly below its root and has no
+// root `output`. A final state inside a compound state feeds that state's `onDone` and stays legal, as
 // does a Machine with no `output` at all.
 
 import { test } from "node:test";
@@ -30,7 +30,7 @@ test("jr2Setup's createMachine refuses a final state's output when the root has 
   assert.throws(() => jr2Setup({ events: [] }).createMachine(lostConfig), REFUSAL);
 });
 
-test("the refusal names each final state below the root that declares an output", () => {
+test("the refusal names each final state directly below the root that declares an output", () => {
   assert.throws(
     () =>
       jr2Setup({ events: [] }).createMachine({
