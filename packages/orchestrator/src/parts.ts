@@ -55,6 +55,7 @@ import { isImageContext } from "./images.ts";
 import { isOpenBody, openBodyDeclarationOf, type OpenBodyDeclaration } from "./open-body.ts";
 import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
+import { refuseLostOutput } from "./run-output.ts";
 import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 
 // --- Repo Slots (ADR-0051) ---------------------------------------------------------------------
@@ -793,6 +794,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     if (walked.has(machine)) return;
     walked.add(machine);
     refuseInlineParts(machine);
+    refuseLostOutput(machine);
     const parts = sandboxPartsOf(machine);
     const user = userSeatOf(parts.user);
     collectImage(parts.image);

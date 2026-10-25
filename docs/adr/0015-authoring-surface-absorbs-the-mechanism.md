@@ -156,6 +156,20 @@ Agent waits (ADR-0024): a Gate whose answer has no target (the Gate stays open a
 that runs until its state exits, not a promise, an Effect, a Gate, an Agent or a child Machine. A child with no `onDone`
 that strands the Agent in it — a one-way mode — is legal and silent on purpose, an Effect child included.
 
+**Load check on the output of a run.** xstate v5 gives a run one output: the `output` at the root of the Machine. The
+`output` of a final state directly below the root goes to that root `output` as `event.output`, and to nothing else.
+Thus a Machine with an `output` on such a final state and no root `output` ends with no output, and `types.output` does
+not stop it. It was the most frequent error in the Machines that Assistants wrote, and an Assistant then told its user a
+result that the run did not have. Thus the load walk refuses that shape: `createMachine` and the parts walk at `jr2 up`
+and at the boot, so a Machine built with xstate's own `setup()`, and a child Machine, are refused too. The refusal names
+each such final state and the two fixes: an `output` at the root from `context`, or
+`output: ({ event }) => event.output` at the root, which passes on the output of the final state. A final state inside a
+compound state is legal: its `output` is the `event.output` of the `onDone` of that state. A Machine with no `output`
+anywhere is legal: its result is in its `context`, and it tells nothing false about an output. Considered and rejected:
+a warning (a run with no output is never what the author meant, and a warning does not stop the false result); and a
+root `output` that jr2 adds when there is none (it would make jr2 Machines behave differently from xstate Machines, and
+a Machine that a different xstate host runs would lose its output again).
+
 **Load checks on Effects** (ADR-0067). `createMachine` refuses a state below an Agent's state that invokes something and
 that nothing enters: what it invokes never runs (a mode nothing enters is only the warning above). Both checks read one
 reachability walk, history defaults included; where a history default the walk cannot resolve may enter such a state,

@@ -51,6 +51,7 @@ import { gate } from "./gate.ts";
 import { attachLent, isOpenBody, openBodyDeclarationOf, type LentParts } from "./open-body.ts";
 import { refuseInlineParts } from "./parts.ts";
 import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
+import { refuseLostOutput } from "./run-output.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
 import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } from "./vocabulary.ts";
 
@@ -139,9 +140,10 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  *
  * The output of a run is the root `output` of `createMachine`, beside `id` and `states`, as in
  * xstate v5. xstate does not read the `output` of a final state as the output of the Machine. It
- * gives that output to the root `output` as `event.output`. Thus a Machine with an `output` only
- * on its final states has no output: write `output: ({ event }) => event.output as Output` at
- * the root, or make the output from `context` there.
+ * gives that output to the root `output` as `event.output`. Write
+ * `output: ({ event }) => event.output as Output` at the root, or make the output from `context`
+ * there. `createMachine` refuses an `output` on a final state below the root when the root has no
+ * `output` (see the list below).
  *
  * `createMachine` refuses a Machine that it cannot run as written. Among the refusals:
  * - an `on` key that no listed event has: ``machine "<id>" handles event "<key>", which no def in
@@ -157,6 +159,14 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  *   a name that the ledger, the report and customize() share: actors: { <name>: <factory>(...) },
  *   then invoke: { src: "<name>" }``. `<part>` is `an Agent`, `an Effect` or `a Workspace`.
  *   `<factory>` is `agent`, the Effect's kind (such as `command`), or `workspace`.
+ * - an `output` on a final state directly below the root, when the root has no `output`:
+ *   ``machine "<id>": final state "<state>" declares an output, and the root has no output — xstate
+ *   v5 gives a run only its root output, so this output reaches nothing and the run ends with none:
+ *   write it at the root, as output: ({ context }) => ..., or keep it on the final state and pass it
+ *   on with output: ({ event }) => event.output at the root``. With more than one such final state,
+ *   it names each one: ``final states "<state>", "<state>" declare an output``. An `output` on a
+ *   final state inside a compound state is legal: the `onDone` of that compound state gets it as
+ *   `event.output`.
  * - a parallel state at or below a state that invokes an Agent: ``machine "<id>": state "<state>"
  *   is parallel, at or below Agent "<slot>"'s state "<state>" — a parallel region below an Agent's
  *   state is reserved for picks the Agent does not wait for, which jr2 does not build; background
@@ -363,6 +373,8 @@ export function jr2Setup<
 
     // A Part written inline has no name (ADR-0049, ADR-0067): refused, with the slot form.
     refuseInlineParts(machine);
+    // A final state's output with no root output (ADR-0015): the run would end with none.
+    refuseLostOutput(machine);
     refuseParallelBelowAgents(machine, def.actors ?? {});
     refuseUnknownSentBy(machine);
     // Before the Effect checks: they ask who may send a writing (`mayTake`), which reads its audience.

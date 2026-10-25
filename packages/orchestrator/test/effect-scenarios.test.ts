@@ -58,6 +58,7 @@ test("s01 — a test gate with no Agent: `onDone` routes on the exit code", asyn
         green: { type: "final", output: { green: true } },
         red: { type: "final", output: { green: false } },
       },
+      output: ({ event }) => event.output as { green: boolean },
     });
   for (const [code, end] of [
     [0, "green"],
