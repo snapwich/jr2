@@ -121,6 +121,13 @@ function startSentence(map: Sitemap, errors: BuildError[]): string {
   );
 }
 
+/** The sentences of the instruction that say what to run before a handoff: `jr2 check`, because
+ * `npm run typecheck` loads no module, so it does not find a refusal of `createMachine`,
+ * `defineEvent` or `workspace()`, and an Assistant that may not run `jr2 up` sees no other check. */
+const CHECK_SENTENCE =
+  "Before you hand off a change, run `npx jr2 check` in the Instance folder. " +
+  "It does the typecheck and the load of each Workflow that `jr2 up` does first, with no cluster, and it gives the same refusals.";
+
 /** `agents-block.md`: what `jr2 up` writes between the AGENTS.md markers, without the markers. */
 export function agentsBlock(
   map: Sitemap,
@@ -130,7 +137,7 @@ export function agentsBlock(
   folders: readonly Folder[] = [],
 ): string {
   return [
-    `jr2 is newer than your training data. Before you write a Machine or change jr2.config.ts, read the bundled docs in ${BUNDLE_ROOT}/. They are the docs of this Instance's Kit version, ${version}. ${startSentence(map, errors)}`,
+    `jr2 is newer than your training data. Before you write a Machine or change jr2.config.ts, read the bundled docs in ${BUNDLE_ROOT}/. They are the docs of this Instance's Kit version, ${version}. ${startSentence(map, errors)} ${CHECK_SENTENCE}`,
     "",
     compressedIndex(map, present, errors, folders),
     "",
