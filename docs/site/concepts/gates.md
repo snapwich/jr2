@@ -32,7 +32,7 @@ is optional. It can hold `meta`, and an authored `gate` id.
 By default, jr2 makes the id of a Gate from the keys of the states. It joins the keys from the root of its Machine down
 to the state that invokes it, with a `.` between them. In the example, the ids are `checks` and `review`. When the
 Machine runs inside a different Machine, the id starts with the invoke ids above it. For example, the `review` Gate of a
-Machine that [`workspace()`](../reference/authoring-surface.md#workspace) wraps has the id `body.review`. In a Pool, the
+Machine that [`workspace()`](../reference/authoring-surface/workspace.md) wraps has the id `body.review`. In a Pool, the
 id of each worker's Gate includes the id of its item. Thus two workers that wait at the same state have different Gate
 ids.
 
@@ -45,7 +45,7 @@ apart, so two runs can use the same id.
 A Gate takes the events of the `on` keys of its own state, and of its child states that invoke no party. It also takes
 the events of its parent states that belong to no other party. The position of the `on` key decides this, as it does for
 the [Menu](../reference/glossary.md#menu) of an Agent. [The Menu](the-menu.md) gives the full rule. Set
-[`audience`](../reference/authoring-surface.md#type-eventaudience) on an event only to give it to the other party too.
+[`audience`](../reference/authoring-surface/type-eventaudience.md) on an event only to give it to the other party too.
 
 A Gate takes some of its events now and other events later, because of the guards. `acceptsNow` is the list of events
 that the run takes from the Gate now. jr2 refuses an event that is not in `acceptsNow`, and the run does not move. When
@@ -114,7 +114,7 @@ A Pool that has a `wake` event serves it as a Gate with the id `source` (see [Po
 - Reference: [`jr2 send`](../reference/cli.md#send), [`jr2 status`](../reference/cli.md#status),
   [`GET /runs/:runId`](../reference/http-api.md#get-runs-runid),
   [`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#post-runs-runid-gates-gate-events),
-  [`GateView`](../reference/http-api.md#type-gateview) and [`sentBy`](../reference/authoring-surface.md#sentby)
+  [`GateView`](../reference/http-api.md#type-gateview) and [`sentBy`](../reference/authoring-surface/sentby.md)
 - [ADR-0011](../reference/decisions/0011-workflow-defined-events.md): a Gate is an addressable resource on a run
 - [ADR-0013](../reference/decisions/0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md): an Agent
   cannot send to a Gate, and a send that the run does not take is refused

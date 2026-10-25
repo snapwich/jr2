@@ -26,12 +26,16 @@ const set: DocsSet = {
     "concepts/workspaces.md",
     "reference/glossary.md",
     "reference/cli.md",
+    "reference/authoring-surface.md",
+    "reference/authoring-surface/workspace.md",
     `reference/decisions/${ADR}`,
   ]),
   skipped: new Set(["guides/write-a-workflow.md"]),
   anchors: new Map([
     ["reference/glossary.md", new Set(["lease", "authoring-surface"])],
     ["reference/cli.md", new Set(["run"])],
+    ["reference/authoring-surface.md", new Set(["effects"])],
+    ["reference/authoring-surface/workspace.md", new Set(["overload-1"])],
   ]),
 };
 
@@ -98,6 +102,20 @@ test("a link to nothing fails with file:line and its target", () => {
   ]);
   assert.match(rewrite("[x](/abs.md)").errors[0]!.message, /root-absolute/);
   assert.match(rewrite("[x](../../../../outside.md)").errors[0]!.message, /does not exist/);
+});
+
+test("a link to an entry that has its own page goes to that page, and its anchor on the contents page names the page", () => {
+  const r = rewrite(
+    [
+      "[`workspace`](../reference/authoring-surface/workspace.md#overload-1)",
+      "[Effects](../reference/authoring-surface.md#effects)",
+      "[`workspace`](../reference/authoring-surface.md#workspace)",
+    ].join("\n"),
+  );
+  assert.deepEqual(r.errors.map(formatError), [
+    "docs/site/concepts/workspaces.md:3: the anchor #workspace is not in reference/authoring-surface.md: the entry is its own page, reference/authoring-surface/workspace.md",
+  ]);
+  assert.ok(r.text.startsWith("[`workspace`](../reference/authoring-surface/workspace.md#overload-1)\n"));
 });
 
 test("a link into a folder that the site build writes fails, even when an earlier build left the file", async () => {

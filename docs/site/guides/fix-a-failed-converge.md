@@ -128,7 +128,7 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   ``error: this instance's TypeScript compiler is missing — install its dependencies (npm, pnpm, or bun), then re-run `jr2 up`.``
 - The Instance must typecheck: `refusing: this instance does not typecheck — nothing was built and nothing was applied`
 - A registered Machine must have no [Open](../reference/glossary.md#open) part. The refusal gives the
-  [`customize()`](../reference/authoring-surface.md#customize) line that binds the part. Put it in
+  [`customize()`](../reference/authoring-surface/customize.md) line that binds the part. Put it in
   `workflows/<workflow>.ts`. Replace `<import>` with the name that you import the Machine as. Give the values in the
   `<>`. See [Bind a shipped Machine's Open parts](bind-open-parts.md).
   - `refusing: workflow "<workflow>" leaves Repo Slot "<slot>" open — bind it where the Machine is registered: export const machine = customize(<import>, { repos: { <slot>: "<url>" } })  (ADR-0051)`
@@ -223,7 +223,7 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `error: this host cannot build for <missing platforms>: a foreign architecture's RUN steps need qemu binfmt emulation, and none is registered (this builder targets <builder platforms>). Install it, then re-run:`,
   then `  docker run --privileged --rm tonistiigi/binfmt --install <arch>`
 - The folder of each [Sandbox Image](../reference/glossary.md#sandbox-image) that a
-  [`workspace()`](../reference/authoring-surface.md#workspace) names must exist:
+  [`workspace()`](../reference/authoring-surface/workspace.md) names must exist:
   ``error: the Sandbox Image context <folder> cannot be read (<code>) — a `workspace()` names its image with `import.meta.resolve("./<dir>")`, so that directory must exist beside the Machine's own module (ADR-0037/0049).``
   See [Add tools to the Sandbox](add-tools-to-the-sandbox.md).
 - Each Secret that [`harness.envFrom`](../reference/config.md#harness-envfrom) names must exist:

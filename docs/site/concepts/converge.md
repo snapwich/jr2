@@ -105,7 +105,7 @@ Each image that a converge uses is one of these kinds:
 | ----------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [Kit image](../reference/glossary.md#kit-image)       | jr2         | It builds nothing. The cluster pulls `jr2-orchestrator`, `jr2-harness` and `jr2-operator` at the tag of the Kit version.                                                             |
 | [Pinned image](../reference/glossary.md#pinned-image) | Upstream    | It builds nothing. The cluster pulls the Envoy image of the [Custodian](../reference/glossary.md#custodian), by its tag and its digest.                                              |
-| Sandbox Image, from a `file:` URL                     | You         | It builds the folder that a [`workspace()`](../reference/authoring-surface.md#workspace) names, and the `images/default/` folder that [`jr2 init`](../reference/cli.md#init) writes. |
+| Sandbox Image, from a `file:` URL                     | You         | It builds the folder that a [`workspace()`](../reference/authoring-surface/workspace.md) names, and the `images/default/` folder that [`jr2 init`](../reference/cli.md#init) writes. |
 | Sandbox Image, from a registry                        | You         | It builds nothing. The cluster pulls the image.                                                                                                                                      |
 
 The Custodian is a container in each [Harness](../reference/glossary.md#harness) pod.

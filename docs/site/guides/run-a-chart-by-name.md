@@ -7,7 +7,7 @@ Keep a [Chart](../reference/glossary.md#chart) under a name, and run it as a
 [Workflow](../reference/glossary.md#workflow).
 
 This example is `workflows/notes.ts`, a [Chart wrapper](../reference/glossary.md#chart-wrapper). Its run input has a
-field `chart` that is [`chartSchema`](../reference/authoring-surface.md#chartschema). Thus it takes a Chart in its run
+field `chart` that is [`chartSchema`](../reference/authoring-surface/chartschema.md). Thus it takes a Chart in its run
 input, and it keeps Charts under names:
 
 <<< @/examples/guides/run-a-chart-by-name/anthropic/notes.ts#imports
@@ -168,7 +168,7 @@ write.
 - [Charts](../concepts/charts.md)
 - [Start a run](start-a-run.md)
 - [Let an Agent write a Chart](let-an-agent-write-a-chart.md)
-- Reference: [`chartSchema`](../reference/authoring-surface.md#chartschema), [`jr2 runs`](../reference/cli.md#runs),
+- Reference: [`chartSchema`](../reference/authoring-surface/chartschema.md), [`jr2 runs`](../reference/cli.md#runs),
   [`PUT /workflows/:wrapper/charts/:name`](../reference/http-api.md#put-workflows-wrapper-charts-name),
   [`GET /workflows/:wrapper/chart-schema`](../reference/http-api.md#get-workflows-wrapper-chart-schema)
 - [ADR-0070](../reference/decisions/0070-a-machine-lends-its-parts-to-a-chart.md): a Machine lends its parts to a Chart.

@@ -68,7 +68,7 @@ time.
 
 A Machine can invoke a different Machine. A Machine can also leave a part [Open](reference/glossary.md#open), such as
 the URL of a Repo or the model of an Agent. You bind that part with
-[`customize()`](reference/authoring-surface.md#customize). Thus a Machine can come from an npm package, such as the
+[`customize()`](reference/authoring-surface/customize.md). Thus a Machine can come from an npm package, such as the
 [`task`](reference/machines.md#task) Machine in `@jr2/machines`.
 
 Read [Composition](concepts/composition.md) and [Pools and Sources](concepts/pools-and-sources.md).
@@ -112,7 +112,7 @@ Read [Converge](concepts/converge.md).
 An error in a workflow or in its config can show only when a run gets to it. A run can take many minutes to get there.
 
 In jr2, a Machine names its Agents, its [Repo Slots](reference/glossary.md#repo-slot) and the Machines that it invokes,
-and TypeScript checks each name. `jr2.config.ts` uses [`defineConfig()`](reference/authoring-surface.md#defineconfig),
+and TypeScript checks each name. `jr2.config.ts` uses [`defineConfig()`](reference/authoring-surface/defineconfig.md),
 so TypeScript checks the config too. `jr2 up` runs the typecheck first. When the typecheck fails, `jr2 up` builds
 nothing and changes nothing on the cluster. Next, it refuses an Open part that no `customize()` binds. Thus you find
 these errors before a run starts.

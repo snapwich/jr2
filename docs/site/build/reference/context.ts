@@ -28,9 +28,10 @@ export type RefContext = {
   program: Program;
   pages: readonly Page[];
   adrs: readonly Adr[];
-  /** Where each name a TSDoc `{@link}` can name is documented: a bundle path and an anchor. The
-   * generators fill it before any page renders. */
-  names: Map<string, { page: string; anchor: string }>;
+  /** Where each name a TSDoc `{@link}` can name is documented: a bundle path, and the anchor of
+   * its entry there. A name with no anchor has the page to itself. The generators fill it before
+   * any page renders. */
+  names: Map<string, { page: string; anchor?: string }>;
   errors: BuildError[];
 };
 
@@ -129,12 +130,14 @@ const BUNDLE_PACKAGE = "@jr2/orchestrator/";
 export const bundlePath = (target: string): string =>
   target.startsWith(BUNDLE_PACKAGE) ? target.slice(BUNDLE_PACKAGE.length) : target;
 
-/** A `{@link}` resolver for the page at `from`. */
+/** A `{@link}` resolver for the page at `from`. A name that has a page to itself links to that
+ * page, and on that page it is not a link. */
 export const linker =
   (ctx: RefContext, from: string) =>
   (name: string): string | undefined => {
     const n = ctx.names.get(name);
     if (!n) return undefined;
+    if (n.anchor === undefined) return n.page === from ? undefined : relativeHref(from, n.page);
     return n.page === from ? `#${n.anchor}` : `${relativeHref(from, n.page)}#${n.anchor}`;
   };
 

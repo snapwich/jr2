@@ -22,7 +22,7 @@ two times. A plain xstate promise has no such record.
 
 ## An Effect is an actor slot
 
-Put an Effect under `actors` in [`jr2Setup`](../reference/authoring-surface.md#jr2setup). Invoke it by its key from a
+Put an Effect under `actors` in [`jr2Setup`](../reference/authoring-surface/jr2setup.md). Invoke it by its key from a
 state. The state's `onDone` gets the output of the Effect. This example is a Workflow with a Workspace. An Agent fixes
 the code, and it can ask for a test run with the pick `run_tests`. When the Agent picks `finished`, the Machine pushes
 the branch:
@@ -43,7 +43,7 @@ the branch:
 
 The Effect has the life of the state that invokes it. It starts when the run enters the state, and it stops when the run
 leaves the state. Its input goes into the run's snapshot. A typo in `src` is a compile error.
-[`customize()`](../reference/authoring-surface.md#customize) binds an [Open](../reference/glossary.md#open) part of the
+[`customize()`](../reference/authoring-surface/customize.md) binds an [Open](../reference/glossary.md#open) part of the
 Effect by its slot key (see [Composition](composition.md)).
 
 [`jr2 up`](../reference/cli.md#up) reads each Effect slot without running it, and prints what it found. For each
@@ -62,8 +62,8 @@ The first line gives the name of the Workflow. Each next line gives the slot of 
 
 ### `command`
 
-[`command`](../reference/authoring-surface.md#command) runs one program. Its argv is a list, and each entry is one
-argument. jr2 starts `argv[0]` with no shell. An [`arg("name")`](../reference/authoring-surface.md#arg) entry is one
+[`command`](../reference/authoring-surface/command.md) runs one program. Its argv is a list, and each entry is one
+argument. jr2 starts `argv[0]` with no shell. An [`arg("name")`](../reference/authoring-surface/arg.md) entry is one
 argument that the input of the Effect fills. Thus an Agent's text cannot become shell syntax. To use a shell, write it
 in the argv: `["sh", "-c", "…"]`. Then the result is the result of your script. The Agent can change the files that the
 script runs, so do not trust its result more than the Agent.
@@ -75,7 +75,7 @@ option). The full output goes to the run's feed.
 
 ### `http`
 
-[`http`](../reference/authoring-surface.md#http) calls a URL. The definition fixes the method, the URL, the headers and
+[`http`](../reference/authoring-surface/http.md) calls a URL. The definition fixes the method, the URL, the headers and
 the auth. The scheme and the host of the URL are literal text. An Effect secret can be in the path of the URL, in a
 header or in the auth, but never in the host. A `request` function makes the part that changes for each run: path
 segments, and a JSON or text body. Thus a value from the run can change a path segment or the body, but not where the
@@ -97,12 +97,12 @@ Agent has no [Sandbox](../reference/glossary.md#sandbox). The `jira` Effect secr
 
 :::
 
-The body can also be a file of the Worktree: `body: file(path)` (see [`file`](../reference/authoring-surface.md#file)).
+The body can also be a file of the Worktree: `body: file(path)` (see [`file`](../reference/authoring-surface/file.md)).
 The default timeout of an `http` Effect is 30 seconds.
 
 ### `push`
 
-[`push`](../reference/authoring-surface.md#push) pushes the Workspace's branch to the
+[`push`](../reference/authoring-surface/push.md) pushes the Workspace's branch to the
 [Binding](../reference/glossary.md#binding) of its Repo Slot. It uses the push credential of the `git.credentials` entry
 that the URL matches (see [`git.credentials`](../reference/config.md#git-credentials)). The Agent never reads that
 credential. These options change what a push publishes:
@@ -120,7 +120,7 @@ branch to the published commits. The Agent's files, index and stash do not chang
 
 ### `dispatch`
 
-[`dispatch`](../reference/authoring-surface.md#dispatch) starts a run of a Workflow. The new run is a run of its own: it
+[`dispatch`](../reference/authoring-surface/dispatch.md) starts a run of a Workflow. The new run is a run of its own: it
 has its own line in [`jr2 runs`](../reference/cli.md#runs), its own Workspaces and its own `CANCEL`. Its record names
 the run that started it: it is **dispatched by** that run. Use `dispatch` when a Machine waits for work, for example at
 a [Gate](../reference/glossary.md#gate) that a webhook answers, and each item of work needs a run of a Workflow that you
@@ -168,7 +168,7 @@ nothing. It does not run in the live Worktree. It runs against one commit: the t
 `dirty: true`.
 
 A `command`, a `push` and an `http` Effect with a file body need a Workspace. Invoke them from the body of a
-[`workspace()`](../reference/authoring-surface.md#workspace). [Architecture](architecture.md) tells what each Effector
+[`workspace()`](../reference/authoring-surface/workspace.md). [Architecture](architecture.md) tells what each Effector
 is, and [Secrets and trust](secrets-and-trust.md) tells how an Effector holds the Effect secrets.
 
 ## Every outcome is output
@@ -177,10 +177,10 @@ An Effect gives each outcome to `onDone`, a failure too. Route on the `outcome` 
 
 | Kind       | The outcomes                                              | The output type                                                           |
 | ---------- | --------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `command`  | `exited`, `timeout`, `killed`, `unknown`                  | [`CommandOutput`](../reference/authoring-surface.md#type-commandoutput)   |
-| `http`     | `response`, `unreachable`, `refused`, `unknown`           | [`HttpOutput`](../reference/authoring-surface.md#type-httpoutput)         |
-| `push`     | `pushed`, `rejected`, `diverged`, `unknown`               | [`PushOutput`](../reference/authoring-surface.md#type-pushoutput)         |
-| `dispatch` | `started`, `settled`, `refused`, `unreachable`, `unknown` | [`DispatchOutput`](../reference/authoring-surface.md#type-dispatchoutput) |
+| `command`  | `exited`, `timeout`, `killed`, `unknown`                  | [`CommandOutput`](../reference/authoring-surface/type-commandoutput.md)   |
+| `http`     | `response`, `unreachable`, `refused`, `unknown`           | [`HttpOutput`](../reference/authoring-surface/type-httpoutput.md)         |
+| `push`     | `pushed`, `rejected`, `diverged`, `unknown`               | [`PushOutput`](../reference/authoring-surface/type-pushoutput.md)         |
+| `dispatch` | `started`, `settled`, `refused`, `unreachable`, `unknown` | [`DispatchOutput`](../reference/authoring-surface/type-dispatchoutput.md) |
 
 A test that fails is `exited` with a code that is not 0. A program that the container does not have is `exited` with
 code 127. An HTTP 4xx or 5xx status is a `response`. A Workflow that refuses the run input of a `dispatch` is `refused`,
@@ -233,13 +233,13 @@ events of the states above it.
 An Agent can start an Effect with a pick. The pick moves the run into a state that invokes the Effect. Three names help
 you write that state. Each one is optional.
 
-- [`fromPick(def, fill)`](../reference/authoring-surface.md#frompick) is the `input` of the state. The params of the
+- [`fromPick(def, fill)`](../reference/authoring-surface/frompick.md) is the `input` of the state. The params of the
   pick go into the Effect's input, by name. `fill` gives only the keys that the Machine adds. In `comment.ts`, the Agent
   gives `body`, and the Machine gives `ticket`. Thus the Agent cannot post on a different ticket. TypeScript checks the
   sum against the input type of the Effect.
-- [`paramsOf(event, def)`](../reference/authoring-surface.md#paramsof) reads the same params in a plain `input` mapper.
+- [`paramsOf(event, def)`](../reference/authoring-surface/paramsof.md) reads the same params in a plain `input` mapper.
   Use it when the Machine changes a param before the Effect gets it.
-- [`answer(fn)`](../reference/authoring-surface.md#answer) sets what the Agent reads when jr2 answers its pick. In
+- [`answer(fn)`](../reference/authoring-surface/answer.md) sets what the Agent reads when jr2 answers its pick. In
   `test-and-push.ts`, the Agent reads one line, or the end of the test output. Without `answer`, it reads the
   `CommandOutput` of the command, as JSON. [The Menu](the-menu.md) tells more about `answer`.
 
@@ -273,9 +273,9 @@ The guides give the refusal text of each rule.
 - [Push and sign a branch](../guides/push-and-sign-a-branch.md)
 - [Start a run from a run](../guides/start-a-run-from-a-run.md)
 - [Workspaces](workspaces.md), [The Menu](the-menu.md), [Secrets and trust](secrets-and-trust.md)
-- Reference: [`command`](../reference/authoring-surface.md#command), [`http`](../reference/authoring-surface.md#http),
-  [`push`](../reference/authoring-surface.md#push), [`dispatch`](../reference/authoring-surface.md#dispatch),
-  [`fromPick`](../reference/authoring-surface.md#frompick), [`answer`](../reference/authoring-surface.md#answer)
+- Reference: [`command`](../reference/authoring-surface/command.md), [`http`](../reference/authoring-surface/http.md),
+  [`push`](../reference/authoring-surface/push.md), [`dispatch`](../reference/authoring-surface/dispatch.md),
+  [`fromPick`](../reference/authoring-surface/frompick.md), [`answer`](../reference/authoring-surface/answer.md)
 - [ADR-0067](../reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md):
   an Effect is an actor slot, and runs at most once unless marked idempotent
 - [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md): an Effector holds

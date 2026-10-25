@@ -14,25 +14,57 @@ import { COMMANDS, nameOf } from "../../../packages/cli/src/command-table.ts";
 import { generateReference, referenceContext, REPO } from "../build/build.ts";
 import { commandAnchor } from "../build/reference/cli.ts";
 import { checkVoice, seeLink, typeDocTail } from "../build/reference/context.ts";
+import { firstSentence } from "../build/reference/surface.ts";
 import { routeAnchor } from "../build/reference/http-api.ts";
 import { allPages, readSitemap } from "../build/sitemap.ts";
 import { sourceFile } from "../build/tsdoc.ts";
 
 const ctx = referenceContext(REPO, allPages(await readSitemap()));
-const { pages } = generateReference(ctx);
+const { pages, entries } = generateReference(ctx);
 const page = (slug: string) => pages.get(slug) ?? assert.fail(`no page ${slug}`);
+const SURFACE = "reference/authoring-surface";
+/** The Authoring surface's own page of a name: `type-<name>` for a type, the name for a value. */
+const pageOf = (name: string, type = false) => page(`${SURFACE}/${type ? "type-" : ""}${name.toLowerCase()}`);
 
 test("the generators report no error on the real code", () => {
   assert.deepEqual(ctx.errors, []);
 });
 
-test("each root export is on the Authoring surface page, under its own heading", async () => {
+test("each root export has its own page, and the Authoring surface contents page links to it", async () => {
   const index = await readFile(join(REPO, "packages/orchestrator/src/index.ts"), "utf8");
   const types = [...index.matchAll(/^export type \{([^}]*)\}/gm)].flatMap((m) => m[1]!.split(",").map((s) => s.trim()));
-  const names = [...Object.keys(surface), ...types];
-  assert.ok(names.length > 30);
-  const text = page("reference/authoring-surface");
-  for (const name of names) assert.ok(text.includes(`\n### \`${name}\`\n`), `${name} is not on the page`);
+  const values = Object.keys(surface);
+  assert.ok(values.length + types.length > 30);
+  const contents = page(SURFACE);
+  for (const [name, type] of [...values.map((v) => [v, false] as const), ...types.map((t) => [t, true] as const)]) {
+    const file = `${type ? "type-" : ""}${name.toLowerCase()}.md`;
+    assert.match(pageOf(name, type), /^(?:Function|Constant|Type), in `/, `${name} has no page of its own`);
+    assert.ok(
+      contents.includes(`- [\`${name}\`](authoring-surface/${file}) (`),
+      `the contents page does not list ${name}`,
+    );
+  }
+  // The contents page holds no entry: each name's signature is on its page.
+  assert.doesNotMatch(contents, /^```ts$/m);
+});
+
+test("the contents page and each entry page are short enough for one read of a file tool", () => {
+  // The Authoring surface was one page of about 200 KB, which a file tool cuts off.
+  const contents = Buffer.byteLength(page(SURFACE));
+  assert.ok(contents < 15 * 1024, `the contents page is ${contents} bytes`);
+  const list = entries.get(SURFACE) ?? assert.fail("the Authoring surface has no entry pages");
+  for (const e of list) {
+    const size = Buffer.byteLength(page(e.slug));
+    assert.ok(size < 15 * 1024, `${e.slug}.md is ${size} bytes`);
+  }
+  assert.ok(!entries.has("reference/machines"), "the machines page is short, and stays one page");
+});
+
+test("a contents line is the first sentence of the TSDoc summary, as plain text", () => {
+  assert.equal(firstSentence("Make a `command` Effect: an actor slot. It runs."), "Make a `command` Effect.");
+  assert.equal(firstSentence("The output `{ a: 1. b }` of x.\nMore."), "The output `{ a: 1. b }` of x.");
+  assert.equal(firstSentence("See {@link Size} and [the guide](x.md) now"), "See `Size` and the guide now");
+  assert.equal(firstSentence(undefined), undefined);
 });
 
 test("each @jr2/machines export is on its page", async () => {
@@ -80,8 +112,8 @@ test("a union type lists one field list per form, and a kit type a signature nam
     text.indexOf("\n<a id=", text.indexOf("\n### `TaskOutput`\n")),
   );
   assert.match(entry, /\*\*Forms\*\*[\s\S]*- Form 1: `outcome`, `branch`[\s\S]*- Form 2: `outcome`/);
-  const surfaceText = page("reference/authoring-surface");
-  assert.ok(surfaceText.includes('<a id="type-eventaudience"></a>\n\n### `EventAudience`'));
+  assert.match(pageOf("EventAudience", true), /^Type, in `/);
+  assert.ok(page(SURFACE).includes("- [`EventAudience`](authoring-surface/type-eventaudience.md): "));
 });
 
 test("a @see target is a sitemap page or an ADR, and anything else is an error", () => {
@@ -94,10 +126,10 @@ test("a @see target is a sitemap page or an ADR, and anything else is an error",
 });
 
 test("a type in a Types section shows its @see links", () => {
-  const text = page("reference/authoring-surface");
-  const at = text.indexOf("\n### `EventAudience`\n");
-  const entry = text.slice(at, text.indexOf("\n<a id=", at));
-  assert.ok(entry.includes("](../concepts/the-menu.md)"), "EventAudience does not link to the Menu page");
+  assert.ok(
+    pageOf("EventAudience", true).includes("](../../concepts/the-menu.md)"),
+    "EventAudience does not link to the Menu page",
+  );
 });
 
 test("on a named type, a bad @see target and a tag the Reference drops are errors at their lines", () => {
@@ -183,12 +215,7 @@ test("each JR2Config field, nested, is on the config page", () => {
     if (!(type.flags & ts.TypeFlags.Object) || type.getCallSignatures().length) return;
     const props = type.getProperties();
     // A type the Authoring surface documents (Size) is linked, not opened.
-    if (
-      depth > 0 &&
-      type.aliasSymbol &&
-      ctx.names.get(type.aliasSymbol.name)?.page === "reference/authoring-surface.md"
-    )
-      return;
+    if (depth > 0 && type.aliasSymbol && ctx.names.get(type.aliasSymbol.name)?.page.startsWith(`${SURFACE}/`)) return;
     for (const p of props) {
       const child = path ? `${path}.${p.name}` : p.name;
       assert.ok(text.includes(`\`${child}\`\n`), `${child} is not on the page`);
@@ -210,11 +237,18 @@ test("each kit type that a signature or a field on a surface page shows has an a
   const anchors = new Set(
     [...pages.values()].flatMap((t) => [...t.matchAll(/<a id="([^"]+)"><\/a>/g)].map((m) => m[1]!)),
   );
-  for (const slug of ["reference/authoring-surface", "reference/machines"]) {
+  // The Authoring surface is its entry pages; the machines page is one page.
+  const surfacePages = (entries.get(SURFACE) ?? []).map((e) => page(e.slug));
+  for (const [slug, texts] of [
+    [SURFACE, surfacePages],
+    ["reference/machines", [page("reference/machines")]],
+  ] as const) {
     // The type plumbing is shown as its declarations alone; what those name is the kit's machinery.
     // An example is the author's own code, with its own type names.
-    const text = page(slug)
-      .split("**Type plumbing.**")[0]!
+    const text = texts
+      .filter((t) => !t.includes("It is type plumbing"))
+      .map((t) => t.split("**Type plumbing.**")[0]!)
+      .join("\n")
       .replace(/\*\*Example\*\*\n\n```ts\n[\s\S]*?^```$/gm, "");
     const shown = [
       ...[...text.matchAll(/^```ts\n([\s\S]*?)^```$/gm)].map((m) => m[1]!),
@@ -255,9 +289,11 @@ test("the TSDoc a Reference page shows names no repo path and no commit", () => 
 });
 
 test("a type marked @internal is listed with its declaration alone", () => {
-  const text = page("reference/authoring-surface");
-  const plumbing = text.slice(text.indexOf("**Type plumbing.**"));
-  assert.ok(plumbing.includes('<a id="type-bodyacceptsdoor"></a>`BodyAcceptsDoor`'), "BodyAcceptsDoor is not listed");
-  assert.doesNotMatch(text, /door-types\.test\.ts|claim 1/);
-  assert.ok(!text.includes("\n### `BodyAcceptsDoor`\n"), "BodyAcceptsDoor has an entry of its own");
+  const contents = page(SURFACE);
+  const plumbing = contents.slice(contents.indexOf("**Type plumbing.**"));
+  assert.ok(plumbing.includes("[`BodyAcceptsDoor`](authoring-surface/type-bodyacceptsdoor.md)"), "it is not listed");
+  // Its page is the line that says what it is, and its declaration: no TSDoc, no fields.
+  const own = pageOf("BodyAcceptsDoor", true);
+  assert.match(own, /^Type, in `[^`]+`\. It is type plumbing: [^\n]*\n\n```ts\n[\s\S]*\n```\n$/);
+  for (const e of entries.get(SURFACE) ?? []) assert.doesNotMatch(page(e.slug), /door-types\.test\.ts|claim 1/);
 });

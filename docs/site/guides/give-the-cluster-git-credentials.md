@@ -8,7 +8,7 @@ Give the cluster the credentials that it uses to clone and push your [Repos](../
 The same list also sets which Repos a run can name. The credentials are the entries of
 [`git.credentials`](../reference/config.md#git-credentials) in `jr2.config.ts`. It is not a list of Repos: a
 [Machine](../reference/glossary.md#machine) names its Repos in the [Repo Slots](../reference/glossary.md#repo-slot) of
-its [`workspace()`](../reference/authoring-surface.md#workspace). This example has three entries:
+its [`workspace()`](../reference/authoring-surface/workspace.md). This example has three entries:
 
 <<< @/examples/guides/give-the-cluster-git-credentials/jr2.config.ts
 
@@ -157,7 +157,7 @@ trust can start a run. The example on this page lets a run name only the reposit
 
 ## Push with the same credentials
 
-A [`push`](../reference/authoring-surface.md#push) [Effect](../reference/glossary.md#effect) uses the entry that its url
+A [`push`](../reference/authoring-surface/push.md) [Effect](../reference/glossary.md#effect) uses the entry that its url
 matches. By default, the clone credential of the entry pushes too. To push with a different credential, give the entry a
 `push` field. The guide [Push and sign a branch](push-and-sign-a-branch.md) gives the push, the signing key and their
 rules.

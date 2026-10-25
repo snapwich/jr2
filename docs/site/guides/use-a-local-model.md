@@ -61,7 +61,7 @@ sets is 0. Then [Compaction](../reference/glossary.md#compaction) has no context
 ## Name the model in an Agent
 
 An Agent names the model in the `model` field of its definition, as `<provider>/<modelId>`: `"local/qwen3.6-35b-a3b"`.
-See [`agent()`](../reference/authoring-surface.md#agent) for the other fields of the definition.
+See [`agent()`](../reference/authoring-surface/agent.md) for the other fields of the definition.
 
 ## Run jr2 up
 

@@ -3,16 +3,22 @@
 // finds. Per name: its kind, its signature, and its TSDoc — the summary, the params with the fields
 // of the option types an author writes, what it returns, its examples, and its `@see` links. Last,
 // the kit types the signatures name that no page documents, so each name has a definition.
+//
+// A surface is one page, or it is split: then its page is a contents page, which gives each name
+// its kind and the first sentence of its TSDoc, and each name has a page of its own in the folder
+// of the same name. A file tool reads the contents whole, and then one entry at a time.
 
 import ts from "typescript";
 import { relative } from "node:path";
-import { anchor, code, fenced, hang } from "../markdown.ts";
+import { relativeHref } from "../links.ts";
+import { anchor, code, fenced, hang, maskCode } from "../markdown.ts";
 import {
   docOf,
   flow,
   functionSignature,
   paramTag,
   printed,
+  renderInline,
   resolveAlias,
   sourceFile,
   typeAliasSignature,
@@ -30,14 +36,20 @@ import {
   type RefContext,
 } from "./context.ts";
 import { fieldsOf, propertyFields, renderFieldBlock, renderFields, type Field } from "./fields.ts";
-import { namedBy, renderTypes, type TypeClosure } from "./types.ts";
+import { dependencyNames, namedBy, renderTypes, typeBlocks, type NamedType, type TypeClosure } from "./types.ts";
 
 export type Kind = "function" | "const" | "type";
 export type Entry = { name: string; kind: Kind; symbol: ts.Symbol; decls: ts.Declaration[]; anchor: string };
 export type EntryGroup = { title?: string; intro?: string; entries: Entry[] };
 
-/** One root's exports, grouped by the comment that heads each export statement. */
-export type Surface = { root: string; page: string; groups: EntryGroup[] };
+/** One root's exports, grouped by the comment that heads each export statement. A `split` surface
+ * gives each name a page of its own. */
+export type Surface = { root: string; page: string; groups: EntryGroup[]; split: boolean };
+
+/** The page of one name of a split surface: `reference/authoring-surface/<anchor>.md`. The anchor
+ * is lower case, so two names that differ only in case (`Customize`, `customize`) are two files on
+ * a file system that ignores case, too. */
+export const entryPage = (page: string, anchor: string): string => `${page.replace(/\.md$/, "")}/${anchor}.md`;
 
 /** The `//` comment block right above a statement, with no empty line between: the group's head. */
 function headComment(sf: ts.SourceFile, stmt: ts.Statement): string | undefined {
@@ -88,7 +100,7 @@ function entryOf(ctx: RefContext, name: string, sym: ts.Symbol, at: ts.Node): En
 
 /** Read a package root's exports in its order. A named export statement's head comment opens a
  * group, `Title: intro`; an `export *` lists its module's exports in their source order. */
-export function readSurface(ctx: RefContext, root: string, page: string): Surface {
+export function readSurface(ctx: RefContext, root: string, page: string, split = false): Surface {
   const { checker } = ctx.program;
   const sf = sourceFile(ctx.program, root);
   const groups: EntryGroup[] = [];
@@ -126,9 +138,9 @@ export function readSurface(ctx: RefContext, root: string, page: string): Surfac
     if (seen.has(e.anchor))
       ctx.errors.push({ file: root, line: 1, message: `two exports share the anchor #${e.anchor}` });
     seen.add(e.anchor);
-    ctx.names.set(e.name, { page, anchor: e.anchor });
+    ctx.names.set(e.name, split ? { page: entryPage(page, e.anchor) } : { page, anchor: e.anchor });
   }
-  return { root, page, groups: groups.filter((g) => g.entries.length) };
+  return { root, page, groups: groups.filter((g) => g.entries.length), split };
 }
 
 // ---- rendering ---------------------------------------------------------------------------------
@@ -281,20 +293,26 @@ function typeLine(ctx: RefContext, sym: ts.Symbol, named: TypeClosure, from: str
   return `Type: ${code(sym.name)}${pkg ? `, from ${code(pkg)}` : ""}.`;
 }
 
-function renderEntry(ctx: RefContext, e: Entry, from: string, named: TypeClosure): string {
-  const parts = [`${anchor(e.anchor)}\n\n### ${code(e.name)}`];
-  parts.push(
-    `${e.kind === "type" ? "Type" : e.kind === "const" ? "Constant" : "Function"}, in ${declaredIn(ctx, e.decls[0]!)}.`,
-  );
+const KIND_TITLE: Record<Kind, string> = { function: "Function", const: "Constant", type: "Type" };
+
+/** An entry as Markdown blocks after its heading: its kind, then each overload's signature and
+ * TSDoc. `back` is the line that leads from an entry's own page to its contents page. An overload
+ * has a heading one level under the entry's. */
+function entryBlocks(ctx: RefContext, e: Entry, from: string, named: TypeClosure, sub: string, back = ""): string[] {
+  const parts = [`${KIND_TITLE[e.kind]}, in ${declaredIn(ctx, e.decls[0]!)}.${back}`];
   const shown = new Set<string>();
   e.decls.forEach((d, i) => {
-    if (e.decls.length > 1) parts.push(`#### Overload ${i + 1}`);
+    if (e.decls.length > 1) parts.push(`${sub} Overload ${i + 1}`);
     parts.push(fenced("ts", signatureOf(ctx, e, d)));
     const short = shortenedType(ctx, e, d);
     if (short) parts.push(typeLine(ctx, short, named, from));
     parts.push(...renderDoc(ctx, docOf(ctx.program, d), d, e.symbol, from, shown));
   });
-  return parts.join("\n\n");
+  return parts;
+}
+
+function renderEntry(ctx: RefContext, e: Entry, from: string, named: TypeClosure): string {
+  return [`${anchor(e.anchor)}\n\n### ${code(e.name)}`, ...entryBlocks(ctx, e, from, named, "####")].join("\n\n");
 }
 
 /** A page's contents: each group, and a link to each of its names. */
@@ -307,6 +325,19 @@ function contents(s: Surface): string {
     .join("\n");
 }
 
+/** The first sentence of a TSDoc summary, as one line of plain Markdown: a `{@link}` is its code
+ * or its label, and a link is its text. `undefined` for no summary. */
+export function firstSentence(summary: string | undefined): string | undefined {
+  if (!summary?.trim()) return undefined;
+  const text = renderInline(summary, () => undefined)
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  // The end of the sentence is a stop and a space, outside a code span.
+  const end = /[.!?:](?=\s)/.exec(maskCode(text));
+  return end ? text.slice(0, end.index + 1).replace(/:$/, ".") : text;
+}
+
 /** The nodes of a declaration that its signature shows: never a function's body. */
 function signatureNodes(d: ts.Declaration): ts.Node[] {
   if (ts.isFunctionDeclaration(d)) return [...(d.typeParameters ?? []), ...d.parameters, ...(d.type ? [d.type] : [])];
@@ -314,31 +345,117 @@ function signatureNodes(d: ts.Declaration): ts.Node[] {
   return [d];
 }
 
-export function renderSurface(ctx: RefContext, s: Surface, intro: string): string {
+/** A page that a split surface adds beside its contents page: its bundle path without `.md`, its
+ * title and its H1, its description (the first sentence of its TSDoc), and its body. */
+export type EntryPage = { slug: string; title: string; heading: string; description: string; body: string };
+
+/** A surface's pages: its page body, and for a split surface, the page of each name. */
+export type SurfacePages = { body: string; entries: EntryPage[] };
+
+const TYPES_HEADING = "## Types these signatures name";
+
+export function renderSurface(ctx: RefContext, s: Surface, intro: string): SurfacePages {
   // The kit types a signature names that no page documents, first, so a `{@link}` finds them.
   const nodes = s.groups.flatMap((g) => g.entries.flatMap((e) => e.decls.flatMap(signatureNodes)));
   const shortened = s.groups.flatMap((g) =>
     g.entries.flatMap((e) => e.decls.flatMap((d) => shortenedType(ctx, e, d) ?? [])),
   );
-  const named = namedBy(ctx, nodes, s.page, (name) => ctx.names.has(name), "type", shortened);
+  const place = s.split ? (a: string) => entryPage(s.page, a) : s.page;
+  const named = namedBy(ctx, nodes, place, (name) => ctx.names.has(name), "type", shortened);
+  const pkg = s.root.startsWith("packages/machines/") ? "@jr2/machines" : "@jr2/orchestrator";
+  if (s.split) return renderSplit(ctx, s, intro, named, pkg);
   const sections = s.groups.map((g) => {
     const head = g.title ? [`## ${g.title}`] : [];
     const intro = g.intro ? [renderProse(ctx, g.intro[0]!.toUpperCase() + g.intro.slice(1), s.page)] : [];
     return [...head, ...intro, ...g.entries.map((e) => renderEntry(ctx, e, s.page, named))].join("\n\n");
   });
-  const pkg = s.root.startsWith("packages/machines/") ? "@jr2/machines" : "@jr2/orchestrator";
   const types = named.types.length
     ? [
         renderTypes(
           ctx,
           named,
           s.page,
-          "## Types these signatures name",
+          TYPES_HEADING,
           `A signature above names these types, or a type here names them. They are not exports of ${code(pkg)}, so a workflow module does not import them by name. With them, each kit type that this page shows has a definition on a Reference page.`,
         ),
       ]
     : [];
-  return [intro, "## Contents", contents(s), ...sections, ...types].join("\n\n") + "\n";
+  return { body: [intro, "## Contents", contents(s), ...sections, ...types].join("\n\n") + "\n", entries: [] };
+}
+
+/** A split surface: its contents page, and a page for each export and each type it names. */
+function renderSplit(ctx: RefContext, s: Surface, intro: string, named: TypeClosure, pkg: string): SurfacePages {
+  const entries: EntryPage[] = [];
+  // Add the page of one name, and give the href of that page from the contents page.
+  const add = (name: string, anchor: string, description: string, body: string[]) => {
+    const page = entryPage(s.page, anchor);
+    entries.push({
+      slug: page.replace(/\.md$/, ""),
+      title: name,
+      heading: code(name),
+      description,
+      body: body.join("\n\n") + "\n",
+    });
+    return relativeHref(s.page, page);
+  };
+  const home = (from: string) => `[${pageTitle(ctx, s.page)}](${relativeHref(from, s.page)})`;
+  const line = (href: string, name: string, kind: string, summary: string | undefined) =>
+    `- [${code(name)}](${href})${kind}${summary ? `: ${summary}` : ""}`;
+
+  const sections = s.groups.map((g) => {
+    const head = g.title ? [`## ${g.title}`] : [];
+    const text = g.intro ? [renderProse(ctx, g.intro[0]!.toUpperCase() + g.intro.slice(1), s.page)] : [];
+    const items = g.entries.map((e) => {
+      const from = entryPage(s.page, e.anchor);
+      const summary = firstSentence(docOf(ctx.program, e.decls[0]!)?.summary);
+      const back = ` It is an export of ${code(pkg)}, on the ${home(from)} page${g.title ? `, in ${g.title}` : ""}.`;
+      const href = add(
+        e.name,
+        e.anchor,
+        summary ?? `${KIND_TITLE[e.kind]}, an export of ${pkg}.`,
+        entryBlocks(ctx, e, from, named, "##", back),
+      );
+      return line(href, e.name, ` (${KIND_TITLE[e.kind].toLowerCase()})`, summary);
+    });
+    return [...head, ...text, items.join("\n")].join("\n\n");
+  });
+
+  const typeEntry = (t: NamedType) => {
+    const from = entryPage(s.page, t.anchor);
+    const summary = t.plumbing ? undefined : firstSentence(docOf(ctx.program, t.decl)?.summary);
+    const what = t.plumbing
+      ? ` It is type plumbing: it computes a type from the types of a Machine or of its parts, and a workflow module does not write it. A signature on the ${home(from)} page names it, so its declaration is here.`
+      : ` A signature or a type on the ${home(from)} page names it. It is not an export of ${code(pkg)}, so a workflow module does not import it by name.`;
+    return add(t.name, t.anchor, summary ?? `A type that the ${pageTitle(ctx, s.page)} names.`, [
+      `Type, in ${declaredIn(ctx, t.decl)}.${what}`,
+      ...typeBlocks(ctx, t, from),
+    ]);
+  };
+  const types: string[] = [];
+  if (named.types.length) {
+    types.push(
+      TYPES_HEADING,
+      `A signature above names these types, or a type here names them. They are not exports of ${code(pkg)}, so a workflow module does not import them by name.`,
+    );
+    const own = named.types.filter((t) => !t.plumbing);
+    if (own.length)
+      types.push(
+        own.map((t) => line(typeEntry(t), t.name, "", firstSentence(docOf(ctx.program, t.decl)?.summary))).join("\n"),
+      );
+    const plumbing = named.types.filter((t) => t.plumbing);
+    if (plumbing.length)
+      types.push(
+        `**Type plumbing.** These types compute a type from the types of a Machine or of its parts. A workflow module does not write them. Each has a page with its declaration: ${plumbing.map((t) => `[${code(t.name)}](${typeEntry(t)})`).join(", ")}.`,
+      );
+    const deps = dependencyNames(named, true);
+    if (deps) types.push(deps);
+  }
+  return { body: [intro, ...sections, ...types].join("\n\n") + "\n", entries };
+}
+
+/** The sitemap title of a Reference page, by its bundle path. */
+function pageTitle(ctx: RefContext, page: string): string {
+  return ctx.pages.find((p) => `${p.slug}.md` === page)?.title ?? page;
 }
 
 /** Every `@example` on a surface, by the name that carries it, for the typecheck test. */

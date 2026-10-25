@@ -6,11 +6,11 @@ description: Run a program or call a URL as an Effect, give it input from a pick
 Run a program in the [Workspace](../reference/glossary.md#workspace), or call a URL, as an
 [Effect](../reference/glossary.md#effect), and route the [Machine](../reference/glossary.md#machine) on its output.
 
-Put the Effect under `actors` in [`jr2Setup`](../reference/authoring-surface.md#jr2setup), beside the
+Put the Effect under `actors` in [`jr2Setup`](../reference/authoring-surface/jr2setup.md), beside the
 [Agents](../reference/glossary.md#agent). Then invoke it by its key from a state, and route on its output in `onDone`.
 In this [Workflow](../reference/glossary.md#workflow), a coder fixes the tests. It picks `run_test` to run one test file
-with a [`command`](../reference/authoring-surface.md#command) Effect. When it picks `finished`, an
-[`http`](../reference/authoring-surface.md#http) Effect posts its summary to a URL. Save the file as
+with a [`command`](../reference/authoring-surface/command.md) Effect. When it picks `finished`, an
+[`http`](../reference/authoring-surface/http.md) Effect posts its summary to a URL. Save the file as
 `workflows/fix-and-report.ts` in your [Instance](../reference/glossary.md#instance):
 
 ::: tabs key:provider
@@ -46,7 +46,7 @@ HOOK_TOKEN=<token>
 ## Run a command
 
 `command(argv, options)` runs one program. `argv` is a list, and each entry is one argument. jr2 starts `argv[0]` with
-no shell. An [`arg("name")`](../reference/authoring-surface.md#arg) entry is one argument that the input of the Effect
+no shell. An [`arg("name")`](../reference/authoring-surface/arg.md) entry is one argument that the input of the Effect
 fills, whatever its characters. To use a shell, write it in the argv: `["sh", "-c", "<script>"]`.
 
 The options:
@@ -64,10 +64,10 @@ A `command` with no Effect secret runs in the [Harness](../reference/glossary.md
 [Sandbox](../reference/glossary.md#sandbox), in the Worktree, beside the
 [Working tools](../reference/glossary.md#working-tools) of the Agent. It uses the tools of the
 [Sandbox Image](../reference/glossary.md#sandbox-image). Thus invoke it in the body of a
-[`workspace()`](../reference/authoring-surface.md#workspace).
+[`workspace()`](../reference/authoring-surface/workspace.md).
 
 Each outcome is output for `onDone`, also a failure. Route on `outcome`
-([`CommandOutput`](../reference/authoring-surface.md#type-commandoutput)):
+([`CommandOutput`](../reference/authoring-surface/type-commandoutput.md)):
 
 - `exited`, with `code` and `tail`. A test that fails is `exited` with a `code` that is not 0. A program that the
   container does not have is `exited` with code 127.
@@ -78,7 +78,7 @@ Each outcome is output for `onDone`, also a failure. Route on `outcome`
 ## Use an Effect secret in a command
 
 A program that needs a credential gets it from the `env` option. Each value is an Effect secret, for example
-`env: { NODE_AUTH_TOKEN: secret("npm-token") }`. [`secret("<name>")`](../reference/authoring-surface.md#secret) gives
+`env: { NODE_AUTH_TOKEN: secret("npm-token") }`. [`secret("<name>")`](../reference/authoring-surface/secret.md) gives
 the value. `secret("<name>").path` gives the path of a file that holds the value. The name is an entry of the `secrets`
 list of `jr2.config.ts`, as for `hook-token`.
 
@@ -100,10 +100,10 @@ image must hold the program.
 
 - `method`: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS`.
 - `url`: `http://` or `https://`, then a literal host. An Effect secret can be only in the path, in a
-  [`text`](../reference/authoring-surface.md#text) template:
+  [`text`](../reference/authoring-surface/text.md) template:
   `` text`https://api.example.com/bot${secret("<name>")}/send` ``.
-- `auth`: the `Authorization` header. Use [`bearer(secret("<name>"))`](../reference/authoring-surface.md#bearer),
-  [`basic(user, password)`](../reference/authoring-surface.md#basic), or a `text` that is the full value.
+- `auth`: the `Authorization` header. Use [`bearer(secret("<name>"))`](../reference/authoring-surface/bearer.md),
+  [`basic(user, password)`](../reference/authoring-surface/basic.md), or a `text` that is the full value.
 - `headers`: the headers that are the same for each run. Each name is in lower case. A value is a string, a
   `secret("<name>")` or a `text`.
 - `input`: the zod schema of the input of the Effect. jr2 parses the input with it before the call.
@@ -113,7 +113,7 @@ image must hold the program.
 - `maxBody`: how many bytes of a text body the output keeps. The default is 65536.
 - `idempotent`: `true` when a second call is safe. The default is `false`. See [Effects](../concepts/effects.md).
 
-To send a file of the Worktree as the body, use [`file(path)`](../reference/authoring-surface.md#file) as `body`. jr2
+To send a file of the Worktree as the body, use [`file(path)`](../reference/authoring-surface/file.md) as `body`. jr2
 sends a file body only with `PUT`, `POST` or `PATCH`.
 
 An `http` Effect runs in the [Instance Effector](../reference/glossary.md#instance-effector). The
@@ -122,7 +122,7 @@ the value. You can invoke an `http` Effect in a Machine with no Workspace. An `h
 Sandbox Effector, so invoke it in the body of a `workspace()`.
 
 Each outcome is output for `onDone`. Route on `outcome`
-([`HttpOutput`](../reference/authoring-surface.md#type-httpoutput)):
+([`HttpOutput`](../reference/authoring-surface/type-httpoutput.md)):
 
 - `response`, with `status`, `headers`, `contentType`, `size` and, for a text body, `body`. A 4xx or 5xx status is a
   `response` too. The example goes to `done` only for a status below 300.
@@ -135,15 +135,15 @@ Each outcome is output for `onDone`. Route on `outcome`
 The input of an Effect is the `input` of the invoke. When a pick of the Agent enters the state, the input can come from
 the params of the pick:
 
-- [`fromPick(def)`](../reference/authoring-surface.md#frompick) gives each param of the pick to the key of the same
+- [`fromPick(def)`](../reference/authoring-surface/frompick.md) gives each param of the pick to the key of the same
   name. In the `testing` state, the `file` of `run_test` goes to `arg("file")`.
 - `fromPick(def, fill)` adds the keys that `fill` gives. In the `reporting` state, the Agent gives `summary`, and the
   Machine gives `branch`. Thus the Agent cannot choose the branch in the report.
-- [`paramsOf(event, def)`](../reference/authoring-surface.md#paramsof) reads the params in a plain `input` function. Use
+- [`paramsOf(event, def)`](../reference/authoring-surface/paramsof.md) reads the params in a plain `input` function. Use
   it when the Machine changes a param before the Effect gets it.
 
 TypeScript checks the keys of the pick and of `fill` against the input of the Effect. When the Agent's state holds the
-Effect, the Agent waits for the answer to its pick. [`answer(fn)`](../reference/authoring-surface.md#answer) sets that
+Effect, the Agent waits for the answer to its pick. [`answer(fn)`](../reference/authoring-surface/answer.md) sets that
 answer. In the `testing` state, the Agent reads one line, or the end of the test output. Without `answer`, it reads the
 `CommandOutput` of the command, as JSON.
 
@@ -254,7 +254,7 @@ When you call `secret()`, `bearer()` or `text`, they refuse:
 - a param of a pick that enters an Effect's state with no `fromPick`, when nothing reads it:
   `machine "<id>": pick "<pick>" enters state "<state>" (Effect "<slot>"), which never reads "<param>": the Agent supplies it and nothing uses it — map it in an invoke's input, store it with assign, or drop it from the def`
 
-[`paramsOf()`](../reference/authoring-surface.md#paramsof) refuses an event that is not the pick:
+[`paramsOf()`](../reference/authoring-surface/paramsof.md) refuses an event that is not the pick:
 `state entered by "<event>", but its input reads the params of pick "<pick>"`
 
 `jr2 up` refuses:
@@ -273,10 +273,10 @@ When you call `secret()`, `bearer()` or `text`, they refuse:
 - [Secrets and trust](../concepts/secrets-and-trust.md): who holds an Effect secret.
 - [The Menu](../concepts/the-menu.md): how a pick waits for its answer.
 - [Push and sign a branch](push-and-sign-a-branch.md): the `push` Effect.
-- Reference: [`command`](../reference/authoring-surface.md#command),
-  [`CommandOptions`](../reference/authoring-surface.md#type-commandoptions),
-  [`http`](../reference/authoring-surface.md#http), [`secret`](../reference/authoring-surface.md#secret),
-  [`fromPick`](../reference/authoring-surface.md#frompick) and [`answer`](../reference/authoring-surface.md#answer).
+- Reference: [`command`](../reference/authoring-surface/command.md),
+  [`CommandOptions`](../reference/authoring-surface/type-commandoptions.md),
+  [`http`](../reference/authoring-surface/http.md), [`secret`](../reference/authoring-surface/secret.md),
+  [`fromPick`](../reference/authoring-surface/frompick.md) and [`answer`](../reference/authoring-surface/answer.md).
 - [ADR-0067](../reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md):
   an Effect is an actor slot, and runs at most once unless marked idempotent.
 - [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md): an Effector holds

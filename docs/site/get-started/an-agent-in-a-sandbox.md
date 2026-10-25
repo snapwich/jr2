@@ -78,7 +78,7 @@ The shipped Machine [`task`](../reference/machines.md#task) gives one prompt to 
 
 `task` cannot know your Repo, and it cannot pay for your model. Thus it leaves two parts
 [Open](../reference/glossary.md#open): its [Repo Slots](../reference/glossary.md#repo-slot) and the model of its coder.
-You bind the two with [`customize()`](../reference/authoring-surface.md#customize).
+You bind the two with [`customize()`](../reference/authoring-surface/customize.md).
 
 Make the file `workflows/task.ts`. Replace `<you>` and `<version>` in it:
 

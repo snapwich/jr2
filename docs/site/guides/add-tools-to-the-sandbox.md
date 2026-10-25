@@ -4,7 +4,7 @@ description: Put the programs that your Agents use into the Sandbox Image, or ru
 ---
 
 Put the programs that your [Agents](../reference/glossary.md#agent) and
-[`command`](../reference/authoring-surface.md#command) [Effects](../reference/glossary.md#effect) use into the
+[`command`](../reference/authoring-surface/command.md) [Effects](../reference/glossary.md#effect) use into the
 [Sandbox Image](../reference/glossary.md#sandbox-image).
 
 A [Workspace](../reference/glossary.md#workspace) runs its body in a [Sandbox](../reference/glossary.md#sandbox): a pod
@@ -24,7 +24,7 @@ Use this table to choose:
 ## Add a tool to the default image
 
 `jr2 init` writes `images/default/Dockerfile`. Each Workspace that names no `image` in
-[`workspace()`](../reference/authoring-surface.md#workspace) uses it. This example adds pnpm to the file that `jr2 init`
+[`workspace()`](../reference/authoring-surface/workspace.md) uses it. This example adds pnpm to the file that `jr2 init`
 wrote:
 
 <<< @/examples/guides/add-tools-to-the-sandbox/images/default/Dockerfile{dockerfile}
@@ -123,7 +123,7 @@ this example, `workflows/pytest.ts` runs the tests of a Python [Repo](../referen
   the tag.
 
 A Machine that you register from a package, such as `task` from [`@jr2/machines`](../reference/machines.md), takes an
-image from [`customize()`](../reference/authoring-surface.md#customize): `customize(task, { image })`. The value has the
+image from [`customize()`](../reference/authoring-surface/customize.md): `customize(task, { image })`. The value has the
 same two forms, and it replaces the image of the Machine's `workspace()`. See
 [Bind a shipped Machine's Open parts](bind-open-parts.md).
 
@@ -205,9 +205,9 @@ container, the [Sandbox Effector](../reference/glossary.md#sandbox-effector). By
 - [Workspaces](../concepts/workspaces.md): the pod, the Sandbox Image and the User Container.
 - [Converge](../concepts/converge.md): how `jr2 up` builds and loads the images.
 - [Look inside a Sandbox](look-inside-a-sandbox.md)
-- Reference: [`workspace`](../reference/authoring-surface.md#workspace),
-  [`SandboxOptions`](../reference/authoring-surface.md#type-sandboxoptions),
-  [`UserContainer`](../reference/authoring-surface.md#type-usercontainer), [`jr2 up`](../reference/cli.md#up)
+- Reference: [`workspace`](../reference/authoring-surface/workspace.md),
+  [`SandboxOptions`](../reference/authoring-surface/type-sandboxoptions.md),
+  [`UserContainer`](../reference/authoring-surface/type-usercontainer.md), [`jr2 up`](../reference/cli.md#up)
 - [ADR-0037](../reference/decisions/0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md): the Instance
   builds its Sandbox Images, and jr2 injects the Harness.
 - [ADR-0005](../reference/decisions/0005-sandbox-pod-composition.md): the containers of the Sandbox pod.

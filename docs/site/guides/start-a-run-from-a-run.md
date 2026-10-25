@@ -165,8 +165,8 @@ the token together:
 - [Effects](../concepts/effects.md)
 - [Machines and Workflows](../concepts/machines-and-workflows.md)
 - [Durable runs](../concepts/durable-runs.md): `CANCEL`, and how long jr2 keeps a run.
-- Reference: [`dispatch`](../reference/authoring-surface.md#dispatch),
-  [`DispatchOutput`](../reference/authoring-surface.md#type-dispatchoutput),
+- Reference: [`dispatch`](../reference/authoring-surface/dispatch.md),
+  [`DispatchOutput`](../reference/authoring-surface/type-dispatchoutput.md),
   [`POST /workflows/:name/runs`](../reference/http-api.md#post-workflows-name-runs)
 - [ADR-0071](../reference/decisions/0071-a-run-starts-a-run-through-a-dispatch-effect.md): a run starts a run through a
   `dispatch` Effect.

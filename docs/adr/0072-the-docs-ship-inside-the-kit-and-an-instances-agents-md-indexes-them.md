@@ -14,6 +14,12 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
 - **One Markdown source, three outputs.**
   - **The bundle.** `@jr2/orchestrator` ships `docs/`: every page of the sitemap, the generated Reference, the Glossary
     and the Decisions, as plain Markdown. No site-generator syntax reaches it. It is the main channel for an Assistant.
+    Each page is at its slug, such as `concepts/gates.md`, and each ADR is at `reference/decisions/<file>`. An Assistant
+    reads a page with its file tool, which cuts off a long file. So the Authoring surface is two parts:
+    `reference/authoring-surface.md`, a contents page that gives each name its kind and the first sentence of its TSDoc,
+    and `reference/authoring-surface/<anchor>.md`, one page for each export and for each type that a signature names.
+    One page of all the names is about 200 KB, and the contents page is less than 15 KB. A link to an entry goes to its
+    page. The other Reference pages are short, and each one stays one page.
   - **The `AGENTS.md` block.** A compressed index of the bundle, and one instruction: jr2 is newer than your training
     data, so read the bundled docs before you write a Machine or config.
   - **The site**, on GitHub Pages. HTML for humans, and every page also at a `.md` URL, plus `llms.txt`, for tools that
@@ -32,14 +38,15 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
   exists for it. A broken marker pair is reported, and `up` does not change the file.
 - **The Reference is generated from the code wherever the code holds the facts.**
 
-  | Page                               | Source                                                          |
-  | ---------------------------------- | --------------------------------------------------------------- |
-  | Authoring surface, `@jr2/machines` | TSDoc on the exports — for the surface, exactly the root's list |
-  | `jr2.config.ts`                    | TSDoc on the `JR2Config` fields                                 |
-  | CLI                                | a structured command table, which also prints `--help`          |
-  | HTTP API                           | the route table in `http.ts`, made data                         |
-  | Mechanism events                   | the code that defines them                                      |
-  | Glossary, Decisions                | `GLOSSARY.md` and `docs/adr/`, rendered as they are             |
+  | Page                                                    | Source                                                 |
+  | ------------------------------------------------------- | ------------------------------------------------------ |
+  | Authoring surface: a contents page, and a page per name | TSDoc on the exports, exactly the root's list          |
+  | `@jr2/machines`                                         | TSDoc on the exports                                   |
+  | `jr2.config.ts`                                         | TSDoc on the `JR2Config` fields                        |
+  | CLI                                                     | a structured command table, which also prints `--help` |
+  | HTTP API                                                | the route table in `http.ts`, made data                |
+  | Mechanism events                                        | the code that defines them                             |
+  | Glossary, Decisions                                     | `GLOSSARY.md` and `docs/adr/`, rendered as they are    |
 
   The TSDoc on an Authoring surface export is written for the author: what it does, what it refuses, what to read next,
   and one example. Maintainer reasoning goes in `//` comments in the body. The packages ship their `.ts` source, so an
@@ -75,6 +82,11 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
   one. An Assistant also fetches over the network inconsistently, and some run without network.
 - **A separate `@jr2/docs` package.** Rejected: the Instance must install it and pin it to the Kit version, and a
   mismatch is silent. Inside `@jr2/orchestrator`, it cannot mismatch.
+- **The Authoring surface as one page.** Rejected: an Assistant's file tool cuts it off, so it reads the first entries
+  and not the rest.
+- **An entry page named by its export, such as `Customize.md`.** Rejected: `customize` and `Customize` are both exports,
+  and on a file system that ignores case (macOS, Windows) the two are one file. A page is named by its anchor, which is
+  lower case and starts with `type-` for a type.
 - **A hand-written Reference.** Rejected: it drifts from the code, and the Reference is what an Assistant trusts most.
 - **Copies of the Glossary and the ADRs committed inside the package**, kept equal by a drift check. Rejected: two
   copies of one text, to avoid one pack-time step.

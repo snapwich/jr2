@@ -6,7 +6,7 @@ description: How a Workflow gets a git Worktree in a Sandbox, and how long it ke
 A [Workspace](../reference/glossary.md#workspace) is a [Machine](../reference/glossary.md#machine) that runs a body
 Machine in a [Sandbox](../reference/glossary.md#sandbox). The Sandbox is a pod of its own, with a git
 [Worktree](../reference/glossary.md#worktree) of each [Repo](../reference/glossary.md#repo) on one branch. You make a
-Workspace with [`workspace()`](../reference/authoring-surface.md#workspace). The Workspace makes the Sandbox when the
+Workspace with [`workspace()`](../reference/authoring-surface/workspace.md). The Workspace makes the Sandbox when the
 run enters it, and deletes the Sandbox when the body reaches a final state.
 
 ## Why Workspaces exist
@@ -47,17 +47,17 @@ Only `spec` and a per-run [Repo Slot](../reference/glossary.md#repo-slot) read t
   `workspace()`, not on the body.
 - `repos` gives the Repo Slots that the Sandbox clones.
 - `spec` is a function from the run input to the branch. At a root `workspace()`, its input also holds `instanceId` (see
-  [`HostInjectedInput`](../reference/authoring-surface.md#type-hostinjectedinput)).
+  [`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md)).
 - `resources` is the [Size](../reference/glossary.md#size). `image`, `user` and `effector` name the images of the pod's
   containers.
 - `secrets` names the [Held secrets](../reference/glossary.md#held-secret) that the Sandbox can use (see
   [Secrets and trust](secrets-and-trust.md)).
 
 The body gets the run input, plus `workspace`: the handles of the Workspace (see
-[`WorkspaceHandles`](../reference/authoring-surface.md#type-workspacehandles)). `workspace.repos` gives the absolute
+[`WorkspaceHandles`](../reference/authoring-surface/type-workspacehandles.md)). `workspace.repos` gives the absolute
 path of each Worktree, and `workspace.branch` gives the branch. Give a path to an Agent's
 [Turn](../reference/glossary.md#turn) as its `cwd`, as the example does. Type the body's input with
-[`Workspaced`](../reference/authoring-surface.md#type-workspaced).
+[`Workspaced`](../reference/authoring-surface/type-workspaced.md).
 
 The Agents with [Working tools](../reference/glossary.md#working-tools) in the body run in the Sandbox. An Agent with
 `workspace: "none"` runs on the [Instance Harness](../reference/glossary.md#instance-harness), also when its state is in
@@ -74,9 +74,9 @@ Repo under `/work`. Each slot is one of three kinds:
 
 - **Bound**: the Machine gives the url, or a [Binding](../reference/glossary.md#binding) `{ url, ref }`. `ref` is the
   branch or the commit that the Worktree starts from. Without `ref`, the Worktree starts from the Repo's default branch.
-- **[Open](../reference/glossary.md#open)**: the Machine gives [`open`](../reference/authoring-surface.md#open). The
+- **[Open](../reference/glossary.md#open)**: the Machine gives [`open`](../reference/authoring-surface/open.md). The
   [Instance](../reference/glossary.md#instance) that registers the Machine binds the slot with
-  [`customize()`](../reference/authoring-surface.md#customize) (see [Composition](composition.md)).
+  [`customize()`](../reference/authoring-surface/customize.md) (see [Composition](composition.md)).
 - **Per-run**: the Machine gives a function of the run input, `({ input }) => url`. Each run chooses its Repo.
 
 A Machine that names no slot writes `repos: open` for the whole map. Then the composer names each slot.
@@ -94,7 +94,7 @@ is beside it, at `/work/<slot>/<branch>`. In the folder name, each `/` of the br
 branch `docs/T-12` of the slot `app` is at `/work/app/docs-T-12`. This is the
 [Project layout](../reference/glossary.md#project-layout).
 
-`spec` returns a [`WorkspaceSpec`](../reference/authoring-surface.md#type-workspacespec). It gives the branch, and two
+`spec` returns a [`WorkspaceSpec`](../reference/authoring-surface/type-workspacespec.md). It gives the branch, and two
 optional fields:
 
 - `reviewSha`: a commit for a reviewer. jr2 checks it out in a second Worktree, at `/work/<slot>/<branch>-review`. The
@@ -155,7 +155,7 @@ The Size is a fact of the Machine, as its image is. It is never set for one run.
 3. When the Machine states no Size, jr2 uses [`sandbox.resources`](../reference/config.md#sandbox-resources) in
    `jr2.config.ts`. A field that it does not state comes from the kit default.
 
-A Size is `{ limits: { memory, cpu } }`, and nothing else (see [`Size`](../reference/authoring-surface.md#type-size)).
+A Size is `{ limits: { memory, cpu } }`, and nothing else (see [`Size`](../reference/authoring-surface/type-size.md)).
 Inside the pod, the Custodian gets a small fixed part. A User Container gets the part that `user` gives it, or shares
 the rest. The Harness container gets the rest. `jr2 up` refuses a Size that leaves the Harness container less than 256Mi
 of memory.
@@ -188,7 +188,7 @@ A Workspace goes through these states:
 The output of the Workspace is the output of the body.
 
 A final state of the body deletes the Sandbox, with each commit in it. Push the work before the body ends: with a
-[`push`](../reference/authoring-surface.md#push) Effect, or by hand while the run waits. A body that must keep its
+[`push`](../reference/authoring-surface/push.md) Effect, or by hand while the run waits. A body that must keep its
 Sandbox waits in a state that is not final, such as at a Gate. The Sandbox stays while the run waits.
 
 When a run faults after its Sandbox was placed, the Sandbox stays, so that you can look inside it. jr2's operator
@@ -235,9 +235,9 @@ The guides and the Reference give the refusal text of each rule.
 - [Size a Workspace](../guides/size-a-workspace.md)
 - [Give the cluster git credentials](../guides/give-the-cluster-git-credentials.md)
 - [Effects](effects.md), [Composition](composition.md), [Architecture](architecture.md)
-- Reference: [`workspace`](../reference/authoring-surface.md#workspace),
-  [`RepoSlot`](../reference/authoring-surface.md#type-reposlot), [`Size`](../reference/authoring-surface.md#type-size),
-  [`UserContainer`](../reference/authoring-surface.md#type-usercontainer),
+- Reference: [`workspace`](../reference/authoring-surface/workspace.md),
+  [`RepoSlot`](../reference/authoring-surface/type-reposlot.md), [`Size`](../reference/authoring-surface/type-size.md),
+  [`UserContainer`](../reference/authoring-surface/type-usercontainer.md),
   [`workspace.lost`](../reference/mechanism-events.md#workspace-lost), [`sandbox`](../reference/config.md#sandbox)
 - [ADR-0012](../reference/decisions/0012-workspace-wrapper-machine.md): `workspace()` wraps a body Machine and owns only
   Sandbox lifecycle

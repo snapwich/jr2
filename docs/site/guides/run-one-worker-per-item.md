@@ -4,8 +4,8 @@ description: Make a Pool that runs one worker Machine for each item that a Sourc
 ---
 
 Make a [Workflow](../reference/glossary.md#workflow) that runs one worker [Machine](../reference/glossary.md#machine)
-for each item of work, with [`pool()`](../reference/authoring-surface.md#pool) and
-[`source()`](../reference/authoring-surface.md#source).
+for each item of work, with [`pool()`](../reference/authoring-surface/pool.md) and
+[`source()`](../reference/authoring-surface/source.md).
 
 In this example, the items are the open issues of a GitHub [Repo](../reference/glossary.md#repo) that have the label
 `jr2`. The worker is the shipped Machine [`task`](../reference/machines.md#task). Each worker works on one issue in its
@@ -225,7 +225,7 @@ tells what each status means.
 - [Pools and Sources](../concepts/pools-and-sources.md)
 - [Composition](../concepts/composition.md)
 - [Gates](../concepts/gates.md)
-- Reference: [`pool()`](../reference/authoring-surface.md#pool), [`source()`](../reference/authoring-surface.md#source),
-  [`PoolSpec`](../reference/authoring-surface.md#type-poolspec),
-  [`SourceSpec`](../reference/authoring-surface.md#type-sourcespec), [`task`](../reference/machines.md#task)
+- Reference: [`pool()`](../reference/authoring-surface/pool.md), [`source()`](../reference/authoring-surface/source.md),
+  [`PoolSpec`](../reference/authoring-surface/type-poolspec.md),
+  [`SourceSpec`](../reference/authoring-surface/type-sourcespec.md), [`task`](../reference/machines.md#task)
 - [ADR-0017](../reference/decisions/0017-pool-over-a-source-port.md): the run loop is a Pool over a Source

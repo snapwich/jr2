@@ -31,12 +31,12 @@ You do not write the Menu. `jr2Setup` makes the Menu from the Machine when you c
 - A child state that invokes a different Agent, or a [Gate](../reference/glossary.md#gate), does not give its events.
   Those events belong to that Agent or to that Gate.
 - When two or more states invoke the same Agent slot, its Menu has the events of all of them.
-- The `description` of each [`defineEvent`](../reference/authoring-surface.md#defineevent) is the description of its
+- The `description` of each [`defineEvent`](../reference/authoring-surface/defineevent.md) is the description of its
   tool. Make it true at each state that takes the event.
 
 The position of an `on` key decides who can send its event. The event belongs to the party (an Agent or a Gate) that its
 state, or the nearest state above it, invokes. An `on` key with no such state above it belongs to both parties. Set
-[`audience`](../reference/authoring-surface.md#type-eventaudience) on an event only to give it to the other party too,
+[`audience`](../reference/authoring-surface/type-eventaudience.md) on an event only to give it to the other party too,
 or to keep an event at the root from one party.
 
 ## A worked example
@@ -115,7 +115,7 @@ By default, the answer is the last reply since the pick. A reply is the output o
 state. An event from a party below it is also a reply: a Gate's event, or the pick of a nested Agent. Every reply since
 the pick, oldest first, is the [Chain](../reference/glossary.md#chain).
 
-To give the Agent a different answer, write [`answer`](../reference/authoring-surface.md#answer) on the route. It is an
+To give the Agent a different answer, write [`answer`](../reference/authoring-surface/answer.md) on the route. It is an
 xstate action. It reads the context, the event and the Chain, and its value is the answer. In the example, the writer
 reads `The editor replied: <text>` and not the raw `reply` event. Where you write `answer` decides which pick it
 answers. The Reference entry gives the rule.
@@ -131,11 +131,11 @@ no Agent reads the answer.
 
 Each event that a party sends carries its [Sender](../reference/glossary.md#sender), as `event.sender`. The Sender is
 `{ party, id }`: an Agent by its slot, or a Gate by its invoke id (see
-[`Sender`](../reference/authoring-surface.md#type-sender)). The [Orchestrator](../reference/glossary.md#orchestrator)
+[`Sender`](../reference/authoring-surface/type-sender.md)). The [Orchestrator](../reference/glossary.md#orchestrator)
 writes it on each event that a party delivers. An event that the Machine sends to itself has no Sender.
 
 Use the Sender when two parties can send the same event to one state. The guard
-[`sentBy(id)`](../reference/authoring-surface.md#sentby) is true for an event from that party, and for an event with no
+[`sentBy(id)`](../reference/authoring-surface/sentby.md) is true for an event from that party, and for an event with no
 Sender. It is false for an event from a different party, so xstate tries the next transition. `sentBy` can only make a
 transition refuse other senders. It never gives an event to a party. The position of the `on` key does that.
 
@@ -161,10 +161,10 @@ transition refuse other senders. It never gives an event to a party. The positio
 - [Set an Agent's access and Dials](../guides/set-an-agents-access-and-dials.md)
 - [Run a command or call a URL with an Effect](../guides/run-a-command-or-call-a-url.md)
 - [Agents and Turns](agents-and-turns.md), [Gates](gates.md) and [Effects](effects.md)
-- Reference: [`jr2Setup`](../reference/authoring-surface.md#jr2setup),
-  [`defineEvent`](../reference/authoring-surface.md#defineevent), [`answer`](../reference/authoring-surface.md#answer),
-  [`sentBy`](../reference/authoring-surface.md#sentby) and
-  [`EventAudience`](../reference/authoring-surface.md#type-eventaudience)
+- Reference: [`jr2Setup`](../reference/authoring-surface/jr2setup.md),
+  [`defineEvent`](../reference/authoring-surface/defineevent.md), [`answer`](../reference/authoring-surface/answer.md),
+  [`sentBy`](../reference/authoring-surface/sentby.md) and
+  [`EventAudience`](../reference/authoring-surface/type-eventaudience.md)
 - [ADR-0006](../reference/decisions/0006-agent-control-surface.md): the Agent picks from a Menu that the Machine defines
 - [ADR-0015](../reference/decisions/0015-authoring-surface-absorbs-the-mechanism.md): the Menu comes from the Machine,
   and the position of an `on` key gives it to a party

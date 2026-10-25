@@ -5,7 +5,7 @@ description: How a Machine composes Machines that you import, and how you bind t
 
 Composition is how you make a [Workflow](../reference/glossary.md#workflow) from
 [Machines](../reference/glossary.md#machine) that exist already. It has three parts. A Machine invokes a different
-Machine as its child. [`customize()`](../reference/authoring-surface.md#customize) changes the parts that a Machine
+Machine as its child. [`customize()`](../reference/authoring-surface/customize.md) changes the parts that a Machine
 carries. And you bind the parts that a Machine leaves [Open](../reference/glossary.md#open). The kit ships Machines for
 you to compose in this way, in the package [`@jr2/machines`](../reference/machines.md).
 
@@ -69,7 +69,7 @@ A composed Machine is a part of the run of its parent:
 - The parent gets to the child by `import`. It does not use the Workflow name that [`jr2 run`](../reference/cli.md#run)
   uses.
 - Only the root Machine of a run gets `instanceId`
-  ([`HostInjectedInput`](../reference/authoring-surface.md#type-hostinjectedinput)) beside the run input. A child gets
+  ([`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md)) beside the run input. A child gets
   only the input that its parent gives it. Thus the example gives each `task` a `branch`.
 
 ### Composing a Workflow
@@ -92,18 +92,18 @@ them, so `deep` and `quick` have them too.
 
 ## customize()
 
-[`customize(machine, parts)`](../reference/authoring-surface.md#customize) gives a new Machine with the parts changed.
+[`customize(machine, parts)`](../reference/authoring-surface/customize.md) gives a new Machine with the parts changed.
 The Machine that you give it does not change. Thus two calls on one import give two Machines, as `deep` and `quick`
 show.
 
-[`Customize`](../reference/authoring-surface.md#type-customize) gives the parts that you can change:
+[`Customize`](../reference/authoring-surface/type-customize.md) gives the parts that you can change:
 
 | Key         | What it changes                                                                       |
 | ----------- | ------------------------------------------------------------------------------------- |
 | `agents`    | The definition of an Agent, by slot, field by field. `{ model }` keeps the rest.      |
 | `effects`   | The Open url, argv or secret of an Effect, by slot.                                   |
 | `actors`    | A Machine that this Machine composes, by slot. The value has the same keys, one down. |
-| `repos`     | The Repo Slots of the [`workspace()`](../reference/authoring-surface.md#workspace).   |
+| `repos`     | The Repo Slots of the [`workspace()`](../reference/authoring-surface/workspace.md).   |
 | `image`     | The Sandbox Image of the `workspace()`.                                               |
 | `user`      | The [User Container](../reference/glossary.md#user-container) of the `workspace()`.   |
 | `resources` | The Size of the `workspace()`, field by field.                                        |
@@ -111,14 +111,14 @@ show.
 The type comes from the Machine. It offers only the Agents, Effects, Machines and Repo Slots that the Machine declares.
 A slot that the Machine does not have does not compile.
 
-`workspace()` and [`pool()`](../reference/authoring-surface.md#pool) wrap a Machine. `customize()` goes through each
+`workspace()` and [`pool()`](../reference/authoring-surface/pool.md) wrap a Machine. `customize()` goes through each
 wrapper to the Machine inside it. Thus `customize(task, { agents })` changes the Agents of the Machine in the
 `workspace()` of `task`, and you do not name the wrapper's own slot. `repos`, `image`, `user` and `resources` go down to
 the first `workspace()` on that path.
 
 ## Open parts
 
-A Machine marks a part Open with [`open`](../reference/authoring-surface.md#open). These parts can be Open:
+A Machine marks a part Open with [`open`](../reference/authoring-surface/open.md). These parts can be Open:
 
 - a Repo Slot with no url, or the whole Repo Slot map (`repos: open`)
 - the model of an Agent (`agent({ model: open, … })`)
@@ -171,9 +171,9 @@ A package can ship a docker context for its Sandbox Image. The Machine names the
 ## Rules
 
 - A nested Machine is a child in the same run. jr2 has no second run for a child, and no invoke by Workflow name.
-- An [`agent()`](../reference/authoring-surface.md#agent), an Effect or a `workspace()` is a key of `actors`. jr2
+- An [`agent()`](../reference/authoring-surface/agent.md), an Effect or a `workspace()` is a key of `actors`. jr2
   refuses one that a state writes in its `invoke.src`.
-  [`jr2Setup()`](../reference/authoring-surface.md#jr2setup)`.createMachine` refuses it, and `jr2 up` refuses it too.
+  [`jr2Setup()`](../reference/authoring-surface/jr2setup.md)`.createMachine` refuses it, and `jr2 up` refuses it too.
 - `customize()` changes only the parts that a Machine declares. You cannot add a part. A Machine that needs one more
   Agent is a new Machine.
 - For a part that the Machine does not declare, the compiler refuses the key, and `customize()` refuses it at run time.
@@ -197,8 +197,8 @@ A package can ship a docker context for its Sandbox Image. The Machine names the
 - [Machines and Workflows](machines-and-workflows.md)
 - [Workspaces](workspaces.md)
 - [Pools and Sources](pools-and-sources.md)
-- Reference: [`customize()`](../reference/authoring-surface.md#customize),
-  [`Customize`](../reference/authoring-surface.md#type-customize), [`open`](../reference/authoring-surface.md#open),
+- Reference: [`customize()`](../reference/authoring-surface/customize.md),
+  [`Customize`](../reference/authoring-surface/type-customize.md), [`open`](../reference/authoring-surface/open.md),
   [`@jr2/machines`](../reference/machines.md), [`jr2 up`](../reference/cli.md#up)
 - [ADR-0049](../reference/decisions/0049-a-machine-carries-its-parts-and-composes-by-invoke.md): a Machine carries its
   parts and composes by invoke

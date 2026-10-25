@@ -5,8 +5,8 @@ description: How a Pool runs one worker Machine for each work item that a Source
 
 A [Pool](../reference/glossary.md#pool) is a [Machine](../reference/glossary.md#machine) that runs one worker Machine
 for each item of work. It gets the items from a [Source](../reference/glossary.md#source), one at a time, and it runs a
-limited number of workers at once. You make a Pool with [`pool()`](../reference/authoring-surface.md#pool) and a Source
-with [`source()`](../reference/authoring-surface.md#source). A Pool is usually the root of a
+limited number of workers at once. You make a Pool with [`pool()`](../reference/authoring-surface/pool.md) and a Source
+with [`source()`](../reference/authoring-surface/source.md). A Pool is usually the root of a
 [Workflow](../reference/glossary.md#workflow). For example, a Pool can run one [`task`](../reference/machines.md#task)
 for each ticket that is ready.
 
@@ -68,21 +68,21 @@ not a status in the output: a run that waits has no output yet.
 - The [Vocabulary](../reference/glossary.md#vocabulary) of a Pool is only its `wake` event. Each worker keeps its own.
 
 A Pool is a Machine. It can be the root of a Workflow, or a different Machine can compose it.
-[`customize()`](../reference/authoring-surface.md#customize) goes through a Pool to its worker, as
+[`customize()`](../reference/authoring-surface/customize.md) goes through a Pool to its worker, as
 [Composition](composition.md) tells.
 
 ## Sources
 
-[`source(spec)`](../reference/authoring-surface.md#source) declares where a Pool gets its items. A Source has three
-parts ([`SourceSpec`](../reference/authoring-surface.md#type-sourcespec)):
+[`source(spec)`](../reference/authoring-surface/source.md) declares where a Pool gets its items. A Source has three
+parts ([`SourceSpec`](../reference/authoring-surface/type-sourcespec.md)):
 
 - `next`: an xstate promise actor that claims the next ready item. Its input is `{ active }`, the ids of the items that
   workers have now.
-- `wake`: an optional event, made with [`defineEvent`](../reference/authoring-surface.md#defineevent), that tells the
+- `wake`: an optional event, made with [`defineEvent`](../reference/authoring-surface/defineevent.md), that tells the
   Pool that new work is ready.
 - `pollEvery`: an optional time in milliseconds. While the Pool waits, it calls `next` again at this interval.
 
-`next` resolves to one of three answers ([`SourceNextResult`](../reference/authoring-surface.md#type-sourcenextresult)):
+`next` resolves to one of three answers ([`SourceNextResult`](../reference/authoring-surface/type-sourcenextresult.md)):
 an item, `null` when no item is ready now, or `{ item, open }`. `open` is the number of items that exist but are not
 ready. Without `open`, the Pool cannot tell a finished run from a blocked one. Thus, when no worker runs, `null` means
 `drained`.
@@ -119,8 +119,8 @@ the issue tracker.
 - [Run one worker per item](../guides/run-one-worker-per-item.md)
 - [Composition](composition.md)
 - [Gates](gates.md)
-- Reference: [`pool()`](../reference/authoring-surface.md#pool), [`source()`](../reference/authoring-surface.md#source),
-  [`PoolSpec`](../reference/authoring-surface.md#type-poolspec),
-  [`SourceSpec`](../reference/authoring-surface.md#type-sourcespec),
-  [`SourceNextResult`](../reference/authoring-surface.md#type-sourcenextresult)
+- Reference: [`pool()`](../reference/authoring-surface/pool.md), [`source()`](../reference/authoring-surface/source.md),
+  [`PoolSpec`](../reference/authoring-surface/type-poolspec.md),
+  [`SourceSpec`](../reference/authoring-surface/type-sourcespec.md),
+  [`SourceNextResult`](../reference/authoring-surface/type-sourcenextresult.md)
 - [ADR-0017](../reference/decisions/0017-pool-over-a-source-port.md): the run loop is a Pool over a Source

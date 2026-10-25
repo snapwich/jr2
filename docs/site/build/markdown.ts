@@ -114,9 +114,10 @@ function yamlScalar(value: string): string {
   return /^[A-Za-z0-9(][^:#"'\n]*$/.test(value) && !/\s$/.test(value) ? value : JSON.stringify(value);
 }
 
-/** The bundle's head of a page: its frontmatter, then its title as the one H1. */
-export function pageHead(title: string, description: string): string {
-  return `---\ntitle: ${yamlScalar(title)}\ndescription: ${yamlScalar(description)}\n---\n\n# ${title}\n`;
+/** The bundle's head of a page: its frontmatter, then its title as the one H1, or `heading` when
+ * the H1 shows the title in another form (a name as code). */
+export function pageHead(title: string, description: string, heading = title): string {
+  return `---\ntitle: ${yamlScalar(title)}\ndescription: ${yamlScalar(description)}\n---\n\n# ${heading}\n`;
 }
 
 /** The anchor GitHub gives a heading: lower case, punctuation dropped, a hyphen for each space. */

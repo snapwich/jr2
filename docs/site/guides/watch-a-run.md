@@ -286,7 +286,7 @@ kubectl -n <namespace> logs <sandbox> -c harness > <file>
 ::: warning
 
 A person who can read the pod logs of the namespace can read each conversation, and the answers that jr2 gives to the
-picks. An answer can hold the output of a [`command`](../reference/authoring-surface.md#command) Effect. On a shared
+picks. An answer can hold the output of a [`command`](../reference/authoring-surface/command.md) Effect. On a shared
 cluster, decide who can read the pod logs.
 
 :::

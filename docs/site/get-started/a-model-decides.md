@@ -37,16 +37,16 @@ is `triage`. Copy this code into the file:
 The two tabs are different only in the `model` line and its comment. The file has five parts:
 
 - **The run input.** `door` is a zod schema. A run of `triage` starts with one `request`.
-- **The Vocabulary.** Each [`defineEvent()`](../reference/authoring-surface.md#defineevent) makes one event of the
+- **The Vocabulary.** Each [`defineEvent()`](../reference/authoring-surface/defineevent.md) makes one event of the
   [Vocabulary](../reference/glossary.md#vocabulary). Each transition belongs to the party that its state invokes.
   `triaging` invokes the Agent, so only the Agent can send `accept`, `needs_info` and `reject`. `clarify` invokes a
   Gate, so only the Gate can take `answer`.
-- **The Agent.** [`agent()`](../reference/authoring-surface.md#agent) makes the Agent `triager`, with its model and its
+- **The Agent.** [`agent()`](../reference/authoring-surface/agent.md) makes the Agent `triager`, with its model and its
   instructions. `workspace: "none"` gives it no [Sandbox](../reference/glossary.md#sandbox) and no
   [Working tools](../reference/glossary.md#working-tools). It can only read its prompt and pick an event.
   `thinkingLevel: "off"` makes the model pick with no thinking step. [Agents and Turns](../concepts/agents-and-turns.md)
   explains the other fields.
-- **The Machine.** [`jr2Setup()`](../reference/authoring-surface.md#jr2setup) takes the Vocabulary and the Agent. Then
+- **The Machine.** [`jr2Setup()`](../reference/authoring-surface/jr2setup.md) takes the Vocabulary and the Agent. Then
   `createMachine` gives the states of the [Machine](../reference/glossary.md#machine).
 - **The prompt.** `prompt()` makes the text of each [Turn](../reference/glossary.md#turn) from the request and each
   question and answer.
@@ -57,7 +57,7 @@ and its input schema. The Agent ends its Turn when it calls one of them. The fou
 [`agent.fault`](../reference/mechanism-events.md#agent-fault), is not on the Menu. jr2 sends it when a Turn fails with
 no pick. Then the run waits at the Gate, and the Gate shows a `fault` in place of a question.
 
-The state `clarify` invokes [`gate`](../reference/authoring-surface.md#jr2setup), which jr2 supplies. Its `meta` holds
+The state `clarify` invokes [`gate`](../reference/authoring-surface/jr2setup.md), which jr2 supplies. Its `meta` holds
 the question of the Agent, and its one transition takes `answer`. The Gate has the name of its state: `clarify`. When
 you send `answer`, the run goes back to `triaging`. The next Turn gets the request, the question, and your answer in its
 prompt.

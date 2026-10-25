@@ -7,7 +7,7 @@ Set what an [Agent](../reference/glossary.md#agent) can do to the [Workspace](..
 set the [Dials](../reference/glossary.md#dials) and `continue` of one [Turn](../reference/glossary.md#turn).
 
 The definition of the Agent sets its access, in the `workspace` field of
-[`agent()`](../reference/authoring-surface.md#agent). The state that invokes the Agent sets the Dials and `continue`, in
+[`agent()`](../reference/authoring-surface/agent.md). The state that invokes the Agent sets the Dials and `continue`, in
 the `input` of the invoke. In this [Workflow](../reference/glossary.md#workflow), a reviewer reads one commit and asks
 for changes. A coder makes the changes on the branch. Then a Menu-only checker decides if the changes are complete. Save
 the file as `workflows/review.ts` in your [Instance](../reference/glossary.md#instance):
@@ -38,7 +38,7 @@ where its Turns run. The default is `"write"`.
 | `"none"`            | none                                         | The [Instance Harness](../reference/glossary.md#instance-harness), with no Sandbox |
 
 An Agent with `"write"` or `"read"` works in a Sandbox. Thus invoke it in the body of a
-[`workspace()`](../reference/authoring-surface.md#workspace). An Agent with `"none"` is a Menu-only Agent. It reads its
+[`workspace()`](../reference/authoring-surface/workspace.md). An Agent with `"none"` is a Menu-only Agent. It reads its
 prompt and picks from its [Menu](../reference/glossary.md#menu). You can invoke it in the body of a `workspace()`, as
 the example does, or in a [Machine](../reference/glossary.md#machine) with no Workspace.
 
@@ -146,10 +146,10 @@ task, also on a Turn that continues. In the example, each `fixing` prompt gives 
 - [Workspaces](../concepts/workspaces.md): the Worktrees and the review Worktree.
 - [The Menu](../concepts/the-menu.md): the picks of an Agent.
 - [Bind a shipped Machine's Open parts](bind-open-parts.md): bind an Open model.
-- Reference: [`agent`](../reference/authoring-surface.md#agent),
-  [`AgentDefinition`](../reference/authoring-surface.md#type-agentdefinition),
-  [`ThinkingLevel`](../reference/authoring-surface.md#type-thinkinglevel),
-  [`WorkspaceAccess`](../reference/authoring-surface.md#type-workspaceaccess) and
+- Reference: [`agent`](../reference/authoring-surface/agent.md),
+  [`AgentDefinition`](../reference/authoring-surface/type-agentdefinition.md),
+  [`ThinkingLevel`](../reference/authoring-surface/type-thinkinglevel.md),
+  [`WorkspaceAccess`](../reference/authoring-surface/type-workspaceaccess.md) and
   [`agent.fault`](../reference/mechanism-events.md#agent-fault).
 - [ADR-0028](../reference/decisions/0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md): what an
   Agent can do to the Workspace is a part of its definition.

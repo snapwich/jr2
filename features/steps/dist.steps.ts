@@ -436,7 +436,13 @@ Then("the published @jr2\\/orchestrator tarball holds the docs bundle", async fu
     assert.ok(packed, `npm pack fetched no tarball of @jr2/orchestrator@${version}`);
     const { stdout: list } = await exec("tar", ["-tzf", join(out, packed.filename)], { maxBuffer: BIG });
     const entries = new Set(list.split("\n"));
-    for (const file of ["index.md", "reference/authoring-surface.md", "agents-block.md", "llms.txt"])
+    for (const file of [
+      "index.md",
+      "reference/authoring-surface.md",
+      "reference/authoring-surface/workspace.md",
+      "agents-block.md",
+      "llms.txt",
+    ])
       assert.ok(
         entries.has(`package/docs/${file}`),
         `the published @jr2/orchestrator@${version} packs no docs/${file} (ADR-0072)`,

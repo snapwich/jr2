@@ -43,7 +43,7 @@ warning: no Sandbox node right now has the allocatable for a Size of memory 64Gi
 The Size is a fact of the [Machine](../reference/glossary.md#machine). A run cannot change it. jr2 uses the first of
 these that states a Size:
 
-1. [`customize(machine, { resources })`](../reference/authoring-surface.md#customize), in the
+1. [`customize(machine, { resources })`](../reference/authoring-surface/customize.md), in the
    [Instance](../reference/glossary.md#instance) that registers the Machine.
 2. `resources` on the `workspace()`.
 3. [`sandbox.resources`](../reference/config.md#sandbox-resources) in `jr2.config.ts`, such as
@@ -147,8 +147,8 @@ Size.
 
 - [Workspaces](../concepts/workspaces.md#size): the Size, and Placing.
 - [Add tools to the Sandbox](add-tools-to-the-sandbox.md): the User Container.
-- Reference: [`Size`](../reference/authoring-surface.md#type-size),
-  [`UserContainer`](../reference/authoring-surface.md#type-usercontainer),
+- Reference: [`Size`](../reference/authoring-surface/type-size.md),
+  [`UserContainer`](../reference/authoring-surface/type-usercontainer.md),
   [`sandbox.resources`](../reference/config.md#sandbox-resources), [`jr2 up`](../reference/cli.md#up)
 - [ADR-0060](../reference/decisions/0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md): a Workspace states
   its Size, and jr2 reserves all of it.

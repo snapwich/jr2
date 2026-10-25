@@ -48,8 +48,8 @@ package that it imports, so the package must pass the same options:
 <<< @/examples/guides/publish-a-machine-as-an-npm-package/labeler/src/index.ts
 
 The Machine carries all of its parts: its run input, its [Vocabulary](../reference/glossary.md#vocabulary) and its
-Agent. The model is [`open`](../reference/authoring-surface.md#open), so the Instance binds it with
-[`customize()`](../reference/authoring-surface.md#customize). On the export, write TSDoc that gives its Open parts and
+Agent. The model is [`open`](../reference/authoring-surface/open.md), so the Instance binds it with
+[`customize()`](../reference/authoring-surface/customize.md). On the export, write TSDoc that gives its Open parts and
 its run input, as [`task`](../reference/machines.md#task) does. An [Assistant](../reference/glossary.md#assistant) that
 reads `node_modules` reads that text.
 
@@ -212,8 +212,8 @@ tells how to run the Workflow `label`.
 - [Composition](../concepts/composition.md)
 - [Bind a shipped Machine's Open parts](bind-open-parts.md)
 - [Durable runs](../concepts/durable-runs.md)
-- Reference: [`customize()`](../reference/authoring-surface.md#customize),
-  [`open`](../reference/authoring-surface.md#open), [`@jr2/machines`](../reference/machines.md)
+- Reference: [`customize()`](../reference/authoring-surface/customize.md),
+  [`open`](../reference/authoring-surface/open.md), [`@jr2/machines`](../reference/machines.md)
 - [ADR-0054](../reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md): the kit
   ships Machines, and a shipped Machine leaves its parts Open
 - [ADR-0049](../reference/decisions/0049-a-machine-carries-its-parts-and-composes-by-invoke.md): a Machine carries its

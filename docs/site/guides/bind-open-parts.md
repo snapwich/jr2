@@ -5,10 +5,10 @@ description: Register a Machine from a package as a Workflow, and bind the parts
 
 Register a [Machine](../reference/glossary.md#machine) from a package as a
 [Workflow](../reference/glossary.md#workflow), and bind the parts that it leaves [Open](../reference/glossary.md#open)
-with [`customize()`](../reference/authoring-surface.md#customize).
+with [`customize()`](../reference/authoring-surface/customize.md).
 
 A package does not know your [Repo](../reference/glossary.md#repo), and it cannot pay for your model. Thus a Machine in
-a package marks these parts with [`open`](../reference/authoring-surface.md#open), and you bind them on the line that
+a package marks these parts with [`open`](../reference/authoring-surface/open.md), and you bind them on the line that
 registers it. [`jr2 up`](../reference/cli.md#up) refuses a Workflow with an Open part that nobody bound.
 
 The examples on this page register [`task`](../reference/machines.md#task), the Machine that `@jr2/machines` ships.
@@ -98,7 +98,7 @@ others. A Machine that names its slots, such as `repos: { app: open }`, takes on
 `agents` takes the fields of the definition of an Agent, by slot. Each field goes over the field that the author wrote.
 Thus `{ model }` changes only the model, and the coder keeps the instructions of `task`. You can also change other
 fields, such as `thinkingLevel` or `instructions`.
-[`AgentDefinition`](../reference/authoring-surface.md#type-agentdefinition) gives the fields.
+[`AgentDefinition`](../reference/authoring-surface/type-agentdefinition.md) gives the fields.
 
 ## Bind the parts of a Machine that you compose
 
@@ -127,7 +127,7 @@ When `task` is a child of your Machine, give it `branch` in its input. Only the 
 A packaged Machine can leave the url of an `http` [Effect](../reference/glossary.md#effect), the argv of a `command`, or
 the name of a secret Open. Bind them with `effects`, by the slot of the Effect:
 `customize(machine, { effects: { notify: { url } } })`. One object binds all the Open parts of one Effect. You bind each
-part one time, to a value. No run chooses it. [`EffectBinding`](../reference/authoring-surface.md#type-effectbinding)
+part one time, to a value. No run chooses it. [`EffectBinding`](../reference/authoring-surface/type-effectbinding.md)
 gives the values, and [Run a command or call a URL with an Effect](run-a-command-or-call-a-url.md) shows an Effect.
 
 ## Rules
@@ -179,6 +179,6 @@ gives the values, and [Run a command or call a URL with an Effect](run-a-command
 - [Workspaces](../concepts/workspaces.md)
 - [Publish a Machine as an npm package](publish-a-machine-as-an-npm-package.md), to leave parts Open in a Machine of
   your own.
-- Reference: [`customize()`](../reference/authoring-surface.md#customize),
-  [`Customize`](../reference/authoring-surface.md#type-customize), [`open`](../reference/authoring-surface.md#open),
-  [`RepoSlot`](../reference/authoring-surface.md#type-reposlot), [`task`](../reference/machines.md#task)
+- Reference: [`customize()`](../reference/authoring-surface/customize.md),
+  [`Customize`](../reference/authoring-surface/type-customize.md), [`open`](../reference/authoring-surface/open.md),
+  [`RepoSlot`](../reference/authoring-surface/type-reposlot.md), [`task`](../reference/machines.md#task)

@@ -24,7 +24,7 @@ it bad text.
 
 ## The Open body
 
-[`openBody()`](../reference/authoring-surface.md#openbody) makes the actor slot that a Chart binds. It is the one
+[`openBody()`](../reference/authoring-surface/openbody.md) makes the actor slot that a Chart binds. It is the one
 [Open](../reference/glossary.md#open) part that a run binds, not a composer. Its declaration has three parts:
 
 - **`lends`**: the parts of the Chart wrapper that a Chart can use, by their slot keys. These are Agents, Effects,
@@ -72,7 +72,7 @@ back to the planner as the answer to its pick, and the planner sends a corrected
 `{ outcome: "done", output }` when the Chart ends, and `{ outcome: "ceiling", ceiling }` when it gets to a ceiling.
 
 The pick of a planner carries the Chart as its parameter. Its schema is
-[`chartSchemaFor(declaration)`](../reference/authoring-surface.md#chartschemafor): the Chart grammar with the lent names
+[`chartSchemaFor(declaration)`](../reference/authoring-surface/chartschemafor.md): the Chart grammar with the lent names
 of this Open body. Thus the model gets the grammar as the parameters of its tool. On each Turn where the pick is an
 [Allowed pick](../reference/glossary.md#allowed-picks), the [Briefing](../reference/glossary.md#briefing) also tells the
 Agent how a Chart runs.
@@ -85,7 +85,7 @@ Agent how a Chart runs.
 | An Agent             | Its pick carries the Chart, and a state invokes the Open body | The Open body gets `{ chart: { name } }`                            |
 
 A Chart wrapper takes a Chart in its run input when a field of its input is
-[`chartSchema`](../reference/authoring-surface.md#chartschema). Only such a wrapper keeps Charts under a name. A named
+[`chartSchema`](../reference/authoring-surface/chartschema.md). Only such a wrapper keeps Charts under a name. A named
 Chart is a [Workflow](../reference/glossary.md#workflow), with the name `<wrapper>/<name>`, and it runs under that
 wrapper only. It comes from one of two places:
 
@@ -124,10 +124,10 @@ the states of the Chart while it runs.
 - [Let an Agent write a Chart](../guides/let-an-agent-write-a-chart.md)
 - [Run a Chart by name](../guides/run-a-chart-by-name.md)
 - [Composition](composition.md), [The Menu](the-menu.md), [Agents and Turns](agents-and-turns.md)
-- Reference: [`openBody`](../reference/authoring-surface.md#openbody),
-  [`OpenBodyDeclaration`](../reference/authoring-surface.md#type-openbodydeclaration),
-  [`OpenBodyOutput`](../reference/authoring-surface.md#type-openbodyoutput),
-  [`chartSchema`](../reference/authoring-surface.md#chartschema),
-  [`chartSchemaFor`](../reference/authoring-surface.md#chartschemafor),
+- Reference: [`openBody`](../reference/authoring-surface/openbody.md),
+  [`OpenBodyDeclaration`](../reference/authoring-surface/type-openbodydeclaration.md),
+  [`OpenBodyOutput`](../reference/authoring-surface/type-openbodyoutput.md),
+  [`chartSchema`](../reference/authoring-surface/chartschema.md),
+  [`chartSchemaFor`](../reference/authoring-surface/chartschemafor.md),
   [`PUT /workflows/:wrapper/charts/:name`](../reference/http-api.md#put-workflows-wrapper-charts-name)
 - [ADR-0070](../reference/decisions/0070-a-machine-lends-its-parts-to-a-chart.md): a Machine lends its parts to a Chart

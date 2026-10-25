@@ -50,13 +50,17 @@ export function typeClosure(ctx: RefContext, roots: readonly string[], page: str
   return closureOf(ctx, seeds, page, prefix);
 }
 
+/** Where the types of a closure are documented: one page, with an anchor for each type, or a
+ * page for each type, by its anchor. */
+export type TypePlace = string | ((anchor: string) => string);
+
 /** The kit types that `nodes` name, and the types in `also`, that no page documents (`skip` knows
  * the documented names), and each kit type that those name in turn: a field's type, or the
  * parameter or the result of a function a field holds. Not what a type marked `@internal` names. */
 export function namedBy(
   ctx: RefContext,
   nodes: readonly ts.Node[],
-  page: string,
+  page: TypePlace,
   skip: (name: string) => boolean,
   prefix = "type",
   also: readonly ts.Symbol[] = [],
@@ -114,7 +118,7 @@ export function isPlumbing(ctx: RefContext, d: ts.Node): boolean {
 function closureOf(
   ctx: RefContext,
   seeds: readonly (ts.TypeAliasDeclaration | ts.InterfaceDeclaration)[],
-  page: string,
+  page: TypePlace,
   prefix: string,
   skip: (name: string) => boolean = () => false,
 ): TypeClosure {
@@ -133,14 +137,43 @@ function closureOf(
     }
     level = next;
   }
-  for (const t of types) ctx.names.set(t.name, ctx.names.get(t.name) ?? { page, anchor: t.anchor });
+  const placeOf = (t: NamedType) => (typeof page === "string" ? { page, anchor: t.anchor } : { page: page(t.anchor) });
+  for (const t of types) ctx.names.set(t.name, ctx.names.get(t.name) ?? placeOf(t));
   // Built-in names (Record, Promise, …) need no line: every TypeScript reader knows them.
   for (const [name, pkg] of external) if (pkg === "the TypeScript lib" || pkg === "typescript") external.delete(name);
   return { types, external };
 }
 
-/** The Types section: each type's declared text, its TSDoc summary, its fields and the rest of its
- * TSDoc; then the type plumbing, as declarations alone; then the dependency names. */
+/** One type, as Markdown blocks: its declared text, its TSDoc summary, its fields and the rest of
+ * its TSDoc. Type plumbing is its declared text alone. */
+export function typeBlocks(ctx: RefContext, t: NamedType, from: string): string[] {
+  const block = [fenced("ts", declaredText(t.decl))];
+  if (t.plumbing) return block;
+  const doc = docOf(ctx.program, t.decl);
+  if (doc?.summary) block.push(renderProse(ctx, doc.summary, from));
+  const sym = ctx.program.checker.getSymbolAtLocation(t.decl.name);
+  const fields = sym && fieldsOf(ctx, t.decl, sym);
+  if (fields) block.push(renderFieldBlock(ctx, fields, from));
+  block.push(...typeDocTail(ctx, doc, from));
+  return block;
+}
+
+/** The names of a closure that a dependency declares, or `undefined` when it has none: a list, or
+ * with `short`, one sentence that groups them by package, for a page that must stay short. */
+export function dependencyNames(c: TypeClosure, short = false): string | undefined {
+  if (!c.external.size) return undefined;
+  if (short) {
+    const by = new Map<string, string[]>();
+    for (const [name, pkg] of c.external) by.set(pkg, [...(by.get(pkg) ?? []), code(name)]);
+    const parts = [...by].map(([pkg, names]) => `from ${code(pkg)}, ${names.join(", ")}`);
+    return `These names come from a dependency: ${parts.join("; ")}.`;
+  }
+  const rows = [...c.external].map(([name, pkg]) => `- ${code(name)}: from ${code(pkg)}`);
+  return `These names come from a dependency:\n\n${rows.join("\n")}`;
+}
+
+/** The Types section: each type, then the type plumbing, as declarations alone; then the
+ * dependency names. */
 export function renderTypes(
   ctx: RefContext,
   c: TypeClosure,
@@ -149,16 +182,8 @@ export function renderTypes(
   intro?: string,
 ): string {
   const parts = [heading, ...(intro ? [intro] : [])];
-  for (const t of c.types.filter((t) => !t.plumbing)) {
-    const doc = docOf(ctx.program, t.decl);
-    const block = [`${anchor(t.anchor)}\n\n### ${code(t.name)}`, fenced("ts", declaredText(t.decl))];
-    if (doc?.summary) block.push(renderProse(ctx, doc.summary, from));
-    const sym = ctx.program.checker.getSymbolAtLocation(t.decl.name);
-    const fields = sym && fieldsOf(ctx, t.decl, sym);
-    if (fields) block.push(renderFieldBlock(ctx, fields, from));
-    block.push(...typeDocTail(ctx, doc, from));
-    parts.push(block.join("\n\n"));
-  }
+  for (const t of c.types.filter((t) => !t.plumbing))
+    parts.push([`${anchor(t.anchor)}\n\n### ${code(t.name)}`, ...typeBlocks(ctx, t, from)].join("\n\n"));
   const plumbing = c.types.filter((t) => t.plumbing);
   if (plumbing.length) {
     const items = plumbing.map((t) => `${anchor(t.anchor)}${code(t.name)}\n\n${fenced("ts", declaredText(t.decl))}`);
@@ -166,9 +191,7 @@ export function renderTypes(
       `**Type plumbing.** These types compute a type from the types of a Machine or of its parts. A workflow module does not write them. A signature above names them, so their declarations are here:\n\n${items.join("\n\n")}`,
     );
   }
-  if (c.external.size) {
-    const rows = [...c.external].map(([name, pkg]) => `- ${code(name)}: from ${code(pkg)}`);
-    parts.push(`These names come from a dependency:\n\n${rows.join("\n")}`);
-  }
+  const deps = dependencyNames(c);
+  if (deps) parts.push(deps);
   return parts.join("\n\n");
 }

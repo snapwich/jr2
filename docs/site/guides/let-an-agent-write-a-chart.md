@@ -39,17 +39,17 @@ The Machine:
 
 ## Read the example
 
-- [`openBody(declaration)`](../reference/authoring-surface.md#openbody) is the slot that the Chart binds. Its
+- [`openBody(declaration)`](../reference/authoring-surface/openbody.md) is the slot that the Chart binds. Its
   declaration lends the Agent `writer` and the Gate, lets a Chart add Agents with `model` and no Sandbox, and sets the
   ceilings. [Charts](../concepts/charts.md#the-open-body) tells what each part does.
 - The pick `run_chart` has one parameter, `chart`. Its schema is
-  [`chartSchemaFor(declaration)`](../reference/authoring-surface.md#chartschemafor): the Chart grammar with the names of
+  [`chartSchemaFor(declaration)`](../reference/authoring-surface/chartschemafor.md): the Chart grammar with the names of
   this Open body. The model gets it as the parameters of its tool.
 - The state `running` is below the state of the planner. Thus the pick is
   [outstanding](../reference/glossary.md#outstanding) while the Chart runs, and the Turn of the planner stays open.
-- [`fromPick`](../reference/authoring-surface.md#frompick) gives the Chart of the pick to the Open body, and adds
+- [`fromPick`](../reference/authoring-surface/frompick.md) gives the Chart of the pick to the Open body, and adds
   `task`. The Chart reads it as `{{input.task}}`.
-- The Open body ends with an [`OpenBodyOutput`](../reference/authoring-surface.md#type-openbodyoutput). `done` goes to
+- The Open body ends with an [`OpenBodyOutput`](../reference/authoring-surface/type-openbodyoutput.md). `done` goes to
   the final state. `refused` and `ceiling` go back to `ready`, where jr2 answers the pick with the output. The planner
   reads the report, and it can pick `run_chart` again.
 
@@ -90,7 +90,7 @@ it. Then the Chart ends, and the run ends with the status `done`.
 
 ## Rules
 
-- [`openBody()`](../reference/authoring-surface.md#openbody) refuses a declaration that is not correct, with one line
+- [`openBody()`](../reference/authoring-surface/openbody.md) refuses a declaration that is not correct, with one line
   for each problem. The refusal starts with `openBody: `, then each problem, separated by `; `. For example:
   - `lends.<kind>: an Open body lends agents, effects, machines, guards, actions, delays and gate only`
   - `allows.workspace: "<value>" is not a Workspace access (write, read, none)`
@@ -121,8 +121,8 @@ it. Then the Chart ends, and the run ends with the status `done`.
 - [Charts](../concepts/charts.md)
 - [The Menu](../concepts/the-menu.md): how a pick waits for its answer.
 - [Run a Chart by name](run-a-chart-by-name.md)
-- Reference: [`openBody`](../reference/authoring-surface.md#openbody),
-  [`OpenBodyDeclaration`](../reference/authoring-surface.md#type-openbodydeclaration),
-  [`chartSchemaFor`](../reference/authoring-surface.md#chartschemafor),
-  [`fromPick`](../reference/authoring-surface.md#frompick)
+- Reference: [`openBody`](../reference/authoring-surface/openbody.md),
+  [`OpenBodyDeclaration`](../reference/authoring-surface/type-openbodydeclaration.md),
+  [`chartSchemaFor`](../reference/authoring-surface/chartschemafor.md),
+  [`fromPick`](../reference/authoring-surface/frompick.md)
 - [ADR-0070](../reference/decisions/0070-a-machine-lends-its-parts-to-a-chart.md): a Machine lends its parts to a Chart.

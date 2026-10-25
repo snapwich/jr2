@@ -31,11 +31,11 @@ each place that names it, and to no other place:
 
 <<< @/examples/concepts/secrets-and-trust/jr2.config.ts
 
-- A pod claims a Held secret when its [`workspace()`](../reference/authoring-surface.md#workspace) lists the name under
+- A pod claims a Held secret when its [`workspace()`](../reference/authoring-surface/workspace.md) lists the name under
   `secrets`. A pod also claims the key of each provider that an Agent in that pod uses.
 - The [Instance Harness](../reference/glossary.md#instance-harness) claims only the model keys of the Menu-only Agents
   that it hosts.
-- An Effect claims an Effect secret when it names it with [`secret()`](../reference/authoring-surface.md#secret).
+- An Effect claims an Effect secret when it names it with [`secret()`](../reference/authoring-surface/secret.md).
 - One entry can be a Held secret and an Effect secret at the same time. The placement is a fact of each place that names
   it, not of the entry.
 - An entry that nothing names goes nowhere, and [`jr2 up`](../reference/cli.md#up) warns about it.
@@ -194,7 +194,7 @@ who can read the pod logs of the namespace can read these conversations.
 - [Architecture](architecture.md) and [Effects](effects.md)
 - The [`secrets`](../reference/config.md#secrets), [`git`](../reference/config.md#git) and
   [`harness`](../reference/config.md#harness) fields of `jr2.config.ts`,
-  [`secret()`](../reference/authoring-surface.md#secret), and the [HTTP API](../reference/http-api.md)
+  [`secret()`](../reference/authoring-surface/secret.md), and the [HTTP API](../reference/http-api.md)
 - [ADR-0013](../reference/decisions/0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md),
   [ADR-0014](../reference/decisions/0014-observation-is-open-run-state-is-not.md),
   [ADR-0023](../reference/decisions/0023-the-harness-prints-the-conversation.md),

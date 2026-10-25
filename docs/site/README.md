@@ -231,22 +231,25 @@ Cite an ADR with a link to its bundle path. From a page one folder deep, such as
 full file name in `docs/adr/`. The link text is the number:
 `[ADR-0054](../reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)`.
 
-Cite a Reference entry with a link to its page and its anchor, such as `../reference/config.md#secrets`. `docs:build`
+Cite a Reference entry with a link to its page and its anchor, such as `../reference/config.md#secrets`. An entry of the
+Authoring surface has a page of its own, `reference/authoring-surface/<anchor>.md`: cite that page, without an anchor,
+such as `../reference/authoring-surface/workspace.md`. `reference/authoring-surface.md` is the contents page, and a link
+to the anchor of an entry on it, such as `#workspace`, fails the build with the path of the entry's page. `docs:build`
 makes each anchor from a name. It joins the parts with a hyphen and changes the result to lower case. Then it changes
 each run of characters that are not `a`–`z` or `0`–`9` to one hyphen. It also removes a hyphen at the start and at the
 end (`anchorOf` in `build/reference/context.ts`). The table gives the name for each kind of entry:
 
-| Page                                  | Entry                 | The anchor is                                    | Example                                                                        |
-| ------------------------------------- | --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `authoring-surface.md`, `machines.md` | a function or a const | the name                                         | `jr2Setup` is `#jr2setup`                                                      |
-| each Reference page                   | a type                | `type-`, then the name                           | `RepoSlot` is `#type-reposlot`                                                 |
-| `config.md`                           | a field               | the path, without `[]`, with `name` for `<name>` | `harness.provider.baseUrl` is `#harness-provider-baseurl`                      |
-| `cli.md`                              | a command             | the command, without `jr2`                       | `jr2 kit push` is `#kit-push`                                                  |
-| `cli.md`                              | a section             | its title                                        | `#global-options`, `#run-ids`, `#env`, `#output`, `#exit-codes`                |
-| `http-api.md`                         | a route               | the method and the path                          | `POST /runs/:runId/gates/:gate/events` is `#post-runs-runid-gates-gate-events` |
-| `http-api.md`                         | an access band        | `band-`, then the band                           | `#band-open`, `#band-authenticated`, `#band-instanceonly`                      |
-| `mechanism-events.md`                 | an event              | the event type                                   | `agent.fault` is `#agent-fault`                                                |
-| `glossary.md`                         | a term                | the rule in [Links](#links)                      | `Repo Slot` is `#repo-slot`                                                    |
+| Page                                | Entry                 | The anchor is                                    | Example                                                                        |
+| ----------------------------------- | --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `authoring-surface/`, `machines.md` | a function or a const | the name                                         | `jr2Setup` is `jr2setup`: the page `authoring-surface/jr2setup.md`             |
+| each Reference page                 | a type                | `type-`, then the name                           | `RepoSlot` is `type-reposlot`: the page `authoring-surface/type-reposlot.md`   |
+| `config.md`                         | a field               | the path, without `[]`, with `name` for `<name>` | `harness.provider.baseUrl` is `#harness-provider-baseurl`                      |
+| `cli.md`                            | a command             | the command, without `jr2`                       | `jr2 kit push` is `#kit-push`                                                  |
+| `cli.md`                            | a section             | its title                                        | `#global-options`, `#run-ids`, `#env`, `#output`, `#exit-codes`                |
+| `http-api.md`                       | a route               | the method and the path                          | `POST /runs/:runId/gates/:gate/events` is `#post-runs-runid-gates-gate-events` |
+| `http-api.md`                       | an access band        | `band-`, then the band                           | `#band-open`, `#band-authenticated`, `#band-instanceonly`                      |
+| `mechanism-events.md`               | an event              | the event type                                   | `agent.fault` is `#agent-fault`                                                |
+| `glossary.md`                       | a term                | the rule in [Links](#links)                      | `Repo Slot` is `#repo-slot`                                                    |
 
 - A flag has no anchor. Link to its command.
 - An anchor in an ADR is the slug that GitHub gives its heading.
@@ -500,6 +503,7 @@ The site also turns off the `{.class}` attributes of `markdown-it-attrs`, the Gi
 | ------------------------------ | --------------------------------------------------------------------------------- |
 | `<slug>.md`                    | Each page of `sitemap.json`, at its slug.                                         |
 | `reference/*.md`               | The Reference, generated from the code. See ADR-0072 for the source of each page. |
+| `reference/authoring-surface/` | One page for each export of the Authoring surface, and for each type it names.    |
 | `reference/glossary.md`        | `GLOSSARY.md`, with an anchor before each term.                                   |
 | `reference/decisions.md`       | An index of the ADRs.                                                             |
 | `reference/decisions/<adr>.md` | Each ADR, with its links changed for the bundle.                                  |
@@ -548,7 +552,7 @@ It also changes each relative link:
 - a repo path or a commit id in the TSDoc that a Reference page shows, such as `test/x.test.ts`, `parts.ts` or
   `baba71f`. `jr2.config.ts`, `AGENTS.md` and `CLAUDE.md` are the author's files, so they are not errors. The code of an
   `@example` and the target of a `@see` are not checked.
-- two entries of a generated page with the same anchor
+- two entries of a generated page with the same anchor, or two entry pages with the same path
 - a group or a page that the `AGENTS.md` block puts first (the Reference pages for an author, Write Machines, What you
   write) that `sitemap.json` does not have
 
@@ -599,8 +603,9 @@ their signatures and fields name, to any depth. Write that TSDoc for the author:
 with the full text, and what to read next. Put the reasoning of a maintainer in `//` comments above it.
 
 Mark with `@internal` a type that only computes a type from other types, such as the type of a Machine's actors. An
-author never writes such a type. The Reference shows its declaration only, in the list "Type plumbing", and does not
-follow the types that it names. Its TSDoc is not shown, so it can stay a maintainer's note.
+author never writes such a type. The Reference shows its declaration only, in the list "Type plumbing" (on the Authoring
+surface, a page with its declaration), and does not follow the types that it names. Its TSDoc is not shown, so it can
+stay a maintainer's note.
 
 ## The tutorial fixture
 

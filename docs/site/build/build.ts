@@ -21,7 +21,7 @@ import { readAdrs, type RefContext } from "./reference/context.ts";
 import { GLOSSARY_PAGE, renderDecisions, renderGlossary } from "./reference/glossary.ts";
 import { HTTP_PAGE, renderHttp } from "./reference/http-api.ts";
 import { EVENTS_PAGE, readMechanismEvents, renderMechanismEvents } from "./reference/mechanism-events.ts";
-import { examplesOf, readSurface, renderSurface } from "./reference/surface.ts";
+import { examplesOf, readSurface, renderSurface, type EntryPage } from "./reference/surface.ts";
 import { allPages, readSitemap, type Page } from "./sitemap.ts";
 import { createProgram, type Program } from "./tsdoc.ts";
 import { generatorSyntax, headingOnes, toPlainMarkdown } from "./vitepress.ts";
@@ -50,7 +50,7 @@ export type BuildResult = {
 /** The generated Reference pages: what each says it holds. */
 const GENERATED: Record<string, string> = {
   "reference/authoring-surface":
-    "Every name that @jr2/orchestrator exports from its root: its signature, its TSDoc, and an example.",
+    "Every name that @jr2/orchestrator exports from its root, by group, with a link to its page: its signature, its TSDoc, and an example.",
   "reference/machines": "The Machines that @jr2/machines ships: their input, their output, and their Open parts.",
   "reference/config": "Every field of jr2.config.ts: its type, whether it is required, its default, and what it does.",
   "reference/cli": "Every jr2 command: its synopsis, its arguments, flags and env vars, and what it prints.",
@@ -107,42 +107,64 @@ export function referenceContext(repo: string, pages: readonly Page[]): RefConte
   return { repo, program: programFor(repo), pages, adrs: readAdrs(repo), names: new Map(), errors: [] };
 }
 
-/** The Reference pages, by slug, and the examples the surface pages carry. */
-export function generateReference(ctx: RefContext): {
+/** The surface pages that are split into a contents page and a folder of entry pages, by slug,
+ * and what the AGENTS.md block says that the folder holds. The Authoring surface is too long for
+ * one read of a file tool (about 200 KB as one page). The machines page is short. */
+export const SPLIT: Record<string, string> = {
+  "reference/authoring-surface": "one file per export and type",
+};
+
+export type GeneratedReference = {
+  /** Each Reference page's body, by slug: the sitemap's pages and their entry pages. */
   pages: Map<string, string>;
+  /** The entry pages of each contents page, by the contents page's slug. */
+  entries: Map<string, EntryPage[]>;
   examples: { page: string; name: string; code: string }[];
-} {
-  const surface = readSurface(ctx, "packages/orchestrator/src/index.ts", "reference/authoring-surface.md");
-  const machines = readSurface(ctx, "packages/machines/src/index.ts", "reference/machines.md");
+};
+
+/** The Reference pages, by slug, and the examples the surface pages carry. */
+export function generateReference(ctx: RefContext): GeneratedReference {
+  const read = (root: string, slug: string) => readSurface(ctx, root, `${slug}.md`, slug in SPLIT);
+  const surface = read("packages/orchestrator/src/index.ts", "reference/authoring-surface");
+  const machines = read("packages/machines/src/index.ts", "reference/machines");
   const config = readConfig(ctx);
   const events = readMechanismEvents(ctx);
+  const surfacePages = renderSurface(
+    ctx,
+    surface,
+    "The [Authoring surface](glossary.md#authoring-surface) is every name that `@jr2/orchestrator` exports from its root, and nothing else: a workflow module and `jr2.config.ts` import only these names. The groups and their order are those of the root's `src/index.ts`. This page gives each name its kind and the first sentence of its TSDoc. Each name has a page of its own, in `authoring-surface/`, with the file that declares it, its signature, and its TSDoc.",
+  );
+  const machinesPages = renderSurface(
+    ctx,
+    machines,
+    "`@jr2/machines` ships Machines, not Workflows. A Machine becomes a Workflow when a file in the Instance's `workflows/` folder exports it, with each [Open](glossary.md#open) part bound by [`customize`](authoring-surface/customize.md). Install it beside `@jr2/orchestrator`, at the same version: it is a peer of the kit, never a copy of it.",
+  );
   const pages = new Map<string, string>([
-    [
-      "reference/authoring-surface",
-      renderSurface(
-        ctx,
-        surface,
-        "The [Authoring surface](glossary.md#authoring-surface) is every name that `@jr2/orchestrator` exports from its root, and nothing else: a workflow module and `jr2.config.ts` import only these names. The groups and their order are those of the root's `src/index.ts`. Each name has its kind, the file that declares it, its signature, and its TSDoc.",
-      ),
-    ],
-    [
-      "reference/machines",
-      renderSurface(
-        ctx,
-        machines,
-        "`@jr2/machines` ships Machines, not Workflows. A Machine becomes a Workflow when a file in the Instance's `workflows/` folder exports it, with each [Open](glossary.md#open) part bound by [`customize`](authoring-surface.md#customize). Install it beside `@jr2/orchestrator`, at the same version: it is a peer of the kit, never a copy of it.",
-      ),
-    ],
+    ["reference/authoring-surface", surfacePages.body],
+    ["reference/machines", machinesPages.body],
     [CONFIG_PAGE.replace(/\.md$/, ""), renderConfig(ctx, config)],
     [CLI_PAGE.replace(/\.md$/, ""), renderCli(ctx)],
     [HTTP_PAGE.replace(/\.md$/, ""), renderHttp(ctx)],
     [EVENTS_PAGE.replace(/\.md$/, ""), renderMechanismEvents(ctx, events)],
   ]);
+  const entries = new Map<string, EntryPage[]>();
+  for (const [slug, p] of [
+    ["reference/authoring-surface", surfacePages],
+    ["reference/machines", machinesPages],
+  ] as const) {
+    if (!p.entries.length) continue;
+    entries.set(slug, p.entries);
+    for (const e of p.entries) {
+      if (pages.has(e.slug))
+        ctx.errors.push({ file: `${slug}.md (generated)`, line: 1, message: `two pages are ${e.slug}.md` });
+      pages.set(e.slug, e.body);
+    }
+  }
   const examples = [
     ...examplesOf(ctx, surface).map((e) => ({ page: surface.page, ...e })),
     ...examplesOf(ctx, machines).map((e) => ({ page: machines.page, ...e })),
   ];
-  return { pages, examples };
+  return { pages, entries, examples };
 }
 
 /** Assemble the bundle in memory. Nothing is written. */
@@ -180,6 +202,7 @@ export async function buildDocs(opts: BuildOptions = {}): Promise<BuildResult> {
   for (const e of glossary.errors) errors.push({ file: "GLOSSARY.md", line: 1, message: e });
   reference.pages.set("reference/glossary", glossary.body);
   reference.pages.set("reference/decisions", renderDecisions(ctx.adrs));
+  const entryPages = new Map([...reference.entries.values()].flat().map((e) => [e.slug, e]));
   for (const p of pages.filter((p) => p.source === "generated"))
     if (!reference.pages.has(p.slug) || !GENERATED[p.slug])
       errors.push({ file: "docs/site/sitemap.json", line: 1, message: `no generator makes the page ${p.slug}` });
@@ -227,10 +250,13 @@ export async function buildDocs(opts: BuildOptions = {}): Promise<BuildResult> {
   }
   for (const [slug, body] of reference.pages) {
     const page = pages.find((p) => p.slug === slug);
+    const entry = entryPages.get(slug);
     const bundlePath = `${slug}.md`;
     const from = slug === "reference/glossary" ? "GLOSSARY.md" : `docs/site/${bundlePath}`;
     const label = slug === "reference/glossary" ? "GLOSSARY.md" : `${bundlePath} (generated)`;
-    const head = pageHead(page?.title ?? slug, GENERATED[slug] ?? "");
+    const head = entry
+      ? pageHead(entry.title, entry.description, entry.heading)
+      : pageHead(page?.title ?? slug, GENERATED[slug] ?? "");
     const linked = rewriteLinks(body, { from, bundle: bundlePath, file: label }, set);
     errors.push(...linked.errors);
     files.set(bundlePath, `${head}\n${linked.text}`);

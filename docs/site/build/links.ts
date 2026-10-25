@@ -4,7 +4,8 @@
 //   - a link to a file in the docs set becomes that file's bundle path, relative to the linking
 //     file: docs/adr/X.md is reference/decisions/X.md, GLOSSARY.md is reference/glossary.md, and a
 //     docs/site page is its slug. The anchor is kept, and one into the Glossary or the Reference
-//     must exist there;
+//     must exist there. An entry that has a page of its own (reference/authoring-surface/<anchor>.md)
+//     is linked as that page: its old anchor on the contents page is an error that names the page;
 //   - a link to any other repo file becomes a GitHub URL at the release tag, `v<version>`;
 //   - a link that resolves to nothing fails the build, with its file and line.
 //
@@ -127,8 +128,12 @@ export function rewriteHref(
 function checkAnchor(bundle: string, frag: string, set: DocsSet): { error: string } | undefined {
   if (frag === "" || set.skipped.has(bundle)) return undefined;
   const anchors = set.anchors.get(bundle);
-  if (anchors && !anchors.has(frag)) return { error: `the anchor #${frag} is not in ${bundle}` };
-  return undefined;
+  if (!anchors || anchors.has(frag)) return undefined;
+  // A contents page lists its entries, and each entry is a page of its own, named by its anchor.
+  const entry = `${bundle.replace(/\.md$/, "")}/${frag}.md`;
+  if (set.bundle.has(entry))
+    return { error: `the anchor #${frag} is not in ${bundle}: the entry is its own page, ${entry}` };
+  return { error: `the anchor #${frag} is not in ${bundle}` };
 }
 
 /** An inline link's or image's `](href "title")`, and a reference definition's `[x]: href`. */

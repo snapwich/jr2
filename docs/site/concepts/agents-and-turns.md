@@ -22,8 +22,8 @@ Turn ends. It also decides what to do when a Turn does not end. You do not write
 
 ## The definition
 
-An Agent is an [`agent()`](../reference/authoring-surface.md#agent) under `actors` in
-[`jr2Setup`](../reference/authoring-surface.md#jr2setup): `actors: { coder: agent({ … }) }`. The key is the name of the
+An Agent is an [`agent()`](../reference/authoring-surface/agent.md) under `actors` in
+[`jr2Setup`](../reference/authoring-surface/jr2setup.md): `actors: { coder: agent({ … }) }`. The key is the name of the
 Agent. A state invokes it with `src: "coder"`. The definition is plain data, and it has these fields:
 
 | Field           | What it tells                                                                          |
@@ -34,12 +34,12 @@ Agent. A state invokes it with `src: "coder"`. The definition is plain data, and
 | `thinkingLevel` | How hard the model thinks, when the state sets no other level. The default is `"off"`. |
 | `description`   | A short text for the people who read the Machine. The model does not read it.          |
 
-[`AgentDefinition`](../reference/authoring-surface.md#type-agentdefinition) gives each field.
+[`AgentDefinition`](../reference/authoring-surface/type-agentdefinition.md) gives each field.
 
 An Agent belongs to the Machine that holds it. Two Machines in one run can each hold an Agent named `coder`, and the two
 are different Agents. A Machine that you get from a package can leave its model
-[`open`](../reference/authoring-surface.md#open), for you to bind with
-[`customize()`](../reference/authoring-surface.md#customize). [Composition](composition.md) tells how.
+[`open`](../reference/authoring-surface/open.md), for you to bind with
+[`customize()`](../reference/authoring-surface/customize.md). [Composition](composition.md) tells how.
 
 `instructions` and `workspace` are the identity of the Agent. Only the definition sets them. A state cannot change them
 for one Turn, because then the name of the Agent would not tell what it is.
@@ -58,7 +58,7 @@ field selects them:
 
 The field also tells where the Turn runs. An Agent with `"write"` or `"read"` works in the
 [Sandbox](../reference/glossary.md#sandbox) of a Workspace, so a state invokes it in the body of a
-[`workspace()`](../reference/authoring-surface.md#workspace). A Menu-only Agent has no Sandbox. Its Turn runs on the
+[`workspace()`](../reference/authoring-surface/workspace.md). A Menu-only Agent has no Sandbox. Its Turn runs on the
 [Instance Harness](../reference/glossary.md#instance-harness), also when a `workspace()` holds it.
 [Architecture](architecture.md) shows where each Harness runs.
 
@@ -232,9 +232,9 @@ the model in `models`. A model with no context window gets no Compaction.
 
 - [Set an Agent's access and Dials](../guides/set-an-agents-access-and-dials.md)
 - [The Menu](the-menu.md), [Workspaces](workspaces.md) and [Architecture](architecture.md)
-- Reference: [`agent`](../reference/authoring-surface.md#agent),
-  [`AgentDefinition`](../reference/authoring-surface.md#type-agentdefinition),
-  [`ThinkingLevel`](../reference/authoring-surface.md#type-thinkinglevel),
+- Reference: [`agent`](../reference/authoring-surface/agent.md),
+  [`AgentDefinition`](../reference/authoring-surface/type-agentdefinition.md),
+  [`ThinkingLevel`](../reference/authoring-surface/type-thinkinglevel.md),
   [`agent.fault`](../reference/mechanism-events.md#agent-fault) and
   [`harness.provider`](../reference/config.md#harness-provider)
 - [ADR-0018](../reference/decisions/0018-instance-agents-are-definitions-jr2-assembles-the-harness.md): an Agent is a

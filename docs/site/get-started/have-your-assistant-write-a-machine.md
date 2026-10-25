@@ -290,7 +290,7 @@ This is one `fix.ts` that does what the prompt asks, with the model of the tab:
 
 Read it in the order of the graph. Each part below links to its entry in the Reference.
 
-**The events.** Each [`defineEvent`](../reference/authoring-surface.md#defineevent) is an event that the Machine takes.
+**The events.** Each [`defineEvent`](../reference/authoring-surface/defineevent.md) is an event that the Machine takes.
 `finish` is in a state that invokes the coder, so it is a tool on the coder's [Menu](../reference/glossary.md#menu).
 `approve` and `request_changes` are in a state that invokes the Gate, so only the Gate takes them. This file sets no
 `audience` on its events, so the place of each event says who sends it. The `defineEvent` field `audience` can change
@@ -299,10 +299,10 @@ that. The seats show the result.
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#events
 
 **The Effects.** `tests` and `publish` are actor slots, as the coder is. A state runs one when it invokes it.
-[`command()`](../reference/authoring-surface.md#command) takes a list of arguments, not a line of shell text. It runs in
+[`command()`](../reference/authoring-surface/command.md) takes a list of arguments, not a line of shell text. It runs in
 the [Worktree](../reference/glossary.md#worktree) of the one [Repo Slot](../reference/glossary.md#repo-slot). A command
 runs in the root of the Worktree, so `tests` names the test files by their path from that root.
-[`push()`](../reference/authoring-surface.md#push) pushes the tip of the coder's branch.
+[`push()`](../reference/authoring-surface/push.md) pushes the tip of the coder's branch.
 
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#effects
 
@@ -315,7 +315,7 @@ jr2, when it cannot get a pick from the coder.
 
 **The tests.** Every outcome of a command is output. A failed test is output too. The `onDone` list routes on that
 output. The first transition whose guard passes is the one that the run takes. The second transition has no guard, so it
-catches every other outcome. See [`CommandOutput`](../reference/authoring-surface.md#type-commandoutput).
+catches every other outcome. See [`CommandOutput`](../reference/authoring-surface/type-commandoutput.md).
 
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#testing
 
@@ -327,11 +327,11 @@ as `body`, and the state is `review`, so the id is `body.review`. You give `--ga
 
 **The push.** `pushing` invokes `publish`. A push that fails is output too: `rejected`, `diverged` or `unknown`. Here it
 goes back to `review`, and the Sandbox stays. If the run went to a final state, jr2 would remove the Sandbox and the
-commits in it. See [`PushOutput`](../reference/authoring-surface.md#type-pushoutput).
+commits in it. See [`PushOutput`](../reference/authoring-surface/type-pushoutput.md).
 
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#pushing
 
-**The Workspace.** [`workspace()`](../reference/authoring-surface.md#workspace) runs the body in a Sandbox. `input` is
+**The Workspace.** [`workspace()`](../reference/authoring-surface/workspace.md) runs the body in a Sandbox. `input` is
 the schema of the run input that `jr2 run --input` sends. `repos` binds the Repo Slot `target` to your fork, at the
 release tag. `spec` gives the branch. At a root `workspace()`, the input of `spec` also holds `instanceId`, but its type
 does not show it, so the example reads it with a cast.

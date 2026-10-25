@@ -57,7 +57,7 @@ which waits for an event from outside the run. [Gates](gates.md) tells how.
 ## The door
 
 The door of a Machine is the input that starts a run. A Machine declares its door as a zod object in the `input` of
-`createMachine`. [`jr2Setup`](../reference/authoring-surface.md#jr2setup) adds this option to `createMachine`. The same
+`createMachine`. [`jr2Setup`](../reference/authoring-surface/jr2setup.md) adds this option to `createMachine`. The same
 schema, through `z.infer`, gives `types.input`, so TypeScript and jr2 agree about one shape.
 
 With a door, jr2 does these things:
@@ -73,9 +73,9 @@ Without a door, a run starts with any input, and the start form of the Console i
 
 The root Machine of a run also gets `instanceId`, an id that jr2 makes for the run. It is not the run id. It is not a
 part of the door, because no caller sends it.
-[`HostInjectedInput`](../reference/authoring-surface.md#type-hostinjectedinput) is its type.
+[`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md) is its type.
 
-A [`workspace()`](../reference/authoring-surface.md#workspace) or a [`pool()`](../reference/authoring-surface.md#pool)
+A [`workspace()`](../reference/authoring-surface/workspace.md) or a [`pool()`](../reference/authoring-surface/pool.md)
 has a door of its own. It does not use the door of the Machine inside it, because that Machine gets other input. A
 `workspace()` body gets the run input and the Workspace handles. A [Pool](../reference/glossary.md#pool) worker gets its
 item. Thus the wrapper declares the door, with its `input` option. `workspace()` refuses a body that declares a door.
@@ -83,7 +83,7 @@ item. Thus the wrapper declares the door, with its `input` option. `workspace()`
 ## The Vocabulary
 
 The Vocabulary of a Machine is the list of the workflow events that it takes. Each event comes from
-[`defineEvent`](../reference/authoring-surface.md#defineevent): a name, a zod schema for its payload and, if you want, a
+[`defineEvent`](../reference/authoring-surface/defineevent.md): a name, a zod schema for its payload and, if you want, a
 description. `jr2Setup` lists the events. Each name is an `on` key of the states that take it.
 
 jr2 makes three things from the Vocabulary:
@@ -153,9 +153,9 @@ moves a Machine.
 - [Write a Workflow](../guides/write-a-workflow.md)
 - [Start a run](../guides/start-a-run.md)
 - [Agents and Turns](agents-and-turns.md), [The Menu](the-menu.md), [Gates](gates.md) and [Charts](charts.md)
-- Reference: [`jr2Setup`](../reference/authoring-surface.md#jr2setup),
-  [`defineEvent`](../reference/authoring-surface.md#defineevent),
-  [`HostInjectedInput`](../reference/authoring-surface.md#type-hostinjectedinput), [`jr2 run`](../reference/cli.md#run),
+- Reference: [`jr2Setup`](../reference/authoring-surface/jr2setup.md),
+  [`defineEvent`](../reference/authoring-surface/defineevent.md),
+  [`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md), [`jr2 run`](../reference/cli.md#run),
   [`POST /workflows/:name/runs`](../reference/http-api.md#post-workflows-name-runs) and
   [Mechanism events](../reference/mechanism-events.md)
 - [ADR-0011](../reference/decisions/0011-workflow-defined-events.md): the events are the Workflow's, and jr2 delivers

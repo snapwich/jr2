@@ -7,7 +7,7 @@ Push the branch of a [Workspace](../reference/glossary.md#workspace) with a `pus
 [Effect](../reference/glossary.md#effect), signed with a key that the [Agent](../reference/glossary.md#agent) never
 reads.
 
-[`push(options)`](../reference/authoring-surface.md#push) pushes the branch to the [Repo](../reference/glossary.md#repo)
+[`push(options)`](../reference/authoring-surface/push.md) pushes the branch to the [Repo](../reference/glossary.md#repo)
 that the [Binding](../reference/glossary.md#binding) of its [Repo Slot](../reference/glossary.md#repo-slot) names. With
 `sign: true`, it pushes signed copies of the Agent's commits. In this [Workflow](../reference/glossary.md#workflow), a
 coder fixes the tests and commits. A person reads the branch at the [Gate](../reference/glossary.md#gate) of the state
@@ -113,7 +113,7 @@ The `images/default/Dockerfile` that `jr2 init` writes installs `git` and no ssh
 <<< @/examples/guides/push-and-sign-a-branch/images/default/Dockerfile{dockerfile}
 
 To keep these programs out of the Sandbox Image, give the `workspace()` an image for the Sandbox Effector only:
-`effector: { image }` (see [`SandboxOptions`](../reference/authoring-surface.md#type-sandboxoptions)).
+`effector: { image }` (see [`SandboxOptions`](../reference/authoring-surface/type-sandboxoptions.md)).
 [Add tools to the Sandbox](add-tools-to-the-sandbox.md) tells how to change an image.
 
 ## Run jr2 up
@@ -183,7 +183,7 @@ delivered approve to gate "body.review" on f000bc5a-4c4f-4cdc-be52-55bc43a5fba0
 ## Read the output of the push
 
 Each outcome is output for `onDone`. Route on `outcome`
-([`PushOutput`](../reference/authoring-surface.md#type-pushoutput)):
+([`PushOutput`](../reference/authoring-surface/type-pushoutput.md)):
 
 - `pushed`: the remote has the commit. `published` is the commit on the remote, and `source` is the Agent's commit.
 - `rejected`: git, the remote or the Sandbox Effector refused the push. `stage` tells where, and `reason` tells why.
@@ -284,9 +284,9 @@ the push Secret of the entry, `jr2-git-push-<hash>`, as `jr2 up` shows it. It is
 - [Secrets and trust](../concepts/secrets-and-trust.md): who holds the push credential and the signing key.
 - [Give the cluster git credentials](give-the-cluster-git-credentials.md): the entries of `git.credentials`.
 - [Add tools to the Sandbox](add-tools-to-the-sandbox.md): the Sandbox Image.
-- Reference: [`push`](../reference/authoring-surface.md#push),
-  [`PushOptions`](../reference/authoring-surface.md#type-pushoptions),
-  [`PushOutput`](../reference/authoring-surface.md#type-pushoutput) and
+- Reference: [`push`](../reference/authoring-surface/push.md),
+  [`PushOptions`](../reference/authoring-surface/type-pushoptions.md),
+  [`PushOutput`](../reference/authoring-surface/type-pushoutput.md) and
   [`git.credentials[].sign`](../reference/config.md#git-credentials-sign).
 - [ADR-0067](../reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md):
   the `push` Effect, signed copies and the sync of the branch.

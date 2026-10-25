@@ -27,10 +27,10 @@ The parts of the module:
   start against it, and it starts the run with the input that zod parsed. Thus `canaryPercent` gets its default when the
   caller does not send it. Give the same type to `types.input`, with `z.infer`, so that TypeScript and jr2 agree.
 - **`instanceId`.** jr2 adds `instanceId` to the input of the root Machine of a run. Add
-  [`HostInjectedInput`](../reference/authoring-surface.md#type-hostinjectedinput) to the input type when the Machine
+  [`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md) to the input type when the Machine
   reads it. Do not put it in the door. No caller sends it.
-- **The Vocabulary.** Make each event with [`defineEvent`](../reference/authoring-surface.md#defineevent), and list it
-  in the `events` of [`jr2Setup`](../reference/authoring-surface.md#jr2setup). Write its name as an `on` key on each
+- **The Vocabulary.** Make each event with [`defineEvent`](../reference/authoring-surface/defineevent.md), and list it
+  in the `events` of [`jr2Setup`](../reference/authoring-surface/jr2setup.md). Write its name as an `on` key on each
   state that takes it.
 - **The Gate.** The state `canary` invokes `gate`. The Gate takes the events of the `on` keys of that state. Its `meta`
   is the data that `jr2 status` and the [Console](../reference/glossary.md#console) show to the person who answers.
@@ -147,7 +147,7 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
 - [Gates](../concepts/gates.md) and [The Menu](../concepts/the-menu.md)
 - [Set an Agent's access and Dials](set-an-agents-access-and-dials.md), to add an Agent to the Machine.
 - [Bind a shipped Machine's Open parts](bind-open-parts.md), to register a Machine from a package.
-- Reference: [`jr2Setup`](../reference/authoring-surface.md#jr2setup),
-  [`defineEvent`](../reference/authoring-surface.md#defineevent),
-  [`HostInjectedInput`](../reference/authoring-surface.md#type-hostinjectedinput),
+- Reference: [`jr2Setup`](../reference/authoring-surface/jr2setup.md),
+  [`defineEvent`](../reference/authoring-surface/defineevent.md),
+  [`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md),
   [`GET /workflows/:name`](../reference/http-api.md#get-workflows-name)
