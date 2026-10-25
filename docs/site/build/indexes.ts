@@ -103,8 +103,9 @@ function compressedIndex(
  * and the contents page that links to each name an Assistant writes against. */
 const START = { guide: "guides/write-a-workflow", contents: "reference/authoring-surface" };
 
-/** The sentence of the instruction that says where to start. A page that sitemap.json does not
- * have is an error, so a rename cannot leave the sentence pointing nowhere. */
+/** The sentences of the instruction that say where to start, and to read one page at a time: two
+ * entry pages in one read are more than a file tool shows. A page that sitemap.json does not have
+ * is an error, so a rename cannot leave the sentence pointing nowhere. */
 function startSentence(map: Sitemap, errors: BuildError[]): string {
   const slugs = new Set(allPages(map).map((p) => p.slug));
   for (const slug of Object.values(START))
@@ -114,7 +115,10 @@ function startSentence(map: Sitemap, errors: BuildError[]): string {
         line: 1,
         message: `the AGENTS.md block says to start with ${slug}.md, and sitemap.json has no such page`,
       });
-  return `Start with ${START.guide}.md and with ${START.contents}.md, the contents page of the Authoring surface.`;
+  return (
+    `Start with ${START.guide}.md and with ${START.contents}.md, the contents page of the Authoring surface. ` +
+    "Read one page with each call of your file tool, because a file tool cuts off a long output."
+  );
 }
 
 /** `agents-block.md`: what `jr2 up` writes between the AGENTS.md markers, without the markers. */

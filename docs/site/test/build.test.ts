@@ -99,10 +99,11 @@ test("a full strict build of this repo succeeds, and writes the bundle", async (
   assert.deepEqual((await readdir(join(out, "reference/decisions"))).sort(), adrs.sort());
   const block = await readFile(join(out, "agents-block.md"), "utf8");
   assert.match(block, /node_modules\/@jr2\/orchestrator\/docs/);
-  // The instruction says where to start, and both pages are in the bundle.
+  // The instruction says where to start and to read one page at a time, and both pages are in
+  // the bundle.
   assert.match(
     block.split("\n")[0]!,
-    / Start with guides\/write-a-workflow\.md and with reference\/authoring-surface\.md, the contents page of the Authoring surface\.$/,
+    / Start with guides\/write-a-workflow\.md and with reference\/authoring-surface\.md, the contents page of the Authoring surface\. Read one page with each call of your file tool, because a file tool cuts off a long output\.$/,
   );
   assert.ok(r.files.has("guides/write-a-workflow.md") && r.files.has("reference/authoring-surface.md"));
   // One entry for each directory, in the order an Assistant needs the pages. A folder of entry
