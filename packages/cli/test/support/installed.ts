@@ -78,7 +78,7 @@ export async function mkInstalledInstance(opts: { cli?: boolean } = {}): Promise
   await writeFile(
     join(root, "workflows", "ping.ts"),
     `import { jr2Setup } from "@jr2/orchestrator";\n` +
-      `export const machine = jr2Setup({ events: [] }).createMachine({\n` +
+      `export const machine = jr2Setup().createMachine({\n` +
       `  id: "ping",\n  initial: "done",\n  states: { done: { type: "final" } },\n});\n`,
   );
   return root;

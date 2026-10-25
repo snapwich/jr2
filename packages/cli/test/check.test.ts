@@ -27,7 +27,7 @@ const ZOD = import.meta.resolve("zod");
 
 /** A Machine whose `on` key names an event that its list does not hold, next to one that it holds.
  * `tsc` accepts it, because `on` takes the listed names and also other keys. `createMachine` refuses
- * it when the module loads. (With `events: []`, `tsc` refuses the key itself, TS2353.) */
+ * it when the module loads. (With no listed event, `tsc` refuses the key itself, TS2353.) */
 const UNDECLARED_EVENT =
   `import { defineEvent } from ${JSON.stringify(KIT_SRC)};\nimport { z } from ${JSON.stringify(ZOD)};\n` +
   `const go = defineEvent({ name: "go", input: z.object({}) });\n` +
@@ -36,7 +36,7 @@ const UNDECLARED_EVENT =
 
 /** A workflow that leaves its Repo Slot open: the walk refuses it, after the module loads. */
 const OPEN_SLOT =
-  `const body = jr2Setup({ events: [] })\n` +
+  `const body = jr2Setup()\n` +
   `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
   `export const machine = workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) });\n`;
 
@@ -98,7 +98,7 @@ function why(err: string[]): string[] {
 
 test("a folder that compiles and loads passes, names its Workflows, and reads no kube context", async () => {
   const root = await mkInstance({
-    ping: `export const machine = jr2Setup({ events: [] }).createMachine({ id: "ping", initial: "done", states: { done: { type: "final" } } });\n`,
+    ping: `export const machine = jr2Setup().createMachine({ id: "ping", initial: "done", states: { done: { type: "final" } } });\n`,
   });
   const w = mkIo(root);
   assert.equal(await main(["check"], w.io), 0);
