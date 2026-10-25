@@ -148,9 +148,9 @@ the params of the pick:
 
 Each param of a pick that enters an Effect's state must go somewhere: to a key of the Effect's input, to `fill`, or to
 the context with `assign`. `createMachine` refuses a param that nothing reads, because the Agent gives it and nothing
-uses it. The compiler does not find this error. Only `jr2 up` finds it, when it loads the module. Thus when you copy
-`finished` with its `summary` into a Machine that does not send or keep the summary, drop `summary` from the `input` of
-the event. [Rules](#rules) gives the text of each refusal.
+uses it. The compiler does not find this error. `jr2 check` and `jr2 up` find it when they load the module. Thus when
+you copy `finished` with its `summary` into a Machine that does not send or keep the summary, drop `summary` from the
+`input` of the event. [Rules](#rules) gives the text of each refusal.
 
 TypeScript checks the keys of the pick and of `fill` against the input of the Effect. When the Agent's state holds the
 Effect, the Agent waits for the answer to its pick. [`answer(fn)`](../reference/authoring-surface/answer.md) sets that

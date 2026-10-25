@@ -126,10 +126,15 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
 
 - `jr2 up` changes nothing when the Instance does not typecheck. It prints
   `refusing: this instance does not typecheck — nothing was built and nothing was applied`, then each line of the output
-  of the compiler. Run `npm run typecheck` to see the same errors without `jr2 up`.
+  of the compiler.
 - `npm run typecheck` does not find a refusal of `defineEvent`, `createMachine` or `workspace()`. These refusals occur
   when a module loads. `jr2 up` loads each module after the typecheck and before it connects to the cluster, so a
   refusal stops it before it changes the cluster.
+- Run [`jr2 check`](../reference/cli.md#check) (`npm run check` in the scaffold) to find these errors without a cluster.
+  It runs the typecheck and the load of each module that `jr2 up` runs first, with the same code, and it gives the same
+  refusals. It exits with `1` when it refuses. Run it before you hand off a change. Do not import a workflow module with
+  `node`: in an installed Instance, `node` cannot load the Kit, because the Kit is TypeScript under `node_modules`. The
+  `jr2` binary can.
 - The name of a Workflow file has lower-case letters, digits and `-`, such as `release-notes.ts`. `jr2 up` refuses a
   different name, and gives the name to use:
   ``error: <folder>/workflows/<file>.ts: a Workflow is named by its filename stem, in lowercase letters, digits and "-", so that `jr2 run` and a `dispatch` slot name it the same way — rename it to <name>.ts (ADR-0071)``
@@ -139,8 +144,8 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
   `defineEvent: invalid name "<name>" — must match /^[a-zA-Z0-9_-]+$/ (it becomes an MCP tool name and an xstate event type)`
 - `defineEvent` refuses an input with a `sender` field:
   ``defineEvent: "<name>" declares `sender` in its input — the Orchestrator writes that field on every delivered event (who sent it); name the payload field something else``
-- `createMachine` refuses an `on` key that no listed event has. The compiler does not find this error, so `jr2 up` finds
-  it when it loads the module:
+- `createMachine` refuses an `on` key that no listed event has. The compiler does not always find this error.
+  `jr2 check` and `jr2 up` find it when they load the module:
   `machine "<id>" handles event "<key>", which no def in jr2Setup({ events }) declares (declared: <names>) — a typo, or a missing defineEvent`.
   An `on` key with a `.` is a jr2 or xstate event, such as `agent.fault`, and you do not list it.
 - `createMachine` refuses a listed event that no state takes:

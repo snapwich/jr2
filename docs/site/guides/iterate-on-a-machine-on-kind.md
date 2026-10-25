@@ -19,16 +19,17 @@ model.
 Open `workflows/ping.ts`. In the line of the `respond` actor, change `` `pong: ${input.message}` `` to
 `` `pong, again: ${input.message}` ``. Save the file.
 
-To find the type errors before you converge, run the typecheck of the Instance. `jr2 up` runs the same check first:
+To find the errors before you converge, run [`jr2 check`](../reference/cli.md#check). `jr2 up` runs the same check
+first:
 
 ```sh
-npm run typecheck
+jr2 check
 ```
 
-To also see the walk of each Machine with no cluster, give `jr2 up` a context that does not exist, such as
-`jr2 up --context nope`. It prints the typecheck, the `effects:` lines and the `seats:` lines. Then it stops with
-`refusing: cannot reach the API server of nope (<error>). Nothing was applied.` The checks of `git.credentials` and of
-the images come after that refusal, so they need the cluster.
+It typechecks the Instance, loads each Workflow and walks its Machine, with no cluster. It prints the typecheck, the
+`effects:` lines and the `seats:` lines, and then `check: passed`. When it refuses, it gives the line that `jr2 up`
+gives, and exits with `1`. `npm run typecheck` runs only the compiler, so it does not find a refusal that occurs when a
+module loads. The checks of `git.credentials` and of the images need the cluster, so only `jr2 up` does them.
 
 ## Converge the change
 

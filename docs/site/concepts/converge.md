@@ -61,7 +61,8 @@ the cluster, see [Architecture](architecture.md).
 
 ## What jr2 up does
 
-`jr2 up` does its steps in this order. Steps 1 to 4 change nothing in the cluster:
+`jr2 up` does its steps in this order. Steps 1 to 4 change nothing in the cluster.
+[`jr2 check`](../reference/cli.md#check) does steps 2 and 3 alone, with the same code and no cluster:
 
 1. It writes the docs index of the [Kit version](../reference/glossary.md#kit-version) between the two `jr2-docs`
    markers in `AGENTS.md`. This step changes the folder, not the cluster. Thus a converge that fails still leaves the

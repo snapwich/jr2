@@ -30,17 +30,18 @@ refusing: this instance does not typecheck — nothing was built and nothing was
 
 The first line (`…`) is the `.env` line, when `.env` sets a variable that your shell does not set. The refusal comes
 before `jr2 up` reads the cluster, so the cluster did not change. Each line after it is a line from the TypeScript
-compiler of the Instance. To see the same errors without `jr2 up`, run `npm run typecheck`.
+compiler of the Instance. To see the same errors without `jr2 up`, run [`jr2 check`](../reference/cli.md#check).
 
 Correct the typo. Then run `jr2 up` again. You can run `jr2 up` again after each fix. It does not build an image again
 when the inputs of the image did not change.
 
 The checks of the config, the compiler and the [Machines](../reference/glossary.md#machine) come before `jr2 up` reads
-the cluster. The checks of the context, the API server, the Kubernetes version and the namespace come before `jr2 up`
-changes the cluster. Thus these refusals change nothing in the cluster. The pod-level resources refusal comes after
-`jr2 up` makes the namespace. Other errors can come after `jr2 up` applied some parts. When you fix the cause, run
-`jr2 up` again. A converge that fails removes no image. [Converge](../concepts/converge.md#what-jr2-up-does) gives the
-order of the steps.
+the cluster. `jr2 check` runs these checks with the same code and no cluster, and gives the same `refusing:` and
+`error:` lines. Thus you, or an Assistant that cannot run `jr2 up`, can fix them before a converge. The checks of the
+context, the API server, the Kubernetes version and the namespace come before `jr2 up` changes the cluster. Thus these
+refusals change nothing in the cluster. The pod-level resources refusal comes after `jr2 up` makes the namespace. Other
+errors can come after `jr2 up` applied some parts. When you fix the cause, run `jr2 up` again. A converge that fails
+removes no image. [Converge](../concepts/converge.md#what-jr2-up-does) gives the order of the steps.
 
 ## Fix a rollout that does not complete
 
