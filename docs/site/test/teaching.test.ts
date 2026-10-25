@@ -27,3 +27,9 @@ test("a retry loop continues on each Turn, so attempt 2 sees attempt 1", async (
     assert.doesNotMatch(flat, /attempts > 0 \? \{ continue/, `${name} shows a retry loop that loses attempt 1`);
   }
 });
+
+test("an ask that a Gate answers has a guard, so the Agent cannot ask with no end", async () => {
+  const text = (await source("concepts/gates")).replace(/\s+/g, " ");
+  assert.ok(text.includes("To stop this loop, put a guard on the pick."), "Gates does not guard the ask loop");
+  assert.ok(text.includes("](the-menu.md#allowed-picks)"), "Gates does not link to the guards of the Allowed picks");
+});

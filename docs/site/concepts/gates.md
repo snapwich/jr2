@@ -89,6 +89,10 @@ A Gate can be inside the state of an Agent. Then the Agent's pick that opened th
 default, the Gate's event is the answer to the pick. The Gate takes its own events. It does not take the picks of the
 Agent, unless an event's `audience` is `"any"`. [The Menu](the-menu.md) tells how jr2 answers the pick.
 
+After each answer, the Agent can pick again, so it can ask and get answers with no end. To stop this loop, put a guard
+on the pick. For example, `guard: ({ context }) => context.replies < 1` allows one question only. A guard that reads
+only the context removes the pick from the [Allowed picks](the-menu.md#allowed-picks).
+
 A Pool that has a `wake` event serves it as a Gate with the id `source` (see [Pools and Sources](pools-and-sources.md)).
 
 ## Rules
