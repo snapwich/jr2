@@ -177,6 +177,14 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  * The input of an Open argv is one string for each key, so TypeScript checks no key for it. A key
  * that the bound argv names and the input does not give stops the Effect when it starts.
  *
+ * The state that the pick enters has one of two places:
+ * - A child state of the Agent's state, as in the first example. The Turn stays open, and the
+ *   pick is outstanding until the Effect ends. The Agent then reads the Effect's output as the
+ *   answer, and it can pick again. Use this shape when the Agent must see the result.
+ * - A sibling state of the Agent's state, as in the second example. The pick leaves the Agent's
+ *   state, so the Turn ends before the Effect runs, and the Agent does not see the output. Use
+ *   this shape for a pick that ends the work of the Agent.
+ *
  * @param def - The pick, as `defineEvent` made it.
  * @returns An `input` mapper for the `invoke` of the state.
  *
@@ -226,6 +234,54 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *       },
  *     },
  *     done: { id: "done", type: "final" },
+ *   },
+ * });
+ * ```
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { agent, defineEvent, fromPick, http, jr2Setup } from "@jr2/orchestrator";
+ *
+ * const postNote = defineEvent({
+ *   name: "post_note",
+ *   description: "Post the note to the team channel. This ends your work.",
+ *   input: z.object({ text: z.string() }),
+ * });
+ *
+ * export const machine = jr2Setup({
+ *   types: {} as { context: {}; input: {} },
+ *   events: [postNote],
+ *   actors: {
+ *     writer: agent({
+ *       model: "anthropic/claude-haiku-5-5",
+ *       instructions: "You write one short note for the team.",
+ *       workspace: "none",
+ *     }),
+ *     note: http({
+ *       method: "POST",
+ *       url: "https://hooks.example.com/notes",
+ *       input: z.object({ text: z.string() }),
+ *       request: ({ text }) => ({ json: { text } }),
+ *     }),
+ *   },
+ * }).createMachine({
+ *   id: "note",
+ *   initial: "writing",
+ *   states: {
+ *     // The pick leaves this state, so it ends the Turn of the writer.
+ *     writing: {
+ *       invoke: {
+ *         src: "writer",
+ *         input: { prompt: "Write a note that says the release is out, and post it." },
+ *       },
+ *       on: { post_note: "posting" },
+ *     },
+ *     // A sibling of `writing`: the Effect runs after the Turn, and no Agent reads its output.
+ *     posting: {
+ *       invoke: { src: "note", input: fromPick(postNote), onDone: "done" },
+ *     },
+ *     done: { type: "final" },
  *   },
  * });
  * ```

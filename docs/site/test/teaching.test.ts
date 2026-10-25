@@ -33,3 +33,10 @@ test("an ask that a Gate answers has a guard, so the Agent cannot ask with no en
   assert.ok(text.includes("To stop this loop, put a guard on the pick."), "Gates does not guard the ask loop");
   assert.ok(text.includes("](the-menu.md#allowed-picks)"), "Gates does not link to the guards of the Allowed picks");
 });
+
+test("fromPick says when the state of a pick is a child of the Agent's state and when it is a sibling", () => {
+  const text = page("reference/authoring-surface/frompick").replace(/\s+/g, " ");
+  assert.ok(text.includes("A child state of the Agent's state, as in the first example."), "no child shape");
+  assert.ok(text.includes("A sibling state of the Agent's state, as in the second example."), "no sibling shape");
+  assert.ok(text.includes('on: { post_note: "posting" },'), "the second example is not the sibling shape");
+});
