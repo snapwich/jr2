@@ -23,6 +23,10 @@ test("a retry loop continues on each Turn, so attempt 2 sees attempt 1", async (
       flat.includes("A Turn can join only a conversation that an earlier Turn started with `continue: true`."),
       `${name} does not say which conversation a Turn can join`,
     );
+    assert.ok(
+      flat.includes("A clean Turn does not start the continued conversation again"),
+      `${name} does not say which conversation the Turn after a clean Turn joins`,
+    );
     // A spread on `attempts > 0` keeps the first Turn out of the conversation that it continues.
     assert.doesNotMatch(flat, /attempts > 0 \? \{ continue/, `${name} shows a retry loop that loses attempt 1`);
   }

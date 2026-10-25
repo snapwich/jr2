@@ -57,9 +57,11 @@ ADR-0018 and GLOSSARY.md said `cwd` is identity, never per Turn. The decided thi
     state that wants a clean context leaves `continue` off. A Turn joins only a conversation that an earlier Turn
     started with `continue: true`, so a retry loop says `continue` on each Turn, the first too: a first attempt without
     it is not in the conversation that attempt 2 continues. Thus the docs show `continue: true` on each Turn of a retry
-    loop, and a conditional spread (`...(clean ? {} : { continue: true as const })`) only for a state that must start
-    clean. The alternative, a spread on `attempts > 0`, keeps attempt 1 out of the conversation, so attempt 2 does not
-    see it.
+    loop, and a conditional spread (`...(clean ? {} : { continue: true as const })`) only for a state that must start a
+    clean conversation on some Turns only (a state that always starts clean leaves `continue` off). A clean Turn does
+    not start the continued conversation again: the next Turn with `continue: true` joins the earlier one, so attempt 4
+    after a clean attempt 3 continues attempts 1 and 2. The alternative, a spread on `attempts > 0`, keeps attempt 1 out
+    of the conversation, so attempt 2 does not see it.
   - **Two Agents never share a conversation.** The agent name is in the id, and it always was; a second persona under
     one transcript would swap the system prompt mid-conversation. The memory-Agent shape ("read the coder's
     conversation, store what matters") is served by handing the transcript as prompt _data_ to an Agent with its own

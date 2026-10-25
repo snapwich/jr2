@@ -145,9 +145,10 @@ it. Thus, in the example, `coding` sets `continue: true` too, so that `fixing` c
 A Turn can join only a conversation that an earlier Turn started with `continue: true`. Thus, in a retry loop, put
 `continue: true` on each Turn, also on the first. If the first Turn has no `continue`, attempt 2 does not see attempt 1.
 
-`continue` is the literal `true`, not a `boolean`, so `continue: context.attempts > 0` is a type error. Spread it into
-the input only for a state that must start a clean conversation:
-`...(context.clean ? {} : { continue: true as const })`.
+`continue` is the literal `true`, not a `boolean`, so `continue: context.attempts > 0` is a type error. A state that
+always starts a clean conversation leaves `continue` off. Spread it into the input only when a state must start a clean
+conversation on some Turns only: `...(context.clean ? {} : { continue: true as const })`. A clean Turn does not start
+the continued conversation again: the next Turn with `continue: true` joins the earlier one.
 
 The conversation has no name that you write. jr2 makes its id from the run, the Machine instance and the Agent. Thus two
 Agents never share a conversation. Two workers of a [Pool](../reference/glossary.md#pool) never share one either,
