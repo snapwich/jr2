@@ -215,5 +215,5 @@ export const machine = workspace(body, {
   input: door,
   repos: { target: { url: "https://github.com/<you>/jr2.git", ref: "v<version>" } },
   // One branch for each run, from its seed Instance ID. Its type is not on the input of `spec`.
-  spec: ({ input }) => ({ branch: `jr2/fix-${(input as Door & HostInjectedInput).instanceId}` }),
+  spec: ({ input }) => ({ branch: `jr2/fix-${input.instanceId}` }),
 });

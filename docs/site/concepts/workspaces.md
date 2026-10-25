@@ -46,7 +46,7 @@ Only `spec` and a per-run [Repo Slot](../reference/glossary.md#repo-slot) read t
 - `input` is the schema of the run input: what [`jr2 run`](../reference/cli.md#run) gives with `--input`. Put it on the
   `workspace()`, not on the body.
 - `repos` gives the Repo Slots that the Sandbox clones.
-- `spec` is a function from the run input to the branch. At a root `workspace()`, its input also holds `instanceId` (see
+- `spec` is a function from the run input to the branch. Its input also holds `instanceId` (see
   [`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md)).
 - `resources` is the [Size](../reference/glossary.md#size). `image`, `user` and `effector` name the images of the pod's
   containers.
@@ -57,9 +57,7 @@ The body gets the run input, plus `workspace`: the handles of the Workspace (see
 [`WorkspaceHandles`](../reference/authoring-surface/type-workspacehandles.md)). `workspace.repos` gives the absolute
 path of each Worktree, and `workspace.branch` gives the branch. Give a path to an Agent's
 [Turn](../reference/glossary.md#turn) as its `cwd`, as the example does. Type the body's input with
-[`Workspaced`](../reference/authoring-surface/type-workspaced.md). When the run input has no fields, write
-`Workspaced<HostInjectedInput, "<slot>">`. `z.infer` of `z.object({})` is `Record<string, never>`, and a `Workspaced` of
-it holds no field.
+[`Workspaced`](../reference/authoring-surface/type-workspaced.md), also when the run input is `z.object({})`.
 
 The Agents with [Working tools](../reference/glossary.md#working-tools) in the body run in the Sandbox. An Agent with
 `workspace: "none"` runs on the [Instance Harness](../reference/glossary.md#instance-harness), also when its state is in
@@ -105,8 +103,9 @@ optional fields:
 
 Your Machine chooses the branch name. jr2 makes the branch in each Repo Slot. Give each run a different branch, so that
 two runs do not push to one branch. Make it from a field of the run input, or from `instanceId` when the run input has
-no field that is different for each run:
-``spec: ({ input }) => ({ branch: `fix/${(input as unknown as HostInjectedInput).instanceId}` })``.
+no field that is different for each run: ``spec: ({ input }) => ({ branch: `fix/${input.instanceId}` })``. Only a root
+`workspace()` gets `instanceId` from jr2. A `workspace()` that a different Machine invokes gets it only when its parent
+gives it.
 
 ## The pod
 

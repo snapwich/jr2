@@ -333,8 +333,8 @@ commits in it. See [`PushOutput`](../reference/authoring-surface/type-pushoutput
 
 **The Workspace.** [`workspace()`](../reference/authoring-surface/workspace.md) runs the body in a Sandbox. `input` is
 the schema of the run input that `jr2 run --input` sends. `repos` binds the Repo Slot `target` to your fork, at the
-release tag. `spec` gives the branch. At a root `workspace()`, the input of `spec` also holds `instanceId`, but its type
-does not show it, so the example reads it with a cast.
+release tag. `spec` gives the branch. The input of `spec` also holds `instanceId`, an id that jr2 makes for each run, so
+each run gets a branch of its own.
 
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#workspace
 
