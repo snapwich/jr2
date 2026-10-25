@@ -123,9 +123,12 @@ function startSentence(map: Sitemap, errors: BuildError[]): string {
 
 /** The sentences of the instruction that say what to run before a handoff: `jr2 check`, because
  * `npm run typecheck` loads no module, so it does not find a refusal of `createMachine`,
- * `defineEvent` or `workspace()`, and an Assistant that may not run `jr2 up` sees no other check. */
+ * `defineEvent` or `workspace()`, and an Assistant that may not run `jr2 up` sees no other check.
+ * The command is `npx --no`, because npx with no TTY installs a missing package with no prompt, and
+ * the package `jr2` on the npm registry is not jr2. With `--no`, npx stops when the Instance has no
+ * local `jr2` bin. */
 const CHECK_SENTENCE =
-  "Before you hand off a change, run `npx jr2 check` in the Instance folder. " +
+  "Before you hand off a change, run `npx --no jr2 check` in the Instance folder. " +
   "It does the typecheck and the load of each Workflow that `jr2 up` does first, with no cluster, and it gives the same refusals.";
 
 /** `agents-block.md`: what `jr2 up` writes between the AGENTS.md markers, without the markers. */
