@@ -142,6 +142,9 @@ With `continue: true`, the Turn continues the one conversation of this Agent in 
 Machine that invokes the Agent with `continue: true` uses the same conversation. A Turn without `continue` does not join
 it. Thus, in the example, `coding` sets `continue: true` too, so that `fixing` continues the conversation of `coding`.
 
+`continue` is the literal `true`, not a `boolean`, so `continue: context.attempts > 0` is a type error. To continue on
+some Turns only, spread it into the input: `...(context.attempts > 0 ? { continue: true as const } : {})`.
+
 The conversation has no name that you write. jr2 makes its id from the run, the Machine instance and the Agent. Thus two
 Agents never share a conversation. Two workers of a [Pool](../reference/glossary.md#pool) never share one either,
 because each worker is a Machine instance of its own.
