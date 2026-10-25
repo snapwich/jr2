@@ -330,9 +330,9 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   `jr2 up` publishes nothing:
   ``refusing: after <seconds>s the Orchestrator still reads an older <maps> from its mount — the kubelet has not refreshed it; nothing was published, and the previous Assembly is still current. Run `jr2 up` again``
 - The Orchestrator checks the Assembly again before it makes it current. It loads each Workflow and `jr2.config.ts`. It
-  refuses an [Open](../reference/glossary.md#open) part that nobody bound, a secret that the config does not declare,
-  and a Kit version that is not its own. The refusal gives the status code and the reason, then one line for each
-  problem:
+  refuses an [Open](../reference/glossary.md#open) part that nobody bound, a secret that the config does not declare, a
+  Kit version that is not its own, and a zod `input` that no door reads (a Machine that `jr2Setup` did not make). The
+  refusal gives the status code and the reason, then one line for each problem:
   `refusing: the Orchestrator refused Assembly <hash> (HTTP <status>): <error> — the previous Assembly is still current`.
   Fix each problem. Then run `jr2 up` again.
 
