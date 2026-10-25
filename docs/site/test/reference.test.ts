@@ -341,3 +341,10 @@ test("a type marked @internal is listed with its declaration alone", () => {
   assert.match(own, /^Type, in `[^`]+`\. It is type plumbing: [^\n]*\n\n```ts\n[\s\S]*\n```\n$/);
   for (const e of entries.get(SURFACE) ?? []) assert.doesNotMatch(page(e.slug), /door-types\.test\.ts|claim 1/);
 });
+
+test("the Reference tells that the fields of `Workspaced` are the fields of the run input", () => {
+  assert.ok(pageOf("Workspaced", true).includes("each field of [`WithoutEmptyIndex`](type-withoutemptyindex.md)"));
+  const base = pageOf("WithoutEmptyIndex", true);
+  assert.ok(!base.includes("It is type plumbing"), "its page shows only the declaration");
+  assert.ok(base.includes("The fields of the run input `T`."), "its page does not say what its fields are");
+});

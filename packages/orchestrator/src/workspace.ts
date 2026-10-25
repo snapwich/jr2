@@ -179,8 +179,8 @@ export type WorkspaceHandles<TSlots extends string> = {
  * A body under a root `workspace()` also gets the fields of `HostInjectedInput`. Add them when the
  * body reads them: `Workspaced<HostInjectedInput & RunInput, "app">`.
  *
- * The run input can have no fields: `Workspaced<z.infer<typeof door>, "app">` for the door
- * `z.object({})` holds only `workspace`.
+ * Its fields are the fields of the run input, and `workspace`. The run input can have no fields:
+ * `Workspaced<z.infer<typeof door>, "app">` for the door `z.object({})` holds only `workspace`.
  *
  * @example
  * ```ts
@@ -247,12 +247,12 @@ export type Workspaced<TInput, TSlots extends string> = WithoutEmptyIndex<TInput
 // (`HostInjectedInput & Record<string, never>` keeps `instanceId: string`) and an input that is a
 // real map (`Record<string, string>`) is not changed. The alternative, a separate type for the empty
 // door, makes the author choose between two names for one statement.
+// It is not `@internal`: the Reference then shows this TSDoc, so a reader of `Workspaced` sees that
+// these are the fields of the run input. As plumbing, its page showed only the declaration.
 /**
- * The type `T` without a string index signature whose value is `never`, such as the
- * `Record<string, never>` that `z.infer` gives for `z.object({})`. The named fields of `T` stay. A
- * different `T` does not change.
- *
- * @internal
+ * The fields of the run input `T`. A string index signature whose value is `never` is not one of
+ * them: `z.infer` gives `Record<string, never>` for `z.object({})`, and this type makes it `{}`. The
+ * named fields of `T` stay. A different `T` does not change.
  */
 type WithoutEmptyIndex<T> = string extends keyof T
   ? [T[string & keyof T]] extends [never]
