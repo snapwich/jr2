@@ -78,6 +78,8 @@ export const machine = jr2Setup({
         },
       },
     },
-    published: { type: "final", output: ({ context }) => ({ notes: context.notes ?? "" }) },
+    published: { type: "final" },
   },
+  // The output of the run: the root `output`, not an `output` on the final state.
+  output: ({ context }) => ({ notes: context.notes ?? "" }),
 });

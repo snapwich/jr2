@@ -131,6 +131,12 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  * - `createMachine` also takes `input`: a zod object for the input that starts a run. jr2 checks
  *   each start against it. Without it, a run can start with any input.
  *
+ * The output of a run is the root `output` of `createMachine`, beside `id` and `states`, as in
+ * xstate v5. xstate does not read the `output` of a final state as the output of the Machine. It
+ * gives that output to the root `output` as `event.output`. Thus a Machine with an `output` only
+ * on its final states has no output: write `output: ({ event }) => event.output as Output` at
+ * the root, or make the output from `context` there.
+ *
  * `createMachine` refuses a Machine that it cannot run as written. Among the refusals:
  * - an `on` key that no listed event has: ``machine "<id>" handles event "<key>", which no def in
  *   jr2Setup({ events }) declares (declared: <names>) — a typo, or a missing defineEvent``

@@ -40,6 +40,23 @@ The parts of the module:
 A Machine that takes no workflow event can use the `setup()` of xstate in place of `jr2Setup`. The `ping` Workflow that
 `jr2 init` writes does this. To declare a door, use `jr2Setup`.
 
+## Give the run an output
+
+The output of a run is the `output` at the root of `createMachine`, beside `id` and `states`. The status of the run
+shows it as `output`. When a different Machine invokes this Machine, the `onDone` of that invoke gets it as
+`event.output`. The `rollout` example has no root `output`. Thus its run has no output, and its result is only in its
+`context`.
+
+xstate does not use the `output` of a final state as the output of the Machine. It gives that output to the root
+`output` as `event.output`. Thus a Machine that has an `output` only on its final states has no output, and TypeScript
+does not find this error. Write the root `output` in one of these two forms:
+
+- From the context: `output: ({ context }) => ({ reason: context.reason })`.
+- From the final state that ended the run: `output: ({ event }) => event.output as Output`, with an `output` on each
+  final state. The example of [Gates](../concepts/gates.md) does this.
+
+Give the same type to `types.output`.
+
 ## Register it and run it
 
 Run [`jr2 up`](../reference/cli.md#up) in the Instance folder. `jr2 up` typechecks the Instance, then loads each module

@@ -175,8 +175,9 @@ const body = jr2Setup({
     },
     lost: { type: "final", output: { outcome: "lost" } satisfies Output },
   },
-  // The output of the run is the output of the final state that ended it.
-  output: ({ event }) => (event as { output?: Output }).output as Output,
+  // The output of the run. xstate reads only this root `output` as the output of the Machine. It
+  // gets the output of the final state that ended the run as `event.output`.
+  output: ({ event }) => event.output as Output,
 });
 
 // The text of each Turn. The first Turn of a conversation carries the task. Each later Turn carries only what is new.

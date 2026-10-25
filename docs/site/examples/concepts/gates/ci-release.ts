@@ -70,4 +70,7 @@ export const machine = jr2Setup({
       output: ({ context }): Output => ({ outcome: "rejected", reason: context.reason ?? "" }),
     },
   },
+  // The output of the run. xstate reads only this root `output` as the output of the Machine. It
+  // gets the output of the final state that ended the run as `event.output`.
+  output: ({ event }) => event.output as Output,
 });

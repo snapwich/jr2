@@ -107,6 +107,14 @@ jr2 also sends its own events into each Machine that `jr2Setup` makes: `agent.fa
 in the Vocabulary. Their names have a dot, and the name of a workflow event cannot have a dot.
 [Mechanism events](../reference/mechanism-events.md) gives them.
 
+## The output of a run
+
+The output of a run is the root `output` of its Machine: the `output` beside `id` and `states` in `createMachine`. The
+status of the run shows it. A Machine that invokes this Machine gets it as `event.output` in `onDone`. xstate reads the
+`output` of a final state only as the `event.output` of the root `output`. Thus a Machine with an `output` only on its
+final states has no output. [Write a Workflow](../guides/write-a-workflow.md#give-the-run-an-output) gives the two
+forms.
+
 ## Emits
 
 An Emit is a message that a Machine sends to the people and the tools that watch a run, such as "the review is done". A
@@ -144,6 +152,7 @@ moves a Machine.
   sends.
 - When a Machine declares a door, the Orchestrator refuses a start whose input does not agree with it.
 - The body of a `workspace()` declares no door. `workspace()` refuses a body that declares one.
+- The output of a run is the root `output` of its Machine. An `output` on a final state alone gives no output.
 - An Emit never moves a Machine.
 
 [Write a Workflow](../guides/write-a-workflow.md) gives the exact text of each refusal.
