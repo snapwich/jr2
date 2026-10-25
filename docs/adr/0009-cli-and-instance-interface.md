@@ -123,6 +123,7 @@ events POST is ambiguous. `CANCEL` is the one reserved run-level event; everythi
 ```
 # lifecycle (instance)
 jr2 init [dir] [--name <n>]        # scaffold the minimum runnable instance
+jr2 check                          # the typecheck and the Machine walk of `up`, with no cluster (ADR-0050)
 jr2 up [--yes] [--force] [--skip-provider-preflight]
                                    # converge the current context to this instance (ADR-0019)
 jr2 down [--all] [--yes]           # remove the instance from the cluster (--all: operator too)
@@ -182,7 +183,7 @@ lines beside it are advisory. It does not generalise to a **report verb** — `v
 whose output is a diagnosis a human reads whole: dual-printing there shows a JSON blob and a partial table, and the
 readable form exists nowhere. So a report verb prints its human table on **stdout**, and `--json` swaps the table for
 the one object. No `isatty` sniffing: output that changes with how it is invoked is a debugging trap of its own. `init`,
-`up`, `down`, `gc` and `send` are neither class — activity only, no result.
+`check`, `up`, `down`, `gc` and `send` are neither class — activity only, no result.
 
 **`jr2 version` (amended 2026-09-20).** The report you paste into a bug: what is _here_ and what is _deployed_, side by
 side, so the gap between the halves is the answer ("you edited the pin and never ran `jr2 up`"). The local half: `cli`
@@ -201,6 +202,18 @@ you reach for when that refusal fires. It hands off like every verb. The shared 
 `--context`) as every run verb; `--url` leaves only the orchestrator line; `--local` skips the cluster. Exit 0 whatever
 it finds: a report. No registry lookup: "out of date" here means behind the Instance, and `npm view` answers the other
 question.
+
+**`jr2 check`.** The Instance check of `jr2 up` alone: the Instance's own `tsc --noEmit`, then the load of each
+registered Workflow and the walk of its Machine, which hold the refusals the compiler cannot make (a refusal of
+`createMachine`, `defineEvent` or `workspace()` when a module loads, an Open part, a Chart file, a dispatch, an Effect
+secret, a Size). It reads no kube context, touches no cluster, docker or registry, writes no file, and exits 1 with the
+`refusing:` or `error:` line of `jr2 up`. It is one function with `jr2 up` (`checkInstance`), not a copy, so the two
+cannot disagree. It exists for the Assistant that may not converge: `npm run typecheck` loads no module, and `node`
+cannot import a workflow module of an installed Instance, because the kit's `.ts` sources are under `node_modules`,
+where Node does not strip types; the `jr2` binary does. The scaffold names it as its `check` script, and the AGENTS.md
+block names it as the step before a handoff (ADR-0072). It does not stage the Assembly: staging installs the production
+dependencies from the lockfile, and its refusals are about that install. It does not write the AGENTS.md block either: a
+check that changes the folder is not one an Assistant or CI can run without a diff.
 
 **`jr2 run` — blocking, attach-by-default.** Start the run, stream activity to **stderr**, print the terminal
 `RunStatus` as JSON to **stdout**, exit — so `jr2 run … | jq` yields just the result. It **attaches to the running

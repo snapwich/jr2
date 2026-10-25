@@ -343,7 +343,8 @@ The one-shot pod in which the provider preflight of `jr2 up` checks the models o
 converge writes an object that the Instance reads. It has a Custodian, its own copies of the objects that it reads, and
 labels that no Harness pod has. Its check container calls each model as a Turn calls it. The preflight is the step of
 `jr2 up`, and a check is what the check container does for one model: one call, and at most a second one after an
-answer in text.
+answer in text. `jr2 check` is not this check: it runs the typecheck and the Machine walk of `jr2 up`, with no pod and no
+cluster.
 _Avoid_: probe, probe pod, preflight pod, test pod, Harness (it runs none)
 
 **Effector**:

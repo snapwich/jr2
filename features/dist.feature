@@ -41,6 +41,9 @@ Feature: the kit, as a user installs it
       # The tarball is one per run, so only this scenario asks the registry for it.
       Then the published @jr2/orchestrator tarball holds the docs bundle
       And the Instance's AGENTS.md indexes the installed Kit's docs bundle
+      # ADR-0050: the check of `jr2 up` with no cluster, from the installed binary, which loads the
+      # kit's .ts sources from node_modules.
+      When I check it with the installed jr2
       # `npm ci --omit=dev` in the staged copy, from the lockfile npm just wrote; the stripped tree
       # is the Assembly `jr2 up` publishes.
       When I converge it onto the cluster

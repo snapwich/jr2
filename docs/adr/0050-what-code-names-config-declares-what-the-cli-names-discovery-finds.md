@@ -31,6 +31,14 @@ a definition lives, and the gate that enforces it.
   all stop here. One Repo check is converge-time and not compile-time: a registered Machine with an open slot nobody
   bound. A `workflows/` export has no type to hang it on, so the walk that follows the typecheck refuses it, before it
   builds anything, naming the Machine, the slot, and the `customize` line that fixes it (ADR-0051).
+- **`jr2 check` runs the gate and the walk with no cluster.** The typecheck and the walk are one function of the CLI,
+  `checkInstance`, and `jr2 up` and `jr2 check` both call it, so the two give the same refusals with the same text. The
+  walk loads each registered module, so `jr2 check` also gives each refusal that a module throws when it loads (of
+  `createMachine`, `defineEvent`, `workspace()`), which `npm run typecheck` cannot give. It reads no kube context, so an
+  Assistant that may not converge runs it before a handoff, in a kit checkout and in an installed Instance alike. The
+  name is the verb that a user types for "is this folder correct"; the glossary's _check_ of a Check pod is one model
+  call inside the provider preflight, a different noun in a different place, so the name stays and the glossary entry
+  says which is which.
 
 ## Considered options
 
@@ -45,6 +53,15 @@ a definition lives, and the gate that enforces it.
   derived from `typeof config`, `z.enum(repoNames(config))` on a door), the shape this ADR took for the one dependency
   it left in config. Rejected in ADR-0051 by the argument above: a packaged Machine still could not say which repository
   it works on, and a consumer could bind one only by holding the right NAME. The slot key is the type now.
+
+- **A flag on `jr2 up`** (`jr2 up --check`, or `--dry-run`) in place of a verb. Rejected: `up` reads the kube context
+  first and its flags are converge flags; a flag that stops it after the walk still asks an Assistant to run the
+  converging verb, which a permission rule that forbids `jr2 up` also forbids. A verb is the line a permission rule can
+  allow.
+- **A copy of the walk in `jr2 check`.** Rejected: two walks drift, and then the check passes a folder that `jr2 up`
+  refuses — the failure that `jr2 check` exists to remove.
+- **Stage the Assembly in `jr2 check` too.** Rejected: staging runs a frozen install from the lockfile (ADR-0043), which
+  needs the registry and takes minutes, and its refusals are about the install, not the code an Assistant writes.
 
 ## Consequences
 

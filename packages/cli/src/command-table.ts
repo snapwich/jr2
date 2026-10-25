@@ -181,6 +181,19 @@ const TABLE = [
     adrs: ["0009", "0072"],
   },
   {
+    verb: "check",
+    args: [],
+    flags: [],
+    env: [],
+    summary: "typecheck this instance and load its workflows, as `jr2 up` does first, with no cluster",
+    lines: [
+      "runs the check that `jr2 up` runs before it stages the Assembly, and exits 1 with the same refusal: a type error, a module that refuses to load (a refusal of `createMachine`, `defineEvent` or `workspace()`), an Open part, a Chart file, a dispatch, an Effect secret or a Size",
+      "reads no kube context and writes no file, so an Assistant runs it before a handoff",
+    ],
+    output: ACTIVITY,
+    adrs: ["0050"],
+  },
+  {
     verb: "up",
     args: [],
     flags: [

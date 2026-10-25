@@ -15,6 +15,7 @@ import { status } from "./commands/status.ts";
 import { logs } from "./commands/logs.ts";
 import { send } from "./commands/send.ts";
 import { up } from "./commands/up.ts";
+import { check } from "./commands/check.ts";
 import { down } from "./commands/down.ts";
 import { gc } from "./commands/gc.ts";
 import { kit } from "./commands/kit.ts";
@@ -68,6 +69,8 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await logs(rest, io);
       case "send":
         return await send(rest, io);
+      case "check":
+        return await check(rest, io);
       case "up":
         return await up(rest, io);
       case "down":

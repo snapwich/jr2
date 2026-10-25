@@ -117,6 +117,16 @@ When("I install its dependencies with {string}", async function (this: E2EWorld,
  */
 const CACHE_SETTING: Record<string, string> = { npm: "npm_config_cache", pnpm: "npm_config_cache_dir" };
 
+// `jr2 check` from the installed binary (ADR-0050): the global on PATH hands off to the Instance's
+// own `@jr2/cli` (ADR-0056), which typechecks the folder and imports each Workflow, and with it the
+// kit's `.ts` sources under `node_modules`, where Node alone does not strip types. No `-n`: the
+// check reads no kube context.
+When("I check it with the installed jr2", async function (this: E2EWorld): Promise<void> {
+  const r = await this.runCli(["check"], { namespaced: false });
+  assert.equal(r.code, 0, `jr2 check failed: ${r.stderr}`);
+  assert.match(r.stderr, /^check: passed — 1 workflow\(s\): ping;/m);
+});
+
 // The converge, in installed mode: no kit sources resolve, so the Harness, the operator and the
 // Orchestrator come from the published `<kitRegistry>/jr2-<x>:<kitversion>` tags the suite fixture
 // PUSHED, pulled by the nodes themselves (ADR-0038/0044/0069). Nothing is built: the Instance's

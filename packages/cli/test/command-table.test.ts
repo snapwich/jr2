@@ -167,7 +167,7 @@ test("the output section's verb lists are computed: each entry is named once, se
   const help = renderHelp().replace(/\s+/g, " ");
   assert.match(help, /result verbs \(kit push, run, runs, status <runId>, logs\)/);
   assert.match(help, /report verbs \(version, bare status\)/);
-  assert.match(help, /activity verbs \(init, up, down, gc, send\)/);
+  assert.match(help, /activity verbs \(init, check, up, down, gc, send\)/);
 });
 
 test("every line of the help, and of each entry's, fits the width", () => {
