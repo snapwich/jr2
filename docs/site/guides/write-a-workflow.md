@@ -37,8 +37,10 @@ The parts of the module:
 - **The [Emit](../reference/glossary.md#emit).** `emit()` tells the people who watch the run what happened. It does not
   move the Machine. Declare its type in `types.emitted`.
 
-A Machine that takes no workflow event can use the `setup()` of xstate in place of `jr2Setup`. The `ping` Workflow that
-`jr2 init` writes does this. To declare a door, use `jr2Setup`.
+A Machine with a door uses `jr2Setup`, also when it takes no workflow event. Then write `events: []`. The `setup()` of
+xstate does not read the `input` of `createMachine`. TypeScript accepts a zod `input` there, but jr2 does not see it as
+a door: it starts a run with any input, and the Console has no start form. Only a Machine with no door and no workflow
+event can use `setup()`, as the `ping` Workflow that `jr2 init` writes does.
 
 ## Give the run an output
 

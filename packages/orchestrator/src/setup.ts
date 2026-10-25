@@ -118,18 +118,21 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
 
 /**
  * Set up a Machine that takes workflow events: the jr2 form of xstate's `setup()`. Write a Machine
- * with it when an Agent or a Gate sends events into the Machine. Call `.createMachine(config)` on
- * the result, as with `setup()`. The Machine you get is a plain xstate Machine.
+ * with it when an Agent or a Gate sends events into the Machine, or when the Machine declares a
+ * door. Call `.createMachine(config)` on the result, as with `setup()`. The Machine you get is a
+ * plain xstate Machine.
  *
  * What it adds to `setup()`:
  * - `events` replaces `types.events`. The event type of the Machine comes from the
  *   `defineEvent` events you list, plus the events jr2 itself sends (`agent.fault`,
- *   `workspace.lost`). An event that a party sent has `event.sender`.
+ *   `workspace.lost`). An event that a party sent has `event.sender`. `events` is required: a
+ *   Machine that takes no workflow event writes `events: []`.
  * - The `gate` actor is ready to invoke by name: `invoke: { src: "gate" }`.
  * - Each Agent slot (`actors: { coder: agent(…) }`) gets its Menu from the states that invoke it.
  * - The `sentBy(id)` guard is ready to use.
  * - `createMachine` also takes `input`: a zod object for the input that starts a run. jr2 checks
- *   each start against it. Without it, a run can start with any input.
+ *   each start against it. Without it, a run can start with any input. The `setup()` of xstate
+ *   does not read this `input`, so a Machine with a door uses `jr2Setup`, also with `events: []`.
  *
  * The output of a run is the root `output` of `createMachine`, beside `id` and `states`, as in
  * xstate v5. xstate does not read the `output` of a final state as the output of the Machine. It

@@ -245,9 +245,10 @@ const PING_TS = `// The simplest jr2 workflow: no Agent, no Workspace, no data p
 // Shape: take the run input, invoke a plain \`fromPromise\` actor, fold its result into context, finish.
 // \`jr2 run ping --input '{"message":"hi"}'\` → the run reaches \`done\` and \`jr2 status\` shows the reply.
 //
-// Module contract (ADR-0011/0015): one named export — \`machine\`. A workflow that accepts
-// external events authors with \`jr2Setup({ events: [...] })\`; ping accepts none, so plain
-// xstate \`setup()\` is all it needs.
+// Module contract (ADR-0011/0015): one named export — \`machine\`. ping takes no workflow event and
+// declares no door, so plain xstate \`setup()\` is enough. A Machine with a door (a zod \`input\` on
+// \`createMachine\`, ADR-0033) uses \`jr2Setup\`, also when it takes no event: \`jr2Setup({ events: [] })\`.
+// \`setup()\` does not read that \`input\`, so jr2 would start the run with any input.
 //
 // The next step is a Machine the kit already ships (ADR-0054). \`@jr2/machines\` exports \`task\` — one
 // prompt, one Workspace, one human says done — and a Workflow is only the name an Instance
