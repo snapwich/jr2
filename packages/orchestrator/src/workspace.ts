@@ -750,6 +750,13 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  * Workspace deletes the Sandbox, and its output is the body's output. Push the branch before
  * then: jr2 deletes the Sandbox's commits with it.
  *
+ * Give each run a different branch, so that two runs do not push to one branch. Make it from a
+ * field of the run input, or from `instanceId` when the run input has no field that is different
+ * for each run: ``spec: ({ input }) => ({ branch: `fix/${input.instanceId}` })``. The input of
+ * `spec` holds `instanceId` with no cast, also for the door `z.object({})`. Only a root
+ * `workspace()` gets `instanceId` from jr2. A `workspace()` that a different Machine invokes gets
+ * it only when its parent gives it.
+ *
  * The Sandbox is Lost when its pod is evicted or its node goes. Then the body gets the event
  * `workspace.lost`, and the body decides what to do. jr2 does not make the Lost Sandbox again.
  * When the body fails with an error, the run faults. The Sandbox then stays for you to inspect,
@@ -827,6 +834,35 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  *     docs: { url: "https://github.com/you/docs.git", ref: "main" },
  *   },
  *   spec: ({ input }) => ({ branch: `fix/${input.ticket}` }),
+ * });
+ * ```
+ *
+ * @example
+ * ```ts
+ * import { z } from "zod";
+ * import { command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ *
+ * // The run input has no field that is different for each run, so the branch comes from
+ * // `instanceId`.
+ * const runInput = z.object({});
+ *
+ * const body = jr2Setup({
+ *   types: {} as { input: Workspaced<z.infer<typeof runInput>, "app"> },
+ *   actors: { test: command(["npm", "test"], { slot: "app" }) },
+ * }).createMachine({
+ *   id: "nightly",
+ *   initial: "testing",
+ *   states: {
+ *     testing: { invoke: { src: "test", onDone: "tested" } },
+ *     tested: { type: "final" },
+ *   },
+ * });
+ *
+ * export const machine = workspace(body, {
+ *   input: runInput,
+ *   image: "docker.io/library/node:24",
+ *   repos: { app: "https://github.com/you/app.git" },
+ *   spec: ({ input }) => ({ branch: `fix/${input.instanceId}` }),
  * });
  * ```
  *
