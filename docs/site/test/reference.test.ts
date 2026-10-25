@@ -72,6 +72,17 @@ test("each other Reference page is one page of 64 KB or less", () => {
   }
 });
 
+test("the split Authoring surface does not send the reader to a signature on its contents page", () => {
+  // The signatures are on the entry pages; the contents page has none.
+  const list = entries.get(SURFACE) ?? assert.fail("the Authoring surface has no entry pages");
+  for (const slug of [SURFACE, ...list.map((e) => e.slug)])
+    assert.doesNotMatch(page(slug).replace(/\s+/g, " "), /A signature (?:above|on the|or a type on the)/, slug);
+  assert.match(
+    pageOf("BodyAcceptsDoor", true),
+    /The signature of an export, or a type that it names, names this type, so its declaration is here\. The \[Authoring surface\]\(\.\.\/authoring-surface\.md\) page lists each export\./,
+  );
+});
+
 test("no line of the contents page or of an entry page is longer than 1,000 characters", () => {
   // A file tool can cut off a long line, and a list of 60 links on one line is hard to read.
   const list = entries.get(SURFACE) ?? assert.fail("the Authoring surface has no entry pages");

@@ -425,8 +425,8 @@ function renderSplit(ctx: RefContext, s: Surface, intro: string, named: TypeClos
     const from = entryPage(s.page, t.anchor);
     const summary = t.plumbing ? undefined : firstSentence(docOf(ctx.program, t.decl)?.summary);
     const what = t.plumbing
-      ? ` It is type plumbing: it computes a type from the types of a Machine or of its parts, and a workflow module does not write it. A signature on the ${home(from)} page names it, so its declaration is here.`
-      : ` A signature or a type on the ${home(from)} page names it. It is not an export of ${code(pkg)}, so a workflow module does not import it by name.`;
+      ? ` It is type plumbing: it computes a type from the types of a Machine or of its parts, and a workflow module does not write it. The signature of an export, or a type that it names, names this type, so its declaration is here. The ${home(from)} page lists each export.`
+      : ` The signature of an export, or a type that it names, names this type. The ${home(from)} page lists each export. This type is not an export of ${code(pkg)}, so a workflow module does not import it by name.`;
     return add(t.name, t.anchor, summary ?? `A type that the ${pageTitle(ctx, s.page)} names.`, [
       `Type, in ${declaredIn(ctx, t.decl)}.${what}`,
       ...typeBlocks(ctx, t, from),
@@ -436,7 +436,7 @@ function renderSplit(ctx: RefContext, s: Surface, intro: string, named: TypeClos
   if (named.types.length) {
     types.push(
       TYPES_HEADING,
-      `A signature above names these types, or a type here names them. They are not exports of ${code(pkg)}, so a workflow module does not import them by name.`,
+      `The signature of an export, or a type here, names each of these types. They are not exports of ${code(pkg)}, so a workflow module does not import them by name.`,
     );
     const own = named.types.filter((t) => !t.plumbing);
     if (own.length)
