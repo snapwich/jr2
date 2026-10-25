@@ -61,6 +61,17 @@ test("the contents page and each entry page are short enough for one read of a f
   assert.ok(!entries.has("reference/machines"), "the machines page is short, and stays one page");
 });
 
+test("each other Reference page is one page of 64 KB or less", () => {
+  // ADR-0072 gives this size. The HTTP API page is the largest, at about 50 KB.
+  assert.deepEqual([...entries.keys()], [SURFACE], "only the Authoring surface has entry pages");
+  const split = new Set((entries.get(SURFACE) ?? []).map((e) => e.slug));
+  for (const [slug, text] of pages) {
+    if (slug === SURFACE || split.has(slug)) continue;
+    const size = Buffer.byteLength(text);
+    assert.ok(size <= 64 * 1024, `${slug}.md is ${size} bytes`);
+  }
+});
+
 test("no line of the contents page or of an entry page is longer than 1,000 characters", () => {
   // A file tool can cut off a long line, and a list of 60 links on one line is hard to read.
   const list = entries.get(SURFACE) ?? assert.fail("the Authoring surface has no entry pages");
