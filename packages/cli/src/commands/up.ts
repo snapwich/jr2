@@ -29,7 +29,7 @@
 // export has no type to hang that on. Nothing is built, and nothing on the cluster is touched,
 // before the compiler has agreed the folder is coherent and every slot is bound. The two are one
 // function, `checkInstance` (instance-check.ts), which `jr2 check` runs alone with no cluster, so
-// an Assistant that may not converge gets the same refusals from the same code.
+// an Assistant that may not run `jr2 up` gets the same refusals from the same code.
 //
 // Images (ADR-0038, as amended by ADR-0045): `jr2 up` builds every image it deploys, and every tag is
 // a content address of (its own inputs × the platform set it was built for) — `<hash>-<arch>`, with
@@ -218,8 +218,8 @@ export async function up(args: string[], io: Io): Promise<number> {
   // A REFUSAL, not a warning, and it comes before the namespace apply as well as before the builds:
   // the names a Machine carries are typed since ADR-0049/0051, so the compiler's answer is the
   // author's editor's answer; the walk then refuses what the compiler cannot see (an Open part, a
-  // Chart file, a dispatch, an Effect secret, a Size). It is the one function `jr2 check` runs too,
-  // so an Assistant that may not converge gets this converge's answer.
+  // Chart file, a dispatch, an Effect secret, a Size). `jr2 check` runs the same function, so an
+  // Assistant that may not run `jr2 up` gets the answer of this converge.
   const checked = await checkInstance(io, root, config);
   if (!checked) return 1;
   const { workflows, carried, placementWalk, sizes, chartFiles } = checked;

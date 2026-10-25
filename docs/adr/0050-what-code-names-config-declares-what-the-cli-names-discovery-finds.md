@@ -32,13 +32,13 @@ a definition lives, and the gate that enforces it.
   bound. A `workflows/` export has no type to hang it on, so the walk that follows the typecheck refuses it, before it
   builds anything, naming the Machine, the slot, and the `customize` line that fixes it (ADR-0051).
 - **`jr2 check` runs the gate and the walk with no cluster.** The typecheck and the walk are one function of the CLI,
-  `checkInstance`, and `jr2 up` and `jr2 check` both call it, so the two give the same refusals with the same text. The
-  walk loads each registered module, so `jr2 check` also gives each refusal that a module throws when it loads (of
-  `createMachine`, `defineEvent`, `workspace()`), which `npm run typecheck` cannot give. It reads no kube context, so an
-  Assistant that may not converge runs it before it gives a change to the user, in a kit checkout and in an installed
-  Instance alike. The name is the verb that a user types for "is this folder correct"; the glossary's _check_ of a Check
-  pod is one model call inside the provider preflight, a different noun in a different place, so the name stays and the
-  glossary entry says which is which.
+  `checkInstance`. `jr2 up` and `jr2 check` both call it, so the two give the same refusals with the same text. The walk
+  loads each registered module. Thus `jr2 check` also gives each refusal that a module throws when it loads. These are
+  refusals of `createMachine`, `defineEvent` and `workspace()`, and `npm run typecheck` cannot give them. `jr2 check`
+  reads no kube context. Thus an Assistant that may not run `jr2 up` can run it before it gives a change to the user. It
+  runs in a kit checkout and in an installed Instance. The name is the verb that a user types for "is this folder
+  correct". The glossary's _check_ of a Check pod is a different noun in a different place: one model call in the
+  provider preflight. Thus the name stays, and the glossary entry tells the two apart.
 
 ## Considered options
 

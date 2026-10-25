@@ -5,11 +5,11 @@
 // `workspace()` when a module loads, an Open part nobody bound, a Chart file the door refuses, a
 // dispatch, an Effect secret, a Size. Each refusal has the text of `jr2 up`, and the exit code is 1.
 //
-// It reads no kube context and touches no cluster, no docker and no registry, so an Assistant that
-// may not converge runs it before it gives a change to the user. It writes no file: the AGENTS.md
-// block is `jr2 up`'s and `jr2 init`'s (ADR-0072). It runs in a kit checkout and in an installed Instance alike, because
-// the `jr2` binary strips the types of the kit sources under `node_modules`, which `node` alone
-// refuses to do.
+// It reads no kube context. It touches no cluster, no docker and no registry. Thus an Assistant
+// that may not run `jr2 up` can run it before it gives a change to the user. It writes no file: the
+// AGENTS.md block is `jr2 up`'s and `jr2 init`'s (ADR-0072). It runs in a kit checkout and in an
+// installed Instance. The `jr2` binary strips the types of the kit sources under `node_modules`,
+// and `node` alone does not.
 
 import { basename } from "node:path";
 import { loadConfig } from "@jr2/orchestrator/internal";
