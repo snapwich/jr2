@@ -189,8 +189,8 @@ export function loadWarningsOf(machine: AnyStateMachine): string[] {
  * that its parent gives it. A `workspace()` passes its input to its body, so the body of a root
  * `workspace()` gets it too: `Workspaced<HostInjectedInput & RunInput, "app">`.
  *
- * The `spec` of a root `workspace()` also gets it, but the type of its input does not show it.
- * Read it with a cast: `(input as RunInput & HostInjectedInput).instanceId`.
+ * The `spec` of a root `workspace()` also gets it, and the type of its input shows it:
+ * ``spec: ({ input }) => ({ branch: `fix/${input.instanceId}` })``.
  *
  * It is not the run id. Use it, for example, to give each run a branch of its own.
  *

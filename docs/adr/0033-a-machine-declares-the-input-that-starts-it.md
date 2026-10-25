@@ -47,7 +47,13 @@ machine is the one piece of its vocabulary that pattern missed.
   its own defs and nothing is merged upward (ADR-0011, ADR-0049). The door is one more part a Machine carries and scopes
   to itself. The composition the body needs a name for is exported instead:
   `Workspaced<T, Slot> = T & { workspace: WorkspaceHandles<Slot> }`, the handles keyed by the Repo Slots the body names
-  (ADR-0050, ADR-0051). A body that _still_ declares a schema is refused by `workspace()` with a message naming the fix:
+  (ADR-0050, ADR-0051). A door with no fields gets the same name: `z.infer` of `z.object({})` is
+  `Record<string, never>`, an index signature that says each key holds `never`, and intersected with the handles it
+  makes each `assign` to the body's context a type error that does not name the cause. So `Workspaced` removes a string
+  index signature whose value is `never`, and only that: named fields beside it stay (`HostInjectedInput & …` keeps
+  `instanceId`), and an input that is a real map is not changed. A separate name for the empty door was the alternative;
+  it was rejected because the author then chooses between two names for one statement, and finds the second only after
+  the opaque error. A body that _still_ declares a schema is refused by `workspace()` with a message naming the fix:
   nothing would ever serve or validate it, and a contract nobody enforces is worse than none.
 - **The door types the mapping, and constrains the body.** `WorkspaceOptions.spec` reads its `input` from the declared
   schema (`z.infer`), so a workflow states its shape once and the workspace mapping is checked against it — the drift
@@ -59,14 +65,19 @@ machine is the one piece of its vocabulary that pattern missed.
   so a root-placed wrapper hands its body the door, the handles, _and_ that — while a nested one does not, and no type
   can see which. It is not door material either (no caller sends it, `start` overwrites it after the parse, nothing
   serves it), so widening the door would be the wrong fix. The guard takes the permissive answer: it counts those keys
-  as _provided_, so a body may declare the field honestly. Counting them as provided rather than subtracting them from
-  what the body demands is deliberate — subtraction would drop the keys from the comparison and with them two cases the
-  check owns: a body that mistypes `instanceId`, and a body whose input is a union, which subtraction compares on its
-  members' shared keys alone. The typed wrapper also checks the seam above it — a parent invoking a nested `workspace()`
-  has its input mapper checked against that wrapper's door, and gets the body's output typed back. With no schema
-  declared the door is permissive, so there is nothing to infer and the mapper's argument is `unknown` — an honest "jr2
-  does not know", not `any`; a wrapper fed by something other than a caller (a pool worker) states what it is fed by
-  annotating the parameter, as `PoolSpec.cap`/`itemInput` do.
+  as _provided_, so a body may declare the field honestly. `spec` takes the same answer: its `input` is the door plus
+  `HostInjectedInput`, so a `spec` gives each run a branch from `instanceId` with no cast, and a nested wrapper whose
+  `spec` reads it needs a parent that gives it. `Partial<HostInjectedInput>` was the alternative; it was rejected
+  because each root `spec` would then write a fallback for a value that is always there. The input of the wrapper stays
+  the door alone, so no parent must send `instanceId`, and a per-run Repo Slot's mapper keeps the door alone, because a
+  url does not come from a run's id. Counting them as provided rather than subtracting them from what the body demands
+  is deliberate — subtraction would drop the keys from the comparison and with them two cases the check owns: a body
+  that mistypes `instanceId`, and a body whose input is a union, which subtraction compares on its members' shared keys
+  alone. The typed wrapper also checks the seam above it — a parent invoking a nested `workspace()` has its input mapper
+  checked against that wrapper's door, and gets the body's output typed back. With no schema declared the door is
+  permissive, so there is nothing to infer and the mapper's argument is `unknown` — an honest "jr2 does not know", not
+  `any`; a wrapper fed by something other than a caller (a pool worker) states what it is fed by annotating the
+  parameter, as `PoolSpec.cap`/`itemInput` do.
 - **The schema is structure, so it is open.** Workflow-detail JSON (`GET /workflows/:name`, the address ADR-0032's
   negotiation kept) serves it as JSON Schema — same band as the Machine doc, and what drives the Console's start form
   before any token is entered. The _submit_ stays `authenticated`; schema open, trigger guarded.

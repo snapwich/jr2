@@ -22,11 +22,14 @@
 //  10. the handles are keyed by the wrapper's DECLARED Repo Slots (ADR-0050): a body names the
 //      slots it reads, an undeclared one is refused at the `workspace()` call — on BOTH overloads,
 //      since the slots are declared on the door-less path exactly as on the other — and no type
-//      on the seam defaults its slots to `string`, which would widen `repos` to `Record<string, …>`.
+//      on the seam defaults its slots to `string`, which would widen `repos` to `Record<string, …>`;
+//  11. a door with no fields (`z.object({})`) types a body and its `spec` with no cast: `Workspaced`
+//      removes the `Record<string, never>` that `z.infer` gives it, and `spec` reads `instanceId`
+//      (HostInjectedInput) as a string, on each door.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup, type InputFrom, type OutputFrom } from "xstate";
+import { assign, setup, type InputFrom, type OutputFrom } from "xstate";
 import { z } from "zod";
 import { open } from "../src/parts.ts";
 import {
@@ -318,6 +321,61 @@ void workspace(ignoresHandles, {
   spec: ({ input }: { input: { ticket: Door } }) => specOf(input.ticket),
 });
 
+// --- 11: a door with no fields needs no cast ----------------------------------------------------
+
+// `z.infer` of `z.object({})` is `Record<string, never>`. Intersected as it is, it made each assign
+// of the body's context fail: `count: number` is not `never`. `Workspaced` removes that index
+// signature, so the body below compiles as it is written.
+const emptyDoor = z.object({});
+type EmptyBody = Workspaced<z.infer<typeof emptyDoor>, "app">;
+const emptyHoldsOnlyTheHandles: Eq<keyof EmptyBody, "workspace"> = true;
+const emptyBody = setup({
+  types: {} as { input: EmptyBody; context: EmptyBody & { count: number } },
+}).createMachine({
+  context: ({ input }) => ({ ...input, count: 0 }),
+  initial: "working",
+  states: {
+    working: {
+      entry: assign({ count: ({ context }) => context.count + 1 }),
+      always: { target: "done", guard: ({ context }) => context.workspace.repos.app.length > 0 },
+    },
+    done: { type: "final" },
+  },
+});
+const emptyWrapped = workspace(emptyBody, {
+  input: emptyDoor,
+  repos,
+  spec: ({ input }) => {
+    // @ts-expect-error the empty door holds no field, so a misspelled read is refused, not `never`
+    void input.ticket;
+    return { branch: `fix/${input.instanceId}` };
+  },
+});
+const emptyDoorIsTheInput: Eq<InputFrom<typeof emptyWrapped>, z.infer<typeof emptyDoor>> = true;
+
+// The named fields beside the empty door stay: a root body that reads `instanceId` writes the same
+// composition as for any other door.
+type EmptyRootBody = Workspaced<HostInjectedInput & z.infer<typeof emptyDoor>, "app">;
+const instanceIdStays: Eq<EmptyRootBody["instanceId"], string> = true;
+void workspace(bodyTakingInput<EmptyRootBody>(), { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
+
+// Only an index signature whose value is `never` goes: an input that is a real map is not changed.
+const mapStays: Eq<Workspaced<Record<string, string>, "app">["anyKey"], string> = true;
+
+// `spec` reads `instanceId` on a door with fields too, typed as the string the host injects. The
+// wrapper's own input is still the door alone: no caller sends `instanceId`.
+void workspace(exact, {
+  input: door,
+  repos,
+  spec: ({ input }) => {
+    const id: string = input.instanceId;
+    // @ts-expect-error the host injects an Instance ID string, never a number
+    const wrong: number = input.instanceId;
+    void wrong;
+    return { branch: `${input.branch}-${id}` };
+  },
+});
+
 test("the door's type-level claims are the compiler's; this run pins the runtime half", () => {
   assert.equal(inputSchemaOf(wrapped), door, "the declared door rides the WRAPPER, not the body");
   assert.equal(inputSchemaOf(permissive), undefined, "no schema declared → the door stays permissive");
@@ -327,6 +385,10 @@ test("the door's type-level claims are the compiler's; this run pins the runtime
       permissiveDoorIsUnknown &&
       annotatedInputFlows &&
       mapperSlotsAreSlots &&
-      appPathIsAString,
+      appPathIsAString &&
+      emptyHoldsOnlyTheHandles &&
+      emptyDoorIsTheInput &&
+      instanceIdStays &&
+      mapStays,
   );
 });

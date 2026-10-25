@@ -179,10 +179,8 @@ export type WorkspaceHandles<TSlots extends string> = {
  * A body under a root `workspace()` also gets the fields of `HostInjectedInput`. Add them when the
  * body reads them: `Workspaced<HostInjectedInput & RunInput, "app">`.
  *
- * When the run input has no fields, do not write `Workspaced<z.infer<typeof door>, "app">` for the
- * door `z.object({})`. `z.infer` of an empty `z.object` is `Record<string, never>`, so the type
- * holds no field, and each read of `context.workspace` and each `assign` is a type error. Write
- * `Workspaced<HostInjectedInput, "app">`.
+ * The run input can have no fields: `Workspaced<z.infer<typeof door>, "app">` for the door
+ * `z.object({})` holds only `workspace`.
  *
  * @example
  * ```ts
@@ -238,7 +236,29 @@ export type WorkspaceHandles<TSlots extends string> = {
  * @see docs/reference/decisions/0012-workspace-wrapper-machine.md
  * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
  */
-export type Workspaced<TInput, TSlots extends string> = TInput & { workspace: WorkspaceHandles<TSlots> };
+export type Workspaced<TInput, TSlots extends string> = WithoutEmptyIndex<TInput> & {
+  workspace: WorkspaceHandles<TSlots>;
+};
+
+// `z.infer` of a door with no fields, `z.object({})`, is `Record<string, never>`: an index signature
+// that says each key holds `never`. Intersected with the handles, it makes each assign of a body
+// context fail (`n: number` is not `never`) with a diagnostic that does not name the cause. This
+// removes that index signature, and only one whose value is `never`, so the named fields stay
+// (`HostInjectedInput & Record<string, never>` keeps `instanceId: string`) and an input that is a
+// real map (`Record<string, string>`) is not changed. The alternative, a separate type for the empty
+// door, makes the author choose between two names for one statement.
+/**
+ * The type `T` without a string index signature whose value is `never`, such as the
+ * `Record<string, never>` that `z.infer` gives for `z.object({})`. The named fields of `T` stay. A
+ * different `T` does not change.
+ *
+ * @internal
+ */
+type WithoutEmptyIndex<T> = string extends keyof T
+  ? [T[string & keyof T]] extends [never]
+    ? { [K in keyof T as string extends K ? never : number extends K ? never : K]: T[K] }
+    : T
+  : T;
 
 /**
  * What the watch says about a workspace (ADR-0021, ADR-0063): gone, or present — and, once the
@@ -677,15 +697,17 @@ export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string>
    * on, and optionally `reviewSha` and `workGroup`. jr2 calls it when the run enters the
    * Workspace.
    *
-   * At a root `workspace()`, the input of `spec` also holds `instanceId`, the seed Instance ID of
-   * the run (see {@link HostInjectedInput}). Its type does not show it, so read it with a cast:
-   * ``spec: ({ input }) => ({ branch: `fix/${(input as In & HostInjectedInput).instanceId}` })``,
-   * where `In` is the type of the run input. For the door `z.object({})`, the type of `input` is
-   * `Record<string, never>`, so cast through `unknown`:
-   * ``(input as unknown as HostInjectedInput).instanceId``. A `workspace()` that a different
-   * Machine invokes gets only the input that its parent gives it.
+   * The input of `spec` also holds `instanceId`, the seed Instance ID of the run (see
+   * {@link HostInjectedInput}). Use it to give each run a branch of its own:
+   * ``spec: ({ input }) => ({ branch: `fix/${input.instanceId}` })``. Only a root `workspace()` gets
+   * it from jr2. A `workspace()` that a different Machine invokes gets only the input that its
+   * parent gives it, so that parent must give `instanceId` when `spec` reads it.
    */
-  spec: (args: { input: z.infer<TSchema> }) => WorkspaceSpec;
+  // The type says `instanceId` is present also below the root, where only the parent can supply it:
+  // the same permissive answer the body guard gives (BodyAcceptsDoor), because no type can see where
+  // the wrapper sits. The alternative, `Partial<HostInjectedInput>`, makes each root `spec` that reads
+  // it write a fallback for a value that is always there.
+  spec: (args: { input: WithoutEmptyIndex<z.infer<TSchema>> & HostInjectedInput }) => WorkspaceSpec;
 };
 
 // How a Workspace with NO declared door is configured: absence is permissive (ADR-0033), so jr2
