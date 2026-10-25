@@ -25,7 +25,8 @@
 //      on the seam defaults its slots to `string`, which would widen `repos` to `Record<string, …>`;
 //  11. a door with no fields (`z.object({})`) types a body and its `spec` with no cast: `Workspaced`
 //      removes the `Record<string, never>` that `z.infer` gives it, and `spec` reads `instanceId`
-//      (HostInjectedInput) as a string, on each door.
+//      (HostInjectedInput) as a string, on each door; a body that writes `z.infer` of the empty door
+//      is still accepted, and one that demands a field the empty door does not carry is refused.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -358,6 +359,28 @@ const emptyDoorIsTheInput: Eq<InputFrom<typeof emptyWrapped>, z.infer<typeof emp
 type EmptyRootBody = Workspaced<HostInjectedInput & z.infer<typeof emptyDoor>, "app">;
 const instanceIdStays: Eq<EmptyRootBody["instanceId"], string> = true;
 void workspace(bodyTakingInput<EmptyRootBody>(), { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
+
+// A body that writes the empty door's own type, alone or with the handles, is accepted as on main:
+// the raw door stays on the provided side of the guard (the empty-door twin of `ignoresHandles`).
+void workspace(bodyTakingInput<z.infer<typeof emptyDoor>>(), {
+  input: emptyDoor,
+  repos,
+  spec: () => ({ branch: "feat" }),
+});
+void workspace(bodyTakingInput<z.infer<typeof emptyDoor> & { workspace: WorkspaceHandles<"app"> }>(), {
+  input: emptyDoor,
+  repos,
+  spec: () => ({ branch: "feat" }),
+});
+// The guard still refuses what the empty door does not carry.
+// @ts-expect-error the body demands `ticket`, which the empty door does not carry
+void workspace(unrelated, { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
+const wrongInstanceId = bodyTakingInput<Workspaced<{ instanceId: number }, "app">>();
+// @ts-expect-error the host injects an Instance ID string, never a number
+void workspace(wrongInstanceId, { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
+const demandsReason = bodyTakingInput<Workspaced<{ reason: string }, "app">>();
+// @ts-expect-error the body demands `reason`, which the empty door does not carry
+void workspace(demandsReason, { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
 
 // Only an index signature whose value is `never` goes: an input that is a real map is not changed.
 const mapStays: Eq<Workspaced<Record<string, string>, "app">["anyKey"], string> = true;

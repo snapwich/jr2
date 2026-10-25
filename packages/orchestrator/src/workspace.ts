@@ -546,9 +546,15 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSl
  */
 // The handles are keyed by the wrapper's DECLARED slots (ADR-0051), so a body demanding a slot the
 // wrapper never declared is refused here too; demanding fewer is fine, as with any other field.
+//
+// The provided side holds the raw door AND its `Workspaced` form. `Workspaced` removes the
+// `Record<string, never>` that `z.infer` gives the empty door, so `Workspaced` alone no longer
+// satisfies a body that writes that type itself (`z.infer<typeof door>`, alone or with the
+// handles). The raw door keeps those bodies legal, and the stripped form keeps a body that
+// declares `Workspaced<…>` legal. A key that the door does not carry is still refused.
 /** @internal */
 type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor, TSlots extends string> =
-  Workspaced<TDoor, TSlots> & HostInjectedInput extends InputFrom<TBody>
+  TDoor & Workspaced<TDoor, TSlots> & HostInjectedInput extends InputFrom<TBody>
     ? BodyNamesNoSlotUnderOpenMap<TBody, TSlots>
     : { "the body's declared input must accept the door plus the injected handles": Workspaced<TDoor, TSlots> };
 
