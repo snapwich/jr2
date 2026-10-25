@@ -446,7 +446,7 @@ function renderSplit(ctx: RefContext, s: Surface, intro: string, named: TypeClos
     const plumbing = named.types.filter((t) => t.plumbing);
     if (plumbing.length)
       types.push(
-        `**Type plumbing.** These types compute a type from the types of a Machine or of its parts. A workflow module does not write them. Each has a page with its declaration: ${plumbing.map((t) => `[${code(t.name)}](${typeEntry(t)})`).join(", ")}.`,
+        `**Type plumbing.** These types compute a type from the types of a Machine or of its parts. A workflow module does not write them. Each has a page with its declaration:\n\n${plumbing.map((t) => `- [${code(t.name)}](${typeEntry(t)})`).join("\n")}`,
       );
     const deps = dependencyNames(named, true);
     if (deps) types.push(deps);

@@ -61,6 +61,14 @@ test("the contents page and each entry page are short enough for one read of a f
   assert.ok(!entries.has("reference/machines"), "the machines page is short, and stays one page");
 });
 
+test("no line of the contents page or of an entry page is longer than 1,000 characters", () => {
+  // A file tool can cut off a long line, and a list of 60 links on one line is hard to read.
+  const list = entries.get(SURFACE) ?? assert.fail("the Authoring surface has no entry pages");
+  for (const slug of [SURFACE, ...list.map((e) => e.slug)])
+    for (const [i, l] of page(slug).split("\n").entries())
+      assert.ok(l.length <= 1000, `${slug}.md:${i + 1} is ${l.length} characters`);
+});
+
 test("a contents line is the first sentence of the TSDoc summary, as plain text", () => {
   // A colon does not end the sentence: "An invoke." alone tells nothing.
   assert.equal(

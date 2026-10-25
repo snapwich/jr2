@@ -18,9 +18,12 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
     reads a page with its file tool, which cuts off a long file. So the Authoring surface is two parts:
     `reference/authoring-surface.md`, a contents page that gives each name its kind and the first sentence of its TSDoc,
     and `reference/authoring-surface/<anchor>.md`, one page for each export and for each type that a signature names.
-    One page of all the names is about 200 KB, and the contents page is less than 25 KB. The first sentence ends at a
-    stop, not at a colon, because the words before a colon often tell nothing alone ("An invoke."). A link to an entry
-    goes to its page. The other Reference pages are short, and each one stays one page.
+    One page of all the names is about 200 KB, and the contents page is less than 25 KB. No line of the contents page or
+    of an entry page is longer than 1,000 characters, so the type plumbing is a list, not a paragraph. When the contents
+    page passes 25 KB, first make the long first sentences shorter; if it still passes, give each group of the contents
+    page a page of its own, and make the contents page a list of the groups. The first sentence ends at a stop, not at a
+    colon, because the words before a colon often tell nothing alone ("An invoke."). A link to an entry goes to its
+    page. The other Reference pages are short, and each one stays one page.
   - **The `AGENTS.md` block.** A compressed index of the bundle, and one instruction: jr2 is newer than your training
     data, so read the bundled docs before you write a Machine or config, start with the guide "Write a workflow" and the
     contents page of the Authoring surface, and read one page with each call of the file tool. The two entry pages in
