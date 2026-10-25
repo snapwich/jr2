@@ -179,6 +179,11 @@ export type WorkspaceHandles<TSlots extends string> = {
  * A body under a root `workspace()` also gets the fields of `HostInjectedInput`. Add them when the
  * body reads them: `Workspaced<HostInjectedInput & RunInput, "app">`.
  *
+ * When the run input has no fields, do not write `Workspaced<z.infer<typeof door>, "app">` for the
+ * door `z.object({})`. `z.infer` of an empty `z.object` is `Record<string, never>`, so the type
+ * holds no field, and each read of `context.workspace` and each `assign` is a type error. Write
+ * `Workspaced<HostInjectedInput, "app">`.
+ *
  * @example
  * ```ts
  * import { z } from "zod";
@@ -675,8 +680,10 @@ export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string>
    * At a root `workspace()`, the input of `spec` also holds `instanceId`, the seed Instance ID of
    * the run (see {@link HostInjectedInput}). Its type does not show it, so read it with a cast:
    * ``spec: ({ input }) => ({ branch: `fix/${(input as In & HostInjectedInput).instanceId}` })``,
-   * where `In` is the type of the run input. A `workspace()` that a different Machine invokes
-   * gets only the input that its parent gives it.
+   * where `In` is the type of the run input. For the door `z.object({})`, the type of `input` is
+   * `Record<string, never>`, so cast through `unknown`:
+   * ``(input as unknown as HostInjectedInput).instanceId``. A `workspace()` that a different
+   * Machine invokes gets only the input that its parent gives it.
    */
   spec: (args: { input: z.infer<TSchema> }) => WorkspaceSpec;
 };
