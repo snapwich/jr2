@@ -262,6 +262,7 @@ test("a zod `input` on a Machine that plain setup() made is refused, naming jr2S
     /^workflow "lost": machine "lost" has a zod `input` on createMachine, but jr2Setup did not make it, so no door reads that input/,
   );
   assert.match(lines[0]!, /make the Machine with jr2Setup in place of setup\(\) .*\(ADR-0033\)$/);
+  assert.match(lines[0]!, /the Console start form is only a field for JSON/);
   // A `.provide()` clone keeps the config, so it is refused too.
   assert.equal(doorRefusals([{ name: "lost", machine: lost.provide({}) }]).length, 1);
   // The door's walk holds the same line.

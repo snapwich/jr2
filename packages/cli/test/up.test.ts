@@ -1423,7 +1423,7 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
 
 test("a zod `input` on a Machine that plain setup() made is refused before any cluster work, naming jr2Setup", async () => {
   // TypeScript accepts the config, and xstate does not read the `input`: without this refusal the
-  // run would start with any input, and the Console would have no start form.
+  // run would start with any input, and the Console start form would be only a field for JSON.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   await mkdir(join(root, "workflows"), { recursive: true });
   await writeFile(
