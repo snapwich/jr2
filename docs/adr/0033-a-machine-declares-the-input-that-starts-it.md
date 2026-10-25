@@ -22,11 +22,12 @@ machine is the one piece of its vocabulary that pattern missed.
   names the fix: make it with `jr2Setup`, with no `events` when it takes no workflow event (ADR-0015). The test is the
   attachment, not the factory, so a `workspace()` or `pool()` wrapper with its own door passes, and a `.provide()` clone
   is judged as its original. A Machine with no `input` (or an `input` that is not zod) can still use `setup()`: the
-  zero-ceremony `ping` that `jr2 init` writes does, and no ADR asks more of it. The check is on the registered roots
-  only, because a nested Machine's `input` is never the door (see below). Considered and rejected: refusing every
-  `setup()` Machine (it taxes the hello-world for no gain); a refusal at boot (an Assembly already published would then
-  stop the Orchestrator, where the walk refuses only the next publish); and a `jr2Setup` that reads the `input` of a
-  `setup()` Machine (it cannot: the Machine is built before jr2 sees it).
+  zero-ceremony `ping` that `jr2 init` writes does, and no ADR asks more of it. The walk checks the registered roots
+  only, because a nested Machine's `input` is never the door (see below). `workspace()` refuses a body with a zod
+  `input` when you call it, also a body that `setup()` made: it reads the config, not only the attached door. Considered
+  and rejected: refusing every `setup()` Machine (it taxes the hello-world for no gain); a refusal at boot (an Assembly
+  already published would then stop the Orchestrator, where the walk refuses only the next publish); and a `jr2Setup`
+  that reads the `input` of a `setup()` Machine (it cannot: the Machine is built before jr2 sees it).
 - **A wrapper declares its own door; it never borrows its child's.** `workspace(body, { input, spec })` and
   `pool(worker, { input, … })` each take an `input` of their own, and neither propagates one upward. The reason is the
   same in both, at different strengths: a wrapper does not feed its child what a caller sent. `pool` is the sharp case —

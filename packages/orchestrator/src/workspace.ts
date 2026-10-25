@@ -61,7 +61,7 @@ import {
 } from "./parts.ts";
 import { actorPath, runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { assertSize, assertUserSeat, userSeatOf, type Size, type UserContainer } from "./size.ts";
-import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInput } from "./vocabulary.ts";
+import { attachInputSchema, declaresRunInput, invokingMachine, type HostInjectedInput } from "./vocabulary.ts";
 
 /** Lease cadence when the backend names none. Well inside the 30m default idle timeout, so a
  * few missed renewals in a row are survivable. It bounds only how long an orphan waits to be
@@ -843,7 +843,9 @@ export function workspace(
   // A body that still declares its own run input is a dead declaration under the door design: the
   // wrapper never serves it, never validates against it, and feeds the body something it does not
   // describe. Silence would leave an author believing a contract that nothing enforces (ADR-0033).
-  if (inputSchemaOf(body)) {
+  // A body that `setup()` made keeps its zod `input` in the config with no door attached, so the
+  // check reads the config too: else the author loses the door with no message.
+  if (declaresRunInput(body)) {
     throw new Error(
       `workspace(): the body "${body.id}" declares its own run input, which nothing will ever ` +
         "serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` " +

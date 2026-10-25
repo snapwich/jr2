@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fromPromise } from "xstate";
+import { fromPromise, setup } from "xstate";
 import { z } from "zod";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
@@ -181,6 +181,23 @@ test("workspace(): wrapping a body that declares its own input fails loudly, nam
     () => workspace(titledTemplate, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }),
     (err: Error) =>
       /declares its own run input/.test(err.message) && /workspace\(body, \{ input, spec \}\)/.test(err.message),
+  );
+});
+
+test("workspace(): a body that setup() made with a zod `input` is refused too, naming the fix", () => {
+  // xstate's setup() keeps the zod `input` in the config but attaches no door. The wrapper must
+  // still refuse it: else the wrapper has no door, and the author gets no message (ADR-0033).
+  const setupBody = setup({}).createMachine({
+    id: "setupbody",
+    input: startInput,
+    initial: "idle",
+    states: { idle: {} },
+  });
+  assert.throws(
+    () => workspace(setupBody, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }),
+    (err: Error) =>
+      /"setupbody" declares its own run input/.test(err.message) &&
+      /workspace\(body, \{ input, spec \}\)/.test(err.message),
   );
 });
 

@@ -78,7 +78,8 @@ part of the door, because no caller sends it.
 A [`workspace()`](../reference/authoring-surface/workspace.md) or a [`pool()`](../reference/authoring-surface/pool.md)
 has a door of its own. It does not use the door of the Machine inside it, because that Machine gets other input. A
 `workspace()` body gets the run input and the Workspace handles. A [Pool](../reference/glossary.md#pool) worker gets its
-item. Thus the wrapper declares the door, with its `input` option. `workspace()` refuses a body that declares a door.
+item. Thus the wrapper declares the door, with its `input` option. `workspace()` refuses a body that has a zod `input`,
+also a body that `setup()` made.
 
 ## The Vocabulary
 

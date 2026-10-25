@@ -25,7 +25,7 @@ import { doorCompat } from "./door-compat.ts";
 // The comparison is the same one `jr2 up`'s foreign preflight makes, so it is exported beside the
 // walk the CLI already imports (ADR-0071).
 export { doorCompat, type DoorCompat } from "./door-compat.ts";
-import { inputSchemaOf } from "./vocabulary.ts";
+import { inputSchemaOf, isZodSchema } from "./vocabulary.ts";
 
 /** One registered Workflow, as `loadWorkflows` gives it. */
 export type LoadedWorkflow = { name: string; machine: AnyStateMachine };
@@ -52,17 +52,6 @@ export function doorRefusals(workflows: readonly LoadedWorkflow[]): string[] {
     );
   }
   return lines;
-}
-
-/** A zod schema, by its shape: the Instance can resolve a zod of its own, so `instanceof` does not
- * tell. */
-function isZodSchema(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "_zod" in value &&
-    typeof (value as { safeParse?: unknown }).safeParse === "function"
-  );
 }
 
 /**
