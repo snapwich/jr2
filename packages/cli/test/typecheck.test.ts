@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tscTypecheck } from "../src/typecheck.ts";
+import { mkInstalledInstance } from "./support/installed.ts";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const REPO_TYPESCRIPT = join(REPO, "node_modules", "typescript");
@@ -97,63 +98,6 @@ test("no tsconfig.json: the refusal names the file the scaffold writes", async (
 
   await assert.rejects(tscTypecheck(root), /no tsconfig\.json/);
 });
-
-/** An instance as npm leaves one, staged from this checkout (ADR-0043's installed shape).
- *
- * Faithful in the one way that matters: `node_modules/@jr2/orchestrator` is a COPY of the package's
- * `files:` list with no `node_modules` of its own, and only its declared `dependencies` sit beside
- * it. So a kit source reaching for a devDependency — `@jr2/harness`, which is private and never
- * published (ADR-0009/0043) — is `Cannot find module` here and nowhere else in the default gate.
- */
-async function mkInstalledInstance(): Promise<string> {
-  const pkg = JSON.parse(await readFile(join(ORCHESTRATOR, "package.json"), "utf8")) as {
-    files: string[];
-    dependencies: Record<string, string>;
-  };
-  const root = await mkdtemp(join(tmpdir(), "jr2-installed-"));
-  const modules = join(root, "node_modules");
-
-  const orchestrator = join(modules, "@jr2", "orchestrator");
-  await mkdir(orchestrator, { recursive: true });
-  for (const entry of pkg.files) {
-    // The docs bundle is made at pack time (ADR-0072), so a checkout holds none until docs:build.
-    // The compiler reads no file of it.
-    if (entry === "docs" && !existsSync(join(ORCHESTRATOR, entry))) continue;
-    await cp(join(ORCHESTRATOR, entry), join(orchestrator, entry), { recursive: true });
-  }
-  await writeFile(join(orchestrator, "package.json"), JSON.stringify({ ...pkg, devDependencies: undefined }));
-
-  // Flat-hoisted, as npm and pnpm's default public hoisting both leave them. Each is the link the
-  // workspace already resolved, so the versions under test are the versions that ship.
-  for (const dep of [...Object.keys(pkg.dependencies), "@types/node"]) {
-    await mkdir(join(modules, dirname(dep)), { recursive: true });
-    await symlink(join(ORCHESTRATOR, "node_modules", dep), join(modules, dep), "dir");
-  }
-  await symlink(REPO_TYPESCRIPT, join(modules, "typescript"), "dir");
-
-  // What `jr2 init` scaffolds, verbatim in shape: an ESM package, the real extends chain, and one
-  // workflow that imports the kit — which is what pulls @jr2/orchestrator's sources into the program.
-  await writeFile(join(root, "package.json"), JSON.stringify({ name: "staged", private: true, type: "module" }));
-  await writeFile(
-    join(root, "tsconfig.json"),
-    `{ "extends": "@jr2/orchestrator/tsconfig.instance.json", "include": ["**/*.ts"] }`,
-  );
-  // The config imports the kit by BARE specifier, so this is also where "does the package resolve
-  // the way npm laid it out?" is answered; in the checkout it resolves through a pnpm link instead.
-  await writeFile(
-    join(root, "jr2.config.ts"),
-    `import { defineConfig } from "@jr2/orchestrator";\n` +
-      `export default defineConfig({ git: { credentials: [{ match: "*", token: "JR2_GIT_TOKEN" }] } });\n`,
-  );
-  await mkdir(join(root, "workflows"), { recursive: true });
-  await writeFile(
-    join(root, "workflows", "ping.ts"),
-    `import { jr2Setup } from "@jr2/orchestrator";\n` +
-      `export const machine = jr2Setup({ events: [] }).createMachine({\n` +
-      `  id: "ping",\n  initial: "done",\n  states: { done: { type: "final" } },\n});\n`,
-  );
-  return root;
-}
 
 /** A packaged `workspace()` that leaves its one Repo Slot OPEN (`_pkg.ts` — imported, never
  * registered), and a registered Workflow that binds it with `customize()` under `slot` — the
