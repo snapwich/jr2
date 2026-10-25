@@ -9,8 +9,8 @@
 // Module contract (ADR-0011/0015): one named export — `machine`. ping takes no workflow event and
 // declares no door, so plain xstate `setup()` is enough. A Machine with a door (a zod `input` on
 // `createMachine`, ADR-0033) uses `jr2Setup`, also when it takes no event: then it leaves out
-// `events`, as in `jr2Setup()`. `setup()` does not read that `input`, so jr2 would start the run
-// with any input.
+// `events`, as in `jr2Setup()`. `setup()` does not read that `input`, so `jr2 up` refuses a
+// zod `input` on a Machine that `setup()` made.
 //
 // The next step is a Machine the kit already ships (ADR-0054). `@jr2/machines` exports `task` — one
 // prompt, one Workspace, one human says done — and a Workflow is only the name an Instance

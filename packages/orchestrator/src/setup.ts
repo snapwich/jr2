@@ -133,7 +133,9 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  * - `createMachine` also takes `input`: a zod object for the input that starts a run. jr2 checks
  *   each start against it. Without it, a run can start with any input. The `setup()` of xstate
  *   does not read this `input`, so a Machine with a door uses `jr2Setup`, also when it takes no
- *   workflow event.
+ *   workflow event. `jr2 up` and the publish door refuse a registered Machine with a zod `input`
+ *   that `jr2Setup` did not make: ``workflow "<name>": machine "<id>" has a zod `input` on
+ *   createMachine, but jr2Setup did not make it, so no door reads that input …``
  *
  * The output of a run is the root `output` of `createMachine`, beside `id` and `states`, as in
  * xstate v5. xstate does not read the `output` of a final state as the output of the Machine. It

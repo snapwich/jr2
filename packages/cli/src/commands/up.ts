@@ -82,6 +82,7 @@ import {
   chartFileRefusals,
   dispatchRefusals,
   doorCompat,
+  doorRefusals,
   machineBodies,
   matchCredential,
   openPartRefusals,
@@ -258,9 +259,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // context a `workspace()` names, which is built below (ADR-0037), every bound Repo, whose ssh
   // key is asked for here and whose resource the Orchestrator creates at boot (ADR-0051), and
   // whether any Machine composes a Sandbox at all — the data-plane switch. It runs right after the
-  // gate and before ownership because it holds the one REFUSAL the compiler cannot make: a part
-  // left Open on a registered Machine — a Repo Slot with no url, an Agent with no model
-  // (ADR-0054). Nothing about Agents is published, because the definition rides each Turn.
+  // gate and before ownership because it holds REFUSALS the compiler cannot make: a part left
+  // Open on a registered Machine — a Repo Slot with no url, an Agent with no model (ADR-0054) —
+  // and a zod `input` on a Machine that `jr2Setup` did not make, which no door reads (ADR-0033). Nothing about Agents is published, because the definition rides each Turn.
   const workflows = await loadWorkflows(root);
   const carried = partsOf(workflows.map((w) => w.machine));
   const { agents, images: contexts } = carried;
@@ -272,7 +273,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // then the Agent one run later, would cost them two rounds to learn one thing. The listing is the
   // door's own (ADR-0069): the Orchestrator refuses a publish with the same lines, so the host walk
   // and the door's walk cannot drift.
-  const open = openPartRefusals(workflows);
+  // A zod `input` that no door reads (ADR-0033) is in the same listing, first: the door refuses it
+  // with the same line.
+  const open = [...doorRefusals(workflows), ...openPartRefusals(workflows)];
   if (open.length) {
     for (const line of open) activity(io, `refusing: ${line}`);
     return 1;

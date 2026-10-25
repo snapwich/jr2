@@ -31,6 +31,41 @@ import { inputSchemaOf } from "./vocabulary.ts";
 export type LoadedWorkflow = { name: string; machine: AnyStateMachine };
 
 /**
+ * Every registered Machine with a zod `input` on its `createMachine` config that `jr2Setup` did not
+ * make (ADR-0033). The `setup()` of xstate keeps that `input` in the config but does not read it,
+ * so the Machine has no door: a start with any input passes, and the Console has no start form.
+ * TypeScript accepts the config, so only this walk finds it. One line per Workflow, naming the fix.
+ * A Machine with no `input`, or with an `input` that is not zod, can still use `setup()`.
+ *
+ * The line text follows `refusing: ` in `jr2 up`'s output; the prefix is the caller's.
+ */
+export function doorRefusals(workflows: readonly LoadedWorkflow[]): string[] {
+  const lines: string[] = [];
+  for (const w of workflows) {
+    const declared = (w.machine.config as { input?: unknown }).input;
+    if (!isZodSchema(declared) || inputSchemaOf(w.machine)) continue;
+    lines.push(
+      `workflow "${w.name}": machine "${w.machine.id}" has a zod \`input\` on createMachine, but jr2Setup did not ` +
+        "make it, so no door reads that input: a run starts with any input, and the Console has no start form — " +
+        "make the Machine with jr2Setup in place of setup() (leave out `events` if it takes no workflow event) " +
+        "(ADR-0033)",
+    );
+  }
+  return lines;
+}
+
+/** A zod schema, by its shape: the Instance can resolve a zod of its own, so `instanceof` does not
+ * tell. */
+function isZodSchema(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "_zod" in value &&
+    typeof (value as { safeParse?: unknown }).safeParse === "function"
+  );
+}
+
+/**
  * Every part a registered Machine leaves Open (ADR-0051, ADR-0054): a Repo Slot with no url, an
  * Agent with no model, an Effect's url, argv or secret. One line per part, in walk order within
  * each kind, so a composer fixes all of them in one edit. Each line names the Workflow and the
@@ -269,14 +304,14 @@ export type AssemblyRefusalInput = {
 /**
  * The door's walk (ADR-0069): the refusals the Orchestrator can see in an Assembly it has already
  * imported. An import error, a missing `export const machine` and a Vocabulary error are the
- * caller's: they throw at import, before this runs. Here: every Open part, a secret the config does
+ * caller's: they throw at import, before this runs. Here: a zod `input` that no door reads, every Open part, a secret the config does
  * not declare (or a literal one too short to scrub), a `file:` image context whose digest the
  * mounted image map does not hold, and a Chart file that does not admit under its wrapper
  * (ADR-0070), each line naming the file. The door runs this after `jr2 up` did its cluster work, so each
  * check is true when the Assembly lands.
  */
 export async function assemblyRefusals(input: AssemblyRefusalInput): Promise<string[]> {
-  const lines = openPartRefusals(input.workflows);
+  const lines = [...doorRefusals(input.workflows), ...openPartRefusals(input.workflows)];
   // A Chart file is the Instance's own (ADR-0070): one that fails refuses the publish.
   if (input.charts?.length) lines.push(...chartFileRefusals(input.charts, input.workflows));
   // A same-Instance dispatch names a Workflow this Assembly has (ADR-0071). The door sees the

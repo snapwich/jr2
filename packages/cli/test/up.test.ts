@@ -1419,6 +1419,45 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
   assert.deepEqual(imagesOf(w2).sandbox, {});
 });
 
+// --- a door no one reads (ADR-0033) ------------------------------------------------------------
+
+test("a zod `input` on a Machine that plain setup() made is refused before any cluster work, naming jr2Setup", async () => {
+  // TypeScript accepts the config, and xstate does not read the `input`: without this refusal the
+  // run would start with any input, and the Console would have no start form.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  await mkdir(join(root, "workflows"), { recursive: true });
+  await writeFile(
+    join(root, "workflows", "lost.ts"),
+    `import { setup } from ${JSON.stringify(import.meta.resolve("xstate"))};\n` +
+      `import { z } from ${JSON.stringify(import.meta.resolve("zod"))};\n` +
+      `export const machine = setup({}).createMachine({\n` +
+      `  id: "lost", input: z.object({ message: z.string() }), initial: "idle", states: { idle: {} },\n` +
+      `});\n`,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /refusing: workflow "lost": machine "lost" has a zod `input` on createMachine, but jr2Setup did not make it/,
+  );
+  assert.match(err, /make the Machine with jr2Setup in place of setup\(\)/);
+  assert.deepEqual(w.kube.applied, [], "nothing applied");
+
+  // The same Machine with no door is legal on plain setup(). A new folder: the module cache holds
+  // the first file.
+  const plain = await mkInstance(`export default { name: "myinst" };\n`);
+  await mkdir(join(plain, "workflows"), { recursive: true });
+  await writeFile(
+    join(plain, "workflows", "lost.ts"),
+    `import { setup } from ${JSON.stringify(import.meta.resolve("xstate"))};\n` +
+      `export const machine = setup({}).createMachine({ id: "lost", initial: "idle", states: { idle: {} } });\n`,
+  );
+  const ok = mkWorld(plain);
+  await up(["--yes"], ok.io);
+  assert.doesNotMatch(ok.err.join("\n"), /has a zod `input`/);
+});
+
 // --- the Repo Slots (ADR-0051): the walk's one refusal, and what the boot is handed ------------
 
 test("an OPEN Repo Slot on a registered Machine is refused after the gate and before anything else", async () => {

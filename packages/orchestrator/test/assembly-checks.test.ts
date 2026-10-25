@@ -8,8 +8,15 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { setup, type AnyStateMachine } from "xstate";
 import { z } from "zod";
-import { assemblyRefusals, dispatchRefusals, placementWalkOf } from "../src/assembly-checks.ts";
+import {
+  assemblyRefusals,
+  dispatchRefusals,
+  doorRefusals,
+  placementWalkOf,
+  type LoadedWorkflow,
+} from "../src/assembly-checks.ts";
 import { dispatch } from "../src/dispatch-effect.ts";
 import { secret } from "../src/http-effect.ts";
 import { open } from "../src/open.ts";
@@ -230,4 +237,33 @@ test("a foreign target is not checked here: its door is another Instance's, whic
     errors: [],
     warnings: [],
   });
+});
+
+// --- A door that no one reads (ADR-0033) ----------------------------------------------------------
+
+test("a zod `input` on a Machine that plain setup() made is refused, naming jr2Setup; one with no door passes", async () => {
+  const lost = setup({}).createMachine({
+    id: "lost",
+    input: z.object({ message: z.string() }),
+    initial: "a",
+    states: { a: {} },
+  }) as AnyStateMachine;
+  const plain = setup({}).createMachine({ id: "plain", initial: "a", states: { a: {} } }) as AnyStateMachine;
+  const workflows: LoadedWorkflow[] = [
+    { name: "lost", machine: lost },
+    { name: "plain", machine: plain },
+    { name: "intake", machine: intake() },
+    { name: "build", machine: boxed("node:24") },
+  ];
+  const lines = doorRefusals(workflows);
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(
+    lines[0]!,
+    /^workflow "lost": machine "lost" has a zod `input` on createMachine, but jr2Setup did not make it, so no door reads that input/,
+  );
+  assert.match(lines[0]!, /make the Machine with jr2Setup in place of setup\(\) .*\(ADR-0033\)$/);
+  // A `.provide()` clone keeps the config, so it is refused too.
+  assert.equal(doorRefusals([{ name: "lost", machine: lost.provide({}) }]).length, 1);
+  // The door's walk holds the same line.
+  assert.deepEqual(await assemblyRefusals({ config: undefined, workflows }), lines);
 });

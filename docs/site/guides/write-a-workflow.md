@@ -39,8 +39,9 @@ The parts of the module:
 
 A Machine with a door uses `jr2Setup`, also when it takes no workflow event. Then leave out `events`, as in
 `jr2Setup()`. The `setup()` of xstate does not read the `input` of `createMachine`. TypeScript accepts a zod `input`
-there, but jr2 does not see it as a door: it starts a run with any input, and the Console has no start form. Only a
-Machine with no door and no workflow event can use `setup()`, as the `ping` Workflow that `jr2 init` writes does.
+there, but no door reads it, so `jr2 up` refuses that Machine. Without the refusal, a run would start with any input,
+and the Console would have no start form. Only a Machine with no door and no workflow event can use `setup()`, as the
+`ping` Workflow that `jr2 init` writes does.
 
 ## Give the run an output
 
@@ -146,6 +147,10 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
 - `createMachine` refuses an `agent()`, an Effect or a `workspace()` that a state writes in its `invoke.src`. Put it
   under `actors`, and invoke it by its key:
   `machine "<id>": state "<state>" invokes <part> inline — a Part is a key of actors, so it has a name that the ledger, the report and customize() share: actors: { <name>: <factory>(...) }, then invoke: { src: "<name>" }`
+- `jr2 up` refuses a registered Machine with a zod `input` that `setup()` made in place of `jr2Setup`. The compiler does
+  not find this error:
+  ``refusing: workflow "<workflow>": machine "<id>" has a zod `input` on createMachine, but jr2Setup did not make it, so no door reads that input: a run starts with any input, and the Console has no start form — make the Machine with jr2Setup in place of setup() (leave out `events` if it takes no workflow event) (ADR-0033)``.
+  The Orchestrator refuses a publish of that Machine with the same line.
 - `workspace()` refuses a body that declares a door. Declare the door with the `input` option of `workspace()`:
   ``workspace(): the body "<id>" declares its own run input, which nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` handles, so the body's schema is not the door. Move it to the wrapper: workspace(body, { input, spec }) (ADR-0033).``
 - `jr2 up` prints each refusal of `defineEvent`, `createMachine` and `workspace()` as `error: <refusal>`, and exits with
