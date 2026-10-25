@@ -61,14 +61,22 @@ test("the contents page and each entry page are short enough for one read of a f
   assert.ok(!entries.has("reference/machines"), "the machines page is short, and stays one page");
 });
 
-test("each other Reference page is one page of 64 KB or less", () => {
-  // ADR-0072 gives this size. The HTTP API page is the largest, at about 50 KB.
+test("each other generated Reference page is one read of a file tool, and the HTTP API page's routes are", () => {
+  // ADR-0072: one read of a file tool shows about 30 KB. The HTTP API page is more, but its routes
+  // come first and are less than that; the types after them are read by heading.
+  const ONE_READ = 30 * 1024;
   assert.deepEqual([...entries.keys()], [SURFACE], "only the Authoring surface has entry pages");
   const split = new Set((entries.get(SURFACE) ?? []).map((e) => e.slug));
   for (const [slug, text] of pages) {
     if (slug === SURFACE || split.has(slug)) continue;
-    const size = Buffer.byteLength(text);
-    assert.ok(size <= 64 * 1024, `${slug}.md is ${size} bytes`);
+    let head = text;
+    if (slug === "reference/http-api") {
+      const types = text.indexOf("\n## Types\n");
+      assert.ok(types > 0, "the HTTP API page has no Types section after its routes");
+      head = text.slice(0, types);
+    }
+    const size = Buffer.byteLength(head);
+    assert.ok(size < ONE_READ, `${slug}.md${head === text ? "" : " up to its Types"} is ${size} bytes`);
   }
 });
 

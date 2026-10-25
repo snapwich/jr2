@@ -23,8 +23,14 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
     page passes 25 KB, first make the long first sentences shorter; if it still passes, give each group of the contents
     page a page of its own, and make the contents page a list of the groups. The first sentence ends at a stop, not at a
     colon, because the words before a colon often tell nothing alone ("An invoke."). A link to an entry goes to its
-    page. Each of the other Reference pages stays one page, and none is more than 64 KB; the HTTP API page is the
-    largest, at about 50 KB.
+    page. Each of the other generated Reference pages (CLI, config, machines, mechanism events, HTTP API) stays one
+    page. Each is less than 30 KB, the size that one read of a file tool shows, with one exception: the HTTP API page is
+    about 50 KB. It is one page because its routes come first and are less than 30 KB, so one read shows every route;
+    the types of the bodies come after the routes, and an Assistant reads one of them with an offset or by its heading.
+    When the routes pass 30 KB, give the types a page of their own. The alternative, a split of the HTTP API page now,
+    is rejected because a route and the types it names are then on two pages, and one read shows all routes already. The
+    Glossary and the Decisions are not generated, and this rule does not hold them: an ADR can be about 50 KB, and an
+    Assistant reads the one ADR that a page links to.
   - **The `AGENTS.md` block.** A compressed index of the bundle, and one instruction: jr2 is newer than your training
     data, so read the bundled docs before you write a Machine or config, start with the guide "Write a workflow" and the
     contents page of the Authoring surface, and read one page with each call of the file tool. The two entry pages in
