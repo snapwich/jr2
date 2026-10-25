@@ -14,8 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +23,6 @@ import { mkInstalledInstance } from "./support/installed.ts";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const REPO_TYPESCRIPT = join(REPO, "node_modules", "typescript");
-const ORCHESTRATOR = join(REPO, "packages", "orchestrator");
 
 /** An instance folder as `jr2 init` leaves one: the root marker, a tsconfig, and an installed
  * compiler. `compiler: false` is the folder whose dependencies were never installed. */

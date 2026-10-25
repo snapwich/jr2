@@ -23,8 +23,8 @@ async function copyPackage(from: string, to: string): Promise<Manifest> {
   await mkdir(to, { recursive: true });
   for (const entry of pkg.files) {
     // The docs bundle is made at pack time (ADR-0072), so a checkout holds none until docs:build.
-    // The compiler and the loader read no file of it.
-    if (!existsSync(join(from, entry))) continue;
+    // The compiler and the loader read no file of it. Any other missing entry is an error.
+    if (entry === "docs" && !existsSync(join(from, entry))) continue;
     await cp(join(from, entry), join(to, entry), { recursive: true });
   }
   await writeFile(join(to, "package.json"), JSON.stringify({ ...pkg, devDependencies: undefined }));
