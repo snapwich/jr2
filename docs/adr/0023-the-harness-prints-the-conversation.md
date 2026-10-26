@@ -24,8 +24,14 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   or version.
 - **The Harness is the right seat because it already holds both halves of the label.** It knows its Agent's name and the
   iid arrives per Submission. So a line is `[<agent>] [<iid>] …` with no lookup, no correlation table, and no
-  orchestrator round trip. Nothing else in the pod knows both: the Custodian sees routes and names, never a
-  conversation, and working-tool execution happens inside the Harness, invisible to every other jr2 process there.
+  orchestrator round trip. Every line of a body carries both, the later lines of a body that spans lines too. The iid is
+  what tells two conversations of one Agent apart in one log: the Instance Harness hosts the Menu-only Agents of every
+  run ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), so the runs in flight print into one log, and
+  a reader keeps one run's lines by the prefix `<runId>/` (a run's Agents sit at more than one Machine path, and a Turn
+  that does not continue, the conversation after one jr2 faulted, and a reroll each add a part to the iid). An iid
+  always holds a `/`, and a label never does, so a reader can tell the two apart. Nothing else in the pod knows both:
+  the Custodian sees routes and names, never a conversation, and working-tool execution happens inside the Harness,
+  invisible to every other jr2 process there.
 - **Reasoning prints, and so does each pick's answer; a Working tool's result does not.** Prompts, assistant text,
   thinking, tool calls with truncated inputs, and the answer to each Menu pick. The file contents, command output, and
   API responses a Working tool returns never print. This is one cut serving two purposes, which is why it is a boundary
@@ -34,16 +40,16 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   bullet below states what it can still carry. Every user message the model reads prints as a prompt — the Frame's
   prompt with its Turn part, a nudge, and a Turn part the Harness restated at a step boundary
   ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)), which prints once as
-  `[<agent>] [prompt] <jr2-turn>` where the model read it.
+  `[<agent>] [<iid>] [prompt] <jr2-turn>` where the model read it.
 - **A pick's answer prints after its call, as the model received it.** A Menu call's result is jr2's own text: the
   receipt, an outstanding pick's answer with the reply it carries (an Effect's output, a Gate's event and payload) and
   the paragraph after a push, a refusal ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md),
   [ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)). It prints as
-  `[<agent>] [<pick> answer] <text>`, or `[<pick> error] <text>` for an answer the model reads as an error (a refusal
-  while a pick is outstanding, a pick the tool's schema refused, a pick that never reached the Orchestrator), under the
-  same bound as a call's input, cut in its middle: the print keeps the answer's head (the receipt) and its end (what
-  follows the reply: the paragraph after a push, "Allowed now"), and marks the cut with the number of characters it
-  dropped, `… [<n> characters cut] …`. The bound is the log's copy only; the model reads the whole answer, which the
+  `[<agent>] [<iid>] [<pick> answer] <text>`, or `[<pick> error] <text>` for an answer the model reads as an error (a
+  refusal while a pick is outstanding, a pick the tool's schema refused, a pick that never reached the Orchestrator),
+  under the same bound as a call's input, cut in its middle: the print keeps the answer's head (the receipt) and its end
+  (what follows the reply: the paragraph after a push, "Allowed now"), and marks the cut with the number of characters
+  it dropped, `… [<n> characters cut] …`. The bound is the log's copy only; the model reads the whole answer, which the
   Orchestrator (a command's output tail) and the Effector (an `http` body) already bound. It is the text the model
   already read, so printing it changes nothing the model reads; it is what lets a reader of the log, and the `@model`
   tier's kept evidence ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)),
@@ -72,7 +78,7 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   every prompt prints after the answers of the calls before it (a nudge, a restated Turn part and a re-admission alike),
   so no call's answer prints after a prompt that follows it.
 - **Two mechanic lines print.** A Compaction prints
-  `[<agent>] [compacted] context <before> → ~<after> tokens (window <w>)` where it cuts
+  `[<agent>] [<iid>] [compacted] context <before> → ~<after> tokens (window <w>)` where it cuts
   ([ADR-0036](0036-a-turn-compacts-its-own-context-mid-flight.md)). When a model has no level of the name the Turn asked
   for ([ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)), the Harness prints, once in a
   Submission and before the first answer a provider gave, the level that the model ran at:
@@ -98,7 +104,9 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   remotely-hosted Turn echoes its admission and its pick, never its transcript (the transcript prints exactly once,
   where the Turn ran); **fire and forget** — a failed echo never fails anything, the feed remains the record and the log
   is a courtesy view; **Emit is the only author API** — a workflow that wants prose in the log Emits it (ADR-0011's
-  vocabulary discipline holds; no `log()` primitive exists or will).
+  vocabulary discipline holds; no `log()` primitive exists or will). The echo's lines carry no iid: `[run] [status] …`,
+  `[run] [emit] …`, `[<agent>] [admitted] …` and `[<agent>] [pick] …`. A Workspace's Harness serves one run, so its log
+  needs no run in a line, and a marker stands for a conversation that is in another log.
 - **A status is a level, so the echo coalesces it.** In an echo's queue, pending statuses collapse to the latest;
   markers and Emits keep their order. A Harness that answers slowly holds at most one status plus the markers since its
   last push, and a burst of transitions across a Pool's workers costs each Harness one push per flush, not one per

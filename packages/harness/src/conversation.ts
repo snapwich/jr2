@@ -22,6 +22,7 @@ import {
   type SettlementOutcome,
   type StreamEvent,
   type StreamPosition,
+  type SubmissionUsage,
 } from "./wire.ts";
 
 /** Run one Submission (the turn, `turn.ts`). Resolution settles `completed` — unless it resolves
@@ -65,7 +66,20 @@ export const NO_SWEEP_MESSAGE =
 export type SubmissionSeat = {
   waiting: (onPickOnly: boolean) => void;
   cut: AbortSignal;
+  /** One model answer's usage: the Submission's Settlement carries the sum (ADR-0027). */
+  spent: (usage: SubmissionUsage) => void;
 };
+
+/** Two usages summed, field by field. */
+function addUsage(a: SubmissionUsage, b: SubmissionUsage): SubmissionUsage {
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheWrite: a.cacheWrite + b.cacheWrite,
+    cost: a.cost + b.cost,
+  };
+}
 
 /** What a cut Submission's settlement says (ADR-0031): typed as a restart, which is what it is to
  * the Orchestrator — the Turn was cut while the workflow ran its pick. */
@@ -95,11 +109,13 @@ export type UpdatesView = {
 };
 
 /** One admitted Submission, as the queue holds it. `settled` is the guard that lets the abort
- * sweep and the pump race safely: whichever settles first wins, the other is a no-op. */
+ * sweep and the pump race safely: whichever settles first wins, the other is a no-op. `usage` is
+ * what its model answers spent so far (`SubmissionSeat.spent`), unset until the first one. */
 type SubmissionRecord = {
   submissionId: string;
   submission: AdmissionRequest;
   settled: boolean;
+  usage?: SubmissionUsage;
 };
 
 export class Conversation {
@@ -379,6 +395,9 @@ export class Conversation {
         if (this.active === active) this.cutIfOnPick();
       },
       cut: active.cut.signal,
+      spent: (usage) => {
+        record.usage = record.usage ? addUsage(record.usage, usage) : usage;
+      },
     };
     void (async () => {
       let over = false;
@@ -431,7 +450,7 @@ export class Conversation {
   }
 
   private settle(
-    record: Pick<SubmissionRecord, "submissionId" | "settled">,
+    record: Pick<SubmissionRecord, "submissionId" | "settled" | "usage">,
     outcome: SettlementOutcome,
     error?: SettlementError,
   ): void {
@@ -439,7 +458,14 @@ export class Conversation {
     record.settled = true;
     const index = this.queue.findIndex((queued) => queued === record);
     if (index !== -1) this.queue.splice(index, 1);
-    const settlement: Settlement = { submissionId: record.submissionId, outcome, ...(error ? { error } : {}) };
+    // No usage when no model answer was reported: one that never ran, or one lost with a restarted
+    // Harness, whose spend was lost with it.
+    const settlement: Settlement = {
+      submissionId: record.submissionId,
+      outcome,
+      ...(error ? { error } : {}),
+      ...(record.usage ? { usage: record.usage } : {}),
+    };
     // Recorded as its stream line alone (`append`): the rebuild reads settlements off the stream.
     this.settlements.push(settlement);
     this.append({

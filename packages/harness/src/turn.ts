@@ -63,7 +63,7 @@ import type { EnginePart } from "./transcript.ts";
 import { lacksLevel, mapThinkingLevel, PROVIDER_RETRIES, providerLimit, ranAt, resolveModel } from "./provider.ts";
 import type { EngineSeat } from "./record.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
-import type { HistoryMessage } from "./wire.ts";
+import type { HistoryMessage, SubmissionUsage } from "./wire.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
 import { workingToolsFor } from "./working-tools.ts";
 
@@ -142,6 +142,13 @@ function isFailureShell(message: AssistantMessage): boolean {
   if (message.stopReason !== "error" && message.stopReason !== "aborted") return false;
   const u = message.usage;
   return u.input === 0 && u.output === 0 && u.cacheRead === 0 && u.cacheWrite === 0 && u.totalTokens === 0;
+}
+
+/** One model answer's usage in the Settlement's shape: its tokens, and the cost pi-ai computed
+ * from the model's catalog rates. */
+function usageOf(message: AssistantMessage): SubmissionUsage {
+  const u = message.usage;
+  return { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite, cost: u.cost.total };
 }
 
 /**
@@ -303,7 +310,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
               signal: runSignal,
             });
             if (!cut) return undefined;
-            printLines(out, deps.agentName, [
+            printLines(out, deps.agentName, deps.instanceId, [
               renderCompaction(cut.tokensBefore, cut.tokensAfter, current.model.contextWindow),
             ]);
             return cut.messages;
@@ -354,7 +361,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         if (isFailureShell(event.message)) return;
         turn.levelSaid = true;
         if (!lacksLevel(current.model, current.thinkingLevel)) return;
-        printLines(out, deps.agentName, [
+        printLines(out, deps.agentName, deps.instanceId, [
           renderThinkingLevel(
             current.model,
             current.thinkingLevel,
@@ -362,7 +369,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
           ),
         ]);
       });
-      attachPrinter(engine, deps.agentName, out);
+      attachPrinter(engine, deps.agentName, deps.instanceId, out);
       // The step boundary — the engine's placement of the engine-neutral check (`between-steps.ts`,
       // ADR-0029): after a model answer's tool results and before the next request, the Turn part
       // is restated when the Allowed picks changed since the model last read them. The engine awaits
@@ -425,6 +432,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         if (event.message.role === "assistant") {
           turn.last = event.message;
           turn.answerPick = undefined;
+          // What the model answer spent: the Submission's Settlement carries the sum (ADR-0027).
+          // A failure shell is no model answer, so it adds no usage.
+          if (!isFailureShell(event.message)) work.seat?.spent(usageOf(event.message));
         }
         const entry = historyMessage(event.message);
         if (entry) deps.appendMessage(entry);
@@ -466,7 +476,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // shows that answer once, here, before the prompt that follows the call (ADR-0023).
       const cuts = cutPickAnswers(context).filter((answer) => !printedCuts.has(answer.toolCallId));
       for (const answer of cuts) printedCuts.add(answer.toolCallId);
-      printLines(out, deps.agentName, cuts.flatMap(renderMessage));
+      printLines(out, deps.agentName, deps.instanceId, cuts.flatMap(renderMessage));
       // The Briefing's Turn part FOLLOWS the Frame's prompt (ADR-0062): the author's task reads
       // first, and the Allowed picks last, where a model obeys them (ADR-0029, measured).
       // The system prompt is the instructions, then the Briefing's standing part (byte-stable for
@@ -495,7 +505,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // (`unrunResult`).
       const unrun = unrunAnswers(part.context());
       for (const answer of unrun) part.appendMessage(answer);
-      printLines(out, deps.agentName, unrun.flatMap(renderMessage));
+      printLines(out, deps.agentName, deps.instanceId, unrun.flatMap(renderMessage));
       // The watch's SELF-abort (ADR-0035): the engine ended the run, but the pump's signal never fired.
       // Checked first so the runaway reason wins over the generic mapping below; a sweep that raced
       // the trip still settles the Submission as the sweep says (`ended` or `aborted`), because the

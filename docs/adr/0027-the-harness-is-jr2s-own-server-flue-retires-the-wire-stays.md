@@ -152,7 +152,14 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
     or no sweep came in time, or it was over before it started
     ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)). `failed` and `aborted` carry an error, `aborted` the
     type `{type: "submission_aborted"}` — continuity with what ADR-0024/0025 recorded. `completed` and `ended` carry
-    none: nothing went wrong.
+    none: nothing went wrong. A Settlement also carries its Submission's `usage`: the input, output, cache-read and
+    cache-write tokens and the cost, summed over the Submission's model answers. The cost is pi-ai's, from its catalog
+    rates, so a `harness.provider` model with no rates costs 0. A Compaction summary's model call is not in it. The
+    field is optional. A Submission whose model never answered carries none, and so does one lost with a restarted
+    Harness, because its spend was lost with it. The reason is the `@model` tier
+    ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)): it records the
+    tokens and the cost of each trial, and the Settlement is the one place outside the pod that knows them. The
+    Orchestrator does not read it yet.
   - **An unknown conversation is 404**, on both views. `POST` creates (that is admission), except an admission with
     `kept: true`, which is 404 (with `kept: false` in the body) on an unknown conversation and creates nothing
     ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)); abort answers `{aborted: false}`. This is

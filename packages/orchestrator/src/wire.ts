@@ -49,11 +49,18 @@ export const SUBMISSION_RUNAWAY = "runaway";
  * Settlement, not a 404. The Agent actor switches on this type, never on the message's prose. */
 export const SUBMISSION_HARNESS_RESTARTED = "harness_restarted";
 
-/** One settled Submission, in the shape `?view=history`'s `settlements` reports. */
+/** What a Submission's model answers spent, summed: tokens, and the cost in US dollars from the
+ * model's catalog rates (0 for a model with no rates). */
+export type SubmissionUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+
+/** One settled Submission, in the shape `?view=history`'s `settlements` reports. `usage` is absent
+ * when no model answer reported one, or when the Submission was lost with a restarted Harness. The
+ * Orchestrator does not read it yet: the @model tier records it per trial (ADR-0066). */
 export type Settlement = {
   submissionId: string;
   outcome: SettlementOutcome;
   error?: SettlementError;
+  usage?: SubmissionUsage;
 };
 
 /** Where a chunk sits on the durable stream. Ordering only (`batch`, then `index`); the Harness

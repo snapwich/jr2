@@ -205,10 +205,10 @@ test("renderMessage: the paragraph after a signed push prints whole in its pick'
   assert.match(line!, /Allowed now: `mcp__jr2__publish`, `mcp__jr2__finish`\.$/);
 });
 
-test("attachPrinter: completed messages print [agent]-prefixed atomic lines; nothing else does", () => {
+test("attachPrinter: completed messages print atomic lines under [agent] [iid]; nothing else does", () => {
   const harness = fakeHarness();
   const { out, text } = collector();
-  attachPrinter(harness, "coder", out);
+  attachPrinter(harness, "coder", "run-1/root/coder", out);
 
   harness.emit({ type: "message_end", message: user("fix the bug") });
   // Deltas are live progress, never printed — a line is atomic.
@@ -241,8 +241,14 @@ test("attachPrinter: completed messages print [agent]-prefixed atomic lines; not
 
   assert.equal(
     text(),
-    // A multi-line body carries its label on the first line only — the shim's exact format.
-    ["[coder] [prompt] fix the bug", "[coder] [text] line one", "[coder] line two", "[coder] [bash] npm test"]
+    // A multi-line body carries its label on the first line only, and every line carries the Agent
+    // and the Instance ID (ADR-0023).
+    [
+      "[coder] [run-1/root/coder] [prompt] fix the bug",
+      "[coder] [run-1/root/coder] [text] line one",
+      "[coder] [run-1/root/coder] line two",
+      "[coder] [run-1/root/coder] [bash] npm test",
+    ]
       .map((line) => line + "\n")
       .join(""),
   );
@@ -253,7 +259,7 @@ test("attachPrinter: completed messages print [agent]-prefixed atomic lines; not
 test("attachPrinter: a Menu call prints, then its answer under the pick's name, as the model read it", () => {
   const harness = fakeHarness();
   const { out, text } = collector();
-  attachPrinter(harness, "coder", out);
+  attachPrinter(harness, "coder", "run-1/root/coder", out);
 
   harness.emit({ type: "message_end", message: assistant([toolCall(menuToolName("publish"), {})]) });
   // pi emits a call's result twice: as the execution's end, and as the message the model reads.
@@ -269,7 +275,11 @@ test("attachPrinter: a Menu call prints, then its answer under the pick's name, 
 
   assert.equal(
     text(),
-    ["[coder] [publish] {}", "[coder] [publish answer] Delivered.", "[coder] Allowed now: none."]
+    [
+      "[coder] [run-1/root/coder] [publish] {}",
+      "[coder] [run-1/root/coder] [publish answer] Delivered.",
+      "[coder] [run-1/root/coder] Allowed now: none.",
+    ]
       .map((line) => line + "\n")
       .join(""),
   );
@@ -278,7 +288,7 @@ test("attachPrinter: a Menu call prints, then its answer under the pick's name, 
 test("attachPrinter: the returned unsubscribe detaches the printer", () => {
   const harness = fakeHarness();
   const { out, text } = collector();
-  const unsubscribe = attachPrinter(harness, "coder", out);
+  const unsubscribe = attachPrinter(harness, "coder", "run-1/root/coder", out);
   unsubscribe();
   harness.emit({ type: "message_end", message: user("anyone there?") });
   assert.equal(text(), "");

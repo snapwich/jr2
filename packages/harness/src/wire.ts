@@ -145,12 +145,21 @@ export const SUBMISSION_RUNAWAY = "runaway";
 export const SUBMISSION_HARNESS_RESTARTED = "harness_restarted";
 export const SUBMISSION_RESTARTED_MESSAGE = "Harness restarted before this Submission settled (ADR-0031)";
 
+/** What a Submission's model answers spent, summed over its assistant messages: the tokens as the
+ * provider reported them, and the cost in US dollars that pi-ai computes from its catalog rates
+ * (`usage.cost.total`). A model with no rates, as a `harness.provider` model is, costs 0. */
+export type SubmissionUsage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+
 /** One settled Submission, in the shape `?view=history`'s `settlements` reports — the asserted
- * contract (the mechanics/@kind tiers assert exact counts and outcomes). */
+ * contract (the mechanics/@kind tiers assert exact counts and outcomes). `usage` is additive: a
+ * Submission carries it once a model answer reported its usage. One whose model never answered
+ * carries none, and so does one lost with a restarted Harness, whose spend was lost with it
+ * (ADR-0027). */
 export type Settlement = {
   submissionId: string;
   outcome: SettlementOutcome;
   error?: SettlementError;
+  usage?: SubmissionUsage;
 };
 
 /** A completed conversation message, as `?view=history`'s best-effort `messages` reports it. */

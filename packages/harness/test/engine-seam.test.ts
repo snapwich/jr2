@@ -102,7 +102,7 @@ test("a Turn runs on any EngineAdapter: the part it opens, the run it gives, the
   assert.match(runs[0]!.prompt, /^go\n/);
   assert.match(runs[0]!.systemPrompt, /^be brief/);
   assert.deepEqual(history.at(-1), { role: "assistant", text: "done" });
-  assert.match(printed.join(""), /\[coder\] \[text\] done/);
+  assert.match(printed.join(""), /\[coder\] \[i\] \[text\] done/);
 });
 
 test("the pi adapter runs the calls of one model answer one at a time, in the model's order (ADR-0027)", async () => {

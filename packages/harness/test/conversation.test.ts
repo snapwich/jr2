@@ -387,3 +387,23 @@ test("a guard kill after the sweep settled the running Submission is not on its 
     ["submission-settled"],
   );
 });
+
+test("a settlement carries the sum of what its run reported spent; one whose model never answered carries none (ADR-0027)", async () => {
+  const answers = [
+    { input: 40, output: 20, cacheRead: 60, cacheWrite: 0, cost: 0.0015 },
+    { input: 50, output: 30, cacheRead: 90, cacheWrite: 10, cost: 0.0025 },
+  ];
+  const conversation = new Conversation("coder", "iid-1", async (submission, _signal, seat) => {
+    if (submission.message === "spend") for (const usage of answers) seat?.spent(usage);
+  });
+  const spent = conversation.admit({ message: "spend", definition: CODER });
+  const quiet = conversation.admit({ message: "quiet", definition: CODER });
+  await conversation.idle();
+  const [first, second] = conversation.historyView().settlements;
+  assert.equal(first!.submissionId, spent.submissionId);
+  assert.deepEqual(first!.usage, { input: 90, output: 50, cacheRead: 150, cacheWrite: 10, cost: 0.004 });
+  assert.equal(second!.submissionId, quiet.submissionId);
+  assert.equal(second!.usage, undefined, "no model answer, no usage");
+  const streamed = conversation.updatesView("0").events.find((e) => e.type === "submission-settled");
+  assert.deepEqual(streamed?.type === "submission-settled" ? streamed.usage : undefined, first!.usage);
+});

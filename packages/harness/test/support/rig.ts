@@ -46,8 +46,13 @@ export type Turn = {
   reasoning?: string;
   /** The usage this response reports — Compaction's only lever (ADR-0036), since a scripted
    * transcript can never fill a real window. pi DERIVES its total from the parts rather than
-   * reading `total_tokens`, so the fabricated context size goes in `prompt_tokens`. */
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+   * reading `total_tokens`, so the fabricated context size goes in `prompt_tokens`. The cache's
+   * share of the prompt rides in `prompt_tokens_details`, as OpenAI reports it. */
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+  };
 };
 
 /** One request body, as the provider received it. `tools` is where the Menu is visible — the same bytes on every Turn (ADR-0029). */

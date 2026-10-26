@@ -218,7 +218,12 @@ kubectl -n <namespace> logs -f statefulset/jr2-instance-harness -c harness
 ```
 
 The Instance Harness runs the Turns of all the Menu-only Agents of the Instance. Thus its log can hold the lines of more
-than one run.
+than one run. Each line of a conversation holds its Instance ID, which starts with the run id. To read the lines of one
+run, keep the lines that hold `[<run id>/`:
+
+```sh
+kubectl -n <namespace> logs statefulset/jr2-instance-harness -c harness | grep -F '[<run id>/'
+```
 
 For an Agent that works in a Workspace, read the log of its Sandbox. Find the Sandbox with the full run id, as
 [Look inside a Sandbox](look-inside-a-sandbox.md) shows. The pod has the name of the Sandbox:
@@ -236,42 +241,43 @@ For example, this is the log of a run of the `task` Workflow of
 jr2 harness serving on :8080
 [run] [status] running · body: working
 [run] [status] running · body: working
-[coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
-[coder]
-[coder] Work in /work/target/jr2-task-19b49b58-2ea4-4d79-b100-49aad6e12013, on branch jr2/task-19b49b58-2ea4-4d79-b100-49aad6e12013 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder]
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] Work in /work/target/jr2-task-19b49b58-2ea4-4d79-b100-49aad6e12013, on branch jr2/task-19b49b58-2ea4-4d79-b100-49aad6e12013 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
 …
-[coder] [thinking] The user wants me to run `node bin/greet.js` inside `docs/intro/repo` directory. Let me navigate there and run it.
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [thinking] The user wants me to run `node bin/greet.js` inside `docs/intro/repo` directory. Let me navigate there and run it.
 …
-[coder] [bash] cd docs/intro/repo && node bin/greet.js
-[coder] [thinking] The script printed "hello, world". I should now finish with this summary.
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [bash] cd docs/intro/repo && node bin/greet.js
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [thinking] The script printed "hello, world". I should now finish with this summary.
 …
-[coder] [finish] {"summary":"Ran `node bin/greet.js` in docs/intro/repo, which printed: hello, world"}
-[coder] [finish answer] Delivered "finish" to the workflow (delivery afe6340b-fe10-4819-b545-8ebd1b9a3964). The workflow consumed it and moved on: your turn is over.
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [finish] {"summary":"Ran `node bin/greet.js` in docs/intro/repo, which printed: hello, world"}
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [finish answer] Delivered "finish" to the workflow (delivery afe6340b-fe10-4819-b545-8ebd1b9a3964). The workflow consumed it and moved on: your turn is over.
 [run] [status] running · body: review
 ```
 
 The thinking, the calls and the text are the words of the model, so your log is different. Your ids are different too.
 
-Each line starts with the name of the Agent in brackets. The first line of each message then has a label in brackets.
-The next lines of the same message have no label:
+Each line of a conversation starts with the name of the Agent in brackets, then the
+[Instance ID](../reference/glossary.md#instance-id) of the conversation in brackets. The Instance ID starts with the run
+id. The first line of each message then has a label in brackets. The next lines of the same message have no label:
 
-| Line                                | What it shows                                                                                                                                                                    |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `[<agent>] [prompt] <text>`         | A message that the model reads: the prompt of the Turn, or a message that jr2 adds to the Turn.                                                                                  |
-| `[<agent>] [thinking] <text>`       | The thinking of the model.                                                                                                                                                       |
-| `[<agent>] [text] <text>`           | The text of the model.                                                                                                                                                           |
-| `[<agent>] [<call>] <input>`        | A call of a [Working tool](../reference/glossary.md#working-tools), or a pick from the Menu. `<input>` is a path for read, write and edit, the command for `bash`, or else JSON. |
-| `[<agent>] [<pick> answer] <text>`  | The answer that the model got for a pick from its Menu.                                                                                                                          |
-| `[<agent>] [<pick> error] <text>`   | An answer to a pick that the model reads as an error, such as a refusal.                                                                                                         |
-| `[<agent>] [compacted] <text>`      | The Harness made the context of the conversation smaller: `context <before> → ~<after> tokens (window <window>)`.                                                                |
-| `[<agent>] [thinking level] <text>` | The model has no thinking level of the name that the Turn asked for, and the line names the level that the model ran at. The Harness prints it one time for each Turn.           |
+| Line                                        | What it shows                                                                                                                                                                    |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[<agent>] [<iid>] [prompt] <text>`         | A message that the model reads: the prompt of the Turn, or a message that jr2 adds to the Turn.                                                                                  |
+| `[<agent>] [<iid>] [thinking] <text>`       | The thinking of the model.                                                                                                                                                       |
+| `[<agent>] [<iid>] [text] <text>`           | The text of the model.                                                                                                                                                           |
+| `[<agent>] [<iid>] [<call>] <input>`        | A call of a [Working tool](../reference/glossary.md#working-tools), or a pick from the Menu. `<input>` is a path for read, write and edit, the command for `bash`, or else JSON. |
+| `[<agent>] [<iid>] [<pick> answer] <text>`  | The answer that the model got for a pick from its Menu.                                                                                                                          |
+| `[<agent>] [<iid>] [<pick> error] <text>`   | An answer to a pick that the model reads as an error, such as a refusal.                                                                                                         |
+| `[<agent>] [<iid>] [compacted] <text>`      | The Harness made the context of the conversation smaller: `context <before> → ~<after> tokens (window <window>)`.                                                                |
+| `[<agent>] [<iid>] [thinking level] <text>` | The model has no thinking level of the name that the Turn asked for, and the line names the level that the model ran at. The Harness prints it one time for each Turn.           |
 
 The log of a Sandbox also tells the story of its run, in lines that start with `[run]`. `[run] [status] <state>` gives
 the state of the run, then the state of each Machine that it invokes, separated by `·`, such as
 `running · body: working`. When the run ends, the line gives its status. `[run] [emit] <type> <payload>` gives an Emit.
 A Turn that runs in a different Harness shows only as `[<agent>] [admitted] <prompt>` and
 `[<agent>] [pick] <pick> <input>`. `<input>` is the JSON of the input of the pick, and it is absent for a pick with no
-input.
+input. The lines of the story of the run have no Instance ID.
 
 The Harness does not print the result of a Working tool. For example, it does not print the text of a file that the
 Agent read, or the output of a command that the Agent ran.

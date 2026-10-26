@@ -126,23 +126,26 @@ export function renderThinkingLevel(model: Model<Api>, asked: string, ran: RanAt
   return `${head}; the provider chose the level`;
 }
 
-/** A conversation line's one shape: the Agent name, then a labelled body that may span lines.
- * Every writer goes through here, so the format has exactly one definition. */
-export function printLines(out: PrinterOut, agentName: string, bodies: string[]): void {
+/** A conversation line's one shape: the Agent name, the Instance ID, then a labelled body that may
+ * span lines (ADR-0023). Every writer goes through here, so the format has exactly one definition.
+ * The Instance ID tells apart the conversations of one Agent that share a pod log: the Instance
+ * Harness hosts the Menu-only Agents of every run. */
+export function printLines(out: PrinterOut, agentName: string, instanceId: string, bodies: string[]): void {
   for (const body of bodies) {
-    for (const line of body.split("\n")) out.write(`[${agentName}] ${line}\n`);
+    for (const line of body.split("\n")) out.write(`[${agentName}] [${instanceId}] ${line}\n`);
   }
 }
 
-/**
- * Subscribe the conversation printer to the engine's event stream. Every line carries the Agent
- * name alone — the minted iid mostly restates it (ADR-0015), and per-conversation diagnostics
- * live elsewhere. Returns the unsubscribe.
- */
-export function attachPrinter(source: PrinterSource, agentName: string, out: PrinterOut = process.stdout): () => void {
+/** Subscribe the conversation printer to the engine's event stream. Returns the unsubscribe. */
+export function attachPrinter(
+  source: PrinterSource,
+  agentName: string,
+  instanceId: string,
+  out: PrinterOut = process.stdout,
+): () => void {
   return source.subscribe((event) => {
     if (event.type !== "message_end") return;
-    printLines(out, agentName, renderMessage(event.message));
+    printLines(out, agentName, instanceId, renderMessage(event.message));
   });
 }
 
@@ -182,8 +185,9 @@ function compactStatus(value: unknown, children: unknown): string {
 /**
  * One structured feed event → its narrative lines, in the conversation's own idiom: a label per
  * line, no ANSI, payloads under the same bound as tool inputs. Run-scoped events carry the `run`
- * label; Turn markers carry the Agent's name, so a remote decisioner's admission and pick read
- * exactly like a local turn's lines. Taken defensively (the payload is wire data): an event this
+ * label; Turn markers carry the Agent's name, so a remote decisioner's admission and pick sit
+ * beside its Agent's lines. They carry no Instance ID: the conversation a marker stands for prints
+ * in another log (ADR-0023). Taken defensively (the payload is wire data): an event this
  * renderer does not recognize prints nothing — the log is a courtesy view, never a validator.
  */
 export function renderEchoEvent(event: EchoEvent | unknown): string[] {

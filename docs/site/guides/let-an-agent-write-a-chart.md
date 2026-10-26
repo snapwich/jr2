@@ -68,17 +68,18 @@ the Chart inside `running`. The Chart of each run is different, because the plan
 
 When the door refuses a Chart, the answer to the pick holds the report. The log of the
 [Instance Harness](../reference/glossary.md#instance-harness) shows each answer. Replace `<namespace>` with the
-namespace of your Instance:
+namespace of your Instance, and `<run id>` with the full run id. The log holds the lines of each run of a Menu-only
+Agent, and the first `grep` keeps the lines of your run:
 
 ```sh
-kubectl -n <namespace> logs statefulset/jr2-instance-harness -c harness | grep -F '[run_chart answer]'
+kubectl -n <namespace> logs statefulset/jr2-instance-harness -c harness | grep -F '[<run id>/' | grep -F '[run_chart answer]'
 ```
 
 For example, in one run with the model of each tab, the first Chart of the planner gave a prompt to the Gate. The door
 refused it:
 
 ```text
-[planner] [run_chart answer] Delivered "run_chart" to the workflow (delivery ede62e99-7596-41fe-bda3-c6dcc194517f). The workflow took it and is back in the state that asked for this turn. Its answer: the output of `body`: {"outcome":"refused","report":["states.approve.invoke.input.prompt: a Gate's input takes gate and meta only; `gate` is the kit's Gate, which waits for an outside answer (a human, a webhook), not an Agent's Turn"]}. Your turn is not over. Allowed now: `mcp__jr2__run_chart`.
+[planner] [<run id>/root/planner] [run_chart answer] Delivered "run_chart" to the workflow (delivery ede62e99-7596-41fe-bda3-c6dcc194517f). The workflow took it and is back in the state that asked for this turn. Its answer: the output of `body`: {"outcome":"refused","report":["states.approve.invoke.input.prompt: a Gate's input takes gate and meta only; `gate` is the kit's Gate, which waits for an outside answer (a human, a webhook), not an Agent's Turn"]}. Your turn is not over. Allowed now: `mcp__jr2__run_chart`.
 ```
 
 The planner writes a different Chart in each run. Thus your report can be different, and the door can accept the first

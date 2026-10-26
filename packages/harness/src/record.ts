@@ -182,6 +182,7 @@ export function readRecord(dir: string): RecordedConversation {
               submissionId: event.submissionId,
               outcome: event.outcome,
               ...(event.error ? { error: event.error } : {}),
+              ...(event.usage ? { usage: event.usage } : {}),
             },
           ]
         : [],

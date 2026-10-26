@@ -854,8 +854,8 @@ function pickAnswers(iid: string, agent = AGENT): string[] {
   const answers: string[] = [];
   let open = false;
   for (const line of (printed.get(iid) ?? "").split("\n")) {
-    if (!line.startsWith(`[${agent}] `)) continue;
-    const text = line.slice(`[${agent}] `.length);
+    if (!line.startsWith(`[${agent}] [${iid}] `)) continue;
+    const text = line.slice(`[${agent}] [${iid}] `.length);
     if (/^\[[^\]]+ (answer|error)\] /.test(text)) {
       answers.push(text);
       open = true;
@@ -919,7 +919,12 @@ test("step boundary: a Gate's answer during a run of Working-tool calls is resta
   assert.equal(said.length, 1);
   assert.equal(said[0]!.role, "user");
   assert.equal(printed.get(iid)!.split(PUSH_MARK).length - 1, 1, "printed once");
-  assert.match(printed.get(iid)!, /\[reviewer\] \[prompt\] <jr2-turn>\n\[reviewer\] The workflow's state changed/);
+  assert.ok(
+    printed
+      .get(iid)!
+      .includes(`[reviewer] [${iid}] [prompt] <jr2-turn>\n[reviewer] [${iid}] The workflow's state changed`),
+    printed.get(iid) ?? "",
+  );
 });
 
 test("step boundary: the Agent's OWN pick changed the mode — its receipt said so, and nothing is restated", async () => {
@@ -1139,7 +1144,8 @@ test("ask-again rule: stop, wake, a pick back out of the mode and into it again,
   const said = (printed.get(iid) ?? "")
     .split("\n")
     .flatMap((line) => {
-      const m = /^\[reviewer\] \[([^\]]+)\] ?(.*)$/.exec(line);
+      if (!line.startsWith(`[reviewer] [${iid}] `)) return [];
+      const m = /^\[([^\]]+)\] ?(.*)$/.exec(line.slice(`[reviewer] [${iid}] `.length));
       if (!m) return [];
       if (m[1] === "prompt") return m[2]!.startsWith("Your previous turn ended") ? ["(nudge)"] : [];
       return /^[a-z][a-z0-9_]*$/.test(m[1]!) && menu.includes(m[1]!) ? [m[1]!] : [];
@@ -1459,16 +1465,16 @@ test("a Menu call an abort cut while the model was still writing it is answered 
   assert.equal(JSON.stringify(answered?.content ?? ""), JSON.stringify(unsent), JSON.stringify(answered));
   assert.doesNotMatch(JSON.stringify(sent), /This pick reached the workflow/);
 
-  const answerLine = `[${AGENT}] [review_verdict answer] ${unsent}`;
+  const answerLine = `[${AGENT}] [${iid}] [review_verdict answer] ${unsent}`;
   const lines = () => (printed.get(iid) ?? "").split("\n");
-  const call = lines().findIndex((l) => l.startsWith(`[${AGENT}] [review_verdict] `));
+  const call = lines().findIndex((l) => l.startsWith(`[${AGENT}] [${iid}] [review_verdict] `));
   const answer = lines().indexOf(answerLine);
-  const prompt = lines().findIndex((l) => l.startsWith(`[${AGENT}] [prompt] Now summarize.`));
+  const prompt = lines().findIndex((l) => l.startsWith(`[${AGENT}] [${iid}] [prompt] Now summarize.`));
   assert.ok(
     call !== -1 && call < answer && answer < prompt,
     `call, its answer, then the prompt:\n${lines().join("\n")}`,
   );
-  const answers = () => lines().filter((l) => l.startsWith(`[${AGENT}] [review_verdict answer]`));
+  const answers = () => lines().filter((l) => l.startsWith(`[${AGENT}] [${iid}] [review_verdict answer]`));
   assert.deepEqual(answers(), [answerLine], "printed once");
 
   // A process after it: the history still answers the call with the same text, and nothing prints.
@@ -1779,6 +1785,39 @@ test("history settlements from the real loop match the wire contract: outcomes a
   );
 });
 
+test("a settlement carries the summed usage of its Submission's model answers, on the stream and in the history view (ADR-0027)", async () => {
+  provider.reset([
+    {
+      ...bashCall("u1", "echo one"),
+      usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 60 } },
+    },
+    {
+      text: "Done.",
+      usage: {
+        prompt_tokens: 150,
+        completion_tokens: 30,
+        prompt_tokens_details: { cached_tokens: 90, cache_write_tokens: 10 },
+      },
+    },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/usage";
+
+  const admission = await admit(iid, "Spend some tokens.");
+  const settlement = await settled(iid, admission);
+  assert.equal(settlement.outcome, "completed");
+  assert.equal(provider.calls.length, 2, "two model answers");
+  // pi-ai's input is the prompt less its cache read and cache write; the rig's model has no rates.
+  const usage = { input: 40 + 50, output: 20 + 30, cacheRead: 60 + 90, cacheWrite: 10, cost: 0 };
+  assert.deepEqual(settlement.usage, usage);
+  assert.deepEqual((await history(iid)).settlements.at(-1)?.usage, usage, "the history view carries the same sum");
+
+  // The next Submission's settlement carries its own answers only.
+  provider.reset([{ text: "Again." }]);
+  const next = await admit(iid, "Once more.");
+  assert.deepEqual((await settled(iid, next)).usage, { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0 });
+});
+
 test('a provider that refuses the load is named: the failed settlement reads "provider limit" (ADR-0064)', async () => {
   // With `maxRetries: 0` the first refusal is the one left after the Harness's retries. Quota
   // exhaustion is the same 429 status, but pi does not call it retryable, so it keeps its own words.
@@ -1793,6 +1832,7 @@ test('a provider that refuses the load is named: the failed settlement reads "pr
   assert.equal(limited.outcome, "failed");
   assert.equal(limited.error?.type, "submission_failed", "an infra fault, not a new class (ADR-0016)");
   assert.match(limited.error?.message ?? "", /^provider limit \(fake\/model-x\): 429\b.*Rate limit reached/);
+  assert.equal(limited.usage, undefined, "no model answer, no usage");
 
   const quota = await settled(iid, await admit(iid, "two"));
   assert.equal(quota.outcome, "failed");
@@ -1820,24 +1860,27 @@ test("the printer wrote the conversation: prompts, text, tool calls, each pick's
 
   const log = printed.get(iid) ?? "";
   const lines = log.split("\n");
-  assert.ok(lines.includes(`[${AGENT}] [prompt] Review the diff.`), `no prompt line in:\n${log}`);
-  assert.ok(lines.includes(`[${AGENT}] [text] Here is my verdict.`), `no assistant text line in:\n${log}`);
+  assert.ok(lines.includes(`[${AGENT}] [${iid}] [prompt] Review the diff.`), `no prompt line in:\n${log}`);
+  assert.ok(lines.includes(`[${AGENT}] [${iid}] [text] Here is my verdict.`), `no assistant text line in:\n${log}`);
   assert.ok(
-    lines.includes(`[${AGENT}] [review_verdict] {"verdict":"approved"}`),
+    lines.includes(`[${AGENT}] [${iid}] [review_verdict] {"verdict":"approved"}`),
     `no bare-named tool-call line in:\n${log}`,
   );
-  assert.ok(lines.includes(`[${AGENT}] [text] All done.`), `no second-turn text line in:\n${log}`);
+  assert.ok(lines.includes(`[${AGENT}] [${iid}] [text] All done.`), `no second-turn text line in:\n${log}`);
   // The pick's answer prints after its call, the text the model read back (the provider saw it).
-  const answer = lines.find((line) => line.startsWith(`[${AGENT}] [review_verdict answer] `));
+  const answer = lines.find((line) => line.startsWith(`[${AGENT}] [${iid}] [review_verdict answer] `));
   assert.ok(answer, `no answer line in:\n${log}`);
-  const text = answer.slice(`[${AGENT}] [review_verdict answer] `.length);
+  const text = answer.slice(`[${AGENT}] [${iid}] [review_verdict answer] `.length);
   assert.match(text, /^Delivered "review_verdict" to the workflow/);
   assert.ok(JSON.stringify(provider.calls).includes(JSON.stringify(text).slice(1, -1)), "the text the model read");
   assert.ok(
-    lines.indexOf(answer) > lines.indexOf(`[${AGENT}] [review_verdict] {"verdict":"approved"}`),
+    lines.indexOf(answer) > lines.indexOf(`[${AGENT}] [${iid}] [review_verdict] {"verdict":"approved"}`),
     "after its call",
   );
-  assert.ok(lines.includes(`[${AGENT}] [bash] echo V09SS0lORy1SRVNVTFQ= | base64 -d`), `no bash line in:\n${log}`);
+  assert.ok(
+    lines.includes(`[${AGENT}] [${iid}] [bash] echo V09SS0lORy1SRVNVTFQ= | base64 -d`),
+    `no bash line in:\n${log}`,
+  );
   assert.ok(JSON.stringify(provider.calls).includes("WORKING-RESULT"), "the command ran, and the model read it");
   assert.ok(!log.includes("WORKING-RESULT"), "a Working tool's RESULT is a boundary, never printed (ADR-0023)");
 });
@@ -1954,7 +1997,7 @@ test("a turn compacts MID-flight: the cut lands between two requests of ONE Subm
   const compacted = log.split("\n").filter((line) => line.includes("[compacted]"));
   assert.equal(compacted.length, 1, `exactly one Compaction line in:\n${log}`);
   const numbers = new RegExp(
-    `^\\[${AGENT}\\] \\[compacted\\] context (\\d+) → ~(\\d+) tokens \\(window 200000\\)$`,
+    `^\\[${AGENT}\\] \\[${iid}\\] \\[compacted\\] context (\\d+) → ~(\\d+) tokens \\(window 200000\\)$`,
   ).exec(compacted[0]!);
   assert.ok(numbers, `the Compaction line's shape in:\n${log}`);
   assert.match(numbers[1]!, /^190\d{3}$/, "before is the provider count that crossed the reserve");
@@ -2384,12 +2427,12 @@ test("every call that starts is a step: an invalid pick and a blocked second pic
 });
 
 /** The printed lines of one conversation (ADR-0023) whose label is in `labels`, without the Agent
- * prefix: the order a reader of the log, and the `@model` tier's `answersIn`, rely on. */
+ * and Instance ID prefix: the order a reader of the log, and the `@model` tier's `answersIn`, rely on. */
 function printedOrder(iid: string, agent: string, labels: RegExp): string[] {
   return (printed.get(iid) ?? "")
     .split("\n")
-    .filter((line) => line.startsWith(`[${agent}] [`))
-    .map((line) => line.slice(`[${agent}] `.length))
+    .filter((line) => line.startsWith(`[${agent}] [${iid}] [`))
+    .map((line) => line.slice(`[${agent}] [${iid}] `.length))
     .filter((line) => labels.test(line));
 }
 
@@ -2569,13 +2612,13 @@ test("a stopping Harness cuts at once a Turn that waits only on its pick's answe
   // The printed conversation (ADR-0023): the cut call's answer is jr2's text in the rebuilt
   // history, and it prints once, after the call and before the re-admission's prompt — the text
   // the model read on that call.
-  const cutAnswer = `[${DECISIONER}] [run_audit answer] ${cutPickResult("mcp__jr2__run_audit")}`;
+  const cutAnswer = `[${DECISIONER}] [${iid}] [run_audit answer] ${cutPickResult("mcp__jr2__run_audit")}`;
   const answerLines = () =>
-    (printed.get(iid) ?? "").split("\n").filter((l) => l.startsWith(`[${DECISIONER}] [run_audit `));
+    (printed.get(iid) ?? "").split("\n").filter((l) => l.startsWith(`[${DECISIONER}] [${iid}] [run_audit `));
   const lines = (printed.get(iid) ?? "").split("\n");
-  const call = lines.indexOf(`[${DECISIONER}] [run_audit] {"verdict":"go"}`);
+  const call = lines.indexOf(`[${DECISIONER}] [${iid}] [run_audit] {"verdict":"go"}`);
   const answer = lines.indexOf(cutAnswer);
-  const prompt = lines.findIndex((l) => l.startsWith(`[${DECISIONER}] [prompt] Your previous turn was cut`));
+  const prompt = lines.findIndex((l) => l.startsWith(`[${DECISIONER}] [${iid}] [prompt] Your previous turn was cut`));
   assert.ok(call !== -1 && call < answer && answer < prompt, `call, its answer, then the prompt:\n${lines.join("\n")}`);
   assert.ok(JSON.stringify(cut).includes(JSON.stringify(cutPickResult("mcp__jr2__run_audit")).slice(1, -1)));
   assert.deepEqual(answerLines(), [cutAnswer], "printed once");
@@ -2763,9 +2806,12 @@ test("the thinking level line: a level the model lacks names the level the Harne
   // The custom provider's model has no `xhigh`: the OpenAI-completions adapter clamps it to `high`.
   assert.equal((await settled(iid, await admit(iid, "one", { thinkingLevel: "xhigh" }))).outcome, "completed");
   assert.equal(provider.calls[0]!.reasoning_effort, "high");
-  assert.match(
+  assert.ok(
+    (printed.get(iid) ?? "").includes(
+      `[reviewer] [${iid}] [thinking level] fake/model-x has no level "xhigh"; the Harness sent "high"\n` +
+        `[reviewer] [${iid}] [text] Deep.`,
+    ),
     printed.get(iid) ?? "",
-    /\[reviewer\] \[thinking level\] fake\/model-x has no level "xhigh"; the Harness sent "high"\n\[reviewer\] \[text\] Deep\./,
   );
   const before = (printed.get(iid) ?? "").length;
   assert.equal((await settled(iid, await admit(iid, "two", { thinkingLevel: "high" }))).outcome, "completed");
@@ -2797,9 +2843,12 @@ test("the thinking level line: Claude Sonnet 5.5 at off names the effort that th
   const sent = anthropicGateway.seen.slice(before);
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0]!.body.output_config, { effort: "high" });
-  assert.match(
+  assert.ok(
+    (printed.get(iid) ?? "").includes(
+      `[reviewer] [${iid}] [thinking level] anthropic/claude-sonnet-5-5 has no level "off"; ` +
+        `the Harness sent effort "high"\n[reviewer] [${iid}] [text] pong`,
+    ),
     printed.get(iid) ?? "",
-    /\[reviewer\] \[thinking level\] anthropic\/claude-sonnet-5-5 has no level "off"; the Harness sent effort "high"\n\[reviewer\] \[text\] pong/,
   );
 });
 
@@ -3011,7 +3060,7 @@ test("an abort between two calls of one model answer: the call after it never st
   for (const id of ["call_t", "call_f"]) assert.equal(toolResultText(provider.calls[0], id), unrunResult());
   // A Working tool's result is never printed (ADR-0023); the pick's answer prints once.
   const answers = (printed.get(iid) ?? "").split("\n").filter((line) => line.includes(unrunResult()));
-  assert.deepEqual(answers, [`[${AGENT}] [finish error] ${unrunResult()}`], printed.get(iid) ?? "");
+  assert.deepEqual(answers, [`[${AGENT}] [${iid}] [finish error] ${unrunResult()}`], printed.get(iid) ?? "");
 });
 
 test("jr2 is not pi: a request names no attribution, even to a base URL that pi-ai reads as OpenRouter", async () => {
