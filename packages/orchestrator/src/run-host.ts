@@ -2819,6 +2819,10 @@ export class RunHost {
       ...(def.assembly !== undefined ? { assembly: def.assembly } : {}),
       table: this.table,
       sandbox: this.sandbox,
+      heldSandboxes: () => {
+        const run = this.runs.get(record.runId);
+        return new Set(run ? runSandboxes(run.actor, record.runId, { placing: true }) : []);
+      },
       instanceHarness: this.instanceHarness,
       ...(this.harnessBearer ? { harnessBearer: this.harnessBearer } : {}),
       ...(this.effector ? { effector: this.effector } : {}),
@@ -3114,8 +3118,7 @@ export class RunHost {
             queueMicrotask(() => {
               const sandboxes = runSandboxes(source, record.runId);
               stopTree(source);
-              const run = this.runs.get(record.runId);
-              const held = new Set(run ? runSandboxes(run.actor, record.runId, { placing: true }) : []);
+              const held = this.runs.get(record.runId)?.binding.heldSandboxes?.() ?? new Set<string>();
               const ended = sandboxes.filter((name) => !held.has(name));
               void this.destroySandboxes(record.runId, ended, "the end of the failed Machine");
             });

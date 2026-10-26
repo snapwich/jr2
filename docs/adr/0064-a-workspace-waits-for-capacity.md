@@ -33,7 +33,10 @@ Workspaces for the Instance (R4), and concurrent Turns per model provider (R5)?
 - **The Lease covers the Sandbox from its write to its teardown**, in every state, so the idle GC reaps only what the
   Orchestrator has abandoned (ADR-0001).
 - **Delete what never ran; keep what ran.** A Sandbox whose wait ends without a node — a parent `after`, a stopped run,
-  a faulted run — is deleted at once: nothing on it can be inspected, and left alone it could take a node later. A
+  a faulted run — is deleted at once: nothing on it can be inspected, and left alone it could take a node later. The
+  delete does not touch a name that a live Workspace of the run holds then: a parent that re-enters the state, or
+  invokes the same Machine again, gives its new Workspace the same invoke id and so the same name, and that Workspace
+  has placed it again ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)). A
   Sandbox that was placed and then faulted keeps ADR-0021's rule: it stays inspectable (logs, `jr2 ssh`) and ages out at
   the idle timeout.
 - **jr2 caps nothing of its own.** Not live Workspaces (R4), not concurrent Turns per provider (R5). See the options.

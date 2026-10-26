@@ -1189,7 +1189,10 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
    * delete rides the abort, after any write in flight has settled. A wait that fails on its own —
    * the Sandbox Lost before its node, a write that half landed — is the same end: the delete comes
    * before the fault, and the fault carries the reason. The host stopping the run for a restart is
-   * not an end: the restored run re-enters `placing` and keeps its place.
+   * not an end: the restored run re-enters `placing` and keeps its place. Nor is a name that a live
+   * Workspace of the run holds when the delete would run: a parent that re-enters the state, or
+   * catches a Failure and invokes the same Machine again, gives its new Workspace the same invoke id,
+   * and so the same name, which that Workspace has placed again by then (ADR-0073).
    */
   const place = fromPromise<
     { bindings: Record<string, ResolvedBinding> },
@@ -1261,7 +1264,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
         if (binding.hostStopping) return;
         void placed
           .catch(() => {})
-          .then(() => port.destroy(name))
+          .then(() => (binding.heldSandboxes?.().has(name) ? undefined : port.destroy(name)))
           .catch(() => {}); // a delete that fails leaves the CR to the idle GC, as ever
       },
       { once: true },

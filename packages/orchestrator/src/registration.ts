@@ -582,6 +582,13 @@ export type RunBinding = {
    */
   hostStopping?: boolean;
   /**
+   * The Sandbox names that a live Workspace of this run holds now, a Workspace in `placing` too
+   * (ADR-0064, ADR-0073). A delete that runs after a stop leaves these alone: a parent that invokes
+   * the same Machine again gives its new Workspace the same invoke id, and so the same name. Absent
+   * outside a RunHost: no name is held.
+   */
+  heldSandboxes?: () => ReadonlySet<string>;
+  /**
    * Every reply since the pick that `machine`'s Agent has outstanding, or is delivering now, oldest
    * first (ADR-0024) — what an `answer` action reads as its `chain` (ADR-0067). `seat` is the place
    * the action runs from: an Agent's state, and then only that Agent's pick counts; or `null`, a

@@ -1638,6 +1638,86 @@ test("a parent that catches a Failure and invokes the same Machine again keeps t
   assert.deepEqual(destroyed(sandbox), [name]);
 });
 
+test("a parent that catches a Failure while the old Workspace is in `placing` keeps the Sandbox of its retry (ADR-0064, ADR-0073)", async () => {
+  // The old Workspace's own delete rides the abort of its wait, after the write in flight settles. By
+  // then the retry has placed the same name again, so the delete leaves it.
+  const inner = jr2Setup({
+    events: [approveDef],
+    actors: {
+      other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+      stop: fail(),
+    },
+  }).createMachine({
+    id: "inner",
+    type: "parallel",
+    states: {
+      a: { invoke: { id: "F-2", src: "other" } },
+      b: {
+        initial: "working",
+        states: {
+          working: {
+            invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } },
+            on: { approve: "giving-up" },
+          },
+          "giving-up": { invoke: { src: "stop", input: { reason: "region b gave up" } } },
+        },
+      },
+    },
+  });
+  const outer = jr2Setup({ actors: { inner } }).createMachine({
+    id: "outer",
+    initial: "trying",
+    states: {
+      trying: {
+        invoke: {
+          id: "inner",
+          src: "inner",
+          onError: { guard: ({ event }) => isFailure(event.error), target: "trying", reenter: true },
+        },
+      },
+    },
+  });
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "outer", machine: outer, provide: () => ({}) });
+  const { runId } = await host.start("outer");
+  await waitFor(() => host.gates(runId).length === 1 && sandbox.waiting === 1);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  const name = workspaceName(runId, "F-2");
+  await waitFor(() => sandbox.calls.filter((c) => c === `place:${name}`).length === 2);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(destroyed(sandbox), [], "the retry holds the name");
+});
+
+test("placing: a parent that re-enters the state keeps the Sandbox of its new Workspace (ADR-0064)", async () => {
+  // A plain re-entry, with no Failure: the new Workspace has the same invoke id, so the same name.
+  const outer = jr2Setup({
+    actors: { other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }) },
+  }).createMachine({
+    id: "again",
+    initial: "trying",
+    context: { n: 0 },
+    states: {
+      trying: {
+        invoke: { id: "F-2", src: "other" },
+        after: {
+          30: { guard: ({ context }) => context.n === 0, target: "trying", reenter: true, actions: assign({ n: 1 }) },
+        },
+      },
+    },
+  });
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "again", machine: outer, provide: () => ({}) });
+  const { runId } = await host.start("again");
+  const name = workspaceName(runId, "F-2");
+  await waitFor(() => sandbox.calls.filter((c) => c === `place:${name}`).length === 2);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(destroyed(sandbox), [], "the re-entered Workspace holds the name");
+});
+
 test("a restart in `failing` replays the Failure: the delete runs again, and the same Failure ends the run (ADR-0073)", async () => {
   const store = await mkStore();
   const sandbox = new FakeSandbox();
