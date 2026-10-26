@@ -93,8 +93,10 @@ only, scoped to one workflow the caller can already name, and no store read-thro
 - **Kill-detection latency is untouched** and remains the ~5-minute Lease poll (ADR-0021). The feed reports what the
   Orchestrator believes; a workspace lost 4 minutes ago is still believed live, and now says so in real time. Lowering
   that interval, or watching Sandbox CRs, is a separate decision.
-- A body machine that ignores `workspace.lost` shows healthy on this feed for as long as it ignores it. The feed reports
-  the machine; it does not second-guess it.
+- A body machine cannot ignore `workspace.lost`: `workspace()` refuses a body with no route for it, and an event that no
+  transition takes faults the run
+  ([ADR-0074](0074-an-unrouted-mechanism-event-is-refused-at-load-and-faults-the-run.md)). The feed reports the machine;
+  it does not second-guess it.
 - The page has no reload button and no reload path for settled runs — by design, per the memory rule above.
 - `viz/store.js` exists so the client's logic is a pure reducer testable under `node:test`. The repo still has no jsdom
   and no browser driver, and this ADR is not an argument for adding one: the renderer is a pure function of

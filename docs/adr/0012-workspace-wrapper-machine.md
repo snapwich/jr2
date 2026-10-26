@@ -68,12 +68,14 @@ key, the secrets it does not name, the push credentials and the Worktree (ADR-00
 
 ## There is no retain policy: parking is retention
 
-Teardown fires **only when the body reaches a final state**. A body that needs its Sandbox kept alive — escalation, a
-human inspecting the worktree, a human-review gate — simply parks in a non-final state (typically holding a `gate`,
-ADR-0011). We considered and rejected an `onSettled → retain | destroy` policy knob: parking expresses retention with no
-new API, and keeps the run visibly "waiting" in `jr2 runs`. A parked run's Sandbox stays alive as long as the run does —
-each live workspace renews its own lease, and the operator reaps only Sandboxes whose lease has lapsed (abandonment, not
-parking — ADR-0001).
+Teardown fires **only when the body reaches a final state or fails**. A Failure from the body
+([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)) goes to a `failing` state,
+which runs the same `destroy` and then sends the Failure up unchanged; a defect goes up with no `onError`, and its
+Sandbox stays as evidence. A body that needs its Sandbox kept alive — escalation, a human inspecting the worktree, a
+human-review gate — simply parks in a non-final state (typically holding a `gate`, ADR-0011). We considered and rejected
+an `onSettled → retain | destroy` policy knob: parking expresses retention with no new API, and keeps the run visibly
+"waiting" in `jr2 runs`. A parked run's Sandbox stays alive as long as the run does — each live workspace renews its own
+lease, and the operator reaps only Sandboxes whose lease has lapsed (abandonment, not parking — ADR-0001).
 
 ## Commits leave via the workflow, never the workspace
 
@@ -95,5 +97,7 @@ the same contract as a temp directory.
   the host ledger, ADR-0016). Lost — reaped, deleted, or a replacement pod after an eviction or node loss — → the
   pod-local clone and any unpushed commits are gone, so silently re-provisioning would resume into an inconsistent world
   (tickets closed, commits vanished); instead the wrapper delivers a **`workspace.lost`** event into the body — same
-  channel as `agent.fault` — and the body's policy decides (route it to escalation, settle as lost, or choose to
-  re-provision and restart).
+  channel as `agent.fault` — and the body's policy decides (route it to escalation, fail the run, or choose to
+  re-provision and restart). The body must route it: `workspace()` refuses a body with a non-final state that has no
+  route on itself or an ancestor, and an event that no transition takes faults the run
+  ([ADR-0074](0074-an-unrouted-mechanism-event-is-refused-at-load-and-faults-the-run.md)).

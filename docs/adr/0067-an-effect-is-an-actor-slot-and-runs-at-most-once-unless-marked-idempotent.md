@@ -64,7 +64,10 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   selects from `transitions`, `always` and `initial`, and an `enqueueActions`'s `collect` — as ADR-0007's re-arm reads
   the timer table; raw-xstate tests that pin those shapes are the canary for an xstate bump. A child's error is no link,
   and by default the Agent is not told (ADR-0024); an author who wants it told writes `answer(...)` on the `onError`
-  route. An Effect never takes that route for an outcome: every outcome is output.
+  route. An Effect never takes that route for an outcome: every outcome is output. A Machine that decides from an
+  outcome that its work did not succeed fails with `fail()`
+  ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), whose Failure also
+  arrives on `onError`, at the invoke of a child Machine; `isFailure` tells it from a defect.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.

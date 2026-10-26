@@ -31,18 +31,22 @@ Next.js ships the same design: its docs as Markdown inside the `next` package, a
     is rejected because a route and the types it names are then on two pages, and one read shows all routes already. The
     Glossary and the Decisions are not generated, and this rule does not hold them: an ADR can be about 50 KB, and an
     Assistant reads the one ADR that a page links to.
-  - **The `AGENTS.md` block.** A compressed index of the bundle, and an instruction in four parts. jr2 is newer than
+  - **The `AGENTS.md` block.** A compressed index of the bundle, and an instruction in five parts. jr2 is newer than
     your training data, so read the bundled docs before you write a Machine or config. Start with the guide "Write a
     workflow" and the contents page of the Authoring surface. Read one page with each call of the file tool. Run
-    `npx --no jr2 check` before you give a change to the user. The two entry pages in one read are more than about 30
-    KB, and a file tool then shows only the start of the output. The check is in the block because `npm run typecheck`
-    loads no module. Thus it does not find a refusal of `createMachine`, `defineEvent` or `workspace()`. An Assistant
-    that may not run `jr2 up` gets those refusals only from `jr2 check` (ADR-0009). The command has `--no` because npx
-    with no TTY installs a missing package with no prompt. The package `jr2` on the npm registry is not jr2. With
-    `--no`, npx stops when the Instance has no local `jr2` bin, for example before `npm install`. `npm run check` also
-    does not fetch, but an Instance from an older scaffold has no `check` script. The index names each file of a
-    directory, but the Decisions folder and the Authoring surface folder each have one entry, which names the contents
-    page of the folder. Thus the line stays short.
+    `npx --no jr2 check` before you give a change to the user. A final state means that the work succeeded; when it did
+    not, invoke `fail()`, and do not throw to fail. The Failure rule is in the block because no refusal can teach it:
+    the walk cannot see that a final state means "this did not succeed", or that a promise throws only to fail, and in
+    the eval of [ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md) three of the
+    four trials wrote a failure that ended `done` or `error`. The two entry pages in one read are more than about 30 KB,
+    and a file tool then shows only the start of the output. The check is in the block because `npm run typecheck` loads
+    no module. Thus it does not find a refusal of `createMachine`, `defineEvent` or `workspace()`. An Assistant that may
+    not run `jr2 up` gets those refusals only from `jr2 check` (ADR-0009). The command has `--no` because npx with no
+    TTY installs a missing package with no prompt. The package `jr2` on the npm registry is not jr2. With `--no`, npx
+    stops when the Instance has no local `jr2` bin, for example before `npm install`. `npm run check` also does not
+    fetch, but an Instance from an older scaffold has no `check` script. The index names each file of a directory, but
+    the Decisions folder and the Authoring surface folder each have one entry, which names the contents page of the
+    folder. Thus the line stays short.
   - **The site**, on GitHub Pages. HTML for humans, and every page also at a `.md` URL, plus `llms.txt`, for tools that
     read over the network.
 - **The docs ride `@jr2/orchestrator`, not a package of their own.** The Kit version _is_ the `@jr2/orchestrator` the

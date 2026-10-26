@@ -53,24 +53,26 @@ composition and does not replace it. The two uses stay two mechanisms.
   is deferred.
 - **Two settlements, `started` by default, and every outcome is output.** `{ outcome: "started", run }` settles when the
   Orchestrator accepts the run; the watcher goes round again. `wait: true` settles
-  `{ outcome: "settled", run, status, output }` when that run ends, `status` in the store's own words (`done`, `error`,
-  `cancelled`, `lost`, `drifted`, [ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) and `output` the callee
-  Machine's, which `GET /runs/<id>` serves for a run that is no longer live from this decision on (a live run serves
-  `active` and no output). The slot's `timeout` bounds the whole Effect, the start alone or the start and the wait: 30 s
-  by default without `wait`, 10 min with it, counted from the intent row's first write, so a restore never starts the
-  bound over, and armed again in steps, so a bound past Node's 24.8-day timer holds. A run still live when it runs out
-  settles `status: "live"`, the status the run had when the Effect stopped waiting: in-process the run host says it; in
-  the Instance Effector the last poll must have read the run live, and a wait whose last poll got no answer is
-  `unknown`. In-process the run host tells the wait through a settle hook keyed by the run id, not by its hosting, so a
-  caller restored before its callee hears it when the callee settles, and hears `lost` or `drifted` when restore marks
-  it so; foreign, the Instance Effector polls `GET /runs/<id>` every 5 s as a long-running Effect, which it keeps across
-  an Orchestrator restart already, and a DELETE of the Effect ends that poll and never touches the run. No callback from
-  the callee: a callback needs the callee to hold its caller's address and a token for it, which inverts the trust. A
-  door refusal is OUTPUT, `{ outcome: "refused", status, report }`, with the door's status — 400 for bad input, 404 for
-  a name the current Assembly lacks, 409 for an unrunnable named Chart or a key another Workflow's run holds, 422 for a
-  Chart the door refuses, 413 for a start over the bytes an Effector reads, 0 when the Effector refused it before
-  anything was sent — as a Chart refusal is ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)): the body may
-  have come from a model, and the report must be able to reach it through the Chain. A target no replica could reach is
+  `{ outcome: "settled", run, status, output }` when that run ends, `status` in the store's own words (`done`, `failed`,
+  `error`, `cancelled`, `lost`, `drifted`, [ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)) and `output` the callee
+  Machine's (for `failed`, the Failure's `{ reason, detail }`,
+  [ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), which `GET /runs/<id>`
+  serves for a run that is no longer live from this decision on (a live run serves `active` and no output). The slot's
+  `timeout` bounds the whole Effect, the start alone or the start and the wait: 30 s by default without `wait`, 10 min
+  with it, counted from the intent row's first write, so a restore never starts the bound over, and armed again in
+  steps, so a bound past Node's 24.8-day timer holds. A run still live when it runs out settles `status: "live"`, the
+  status the run had when the Effect stopped waiting: in-process the run host says it; in the Instance Effector the last
+  poll must have read the run live, and a wait whose last poll got no answer is `unknown`. In-process the run host tells
+  the wait through a settle hook keyed by the run id, not by its hosting, so a caller restored before its callee hears
+  it when the callee settles, and hears `lost` or `drifted` when restore marks it so; foreign, the Instance Effector
+  polls `GET /runs/<id>` every 5 s as a long-running Effect, which it keeps across an Orchestrator restart already, and
+  a DELETE of the Effect ends that poll and never touches the run. No callback from the callee: a callback needs the
+  callee to hold its caller's address and a token for it, which inverts the trust. A door refusal is OUTPUT,
+  `{ outcome: "refused", status, report }`, with the door's status — 400 for bad input, 404 for a name the current
+  Assembly lacks, 409 for an unrunnable named Chart or a key another Workflow's run holds, 422 for a Chart the door
+  refuses, 413 for a start over the bytes an Effector reads, 0 when the Effector refused it before anything was sent —
+  as a Chart refusal is ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)): the body may have come from a model,
+  and the report must be able to reach it through the Chain. A target no replica could reach is
   `{ outcome: "unreachable" }`, output, as an `http` Effect's is (ADR-0067): nothing was started. The invoke's error is
   kept for defects: no run host or Effector, input that fails the slot's schema, a refused or malformed wire.
 - **The two runs are independent.** Cancelling the caller never cancels the callee; the caller's end never ends it;

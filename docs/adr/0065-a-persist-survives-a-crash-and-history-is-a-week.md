@@ -31,11 +31,11 @@ upserts cost 0.04 ms (1 KB) and 0.18 ms (100 KB). A run's blob is about 1 KB; a 
   one bundle per Repo Slot at most. An outstanding pick's hold is the one place tails accumulate: its `chain` keeps
   every reply since the pick whole until the pick is answered, then it is dropped (ADR-0067).
 - **`restore()` reads live rows only.** The store answers `WHERE status = 'live'`; terminal rows are not parsed at boot.
-- **A finished run's row lives 7 days, fixed.** Every non-live status — `done`, `error`, `cancelled`, `lost`, `drifted`
-  — ages from its terminal write, and a sweep at boot and every hour deletes what is older. A `live` row is never swept:
-  a run parked on a Gate for a month stays and is restored. The value is fixed like the Sandbox idle timeout, not
-  config: jr2 is not the record of a run's results (a Machine sends its output where it belongs — a PR, a Source), and
-  `jr2 status` on an old run is a debugging act. A swept id frees its abbreviations (ADR-0009).
+- **A finished run's row lives 7 days, fixed.** Every non-live status — `done`, `failed`, `error`, `cancelled`, `lost`,
+  `drifted` — ages from its terminal write, and a sweep at boot and every hour deletes what is older. A `live` row is
+  never swept: a run parked on a Gate for a month stays and is restored. The value is fixed like the Sandbox idle
+  timeout, not config: jr2 is not the record of a run's results (a Machine sends its output where it belongs — a PR, a
+  Source), and `jr2 status` on an old run is a debugging act. A swept id frees its abbreviations (ADR-0009).
 - **The store is sqlite on the Instance's volume. No Postgres is owed.** The `SnapshotStore` interface stays as the
   seam, with one implementation. `DATABASE_URL` is not a thing jr2 reads.
 

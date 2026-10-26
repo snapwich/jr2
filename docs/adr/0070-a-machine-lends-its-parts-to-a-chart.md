@@ -57,7 +57,11 @@ their own maintainers, and the escapes shipped in systems that used them were in
   only its input slots), every Repo and image, every secret, every child Machine, and every guard, action or delay
   beyond the generic set. Lending is attenuated by construction; an author who lends
   `command(["sh", "-c", arg("script")])` has lent a shell, and that is theirs to choose. A lent name may not be dotted,
-  `gate`, a generic action's name or an integer, because those are the kit's; the Gate itself is lent as `gate: true`.
+  `gate`, `fail`, a generic action's name or an integer, because those are the kit's; the Gate itself is lent as
+  `gate: true`, and the Part that fails the run as `fail: true`
+  ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), because the Machine
+  decides which ends a Chart can choose. The guard `jr2.failure`, which tells a Failure from a defect on an `onError`,
+  is in every Chart, as `jr2.sentBy` is: it is a predicate and gives no capability.
 - **Constants for authority, references for data.** `invoke.src`, guard and action `type`s, delay names and event names
   are constants, checked against the lent set and the Chart's own declarations at admission. Data flows through
   references: a placeholder `{{context.ticket.title}}`, or `{ "$ref": "event.summary" }`, in an invoke's `input`, an
@@ -202,19 +206,27 @@ their own maintainers, and the escapes shipped in systems that used them were in
   above. The minted Agents: every model against the allowed list and the placed keys, every Workspace access against the
   allowed set. The structure: no `always` cycle without a guard, through parallel regions and history too; no `onDone`
   on an Agent invoke, because a Turn never settles by itself, it ends on a pick in `on`; no Agent state that nothing can
-  end; no parallel state at or below an Agent's. And two checks that stand in for the types a Chart does not have.
-  **Dataflow**: every reference a Chart makes, `{{context.summary}}` or `{ "$ref": "event.notes" }`, must be supplied by
-  something the door can see: the Chart's initial `context`, the Chart's input (the wrapper's door less its Chart fields
-  and the placement, or, for a body a Machine invokes, what that invoke sends), the schema of the event the transition
-  handles, or a `set`, `append` or `increment` on that path or above it, where a `set` from one reference supplies what
-  that reference supplies and nothing deeper; a reference nothing supplies would resolve to an empty string in a prompt
-  with no one the wiser, so it is refused. The fields a Chart declares are its types. **Lent input shapes**: an Effect
-  carries an `input` schema and an Agent's Turn input is a fixed key set (`prompt`, `cwd`, `continue`, `model`,
-  `thinkingLevel`, no placement), so the literal parts of a Chart's `input` objects are validated at the door and the
-  resolved object again at invoke time, where a failure is that invoke's error and never a mid-Turn surprise. Last, the
-  door compiles the Chart as the body would: `jr2Setup`'s own refusals, and the load warnings a hand-written Machine
-  gets (an unentered mode), are refusal lines for a Chart, because a planner reads a report and nobody reads a warning.
-  A refusal is the body's OUTPUT, `{ outcome: "refused", report }`, routed by the wrapper's `onDone` with a guard on
+  end; no parallel state at or below an Agent's. An Agent state of a Chart needs no `agent.fault` route. A state of a
+  Machine needs one ([ADR-0074](0074-an-unrouted-mechanism-event-is-refused-at-load-and-faults-the-run.md)). An
+  `agent.fault` that no transition of the Chart takes ends the body as an error at the Open body's invoke, so the
+  wrapper catches it with an `onError` on its Open body state, and with no `onError` there the run ends `error`. A route
+  in the Chart stays legal, and it can read `{{event.reason}}`. The wrapper is the right place: a Chart under a body
+  that lends no `fail` has no correct end for a fault, because a final state means `done`
+  ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)) and a state that waits
+  holds the run until the wall clock. So the briefing does not teach the route, and the grammar's fragment does not show
+  it. And two checks that stand in for the types a Chart does not have. **Dataflow**: every reference a Chart makes,
+  `{{context.summary}}` or `{ "$ref": "event.notes" }`, must be supplied by something the door can see: the Chart's
+  initial `context`, the Chart's input (the wrapper's door less its Chart fields and the placement, or, for a body a
+  Machine invokes, what that invoke sends), the schema of the event the transition handles, or a `set`, `append` or
+  `increment` on that path or above it, where a `set` from one reference supplies what that reference supplies and
+  nothing deeper; a reference nothing supplies would resolve to an empty string in a prompt with no one the wiser, so it
+  is refused. The fields a Chart declares are its types. **Lent input shapes**: an Effect carries an `input` schema and
+  an Agent's Turn input is a fixed key set (`prompt`, `cwd`, `continue`, `model`, `thinkingLevel`, no placement), so the
+  literal parts of a Chart's `input` objects are validated at the door and the resolved object again at invoke time,
+  where a failure is that invoke's error and never a mid-Turn surprise. Last, the door compiles the Chart as the body
+  would: `jr2Setup`'s own refusals (less its `agent.fault` refusal), and the load warnings a hand-written Machine gets
+  (an unentered mode), are refusal lines for a Chart, because a planner reads a report and nobody reads a warning. A
+  refusal is the body's OUTPUT, `{ outcome: "refused", report }`, routed by the wrapper's `onDone` with a guard on
   `outcome`, so a wrapper whose `onDone` returns to the planning state hands it to the planner as the output link in its
   Chain ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)): "Chart refused:
   `src: "linter"` is not a lent actor; lent: coder, reviewer, push", and the planner answers with a corrected Chart. It

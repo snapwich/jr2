@@ -92,12 +92,10 @@ windows more often. That is why the flake was degree-independent and serial runs
 
 ## What this does not fix
 
-**An unrouted `agent.fault` is still silent.** A workflow with no `agent.fault` policy does not report a lost turn; it
-stops waiting, and the run sits `active` forever with the reason nowhere `jr2 status` can show it (a child machine's
-state value is served, its context is not). That is what made this class of failure undiagnosable for as long as it was
-— the tier's own workflow now routes the fault, which is a fixture change, not a product one. Whether the run feed
-should carry a terminal fault of its own accord is [ADR-0022](0022-observation-is-a-level-triggered-feed.md)'s territory
-and is not decided here.
+**An unrouted `agent.fault` is not this ADR's.** This ADR does not change what a workflow with no `agent.fault` route
+does with a lost Turn. [ADR-0074](0074-an-unrouted-mechanism-event-is-refused-at-load-and-faults-the-run.md) decides it:
+the walk refuses a state that invokes an Agent with no route on it or above it, and a fault that no transition takes at
+runtime ends the run `error`, with a `fault` that names the event, the state and the reason.
 
 ## Consequences
 

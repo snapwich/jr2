@@ -86,9 +86,13 @@ later adds the third: runaway):
   with its task, or faults when it has no task to send. That ask was spent already, so the budget counts it once.
 
 Budgets are defaulted knobs, not Machine context. Exhaustion emits the single terminal `agent.fault { reason }`; where
-it routes (escalation, a triage/investigator state) is workflow policy. Attempts surface as run-feed/visualize telemetry
-projected to `{ child, attempt }` — no iids on the open observation feed
-([ADR-0014](0014-observation-is-open-run-state-is-not.md) unchanged).
+it routes (escalation, a triage/investigator state, a Failure) is workflow policy, but it must route in a Machine: the
+walk refuses a state that invokes an Agent with no `agent.fault` route on itself or an ancestor, and an `agent.fault`
+that no transition takes faults the run
+([ADR-0074](0074-an-unrouted-mechanism-event-is-refused-at-load-and-faults-the-run.md)). In a Chart the route is
+optional: an unrouted fault ends the Open body as an error ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)).
+Attempts surface as run-feed/visualize telemetry projected to `{ child, attempt }` — no iids on the open observation
+feed ([ADR-0014](0014-observation-is-open-run-state-is-not.md) unchanged).
 
 ## Sessions are fresh by default; continuation is opt-in
 

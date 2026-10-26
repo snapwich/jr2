@@ -11,14 +11,14 @@ canonical v5 pattern _is_ the hand-rolled loop), so jr2 ships one.
 
 ## `pool(worker, spec)` — a machine factory, like `workspace()`
 
-`pool(worker, { source, itemId, cap, itemInput, onDrained })` returns a plain machine that owns spawn-under-cap, stable
-child identity, typed completion collection (`DoneActorEvent<Output, string>` + the `xstate.done.actor.*` wildcard —
-zero casts), `stopChild` bookkeeping, the wake gate, and the re-query timer. The one top-level `spawnChild` lives in
-jr2's pool code, once — the visualize footgun is dissolved by construction, and everything durable is a registered
-string src (xstate cannot persist inline-src children, which independently forces this shape). The pool composes: it
-returns a plain machine and can itself be nested as a child. The typed idioms (wildcard done events, `assertEvent`,
-outcome-in-context root output) ship as documented patterns regardless, so outgrowing the pool means hand-rolling
-without penalty, not fighting a framework.
+`pool(worker, { source, itemId, cap, itemInput, onDrained, failures })` returns a plain machine that owns
+spawn-under-cap, stable child identity, typed completion collection (`DoneActorEvent<Output, string>` + the
+`xstate.done.actor.*` wildcard — zero casts), `stopChild` bookkeeping, the wake gate, and the re-query timer. The one
+top-level `spawnChild` lives in jr2's pool code, once — the visualize footgun is dissolved by construction, and
+everything durable is a registered string src (xstate cannot persist inline-src children, which independently forces
+this shape). The pool composes: it returns a plain machine and can itself be nested as a child. The typed idioms
+(wildcard done events, `assertEvent`, outcome-in-context root output) ship as documented patterns regardless, so
+outgrowing the pool means hand-rolling without penalty, not fighting a framework.
 
 ## The source port is generalized; Work Source is one adapter
 
@@ -37,12 +37,33 @@ static FIFO queue.
 
 Forced by parking-is-retention (ADR-0012) plus workflows whose children park on gates (escalation, human review):
 
-- **drained** — source empty and all children settled → the pool reaches final (jr exit 0);
+- **drained** — source empty and all children settled → final, or the run ends `failed` when items failed (below);
 - **deadlocked** — open-but-never-ready items with nothing progressing → surfaced distinctly (jr exit 2), not an
-  indistinguishable idle poll;
+  indistinguishable idle poll, or the run ends `failed` when items failed (below);
 - **waiting** — children parked in gates → the run stays open and the gates list is the "what needs me" surface (jr exit
   3).
 
 The pool can make this call because it owns both the source and the children — the strongest single argument for the
 primitive over an authored loop. Triage surfaces as run _status_ (feed, `jr2 runs`), not machine events; a
 `pool.deadlock` event can be added if a workflow ever needs to react rather than a human.
+
+## The pool catches a worker's Failure
+
+A worker that fails ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)) ends
+only its own item. The pool catches the Failure on `xstate.error.actor.*`, keeps its payload in `failures` by item id,
+stops that worker, and claims again: the output is `{ status, items, failures }`. The pool is a kit-owned parent, so an
+author cannot give it an `onError`; if it let the Failure go up, one lost `task` would end the whole run `failed`, and
+the host would delete the Sandbox of each sibling, also one that waits at its `review` Gate with commits that it did not
+push. That breaks parking-is-retention for work that did not fail. A defect in a worker still goes up and ends the run
+`error`.
+
+The option `failures: "fail" | "report"` says how a pool ends when one or more items failed. It catches each worker's
+Failure in both modes, so one failed item never stops its siblings. With `"fail"`, the default, a pool that ends
+`drained` or `deadlocked` with failures invokes `fail` with the reason `"<n> of <m> items failed"` and the detail
+`{ status, items, failures }`, so the run ends `failed` and `jr2 run` exits 1. At either end no worker is live, because
+a pool with a live worker parks, so the Failure deletes no sibling's Sandbox. With `"report"`, the pool ends `done` and
+`failures` in its output says which items did not succeed: for a pool whose job is to try each item, where a failed item
+is a correct answer. The default is `"fail"` because `done` means that the work succeeded (ADR-0073), and a CI loop must
+not exit 0 while every item failed. The deadlock is the usual end of a dependency backlog with a failure: a Source over
+a tracker keeps the failed item open, so its dependents never become ready. The `status` in the detail tells the two
+ends apart, and the two details have one shape.

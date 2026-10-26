@@ -125,9 +125,9 @@ recover, finish — are exercised only one scripted tool call at a time.
   model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
   past the bound counts against the floor and prints as a void in the failure list, never as a miss.
 - Each trial's line in the failure list says how its run ended, whatever stopped the trial (a driver that threw prints
-  what it threw, and names the run it had started, if any: `threw: <message> (run <id>)`). A run that ended faulted or
-  lost also prints its final output, and a run in error its fault, which carry the reason
-  (`features/lib/model-status.ts`): the namespace that held the pod log is gone when the list is read.
+  what it threw, and names the run it had started, if any: `threw: <message> (run <id>)`). A run that ended `failed`
+  also prints its Failure, and a run in error its fault, which carry the reason (`features/lib/model-status.ts`): the
+  namespace that held the pod log is gone when the list is read.
 - **Every trial keeps its evidence.** Every trial, passed, missed or void, keeps one folder,
   `features/.tmp/model-trials/<model>/<cell>/<runId>/` (gitignored with `.tmp`; a cell's `/` is a folder; a byte of a
   name outside `[A-Za-z0-9._-]`, such as a model id's `:`, and a leading `.` are spelled `%XX`, so any model id keeps
@@ -261,7 +261,8 @@ recover, finish — are exercised only one scripted tool call at a time.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but
-  name. A fault, a lost Workspace or an unsettled run never finished.
+  name. A run that ended `failed` (a claim workflow fails on a fault and on a lost Workspace), a run in `error` and an
+  unsettled run never finished.
 - `wake` (below, under `push-wake`) has run four times, 10 of 10 each, and is a baseline.
 - **A claim's setup may change; its floor and what counts as a pass may not.** A setup is the part of a trial that
   brings the model to the moment the claim measures. When a claim falls below its floor because that moment seldom
@@ -334,9 +335,9 @@ recover, finish — are exercised only one scripted tool call at a time.
     Two voids stay, each a setup that did not happen. In the first, the first Turn does not pick `started` in its time:
     the run is live, and its body is in `starting`. In the second, no server answers at the `kill` Gate: a server that
     outlives its bash call is the model's job. A body that left `starting` for `faulted` (`agent.fault`) or `lost`
-    (`workspace.lost`) settled the run. It is not void, and it fails "every trial finished", as the finished rule above
-    says. The bound stays half the trials, rounded up. Rejected: a larger bound for `noticed`, and a fault in `starting`
-    counted as void.
+    (`workspace.lost`) invokes `fail`, and the run ends `failed`. It is not void, and it fails "every trial finished",
+    as the finished rule above says. The bound stays half the trials, rounded up. Rejected: a larger bound for
+    `noticed`, and a fault in `starting` counted as void.
 
     Two more voids are new. In the first, the kill does not take the server. The guard's list (`GET /memory-kills`,
     91699c24) holds no new kill, or the port still answers after the hog. Then the exec fails, or the kernel's OOM

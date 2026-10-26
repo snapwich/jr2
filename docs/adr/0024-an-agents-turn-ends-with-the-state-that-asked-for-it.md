@@ -54,7 +54,8 @@ single-threaded.
   | ------------------------------------------------------------------------------------------------------------------------ | ----------- |
   | the Turn's own pick ended the Turn, and the sweep says `cause: "pick"`                                                   | `ended`     |
   | something else ended it: a timer, an outside event, another party's event, the run's CANCEL                              | `aborted`   |
-  | a throw in the Machine, or an error that no state catches                                                                | `aborted`   |
+  | the Turn's own pick routed to a state that invokes `fail`, and the Failure ended a Machine on the way up                 | `ended`     |
+  | a throw in the Machine, or a defect that no state catches                                                                | `aborted`   |
   | a pick found the Turn over, and no sweep came within the Harness's wait for it (10 s)                                    | `aborted`   |
   | it was over before it started: the surface read answered 404 ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)) | `aborted`   |
   | it was queued behind a swept Submission, so it never ran                                                                 | `aborted`   |
@@ -114,6 +115,12 @@ single-threaded.
     only after its actions ran. So a microstep that throws is never the exit, and a fault is never the pick's. When a
     Machine above catches the fault of a Machine on the way up, that catch is the exit, and it has no cause, also when
     the pick's route caused the fault. The stop of a run is no event of the Machine's.
+  - **A Failure is no fault.** A Failure is the end that a state chose
+    ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)). When a Failure ends a
+    Machine on the way up from the Agent, that Machine's error event is the exit, with the cause of that relay. So a
+    pick whose route invokes `fail` ends its Turn `ended`, when a Machine above catches the Failure and when the run
+    ends `failed`. xstate does not stop the children of a Machine that ends `error`, so the host stops the children of a
+    Machine that a Failure ended, after its parent takes the error event. The Agent there then gets its sweep.
 
   Which relay an actor takes now is read from the relay order. xstate relays an event to the actor's mailbox
   (`@xstate.event`). The mailbox takes events one at a time, in that order. xstate inspects `@xstate.snapshot` with the

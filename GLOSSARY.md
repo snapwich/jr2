@@ -86,6 +86,20 @@ The runtime that runs Machines, as the single writer of their run snapshots. Sin
 per process: one Orchestrator hosts many Workflows and many runs.
 _Avoid_: runner, engine (the loop in a Harness that runs a model)
 
+**Run status**:
+How a run of a Workflow stands, as the Orchestrator records it: `live` while it runs, then one of six ends. `done`: the
+Machine got to a final state; `failed`: a Failure that no state caught ended it; `error`: the run faulted on an error or
+a mechanism event that no state of the Machine handled; `cancelled`: a person ended it; `lost`: what it held in the
+cluster went away under it while no Orchestrator hosted it; `drifted`: jr2 keeps it but never resumes it, because of
+drift.
+_Avoid_: outcome (an Effect's output), result, state (the Machine's), settlement (a Submission's), stopped (xstate's)
+
+**Failure**:
+The end that a Machine chooses for work that did not succeed, with a reason for a person. It goes up from the state that
+fails, through each parent Machine, until a state catches it; when none does, the run ends `failed`. It is not a fault:
+a fault is the end that nobody chose.
+_Avoid_: abort and aborted (a Settlement's and the wire's), fault and error (a defect's), exception, throw, rejection
+
 **Actor**:
 An xstate actor in a Machine that drives a remote worker through a Harness: a local handle in the Orchestrator for work
 that occurs remotely. An Agent is an Actor in a named slot.
@@ -219,7 +233,8 @@ _Avoid_: handle, ticket
 
 **Settlement**:
 How a Submission ends. It is one of four: completed, ended, failed or aborted. Completed: its run returned, and its
-Turn is still open. Ended: the Turn's own pick ended the Turn, from this Submission or from an earlier one of the same
+Turn is still open. Failed: the Harness could not run it to its end, as on a provider error, a Runaway or a restart
+of the Harness. Ended: the Turn's own pick ended the Turn, from this Submission or from an earlier one of the same
 Turn. Aborted: something else ended the Turn, or it was over before it started. The Orchestrator judges how a Turn
 ended, and the Turn's sweep says it. It is what the history view reports for each Submission.
 _Avoid_: result, status
