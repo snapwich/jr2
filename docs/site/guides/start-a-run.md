@@ -46,8 +46,9 @@ output starts with one more line, `→ .env:`, with the keys that the CLI took f
   so `jr2 run` waits too. To answer the Gate, use a second terminal. See [Answer a Gate](answer-a-gate.md).
 - When you stop `jr2 run`, for example with Ctrl-C, the run continues in the Orchestrator. To attach again, run
   `jr2 logs -f <run id>`.
-- `jr2 run` exits with `0` when the run ends with the status `done` or `cancelled`. It exits with `1` when the run ends
-  with the status `error`.
+- `jr2 run` exits with `0` only when the run ends with the status `done`. It exits with `1` for each other end:
+  `failed`, `error`, `cancelled`, `lost` and `drifted`, and also when the run stops before it ends. For a run that ends
+  `failed`, the line `failed: <reason>` on stderr gives the reason.
 
 ### Start a run and return at once
 

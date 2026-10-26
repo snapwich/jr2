@@ -1,6 +1,6 @@
 import { assign, emit } from "xstate";
 import { z } from "zod";
-import { defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
+import { defineEvent, fail, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 
 // The door: the input that starts a run. jr2 checks each start against this schema.
 const runInput = z.object({
@@ -24,7 +24,7 @@ const promote = defineEvent({
 const rollBack = defineEvent({
   name: "roll_back",
   description: "Stop the rollout. Say why.",
-  input: z.object({ reason: z.string() }),
+  input: z.object({ reason: z.string().min(1) }),
 });
 
 // jr2 reads only this export. The file name, rollout.ts, gives the Workflow its name: rollout.
@@ -35,6 +35,7 @@ export const machine = jr2Setup({
     emitted: { type: "decided"; promoted: boolean };
   },
   events: [promote, rollBack],
+  actors: { fail: fail() },
 }).createMachine({
   id: "rollout",
   input: runInput,
@@ -63,6 +64,8 @@ export const machine = jr2Setup({
       },
     },
     promoted: { type: "final" },
-    rolledBack: { type: "final" },
+    // A person stopped the rollout, and the run ends here. Not a final state: the run ends `failed`,
+    // with the person's reason, and `jr2 run` exits 1.
+    rolledBack: { invoke: { src: "fail", input: ({ context }) => ({ reason: context.reason! }) } },
   },
 });

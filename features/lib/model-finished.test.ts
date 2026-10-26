@@ -33,3 +33,10 @@ test("a fault, a lost Workspace or an unsettled run never finished", () => {
   assert.equal(FINISHED["continue-after-signed-push"]!(body("faulted")), false);
   assert.equal(FINISHED.obedience!(root("faulted")), false);
 });
+
+test("a failed run never finished, whatever its state: its Machine invoked `fail` (ADR-0073)", () => {
+  const failed: RunEnd = { status: "failed", value: { failing: "raising" }, context: {} };
+  for (const [workflow, check] of Object.entries(FINISHED)) assert.equal(check(failed), false, workflow);
+  assert.equal(FINISHED.obedience!(root("held", "failed")), false, "a final's name with status failed");
+  assert.equal(FINISHED.workdir!(body("finished", "failed")), false);
+});

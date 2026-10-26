@@ -21,6 +21,7 @@ import {
 } from "xstate";
 import { agentActorWith } from "../src/actor.ts";
 import { OutstandingError } from "../src/registration.ts";
+import { fail } from "../src/fail.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { coderDefinition, waitFor } from "./_fixtures.ts";
 import { endpoint, ev, reviewerDefinition, rig, tick, type Agents } from "./_cause-rig.ts";
@@ -39,6 +40,7 @@ function oneAgent(
 ) {
   return ({ coder }: Agents) =>
     jr2Setup({ events, actors: { coder: coder!, ...actors } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {
@@ -132,6 +134,7 @@ test("a route in a child Machine sends its parent the event that leaves: `pick`"
   const work = fromPromise(async () => ({ built: true }));
   const r = await rig({ coder: coderDefinition }, ({ coder }) => {
     const body = jr2Setup({ events: [go], actors: { coder: coder!, work } }).createMachine({
+      on: { "agent.fault": {} },
       id: "body",
       initial: "w",
       states: {
@@ -242,6 +245,7 @@ test("the work's route goes back to Rest, and a sibling of the Agent's state lea
     { coder: coderDefinition },
     ({ coder }) =>
       jr2Setup({ events: [go], actors: { coder: coder!, work, sibling } }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         initial: "w",
         states: {
@@ -290,6 +294,7 @@ test("a child's error in another region, caught there, then the work's route lea
       { coder: coderDefinition },
       ({ coder }) =>
         jr2Setup({ events: [go], actors: { coder: coder!, work, failing } }).createMachine({
+          on: { "agent.fault": {} },
           id: "t",
           type: "parallel",
           states: {
@@ -344,6 +349,7 @@ test("two Agents' picks in parallel regions: each sweep's cause is its own pick'
       { coderA: coderDefinition, coderB: reviewerDefinition },
       ({ coderA, coderB }) =>
         jr2Setup({ events: [pickA, pickB], actors: { coderA: coderA!, coderB: coderB!, workA, workB } }).createMachine({
+          on: { "agent.fault": {} },
           id: "pair",
           type: "parallel",
           states: {
@@ -417,6 +423,7 @@ test("a route back to Rest that sends itself an event back into work, queued: th
     { coder: coderDefinition },
     ({ coder }) =>
       jr2Setup({ events: [go, again], actors: { coder: coder!, work, sib } }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         initial: "w",
         states: {
@@ -467,6 +474,7 @@ test("a Machine above the Agent's Machine faults and is caught: the Agent's Mach
     const work = fromPromise(() => released.then(() => ({ built: true })));
     const r = await rig({ coder: coderDefinition }, ({ coder }) => {
       const m = jr2Setup({ events: [go, poke, finish], actors: { coder: coder!, work } }).createMachine({
+        on: { "agent.fault": {} },
         id: "m",
         initial: "w",
         states: {
@@ -516,6 +524,7 @@ test("a nested Agent's Machine faults below the outer Agent's pick, and the oute
   const dig = ev("dig");
   const r = await rig({ coder: coderDefinition, reviewer: reviewerDefinition }, ({ coder, reviewer }) => {
     const c = jr2Setup({ events: [dig], actors: { reviewer: reviewer!, never } }).createMachine({
+      on: { "agent.fault": {} },
       id: "c",
       initial: "y",
       states: {
@@ -528,6 +537,7 @@ test("a nested Agent's Machine faults below the outer Agent's pick, and the oute
       },
     });
     return jr2Setup({ events: [go], actors: { coder: coder!, c } }).createMachine({
+      on: { "agent.fault": {} },
       id: "m",
       initial: "w",
       states: {
@@ -576,6 +586,7 @@ test("a constant event object that the pick's route sent at once, sent again lat
         },
       });
       return jr2Setup({ events: [ping, leave, arm], actors: { coder: coder!, helper } }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         context: { armed: false },
         invoke: { src: "helper", id: "helper" },
@@ -607,6 +618,7 @@ test("an answer from below the Agent's state that leaves it — a Gate's answer,
     { coder: coderDefinition },
     ({ coder }) =>
       jr2Setup({ events: [review, approve], actors: { coder: coder! } }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         initial: "w",
         states: {
@@ -633,6 +645,7 @@ test("an answer from below the Agent's state that leaves it — a Gate's answer,
     { coder: coderDefinition, reviewer: reviewerDefinition },
     ({ coder, reviewer }) =>
       jr2Setup({ events: [review, approve], actors: { coder: coder!, reviewer: reviewer! } }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         initial: "w",
         states: {
@@ -664,6 +677,7 @@ test("an Agent invoked on a Machine's root whose pick reaches the top-level fina
   const finish = ev("finish");
   const body = (coder: ReturnType<typeof agentActorWith>) =>
     jr2Setup({ events: [finish], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "body",
       invoke: { src: "coder", input: { prompt: "Fix.", endpoint, sandbox: "ws-1" } },
       initial: "a",
@@ -782,6 +796,68 @@ test("the pick's transition sends at once through `enqueueActions`: `pick`; a ch
     r.host.sendToAgent(r.iid("coder"), { type: "go" });
     await waitFor(() => r.of("coder").aborts.length === 1);
     assert.deepEqual(r.causes("coder"), expected, `a spawned child answers ${when}`);
+    await r.host.close();
+  }
+});
+
+test("a pick that routes to a state that invokes `fail` ends the Turn: `pick` — beside the Agent's state, below it with a parent that catches the Failure, and below it with no catch; a throw below it: no cause (ADR-0024, ADR-0073)", async () => {
+  // A Failure is the end that the pick chose, so it is no fault: the sweep is `pick`, and the
+  // Harness settles the Submission `ended`. When a parent catches it, xstate does not stop the
+  // Agent of the Machine that the Failure ended, so the host stops it. A plain throw at the same
+  // place stays a fault: `none`.
+  type Case = "beside" | "below-caught" | "below-uncaught" | "throw-below-uncaught";
+  const expected: Record<Case, string[]> = {
+    beside: ["pick"],
+    "below-caught": ["pick"],
+    "below-uncaught": ["pick"],
+    "throw-below-uncaught": ["none"],
+  };
+  for (const c of Object.keys(expected) as Case[]) {
+    const go = ev("go");
+    const thrower = fromPromise(async () => {
+      throw new Error("boom");
+    });
+    const r = await rig({ coder: coderDefinition }, ({ coder }) => {
+      const m = jr2Setup({ events: [go], actors: { coder: coder!, fail: fail(), thrower } }).createMachine({
+        on: { "agent.fault": {} },
+        id: "m",
+        initial: "w",
+        states: {
+          w: {
+            invoke: { src: "coder", input: { prompt: "Fix.", endpoint, sandbox: "ws-1" } },
+            initial: "rest",
+            states: {
+              rest: { on: { go: c === "beside" ? "#m.failing" : "failing" } },
+              ...(c === "beside"
+                ? {}
+                : {
+                    failing: {
+                      invoke:
+                        c === "throw-below-uncaught"
+                          ? { src: "thrower" }
+                          : { src: "fail", input: { reason: "no fix fits" } },
+                    },
+                  }),
+            },
+          },
+          failing: { invoke: { src: "fail", input: { reason: "no fix fits" } } },
+        },
+      });
+      return jr2Setup({ events: [], actors: { m } }).createMachine({
+        id: "p",
+        initial: "b",
+        states: {
+          b: { invoke: { src: "m", id: "m", ...(c.endsWith("uncaught") ? {} : { onError: "out" }) } },
+          out: {},
+        },
+      }) as AnyStateMachine;
+    });
+    // Beside: the pick leaves the Agent's state at once. Below: the pick's work is outstanding until
+    // the Failure goes up.
+    const sent = r.host.sendToAgent(r.iid("coder"), { type: "go" });
+    assert.equal(c === "beside" ? sent.turnComplete : sent.outstanding, true, c);
+    await waitFor(() => r.of("coder").aborts.length === 1);
+    assert.deepEqual(r.causes("coder"), expected[c], c);
     await r.host.close();
   }
 });

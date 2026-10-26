@@ -26,6 +26,7 @@ const build = (x: Slots) =>
     events: [note, echo, answer, park, later],
     actors: { coder: x.coder! },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "snd",
     context: { ran: [], seen: [] },
     initial: "work",

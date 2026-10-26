@@ -43,6 +43,7 @@ import {
   SEED_URL,
   verifyOnPushRemote,
 } from "./seed.ts";
+import { isSettled } from "../lib/run-settled.ts";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -165,7 +166,12 @@ type WsStatus = {
   /** The RUN's own seed Instance ID (ADR-0033) — what names `task`'s default branch. It is not a
    * conversation address: jr2 mints those structurally (ADR-0057, {@link continuedIid}). */
   instanceId: string;
-  context: { endpoint?: string; output?: { outcome?: string } };
+  context: { endpoint?: string; output?: { outcome?: string; branch?: string } };
+  /** The run's output (ADR-0071). For a run that ended `failed`, the Failure: `{ reason, detail? }`
+   * (ADR-0073). */
+  output?: { reason?: string; detail?: unknown; branch?: string };
+  /** The error message of a run that ended `error`. */
+  fault?: string;
   /** The body lives here: a wrapper's own `value` is only ever placing/provisioning/attaching/running. */
   children: RunChild[];
   /** The run's OPEN GATES, as `GET /runs/:id` lists them (ADR-0011) — the discovery listing a
@@ -242,12 +248,13 @@ async function settlements(world: E2EWorld, iid: string): Promise<HarnessSettlem
   return found;
 }
 
-/** Poll until the run settles (done/error) — restore + teardown are asynchronous. */
+/** Poll until the run settles (any status that is not live, ADR-0073) — restore + teardown are
+ * asynchronous. */
 async function waitSettled(world: E2EWorld): Promise<WsStatus> {
   let last: WsStatus | undefined;
   for (let i = 0; i < 120; i++) {
     last = await wsStatus(world);
-    if (last.status === "done" || last.status === "error") return last;
+    if (isSettled(last.status)) return last;
     await sleep(500);
   }
   throw new Error(`run never settled (last: ${JSON.stringify(last)})`);
@@ -962,8 +969,29 @@ Then("the run's Sandbox is the same one, at the same endpoint", async function (
 
 Then("the run's body settled as {string}", async function (this: E2EWorld, outcome: string): Promise<void> {
   const settled = await waitSettled(this);
-  assert.equal(settled.status, "done");
+  // A body that invoked `fail` ends the run `failed`, with its reason in the output (ADR-0073).
+  assert.equal(
+    settled.status,
+    "done",
+    `the run ended ${settled.status}: ${JSON.stringify(settled.output ?? settled.fault)}`,
+  );
   assert.equal(settled.context.output?.outcome, outcome, "the wrapper forwards the body's output verbatim");
+});
+
+/** A body that invoked `fail` (ADR-0073): the wrapper deleted its Sandbox and sent the Failure up
+ * unchanged, so the run ended `failed` with the body's reason as its output, and no fault. */
+Then("the run failed with reason {string}", async function (this: E2EWorld, reason: string): Promise<void> {
+  const settled = await waitSettled(this);
+  assert.equal(settled.status, "failed", `the run ended ${settled.status}: ${JSON.stringify(settled)}`);
+  assert.equal(settled.output?.reason, reason, "the Failure's reason is the run's output");
+  assert.equal(settled.fault, undefined, "a Failure is no fault");
+});
+
+/** `task`'s one done output (ADR-0073): `{ branch }`, the branch the human approved. */
+Then("the run's output names the branch jr2\\/task-<run id>", async function (this: E2EWorld): Promise<void> {
+  const settled = await waitSettled(this);
+  assert.equal(settled.status, "done");
+  assert.deepEqual(settled.context.output, { branch: `jr2/task-${await runInstanceId(this)}` });
 });
 
 // --- a command Effect in a real Sandbox (ADR-0067) -------------------------------------------------
@@ -1766,7 +1794,7 @@ Then(
   async function (this: E2EWorld, url: string): Promise<void> {
     const key = repoKey(url);
     let last: WsStatus & { fault?: string } = await wsStatus(this);
-    for (let i = 0; i < 240 && last.status !== "error"; i++) {
+    for (let i = 0; i < 240 && !isSettled(last.status); i++) {
       await sleep(1000);
       last = await wsStatus(this);
     }
@@ -2534,7 +2562,7 @@ async function httpOutput(world: E2EWorld): Promise<Record<string, unknown>> {
   let last: WsStatus | undefined;
   for (let i = 0; i < 360; i++) {
     last = await wsStatus(world);
-    if (last.status === "done" || last.status === "error") break;
+    if (isSettled(last.status)) break;
     await sleep(500);
   }
   assert.equal(last?.status, "done", `the run settled ${last?.status} (${JSON.stringify(last?.context)})`);
@@ -2862,7 +2890,7 @@ async function liveEffectorKey(world: E2EWorld): Promise<string> {
       if (data.trim() !== "") return Buffer.from(data.trim(), "base64").toString("utf8");
     }
     const { status } = await wsStatus(world);
-    if (status === "done" || status === "error") break;
+    if (isSettled(status)) break;
     await sleep(250);
   }
   throw new Error(`the Effector's key of run ${world.runId}'s Sandbox was never read while the run was live`);

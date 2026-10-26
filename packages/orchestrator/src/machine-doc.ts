@@ -19,6 +19,7 @@ import type { AnyStateMachine, StateNode, TransitionDefinition } from "xstate";
 import { z } from "zod";
 import type { EventAudience } from "@jr2/agent-protocol";
 import { argvText, isEffect, targetText, type EffectParts } from "./effect.ts";
+import { isFailSlot } from "./fail.ts";
 import { loadWarningsOf, seatsOf, vocabularyOf, type MachineSeat } from "./vocabulary.ts";
 import { open } from "./open.ts";
 
@@ -72,8 +73,9 @@ export type MachineStateDoc = {
   /** Initial child state id (compound only). */
   initial?: string;
   /** Each invoke's id and slot; an Effect's carries its plain-data parts (ADR-0067) — what it runs,
-   * where, and for how long, read without running anything. */
-  invoke: Array<{ id: string; src: string; effect?: EffectDoc }>;
+   * where, and for how long, read without running anything. `fail`: the slot is a `fail()`, so this
+   * state can fail the run (ADR-0073). */
+  invoke: Array<{ id: string; src: string; effect?: EffectDoc; fail?: true }>;
   tags: string[];
   description?: string;
   states: MachineStateDoc[];
@@ -331,6 +333,7 @@ function serializeState(node: StateNode<any, any>, into: MachineTransitionDoc[],
     type: node.type,
     invoke: node.invoke.map((inv) => {
       const logic = typeof inv.src === "string" ? scope.actors[inv.src] : undefined;
+      if (isFailSlot(logic)) return { id: inv.id, src: srcName(inv.src), fail: true as const };
       if (!isEffect(logic)) return { id: inv.id, src: srcName(inv.src) };
       return { id: inv.id, src: srcName(inv.src), effect: effectDoc(logic.effect) };
     }),

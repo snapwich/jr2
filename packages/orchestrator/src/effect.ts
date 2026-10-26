@@ -76,22 +76,24 @@ export type Arg<N extends string = string> = { readonly arg: N };
  *
  * @example
  * ```ts
- * import { arg, command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import { arg, command, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
  *
  * type Input = Workspaced<{ file: string }, "app">;
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   actors: { lint: command(["npx", "eslint", arg("file")]) },
+ *   actors: { lint: command(["npx", "eslint", arg("file")]), fail: fail() },
  * }).createMachine({
  *   id: "lint",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost" },
  *   initial: "lint",
  *   states: {
  *     lint: {
  *       invoke: { src: "lint", input: ({ context }) => ({ file: context.file }), onDone: "done" },
  *     },
  *     done: { type: "final" },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -323,9 +325,10 @@ export type Unknown = { outcome: "unknown"; reason: string };
  * ```ts
  * import {
  *   command,
+ *   type CommandOutput,
+ *   fail,
  *   jr2Setup,
  *   workspace,
- *   type CommandOutput,
  *   type Workspaced,
  * } from "@jr2/orchestrator";
  *
@@ -336,10 +339,11 @@ export type Unknown = { outcome: "unknown"; reason: string };
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   actors: { tests: command(["npm", "test"], { timeout: "15m" }) },
+ *   actors: { tests: command(["npm", "test"], { timeout: "15m" }), fail: fail() },
  * }).createMachine({
  *   id: "tests",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost" },
  *   initial: "testing",
  *   states: {
  *     testing: {
@@ -352,7 +356,9 @@ export type Unknown = { outcome: "unknown"; reason: string };
  *       },
  *     },
  *     green: { type: "final" },
- *     red: { type: "final" },
+ *     // Not a final state: a final state means `done`, and the run ends `failed` here.
+ *     red: { invoke: { src: "fail", input: { reason: "npm test did not pass" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -374,9 +380,10 @@ export type CommandOutput = (ExecOutcome & { dirty?: boolean }) | Unknown;
  * The output of a `dispatch` Effect. Route on `outcome`:
  *
  * - `started`: the Orchestrator accepted the new run. `run` is its id.
- * - `settled`: with `wait`, the new run ended. `status` is `done`, `error`, `cancelled`, `lost` or
- *   `drifted`, and `output` is the output of its Machine. `status` is `live` when the timeout came
- *   first, and the run continues.
+ * - `settled`: with `wait`, the new run ended. `status` is `done`, `failed`, `error`, `cancelled`,
+ *   `lost` or `drifted`, and `output` is the output of its Machine. For `failed`, `output` is the
+ *   Failure, `{ reason, detail? }`. `status` is `live` when the timeout came first, and the run
+ *   continues.
  * - `refused`: the Orchestrator started no run. `status` is the HTTP status: 400 for an input that
  *   the Workflow does not take, 404 for a Workflow that it does not have, 409 for a named Chart that
  *   cannot run now, 422 for a Chart that it refuses. `report` holds the lines of the refusal.
@@ -390,7 +397,7 @@ export type DispatchOutput =
   | {
       outcome: "settled";
       run: string;
-      status: "done" | "error" | "cancelled" | "lost" | "drifted" | "live";
+      status: "done" | "failed" | "error" | "cancelled" | "lost" | "drifted" | "live";
       output?: unknown;
     }
   | { outcome: "refused"; status: number; report: string[] }

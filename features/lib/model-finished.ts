@@ -4,6 +4,11 @@
 // A trial that took the other task final still FINISHED: the claim's measure says whether that was
 // the right pick, and its floor is what tolerates a miss. Counting such a trial unfinished as well
 // would fail every scenario on one miss, and make the floor 10 of 10 in all but name.
+//
+// Only `done` finishes. A trial whose run ended `failed` did not finish: its Machine invoked `fail`
+// from `faulted` (an `agent.fault`) or `lost` (a `workspace.lost`), and the note prints the
+// Failure's reason (ADR-0073, `ended` in model-status.ts). Nor did one that ended `error`,
+// `cancelled`, `lost` or `drifted`.
 
 /** The parts of `jr2 status` the reading uses. */
 export type RunEnd = { status: string; value: unknown; context: { output?: Record<string, unknown> } };

@@ -112,6 +112,7 @@ export type Frame =
   | { kind: "token"; state: TokenState }
   | { kind: "gates"; runId: string; workflow: string; gates: GateCard[] }
   | { kind: "waiting"; runId: string; workflow: string; waiting: WaitingLine[]; held?: HeldLine[] }
+  | { kind: "failure"; runId: string; reason: string | null }
   | { kind: "inboxScope"; all: boolean }
   | { kind: "startForm"; workflow: string | null };
 
@@ -141,6 +142,11 @@ export type Frame =
  * `waiting`  why each run's Workspaces in `placing` wait (ADR-0064): runId -> { workflow, waiting },
  *            off the SAME `GET /runs/:id` re-fetch as `gates`, under the same rules — guarded, whole
  *            per run, gone with the credential. The open band sees `placing` lit and nothing more.
+ * `failures` the reason of each run this page knows that ended `failed` (ADR-0073): runId -> reason,
+ *            off the SAME `GET /runs/:id` re-fetch, under the same rules — guarded (the open band
+ *            sees the `failed` status and its color, never the output), gone with the credential.
+ *            A failed run is a settled run, so `gone` keeps it; it goes with the run when the run
+ *            leaves both `runs` and `settled`.
  * `inboxAll` the widen control: false = the inbox follows the selection, true = every workflow.
  * `startFormFor` which workflow's start-run form is open, if any.
  * `selectedNodeId` the diagram node the reader clicked — an elk node id (scope + state id), one at
@@ -164,6 +170,7 @@ export type Store = {
   token: TokenState;
   gates: Map<string, { workflow: string; gates: GateCard[] }>;
   waiting: Map<string, { workflow: string; waiting: WaitingLine[]; held: HeldLine[] }>;
+  failures: Map<string, string>;
   inboxAll: boolean;
   startFormFor: string | null;
 };
@@ -192,6 +199,7 @@ export function emptyStore(): Store {
     token: "none",
     gates: new Map(),
     waiting: new Map(),
+    failures: new Map(),
     inboxAll: false,
     startFormFor: null,
   };
@@ -201,17 +209,24 @@ export function emptyStore(): Store {
  *  that learns a new frame type does not break a page still running yesterday's script. */
 export function applyFrame(store: Store, frame: Frame): Store {
   switch (frame.kind) {
-    case "runs":
+    case "runs": {
       // The server's whole truth about what is live. Runs that ended during a disconnect are simply
       // ABSENT — no `gone` was delivered for them and none is needed; they were never ours to settle.
       // The same wholeness settles the inbox: a selected-workflow run the frame does not mention can
-      // never be re-fetched again, so its card leaves with it.
+      // never be re-fetched again, so its card leaves with it. A failure stays while its run is live
+      // or settled here.
+      const runs = new Map(frame.runs.map((r): [string, ObservedRun] => [r.runId, r]));
+      const orphans = [...store.failures.keys()].filter((id) => !runs.has(id) && !store.settled.has(id));
+      let failures = store.failures;
+      for (const id of orphans) failures = mapWithout(failures, id);
       return select({
         ...store,
-        runs: new Map(frame.runs.map((r): [string, ObservedRun] => [r.runId, r])),
+        runs,
         gates: dropAbsent(store.gates, store.workflow, new Set(frame.runs.map((r) => r.runId))),
         waiting: dropAbsent(store.waiting, store.workflow, new Set(frame.runs.map((r) => r.runId))),
+        failures,
       });
+    }
 
     case "status":
       return select({ ...store, runs: new Map(store.runs).set(frame.status.runId, frame.status) });
@@ -228,8 +243,13 @@ export function applyFrame(store: Store, frame: Frame): Store {
       const runs = new Map(store.runs);
       runs.delete(frame.runId);
       const settled = new Map(store.settled).set(frame.runId, departing);
-      while (settled.size > SETTLED_CAP) settled.delete(settled.keys().next().value!);
-      return select({ ...store, runs, settled, gates, waiting });
+      let failures = store.failures;
+      while (settled.size > SETTLED_CAP) {
+        const evicted = settled.keys().next().value!;
+        settled.delete(evicted);
+        failures = mapWithout(failures, evicted);
+      }
+      return select({ ...store, runs, settled, gates, waiting, failures });
     }
 
     case "emit":
@@ -265,6 +285,8 @@ export function applyFrame(store: Store, frame: Frame): Store {
         selectedRunId: null,
         selectedNodeId: null,
         connection: "connecting",
+        // Each failure belongs to a run of the old selection's `runs` or `settled`, which go.
+        failures: new Map(),
       };
     }
 
@@ -299,7 +321,7 @@ export function applyFrame(store: Store, frame: Frame): Store {
       // "invalid" (the any-later-401 drop of ADR-0032) empties the inbox. "checking" keeps it — a
       // re-validation of a token that turns out fine should not flash the inbox empty.
       if (frame.state === "none" || frame.state === "invalid") {
-        return { ...store, token: frame.state, gates: new Map(), waiting: new Map() };
+        return { ...store, token: frame.state, gates: new Map(), waiting: new Map(), failures: new Map() };
       }
       return { ...store, token: frame.state };
 
@@ -332,6 +354,20 @@ export function applyFrame(store: Store, frame: Frame): Store {
         held,
       });
       return { ...store, waiting };
+    }
+
+    case "failure": {
+      // The same guarded re-fetch's third half (ADR-0073): the reason of a run that ended `failed`.
+      // Nothing folded without the credential, and nothing for a run that the page does not hold:
+      // the re-fetch can come back after a `select` moved on. `null` says the run did not fail.
+      if (store.token !== "live") return store;
+      if (frame.reason === null) {
+        const failures = mapWithout(store.failures, frame.runId);
+        return failures === store.failures ? store : { ...store, failures };
+      }
+      if (!store.runs.has(frame.runId) && !store.settled.has(frame.runId)) return store;
+      if (store.failures.get(frame.runId) === frame.reason) return store;
+      return { ...store, failures: new Map(store.failures).set(frame.runId, frame.reason) };
     }
 
     case "inboxScope":
@@ -530,6 +566,22 @@ export function selectedRunGates(store: Store): GateCard[] {
 export function selectedRunWaiting(store: Store): WaitingLine[] {
   if (store.selectedRunId === null) return [];
   return store.waiting.get(store.selectedRunId)?.waiting ?? [];
+}
+
+/** The reason of a run that ended `failed`, off a `GET /runs/:id` answer (ADR-0073): the Failure's
+ *  `reason` in the run's output. Null for every other status, and for an output with no reason
+ *  text — the same reading as `jr2 status`'s `failed:` line. */
+export function failureReason(body: { status?: string; output?: unknown }): string | null {
+  if (body.status !== "failed") return null;
+  const reason = (body.output as { reason?: unknown } | null | undefined)?.reason;
+  return typeof reason === "string" ? reason : null;
+}
+
+/** Why the SELECTED run failed (ADR-0073): the reason of its Failure, or null when it did not fail
+ *  or the page has no live token to read it with. */
+export function selectedRunFailure(store: Store): string | null {
+  if (store.selectedRunId === null) return null;
+  return store.failures.get(store.selectedRunId) ?? null;
 }
 
 /** The SELECTED run's outstanding picks, each with since when it is held (ADR-0024) — empty in

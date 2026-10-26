@@ -61,6 +61,7 @@ function chainMachine(fake: FakeHarnessExec, coder: ReturnType<typeof agentActor
       linter: commandWith(fake.factory, ["pnpm", "lint", arg("path")]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "chain",
     context: {},
     invoke: { src: "ws" },
@@ -166,6 +167,7 @@ test("the chain is typed by slot and by kind", () => {
       build: commandWith(fake.factory, ["b"]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "typed",
     context: {},
     initial: "w",
@@ -263,6 +265,7 @@ test("an `answer` below one Agent's state never shapes another Agent's outstandi
         builder: commandWith(fake.factory, ["pnpm", "build"]),
       },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "two",
       invoke: { src: "ws" },
       type: "parallel",
@@ -309,6 +312,7 @@ test("an `answer` written below no Agent's state shapes the outstanding pick", a
       builder: commandWith(fake.factory, ["pnpm", "build"]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "rooted",
     invoke: { src: "ws" },
     after: { 150: { actions: answer(() => "from root") } },
@@ -391,6 +395,7 @@ function twoAgents(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlueClient, 
     invoke: { src: "ws" },
     type: "parallel",
     ...extra,
+    on: { "agent.fault": {}, ...((extra.on as Record<string, unknown> | undefined) ?? {}) },
     states: {
       ra: region("coderA", "builderA", "buildA", "build_a"),
       rb: region("coderB", "builderB", "buildB", "build_b"),
@@ -453,6 +458,7 @@ test("a transition below no Agent's state on a pick shapes the sender's pick, wh
     // A's `ship`, written on the root: its transition is below no Agent's state; the event it raises
     // enters A's work, in the same send, and leaves A's state as it is.
     on: {
+      "agent.fault": {},
       ship: {
         actions: [
           answer(({ event }) => `shipped by ${(event as { sender?: { id: string } }).sender?.id}`),
@@ -549,6 +555,7 @@ test("one `answer` written below two Agents' states shapes the pick of the Agent
       builderB: commandWith(fake.factory, ["make", "b"]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "two",
     invoke: { src: "ws" },
     type: "parallel",
@@ -680,6 +687,7 @@ for (const form of ["inline", "inside a nested enqueue", "by name"] as const) {
       },
       actions: { shapeIt: x } as never,
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "two",
       invoke: { src: "ws" },
       type: "parallel",
@@ -718,7 +726,7 @@ test("a child that a pick's later work started is that pick's: its done event be
     invoke: { src: "ws" },
     type: "parallel",
     // Below no Agent's state, on the done event of the child that A's build started.
-    on: { "xstate.done.actor.testA": { actions: fromRoot } },
+    on: { "agent.fault": {}, "xstate.done.actor.testA": { actions: fromRoot } },
     states: {
       ra: {
         invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
@@ -773,6 +781,7 @@ function twoWithATimer(
       builderB: commandWith(fake.factory, ["make", "b"]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "two",
     invoke: { src: "ws" },
     type: "parallel",
@@ -882,6 +891,7 @@ function aStartsRegionWork(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlue
     invoke: { src: "ws" },
     type: "parallel",
     on: {
+      "agent.fault": {},
       ...(aWaits ? {} : { ship: { actions: raise({ type: "start_c" }) } }),
       "xstate.done.actor.workC": { actions: answer(({ event }) => `the root saw ${event.type}`) },
     },
@@ -1000,6 +1010,7 @@ test("a child a timer below no Agent's state started is no Agent's: its done eve
     invoke: { src: "ws" },
     type: "parallel",
     on: {
+      "agent.fault": {},
       build_a: { actions: raise({ type: "start_c" }) },
       "xstate.done.actor.cmdC": { actions: answer(() => "root answer for A's work in rc") },
     },
@@ -1060,7 +1071,7 @@ function aWorksAfterATimer(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlue
     id: "two",
     invoke: { src: "ws" },
     type: "parallel",
-    on: root,
+    on: { "agent.fault": {}, ...root },
     states: {
       ra: {
         invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
@@ -1155,7 +1166,7 @@ test("an `onError` answer below no Agent's state, on the error of a child A's an
     id: "two",
     invoke: { src: "ws" },
     type: "parallel",
-    on: { kick: { actions: raise({ type: "go_side" }) } },
+    on: { "agent.fault": {}, kick: { actions: raise({ type: "go_side" }) } },
     states: {
       ra: {
         invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
@@ -1223,7 +1234,7 @@ for (const timer of [false, true]) {
     }).createMachine({
       id: "nest",
       invoke: { src: "ws" },
-      on: { "xstate.done.actor.cmdT": { actions: answer(({ event }) => `root saw ${event.type}`) } },
+      on: { "agent.fault": {}, "xstate.done.actor.cmdT": { actions: answer(({ event }) => `root saw ${event.type}`) } },
       initial: "outer",
       states: {
         outer: {
@@ -1286,7 +1297,7 @@ test("a raised event in A's pick's own send, answered on the root while two Agen
     id: "two",
     invoke: { src: "ws" },
     type: "parallel",
-    on: { tick: { actions: fromRoot } },
+    on: { "agent.fault": {}, tick: { actions: fromRoot } },
     states: {
       ra: {
         invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },

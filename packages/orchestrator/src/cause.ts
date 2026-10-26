@@ -21,6 +21,10 @@
 //     inspected, so a fault is never the exit. When a Machine above catches a fault on the way up,
 //     that catch is the exit, and it has no cause: a fault is never the pick's, even when the pick's
 //     route caused it. The stop of a run is no event of the Machine's.
+//   - A FAILURE (ADR-0073) is not a fault: it is the end that a state chose. When a Machine on the
+//     way up from the Agent ends with a Failure, its own error event is the exit, with the cause of
+//     that relay. So a pick whose route invokes `fail` ends its Turn, whether a Machine above
+//     catches the Failure or the run ends `failed`.
 //
 // Which relay an actor takes now is read from the relay order: xstate relays an event (inspected as
 // `@xstate.event`) to the actor's mailbox. The mailbox takes events one at a time, in order, and
@@ -33,6 +37,7 @@
 // is never stopped: its own later sends still reach its parent.
 
 import type { AnyActorRef, AnyEventObject, AnyMachineSnapshot } from "xstate";
+import { isFailure } from "./fail.ts";
 import type { Registration } from "./registration.ts";
 
 const XSTATE_STOP = "xstate.stop";
@@ -88,8 +93,18 @@ export class PickCauses {
    * `@xstate.event`: `event` is relayed from `source` to `target`. `pickOf` names the registrations
    * whose pick it is, or whose work below it comes from. With them: the cause of the timer whose
    * callback makes this relay, or else of the relay that `source` takes now.
+   *
+   * When the relay is the error event of a Machine that a Failure ended, it is the exit of each of
+   * `registrations` whose Agent that Machine invokes, or is above: the Failure took the Agent's
+   * state away, and the pick that chose it is the cause.
    */
-  relayed(source: AnyActorRef | undefined, target: AnyActorRef, event: AnyEventObject, pickOf: () => Cause): void {
+  relayed(
+    source: AnyActorRef | undefined,
+    target: AnyActorRef,
+    event: AnyEventObject,
+    pickOf: () => Cause,
+    registrations: () => Iterable<Registration> = () => [],
+  ): void {
     const firing = this.firing;
     this.firing = undefined;
     const by = firing ? firing.cause : source !== undefined ? this.causeOfCurrent(source) : undefined;
@@ -98,11 +113,25 @@ export class PickCauses {
     if (source !== undefined && isOwnEnd(source, event)) {
       this.finished.add(source);
       this.pending.delete(source);
+      if (isFailure((event as { error?: unknown }).error)) this.failedAt(source, cause, registrations());
     }
     if (this.finished.has(target) || statusOf(target) === "stopped") return;
     const queue = this.pending.get(target);
     if (queue) queue.push({ event, cause });
     else this.pending.set(target, [{ event, cause }]);
+  }
+
+  /** A Failure ended `machine`: record the exit of each registration whose invoker is `machine` or
+   * is below it, with the cause of the Failure's relay. */
+  private failedAt(machine: AnyActorRef, cause: Cause, registrations: Iterable<Registration>): void {
+    for (const reg of registrations) {
+      if (this.exits.has(reg)) continue;
+      for (let at: AnyActorRef | undefined = reg.invoker; at !== undefined; at = at._parent) {
+        if (at !== machine) continue;
+        this.exits.set(reg, cause ?? null);
+        break;
+      }
+    }
   }
 
   /** `@xstate.snapshot`: `actor` has taken `event`. An event that was not relayed (a stop) leaves
@@ -179,8 +208,9 @@ function union(a: Cause, b: Cause): Cause {
 /** Does this microstep of `machine` stop `reg`'s invocation: `machine` is on the way up from the
  * Agent and is done, or the actor (or child Machine) on the way down is no longer its child. It is
  * `"fault"` when a Machine on the way up below `machine` has status `error`: `machine` caught that
- * fault. The invoker's own microstep has no Machine below it on the way up, so the error of a child
- * of the invoker is never a fault here. */
+ * fault. A Failure is no fault (ADR-0073), but it never gets here: its relay records the exit
+ * (`failedAt`) before a Machine above takes it. The invoker's own microstep has no Machine below it
+ * on the way up, so the error of a child of the invoker is never a fault here. */
 function leaves(
   reg: Registration,
   agent: AnyActorRef,

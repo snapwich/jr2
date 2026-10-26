@@ -261,12 +261,12 @@ export const HttpOutputShape = z.union([
  *
  * @example
  * ```ts
- * import { http, jr2Setup, type HttpOutput } from "@jr2/orchestrator";
+ * import { fail, http, jr2Setup, type HttpOutput } from "@jr2/orchestrator";
  *
  * const ok = (output: HttpOutput): boolean => output.outcome === "response" && output.status < 300;
  *
  * export const machine = jr2Setup({
- *   actors: { health: http({ method: "GET", url: "https://app.example.com/healthz" }) },
+ *   actors: { health: http({ method: "GET", url: "https://app.example.com/healthz" }), fail: fail() },
  * }).createMachine({
  *   id: "health",
  *   initial: "checking",
@@ -281,7 +281,8 @@ export const HttpOutputShape = z.union([
  *       },
  *     },
  *     healthy: { type: "final" },
- *     unhealthy: { type: "final" },
+ *     // Not a final state: the run ends `failed`, and `jr2 run` exits 1.
+ *     unhealthy: { invoke: { src: "fail", input: { reason: "the app is not healthy" } } },
  *   },
  * });
  * ```
@@ -369,7 +370,7 @@ export const DispatchOutputShape = z.discriminatedUnion("outcome", [
     // The store's words (ADR-0025) and the timeout's `live`, as `DispatchOutput` types them for the
     // Machine: a door that serves another word (another Kit version) is a malformed answer, the
     // invoke's error, never a status the Machine's type does not name (ADR-0071).
-    status: z.enum(["done", "error", "cancelled", "lost", "drifted", "live"]),
+    status: z.enum(["done", "failed", "error", "cancelled", "lost", "drifted", "live"]),
     output: z.unknown().optional(),
   }),
   z.strictObject({ outcome: z.literal("refused"), status: z.number().int(), report: z.array(z.string()) }),

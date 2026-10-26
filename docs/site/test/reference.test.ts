@@ -150,12 +150,17 @@ test("each field of TaskInput is on the @jr2/machines page, with its TSDoc", asy
 });
 
 test("a union type lists one field list per form, and a kit type a signature names is defined", () => {
+  // `PushOutput` is a union of forms; `TaskOutput` is one object, so its page lists fields.
+  assert.match(
+    pageOf("PushOutput", true),
+    /\*\*Forms\*\*[\s\S]*- Form 1: `outcome`, `stage`, `reason`, `detail`[\s\S]*- Form 2: `outcome`, `reason`, `published`, `source`/,
+  );
   const text = page("reference/machines");
   const entry = text.slice(
     text.indexOf("\n### `TaskOutput`\n"),
     text.indexOf("\n<a id=", text.indexOf("\n### `TaskOutput`\n")),
   );
-  assert.match(entry, /\*\*Forms\*\*[\s\S]*- Form 1: `outcome`, `branch`[\s\S]*- Form 2: `outcome`/);
+  assert.match(entry, /\*\*Fields\*\*\n\n- `branch`: `string`\n/);
   assert.match(pageOf("EventAudience", true), /^Type, in `/);
   assert.ok(page(SURFACE).includes("- [`EventAudience`](authoring-surface/type-eventaudience.md): "));
 });

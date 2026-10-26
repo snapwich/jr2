@@ -11,7 +11,15 @@
 // the Sandbox, and the steps address both by the same derivation.
 
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup, workspace, type HostInjectedInput, type Workspaced } from "@jr2/orchestrator";
+import {
+  agent,
+  defineEvent,
+  fail,
+  jr2Setup,
+  workspace,
+  type HostInjectedInput,
+  type Workspaced,
+} from "@jr2/orchestrator";
 import { advisor, coder } from "./_agents.ts";
 
 const advise = defineEvent({ name: "advise", input: z.object({ summary: z.string() }) });
@@ -22,10 +30,11 @@ type BodyInput = Workspaced<HostInjectedInput, "app">;
 const body = jr2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [advise, finish],
-  actors: { advisor: agent(advisor), coder: agent(coder) },
+  actors: { advisor: agent(advisor), coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
+  on: { "workspace.lost": { target: ".lost" }, "agent.fault": { target: ".faulted" } },
   initial: "consulting",
   states: {
     consulting: {
@@ -55,6 +64,8 @@ const body = jr2Setup({
       on: { finish: { target: "finished" } },
     },
     finished: { type: "final", output: { outcome: "finished" } },
+    faulted: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,
 });

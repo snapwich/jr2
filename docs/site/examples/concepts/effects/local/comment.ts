@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { agent, bearer, defineEvent, fromPick, http, jr2Setup, secret } from "@jr2/orchestrator";
+import { agent, bearer, defineEvent, fail, fromPick, http, jr2Setup, secret } from "@jr2/orchestrator";
 
 const postComment = defineEvent({
   name: "post_comment",
@@ -26,11 +26,13 @@ export const machine = jr2Setup({
       workspace: "none",
     }),
     comment,
+    fail: fail(),
   },
 }).createMachine({
   id: "comment",
   input: z.object({ ticket: z.string() }),
   context: ({ input }) => input,
+  on: { "agent.fault": ".failed" },
   initial: "triaging",
   states: {
     triaging: {
@@ -52,5 +54,6 @@ export const machine = jr2Setup({
       },
     },
     done: { id: "done", type: "final" },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
 });

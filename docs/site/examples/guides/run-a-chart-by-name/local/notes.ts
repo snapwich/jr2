@@ -26,9 +26,10 @@ export const machine = jr2Setup({
       workspace: "none",
       instructions: "You write clear, short text for engineers.",
     }),
-    // A Chart can use the Agent `writer`. It cannot add Agents of its own.
+    // A Chart can use the Agent `writer`, and `fail` to end the run as a Failure. It cannot add
+    // Agents of its own.
     body: openBody({
-      lends: { agents: ["writer"] },
+      lends: { agents: ["writer"], fail: true },
       allows: { models: [], workspace: [] },
       ceilings: { turns: 6, wallClock: "15m", transitions: 200, fanOut: 1, size: 65536 },
     }),

@@ -1,6 +1,6 @@
 import { assign } from "xstate";
 import { z } from "zod";
-import { defineEvent, jr2Setup } from "@jr2/orchestrator";
+import { defineEvent, fail, jr2Setup } from "@jr2/orchestrator";
 
 // The events that a CI job sends to the `checks` Gate.
 const ciPassed = defineEvent({
@@ -23,21 +23,21 @@ const approve = defineEvent({
 const reject = defineEvent({
   name: "reject",
   description: "Do not release this version.",
-  input: z.object({ reason: z.string().describe("Why, in one sentence.") }),
+  input: z.object({ reason: z.string().min(1).describe("Why, in one sentence.") }),
 });
 
 const door = z.object({ version: z.string().describe("The version to release, such as 1.4.0.") });
 
 type Input = z.infer<typeof door>;
 type Ctx = Input & { ci?: string; reason?: string };
-type Output =
-  | { outcome: "released"; version: string }
-  | { outcome: "failed"; ci: string }
-  | { outcome: "rejected"; reason: string };
+// The output of a run that ends `done`. A run whose CI job failed, or that a person rejected, has no
+// output of this type: it ends `failed`, and its output is the reason and the detail of the Failure.
+type Output = { version: string };
 
 export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input; output: Output },
   events: [ciPassed, ciFailed, approve, reject],
+  actors: { fail: fail() },
 }).createMachine({
   id: "ci-release",
   input: door,
@@ -63,12 +63,13 @@ export const machine = jr2Setup({
         reject: { target: "rejected", actions: assign({ reason: ({ event }) => event.reason }) },
       },
     },
-    released: { type: "final", output: ({ context }): Output => ({ outcome: "released", version: context.version }) },
-    failed: { type: "final", output: ({ context }): Output => ({ outcome: "failed", ci: context.ci ?? "" }) },
-    rejected: {
-      type: "final",
-      output: ({ context }): Output => ({ outcome: "rejected", reason: context.reason ?? "" }),
+    released: { type: "final", output: ({ context }): Output => ({ version: context.version }) },
+    // Not a final state: the run ends `failed`, and `jr2 run` exits 1.
+    failed: {
+      invoke: { src: "fail", input: ({ context }) => ({ reason: "the CI job failed", detail: { ci: context.ci } }) },
     },
+    // A person stopped the release. The run ends `failed` too, with the person's reason.
+    rejected: { invoke: { src: "fail", input: ({ context }) => ({ reason: context.reason! }) } },
   },
   // The output of the run. xstate reads only this root `output` as the output of the Machine. It
   // gets the output of the final state that ended the run as `event.output`.

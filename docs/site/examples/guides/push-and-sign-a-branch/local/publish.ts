@@ -1,6 +1,15 @@
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, jr2Setup, push, workspace, type PushOutput, type Workspaced } from "@jr2/orchestrator";
+import {
+  agent,
+  defineEvent,
+  fail,
+  jr2Setup,
+  push,
+  workspace,
+  type PushOutput,
+  type Workspaced,
+} from "@jr2/orchestrator";
 
 const finished = defineEvent({
   name: "finished",
@@ -25,10 +34,12 @@ const body = jr2Setup({
     }),
     // Push signed copies of the Agent's commits, with the key of the git.credentials entry.
     publish: push({ sign: true }),
+    fail: fail(),
   },
 }).createMachine({
   id: "publish",
   context: ({ input }) => input,
+  on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
   initial: "coding",
   states: {
     coding: {
@@ -58,6 +69,8 @@ const body = jr2Setup({
       on: { approve: "publishing", stop: "done" },
     },
     done: { type: "final" },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
   },
 });
 

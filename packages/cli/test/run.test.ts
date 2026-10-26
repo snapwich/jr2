@@ -70,3 +70,70 @@ test("the error keeps the report; an answer with none carries none", async () =>
   const plain = new JR2Client("http://test", async () => Response.json({ error: "bad input" }, { status: 400 }));
   await assert.rejects(plain.start("charted"), (e: unknown) => e instanceof JR2HttpError && e.report === undefined);
 });
+
+/** A fetch that starts run `r1` and serves its feed as one `status` frame per given status, the
+ * last one terminal. */
+function feedOf(...frames: Array<Record<string, unknown>>): Io["fetch"] {
+  return async (url) => {
+    if (url.endsWith("/runs")) return Response.json({ runId: "r1", instanceId: "i1" }, { status: 201 });
+    const body = frames
+      .map(
+        (s) =>
+          `event: status\ndata: ${JSON.stringify({ runId: "r1", workflow: "w", instanceId: "i1", value: "x", context: {}, ...s })}\n\n`,
+      )
+      .join("");
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  };
+}
+
+test("jr2 run exits 0 only for done, and 1 for every other end (ADR-0073)", async () => {
+  const ends: Array<[string, number]> = [
+    ["done", 0],
+    ["failed", 1],
+    ["error", 1],
+    ["cancelled", 1],
+    ["lost", 1],
+    ["drifted", 1],
+  ];
+  for (const [status, code] of ends) {
+    const { io, out } = mkIo(feedOf({ status: "active" }, { status }));
+    assert.equal(await main(["run", "w"], io), code, `status ${status}`);
+    assert.equal(JSON.parse(out()).status, status, "the terminal status is the result on stdout");
+  }
+});
+
+test("jr2 run with no workflow is a usage error: exit 2", async () => {
+  const { io } = mkIo(async () => {
+    throw new Error("no request is sent");
+  });
+  assert.equal(await main(["run"], io), 2);
+});
+
+test("a failed run prints its reason on stderr, and its Failure is the result's output", async () => {
+  const output = { reason: "the tests did not pass", detail: { failed: 3 } };
+  const { io, out, err } = mkIo(feedOf({ status: "failed", value: "failing", output }));
+  assert.equal(await main(["run", "w"], io), 1);
+  assert.match(err(), /→ failed "failing"/);
+  assert.match(err(), /^failed: the tests did not pass$/m);
+  assert.deepEqual(JSON.parse(out()).output, output);
+});
+
+test("jr2 run exits 1 for a run that was parked before it settled: a feed that ends in `gone` (ADR-0073)", async () => {
+  const fetch: Io["fetch"] = async (url) => {
+    if (url.endsWith("/runs")) return Response.json({ runId: "r1", instanceId: "i1" }, { status: 201 });
+    const active = JSON.stringify({
+      runId: "r1",
+      workflow: "w",
+      instanceId: "i1",
+      status: "active",
+      value: "x",
+      context: {},
+    });
+    const body = `event: status\ndata: ${active}\n\nevent: gone\ndata: ${JSON.stringify({ runId: "r1" })}\n\n`;
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  };
+  const { io, out, err } = mkIo(fetch);
+  assert.equal(await main(["run", "w"], io), 1, "a parked run is not a success");
+  assert.equal(out(), "", "nothing on stdout that a script could take for a result");
+  assert.match(err(), /run r1 is parked: stopped before it settled/);
+});

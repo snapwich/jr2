@@ -28,8 +28,8 @@ test("status: child machines append as `id: value` — the root's value alone sa
   );
 });
 
-test("status: a terminal status IS the line — done, error, cancelled", () => {
-  for (const status of ["done", "error", "cancelled"]) {
+test("status: a terminal status IS the line — done, failed, error, cancelled", () => {
+  for (const status of ["done", "failed", "error", "cancelled"]) {
     assert.deepEqual(renderEchoEvent({ kind: "status", status, value: "whatever" }), [`[run] [status] ${status}`]);
   }
 });

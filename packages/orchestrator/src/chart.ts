@@ -23,6 +23,7 @@ import { z } from "zod";
 import { defineEvent, type EventAudience, type EventDef } from "@jr2/agent-protocol";
 import type { AgentDefinition, ThinkingLevel, WorkspaceAccess } from "./agent.ts";
 import { inputKeysOf, isEffect } from "./effect.ts";
+import { FAILURE_GUARD } from "./fail.ts";
 import { compileChart, durationMs, type LentParts, type OpenBodyDeclaration } from "./open-body.ts";
 import { SENT_BY } from "./party.ts";
 import { loadWarningsOf } from "./vocabulary.ts";
@@ -38,7 +39,8 @@ export type ChartJson = string | number | boolean | null | ChartJson[] | { [key:
  */
 export type ChartValue = ChartJson;
 
-/** A guard: a lent guard by name, with or without params, `jr2.sentBy`, or `not`/`and`/`or`. */
+/** A guard: a lent guard by name, with or without params, `jr2.sentBy`, `jr2.failure`, or
+ * `not`/`and`/`or`. */
 export type ChartGuard =
   | string
   | { type: string; params?: ChartValue }
@@ -71,7 +73,7 @@ export type ChartTransition =
 /** One transition or a list, in xstate's order. */
 export type ChartTransitions = ChartTransition | ChartTransition[];
 
-/** An invoke: a lent Agent, Effect or Machine, a minted Agent, or the kit's `gate`. */
+/** An invoke: a lent Agent, Effect or Machine, a minted Agent, or the kit's `gate` or `fail`. */
 export type ChartInvoke = {
   src: string;
   id?: string;
@@ -158,6 +160,10 @@ export function chartBriefing(narrow?: Narrow): string {
     ? ' `src: "gate"` is the kit\'s Gate: the Chart waits there for an outside answer (a human, a webhook), ' +
       'one of its `events` with `audience: "external"`, not an Agent\'s Turn.'
     : "";
+  const fail = narrow?.fail
+    ? ' `src: "fail"` with `input: { reason }` ends the run as a Failure: work that did not succeed, with ' +
+      `the reason for a person; an \`onError\` with the guard \`${FAILURE_GUARD}\` catches it. A final state means done.`
+    : "";
   const agents = mints
     ? `A state runs an Agent with \`invoke: { src, input: { prompt } }\`: \`src\` is a lent Agent's name${lent}. ` +
       "This Chart mints no Agent of its own: there is no `agents`."
@@ -165,7 +171,7 @@ export function chartBriefing(narrow?: Narrow): string {
       "a key of `agents`; a lent Agent needs no entry in `agents`, which mints new ones.";
   return (
     `A Chart is a workflow written as data: states, the events its Agents pick${mints ? "" : ", and the Agents it mints"}. ` +
-    `${agents}${gate} An Agent's Turn ends only when it ` +
+    `${agents}${gate}${fail} An Agent's Turn ends only when it ` +
     "picks one of the Chart's `events`: declare each pick in `events` with an `input` schema " +
     '(`{ "type": "object", "properties": { "<field>": { "type": "string" } }, "required": ["<field>"] }`; a field not in ' +
     "`required` may be absent), and " +
@@ -233,6 +239,7 @@ type Narrow = {
   srcs: string[];
   lentAgents: string[];
   gate: boolean;
+  fail: boolean;
   guards: string[];
   actions: string[];
   delays: string[];
@@ -353,16 +360,25 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
     })
     .describe('A context path without the "context." root, like "round" or "ticket.notes".');
 
-  // `jr2.sentBy` is the kit's routing guard (ADR-0015), and the one guard that is never lent.
+  // `jr2.sentBy` is the kit's routing guard (ADR-0015), and `jr2.failure` its test for a Failure on
+  // an `onError` (ADR-0073): every Chart has both, and neither is lent.
   const sentByArm = z.strictObject({ type: z.literal(SENT_BY), params: z.strictObject({ id: z.string() }) });
+  const failureArm = z.strictObject({ type: z.literal(FAILURE_GUARD) });
   const lentGuardName = narrow
-    ? enumOf(narrow.guards)
+    ? enumOf([...narrow.guards, FAILURE_GUARD])
     : z.string().refine((t) => t !== SENT_BY, { message: `"${SENT_BY}" takes params { id }` });
+  const paramGuardName = narrow
+    ? enumOf(narrow.guards)
+    : z
+        .string()
+        .refine((t) => t !== SENT_BY, { message: `"${SENT_BY}" takes params { id }` })
+        .refine((t) => t !== FAILURE_GUARD, { message: `"${FAILURE_GUARD}" takes no params` });
   const guard: z.ZodType<ChartGuard> = z
     .union([
       lentGuardName,
       sentByArm,
-      z.strictObject({ type: lentGuardName, params: template.optional() }),
+      failureArm,
+      z.strictObject({ type: paramGuardName, params: template.optional() }),
       z.strictObject({
         get not() {
           return guard;
@@ -381,7 +397,7 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
     ])
     .meta({
       id: `${ID_PREFIX}ChartGuard`,
-      description: "A lent guard by name, `jr2.sentBy`, or not/and/or of guards.",
+      description: `A lent guard by name, \`jr2.sentBy\`, \`${FAILURE_GUARD}\`, or not/and/or of guards.`,
     }) as never;
 
   const lentActionName = narrow
@@ -425,9 +441,14 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
     : z.string();
   const invoke = z
     .strictObject({
+      // A narrowed grammar names `fail` only where the body lends it: a model reads only what it can use.
       src: src.describe(
-        "A lent Agent, Effect or Machine by its name; the kit's `gate` (waits for an outside answer: a human, a " +
-          "webhook) where the body lends it; or a key of this Chart's `agents`.",
+        narrow && !narrow.fail
+          ? "A lent Agent, Effect or Machine by its name; the kit's `gate` (waits for an outside answer: a human, a " +
+              "webhook) where the body lends it; or a key of this Chart's `agents`."
+          : "A lent Agent, Effect or Machine by its name; the kit's `gate` (waits for an outside answer: a human, a " +
+              "webhook) or `fail` (ends the run as a Failure, with `input: { reason }`) where the body lends it; or a " +
+              "key of this Chart's `agents`.",
       ),
       id: name("invoke id").optional(),
       input: template.optional().describe("An Agent takes `{ prompt }`; an Effect or a Machine takes its own input."),
@@ -640,6 +661,7 @@ function lendsOf(decl: OpenBodyDeclaration) {
     actions: decl.lends.actions ?? [],
     delays: decl.lends.delays ?? [],
     gate: decl.lends.gate === true,
+    fail: decl.lends.fail === true,
   };
 }
 
@@ -657,9 +679,10 @@ export function narrowedChartSchema(decl: OpenBodyDeclaration): Record<string, u
 function narrowOf(decl: OpenBodyDeclaration): Narrow {
   const l = lendsOf(decl);
   return {
-    srcs: [...l.agents, ...l.effects, ...l.machines, ...(l.gate ? ["gate"] : [])],
+    srcs: [...l.agents, ...l.effects, ...l.machines, ...(l.gate ? ["gate"] : []), ...(l.fail ? ["fail"] : [])],
     lentAgents: l.agents,
     gate: l.gate,
+    fail: l.fail,
     guards: l.guards,
     actions: l.actions,
     delays: l.delays,
@@ -900,6 +923,9 @@ function issueLines(
 
 const pathText = (path: readonly PropertyKey[]): string => (path.length ? path.map(String).join(".") : "(chart)");
 
+/** What an invoke's `src` names (rule 3). */
+type InvokeKind = "agent" | "minted" | "effect" | "machine" | "gate" | "fail";
+
 /** One state of the Chart, indexed for the checks. */
 type Node = {
   key: string;
@@ -1097,11 +1123,12 @@ class Door {
   private lentText(): string {
     const actors = this.lentActors().map((a) => `${a.name} (${a.kind})`);
     const minted = Object.keys(this.chart.agents ?? {});
-    return `lent: ${names(actors)}; kit: ${this.lends.gate ? "gate" : "none"}; minted: ${names(minted)}`;
+    const kit = [...(this.lends.gate ? ["gate"] : []), ...(this.lends.fail ? ["fail"] : [])];
+    return `lent: ${names(actors)}; kit: ${kit.length ? kit.join(", ") : "none"}; minted: ${names(minted)}`;
   }
 
   /** What an invoke's `src` names, or undefined after a refusal line. */
-  private srcKind(src: string, path: string): "agent" | "minted" | "effect" | "machine" | "gate" | undefined {
+  private srcKind(src: string, path: string): InvokeKind | undefined {
     const lentNow = (name: string) => name in this.lent.actors;
     const declared = [...this.lends.agents, ...this.lends.effects, ...this.lends.machines];
     if (declared.includes(src) && !lentNow(src)) {
@@ -1122,6 +1149,14 @@ class Door {
       );
       return undefined;
     }
+    if (src === "fail") {
+      if (this.lends.fail) return "fail";
+      this.fail(
+        3,
+        `${path}: "fail" is the kit's Part that ends the run as a Failure, and this Open body does not lend it (\`lends.fail: true\` would); ${this.lentText()}`,
+      );
+      return undefined;
+    }
     if (Object.hasOwn(this.chart.agents ?? {}, src)) return "minted";
     this.fail(3, `${path}: "${src}" is not a lent actor or an Agent of this Chart; ${this.lentText()}`);
     return undefined;
@@ -1136,11 +1171,16 @@ class Door {
       this.sentBys.push({ id: (guard.params as { id: string }).id, path: `${path}.params.id` });
       return;
     }
+    if (guard.type === FAILURE_GUARD) {
+      if (guard.params !== undefined) this.fail(3, `${path}.params: "${FAILURE_GUARD}" takes no params`);
+      return;
+    }
     this.checkGuardName(guard.type, `${path}.type`);
     if (guard.params !== undefined) this.checkRefs(guard.params, `${path}.params`, scope);
   }
 
   private checkGuardName(name: string, path: string): void {
+    if (name === FAILURE_GUARD) return;
     const lent = this.lends.guards.filter((g) => g in this.lent.guards);
     if (this.lends.guards.includes(name) && !(name in this.lent.guards)) {
       this.fail(
@@ -1150,7 +1190,7 @@ class Door {
     } else if (!this.lends.guards.includes(name)) {
       this.fail(
         3,
-        `${path}: "${name}" is not a lent guard; lent guards: ${names(lent)} (and ${SENT_BY} with params { id })`,
+        `${path}: "${name}" is not a lent guard; lent guards: ${names(lent)} (and ${SENT_BY} with params { id }, and ${FAILURE_GUARD})`,
       );
     }
   }
@@ -1295,7 +1335,7 @@ class Door {
   // --- rule 5: minted Agents ------------------------------------------------------------------------
 
   private checkAgents(): void {
-    const lentNames = new Set([...this.lends.agents, ...this.lends.effects, ...this.lends.machines, "gate"]);
+    const lentNames = new Set([...this.lends.agents, ...this.lends.effects, ...this.lends.machines, "gate", "fail"]);
     for (const [slot, a] of Object.entries(this.chart.agents ?? {})) {
       const path = `agents.${slot}`;
       if (lentNames.has(slot)) {
@@ -1868,15 +1908,12 @@ class Door {
 
   // --- rule 8: lent input shapes --------------------------------------------------------------------
 
-  private checkInvokeInput(
-    inv: ChartInvoke,
-    kind: "agent" | "minted" | "effect" | "machine" | "gate",
-    path: string,
-  ): void {
+  private checkInvokeInput(inv: ChartInvoke, kind: InvokeKind, path: string): void {
     const ipath = `${path}.input`;
     const input = inv.input;
     const isObject = typeof input === "object" && input !== null && !Array.isArray(input) && !("$ref" in input);
     if (kind === "machine") return;
+    if (kind === "fail") return this.checkFailInput(input, isObject, ipath);
     if (kind === "gate") {
       if (input === undefined) return;
       if (!isObject) return this.fail(8, `${ipath}: a Gate's input is an object of gate (a name) and meta`);
@@ -1943,6 +1980,24 @@ class Door {
       return;
     }
     this.checkAgentInput(inv.src, kind, input, isObject, ipath);
+  }
+
+  /** The input of `fail` (ADR-0073): `{ reason, detail? }`, `reason` a text for a person (a string
+   * or a reference), `detail` any value. */
+  private checkFailInput(input: unknown, isObject: boolean, ipath: string): void {
+    if (!isObject) {
+      return this.fail(8, `${ipath}: \`fail\` takes { reason, detail? }: reason is a text for a person`);
+    }
+    for (const key of Object.keys(input as Record<string, unknown>)) {
+      if (key !== "reason" && key !== "detail") {
+        this.fail(8, `${ipath}.${key}: \`fail\` takes reason and detail only`);
+      }
+    }
+    const reason = (input as Record<string, unknown>).reason;
+    if (reason === undefined) this.fail(8, `${ipath}.reason: \`fail\` needs a reason, a text for a person`);
+    else if ((typeof reason !== "string" || reason === "") && !isRef(reason)) {
+      this.fail(8, `${ipath}.reason: a reason is a string that is not empty, or a reference`);
+    }
   }
 
   /**

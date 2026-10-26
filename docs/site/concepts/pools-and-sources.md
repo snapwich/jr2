@@ -45,12 +45,22 @@ start. Thus the run ends in the state `deadlocked`, and the `status` of its outp
 
 ### How the run ends
 
-The output of a Pool is `{ status, items }`. `items` holds the output of each worker, by item id. `status` comes from
-the last answer of `next`:
+The output of a Pool is `{ status, items, failures }`. `items` holds the output of each worker that got to a final
+state, by item id. `failures` holds the [Failure](../reference/glossary.md#failure) of each worker that failed, by item
+id. The Pool catches a worker's Failure: that worker stops, its Sandbox is deleted, and the other workers go on. A
+defect in a worker is not caught, and ends the run `error`.
+
+When the Pool ends and one or more workers failed, the run ends `failed` by default. This is true for `drained` and for
+`deadlocked`. Its output is then the Failure of the Pool: the reason is `"<n> of <m> items failed"`, and the detail is
+`{ status, items, failures }`. `jr2 run` exits 1. To end `done` with the failures in the output, give `pool()` the
+option `failures: "report"`. Use it when a failed item is a correct answer of the run, for example in a run that tries
+each item and reports which ones did not succeed.
+
+`status` comes from the last answer of `next`:
 
 | The last answer of `next`                       | `status`     | What it means                            |
 | ----------------------------------------------- | ------------ | ---------------------------------------- |
-| `null`, or `{ item: null, open: 0 }`            | `drained`    | All the work is done.                    |
+| `null`, or `{ item: null, open: 0 }`            | `drained`    | No item is left.                         |
 | `{ item: null, open: <n> }`, with `<n>` above 0 | `deadlocked` | Items exist, but none of them can start. |
 
 While workers wait at Gates, the run does not end. It stays open, and the Gates of the run show what needs you. This is

@@ -36,6 +36,7 @@ import { z } from "zod";
 import {
   agent,
   defineEvent,
+  fail,
   jr2Setup,
   open,
   workspace,
@@ -117,22 +118,22 @@ const door = z.object({
 export type TaskInput = z.infer<typeof door>;
 
 /**
- * The output of a run of `task`: `{ outcome: "approved", branch }` when the human approves the
- * work, or `{ outcome: "lost" }` when the Workspace was lost, with every commit that was not
- * pushed.
+ * The output of a run of `task` that ends `done`: `{ branch }`, the branch of the work that the
+ * human approved. A run whose Workspace is lost has no output of this type: it fails, and the run
+ * ends `failed` with the reason `the Workspace was lost` (ADR-0073).
  *
  * @example
  * ```ts
  * import type { TaskOutput } from "@jr2/machines";
  *
  * export function describe(output: TaskOutput): string {
- *   return output.outcome === "approved" ? `approved on ${output.branch}` : "the Workspace was lost";
+ *   return `approved on ${output.branch}`;
  * }
  * ```
  *
  * @see @jr2/orchestrator/docs/reference/machines.md
  */
-export type TaskOutput = { outcome: "approved"; branch: string } | { outcome: "lost" };
+export type TaskOutput = { branch: string };
 
 // ---------------------------------------------------------------------------------------------
 // Vocabulary (ADR-0011/0015), scoped to this Machine alone: the agent event becomes the coder
@@ -237,6 +238,8 @@ export const body = jr2Setup({
 - You MUST end your turn by calling \`finish\` exactly once, with a summary of what you did. An
   uncalled tool parks the whole workflow waiting for you.`,
     }),
+    // The Failure (ADR-0073): the `lost` state invokes it, and the run ends `failed`.
+    fail: fail(),
   },
 }).createMachine({
   id: "task",
@@ -244,7 +247,7 @@ export const body = jr2Setup({
   initial: "working",
 
   // Our Sandbox is gone — reaped, or replaced after an eviction (ADR-0021). The pod-local clone and
-  // every unpushed commit went with it, so settle as lost rather than pretend we can resume.
+  // every unpushed commit went with it, so fail the run rather than pretend we can resume.
   on: { "workspace.lost": { target: ".lost" } },
 
   states: {
@@ -329,13 +332,23 @@ export const body = jr2Setup({
     // the pod, and anything still unpushed in it goes too.
     done: {
       type: "final",
-      output: ({ context }): TaskOutput => ({ outcome: "approved", branch: context.workspace.branch }),
+      output: ({ context }): TaskOutput => ({ branch: context.workspace.branch }),
     },
-    lost: { type: "final", output: { outcome: "lost" } satisfies TaskOutput },
+    // Not a final state: a final state means `done`, and this work did not succeed. The Failure
+    // goes up through the wrapper, and the run ends `failed` (ADR-0073). A parent catches it with
+    // an `onError` that `isFailure` guards.
+    lost: {
+      invoke: {
+        src: "fail",
+        input: {
+          reason: "the Workspace was lost",
+          detail: { lost: "the Sandbox is gone, with every commit that was not pushed" },
+        },
+      },
+    },
   },
 
-  // The body's output is whichever final state settled it — the wrapper forwards it verbatim, so
-  // `jr2 status` on a finished run says which of the two things happened.
+  // The body's output is the output of its one final state, `done`; the wrapper forwards it.
   output: ({ event }) => (event as { output?: TaskOutput }).output as TaskOutput,
 });
 
@@ -351,8 +364,9 @@ export const body = jr2Setup({
  *
  * `task` does not push. While the run waits at the Gate, the Sandbox stays. You can exec into it
  * and read the branch. To keep the work, push it yourself. `approve` removes the Sandbox, and
- * every commit that was not pushed goes with it. If the Sandbox is lost, the run ends with
- * `{ outcome: "lost" }`.
+ * every commit that was not pushed goes with it. If the Sandbox is lost, `task` fails: the run
+ * ends `failed` with the reason `the Workspace was lost`. A parent Machine catches that Failure
+ * with an `onError` that `isFailure` guards.
  *
  * `task` leaves two parts Open, so you bind them with `customize()` where you register it:
  *

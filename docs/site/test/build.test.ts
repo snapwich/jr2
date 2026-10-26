@@ -110,6 +110,12 @@ test("a full strict build of this repo succeeds, and writes the bundle", async (
     block.split("\n")[0]!,
     / Before you give a change to the user, run `npx --no jr2 check` in the Instance folder\. It does the typecheck and the load of each Workflow that `jr2 up` does first, with no cluster, and it gives the same refusals\.$/,
   );
+  // And the Failure rule, on a line of its own, with a page that the bundle has (ADR-0073).
+  assert.match(
+    block.split("\n")[2]!,
+    /^A final state means that the work succeeded: the run ends `done`\. When the work did not succeed, invoke `fail\(\)` from a state \(reference\/authoring-surface\/fail\.md\), and the run ends `failed`\. Do not throw to fail: a throw is a defect, and the run ends `error`\.$/,
+  );
+  assert.ok(r.files.has("reference/authoring-surface/fail.md"));
   assert.ok(r.files.has("guides/write-a-workflow.md") && r.files.has("reference/authoring-surface.md"));
   // One entry for each directory, in the order an Assistant needs the pages. A folder of entry
   // pages is one entry, after the directory of its contents page, so the line stays short.

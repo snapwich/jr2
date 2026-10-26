@@ -47,8 +47,8 @@ and the Console start form would be only a field for JSON. Only a Machine with n
 
 The output of a run is the `output` at the root of `createMachine`, beside `id` and `states`. The status of the run
 shows it as `output`. When a different Machine invokes this Machine, the `onDone` of that invoke gets it as
-`event.output`. The `rollout` example has no root `output`. Thus its run has no output, and its result is only in its
-`context`.
+`event.output`. The `rollout` example has no root `output`. Thus a run of it that ends `done` has no output, and its
+result is only in its `context`.
 
 xstate does not use the `output` of a final state as the output of the Machine. It gives that output to the root
 `output` as `event.output`. Thus a Machine that has an `output` only on its final states has no output. TypeScript does
@@ -63,6 +63,32 @@ Give the same type to `types.output`.
 
 A final state inside a compound state can have an `output` without a root `output`. The `onDone` of that compound state
 gets it as `event.output`. A Machine with no `output`, such as `rollout`, is also correct.
+
+## Fail the run
+
+A final state means that the work succeeded: the run ends `done`. When the Machine could not do its work, invoke
+[`fail`](../reference/authoring-surface/fail.md) from a state. Put it under `actors` as `fail: fail()`, and give it a
+`reason`:
+
+```ts
+failed: { invoke: { src: "fail", input: { reason: "the tests did not pass", detail: { code: 1 } } } },
+```
+
+The run ends `failed`, and its output is the `{ reason, detail }` of the [Failure](../reference/glossary.md#failure).
+`jr2 run` exits with `1`. Do not throw from a promise to fail. A throw is a defect: the run ends `error`, with no
+output, and nobody can tell it from a bug in the kit. A Failure deletes the Sandbox of each `workspace()` that it goes
+through. To keep the work for a person to read, wait at a Gate before the state that fails.
+
+The same rule applies to the decision of a person. A decision that sends the work back, such as a `reject` that goes
+back to the coder, is a usual route. A decision that ends the run, such as `roll_back` in `rollout` or a `reject` at a
+Gate, goes to a state that invokes `fail` with the reason of the person, as `rolledBack` does. Do not put a
+`{ outcome: "rejected" }` in the output type for it. When the job of the Machine is the decision itself, such as a
+triage where "no" is a correct answer, the decision is a final state, and the Machine puts the decision in its output.
+
+A Failure goes up through each parent Machine. To catch it, guard an `onError` with
+[`isFailure`](../reference/authoring-surface/isfailure.md):
+`onError: [{ guard: ({ event }) => isFailure(event.error), target: "replan" }, { target: "broken" }]`.
+[How a run ends](../concepts/machines-and-workflows.md#how-a-run-ends) tells more.
 
 ## Register it and run it
 
@@ -101,13 +127,17 @@ jr2 send <run id> --gate canary --event roll_back --input '{"reason":"The error 
 delivered roll_back to gate "canary" on 921d9a0a-da2d-4caf-bb32-5f95acfd3a59
 ```
 
-In the first terminal, the run ends. Its `context` holds the default of `canaryPercent`, the `instanceId` that jr2
-added, and the `reason`:
+In the first terminal, the run ends. A `roll_back` ends the rollout, so the run ends `failed`, with the reason of the
+person as its output, and `jr2 run` exits with `1`. Its `context` holds the default of `canaryPercent`, the `instanceId`
+that jr2 added, and the `reason`:
+
+<!-- output: not run -->
 
 ```text
   emit {"type":"decided","promoted":false}
-  → done "rolledBack"
-{"runId":"921d9a0a-da2d-4caf-bb32-5f95acfd3a59","workflow":"rollout","instanceId":"b5d9ee34-69c3-4b0f-9438-403e19898953","status":"done","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"b5d9ee34-69c3-4b0f-9438-403e19898953","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"assembly":"a44731886e21"}
+  → failed "rolledBack"
+failed: The error rate went up.
+{"runId":"921d9a0a-da2d-4caf-bb32-5f95acfd3a59","workflow":"rollout","instanceId":"b5d9ee34-69c3-4b0f-9438-403e19898953","status":"failed","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"b5d9ee34-69c3-4b0f-9438-403e19898953","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"assembly":"a44731886e21","output":{"reason":"The error rate went up."}}
 ```
 
 Your instance id and your `assembly` hash are different.
@@ -168,6 +198,22 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
   `final states "<state>", "<state>" declare an output`, `these outputs reach nothing`, `write one at the root` and
   `keep them on the final states and pass them on`. `jr2 check` and `jr2 up` also refuse this in a Machine that you make
   with the `setup()` of xstate, and in a child Machine.
+- `createMachine` refuses a state that invokes an Agent when no `agent.fault` route is on that state or on a state above
+  it. jr2 sends `agent.fault` when the Turn of the Agent cannot go on. Route it on the state, or one time on the root:
+  `machine "<id>": state "<state>" invokes an Agent, and no route for "agent.fault" is on it or on a state above — jr2 sends agent.fault when the Agent's Turn cannot go on, and with no route the run faults: route it on that state or on a state above it, as on: { "agent.fault": "<the state that handles it>" } (ADR-0074)`.
+  With more than one such state, the refusal names each one: `states "<state>", "<state>" invoke an Agent` and
+  `is on them`. `jr2 check` and `jr2 up` also refuse this in a Machine that you make with the `setup()` of xstate, and
+  in a child Machine.
+- `workspace()` refuses a body with a state that is not final when no `workspace.lost` route is on that state or on a
+  state above it. `workspace()` sends `workspace.lost` to the body when its Sandbox is gone. Route it on the root of the
+  body:
+  `workspace(): the body "<id>" has a state "<state>" that is not final, and no route for "workspace.lost" is on it or on a state above — jr2 sends workspace.lost to the body when its Sandbox is gone, and with no route the run faults: route it on the body's root, as on: { "workspace.lost": "<the state that handles it>" } (ADR-0074)`.
+  A compound state whose final child has no `onDone` is a state that the body stays in, so it needs the route too.
+- When a run gets `agent.fault` or `workspace.lost` and no transition takes it, for example because the guard of its
+  route is false, the run ends `error`. Its fault names the event, the state and the reason (ADR-0074).
+- `fail` refuses an input that has no `reason`, or a `reason` that is empty. The compiler finds a missing `reason`, but
+  not an empty one. The run ends `error`, and its fault is:
+  `fail: the input must be { reason: string; detail?: unknown } with a reason that is not empty (got <value>) — invoke: { src: "fail", input: { reason: "the tests failed" } } (ADR-0073)`.
 - `workspace()` refuses a body that declares a door. Declare the door with the `input` option of `workspace()`:
   ``workspace(): the body "<id>" declares its own run input, which nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` handles, so the body's schema is not the door. Move it to the wrapper: workspace(body, { input, spec }) (ADR-0033).``
 - `jr2 up` prints each refusal of `defineEvent`, `createMachine` and `workspace()` as `error: <refusal>`, and exits with

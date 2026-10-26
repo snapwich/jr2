@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   emptyStore,
   applyFrame,
+  failureReason,
   dispatchBadge,
   dispatchStrip,
   dispatchedStrip,
@@ -22,6 +23,7 @@ import {
   gateCount,
   machineDocSource,
   selectedRun,
+  selectedRunFailure,
   selectedRunGates,
   selectedRunHeld,
   selectedRunWaiting,
@@ -779,4 +781,73 @@ test("`dispatched` is kept through `runs` and `status`, with no token", () => {
   assert.deepEqual(store.runs.get("a")?.dispatched, [{ slot: "intake", run: "callee-1" }]);
   store = applyFrame(store, { kind: "status", status: started });
   assert.equal(selectedRun(store)?.dispatched?.[0]?.run, "callee-1");
+});
+
+// --- a failed run's reason (ADR-0073): off the guarded re-fetch, kept through `gone` ---------------
+
+test("failureReason reads the Failure's reason only off a `failed` run, as `jr2 status` does", () => {
+  assert.equal(
+    failureReason({ status: "failed", output: { reason: "2 of 3 items failed", detail: {} } }),
+    "2 of 3 items failed",
+  );
+  assert.equal(failureReason({ status: "done", output: { reason: "an output field" } }), null, "a done run's output");
+  assert.equal(failureReason({ status: "error" }), null);
+  assert.equal(failureReason({ status: "failed", output: { reason: 3 } }), null, "no reason text");
+  assert.equal(failureReason({ status: "failed" }), null);
+});
+
+test("a failed run shows its reason with a live token, and keeps it after `gone` — the re-fetch can land on either side", () => {
+  const failed = run("a", "failed");
+  const before = fold(
+    { kind: "select", workflow: "wf" },
+    { kind: "token", state: "live" },
+    { kind: "status", status: run("a") },
+    { kind: "selectRun", runId: "a" },
+    { kind: "status", status: failed },
+    { kind: "failure", runId: "a", reason: "the tests did not pass" },
+    { kind: "gone", runId: "a" },
+  );
+  assert.equal(selectedRunFailure(before), "the tests did not pass", "folded before `gone`");
+  const after = fold(
+    { kind: "select", workflow: "wf" },
+    { kind: "token", state: "live" },
+    { kind: "status", status: run("a") },
+    { kind: "selectRun", runId: "a" },
+    { kind: "status", status: failed },
+    { kind: "gone", runId: "a" },
+    { kind: "failure", runId: "a", reason: "the tests did not pass" },
+  );
+  assert.equal(selectedRunFailure(after), "the tests did not pass", "folded after `gone`, on the settled run");
+  assert.equal(selectedRunFailure(applyFrame(after, { kind: "failure", runId: "a", reason: null })), null);
+});
+
+test("the reason is guarded: no token folds nothing, a dropped token empties it, and it goes with its run", () => {
+  const base: Frame[] = [
+    { kind: "select", workflow: "wf" },
+    { kind: "status", status: run("a", "failed") },
+    { kind: "selectRun", runId: "a" },
+  ];
+  assert.equal(selectedRunFailure(fold(...base, { kind: "failure", runId: "a", reason: "r" })), null, "observer mode");
+  const live = fold(...base, { kind: "token", state: "live" }, { kind: "failure", runId: "a", reason: "r" });
+  assert.equal(selectedRunFailure(live), "r");
+  assert.equal(applyFrame(live, { kind: "token", state: "invalid" }).failures.size, 0, "a 401 drops it");
+  assert.equal(applyFrame(live, { kind: "token", state: "checking" }).failures.size, 1, "re-validation keeps it");
+  assert.equal(applyFrame(live, { kind: "select", workflow: "other" }).failures.size, 0, "a navigation drops it");
+  assert.equal(applyFrame(live, { kind: "runs", runs: [run("b")] }).failures.size, 0, "neither live nor settled");
+  // A re-fetch that comes back for a run the page does not hold folds nothing.
+  const stray = applyFrame(fold({ kind: "token", state: "live" }), { kind: "failure", runId: "x", reason: "r" });
+  assert.equal(stray.failures.size, 0);
+  // A settled run evicted past the cap takes its reason with it.
+  let s = fold(
+    { kind: "select", workflow: "wf" },
+    { kind: "token", state: "live" },
+    { kind: "status", status: run("f") },
+  );
+  s = applyFrame(s, { kind: "failure", runId: "f", reason: "r" });
+  s = applyFrame(s, { kind: "gone", runId: "f" });
+  for (let i = 0; i < SETTLED_CAP; i++) {
+    s = applyFrame(s, { kind: "status", status: run(`r${i}`) });
+    s = applyFrame(s, { kind: "gone", runId: `r${i}` });
+  }
+  assert.equal(s.failures.has("f"), false, "evicted with its run");
 });

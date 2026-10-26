@@ -11,9 +11,15 @@
 // A named Chart is a Workflow (ADR-0070): `jr2 run <wrapper>/<name>` starts it as any other run, the
 // name riding the path as one encoded segment. A Chart the door refuses (one-shot, in `--input`)
 // is a 422 whose report lines this prints, one per rule the Chart fails.
+//
+// The exit code (ADR-0073): 0 only for a run that ended `done`. 1 for every other end — `failed`,
+// `error`, `cancelled`, `lost`, `drifted` — and for a run that was parked before it settled. 2 is a
+// usage error, as for every verb. The status line on stderr says which end it was, and a failed
+// run's reason follows it.
 
 import type { ChildErrorMarker, PlacingMarker } from "@jr2/orchestrator/internal";
 import { JR2Client, JR2HttpError } from "../client.ts";
+import { failureActivity } from "./status.ts";
 import { resolveTarget, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 import { parseCommand, usageLine } from "../command-table.ts";
@@ -64,8 +70,10 @@ export async function run(args: string[], io: Io): Promise<number> {
       }
       activity(io, `  → ${ev.status.status} ${JSON.stringify(ev.status.value)}`);
       if (ev.status.status !== "active") {
+        const failed = failureActivity(ev.status);
+        if (failed) activity(io, failed);
         result(io, ev.status);
-        return ev.status.status === "error" ? 1 : 0;
+        return ev.status.status === "done" ? 0 : 1;
       }
     }
     // `events()` re-attaches until the run settles (ADR-0022), so reaching here means the run left

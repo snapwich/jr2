@@ -19,6 +19,9 @@
 // (<slot>), depth <n>`. A run that dispatched says the other direction, one line per run it
 // started: `dispatched: <run> (<slot>)`. The result itself carries `dispatchedBy`, `dispatched`
 // and, once the run is no longer live, its `output`, as the Orchestrator sends them.
+//
+// A failed run (ADR-0073) says its reason beside the result: `failed: <reason>`. The result's
+// `output` holds the whole Failure, `{ reason, detail? }`.
 
 import type { AssemblyView, RepoStatus } from "@jr2/orchestrator/internal";
 import { JR2Client, type FetchLike, type RunStatus, workflowPath } from "../client.ts";
@@ -48,11 +51,20 @@ export async function status(args: string[], io: Io): Promise<number> {
       return 1;
     }
     result(io, s);
-    for (const note of [dispatchedActivity(s), ...dispatchedLines(s), boundActivity(s)]) if (note) activity(io, note);
+    const notes = [failureActivity(s), dispatchedActivity(s), ...dispatchedLines(s), boundActivity(s)];
+    for (const note of notes) if (note) activity(io, note);
     return 0;
   } finally {
     target.close?.();
   }
+}
+
+/** The `failed:` line for a run that ended `failed` (ADR-0073): the Failure's reason, read from its
+ * output. Undefined for every other status, and for an output with no reason text. */
+export function failureActivity(s: Pick<RunStatus, "status" | "output">): string | undefined {
+  if (s.status !== "failed") return undefined;
+  const reason = (s.output as { reason?: unknown } | undefined)?.reason;
+  return typeof reason === "string" ? `failed: ${reason}` : undefined;
 }
 
 /** The most `dispatched:` lines `jr2 status` prints: a watcher dispatches on every pass, and the

@@ -17,6 +17,7 @@ import {
   agent,
   command,
   defineEvent,
+  fail,
   jr2Setup,
   workspace,
   type HostInjectedInput,
@@ -50,6 +51,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [deploy, announce, checkDeploy],
   actors: {
+    fail: fail(),
     coder: agent(coder),
     // Long enough for the step to restart the Harness under it.
     deployer: command(["node", "-e", "setTimeout(() => console.log('v2 is live'), 120000)"], { timeout: "5m" }),
@@ -92,10 +94,20 @@ const body = jr2Setup({
     },
     announced: { type: "final", output: ({ context }) => ({ outcome: "announced", picks: context.picks }) },
     checked: { type: "final", output: ({ context }) => ({ outcome: "checked", picks: context.picks }) },
-    lost: { type: "final", output: ({ context }) => ({ outcome: "lost", picks: context.picks }) },
+    lost: {
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({ reason: "the Sandbox was lost", detail: { outcome: "lost", picks: context.picks } }),
+      },
+    },
     faulted: {
-      type: "final",
-      output: ({ context }) => ({ outcome: "faulted", picks: context.picks, reason: context.fault }),
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Agent's Turn could not go on",
+          detail: { outcome: "faulted", picks: context.picks, reason: context.fault },
+        }),
+      },
     },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,

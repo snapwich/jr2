@@ -52,8 +52,18 @@ import { attachLent, isOpenBody, openBodyDeclarationOf, type LentParts } from ".
 import { refuseInlineParts } from "./parts.ts";
 import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { refuseLostOutput } from "./run-output.ts";
+import { refuseUnroutedAgentFault } from "./mechanism-routes.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
 import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } from "./vocabulary.ts";
+
+/**
+ * The marker that `compileChart` puts on the config of a Chart's Machine (ADR-0070). In a Chart the
+ * `agent.fault` route is optional: an `agent.fault` that no transition takes ends the Open body as
+ * an error, so `createMachine` does not refuse a Chart state with no route. Not on the Authoring
+ * surface (index.ts). The load walk (`partsOf`) refuses an author's Machine with no route, with or
+ * without the marker (ADR-0074).
+ */
+export const COMPILED_CHART: unique symbol = Symbol("jr2.compiledChart");
 
 // Injected into every jr2Setup union. Dotted names by construction (`NAME_RE` forbids dots in
 // workflow event names), so they can never collide with a def.
@@ -67,7 +77,10 @@ export type MechanismEvent = FaultTelemetry | WorkspaceLost;
  * jr2 sends `workspace.lost` to the body of a `workspace()` when its Sandbox is gone: its pod was
  * evicted or deleted, or its node went. jr2 does not make the Sandbox again, and the commits that
  * were not pushed go with it. The body decides what to do next: route the event with
- * `on: { "workspace.lost": … }`.
+ * `on: { "workspace.lost": … }`, usually once, on the body's root. `workspace()` refuses a body
+ * with a state that is not final and has no route for it on itself or on a state above. When the
+ * event comes and no transition takes it (the route's guard is false), the run ends `error`, with
+ * the event, the state and the reason in its fault.
  */
 export type WorkspaceLost = {
   type: "workspace.lost";
@@ -176,6 +189,13 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  * - a state below an Agent's state that invokes something and that nothing enters: ``machine
  *   "<id>": state "<state>" below Agent "<slot>"'s state "<state>" is entered by nothing, so what
  *   it invokes (<src>) never runs — target it from a pick or a route, or delete it``
+ * - a state that invokes an Agent when that state and each state above it have no `agent.fault`
+ *   route: ``machine "<id>": state "<state>" invokes an Agent, and no route for "agent.fault" is
+ *   on it or on a state above — jr2 sends agent.fault when the Agent's Turn cannot go on, and with
+ *   no route the run faults: route it on that state or on a state above it, as on: {
+ *   "agent.fault": "<the state that handles it>" } (ADR-0074)``. One route on the root is a route
+ *   for each state. A Chart's Machine does not get this refusal: in a Chart the route is optional
+ *   (ADR-0070).
  *
  * It also refuses a `sentBy` that names no party (see `sentBy`). It refuses a pick param that
  * nothing reads, where the pick enters a state that invokes an Effect (see `fromPick`). Shapes that
@@ -189,7 +209,7 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, defineEvent, jr2Setup } from "@jr2/orchestrator";
+ * import { agent, defineEvent, fail, jr2Setup } from "@jr2/orchestrator";
  *
  * const proposed = defineEvent({
  *   name: "proposed",
@@ -208,11 +228,13 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  *       instructions: "You plan small releases.",
  *       workspace: "none",
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "plan",
  *   input: z.object({ goal: z.string() }),
  *   context: ({ input }) => ({ goal: input.goal }),
+ *   on: { "agent.fault": ".failed" },
  *   initial: "planning",
  *   states: {
  *     planning: {
@@ -224,6 +246,7 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  *       on: { approve: "approved", reject: "planning" },
  *     },
  *     approved: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *   },
  * });
  * ```
@@ -323,7 +346,12 @@ export function jr2Setup<
     // machine receives at creation — and is pulled OFF before xstate sees it: a zod schema is
     // not machine structure, and it must never reach the fingerprint/serialization paths that
     // read `machine.config`. It is attached beside the vocabulary below.
-    const { input: inputSchema, ...machineConfig } = config as { input?: z.ZodObject } & Record<string, unknown>;
+    // A compiled Chart (ADR-0070) is marked, and the marker is pulled off as `input` is.
+    const {
+      input: inputSchema,
+      [COMPILED_CHART]: compiledChart,
+      ...machineConfig
+    } = config as { input?: z.ZodObject; [COMPILED_CHART]?: true } & Record<string, unknown>;
 
     // Resolve the defs first (duplicates and reserved semantics fail HERE, naming the machine —
     // the same loud failure `eventMap` gave the manifest, moved to machine-build time)…
@@ -377,6 +405,10 @@ export function jr2Setup<
     refuseInlineParts(machine);
     // A final state's output with no root output (ADR-0015): the run would end with none.
     refuseLostOutput(machine);
+    // A state that invokes an Agent with no `agent.fault` route (ADR-0074): the run would wait for ever.
+    // Not in a compiled Chart: there the route is optional, and the Open body ends as an error
+    // when no transition takes the event (ADR-0070).
+    if (compiledChart !== true) refuseUnroutedAgentFault(machine);
     refuseParallelBelowAgents(machine, def.actors ?? {});
     refuseUnknownSentBy(machine);
     // Before the Effect checks: they ask who may send a writing (`mayTake`), which reads its audience.

@@ -44,11 +44,12 @@ import {
   type ChartTransitions,
 } from "./chart.ts";
 import { inputKeysOf, isEffect, type Duration } from "./effect.ts";
+import { fail, FAILURE_GUARD, failureGuard } from "./fail.ts";
 import { agent } from "./harness-client.ts";
 import { SENT_BY } from "./party.ts";
 import { wrapperBodyOf } from "./parts.ts";
 import { actorPath, boundRun } from "./registration.ts";
-import { jr2Setup } from "./setup.ts";
+import { COMPILED_CHART, jr2Setup } from "./setup.ts";
 import { attachBoundMachine, boundMachineFor } from "./vocabulary.ts";
 
 // ADR-0070: "counters are the Open body's".
@@ -111,7 +112,9 @@ export function jsonOver(value: unknown, cap: number): boolean {
 
 /** The parts of the Chart wrapper that a Chart can use, by their keys in `actors`, `guards`,
  * `actions` and `delays`. `gate: true` lends the Gate, so that a Chart can wait for an answer from
- * outside the run. A Chart can use no other part. */
+ * outside the run. `fail: true` lends the Part that fails the run, so that a Chart can end its run
+ * as a Failure (ADR-0073): the Machine decides which ends a Chart can choose. A Chart can use no
+ * other part. */
 export type Lends = {
   agents?: string[];
   effects?: string[];
@@ -120,6 +123,7 @@ export type Lends = {
   actions?: string[];
   delays?: string[];
   gate?: boolean;
+  fail?: boolean;
 };
 
 /**
@@ -164,6 +168,8 @@ const reservedName = (kind: (typeof LEND_KINDS)[number], v: string): string | un
   if (v.includes(".")) return `"${v}" holds a dot; a lent name is a slot key, and dotted names are jr2's and xstate's`;
   if ((kind === "agents" || kind === "effects" || kind === "machines") && v === "gate")
     return `"gate" is the kit's Gate; lend a slot of another name`;
+  if ((kind === "agents" || kind === "effects" || kind === "machines") && v === "fail")
+    return `"fail" is the kit's Part that fails the run, lent as \`fail: true\`; lend a slot of another name`;
   if (kind === "actions" && (GENERIC_ACTIONS as readonly string[]).includes(v))
     return `"${v}" is a generic action every Chart has; lend an action of another name`;
   if (kind === "delays" && /^(0|[1-9][0-9]*)$/.test(v))
@@ -214,8 +220,12 @@ export function declarationFaults(decl: unknown): string[] {
         if (typeof (lends as { gate?: unknown }).gate !== "boolean") {
           faults.push("lends.gate: the kit's Gate is lent whole: true or false");
         }
+      } else if (key === "fail") {
+        if (typeof (lends as { fail?: unknown }).fail !== "boolean") {
+          faults.push("lends.fail: the kit's Part that fails the run is lent whole: true or false");
+        }
       } else if (!(LEND_KINDS as readonly string[]).includes(key)) {
-        faults.push(`lends.${key}: an Open body lends ${LEND_KINDS.join(", ")} and gate only`);
+        faults.push(`lends.${key}: an Open body lends ${LEND_KINDS.join(", ")}, gate and fail only`);
       }
     }
     for (const kind of LEND_KINDS) {
@@ -274,6 +284,7 @@ function frozen(decl: OpenBodyDeclaration): OpenBodyDeclaration {
     if (v !== undefined) lends[kind] = Object.freeze([...v]) as string[];
   }
   if (decl.lends.gate !== undefined) lends.gate = decl.lends.gate;
+  if (decl.lends.fail !== undefined) lends.fail = decl.lends.fail;
   return Object.freeze({
     lends: Object.freeze(lends),
     allows: Object.freeze({
@@ -948,13 +959,15 @@ export type CompileOptions = OpenBodyOptions & {
 
 /**
  * Build the Machine a Chart describes (ADR-0070), with `jr2Setup` over: the lent actors by their
- * slot names, `agent(def)` for each Agent the Chart mints, and the kit's `gate`; the lent guards
- * and `jr2.sentBy`; the lent actions and the four generic ones; the lent delays. Every reference
- * resolves at invoke time, so the Machine holds the text's shape and no run's data. The Chart's
+ * slot names, `agent(def)` for each Agent the Chart mints, the kit's `gate`, and `fail()` where the
+ * body lends it; the lent guards, `jr2.sentBy` and `jr2.failure`; the lent actions and the four
+ * generic ones; the lent delays. Every reference resolves at invoke time, so the Machine holds the
+ * text's shape and no run's data. The Chart's
  * input is the context key {@link CHART_INPUT_KEY}; a done Chart outputs `{ outcome: "done",
  * output }`, its `output` resolved (or, without one, its final state's). The transitions ceiling
  * is xstate's `maxIterations` as well, so a guarded `always` loop that never ends in one macrostep
- * still ends. `jr2Setup`'s own refusals (a parallel state below an Agent's) throw here.
+ * still ends. `jr2Setup`'s own refusals (a parallel state below an Agent's) throw here, but not its
+ * `agent.fault` refusal: in a Chart that route is optional (see {@link unroutedFault}).
  */
 export function compileChart(
   admitted: AdmittedChart,
@@ -967,6 +980,8 @@ export function compileChart(
   const minted = mapValues(admitted.agents, (def) => def);
   const actors: Record<string, UnknownActorLogic> = chartActors(lent.actors);
   for (const [slot, def] of Object.entries(minted)) actors[slot] = mint(slot, def);
+  // The kit's Part that fails the run, where the body lends it (ADR-0073): no slot of the wrapper's.
+  if (decl.lends.fail === true) actors.fail = fail();
   // The slots an invoke runs an Agent Turn in: the lent Agents and the Chart's own.
   const agentSlots = new Set([
     ...Object.keys(lent.actors).filter((slot) => isAgent(lent.actors[slot])),
@@ -990,11 +1005,15 @@ export function compileChart(
             : (event as { output?: unknown } | undefined)?.output,
       }) satisfies OpenBodyOutput,
     options: { maxIterations: decl.ceilings.transitions },
+    // In a Chart the `agent.fault` route is optional (ADR-0070): the Open body ends as an error
+    // when no transition takes the event, so `createMachine` does not refuse a state with none.
+    [COMPILED_CHART]: true,
   };
   return jr2Setup({
     events: admitted.events,
     actors,
-    guards: lent.guards as never,
+    // `jr2.failure` is in every Chart, as `jr2.sentBy` is: a predicate, with no capability (ADR-0073).
+    guards: { ...(lent.guards as Record<string, unknown>), [FAILURE_GUARD]: failureGuard } as never,
     actions: { ...(lent.actions as Record<string, unknown>), ...GENERIC } as never,
     delays: lent.delays as never,
   }).createMachine(config as never) as unknown as AnyStateMachine;
@@ -1182,6 +1201,35 @@ function watchTurns(self: AnyActorRef, turns: number, ceiling: number): TurnWatc
   return watch;
 }
 
+/**
+ * Does a transition of the Chart take this event now? xstate's own selection, guards and all. A
+ * guard that throws (a reference that resolved to nothing) counts as a take: the step then runs
+ * the guard again, and settles the body `refused` with the reference named.
+ */
+function takes(machine: AnyStateMachine, snapshot: BodySnapshot, event: AnyEventObject): boolean {
+  try {
+    return machine.getTransitionData(snapshot as never, event as never).length > 0;
+  } catch {
+    runFault = undefined;
+    return true;
+  }
+}
+
+/**
+ * The error of an Open body whose Chart got `agent.fault` and took no transition for it (ADR-0070,
+ * ADR-0074). In a Chart the route is optional: the body ends as an error, which an `onError` on the
+ * Open body's state catches. With no `onError` there, the error goes up as any error does, and the
+ * run ends `error`. It is a fault, never a Failure: the Chart did not choose this end.
+ */
+export function unroutedFault(chartId: string, value: unknown, reason: unknown): Error {
+  const why = typeof reason === "string" && reason !== "" ? reason : "no reason given";
+  return new Error(
+    `the Chart "${chartId}" got "agent.fault" in state ${JSON.stringify(value ?? null)}, and no transition of ` +
+      `the Chart took it (${why}): the Open body ends as an error, which an onError on the Open body's state ` +
+      `catches (ADR-0070, ADR-0074)`,
+  );
+}
+
 /** The actor logic of an Open body: a custom ActorLogic that delegates to the compiled Chart. */
 export function openBodyLogic(decl: OpenBodyDeclaration, options: OpenBodyOptions = {}): UnknownActorLogic {
   const wallMs = durationMs(decl.ceilings.wallClock) ?? Number.POSITIVE_INFINITY;
@@ -1210,6 +1258,14 @@ export function openBodyLogic(decl: OpenBodyDeclaration, options: OpenBodyOption
     }
     return settled(output, fields, from);
   };
+
+  /** End the body as an error and stop its children: an `agent.fault` that the Chart did not route. */
+  const errored = (error: Error, from: BodySnapshot, fields: BodyFields, scope: AnyActorScope): BodySnapshot => ({
+    ...settleWith({ outcome: "done", output: undefined }, from, fields, scope),
+    status: "error",
+    output: undefined,
+    error,
+  });
 
   /** Settle on a ceiling (ADR-0070): the body's output names it, and its children are stopped. */
   const ceiling = (
@@ -1476,6 +1532,13 @@ export function openBodyLogic(decl: OpenBodyDeclaration, options: OpenBodyOption
           scope.self,
           ceiling("transitions", transitionsDetail(fields.counters.transitions), snapshot, fields, scope),
         );
+      }
+      // An `agent.fault` that no transition of the Chart takes ends the body as an error (ADR-0070):
+      // in a Chart the route is optional. The body does not give the event to the Chart, so the run
+      // host sees no dropped mechanism event in the Chart; the wrapper gets the body's error.
+      if (event.type === "agent.fault" && !takes(machine, snapshot, event)) {
+        const error = unroutedFault(machine.id, snapshot.value, (event as { reason?: unknown }).reason);
+        return release(scope.self, errored(error, snapshot, fields, scope));
       }
       return release(
         scope.self,

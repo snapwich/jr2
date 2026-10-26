@@ -29,7 +29,8 @@ it bad text.
 
 - **`lends`**: the parts of the Chart wrapper that a Chart can use, by their slot keys. These are Agents, Effects,
   Machines, guards, actions and delays. `gate: true` lends the [Gate](../reference/glossary.md#gate), so that a Chart
-  can wait for a person.
+  can wait for a person. `fail: true` lends [`fail()`](../reference/authoring-surface/fail.md), so that a Chart can end
+  its run as a [Failure](../reference/glossary.md#failure) with `invoke: { src: "fail", input: { reason } }`.
 - **`allows`**: what the Agents that a Chart adds can have. `models` lists the models, and `workspace` lists the
   Workspace accesses. With no model, a Chart cannot add an Agent.
 - **`ceilings`**: the limits of one Chart: the Agent Turns, the wall clock, the transitions, the children at one time,
@@ -44,7 +45,11 @@ runs: in the Sandbox of its `workspace()`, or on the [Instance Harness](../refer
 A Chart is xstate's own JSON config, with these limits:
 
 - States, transitions, `after` delays, and nested and parallel states. A Chart has 200 states at most, 8 levels deep.
-- Each `invoke.src` is a lent slot key or an Agent of the Chart. Each guard, action and delay is a lent name.
+- Each `invoke.src` is a lent slot key or an Agent of the Chart. Each guard, action and delay is a lent name. Each Chart
+  also has the guard `jr2.failure`, which is true on an `onError` when the error is a Failure.
+- A state that invokes an Agent can route [`agent.fault`](../reference/mechanism-events.md#agent-fault) in its `on`, but
+  it does not have to. When no transition of the Chart takes `agent.fault`, the Open body ends as an error. An `onError`
+  on the Open body's state in the Chart wrapper catches it. With no `onError` there, the run ends `error`.
 - Its events, with a JSON Schema for the input of each. An Agent of the Chart picks these events.
 - Its own Agents, under `agents`, each with a model that the Open body allows.
 - Its `context`, and the `output` of its final state. A Chart reads that `output`. A Machine that you write in

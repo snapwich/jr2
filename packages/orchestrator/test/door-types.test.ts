@@ -53,6 +53,7 @@ type Door = z.infer<typeof door>;
 const bodyTakingInput = <TInput>() =>
   setup({ types: {} as { context: {}; input: TInput } }).createMachine({
     context: {},
+    on: { "workspace.lost": {} },
     initial: "idle",
     states: { idle: {} },
   });
@@ -335,6 +336,7 @@ const emptyBody = setup({
   types: {} as { input: EmptyBody; context: EmptyBody & { count: number } },
 }).createMachine({
   context: ({ input }) => ({ ...input, count: 0 }),
+  on: { "workspace.lost": {} },
   initial: "working",
   states: {
     working: {

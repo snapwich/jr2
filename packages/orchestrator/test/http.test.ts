@@ -449,7 +449,8 @@ test("GET /workflows/:wrapper/chart-schema is the grammar narrowed to the Open b
   assert.deepEqual(agent.model?.enum, ["stub/model"]);
   assert.deepEqual(agent.workspace?.enum, ["none", "write"]);
   assert.ok(schema.$defs["jr2.ChartInvoke"].properties.src.anyOf[0]!.enum!.includes("coder"), "a lent src");
-  assert.deepEqual(schema.$defs["jr2.ChartGuard"].anyOf[0]!.enum, ["underLimit"]);
+  // The lent guard, and `jr2.failure`, which every Chart has (ADR-0073).
+  assert.deepEqual(schema.$defs["jr2.ChartGuard"].anyOf[0]!.enum, ["underLimit", "jr2.failure"]);
   assert.deepEqual(schema.$defs["jr2.ChartGuard"].anyOf.find((g) => g.properties?.type?.enum)?.properties?.type?.enum, [
     "underLimit",
   ]);
@@ -613,11 +614,16 @@ test("the one-shot door: a Chart field the door refuses is 422 with the report, 
   assert.equal(host.list().length, before, "nothing started");
 });
 
+/** The review loop with each `agent.fault` route taken in place (ADR-0074: a route with no target
+ * is still a route), so the run stays live on {@link NO_HARNESS}'s fault for a read of it. */
+const stayingOnFault = (chart: unknown): unknown =>
+  JSON.parse(JSON.stringify(chart).replaceAll('"agent.fault":"faulted"', '"agent.fault":{}'));
+
 test("GET /workflows/:name/runs/:runId/machine: the run's bound Machine; 404 for an unknown run", async () => {
   const { app } = await mkChartApp();
   const res = await app.request(
     "/workflows/charted/runs",
-    jsonPost({ endpoint: NO_HARNESS, task: "t", chart: await reviewLoop() }),
+    jsonPost({ endpoint: NO_HARNESS, task: "t", chart: stayingOnFault(await reviewLoop()) }),
   );
   assert.equal(res.status, 201);
   const { runId } = (await res.json()) as { runId: string };

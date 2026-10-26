@@ -179,7 +179,7 @@ example, a run that the Agent accepts immediately prints:
 run <run id> (triage) — attached
   → active "triaging"
   → done "accepted"
-{"runId":"<run id>","workflow":"triage","instanceId":"<instance id>","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[],"summary":"<summary>"},"children":[],"waiting":[],"held":[],"assembly":"<hash>"}
+{"runId":"<run id>","workflow":"triage","instanceId":"<instance id>","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[],"summary":"<summary>"},"children":[],"waiting":[],"held":[],"assembly":"<hash>","output":{"outcome":"accepted","summary":"<summary>"}}
 ```
 
 `<run id>` is the id of this run, and `<instance id>` is the [Instance ID](../reference/glossary.md#instance-id) of the
@@ -229,16 +229,20 @@ delivered answer to gate "clarify" on 3f7047b1-abcb-4486-be80-f93c12aea165
 The run goes back to `triaging`, and the Agent reads your answer. Look at the first terminal. When the Agent picks
 `accept`, the run ends, and `jr2 run` prints the last status:
 
+<!-- output: not run -->
+
 ```text
 …
   → active "triaging"
   → active "triaging"
   → done "accepted"
-{"runId":"3f7047b1-abcb-4486-be80-f93c12aea165","workflow":"triage","instanceId":"6e526cf3-6dd2-4b59-b9ea-e181d94bc0f9","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"Where should the version be shown: a CLI flag or command (e.g. `--version`), a line in the app's help or about screen, or both — and which version string should it print (the app's release version, a git commit hash, or both)?","info":"Add a --version flag to the CLI. It prints the installed version and exits."}],"summary":"Add a `--version` flag to the CLI that prints the installed release version string and exits with status 0 without running any other command."},"children":[],"waiting":[],"held":[],"assembly":"35d4323fff12"}
+{"runId":"3f7047b1-abcb-4486-be80-f93c12aea165","workflow":"triage","instanceId":"6e526cf3-6dd2-4b59-b9ea-e181d94bc0f9","status":"done","value":"accepted","context":{"request":"People keep asking what version they are running.","exchange":[{"question":"Where should the version be shown: a CLI flag or command (e.g. `--version`), a line in the app's help or about screen, or both — and which version string should it print (the app's release version, a git commit hash, or both)?","info":"Add a --version flag to the CLI. It prints the installed version and exits."}],"summary":"Add a `--version` flag to the CLI that prints the installed release version string and exits with status 0 without running any other command."},"children":[],"waiting":[],"held":[],"assembly":"35d4323fff12","output":{"outcome":"accepted","summary":"Add a `--version` flag to the CLI that prints the installed release version string and exits with status 0 without running any other command."}}
 ```
 
-`summary` is the request as the model wrote it again, in one sentence. Your summary is different. If the Agent asks a
-second question, the run goes to `clarify` again. Read the question, and answer it in the same way.
+`summary` is the request as the model wrote it again, in one sentence. Your summary is different. The `output` of the
+run holds the decision. The job of a triage is the decision, so a `reject` is a correct answer too: the run ends `done`,
+with `"outcome":"rejected"` and the reason in its output. If the Agent asks a second question, the run goes to `clarify`
+again. Read the question, and answer it in the same way.
 
 ## Start the second run
 

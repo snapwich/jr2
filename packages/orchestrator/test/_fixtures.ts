@@ -209,6 +209,7 @@ export const codingTemplate = jr2Setup({
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
 }).createMachine({
+  on: { "agent.fault": {} },
   id: "m",
   context: ({ input }) => ({ sandbox: input.sandbox }),
   initial: "active",
@@ -275,6 +276,7 @@ export const continuedTemplate = jr2Setup({
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
 }).createMachine({
+  on: { "agent.fault": {} },
   id: "c",
   context: {},
   initial: "first",
@@ -340,6 +342,7 @@ export const workspaceTemplate = jr2Setup({
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
 }).createMachine({
+  on: { "agent.fault": {} },
   id: "w",
   context: ({ input }) => ({ sandbox: input.sandbox }),
   initial: "code",

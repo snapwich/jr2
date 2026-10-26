@@ -47,6 +47,7 @@ export type Mode = "plain" | "marked";
 /** S1 siblings: `draft` (the Agent's mode) and `review` (a Gate child) both write `approve`. */
 export function s1(coder: AgentLogic): AnyStateMachine {
   return jr2Setup({ types, events: [approve, askReview!], actors: { coder } }).createMachine({
+    on: { "agent.fault": {} },
     id: "s1",
     context: { ran: [] },
     initial: "work",
@@ -92,6 +93,7 @@ export function s2(
     events: [opts.any ? approveAny : approve, polish!, revise!, poke!, tick!],
     actors: { coder },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "s2",
     context: { ran: [] },
     initial: "release",
@@ -129,6 +131,7 @@ export function s2(
 /** S3, a Gate above and the name only above: `draft` writes `revise`; only `release` writes `approve`. */
 export function s3(coder: AgentLogic): AnyStateMachine {
   return jr2Setup({ types, events: [approve, revise!], actors: { coder } }).createMachine({
+    on: { "agent.fault": {} },
     id: "s3",
     context: { ran: [] },
     initial: "release",
@@ -153,6 +156,7 @@ export function s3(coder: AgentLogic): AnyStateMachine {
 /** S4, one party's nested override: `work` and its mode `draft` both write `cancel`. */
 export function s4(coder: AgentLogic): AnyStateMachine {
   return jr2Setup({ types, events: [cancel!], actors: { coder } }).createMachine({
+    on: { "agent.fault": {} },
     id: "s4",
     context: { ran: [] },
     initial: "work",
@@ -172,6 +176,7 @@ export function s4(coder: AgentLogic): AnyStateMachine {
 /** S5, parallel regions above the Agent: `r1` invokes the Agent and writes `go`; `r2` a Gate, `go`. */
 export function s5(coder: AgentLogic, mode: Mode): AnyStateMachine {
   return jr2Setup({ types, events: [go!], actors: { coder } }).createMachine({
+    on: { "agent.fault": {} },
     id: "s5",
     context: { ran: [] },
     type: "parallel",
@@ -198,6 +203,7 @@ export function s5(coder: AgentLogic, mode: Mode): AnyStateMachine {
  * at Rest, so every pick of `coder` is refused whatever the guard (ADR-0024). */
 export function s8(coder: AgentLogic, reviewer: AgentLogic, mode: Mode): AnyStateMachine {
   return jr2Setup({ types, events: [submit!], actors: { coder, reviewer } }).createMachine({
+    on: { "agent.fault": {} },
     id: "s8",
     context: { ran: [] },
     initial: "outer",
@@ -236,7 +242,7 @@ export function rootShape(coder: AgentLogic, mode: Mode): AnyStateMachine {
   return jr2Setup({ types, events: [cancel!, approve], actors: { coder } }).createMachine({
     id: "root",
     context: { ran: [] },
-    on: { cancel: { target: ".cancelled", actions: ran("root") } },
+    on: { "agent.fault": {}, cancel: { target: ".cancelled", actions: ran("root") } },
     initial: "release",
     states: {
       release: {
@@ -320,6 +326,7 @@ export function twoGatesParallel(mode: Mode): AnyStateMachine {
  * the snapshot. (B) declines it by `sentBy("coder")`, so (A) runs only if the sender survived. */
 export function s2Delayed(coder: AgentLogic): AnyStateMachine {
   return jr2Setup({ types, events: [approve, submit!], actors: { coder } }).createMachine({
+    on: { "agent.fault": {} },
     id: "dl",
     context: { ran: [] },
     initial: "release",
@@ -350,6 +357,7 @@ export function s2Delayed(coder: AgentLogic): AnyStateMachine {
 export function payloadBelow(coder: AgentLogic): AnyStateMachine {
   const ask = ev("ask");
   return jr2Setup({ types, events: [approve, ask], actors: { coder } }).createMachine({
+    on: { "agent.fault": {} },
     id: "fo",
     context: { ran: [] },
     initial: "work",

@@ -169,7 +169,7 @@ const openSecretOf = new WeakMap<object, object>();
  *
  * @example
  * ```ts
- * import { command, jr2Setup, secret, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import { command, fail, jr2Setup, secret, workspace, type Workspaced } from "@jr2/orchestrator";
  *
  * type Input = Workspaced<{}, "app">;
  *
@@ -180,14 +180,17 @@ const openSecretOf = new WeakMap<object, object>();
  *     deploy: command(["kubectl", "apply", "-f", "k8s/"], {
  *       env: { KUBECONFIG: secret("kube").path },
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "deploy",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost" },
  *   initial: "deploying",
  *   states: {
  *     deploying: { invoke: { src: "deploy", onDone: "done" } },
  *     done: { type: "final" },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -553,6 +556,7 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
  * import {
  *   bearer,
  *   command,
+ *   fail,
  *   file,
  *   http,
  *   jr2Setup,
@@ -576,15 +580,18 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
  *         contentType: "application/pdf",
  *       }),
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "report",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost" },
  *   initial: "building",
  *   states: {
  *     building: { invoke: { src: "build", onDone: "uploading" } },
  *     uploading: { invoke: { src: "upload", onDone: "done" } },
  *     done: { type: "final" },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *

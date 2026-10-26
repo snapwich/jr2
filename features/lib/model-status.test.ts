@@ -9,6 +9,7 @@ import {
   NO_OPEN_GATE,
   MEMORY_KILL_NOTICE,
   nextTurnNoticed,
+  outputOf,
   noticedAsk,
   stillStarting,
 } from "./model-status.ts";
@@ -44,14 +45,17 @@ test("noticed's setup void is a live run whose body never left `starting`; a set
   assert.equal(stillStarting(at("done", "lost")), false, "a lost Workspace is no void");
   assert.equal(stillStarting({ status: "done", children: [] }), false, "a settled run holds no body");
   assert.equal(stillStarting(at("error", "starting")), false, "an errored run is settled");
+  // A body that invokes `fail` from `faulted` or `lost` ends the run `failed` (ADR-0073).
+  assert.equal(stillStarting(at("failed", "starting")), false, "a failed run is settled");
+  assert.equal(stillStarting(at("cancelled", "starting")), false, "a cancelled run is settled");
   assert.equal(stillStarting(at("active", "asking")), false, "the first Turn picked `started`");
 });
 
-test("a trial's note prints a faulted, lost or errored run's final output, and nothing more for the others", () => {
+test("a trial's note prints a failed or errored run's final output, and nothing more for a `done` run", () => {
+  // A `done` run prints only its head, whatever its final state is named: a faulted or lost end is
+  // a Failure now, and it ends `failed` (ADR-0073).
   const faulted = { status: "done", value: "faulted", context: { output: { outcome: "faulted", reason: "r" } } };
-  assert.equal(ended(faulted), 'done/faulted {"outcome":"faulted","reason":"r"}', "a root Machine's fault");
-  const lost = { status: "done", value: "done", context: { output: { outcome: "lost", reason: "gone" } } };
-  assert.equal(ended(lost, lost.context.output.outcome), 'done/lost {"outcome":"lost","reason":"gone"}', "a body");
+  assert.equal(ended(faulted), "done/faulted", "a `done` run has no reason to print");
   const error = { status: "error", value: "drafting", context: {} };
   assert.equal(ended(error), 'error/drafting "drafting"', "an errored run with no output prints its value");
   const errored = { ...error, fault: 'invoked gate "x" is not in the manifest' };
@@ -64,6 +68,20 @@ test("a trial's note prints a faulted, lost or errored run's final output, and n
   assert.equal(ended(submitted), "done/submitted", "a finished run prints as before");
   const other = { status: "done", value: "shipped", context: { output: { outcome: "shipped" } } };
   assert.equal(ended(other, other.context.output.outcome), "done/shipped", "the other task final prints as before");
+  // A failed run prints its Failure: the reason that the Machine gave to `fail` (ADR-0073).
+  const failed = {
+    status: "failed",
+    value: { failing: "raising" },
+    context: {},
+    output: { reason: "the Agent's Turn could not go on", detail: { fault: "provider down" } },
+  };
+  assert.equal(
+    ended(failed),
+    'failed/{"failing":"raising"} {"reason":"the Agent\'s Turn could not go on","detail":{"fault":"provider down"}}',
+    "a failed run prints its Failure",
+  );
+  const cancelled = { status: "cancelled", value: "drafting", context: {} };
+  assert.equal(ended(cancelled), 'cancelled/drafting "drafting"', "a cancelled run prints its value");
   const live = { status: "active", value: { notes: "reviewing" }, context: {} };
   assert.equal(ended(live), 'active/{"notes":"reviewing"}', "a run still live at its deadline prints its state");
 });
@@ -144,6 +162,11 @@ test("a re-answer that found its Gate gone is scored from the final record; any 
   const body = (value: unknown) => [{ id: "body", value, children: [] }];
   assert.equal(gateWentFirst(refused, { status: "done", gates: [] }, gate, "work"), true, "the run settled");
   assert.equal(
+    gateWentFirst(refused, { status: "failed", gates: [] }, gate, "work"),
+    true,
+    "the run failed (ADR-0073)",
+  );
+  assert.equal(
     gateWentFirst(refused, { status: "active", children: body("faulted"), gates: [] }, gate, "work"),
     true,
     "the body left `work` and the Gate went with it; the run settles next",
@@ -166,4 +189,17 @@ test("a re-answer that found its Gate gone is scored from the final record; any 
   // The words are the Orchestrator's: a black-box tier cannot import them, so this pins the copy.
   const host = readFileSync(new URL("../../packages/orchestrator/src/run-host.ts", import.meta.url), "utf8");
   assert.ok(host.includes(`\`${NO_OPEN_GATE} "\${gate}" on run`), "the Orchestrator still refuses so");
+});
+
+test("a trial reads the body's output of a done run, and the Failure's detail of a failed one (ADR-0073)", () => {
+  const done = { status: "done", context: { output: { outcome: "reported", picks: ["run_tests"] } } };
+  assert.deepEqual(outputOf(done), { outcome: "reported", picks: ["run_tests"] });
+  const failed = {
+    status: "failed",
+    context: {},
+    output: { reason: "the Agent's Turn could not go on", detail: { outcome: "faulted", picks: ["run_tests"] } },
+  };
+  assert.deepEqual(outputOf(failed), { outcome: "faulted", picks: ["run_tests"] }, "the ledger rides the detail");
+  assert.equal(outputOf({ status: "failed", context: {}, output: { reason: "r" } }), undefined, "no detail");
+  assert.equal(outputOf({ status: "error", context: {} }), undefined);
 });

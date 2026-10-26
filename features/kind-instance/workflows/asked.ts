@@ -9,6 +9,7 @@ import {
   agent,
   bearer,
   defineEvent,
+  fail,
   fromPick,
   http,
   jr2Setup,
@@ -35,10 +36,11 @@ const echo = http({
 export const machine = jr2Setup({
   types: {} as { context: HostInjectedInput; input: HostInjectedInput },
   events: [callEcho, advise],
-  actors: { advisor: agent(advisor), echo },
+  actors: { advisor: agent(advisor), echo, fail: fail() },
 }).createMachine({
   id: "asked",
   context: ({ input }) => input,
+  on: { "agent.fault": { target: ".faulted" } },
   initial: "advising",
   states: {
     advising: {
@@ -56,6 +58,7 @@ export const machine = jr2Setup({
       on: { call_echo: ".calling", advise: "advised" },
     },
     advised: { type: "final", output: { outcome: "advised" } },
+    faulted: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,
 });

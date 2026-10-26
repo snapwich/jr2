@@ -105,8 +105,9 @@ the events of the child, and does not declare them again. Thus two Machines in o
 with different payloads.
 
 jr2 also sends its own events into each Machine that `jr2Setup` makes: `agent.fault` and `workspace.lost`. They are not
-in the Vocabulary. Their names have a dot, and the name of a workflow event cannot have a dot.
-[Mechanism events](../reference/mechanism-events.md) gives them.
+in the Vocabulary. Their names have a dot, and the name of a workflow event cannot have a dot. Each one must have a
+route: `jr2 check` refuses a state that invokes an Agent with no `agent.fault` route on it or on a state above it, and a
+`workspace()` body with no `workspace.lost` route. [Mechanism events](../reference/mechanism-events.md) gives them.
 
 ## The output of a run
 
@@ -115,6 +116,43 @@ status of the run shows it. A Machine that invokes this Machine gets it as `even
 `output` of a final state only as the `event.output` of the root `output`. Thus a Machine with an `output` only on its
 final states has no output, and jr2 refuses it when the module loads.
 [Write a Workflow](../guides/write-a-workflow.md#give-the-run-an-output) gives the two forms of a root `output`.
+
+## How a run ends
+
+A run that ended has one [Run status](../reference/glossary.md#run-status). These are the statuses that a Machine
+causes:
+
+- `done`: the Machine got to a final state. A final state means that the work succeeded.
+- `failed`: a state invoked [`fail`](../reference/authoring-surface/fail.md), and no state caught the
+  [Failure](../reference/glossary.md#failure). The output of the run is the `{ reason, detail }` of the Failure, not the
+  root `output`.
+- `error`: the run faulted. A throw from a promise, or a mechanism event that no transition took, is a fault. The fault
+  of the run gives the error.
+
+To fail a run, put `fail: fail()` under `actors`, and invoke it from a state. Its input is `{ reason, detail? }`.
+`reason` is text for a person, and `detail` is optional JSON for a script:
+
+```ts
+failed: { invoke: { src: "fail", input: { reason: "the tests did not pass", detail: { code: 1 } } } },
+```
+
+- Do not use a final state for work that did not succeed. A final state means `done`.
+- Do not throw to fail. A throw is a defect: the run ends `error`, with no output, and nobody can tell it from a bug in
+  the kit.
+- A decision of a person that ends the run, such as a `reject` at a Gate, goes to a state that invokes `fail` with the
+  reason of the person, as the `rejected` state of `refund` does. A decision that sends the work back is a usual route.
+  When the job of the Machine is the decision itself, such as a triage where "no" is a correct answer, the decision is a
+  final state, and the Machine puts it in its output.
+- A Failure goes up from the state that invokes `fail`, through each parent Machine. To catch it, write an `onError`
+  with the guard [`isFailure`](../reference/authoring-surface/isfailure.md):
+  `onError: [{ guard: ({ event }) => isFailure(event.error), target: "replan" }, { target: "broken" }]`. A broad
+  `onError` with no guard catches a Failure too.
+- A Failure that goes through a [`workspace()`](../reference/authoring-surface/workspace.md) deletes its
+  [Sandbox](../reference/glossary.md#sandbox). To keep the work for a person to read, wait at a
+  [Gate](../reference/glossary.md#gate) before the state that fails.
+
+[`jr2 run`](../reference/cli.md#run) exits 0 only for `done`. It exits 1 for `failed`, `error` and each other end.
+`jr2 up` and `jr2 check` list each state that invokes `fail`, under `failures`.
 
 ## Emits
 
@@ -156,6 +194,8 @@ moves a Machine.
 - The output of a run is the root `output` of its Machine. jr2 refuses an `output` on a final state directly below the
   root when the root has no `output`.
 - An Emit never moves a Machine.
+- The input of `fail` has a `reason` that is not empty. Else the run ends `error`:
+  `fail: the input must be { reason: string; detail?: unknown } with a reason that is not empty (got <value>) — invoke: { src: "fail", input: { reason: "the tests failed" } } (ADR-0073)`.
 
 [Write a Workflow](../guides/write-a-workflow.md) gives the exact text of each refusal.
 
@@ -165,7 +205,8 @@ moves a Machine.
 - [Start a run](../guides/start-a-run.md)
 - [Agents and Turns](agents-and-turns.md), [The Menu](the-menu.md), [Gates](gates.md) and [Charts](charts.md)
 - Reference: [`jr2Setup`](../reference/authoring-surface/jr2setup.md),
-  [`defineEvent`](../reference/authoring-surface/defineevent.md),
+  [`defineEvent`](../reference/authoring-surface/defineevent.md), [`fail`](../reference/authoring-surface/fail.md),
+  [`isFailure`](../reference/authoring-surface/isfailure.md),
   [`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md), [`jr2 run`](../reference/cli.md#run),
   [`POST /workflows/:name/runs`](../reference/http-api.md#post-workflows-name-runs) and
   [Mechanism events](../reference/mechanism-events.md)
@@ -181,3 +222,5 @@ moves a Machine.
   only the CLI names, jr2 finds by its file name
 - [ADR-0014](../reference/decisions/0014-observation-is-open-run-state-is-not.md): observation is open, and the state of
   a run is not
+- [ADR-0073](../reference/decisions/0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md): a
+  Machine fails a run with `fail()`, and an uncaught Failure ends it `failed`

@@ -31,6 +31,7 @@ function boxed(image: string) {
     events: [],
     actors: { coder: agent({ model: "vllm/qwen", instructions: "i" }) },
   }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
     id: "body",
     initial: "working",
     states: { working: { invoke: { id: "coder", src: "coder", input: { prompt: "go" } } } },

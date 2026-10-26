@@ -10,6 +10,7 @@
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { calledIn, promptedAgents, told, untimed, type Follow } from "./model-said.ts";
+import { outputOf } from "./model-status.ts";
 
 /** The characters a folder name keeps as they are; every other byte is spelled `%XX`. */
 const PLAIN = /^[A-Za-z0-9._-]$/;
@@ -71,9 +72,15 @@ export const historyIid = (runId: string, sandbox: boolean, agent: string): stri
 
 const COMMIT = /^[0-9a-f]{40}$/;
 
-/** A push claim's published commits, off the Machine's final record: in push order, each once. */
-export function publishedCommits(record: { context?: { output?: Record<string, unknown> } } | undefined): string[] {
-  const pushes = record?.context?.output?.pushes;
+/** A push claim's published commits, off the Machine's final record: in push order, each once. The
+ * record is the one {@link outputOf} reads, so a failed trial's pushes come off the Failure's
+ * `detail` (ADR-0073). */
+export function publishedCommits(
+  record: { status?: string; context?: { output?: Record<string, unknown> }; output?: unknown } | undefined,
+): string[] {
+  const pushes = record
+    ? outputOf({ status: record.status ?? "", context: record.context ?? {}, output: record.output })?.pushes
+    : undefined;
   if (!Array.isArray(pushes)) return [];
   const out = new Set<string>();
   for (const p of pushes as Array<{ published?: unknown }>) {

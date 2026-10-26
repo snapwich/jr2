@@ -1,9 +1,10 @@
 // `workspace(body, { input, image, user, repos, resources, spec })` (ADR-0012, ADR-0049, ADR-0051,
 // ADR-0060): the jr2-owned wrapper Machine that owns ONLY Sandbox lifecycle — provision the Sandbox
-// (out of the STATIC `image`/`user`/`repos`/`resources` options it carries) + attach one worktree per Repo Slot, run the
-// author's body Machine inside it as the named slot `body`, with `{ workspace: { repos, branch } }`
-// appended to its input (the mechanism-facing endpoint/sandbox are published ambiently
-// — ADR-0016, ambient.ts), and destroy the Sandbox when the body reaches a final state. Teardown lives INSIDE the
+// (out of the STATIC `image`/`user`/`repos`/`resources` options it carries) + attach one worktree
+// per Repo Slot, run the author's body Machine inside it as the named slot `body`, with
+// `{ workspace: { repos, branch } }` appended to its input (the mechanism-facing endpoint/sandbox
+// are published ambiently — ADR-0016, ambient.ts), and destroy the Sandbox when the body reaches a
+// final state or fails (ADR-0073). Teardown lives INSIDE the
 // wrapper's own states because an xstate stop is synchronous — multi-step async cleanup must be
 // states the machine transitions through itself, which forces the thing that provisions to also
 // observe the body's completion (the ADR's load-bearing argument). There is no retain policy: a
@@ -18,7 +19,9 @@
 //
 // The lifecycle (ADR-0012, ADR-0064): `placing` writes the Sandbox and waits, with no deadline,
 // for its pod to be scheduled; `provisioning` waits for Ready under a budget that starts there;
-// `attaching` runs the Harness's attach; `running` runs the body; `teardown` destroys.
+// `attaching` runs the Harness's attach; `running` runs the body; `teardown` destroys. A Failure from
+// the body (ADR-0073) goes to `failing`, which destroys as `teardown` does and then sends the same
+// Failure up; a defect has no `onError` here, so it goes up at once and its Sandbox stays as evidence.
 //
 // Restore-reconcile (ADR-0012, ADR-0021): every state from `placing` to `running` co-invokes the
 // lease, and in `running` the lease judges Continuity from the Orchestrator's watch for its
@@ -41,16 +44,20 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
+import { failLogic, failurePayload, isFailure, type Failure, type FailureInput } from "./fail.ts";
+import { refuseUnroutedLost } from "./mechanism-routes.ts";
 import {
   actorRoute,
   actorSlotPath,
   assertRepoSlot,
   attachSandboxParts,
   attachWrapperBody,
+  composesSandbox,
   customizeLine,
   open,
   repoSlotState,
   sandboxPartsOf,
+  wrapperBodyOf,
   type Binding,
   type JR2Repos,
   type JR2Wrapper,
@@ -185,7 +192,7 @@ export type WorkspaceHandles<TSlots extends string> = {
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, defineEvent, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import { agent, defineEvent, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
  *
  * const done = defineEvent({
  *   name: "done",
@@ -204,10 +211,12 @@ export type WorkspaceHandles<TSlots extends string> = {
  *       instructions: "You review one commit and write REVIEW.md.",
  *       workspace: "read",
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "review",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
  *   initial: "reviewing",
  *   states: {
  *     reviewing: {
@@ -221,6 +230,8 @@ export type WorkspaceHandles<TSlots extends string> = {
  *       on: { done: "finished" },
  *     },
  *     finished: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -472,6 +483,9 @@ type WsContext = {
   /** Persisted in context so the registrar can re-publish them on restore. */
   handles?: MechanismHandles;
   output?: unknown;
+  /** The body's Failure (ADR-0073), as plain data: kept while `failing` destroys, so a restore
+   * there sends the same Failure up. */
+  failure?: FailureInput;
 };
 
 /**
@@ -499,7 +513,7 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSl
   any,
   any,
   any,
-  WrapperActors<"body", TBody, "place" | "provision" | "attach" | "registrar" | "lease" | "destroy">,
+  WrapperActors<"body", TBody, "place" | "provision" | "attach" | "registrar" | "lease" | "destroy" | "fail">,
   any,
   any,
   any,
@@ -759,14 +773,22 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  *
  * The Sandbox is Lost when its pod is evicted or its node goes. Then the body gets the event
  * `workspace.lost`, and the body decides what to do. jr2 does not make the Lost Sandbox again.
- * When the body fails with an error, the run faults. The Sandbox then stays for you to inspect,
- * until jr2's operator removes it after an idle timeout.
+ *
+ * When the body fails (it invokes a `fail()` slot), the Workspace deletes the Sandbox, and then the
+ * same Failure goes up to the parent. With no parent to catch it, the run ends `failed`. When the
+ * body has a defect (an error that is not a Failure), the run faults: it ends `error`, and the
+ * Sandbox stays for you to inspect, until jr2's operator removes it after an idle timeout.
  *
  * Give the run input to `input`, not to the body: a body with an `input` schema of its own is
  * refused. The types refuse a body whose input does not accept the run input plus the handles,
  * with the message `the body's declared input must accept the door plus the injected handles`.
  *
  * It refuses, when you call it:
+ * - a body with a state that is not final, when that state and each state above it have no
+ *   `workspace.lost` route: ``workspace(): the body "<id>" has a state "<state>" that is not final,
+ *   and no route for "workspace.lost" is on it or on a state above — jr2 sends workspace.lost to the
+ *   body when its Sandbox is gone, and with no route the run faults: route it on the body's root,
+ *   as on: { "workspace.lost": "<the state that handles it>" } (ADR-0074)``
  * - a body with its own `input`: ``workspace(): the body "<id>" declares its own run input, which
  *   nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected
  *   `workspace` handles, so the body's schema is not the door. Move it to the wrapper:
@@ -806,22 +828,44 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  * @example
  * ```ts
  * import { z } from "zod";
- * import { command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import {
+ *   command,
+ *   fail,
+ *   jr2Setup,
+ *   workspace,
+ *   type CommandOutput,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
  *
  * const runInput = z.object({ ticket: z.string(), repo: z.string() });
  * type BodyInput = Workspaced<z.infer<typeof runInput>, "app" | "docs">;
+ *
+ * const passed = (output: CommandOutput): boolean =>
+ *   output.outcome === "exited" && output.code === 0;
  *
  * const body = jr2Setup({
  *   types: {} as { input: BodyInput },
  *   actors: {
  *     build: command(["npm", "run", "build"], { slot: "app" }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "build",
+ *   on: { "workspace.lost": ".lost" },
  *   initial: "building",
  *   states: {
- *     building: { invoke: { src: "build", onDone: "built" } },
+ *     building: {
+ *       invoke: {
+ *         src: "build",
+ *         onDone: [
+ *           { guard: ({ event }) => passed(event.output), target: "built" },
+ *           { target: "broken" },
+ *         ],
+ *       },
+ *     },
  *     built: { type: "final" },
+ *     broken: { invoke: { src: "fail", input: { reason: "npm run build did not pass" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -840,7 +884,17 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  * @example
  * ```ts
  * import { z } from "zod";
- * import { command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import {
+ *   command,
+ *   fail,
+ *   jr2Setup,
+ *   workspace,
+ *   type CommandOutput,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
+ *
+ * const passed = (output: CommandOutput): boolean =>
+ *   output.outcome === "exited" && output.code === 0;
  *
  * // The run input has no field that is different for each run, so the branch comes from
  * // `instanceId`.
@@ -848,13 +902,24 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  *
  * const body = jr2Setup({
  *   types: {} as { input: Workspaced<z.infer<typeof runInput>, "app"> },
- *   actors: { test: command(["npm", "test"], { slot: "app" }) },
+ *   actors: { test: command(["npm", "test"], { slot: "app" }), fail: fail() },
  * }).createMachine({
  *   id: "nightly",
+ *   on: { "workspace.lost": ".lost" },
  *   initial: "testing",
  *   states: {
- *     testing: { invoke: { src: "test", onDone: "tested" } },
+ *     testing: {
+ *       invoke: {
+ *         src: "test",
+ *         onDone: [
+ *           { guard: ({ event }) => passed(event.output), target: "tested" },
+ *           { target: "red" },
+ *         ],
+ *       },
+ *     },
  *     tested: { type: "final" },
+ *     red: { invoke: { src: "fail", input: { reason: "npm test did not pass" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -902,9 +967,10 @@ export function workspace(
 ): AnyStateMachine {
   // `spec` maps the wrapper's input to the workspace-domain spec (ADR-0012); the body receives
   // the wrapper's input plus the handles — `Workspaced<TInput, TSlots>`, which is also what the
-  // declared door checks the body against. A body ERROR is deliberately unhandled: it faults the
-  // run loudly (RunStatus.fault) and leaves the Sandbox to the operator's idle-timeout GC — the
-  // trail stays inspectable, and silent cleanup would destroy the evidence.
+  // declared door checks the body against. A Failure of the body is caught: the wrapper destroys
+  // the Sandbox and fails again with the same payload (ADR-0073). Every other body error (a defect)
+  // is not caught: it faults the run (RunStatus.fault) and leaves the Sandbox to the operator's
+  // idle-timeout GC, so the trail stays as evidence.
   //
   // A body that still declares its own run input is a dead declaration under the door design: the
   // wrapper never serves it, never validates against it, and feeds the body something it does not
@@ -919,6 +985,11 @@ export function workspace(
         "workspace(body, { input, spec }) (ADR-0033).",
     );
   }
+  // A body state that cannot route `workspace.lost` (ADR-0074): with no route, the body would show
+  // healthy on the feed with no Sandbox. Here, because `workspace()` is the one place that knows
+  // that a Machine is a body. A body that is the kit's own wrapper (a `workspace()`, a `pool()`) is
+  // not judged: its states are jr2's, and the walk refuses a Workspace below a Workspace (ADR-0059).
+  if (!composesSandbox(body) && wrapperBodyOf(body) === undefined) refuseUnroutedLost(body);
   // Static, so checkable NOW rather than at the first provision — an empty or non-string image is
   // the same derives-from-a-typo bug `assertSpec` catches for the spec, one build earlier.
   const image = options.image;
@@ -1360,11 +1431,12 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
 
   // Every actor this wrapper runs is a NAMED SLOT (ADR-0049), the body first among them: a Machine
   // composes by invoking a declared `src`, and `body` is what `provide()`, `customize()`, Stately,
-  // the Console's join key and the `jr2 up` parts walk all reach it by. The mechanism's own six —
-  // place, provision, attach, registrar, lease, destroy — are named for the same price, and the
-  // Console shows what each state is doing instead of "inline".
+  // the Console's join key and the `jr2 up` parts walk all reach it by. The mechanism's own seven —
+  // place, provision, attach, registrar, lease, destroy, fail — are named for the same price, and the
+  // Console shows what each state is doing instead of "inline". `fail` is the unbranded logic: it
+  // sends the body's Failure up again, and the walk does not list it as a state that fails the run.
   return setup({
-    actors: { body, place, provision, attach, registrar, lease, destroy },
+    actors: { body, place, provision, attach, registrar, lease, destroy, fail: failLogic },
   }).createMachine({
     id: "workspace",
     context: ({ input, self }: { input: unknown; self: { id: string } }): WsContext => ({
@@ -1488,6 +1560,15 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
               target: "teardown",
               actions: assign({ output: ({ event }) => (event as unknown as { output: unknown }).output }),
             },
+            // A Failure deletes the Sandbox before it goes up (ADR-0073). Guarded, so a defect
+            // takes no transition and goes up at once, as before: its Sandbox stays as evidence.
+            onError: {
+              guard: ({ event }: { event: { error?: unknown } }) => isFailure(event.error),
+              target: "failing",
+              actions: assign({
+                failure: ({ event }) => failurePayload((event as unknown as { error: Failure }).error),
+              }),
+            },
           },
           leaseInvoke(true),
         ],
@@ -1505,6 +1586,25 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
         },
       },
       done: { type: "final" },
+      // The body failed (ADR-0073): the same delete as `teardown`, then the same Failure goes up to
+      // the parent unchanged. No lease here: nothing judges a Sandbox that is being deleted.
+      failing: {
+        initial: "destroying",
+        states: {
+          destroying: {
+            invoke: {
+              src: "destroy",
+              input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId }),
+              onDone: "raising",
+              // A failed delete is the operator GC's problem, and the run host's (ADR-0012 backstop).
+              onError: "raising",
+            },
+          },
+          raising: {
+            invoke: { src: "fail", input: ({ context }) => (context as unknown as WsContext).failure! },
+          },
+        },
+      },
     },
     // Machine output must be declared at the ROOT in xstate v5 (a final state's own `output`
     // only rides the done event); the workspace's output is the body's, verbatim (ADR-0012).

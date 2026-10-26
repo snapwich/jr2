@@ -394,6 +394,7 @@ test("fromPick into an http Effect: the pick's params fill its input by name; a 
       events: [pick, finish],
       actors: { coder: agentActorWith(() => new MockFlueClient(), coderDefinition), post },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: { ticket: "PROJ-7" },
       initial: "w",
@@ -436,6 +437,7 @@ test("a pick that runs an http Effect is answered with the Effector's output as 
     events: [comment],
     actors: { coder: agentActorWith(() => coder, coderDefinition), post },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: { ticket: "PROJ-7" },
     initial: "w",

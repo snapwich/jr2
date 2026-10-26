@@ -27,6 +27,7 @@ import {
   agent,
   chartSchemaFor,
   defineEvent,
+  fail,
   fromPick,
   jr2Setup,
   openBody,
@@ -78,6 +79,7 @@ export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [runChart],
   actors: {
+    fail: fail(),
     planner: agent(advisor),
     summarizer: agent(advisor),
     body: openBody(declaration),
@@ -156,8 +158,13 @@ export const machine = jr2Setup({
       output: ({ context }) => ({ outcome: "refused", outcomes: context.outcomes, report: context.report }),
     },
     faulted: {
-      type: "final",
-      output: ({ context }) => ({ outcome: "faulted", outcomes: context.outcomes, reason: context.fault }),
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Agent's Turn could not go on",
+          detail: { outcome: "faulted", outcomes: context.outcomes, reason: context.fault },
+        }),
+      },
     },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,

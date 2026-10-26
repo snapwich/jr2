@@ -9,7 +9,7 @@
 // Instance Harness's history under exactly that.
 
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { advisor } from "./_agents.ts";
 
 const advise = defineEvent({ name: "advise", input: z.object({ summary: z.string() }) });
@@ -18,10 +18,11 @@ export const machine = jr2Setup({
   types: {} as { context: HostInjectedInput; input: HostInjectedInput },
   events: [advise],
   // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.
-  actors: { advisor: agent(advisor) },
+  actors: { advisor: agent(advisor), fail: fail() },
 }).createMachine({
   id: "advised",
   context: ({ input }) => input,
+  on: { "agent.fault": { target: ".faulted" } },
   initial: "advising",
   states: {
     advising: {
@@ -39,6 +40,7 @@ export const machine = jr2Setup({
       on: { advise: { target: "advised" } },
     },
     advised: { type: "final", output: { outcome: "advised" } },
+    faulted: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,
 });

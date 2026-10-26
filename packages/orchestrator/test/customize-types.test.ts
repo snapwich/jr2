@@ -105,7 +105,7 @@ const body = jr2Setup({
   events: [],
   types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, "target"> },
   actors: { coder: agent({ model: haiku, instructions: "c" }) },
-}).createMachine({ id: "body", context: {}, initial: "idle", states: { idle: {} } });
+}).createMachine({ on: { "workspace.lost": {} }, id: "body", context: {}, initial: "idle", states: { idle: {} } });
 
 const wrapped = workspace(body, {
   input: door,
@@ -241,7 +241,7 @@ const anySlots = jr2Setup({
   events: [],
   types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, string> },
   actors: { coder: agent({ model: haiku, instructions: "c" }) },
-}).createMachine({ id: "anySlots", context: {}, initial: "idle", states: { idle: {} } });
+}).createMachine({ on: { "workspace.lost": {} }, id: "anySlots", context: {}, initial: "idle", states: { idle: {} } });
 const mapped = workspace(anySlots, { input: door, repos: open, spec: () => ({ branch: "feat" }) });
 void customize(mapped, {
   repos: { target: "git@github.com:ourorg/app.git", reference: { url: "https://example.test/lib.git" } },
@@ -270,7 +270,7 @@ const effectful = jr2Setup({
     lint: command(["pnpm", "lint"]),
     tracked: http({ method: "GET", url: "https://fixed.example.com" }),
   },
-}).createMachine({ id: "effectful", initial: "idle", states: { idle: {} } });
+}).createMachine({ on: { "workspace.lost": {} }, id: "effectful", initial: "idle", states: { idle: {} } });
 
 void customize(effectful, {
   effects: { call: { url: text`https://t.example.com/${secret("path")}` }, deploy: { argv: ["make", arg("env")] } },

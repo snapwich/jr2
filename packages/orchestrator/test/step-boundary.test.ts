@@ -47,6 +47,7 @@ function def(clients: Map<string, MockFlueClient>, tests: ReturnType<typeof cont
       events: [run_tests, ask_approval, approve, revise, submit, abandon],
       actors: { coder, tests: tests.logic },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: {},
       initial: "ticket",

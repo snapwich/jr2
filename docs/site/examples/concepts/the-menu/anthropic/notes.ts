@@ -1,6 +1,6 @@
 import { assign } from "xstate";
 import { z } from "zod";
-import { agent, answer, defineEvent, jr2Setup } from "@jr2/orchestrator";
+import { agent, answer, defineEvent, fail, jr2Setup } from "@jr2/orchestrator";
 
 // The writer's picks. Each one is a tool on the writer's Menu.
 const ask = defineEvent({
@@ -35,11 +35,13 @@ export const machine = jr2Setup({
       instructions: "You write short release notes. Ask the editor at least one question before you finish.",
       workspace: "none",
     }),
+    fail: fail(),
   },
 }).createMachine({
   id: "notes",
   input: door,
   context: ({ input }) => ({ changes: input.changes, replies: 0 }),
+  on: { "agent.fault": ".failed" },
   initial: "writing",
   states: {
     // The writer's state. Its Turn lasts until `done` leaves it.
@@ -79,6 +81,7 @@ export const machine = jr2Setup({
       },
     },
     published: { type: "final" },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
   // The output of the run: the root `output`, not an `output` on the final state.
   output: ({ context }) => ({ notes: context.notes ?? "" }),

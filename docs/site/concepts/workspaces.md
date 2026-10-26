@@ -188,12 +188,17 @@ A Workspace goes through these states:
 3. `attaching`: the Harness clones each Repo Slot and makes its Worktree.
 4. `running`: the body runs.
 5. `teardown`: the body is in a final state, and jr2 deletes the Sandbox.
+6. `failing`: the body invoked [`fail`](../reference/authoring-surface/fail.md), and jr2 deletes the Sandbox. Then the
+   Workspace sends the same [Failure](../reference/glossary.md#failure) up to its parent.
 
 The output of the Workspace is the output of the body.
 
 A final state of the body deletes the Sandbox, with each commit in it. Push the work before the body ends: with a
 [`push`](../reference/authoring-surface/push.md) Effect, or by hand while the run waits. A body that must keep its
 Sandbox waits in a state that is not final, such as at a Gate. The Sandbox stays while the run waits.
+
+A Failure also deletes the Sandbox, with each commit in it. To keep the work for a person to read, wait at a Gate before
+the state that fails.
 
 When a run faults after its Sandbox was placed, the Sandbox stays, so that you can look inside it. jr2's operator
 removes it after an idle timeout of 30 minutes. jr2 immediately deletes a Sandbox that it never placed. `CANCEL` deletes
@@ -213,8 +218,8 @@ none of the work.
 
 The Orchestrator watches its Sandboxes. While the body runs, when it sees a Sandbox that is Lost or gone, it sends
 [`workspace.lost`](../reference/mechanism-events.md#workspace-lost) to the body, with the reason. The body decides what
-to do. In the example, the body goes to its `lost` state, and the run ends. A restart of the Harness container does not
-lose the Workspace: the pod and `/work` stay.
+to do. In the example, the body goes to its `lost` state, which invokes `fail`, and the run ends `failed`. A restart of
+the Harness container does not lose the Workspace: the pod and `/work` stay.
 
 ## Rules
 

@@ -532,7 +532,7 @@ async function withOpenAgent(root: string): Promise<string> {
     join(root, "workflows", "packaged.ts"),
     `import { agent, jr2Setup, open } from ${JSON.stringify(KIT_SRC)};\n` +
       `export const machine = jr2Setup({ events: [], actors: { coder: agent({ model: open, instructions: "i" }) } })\n` +
-      `  .createMachine({ id: "task", initial: "working", states: { working: { invoke: { src: "coder", input: { prompt: "go" } } } } });\n`,
+      `  .createMachine({ id: "task", on: { "agent.fault": {} }, initial: "working", states: { working: { invoke: { src: "coder", input: { prompt: "go" } } } } });\n`,
   );
   return root;
 }
@@ -1647,7 +1647,7 @@ test("up prints who may send what, per state, and the load warnings — a warnin
       `export const machine = jr2Setup({ events: [finish, abandon], actors: { coder: agent({ model: "p/m", instructions: "i" }) } })\n` +
       `  .createMachine({ id: "job", initial: "job", states: {\n` +
       `    job: { invoke: { src: "gate", id: "operator" }, on: { abandon: "gaveUp" }, initial: "working", states: {\n` +
-      `      working: { invoke: { src: "coder", input: { prompt: "go" } }, on: { finish: "#job.done" } } } },\n` +
+      `      working: { invoke: { src: "coder", input: { prompt: "go" } }, on: { finish: "#job.done", "agent.fault": "#job.gaveUp" } } } },\n` +
       `    gaveUp: { type: "final" }, done: { type: "final" } } });\n`,
   );
   const w = mkWorld(root);
@@ -5133,7 +5133,7 @@ async function pushingInstance(url: string, credentials: string, sign: boolean |
     `import { jr2Setup, push, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const publish = push(${options});\n` +
       `const body = jr2Setup({ events: [], actors: { publish } })\n` +
-      `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "publish", onDone: "done" } }, done: { type: "final" } } });\n` +
+      `  .createMachine({ id: "body", on: { "workspace.lost": {} }, initial: "run", states: { run: { invoke: { src: "publish", onDone: "done" } }, done: { type: "final" } } });\n` +
       `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} }, spec: () => ({ branch: "b" }) });\n`,
   );
   return root;
@@ -5385,7 +5385,7 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
     `import { bearer, file, http, jr2Setup, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const deploy = http({ method: "PUT", url: "https://files.example.com/r", auth: bearer(secret("aws")), body: file("r.txt") });\n` +
       `const body = jr2Setup({ events: [], actors: { deploy } })\n` +
-      `  .createMachine({ id: "body", initial: "run", states: { run: { invoke: { src: "deploy", onDone: "done" } }, done: { type: "final" } } });\n` +
+      `  .createMachine({ id: "body", on: { "workspace.lost": {} }, initial: "run", states: { run: { invoke: { src: "deploy", onDone: "done" } }, done: { type: "final" } } });\n` +
       `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
   );
   const first = mkWorld(root);

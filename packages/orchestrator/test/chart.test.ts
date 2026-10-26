@@ -1120,6 +1120,8 @@ test("the Chart briefing is the grammar's root description, per body: no model a
   // The un-narrowed grammar carries the generic text; a narrowed one names the lent Agents.
   assert.equal(chartBriefingOf(chartSchema), CHART_BRIEFING);
   assert.match(CHART_BRIEFING, /`src` is a lent Agent's name or a key of `agents`/);
+  // In a Chart the `agent.fault` route is optional (ADR-0070), so the briefing does not teach it.
+  assert.doesNotMatch(CHART_BRIEFING, /agent\.fault/);
   assert.equal(
     (z.toJSONSchema(chartSchema, { unrepresentable: "any" }) as { description?: string }).description,
     CHART_BRIEFING,
@@ -1163,6 +1165,7 @@ test("a narrowed grammar shows one Agent state and its pick as `examples`, with 
     { invoke: { src: string }; on: Record<string, unknown> },
   ];
   assert.equal(state.invoke.src, "coder");
+  // The pick only: in a Chart the `agent.fault` route is optional (ADR-0070).
   assert.deepEqual(Object.keys(state.on), ["finished"]);
   const [events] = narrowed.properties.events!.examples as [Record<string, unknown>];
   assert.deepEqual(Object.keys(events), ["finished"]);
@@ -1237,6 +1240,123 @@ test("3. the kit's Gate is lent whole (`lends.gate: true`): unlent, it is not a 
   assert.equal(srcs(chartSchemaFor(unlent)), false, "unlent: no `gate` anywhere in the grammar");
   assert.match(chartBriefingOf(chartSchemaFor(decl))!, /`src: "gate"` is the kit's Gate/);
   assert.doesNotMatch(chartBriefingOf(chartSchemaFor(unlent))!, /Gate/);
+});
+
+// --- `fail` and `jr2.failure` (ADR-0073) --------------------------------------------------------
+
+/** A Chart that fails the run from `stop` with `input`, and catches nothing. */
+const failing = (input: unknown): ChartText =>
+  ({ initial: "stop", states: { stop: { invoke: { src: "fail", input } } } }) as ChartText;
+
+test("3. the Part that fails the run is lent whole (`lends.fail: true`): unlent, it is not a `src`, in the grammar or at the door", () => {
+  const lending = { ...decl, lends: { ...decl.lends, fail: true } };
+  assert.deepEqual(report(failing({ reason: "no plan fits" }), undefined, lending), []);
+  assert.deepEqual(report(failing({ reason: "{{input.task}}", detail: { n: 1 } }), undefined, lending), []);
+  assert.deepEqual(report(failing({ reason: "no plan fits" })), [
+    'states.stop.invoke.src: "fail" is the kit\'s Part that ends the run as a Failure, and this Open body does not lend it (`lends.fail: true` would); lent: coder (Agent), tests (Effect), sub (Machine); kit: gate; minted: none',
+  ]);
+  const srcOf = (narrowed: Record<string, unknown>) =>
+    (narrowed as { $defs: { "jr2.ChartInvoke": { properties: { src: { anyOf: Array<{ enum?: string[] }> } } } } })
+      .$defs["jr2.ChartInvoke"].properties.src.anyOf[0]!.enum;
+  assert.ok(srcOf(narrowedChartSchema(lending))!.includes("fail"), "lent: in the src enum");
+  assert.ok(!srcOf(narrowedChartSchema(decl))!.includes("fail"), "unlent: not a src");
+  // The `src` description names `fail` only where the body lends it: a model reads only what it can use.
+  const srcText = (narrowed: Record<string, unknown>) =>
+    (narrowed as { $defs: { "jr2.ChartInvoke": { properties: { src: { description: string } } } } }).$defs[
+      "jr2.ChartInvoke"
+    ].properties.src.description;
+  assert.match(srcText(narrowedChartSchema(lending)), /`fail` \(ends the run as a Failure/);
+  assert.doesNotMatch(srcText(narrowedChartSchema(decl)), /fail/);
+  assert.match(
+    chartBriefingOf(chartSchemaFor(lending))!,
+    /`src: "fail"` with `input: \{ reason \}` ends the run as a Failure/,
+  );
+  assert.doesNotMatch(chartBriefingOf(chartSchemaFor(decl))!, /Failure/);
+  assert.doesNotMatch(CHART_BRIEFING, /Failure/, "the un-narrowed briefing lends nothing");
+  // The kit's names in a refusal's `kit:` list.
+  assert.match(
+    report({ initial: "a", states: { a: { invoke: { src: "nope" } } } }, undefined, lending)[0]!,
+    /; kit: gate, fail; minted: none$/,
+  );
+});
+
+test("8. `fail` takes { reason, detail? }: reason is a text that is not empty, or a reference", () => {
+  const lending = { ...decl, lends: { ...decl.lends, fail: true } };
+  const once = (input: unknown, expected: RegExp) => refusedOnce(failing(input), expected, undefined, lending);
+  once(undefined, /^states\.stop\.invoke\.input: `fail` takes \{ reason, detail\? \}: reason is a text for a person$/);
+  once("stuck", /^states\.stop\.invoke\.input: `fail` takes \{ reason, detail\? \}/);
+  once({ detail: 1 }, /^states\.stop\.invoke\.input\.reason: `fail` needs a reason, a text for a person$/);
+  once({ reason: "" }, /^states\.stop\.invoke\.input\.reason: a reason is a string that is not empty, or a reference$/);
+  once({ reason: 7 }, /^states\.stop\.invoke\.input\.reason: a reason is a string that is not empty, or a reference$/);
+  once({ reason: "r", why: "x" }, /^states\.stop\.invoke\.input\.why: `fail` takes reason and detail only$/);
+});
+
+test("3. `jr2.failure` is a guard every Chart has, with no params, and no Open body lends a part named `fail`", () => {
+  const caught = (guard: unknown): ChartText =>
+    ({
+      initial: "try",
+      states: {
+        try: {
+          invoke: {
+            src: "tests",
+            input: { filter: "x" },
+            onDone: "ok",
+            onError: [{ guard, target: "failed" }, { target: "broken" }],
+          },
+        },
+        ok: { type: "final" },
+        failed: { type: "final" },
+        broken: { type: "final" },
+      },
+    }) as ChartText;
+  const unlent = { ...decl, lends: { effects: ["tests"] } };
+  assert.deepEqual(report(caught("jr2.failure"), undefined, unlent), [], "lent by nobody: every Chart has it");
+  assert.deepEqual(report(caught({ type: "jr2.failure" }), undefined, unlent), []);
+  assert.deepEqual(report(caught({ not: "jr2.failure" }), undefined, unlent), []);
+  assert.ok(report(caught({ type: "jr2.failure", params: { x: 1 } }), undefined, unlent).length > 0, "no params");
+  const faults = declarationFaults({ ...decl, lends: { agents: ["fail"], effects: ["fail"], fail: "yes" as never } });
+  assert.deepEqual(faults, [
+    "lends.fail: the kit's Part that fails the run is lent whole: true or false",
+    'lends.agents: "fail" is the kit\'s Part that fails the run, lent as `fail: true`; lend a slot of another name',
+    'lends.effects: "fail" is the kit\'s Part that fails the run, lent as `fail: true`; lend a slot of another name',
+  ]);
+  assert.deepEqual(declarationFaults({ ...decl, lends: { fail: true } }), []);
+  // A minted Agent may not take the kit's name.
+  assert.match(
+    report({
+      events: DONE,
+      agents: { fail: { model: "stub/model", instructions: "i" } },
+      initial: "a",
+      states: {
+        a: { invoke: { src: "coder", input: { prompt: "go" } }, on: { done: "b" } },
+        b: { type: "final" },
+      },
+    }).join("\n"),
+    /agents\.fail: "fail" is a lent name/,
+  );
+});
+
+test("6. the door admits a Chart state that invokes an Agent with no agent.fault route: in a Chart it is optional (ADR-0070)", () => {
+  const work = (on: Record<string, unknown>, parentOn?: Record<string, unknown>): ChartText =>
+    ({
+      events: DONE,
+      initial: "outer",
+      states: {
+        outer: {
+          ...(parentOn ? { on: parentOn } : {}),
+          initial: "a",
+          states: { a: { invoke: { src: "coder", input: { prompt: "go" } }, on: { done: "#c.b", ...on } } },
+        },
+        b: { type: "final" },
+      },
+      id: "c",
+    }) as ChartText;
+  // No route: the door admits it (the trial compile does too: open-body.test.ts).
+  admits(work({}));
+  // A route is still a route, on the state, above it, or with actions only.
+  admits(work({ "agent.fault": "#c.b" }));
+  admits(work({}, { "agent.fault": "#c.b" }));
+  admits(work({ "agent.fault": { actions: [{ type: "increment", path: "faults" }] } }));
 });
 
 test("a declaration's wall clock is one timer: at most 2147483647 ms", () => {

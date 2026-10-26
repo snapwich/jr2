@@ -140,7 +140,7 @@ export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, defineEvent, jr2Setup } from "@jr2/orchestrator";
+ * import { agent, defineEvent, fail, jr2Setup } from "@jr2/orchestrator";
  *
  * const done = defineEvent({
  *   name: "done",
@@ -156,9 +156,11 @@ export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
  *       instructions: "You write short summaries.",
  *       workspace: "none",
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "summary",
+ *   on: { "agent.fault": ".failed" },
  *   initial: "writing",
  *   states: {
  *     writing: {
@@ -166,6 +168,7 @@ export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
  *       on: { done: "finished" },
  *     },
  *     finished: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *   },
  * });
  * ```

@@ -37,6 +37,7 @@ import { h, render } from "preact";
 import {
   applyFrame,
   emptyStore,
+  failureReason,
   machineDocSource,
   selectedRun,
   type Frame,
@@ -158,10 +159,21 @@ async function refreshRun(runId: string, workflow: string): Promise<void> {
   const res = await gfetch(`/runs/${encodeURIComponent(runId)}`);
   if (!res) return; // 401 already dropped the page to observer
   // !ok: settled + evicted — no gates, and nothing waits.
-  const body = res.ok ? ((await res.json()) as { gates?: GateCard[]; waiting?: WaitingLine[]; held?: HeldLine[] }) : {};
+  const body = res.ok
+    ? ((await res.json()) as {
+        status?: string;
+        output?: unknown;
+        gates?: GateCard[];
+        waiting?: WaitingLine[];
+        held?: HeldLine[];
+      })
+    : {};
   if (runFetchSerial.get(runId) !== serial) return; // superseded — a newer re-fetch owns the answer
   dispatch({ kind: "gates", runId, workflow, gates: body.gates ?? [] });
   dispatch({ kind: "waiting", runId, workflow, waiting: body.waiting ?? [], held: body.held ?? [] });
+  // The reason of a run that ended `failed` (ADR-0073). A 404 says nothing about it, so a reason
+  // the page has stays.
+  if (res.ok) dispatch({ kind: "failure", runId, reason: failureReason(body) });
 }
 
 // ---- The two writes (start-run + gate delivery — ADR-0033) --------------------------------------

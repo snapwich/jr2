@@ -404,6 +404,7 @@ test("a FRESH picking Turn whose route leaves: no notice — a later continued T
       events: [ship, settle, finish],
       actors: { coder, tests: tests.logic, decider },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: {},
       initial: "work",
@@ -470,6 +471,7 @@ test("a per-step timeout brings the Machine back to Rest inside the Agent's stat
         events: [go, finish],
         actors: { coder, work, never },
       }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         context: {},
         initial: "w",
@@ -583,6 +585,7 @@ test("a restore that ends the held Turn and starts another at the same address b
       events: [go, bounce, finish],
       actors: { coder: agentActorWith(() => new MockFlueClient(), coderDefinition), bouncer },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       context: {},
       initial: "w",
@@ -910,6 +913,7 @@ test("a timer with no target holds nothing: the pick is answered at once, and th
       events: [ask, revise, submit],
       actors: { coder },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: { read: false },
       initial: "notes",
@@ -969,6 +973,7 @@ test("a reply from outside the states below the Agent's is no link: a sibling re
       events: [wait, note, finish],
       actors: { coder, side: side.logic },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: {},
       type: "parallel",
@@ -1065,6 +1070,7 @@ async function routeRig(
       events: [go, out, abort, finish],
       actors: { coder, side, work, report, never, fail },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       context: {},
       initial: "w",
@@ -1301,7 +1307,10 @@ test("the run records the Agent each pick's child is of; after a restore, a done
       id: "pair",
       type: "parallel",
       // Below no Agent's state: the root, on A's child's done event.
-      on: { "xstate.done.actor.waitA": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+      on: {
+        "agent.fault": {},
+        "xstate.done.actor.waitA": { actions: answer(({ event }) => `the root saw ${event.type}`) },
+      },
       states: {
         ra: {
           invoke: { src: "coderA", input: { prompt: "A", endpoint, continue: true } },
@@ -1389,7 +1398,7 @@ async function oneAgentTwice(rb: Record<string, unknown>, rootOn: Record<string,
     }).createMachine({
       id: "twice",
       type: "parallel",
-      on: rootOn,
+      on: { "agent.fault": {}, ...rootOn },
       states: {
         ra: {
           invoke: { src: "coder", input: { prompt: "A", endpoint: "http://harness.invalid" } },
@@ -1541,7 +1550,10 @@ test("a child the pick's later work started is recorded as its Agent's; after a 
       id: "pair",
       type: "parallel",
       // Below no Agent's state: the root, on the done event of the child A's first step started.
-      on: { "xstate.done.actor.waitA2": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+      on: {
+        "agent.fault": {},
+        "xstate.done.actor.waitA2": { actions: answer(({ event }) => `the root saw ${event.type}`) },
+      },
       states: {
         ra: {
           invoke: { src: "coderA", input: { prompt: "A", endpoint, continue: true } },
@@ -1637,7 +1649,10 @@ test("a child a timer in the Agent's state started is recorded as its Agent's; a
       id: "pair",
       type: "parallel",
       // Below no Agent's state: the root, on the done event of the child A's timer started.
-      on: { "xstate.done.actor.waitA2": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
+      on: {
+        "agent.fault": {},
+        "xstate.done.actor.waitA2": { actions: answer(({ event }) => `the root saw ${event.type}`) },
+      },
       states: {
         ra: {
           invoke: { src: "coderA", input: { prompt: "A", endpoint, continue: true } },
@@ -1736,7 +1751,10 @@ test("two Machines of one tree each start a child `job`: its done event below no
     }).createMachine({
       id: agentName,
       // Below no Agent's state: this Machine's root, on its own child's done event.
-      on: { "xstate.done.actor.job": { actions: answer(({ event }) => `${agentName}'s root saw ${event.type}`) } },
+      on: {
+        "agent.fault": {},
+        "xstate.done.actor.job": { actions: answer(({ event }) => `${agentName}'s root saw ${event.type}`) },
+      },
       initial: "working",
       states: {
         working: {
@@ -1817,7 +1835,10 @@ test("a pool of two workers: a child `job` one worker's timer started leaves the
     context: ({ input }) => ({ item: input.item }),
     type: "parallel",
     // Below no Agent's state: the worker's root, on A's child's done event.
-    on: { "xstate.done.actor.job": { actions: answer(({ event }) => `the worker saw ${event.type}`) } },
+    on: {
+      "agent.fault": {},
+      "xstate.done.actor.job": { actions: answer(({ event }) => `the worker saw ${event.type}`) },
+    },
     states: {
       ra: {
         invoke: { src: "coderA", input: { prompt: "A", endpoint, continue: true } },

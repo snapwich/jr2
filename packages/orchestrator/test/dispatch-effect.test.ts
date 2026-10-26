@@ -36,6 +36,7 @@ import { open } from "../src/open.ts";
 import { binderOf } from "../src/open-effect.ts";
 import { observe, RunHost, type RunFeedEvent, type RunHostOptions, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
+import { fail as failPart } from "../src/fail.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { fromPick } from "../src/pick.ts";
@@ -48,16 +49,18 @@ import { chartedSrc, machineOf, reviewLoop } from "./_assembly.ts";
 const finish = defineEvent({ name: "finish", input: z.object({}) });
 const fail = defineEvent({ name: "fail", input: z.object({}) });
 const leave = defineEvent({ name: "leave", input: z.object({}) });
+const giveUp = defineEvent({ name: "giveUp", input: z.object({}) });
 
 const intakeDoor = z.object({ ticket: z.string() });
 
 const intake = jr2Setup({
   types: {} as { context: { ticket: string }; input: { ticket: string } },
-  events: [finish, fail],
+  events: [finish, fail, giveUp],
   actors: {
     boom: fromPromise(async () => {
       throw new Error("the intake broke");
     }),
+    stop: failPart(),
   },
 }).createMachine({
   id: "intake",
@@ -65,8 +68,9 @@ const intake = jr2Setup({
   context: ({ input }) => ({ ticket: input.ticket }),
   initial: "waiting",
   states: {
-    waiting: { invoke: { src: "gate", id: "ctl" }, on: { finish: "done", fail: "breaking" } },
+    waiting: { invoke: { src: "gate", id: "ctl" }, on: { finish: "done", fail: "breaking", giveUp: "givingUp" } },
     breaking: { invoke: { src: "boom" } },
+    givingUp: { invoke: { src: "stop", input: { reason: "no owner for the ticket", detail: { queue: "triage" } } } },
     done: { type: "final" },
   },
   output: ({ context }) => ({ verdict: "triaged", ticket: context.ticket }),
@@ -243,6 +247,19 @@ test("in-process wait: a callee that errors settles `error`; one cancelled settl
   await waitFor(() => resultOf(cancels.host, cancels.runId) !== undefined);
   const cancelled = resultOf(cancels.host, cancels.runId) as { status: string };
   assert.equal(cancelled.status, "cancelled");
+});
+
+test("in-process wait: a callee that fails settles `failed`, its Failure as the output (ADR-0073)", async () => {
+  const r = await rig(dispatch("intake", { input: intakeDoor, wait: true }));
+  const callee = await startedRun(r.store, r.runId);
+  r.host.sendToGate(callee, "ctl", { type: "giveUp" });
+  await waitFor(() => resultOf(r.host, r.runId) !== undefined);
+  assert.deepEqual(resultOf(r.host, r.runId), {
+    outcome: "settled",
+    run: callee,
+    status: "failed",
+    output: { reason: "no owner for the ticket", detail: { queue: "triage" } },
+  });
 });
 
 test("in-process: a door refusal is output — 400 naming the door's shape, 404 for no such Workflow, 409 for an unrunnable named Chart", async () => {
@@ -471,6 +488,7 @@ test("a pick that runs a dispatch is held at Rest while it waits, and answered w
     events: [review],
     actors: { coder: agentActorWith(() => coder, coderDefinition), start: dispatcher },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "w",

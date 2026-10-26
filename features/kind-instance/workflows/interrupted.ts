@@ -12,7 +12,7 @@
 // `/agents/coder/<runId>/body/coder`, as `handoff`'s do.
 
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup, sentBy, workspace } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, sentBy, workspace } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
@@ -24,10 +24,11 @@ type BodyInput = { workspace: Ws };
 const body = jr2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [finish, halt],
-  actors: { coder: agent(coder) },
+  actors: { coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
+  on: { "workspace.lost": { target: ".lost" }, "agent.fault": { target: ".faulted" } },
   initial: "coding",
   states: {
     coding: {
@@ -43,6 +44,8 @@ const body = jr2Setup({
       },
     },
     parked: {},
+    faulted: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
   },
 });
 

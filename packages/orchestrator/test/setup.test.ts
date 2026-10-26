@@ -115,6 +115,7 @@ test("an Agent slot is the Machine's own logic; provide() swaps it — the unit-
     events: [approve],
     actors: { coder: agent(testDefinition), probe: fromCallback(() => {}) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "working",
@@ -206,7 +207,7 @@ test("agent menus and gate accepts derive from transitions, routed by audience",
     initial: "coding",
     // Shared-ancestor handlers: report_blocked bubbles into the AGENT menu (audience: agent),
     // human_approve bubbles into the GATE set (audience: external) — and never vice versa.
-    on: { report_blocked: { target: ".done" }, human_approve: { target: ".done" } },
+    on: { "agent.fault": {}, report_blocked: { target: ".done" }, human_approve: { target: ".done" } },
     states: {
       coding: {
         invoke: { src: "coder", input: { prompt: "go", endpoint: "http://x" } },
@@ -252,6 +253,7 @@ test("the Menu is the union of every state that invokes that Agent, sorted — f
     events: [finish, dispute, verdict, humanOnly],
     actors: { coder: slot(coder), reviewer: slot(reviewer) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "implement",
@@ -309,6 +311,7 @@ test("picks written BELOW the invoking state are its modes' picks: derived, neve
     events: [finish],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "active",
@@ -334,6 +337,7 @@ test("a Turn with no Menu at all still builds — nothing below it claims a pick
     events: [],
     actors: { coder: slot(new MockFlueClient()) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "active",
@@ -368,6 +372,7 @@ test("two Machines may each carry a `coder`, and each Turn places by ITS OWN def
     events: [],
     actors: { coder: named(innerPort, testDefinition) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "child",
     context: {},
     initial: "coding",
@@ -379,6 +384,7 @@ test("two Machines may each carry a `coder`, and each Turn places by ITS OWN def
     events: [go],
     actors: { coder: named(outerPort, { ...testDefinition, workspace: "none" }), child },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "advising",
@@ -413,6 +419,7 @@ test("`continue: true` lands every state of one Machine on ONE conversation (ADR
       events: [go],
       actors: { coder: slot(mock) },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: {},
       initial: "a",
@@ -450,6 +457,7 @@ test("`continue: true` is per MACHINE INSTANCE: two children of one Machine neve
     events: [],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "worker",
     context: {},
     initial: "first",
@@ -501,6 +509,7 @@ test("a terminal fault burns the conversation: the next `continue` mints a virgi
     events: [],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "a",
@@ -539,6 +548,7 @@ test("a FRESH turn's fault burns nothing — there is no conversation to continu
     events: [],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "a",
@@ -564,6 +574,7 @@ test("the minted id rides the child's PERSISTED input — what a restore re-spaw
     events: [],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "a",
@@ -594,6 +605,7 @@ test("two PARALLEL states continuing one Agent are refused — one live surface 
     events: [],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     type: "parallel",
@@ -628,6 +640,7 @@ test("a key a Turn has no use for REFUSES the Turn, naming the surface (ADR-0057
       events: [],
       actors: { coder: slot(mock) },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: {},
       initial: "a",
@@ -664,6 +677,7 @@ test("jr2 mints every Instance ID — the Turn carries none to honor (ADR-0057)"
     events: [],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "a",
@@ -685,6 +699,7 @@ test("a `tools:` override is REFUSED — the Menu is what the state will accept 
     events: [ping, pong],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "a",
@@ -713,6 +728,7 @@ test("the Frame's cwd rides the invoke input to the admission (ADR-0057)", async
     events: [ping],
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "a",
@@ -744,6 +760,7 @@ test("the dials pass through to the admission; omitted, nothing is invented (ADR
       events: [ping],
       actors: { coder: slot(mock) },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: {},
       initial: "a",
@@ -781,6 +798,7 @@ async function turnWith(on: any, context: Record<string, unknown>, defs: EventDe
     events: defs,
     actors: { coder: slot(mock) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context,
     initial: "a",
@@ -898,6 +916,7 @@ test("an Open body below an Agent's state is no Rest warning: it runs a Chart, a
     events: [plan],
     actors: { planner: agent({ model: "stub/model", instructions: "plan" }), body: lendingDecl({}) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "p",
     initial: "planning",
     states: {

@@ -25,6 +25,7 @@ export const release = jr2Setup({
   actors: { coder },
   guards: { ready: ({ context }) => context.note === undefined },
 }).createMachine({
+  on: { "agent.fault": {} },
   id: "release",
   context: {},
   initial: "release",
@@ -57,7 +58,7 @@ export const release = jr2Setup({
  * declining others, so the reviewer's `cancel` runs the root's. */
 export const rooted = jr2Setup({ events: [cancel, approve], actors: { coder } }).createMachine({
   id: "rooted",
-  on: { cancel: ".cancelled" },
+  on: { "agent.fault": {}, cancel: ".cancelled" },
   initial: "release",
   states: {
     release: {

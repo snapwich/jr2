@@ -17,6 +17,10 @@ export { jr2Setup } from "./setup.ts";
 export { sentBy } from "./party.ts";
 export type { HostInjectedInput } from "./vocabulary.ts";
 
+// Failure: the Part a Machine invokes to fail its run, and the guard that tells a Failure from a
+// defect in an `onError` (ADR-0073).
+export { fail, isFailure } from "./fail.ts";
+
 // Agents: an Agent slot and the definition it carries (ADR-0028, ADR-0049).
 export { agent } from "./harness-client.ts";
 export type { AgentDefinition, ThinkingLevel } from "./agent.ts";

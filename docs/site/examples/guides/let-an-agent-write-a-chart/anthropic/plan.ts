@@ -5,6 +5,7 @@ import {
   agent,
   chartSchemaFor,
   defineEvent,
+  fail,
   fromPick,
   jr2Setup,
   openBody,
@@ -59,11 +60,13 @@ export const machine = jr2Setup({
       instructions: "You write clear, short text for engineers.",
     }),
     body: openBody(declaration),
+    fail: fail(),
   },
 }).createMachine({
   id: "plan",
   input: z.object({ task: z.string() }),
   context: ({ input }) => ({ task: input.task }),
+  on: { "agent.fault": ".failed" },
   initial: "planning",
   states: {
     planning: {
@@ -96,6 +99,7 @@ export const machine = jr2Setup({
       },
     },
     done: { type: "final" },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
   output: ({ context }) => context.result,
 });

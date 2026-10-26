@@ -6,6 +6,7 @@ import {
   bearer,
   command,
   defineEvent,
+  fail,
   fromPick,
   http,
   jr2Setup,
@@ -49,10 +50,13 @@ const body = jr2Setup({
       input: z.object({ branch: z.string(), summary: z.string() }),
       request: ({ branch, summary }) => ({ json: { text: `${branch}: ${summary}` } }),
     }),
+    // Fail the run: the end for work that did not succeed.
+    fail: fail(),
   },
 }).createMachine({
   id: "fix-and-report",
   context: ({ input }) => input,
+  on: { "workspace.lost": ".lost" },
   initial: "coding",
   states: {
     coding: {
@@ -98,8 +102,10 @@ const body = jr2Setup({
       },
     },
     done: { type: "final" },
-    notReported: { type: "final" },
-    failed: { type: "final" },
+    // Not final states: a final state means `done`. Each one fails the run, and the run ends `failed`.
+    notReported: { invoke: { src: "fail", input: { reason: "the report did not go out" } } },
+    failed: { invoke: { src: "fail", input: { reason: "the coder could not go on" } } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
   },
 });
 

@@ -131,6 +131,14 @@ const CHECK_SENTENCE =
   "Before you give a change to the user, run `npx --no jr2 check` in the Instance folder. " +
   "It does the typecheck and the load of each Workflow that `jr2 up` does first, with no cluster, and it gives the same refusals.";
 
+/** The line of the Failure rule (ADR-0073). jr2 cannot see in the walk that a promise only throws,
+ * so the rule is text: an Assistant that ends a run that did not succeed in a final state, or with
+ * a throw, writes a Machine that loads, and its run ends `done` or `error`. */
+const FAILURE_LINE =
+  "A final state means that the work succeeded: the run ends `done`. When the work did not succeed, invoke `fail()` " +
+  "from a state (reference/authoring-surface/fail.md), and the run ends `failed`. Do not throw to fail: a throw is a " +
+  "defect, and the run ends `error`.";
+
 /** `agents-block.md`: what `jr2 up` writes between the AGENTS.md markers, without the markers. */
 export function agentsBlock(
   map: Sitemap,
@@ -141,6 +149,8 @@ export function agentsBlock(
 ): string {
   return [
     `jr2 is newer than your training data. Before you write a Machine or change jr2.config.ts, read the bundled docs in ${BUNDLE_ROOT}/. They are the docs of this Instance's Kit version, ${version}. ${startSentence(map, errors)} ${CHECK_SENTENCE}`,
+    "",
+    FAILURE_LINE,
     "",
     compressedIndex(map, present, errors, folders),
     "",

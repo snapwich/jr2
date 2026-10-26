@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+import { command, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
 
 const runInput = z.object({ branch: z.string() });
 type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
@@ -9,9 +9,11 @@ const body = jr2Setup({
   actors: {
     // JR2_CPUS holds the cpu limit of the container. Playwright does not read that limit.
     e2e: command(["sh", "-c", "npx playwright test --workers=$JR2_CPUS"], { timeout: "30m" }),
+    fail: fail(),
   },
 }).createMachine({
   id: "e2e",
+  on: { "workspace.lost": ".lost" },
   initial: "testing",
   states: {
     testing: {
@@ -27,7 +29,9 @@ const body = jr2Setup({
       },
     },
     passed: { type: "final" },
-    failed: { type: "final" },
+    // Not final states: each one fails the run, and the run ends `failed`.
+    failed: { invoke: { src: "fail", input: { reason: "the Playwright tests did not pass" } } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
   },
 });
 

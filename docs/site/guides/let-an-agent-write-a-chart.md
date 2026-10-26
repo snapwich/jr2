@@ -92,7 +92,7 @@ it. Then the Chart ends, and the run ends with the status `done`.
 
 - [`openBody()`](../reference/authoring-surface/openbody.md) refuses a declaration that is not correct, with one line
   for each problem. The refusal starts with `openBody: `, then each problem, separated by `; `. For example:
-  - `lends.<kind>: an Open body lends agents, effects, machines, guards, actions, delays and gate only`
+  - `lends.<kind>: an Open body lends agents, effects, machines, guards, actions, delays, gate and fail only`
   - `allows.workspace: "<value>" is not a Workspace access (write, read, none)`
   - `ceilings.<ceiling>: missing; an Open body states every ceiling`
   - `ceilings.<ceiling>: <value> is not a positive integer`
@@ -106,14 +106,19 @@ it. Then the Chart ends, and the run ends with the status `done`.
   - `lends.<kind>: "<name>" is the Open body itself`
 - The door refuses a Chart, and gives one line for each problem. Each line starts with the path in the Chart. For
   example:
-  - `<path>: "<name>" is not a lent actor or an Agent of this Chart; lent: <names>; kit: <gate or none>; minted: <names>`
-  - `<path>: "<name>" is not a lent guard; lent guards: <names> (and jr2.sentBy with params { id })`
+  - `<path>: "<name>" is not a lent actor or an Agent of this Chart; lent: <names>; kit: <gate, fail or none>; minted: <names>`
+  - `<path>: "<name>" is not a lent guard; lent guards: <names> (and jr2.sentBy with params { id }, and jr2.failure)`
   - `<path>.type: "<name>" is not a generic or a lent action; generic: set, append, increment, clear; lent: <names>`
   - ``<path>: <reference> is supplied by nothing: it is not in the initial `context`, and no `set`, `append` or `increment` writes it``,
     then what a write supplies
   - `<path>: "<reference>" is not a reference: it starts at context, event or input (a reference is a path, never an expression)`
+- The door then compiles the Chart as the Open body does. A line of this last check starts with `(chart):`, and names a
+  state by its xstate id (for example `body.writing`), not by its path in the Chart.
 - A refusal is output, not an error: the Open body ends with `{ outcome: "refused", report }`. A Chart wrapper that
   routes `onDone` back to the state of the pick gives the report to the planner.
+- When the Turn of an Agent of the Chart cannot go on, and no transition of the Chart takes
+  [`agent.fault`](../reference/mechanism-events.md#agent-fault), the Open body ends as an error. An `onError` on the
+  Open body's state catches it. With no `onError` there, as in this wrapper, the run ends `error`.
 - A Chart that gets to a ceiling stops, and the Open body ends with `{ outcome: "ceiling", ceiling, detail }`.
 
 ## Read next

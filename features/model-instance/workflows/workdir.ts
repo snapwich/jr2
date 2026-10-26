@@ -8,7 +8,15 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, jr2Setup, workspace, type HostInjectedInput, type Workspaced } from "@jr2/orchestrator";
+import {
+  agent,
+  defineEvent,
+  fail,
+  jr2Setup,
+  workspace,
+  type HostInjectedInput,
+  type Workspaced,
+} from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
 
@@ -33,7 +41,7 @@ type BodyContext = BodyInput & { path?: string; fault?: string };
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [wrote, done],
-  actors: { coder: agent(coder) },
+  actors: { coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
@@ -72,8 +80,21 @@ const body = jr2Setup({
       on: { done: { target: "finished" } },
     },
     finished: { type: "final", output: { outcome: "finished" } },
-    lost: { type: "final", output: { outcome: "lost" } },
-    faulted: { type: "final", output: ({ context }) => ({ outcome: "faulted", reason: context.fault }) },
+    lost: {
+      invoke: {
+        src: "fail",
+        input: { reason: "the Sandbox was lost", detail: { outcome: "lost" } },
+      },
+    },
+    faulted: {
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Agent's Turn could not go on",
+          detail: { outcome: "faulted", reason: context.fault },
+        }),
+      },
+    },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,
 });

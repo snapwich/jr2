@@ -37,7 +37,11 @@ This Chart is `workflows/notes/summary.chart.json`. Its Workflow name is `notes/
 <<< @/examples/guides/run-a-chart-by-name/summary.chart.json
 
 The Chart invokes the lent Agent `writer` with a prompt that reads `{{input.topic}}`. When `writer` picks `finished`,
-the Chart keeps the summary in its context, and ends with it as its output.
+the Chart keeps the summary in its context, and ends with it as its output. When the Turn of `writer` cannot go on, jr2
+sends `agent.fault`. The Chart keeps its `reason`, and goes to `failed`. `failed` invokes `fail`, which the wrapper
+lends (`fail: true`), so the run ends `failed`, with `{ reason, detail }` as its output. In a Chart the `agent.fault`
+route is optional. Without it, the Open body ends as an error, and this wrapper has no `onError` on its Open body state,
+so the run ends `error`.
 
 ## Keep a Chart in a file
 

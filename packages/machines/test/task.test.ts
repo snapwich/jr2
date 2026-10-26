@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { AnyStateMachine } from "xstate";
+import { fromPromise, type AnyStateMachine } from "xstate";
 import {
   agentActorWith,
   asMachine,
@@ -18,8 +18,10 @@ import {
   isAgent,
   inputSchemaOf,
   partsOf,
+  pool,
   requireBoundAgent,
   RunHost,
+  source,
   SqliteSnapshotStore,
   type AgentAdmission,
   type AgentAdmitOptions,
@@ -99,14 +101,19 @@ class FakeSandbox implements SandboxPort {
     repos: Array<{ slot: string }>;
   }): Promise<{ repos: Record<string, string> }> {
     this.specs.push(req.spec);
+    this.branchOf.set(req.name, req.spec.branch);
     const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
     return { repos };
   }
   /** What the watch says about the Sandbox (ADR-0021, ADR-0063). */
   present = true;
+  /** The branches whose Sandbox the watch reports gone, whatever `present` says. */
+  lostBranches = new Set<string>();
+  private readonly branchOf = new Map<string, string>();
   async renew(): Promise<void> {}
-  continuity(_name: string, listener: (seen: { present: boolean }) => void): () => void {
-    queueMicrotask(() => listener({ present: this.present }));
+  continuity(name: string, listener: (seen: { present: boolean }) => void): () => void {
+    const lost = this.lostBranches.has(this.branchOf.get(name) ?? "");
+    queueMicrotask(() => listener({ present: this.present && !lost }));
     return () => {};
   }
   harnessRestarts(): () => void {
@@ -347,7 +354,7 @@ test("request_changes continues the SAME conversation, and approve ends the run 
   const final = await host.read(runId);
   assert.equal(final?.status, "done");
   const ctx = final?.context as { output?: unknown };
-  assert.deepEqual(ctx.output, { outcome: "approved", branch: "feat/json-flag" });
+  assert.deepEqual(ctx.output, { branch: "feat/json-flag" });
 });
 
 test("a terminal agent.fault parks at the same Gate, and the NEXT Turn is a fresh conversation", async () => {
@@ -417,7 +424,7 @@ test("the door's Dials reach the Turn, and never touch the Agent's identity (ADR
   assert.equal(port.definitions[0]!.model, MODEL);
 });
 
-test("a lost Workspace settles the run as lost rather than resuming into an empty pod (ADR-0021)", async () => {
+test("a lost Workspace fails the run rather than resuming into an empty pod (ADR-0021, ADR-0073)", async () => {
   const port = new MockPort();
   const sandbox = new FakeSandbox();
   // Continuity broken: the CR is gone, so the watch's first word reports it and the body decides.
@@ -428,6 +435,73 @@ test("a lost Workspace settles the run as lost rather than resuming into an empt
   const { runId } = await host.start("task", { prompt: PROMPT, branch: "wip" });
   await waitFor(() => host.status(runId) === undefined);
   const final = await host.read(runId);
-  assert.equal(final?.status, "done");
-  assert.deepEqual((final?.context as { output?: unknown }).output, { outcome: "lost" });
+  // A Failure, not `done`: the run's output is the Failure's payload, and `fault` stays empty.
+  assert.equal(final?.status, "failed");
+  assert.equal(final?.fault, undefined);
+  assert.deepEqual(final?.output, {
+    reason: "the Workspace was lost",
+    detail: { lost: "the Sandbox is gone, with every commit that was not pushed" },
+  });
+  // The wrapper deletes the Sandbox before the Failure goes up (ADR-0073).
+  assert.equal(sandbox.destroyed.length, 1);
+});
+
+test("in a Pool, a lost worker fails only its item: the other worker and its Sandbox stay (ADR-0017, ADR-0073)", async () => {
+  const port = new MockPort();
+  const sandbox = new FakeSandbox();
+  sandbox.lostBranches.add("gone");
+  const items = [
+    { id: "KEEP", branch: "keep" },
+    { id: "GONE", branch: "gone" },
+  ];
+  const issues = source<{ id: string; branch: string }>({
+    next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+      const item = items.find((i) => !input.active.includes(i.id)) ?? null;
+      if (item) items.splice(items.indexOf(item), 1);
+      return item;
+    }),
+  });
+  const machine = pool(wire(bound, port, []), {
+    source: issues,
+    itemId: (i: { id: string }) => i.id,
+    cap: 2,
+    itemInput: (i: { branch: string }) => ({ prompt: PROMPT, branch: i.branch }),
+  });
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "pool", machine, provide: () => ({}) } satisfies WorkflowDef);
+  const { runId } = await host.start("pool", {});
+
+  // KEEP works and parks at its review Gate; GONE's Sandbox is lost and its `task` fails.
+  await waitFor(() => port.admits.some((a) => a.instanceId.includes("KEEP")));
+  host.sendToAgent(port.admits.find((a) => a.instanceId.includes("KEEP"))!.instanceId, {
+    type: "finish",
+    summary: "done",
+  });
+  await waitFor(() => host.gates(runId).length === 1 && sandbox.destroyed.length === 1);
+
+  // The Pool caught the Failure: the run is still live, and only GONE's Sandbox is deleted.
+  assert.ok(host.status(runId), "one failed item does not end the Pool run");
+  assert.equal(sandbox.destroyed.length, 1, "parking is retention for the sibling: its Sandbox stays");
+  assert.match(sandbox.destroyed[0]!, /gone/);
+
+  host.sendToGate(runId, host.gates(runId)[0]!.gate, { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  // Drained with one failure, the Pool fails the run by default (ADR-0017): the sibling finished
+  // first, and the Failure lists both items.
+  assert.equal(final?.status, "failed");
+  assert.deepEqual(final?.output, {
+    reason: "1 of 2 items failed",
+    detail: {
+      status: "drained",
+      items: { KEEP: { branch: "keep" } },
+      failures: {
+        GONE: {
+          reason: "the Workspace was lost",
+          detail: { lost: "the Sandbox is gone, with every commit that was not pushed" },
+        },
+      },
+    },
+  });
+  assert.equal(sandbox.destroyed.length, 2);
 });

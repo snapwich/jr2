@@ -58,6 +58,18 @@ effects: workflow "test-and-push" — what it runs outside itself (ADR-0067)
 
 The first line gives the name of the Workflow. Each next line gives the slot of one Effect.
 
+`jr2 up` also lists each state that invokes [`fail`](../reference/authoring-surface/fail.md), because each one ends the
+run `failed`:
+
+<!-- output: not run -->
+
+```text
+failures: workflow "test-and-push" — the states that fail the run (ADR-0073)
+  test-and-push.notPushed: invokes fail
+  test-and-push.failed: invokes fail
+  test-and-push.lost: invokes fail
+```
+
 ## The four kinds
 
 ### `command`
@@ -186,8 +198,11 @@ A test that fails is `exited` with a code that is not 0. A program that the cont
 code 127. An HTTP 4xx or 5xx status is a `response`. A Workflow that refuses the run input of a `dispatch` is `refused`,
 with the status code and the report of the refusal. `unknown` means that jr2 cannot tell what the Effect did.
 
-The `onError` route is only for a defect in the Machine or in the config. For example, the Effect is not in a Workspace,
-or an `arg()` has no value, or an Open part has no binding.
+The `onError` route of an Effect is only for a defect in the Machine or in the config. For example, the Effect is not in
+a Workspace, or an `arg()` has no value, or an Open part has no binding. An outcome that means that the work did not
+succeed goes to a state that invokes [`fail`](../reference/authoring-surface/fail.md). Then the run ends `failed`, with
+a reason (see [How a run ends](machines-and-workflows.md#how-a-run-ends)). Do not throw to fail: a throw is a defect,
+and the run ends `error`.
 
 ## At most once
 

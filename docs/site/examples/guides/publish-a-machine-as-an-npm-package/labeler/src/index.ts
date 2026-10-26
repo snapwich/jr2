@@ -1,6 +1,6 @@
 import { assign } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup, open } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, open } from "@jr2/orchestrator";
 
 // The Agent's one pick.
 const label = defineEvent({
@@ -23,7 +23,7 @@ const door = z.object({
 });
 
 type Input = z.infer<typeof door>;
-export type LabelerOutput = { kind: "bug" | "feature" | "question"; reason: string } | { kind: "none"; reason: string };
+export type LabelerOutput = { kind: "bug" | "feature" | "question"; reason: string };
 
 /**
  * A Machine that gives an issue one label.
@@ -32,11 +32,13 @@ export type LabelerOutput = { kind: "bug" | "feature" | "question"; reason: stri
  *
  * Run input: `{ title, body }`, the title and the text of the issue.
  *
- * Output: `{ kind, reason }`. `kind` is `bug`, `feature` or `question`, or `none` when the Turn of
- * the Agent fails.
+ * Output: `{ kind, reason }`. `kind` is `bug`, `feature` or `question`.
+ *
+ * Fails the run when the Turn of the Agent fails: the reason of the Failure is `no label: ` and the
+ * reason of the fault.
  */
 export const labeler = jr2Setup({
-  types: {} as { input: Input; context: Input & { result?: LabelerOutput }; output: LabelerOutput },
+  types: {} as { input: Input; context: Input & { result?: LabelerOutput; fault?: string }; output: LabelerOutput },
   events: [label],
   actors: {
     labeler: agent({
@@ -45,6 +47,7 @@ export const labeler = jr2Setup({
       workspace: "none",
       instructions: "You read one issue and give it one label. Call label once.",
     }),
+    fail: fail(),
   },
 }).createMachine({
   id: "labeler",
@@ -63,13 +66,12 @@ export const labeler = jr2Setup({
           actions: assign({ result: ({ event }) => ({ kind: event.kind, reason: event.reason }) }),
         },
         // jr2 sends this when the Agent's Turn fails for good.
-        "agent.fault": {
-          target: "done",
-          actions: assign({ result: ({ event }) => ({ kind: "none" as const, reason: event.reason }) }),
-        },
+        "agent.fault": { target: "failed", actions: assign({ fault: ({ event }) => event.reason }) },
       },
     },
     done: { type: "final" },
+    // Not a final state: the run ends `failed`. The reason of the Failure is `no label: ` and the reason of the fault.
+    failed: { invoke: { src: "fail", input: ({ context }) => ({ reason: `no label: ${context.fault}` }) } },
   },
   output: ({ context }) => context.result!,
 });

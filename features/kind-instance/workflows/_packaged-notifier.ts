@@ -9,6 +9,7 @@ import { assign } from "xstate";
 import {
   bearer,
   defineEvent,
+  fail,
   http,
   jr2Setup,
   open,
@@ -34,6 +35,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
   events: [unused, go],
   actors: {
+    fail: fail(),
     notify: http({
       method: "POST",
       url: `${ECHO}/echo`,
@@ -46,7 +48,7 @@ const body = jr2Setup({
   id: "notifier",
   context: ({ input }) => input,
   initial: "holding",
-  on: { noop: ".settled" },
+  on: { "workspace.lost": { target: ".lost" }, noop: ".settled" },
   states: {
     holding: { invoke: { src: "gate", id: "hold" }, on: { go: "notifying" } },
     notifying: {
@@ -57,6 +59,7 @@ const body = jr2Setup({
       },
     },
     settled: { type: "final" },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
   },
   output: ({ context }: { context: BodyContext }) => context.output ?? { outcome: "none" },
 });

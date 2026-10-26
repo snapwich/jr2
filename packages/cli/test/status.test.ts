@@ -5,7 +5,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { main } from "../src/cli.ts";
-import { boundActivity, dispatchedActivity, dispatchedLines, renderInstanceStatus } from "../src/commands/status.ts";
+import {
+  boundActivity,
+  dispatchedActivity,
+  dispatchedLines,
+  failureActivity,
+  renderInstanceStatus,
+} from "../src/commands/status.ts";
 import type { Io } from "../src/output.ts";
 
 const lines = (out: string): string[] => out.split("\n").filter((l) => l.startsWith("assembly:"));
@@ -149,4 +155,32 @@ test("`jr2 status <run>` prints the result with `dispatchedBy` and `output`, and
   assert.deepEqual(printed.dispatchedBy, s.dispatchedBy);
   assert.deepEqual(printed.output, { verdict: "approve" });
   assert.match(err.join(""), /^dispatched by: caller-run \(review\), depth 1$/m);
+});
+
+test("the `failed:` line is a failed run's reason, and no other status has one (ADR-0073)", () => {
+  assert.equal(failureActivity({ status: "failed", output: { reason: "no plan fits" } }), "failed: no plan fits");
+  assert.equal(failureActivity({ status: "done", output: { reason: "a field of the output" } }), undefined);
+  assert.equal(failureActivity({ status: "error" }), undefined);
+  assert.equal(failureActivity({ status: "failed", output: {} }), undefined);
+});
+
+test("`jr2 status <run>` of a failed run prints its reason on stderr and exits 0: the read worked", async () => {
+  const runId = "0b9c2f3e-1111-4222-8333-444455557777";
+  const s = { runId, workflow: "w", instanceId: "i", status: "failed", value: "failing", context: {} };
+  const output = { reason: "the push was refused", detail: { code: 128 } };
+  const out: string[] = [];
+  const err: string[] = [];
+  const io: Io = {
+    stdout: (x) => out.push(x),
+    stderr: (x) => err.push(x),
+    env: { JR2_URL: "http://test" },
+    cwd: "/",
+    fetch: async (url) =>
+      new URL(url).pathname === `/runs/${runId}`
+        ? Response.json({ ...s, output })
+        : new Response("{}", { status: 404 }),
+  };
+  assert.equal(await main(["status", runId], io), 0);
+  assert.deepEqual((JSON.parse(out.join("")) as { output: unknown }).output, output);
+  assert.match(err.join(""), /^failed: the push was refused$/m);
 });

@@ -154,8 +154,9 @@ http://localhost:4000/workflows/fix
 ```
 
 The Console shows the Machine with no run. The outer boxes are the states of the
-[Workspace](../reference/glossary.md#workspace): `placing`, `provisioning`, `attaching`, `running`, `teardown` and
-`done`. jr2 makes them. The body of your Assistant's Machine is the box `▣ body`, inside `running`. Read that box.
+[Workspace](../reference/glossary.md#workspace): `placing`, `provisioning`, `attaching`, `running`, `teardown`,
+`failing` and `done`. jr2 makes them. The body of your Assistant's Machine is the box `▣ body`, inside `running`. Read
+that box.
 
 A box is a state. A line `⚙ <name>` in a box is what the state runs. An arrow is a transition. Its label is the event
 that moves the run, and `[<name>]` is the guard that it must pass. Look for these facts:
@@ -169,7 +170,7 @@ that moves the run, and `[<name>]` is the guard that it must pass. Look for thes
 4. **The push comes only after `approve`.** `pushing` runs `⚙ publish`. The only arrow into `pushing` is `approve`.
 5. **Each failure has a place to go.** `agent.fault` goes from `working` to `review`. A push that fails goes back to
    `review`. The line `↺ workspace.lost` in the `▣ body` box applies to every state of the body. The graph does not show
-   its target. In this file, it goes to `lost`.
+   its target. In this file, it goes to `lost`, which invokes `fail`: the run ends `failed`.
 
 Open **who may send what** in the pane of the graph. It shows the same seats as `jr2 up`:
 
@@ -307,6 +308,8 @@ that. The seats show the result.
 the [Worktree](../reference/glossary.md#worktree) of the one [Repo Slot](../reference/glossary.md#repo-slot). A command
 runs in the root of the Worktree, so `tests` names the test files by their path from that root.
 [`push()`](../reference/authoring-surface/push.md) pushes the tip of the coder's branch.
+[`fail()`](../reference/authoring-surface/fail.md) is a Part, not an Effect. The `lost` state invokes it to end the run
+`failed`, because a final state means `done`.
 
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#effects
 

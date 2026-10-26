@@ -8,6 +8,7 @@ import { Fragment, h, type JSX } from "preact";
 import { useState } from "preact/hooks";
 import {
   selectedRun,
+  selectedRunFailure,
   selectedRunGates,
   selectedRunHeld,
   selectedRunWaiting,
@@ -80,6 +81,7 @@ export function App(props: {
         gates: selectedRunGates(store),
         waiting: selectedRunWaiting(store),
         held: selectedRunHeld(store),
+        failure: selectedRunFailure(store),
         api,
       }),
       h(Drawer, { store, chosenTab, onChooseTab: setChosenTab, api }),

@@ -7,8 +7,8 @@ Open a shell in the [Sandbox](../reference/glossary.md#sandbox) of a run, and re
 [Agent](../reference/glossary.md#agent) works on.
 
 A [Workspace](../reference/glossary.md#workspace) of the run makes the Sandbox, and deletes it when the body of the
-Workspace gets to its final state. The [Rules](#rules) give the cases in which the Sandbox stays. The Sandbox is a pod.
-Its `harness` container runs the [Harness](../reference/glossary.md#harness), and the Agent's
+Workspace gets to its final state or fails. The [Rules](#rules) give the cases in which the Sandbox stays. The Sandbox
+is a pod. Its `harness` container runs the [Harness](../reference/glossary.md#harness), and the Agent's
 [Working tools](../reference/glossary.md#working-tools) run in it. When you use `kubectl exec`, you get a shell in the
 same container. An Agent that has only the [Menu](../reference/glossary.md#menu) has no Sandbox. To read its
 conversation, see [Watch a run](watch-a-run.md).
@@ -152,6 +152,9 @@ commit that you did not push goes with it.
 
 - The Workspace deletes its Sandbox when its body gets to its final state. When the body of each Workspace of the run
   has got to its final state, no Sandbox has the label of the run.
+- A run that a Machine fails deletes its Sandboxes, as a final state does. See
+  [Fail the run](write-a-workflow.md#fail-the-run). To keep the work, wait at a [Gate](../reference/glossary.md#gate)
+  before the state that fails.
 - A Workspace that its parent stops after Placing, for example with an `after` on the state that holds it, does not
   delete its Sandbox. The [operator](../concepts/architecture.md#the-operator) deletes it 30 minutes after the last
   renewal of its [Lease](../reference/glossary.md#lease).

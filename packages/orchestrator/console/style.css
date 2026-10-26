@@ -12,6 +12,8 @@
   --phosphor-soft: rgba(78, 240, 167, 0.12);
   --amber: #f0c04e;
   --red: #f06a5f;
+  /* A Failure (ADR-0073): an end the Machine chose, so not the red of a fault. */
+  --orange: #f0954e;
   --blue: #6aa7f0;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
@@ -227,6 +229,22 @@ main {
   margin-top: 4px;
   font-family: var(--mono);
   color: var(--text-dim);
+}
+
+/* A failed run (ADR-0073): the reason of its Failure. Orange like the rail's `failed` status — the
+   Machine chose this end, so it is not the red of an `error`. */
+#failure {
+  margin: 0 28px 16px;
+  max-width: 720px;
+  border: 1px solid var(--orange);
+  border-radius: 4px;
+  padding: 8px 12px;
+  color: var(--orange);
+  font-family: var(--mono);
+}
+
+#failure[hidden] {
+  display: none;
 }
 
 /* An outstanding pick (ADR-0024): an Agent's Turn held while the workflow runs its pick. */
@@ -614,6 +632,9 @@ ul {
 }
 .wf-runs .run-status.status--error {
   color: var(--red);
+}
+.wf-runs .run-status.status--failed {
+  color: var(--orange);
 }
 .wf-runs .run-status.status--done {
   color: var(--phosphor);

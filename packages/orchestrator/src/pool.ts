@@ -18,6 +18,8 @@
 //                  final, distinct status (jr exit 2), never an indistinguishable idle poll;
 //   - waiting    — children parked (gates, agents) → the run stays open; the gates list is the
 //                  "what needs me" surface (jr exit 3).
+// With failures and `failures: "fail"` (the default), a drained or deadlocked pool fails the run instead
+// (ADR-0073), and the detail of the Failure carries the status.
 // The pool can make this call because it owns both the source and the children. Distinguishing
 // drained from deadlocked needs one more bit than `null` carries, so a Source's `next` MAY
 // resolve the richer `{ item: null, open: n }` shape; a bare `null` means drained-when-idle.
@@ -33,6 +35,7 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import type { EventDef } from "@jr2/agent-protocol";
+import { fail, failurePayload, isFailure, type FailureInput } from "./fail.ts";
 import { gate } from "./gate.ts";
 import { attachWrapperBody, type JR2Wrapper, type WrapperActors } from "./parts.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
@@ -115,8 +118,13 @@ export function source<T>(spec: SourceSpec<T>): SourceSpec<T> {
   return spec;
 }
 
-/** How a pool run ends (its machine output). `items` maps itemId → the worker's output. */
-export type PoolOutput = { status: "drained" | "deadlocked"; items: Record<string, unknown> };
+/** How a pool run ends (its machine output). `items` maps itemId → the output of a worker that got
+ * to a final state. `failures` maps itemId → the Failure of a worker that failed (ADR-0073). */
+export type PoolOutput = {
+  status: "drained" | "deadlocked";
+  items: Record<string, unknown>;
+  failures: Record<string, FailureInput>;
+};
 
 // How a pool is configured (ADR-0017, ADR-0033). `TInput` is what came through the pool's door:
 // the PARSED schema when `input` declares one, and `unknown` when it does not — absence is
@@ -150,6 +158,12 @@ export type PoolSpec<T, TInput = unknown> = {
   /** What the Pool does when the Source has no more items and every worker has settled. Only
    * `"final"`: the run ends. Default: `"final"`. */
   onDrained?: "final";
+  /** What the Pool does at the end when one or more workers failed. The Pool catches each worker's
+   * Failure either way, so one failed item does not stop the other workers. `"fail"`: when the Pool
+   * ends with failures, `drained` or `deadlocked`, it fails the run with the reason
+   * `"<n> of <m> items failed"` and the detail `{ status, items, failures }`. `"report"`: the Pool
+   * ends `done`, with the failures in its output. Default: `"fail"`. */
+  failures?: "fail" | "report";
 };
 
 /**
@@ -165,7 +179,7 @@ export type PoolMachine<TWorker extends AnyStateMachine, TInput> = StateMachine<
   any,
   any,
   any,
-  WrapperActors<"worker", TWorker, "next" | "gate">,
+  WrapperActors<"worker", TWorker, "next" | "gate" | "fail">,
   any,
   any,
   any,
@@ -186,6 +200,8 @@ type PoolCtx = {
   active: string[];
   /** Settled workers' outputs, by item id — the pool's output collects them. */
   items: Record<string, unknown>;
+  /** Failed workers' payloads, by item id (ADR-0073). */
+  failures: Record<string, FailureInput>;
   status?: "drained" | "deadlocked";
 };
 
@@ -213,9 +229,14 @@ function normalizeClaim(output: unknown): Claim {
  * or compose it in another Machine.
  *
  * The run ends when the Source has no item ready and no worker runs. Its output is
- * `{ status, items }`: `status` is `"drained"` when all the work is done, or `"deadlocked"` when
- * items exist but none can start; `items` holds each worker's output by item id. While workers
- * wait on Gates, the run stays open.
+ * `{ status, items, failures }`: `status` is `"drained"` when no item is left, or `"deadlocked"`
+ * when items exist but none can start; `items` holds the output of each worker that got to a final
+ * state, by item id; `failures` holds the Failure of each worker that failed, by item id. A worker's
+ * Failure stops only that worker: the other workers and their Sandboxes stay. When the Pool ends
+ * with one or more failures, `drained` or `deadlocked`, it fails the run by default: the reason is
+ * `"<n> of <m> items failed"`, and the detail is `{ status, items, failures }`. With
+ * `failures: "report"`, it ends `done` with that output. A worker's defect ends the whole run
+ * `error`. While workers wait on Gates, the run stays open.
  *
  * `customize()` reaches through a Pool to its worker: `customize(pool, { agents })` retunes the
  * worker's Agents. The events that the Pool accepts are its `wake` event only; each worker keeps
@@ -294,9 +315,14 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
   /** `xstate.done.actor.<childId>` → the settled worker's item id. */
   const doneChildOf = (event: unknown): string =>
     ((event as { type: string }).type.match(/^xstate\.done\.actor\.(.+)$/) as RegExpMatchArray)[1]!;
+  /** `xstate.error.actor.<childId>` → the failed worker's item id. */
+  const errorChildOf = (event: unknown): string =>
+    ((event as { type: string }).type.match(/^xstate\.error\.actor\.(.+)$/) as RegExpMatchArray)[1]!;
 
+  const report = spec.failures === "report";
+  const failuresOf = (context: unknown) => (context as PoolCtx).failures;
   const machine = setup({
-    actors: { worker, next: spec.source.next, gate },
+    actors: { worker, next: spec.source.next, gate, fail: fail() },
   }).createMachine({
     id: spec.id ?? "pool",
     context: ({ input }): PoolCtx => ({
@@ -304,6 +330,7 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
       cap: typeof spec.cap === "function" ? spec.cap({ input }) : (spec.cap ?? 1),
       active: [],
       items: {},
+      failures: {},
     }),
     // The wake seam: a standing gate for the whole run's life (root invokes stop only at final).
     // The invoke id IS the gate's name (the id derives from the actor path — ADR-0011):
@@ -327,6 +354,28 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
               (context as unknown as PoolCtx).active.filter((id) => id !== doneChildOf(event)),
           }),
           stopChild(({ event }) => doneChildOf(event)),
+        ],
+      },
+      // A worker failed (ADR-0073): keep its Failure, free its slot, stop the ref, and go look for
+      // more work. The Pool is the parent that catches it, so one failed item does not end the run
+      // and the host does not delete the Sandboxes of the other workers — a worker parked at a Gate
+      // keeps its work (parking is retention, ADR-0012). Only a Failure of a live worker: a defect,
+      // or an error of `next`, takes no transition here, so it goes up and ends the run `error`.
+      "xstate.error.actor.*": {
+        guard: ({ context, event }) =>
+          isFailure((event as { error?: unknown }).error) &&
+          (context as unknown as PoolCtx).active.includes(errorChildOf(event)),
+        target: ".discovering",
+        actions: [
+          assign({
+            failures: ({ context, event }) => ({
+              ...(context as unknown as PoolCtx).failures,
+              [errorChildOf(event)]: failurePayload((event as unknown as { error: never }).error),
+            }),
+            active: ({ context, event }) =>
+              (context as unknown as PoolCtx).active.filter((id) => id !== errorChildOf(event)),
+          }),
+          stopChild(({ event }) => errorChildOf(event)),
         ],
       },
     },
@@ -362,6 +411,22 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
             // Nothing ready, workers live → healthy parking: their settling re-queries, as do
             // the wake gate and the poll timer. This is jr's exit-3 "waiting" as a state.
             { guard: ({ context }) => (context as PoolCtx).active.length > 0, target: "parked" },
+            // Idle with failures: the run fails (ADR-0017, ADR-0073), at a drain and at a deadlock.
+            // No worker is live, so the Failure deletes no sibling's Sandbox. `"report"` has no
+            // `failing` state and no branch to it, so the walk lists no state that fails the run. The
+            // branch is spread in, so xstate cannot infer the actor type of its action: `as never`
+            // lets the check pass.
+            ...(report
+              ? []
+              : [
+                  {
+                    guard: ({ context }: { context: unknown }) => Object.keys(failuresOf(context)).length > 0,
+                    target: "failing",
+                    actions: assign({
+                      status: ({ event }) => (claimOf(event).open > 0 ? ("deadlocked" as const) : ("drained" as const)),
+                    }) as never,
+                  },
+                ]),
             // Idle + items exist that will never become ready by themselves → jr's exit 2.
             {
               guard: ({ event }) => claimOf(event).open > 0,
@@ -374,13 +439,30 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
         },
       },
       saturated: {
-        // Every slot full: only a settling worker (the root `xstate.done.actor.*`) moves us.
+        // Every slot full: only a settling worker (the root `xstate.done.actor.*` or a caught
+        // Failure) moves us.
       },
       parked: {
         // Waiting on the world: wake early on push, or re-query on the poll cadence.
         on: wake ? { [wake.name]: "discovering" } : {},
         after: spec.source.pollEvery ? { [spec.source.pollEvery]: { target: "discovering" } } : {},
       },
+      // Not a final state: the run ends `failed`, and the Failure says which items failed.
+      ...(report
+        ? {}
+        : {
+            failing: {
+              invoke: {
+                src: "fail" as const,
+                input: ({ context }: { context: unknown }) => {
+                  const { status, items, failures } = context as PoolCtx;
+                  const n = Object.keys(failures).length;
+                  const m = n + Object.keys(items).length;
+                  return { reason: `${n} of ${m} items failed`, detail: { status, items, failures } };
+                },
+              },
+            },
+          }),
       drained: { type: "final" },
       deadlocked: { type: "final" },
     },
@@ -388,6 +470,7 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
     output: ({ context }): PoolOutput => ({
       status: (context as unknown as PoolCtx).status ?? "drained",
       items: (context as unknown as PoolCtx).items,
+      failures: (context as unknown as PoolCtx).failures,
     }),
   });
 

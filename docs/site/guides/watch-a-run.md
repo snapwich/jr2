@@ -77,18 +77,19 @@ jr2 status a2d8
 
 The status is a [`RunStatus`](../reference/http-api.md#type-runstatus), with the open Gates of the run:
 
-| Field      | What it holds                                                                                                           |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `status`   | `active` while the run continues. `done`, `error` or `cancelled` when it ended. `drifted` when jr2 did not continue it. |
-| `value`    | The state of the root Machine.                                                                                          |
-| `context`  | The context of the root Machine.                                                                                        |
-| `children` | The Machines that the run invokes now, such as its Workspaces, each with its state.                                     |
-| `waiting`  | Each Workspace that waits for capacity: what it waits for, since when, and the words of the scheduler or the quota.     |
-| `held`     | Each [outstanding](../reference/glossary.md#outstanding) pick of an Agent: the Agent, the pick, and since when.         |
-| `fault`    | The error, when the status is `error`.                                                                                  |
-| `reason`   | Why jr2 set the status, when the Machine did not set it, such as `drifted`.                                             |
-| `assembly` | The hash of the [Assembly](../reference/glossary.md#assembly) that the run started under, and holds.                    |
-| `gates`    | Each open Gate. [Answer a Gate](answer-a-gate.md) explains its fields.                                                  |
+| Field      | What it holds                                                                                                                     |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `status`   | `active` while the run continues. `done`, `failed`, `error` or `cancelled` when it ended. `drifted` when jr2 did not continue it. |
+| `value`    | The state of the root Machine.                                                                                                    |
+| `context`  | The context of the root Machine.                                                                                                  |
+| `children` | The Machines that the run invokes now, such as its Workspaces, each with its state.                                               |
+| `waiting`  | Each Workspace that waits for capacity: what it waits for, since when, and the words of the scheduler or the quota.               |
+| `held`     | Each [outstanding](../reference/glossary.md#outstanding) pick of an Agent: the Agent, the pick, and since when.                   |
+| `fault`    | The error, when the status is `error`.                                                                                            |
+| `output`   | The output of the Machine, when the run ended. For `failed`, the Failure: `{ reason, detail? }`.                                  |
+| `reason`   | Why jr2 set the status, when the Machine did not set it, such as `drifted`.                                                       |
+| `assembly` | The hash of the [Assembly](../reference/glossary.md#assembly) that the run started under, and holds.                              |
+| `gates`    | Each open Gate. [Answer a Gate](answer-a-gate.md) explains its fields.                                                            |
 
 [Durable runs](../concepts/durable-runs.md) tells how long jr2 keeps a run that ended.
 
@@ -152,6 +153,9 @@ shows `live`:
 - The `Attention` tab shows the open Gates, and you can answer them. See [Answer a Gate](answer-a-gate.md).
 - For the run that you selected, the Console shows each Workspace that waits for capacity, and why. It also shows each
   outstanding pick of an Agent, and since when.
+- For a run that you selected that ended `failed`, the Console shows the reason of its
+  [Failure](../reference/glossary.md#failure): `failed: <reason>`, as `jr2 status` shows it. With no token, the rail
+  shows only the status `failed`, in orange.
 
 ## Watch from a program
 
@@ -276,8 +280,9 @@ The Harness cuts an input that is longer than 2000 characters at its end, and ma
 answer to a pick in its middle, and marks the cut with `… [<n> characters cut] …`. The model reads the full text. The
 Harness cuts only the log.
 
-The log of a Sandbox goes away with its pod. The Workspace deletes its Sandbox when its body gets to its final state.
-`jr2 send <run id> --event CANCEL` without `--keep` also deletes it. To keep the log, save it before then:
+The log of a Sandbox goes away with its pod. The Workspace deletes its Sandbox when its body gets to its final state,
+and when a [Failure](../reference/glossary.md#failure) goes up through it. `jr2 send <run id> --event CANCEL` without
+`--keep` also deletes it. To keep the log, save it before then:
 
 ```sh
 kubectl -n <namespace> logs <sandbox> -c harness > <file>

@@ -13,7 +13,7 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { advisor } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
 
@@ -39,7 +39,7 @@ type Ctx = Input & { approved: boolean; fault?: string };
 export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [ship, hold],
-  actors: { advisor: agent(advisor) },
+  actors: { advisor: agent(advisor), fail: fail() },
 }).createMachine({
   id: "obedience",
   input: door,
@@ -70,7 +70,15 @@ export const machine = jr2Setup({
     },
     held: { type: "final", output: { outcome: "held" } },
     shipped: { type: "final", output: { outcome: "shipped" } },
-    faulted: { type: "final", output: ({ context }) => ({ outcome: "faulted", reason: context.fault }) },
+    faulted: {
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Agent's Turn could not go on",
+          detail: { outcome: "faulted", reason: context.fault },
+        }),
+      },
+    },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,
 });

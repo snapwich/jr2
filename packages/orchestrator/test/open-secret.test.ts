@@ -297,7 +297,7 @@ test("the walk reports an Open secret nothing bound, with the { secret } line, t
       notify: httpWith(ports, { method: "POST", url: "https://hooks.example.com", auth: bearer(secret(open)) }),
       page: httpWith(ports, { method: "POST", url: open, headers: { "x-api-key": text`${secret(open)}` } }),
     },
-  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const wrapped = workspace(body, { repos, spec });
   const wake = defineEvent({ name: "work_ready", input: z.object({}) });
   const pooled = pool(wrapped, {
@@ -334,7 +334,7 @@ test("the bound secret is placed as a named secret is: in that Effect's Effector
       notify: httpWith(ports, { method: "POST", url: "https://hooks.example.com", auth: bearer(secret(open)) }),
       release: commandWith(execs.factory, ["./release.sh"], { env: { TOKEN: secret(open) } }),
     },
-  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const bound = customize(workspace(body, { repos, spec }), {
     effects: { notify: { secret: "hook-key" }, release: { secret: "release-key" } },
   });

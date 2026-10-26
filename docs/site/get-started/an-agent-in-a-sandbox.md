@@ -322,11 +322,13 @@ delivered approve to gate "body.review" on 4a1d680b-a542-46f3-87e8-67e75edaf0b5
 
 In the first terminal, `jr2 run` prints the end of the run, then the final status as one line of JSON, and stops:
 
+<!-- output: not run -->
+
 ```text
 …
   → active "teardown"
   → done "done"
-{"runId":"4a1d680b-a542-46f3-87e8-67e75edaf0b5","workflow":"task",…,"output":{"outcome":"approved","branch":"jr2/task-04f97b73-285c-49c5-8421-8859b6b2fc4c"}}
+{"runId":"4a1d680b-a542-46f3-87e8-67e75edaf0b5","workflow":"task",…,"output":{"branch":"jr2/task-04f97b73-285c-49c5-8421-8859b6b2fc4c"}}
 ```
 
 ## Make sure that the Sandbox is gone

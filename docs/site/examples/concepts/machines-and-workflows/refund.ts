@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { assign, emit } from "xstate";
-import { defineEvent, jr2Setup } from "@jr2/orchestrator";
+import { defineEvent, fail, jr2Setup } from "@jr2/orchestrator";
 
 // The Vocabulary: the events that this Machine takes.
 const approve = defineEvent({
@@ -11,7 +11,7 @@ const approve = defineEvent({
 const reject = defineEvent({
   name: "reject",
   description: "Do not pay the refund, and say why.",
-  input: z.object({ reason: z.string() }),
+  input: z.object({ reason: z.string().min(1) }),
 });
 
 // The door: the input that starts a run. jr2 refuses a start that does not match it.
@@ -28,6 +28,7 @@ export const machine = jr2Setup({
     emitted: { type: "decided"; approved: boolean };
   },
   events: [approve, reject],
+  actors: { fail: fail() },
 }).createMachine({
   id: "refund",
   input: runInput,
@@ -50,6 +51,8 @@ export const machine = jr2Setup({
       },
     },
     approved: { type: "final" },
-    rejected: { type: "final" },
+    // A person stopped the refund, and the run ends here. Not a final state: the run ends `failed`,
+    // with the person's reason.
+    rejected: { invoke: { src: "fail", input: ({ context }) => ({ reason: context.reason! }) } },
   },
 });

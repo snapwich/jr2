@@ -1,7 +1,7 @@
 {
   "version": 1,
   "id": "summary",
-  "context": { "summary": "" },
+  "context": { "summary": "", "why": "" },
   "events": {
     "finished": {
       "description": "Give the summary. This ends your work.",
@@ -24,7 +24,17 @@
         "finished": {
           "target": "done",
           "actions": [{ "type": "set", "path": "summary", "from": "{{event.summary}}" }]
+        },
+        "agent.fault": {
+          "target": "failed",
+          "actions": [{ "type": "set", "path": "why", "from": "{{event.reason}}" }]
         }
+      }
+    },
+    "failed": {
+      "invoke": {
+        "src": "fail",
+        "input": { "reason": "the writer could not write the summary", "detail": "{{context.why}}" }
       }
     },
     "done": { "type": "final", "output": { "summary": "{{context.summary}}" } }

@@ -555,3 +555,13 @@ test("SSE: a grandchild's transition reaches the observation feed, and its conte
     await reader.cancel();
   }
 });
+
+test("a failed run's status has its own color in the Console, not the red of error (ADR-0073)", async () => {
+  const app = await mkApp();
+  const css = await (await app.request("/assets/style.css")).text();
+  const colorOf = (status: string): string | undefined =>
+    new RegExp(`\\.run-status\\.status--${status}\\s*\\{\\s*color:\\s*([^;]+);`).exec(css)?.[1]?.trim();
+  assert.ok(colorOf("failed"), "status--failed has a color rule");
+  assert.notEqual(colorOf("failed"), colorOf("error"));
+  assert.notEqual(colorOf("failed"), colorOf("done"));
+});

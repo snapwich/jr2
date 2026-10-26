@@ -51,10 +51,12 @@ import type { AnyActorRef, AnyStateMachine, StateNode, UnknownActorLogic } from 
 import { isAgent, isOpenAgent, type AgentDeclaration } from "./agent.ts";
 import { argvText, isEffect, placementOf, type EffectParts, type Placement } from "./effect.ts";
 import { effectBindingLine, openPartsOf, type OpenEffectPart } from "./open-effect.ts";
+import { isFailSlot } from "./fail.ts";
 import { isImageContext } from "./images.ts";
 import { isOpenBody, openBodyDeclarationOf, type OpenBodyDeclaration } from "./open-body.ts";
 import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
+import { refuseUnroutedAgentFault } from "./mechanism-routes.ts";
 import { refuseLostOutput } from "./run-output.ts";
 import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 
@@ -598,9 +600,17 @@ export type CarriedEffect = {
       }
   );
 
+/** One state that can fail the run (ADR-0073): it invokes a `fail()` slot. `state` is the state's
+ * id, `machine` the id of its Machine, `slot` the slot key it invokes, and `path` the `customize()`
+ * route to its Machine, as an {@link OpenSlot}'s. Static, as a Gate or an Effect is: the walk reads
+ * it, and `jr2 up`, `jr2 check` and the Machine doc list it. */
+export type CarriedFailure = { machine: string; state: string; slot: string; path: OpenSlot["path"] };
+
 /** Everything the registered Machines carry that a converge or a boot must act on. */
 export type CarriedParts = {
   agents: CarriedAgent[];
+  /** Every state that invokes a `fail()` slot (ADR-0073), in walk order, nested Machines too. */
+  failures: CarriedFailure[];
   /** Every Effect slot, in walk order — one per Machine and slot key, at the first route the walk
    * reached its Machine by. The placement reads {@link placedEffectsOf}: one per route. */
   effects: CarriedEffect[];
@@ -660,7 +670,7 @@ function inlineMachines(node: StateNode<any, any>): Array<{ machine: AnyStateMac
 }
 
 /**
- * Refuse a Part written inline on an `invoke.src` — an `agent()`, an Effect or a `workspace()` that
+ * Refuse a Part written inline on an `invoke.src` — an `agent()`, an Effect, a `fail()` or a `workspace()` that
  * is no key of the Machine's `actors` (see the module comment). Thrown at build by
  * `jr2Setup.createMachine` and at load by {@link partsOf}, so a Machine built with xstate's own
  * `createMachine` is refused where `jr2 check`, `jr2 up` and the Orchestrator read it. A plain
@@ -671,6 +681,7 @@ export function refuseInlineParts(machine: AnyStateMachine): void {
   const partOf = (src: unknown): { part: string; written: string } | undefined => {
     if (isAgent(src)) return { part: "an Agent", written: "agent(...)" };
     if (isEffect(src)) return { part: "an Effect", written: `${src.effect.kind}(...)` };
+    if (isFailSlot(src)) return { part: "a fail() Part", written: "fail()" };
     const child = asMachine(src);
     if (child && composesSandbox(child)) return { part: "a Workspace", written: "workspace(...)" };
     return undefined;
@@ -719,6 +730,7 @@ function canonical(value: unknown): string {
  */
 export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const agents: CarriedAgent[] = [];
+  const failures: CarriedFailure[] = [];
   const effects: CarriedEffect[] = [];
   const images: CarriedImage[] = [];
   const repos: CarriedRepo[] = [];
@@ -795,6 +807,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     walked.add(machine);
     refuseInlineParts(machine);
     refuseLostOutput(machine);
+    refuseUnroutedAgentFault(machine);
     const parts = sandboxPartsOf(machine);
     const user = userSeatOf(parts.user);
     collectImage(parts.image);
@@ -811,6 +824,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
       });
     }
     const body = wrapperBodyOf(machine);
+    for (const { state, slot } of failingStatesOf(machine)) failures.push({ machine: machine.id, state, slot, path });
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(path, name, logic.definition);
       else if (isOpenBody(logic)) {
@@ -840,6 +854,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   for (const body of noneBodies) for (const m of body.declaration.allows.models) harnessModels.add(m);
   return {
     agents,
+    failures,
     effects,
     images,
     repos,
@@ -1124,6 +1139,22 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
   };
   walk(root, [], [], new Set());
   return pods;
+}
+
+/** Every state of `machine`'s own tree that invokes a `fail()` slot (ADR-0073), in document order,
+ * with the slot key: a state that can fail the run. A child Machine's states are its own walk's. */
+export function failingStatesOf(machine: AnyStateMachine): Array<{ state: string; slot: string }> {
+  const actors = machine.implementations.actors as Record<string, unknown>;
+  const out: Array<{ state: string; slot: string }> = [];
+  const visit = (node: StateNode<any, any>): void => {
+    for (const inv of node.invoke) {
+      if (typeof inv.src === "string" && isFailSlot(actors[inv.src])) out.push({ state: node.id, slot: inv.src });
+    }
+    const children = Object.values(node.states as Record<string, StateNode<any, any>>);
+    for (const child of children.sort((a, b) => a.order - b.order)) visit(child);
+  };
+  visit(machine.root);
+  return out;
 }
 
 /** Every machine object written inline below `node`, at any depth of its state tree, with its hop. */

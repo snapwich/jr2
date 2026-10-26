@@ -14,6 +14,7 @@ import type { AgentDefinition } from "../src/agent.ts";
 import { CHART_BRIEFING, chartSchema, ChartRefusal, admitChart, type ChartText } from "../src/chart.ts";
 import { customize } from "../src/customize.ts";
 import { arg, commandWith } from "../src/effect.ts";
+import { isFailure } from "../src/fail.ts";
 import { agent } from "../src/harness-client.ts";
 import {
   boundChartsOf,
@@ -93,7 +94,18 @@ type Ports = { coder: MockFlueClient; minted: MockFlueClient; exec: FakeHarnessE
  */
 function chartedMachine(
   ports: Ports,
-  opts: { ceilings?: Partial<Ceilings>; lendGuard?: boolean; lendCoder?: boolean; id?: string } = {},
+  opts: {
+    ceilings?: Partial<Ceilings>;
+    lendGuard?: boolean;
+    lendCoder?: boolean;
+    id?: string;
+    /** Lend the Part that fails the run (ADR-0073). */
+    lendFail?: boolean;
+    /** Catch a Failure of the body in the wrapper, with an `onError` guarded by `isFailure`. */
+    catchFailure?: boolean;
+    /** Catch any error of the body in the wrapper, with an `onError` that keeps its message. */
+    catchError?: boolean;
+  } = {},
 ): AnyStateMachine {
   const lendGuard = opts.lendGuard ?? true;
   const lendCoder = opts.lendCoder ?? true;
@@ -114,6 +126,7 @@ function chartedMachine(
             effects: ["tests"],
             ...(lendGuard ? { guards: ["underLimit", "keepGoing"] } : {}),
             delays: ["cooldown"],
+            ...(opts.lendFail ? { fail: true } : {}),
           },
           allows: { models: ["stub/model"], workspace: ["none", "write"] },
           ceilings: { ...CEILINGS, ...opts.ceilings },
@@ -155,10 +168,29 @@ function chartedMachine(
             },
             { target: "done", actions: assign({ result: ({ event }) => event.output }) },
           ],
+          ...(opts.catchFailure
+            ? {
+                onError: {
+                  guard: ({ event }: { event: { error: unknown } }) => isFailure(event.error),
+                  target: "caught",
+                  actions: assign({ result: ({ event }) => (isFailure(event.error) ? event.error.reason : undefined) }),
+                },
+              }
+            : {}),
+          ...(opts.catchError
+            ? {
+                onError: {
+                  target: "errored",
+                  actions: assign({ result: ({ event }) => (event.error as Error).message }),
+                },
+              }
+            : {}),
         },
       },
       done: { type: "final" },
       refused: { type: "final" },
+      caught: { type: "final" },
+      errored: { type: "final" },
     },
   }) as unknown as AnyStateMachine;
 }
@@ -221,6 +253,217 @@ test("a one-shot Chart runs to done under its wrapper, with its output resolved 
   const final = await host.read(runId);
   assert.equal(final?.status, "done");
   assert.deepEqual((final?.context as { result: unknown }).result, { outcome: "done", output: { rounds: 1 } });
+});
+
+// --- A Chart fails the run (ADR-0073) ------------------------------------------------------------
+
+/** A Chart that fails the run with the task as the reason, or catches its own Failure with
+ * `jr2.failure` and ends done. */
+const failingChart = (catchIt: boolean): ChartText => ({
+  initial: "stop",
+  states: {
+    stop: {
+      invoke: {
+        src: "fail",
+        input: { reason: "{{input.task}}", detail: { step: "stop" } },
+        ...(catchIt ? { onError: { guard: "jr2.failure", target: "recovered" } } : {}),
+      },
+    },
+    recovered: { type: "final" },
+  },
+  output: { recovered: true },
+});
+
+test("a Chart under a body that lends `fail` ends the run `failed`, with the Failure as its output", async () => {
+  const { def } = rig({ lendFail: true });
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, failingChart(false), "no plan fits");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.status, "failed");
+  assert.equal(final.fault, undefined, "a Failure is no fault");
+  assert.deepEqual(final.output, { reason: "no plan fits", detail: { step: "stop" } });
+});
+
+test("a Chart's own onError catches its Failure with `jr2.failure`, and the run ends done", async () => {
+  const { def } = rig({ lendFail: true });
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, failingChart(true));
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.status, "done");
+  assert.deepEqual((final.context as { result: unknown }).result, { outcome: "done", output: { recovered: true } });
+});
+
+test("the wrapper catches a Chart's Failure on its Open body state, with isFailure", async () => {
+  const { def } = rig({ lendFail: true, catchFailure: true });
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, failingChart(false), "the tests failed");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.status, "done");
+  assert.deepEqual(final.value, "caught");
+  assert.equal((final.context as { result: unknown }).result, "the tests failed");
+});
+
+// --- An agent.fault that the Chart does not route (ADR-0070, ADR-0074) ---------------------------
+
+/** One Turn of the lent coder, with no `agent.fault` route: in a Chart the route is optional. */
+const UNROUTED: ChartText = {
+  id: "unrouted",
+  events: { submit: { input: { ...EMPTY } } },
+  initial: "draft",
+  states: {
+    draft: { invoke: { src: "coder", input: { prompt: "do {{input.task}}" } }, on: { submit: "shipped" } },
+    shipped: { type: "final" },
+  },
+};
+
+const UNROUTED_LINE =
+  'the Chart "unrouted" got "agent.fault" in state "draft", and no transition of the Chart took it (the harness ' +
+  "went away): the Open body ends as an error, which an onError on the Open body's state catches (ADR-0070, ADR-0074)";
+
+test("the trial compile admits a Chart state with no agent.fault route: jr2Setup's refusal is not for a Chart", () => {
+  const { machine } = rig();
+  assert.doesNotThrow(() => admitWrapperChart(machine, UNROUTED));
+});
+
+test("an agent.fault that the Chart does not route ends the Open body as an error, which the wrapper's onError catches", async () => {
+  const { ports, def } = rig({ catchError: true });
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, UNROUTED);
+  await waitFor(() => ports.coder.settled.length === 1);
+  ports.coder.fault("the harness went away");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.status, "done", "the wrapper routed the body's error");
+  assert.equal(final.value, "errored");
+  assert.equal((final.context as { result: unknown }).result, UNROUTED_LINE);
+});
+
+test("an agent.fault that neither the Chart nor its wrapper routes ends the run `error`, never `failed`", async () => {
+  const { ports, def } = rig();
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, UNROUTED);
+  await waitFor(() => ports.coder.settled.length === 1);
+  ports.coder.fault("the harness went away");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.status, "error", "nobody chose this end: a fault, not a Failure");
+  assert.match(final.fault ?? "", /the Chart "unrouted" got "agent\.fault" in state "draft"/);
+});
+
+test("an agent.fault whose Chart route has a false guard is not routed: the body ends as an error", async () => {
+  const guarded: ChartText = {
+    ...UNROUTED,
+    states: {
+      ...UNROUTED.states,
+      draft: {
+        ...UNROUTED.states.draft!,
+        on: { submit: "shipped", "agent.fault": { target: "shipped", guard: { not: "keepGoing" } } },
+      },
+    },
+  };
+  const { ports, def } = rig({ catchError: true });
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, guarded);
+  await waitFor(() => ports.coder.settled.length === 1);
+  ports.coder.fault("the harness went away");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.value, "errored");
+  assert.equal((final.context as { result: unknown }).result, UNROUTED_LINE);
+});
+
+test("an agent.fault that the Chart routes is the Chart's: the body stays live and goes on", async () => {
+  const routed: ChartText = {
+    ...UNROUTED,
+    states: {
+      ...UNROUTED.states,
+      draft: { ...UNROUTED.states.draft!, on: { submit: "shipped", "agent.fault": "shipped" } },
+    },
+  };
+  const { ports, def } = rig({ catchError: true });
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, routed);
+  await waitFor(() => ports.coder.settled.length === 1);
+  ports.coder.fault("the harness went away");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.status, "done");
+  assert.equal(final.value, "done", "the Chart's own route ended it, so the body is done, not an error");
+});
+
+test("an agent.fault that the Chart does not route stops the body's other children: a sibling Turn does not go on", async () => {
+  // Two regions, each with its own pick, so that the sentBy refusal does not apply. xstate does not stop the children
+  // of a custom actor that ends with status `error`, so the Open body must stop them itself.
+  const both: ChartText = {
+    id: "both",
+    events: { submit: { input: { ...EMPTY } }, looked: { input: { ...EMPTY } } },
+    agents: { reviewer: { model: "stub/model", instructions: "You review.", workspace: "none" } },
+    initial: "fan",
+    states: {
+      fan: {
+        type: "parallel",
+        states: {
+          r1: { invoke: { src: "coder", input: { prompt: "one" } }, on: { submit: "#both.end" } },
+          r2: { invoke: { src: "reviewer", input: { prompt: "two" } }, on: { looked: "#both.end" } },
+        },
+      },
+      end: { type: "final" },
+    },
+  };
+  const { ports, def } = rig({ catchError: true });
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, both);
+  await waitFor(() => ports.coder.settled.length === 1 && ports.minted.settled.length === 1);
+  ports.coder.fault("the harness went away");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.value, "errored");
+  await tick();
+  await tick();
+  assert.equal(ports.minted.aborts.length, 1, "the sibling Turn was stopped");
+});
+
+test("an agent.fault route whose guard reads a context path the run does not hold is a route: the step refuses", async () => {
+  // The guard throws when it resolves its params, so the Open body cannot know that the route is not taken. It counts
+  // the guard as a route, and the step's refusal settles the body `refused`; the body does not end as an error.
+  const unresolved: ChartText = {
+    ...UNROUTED,
+    states: {
+      ...UNROUTED.states,
+      draft: {
+        ...UNROUTED.states.draft!,
+        on: {
+          // `notes` is written on `submit`, so the door's dataflow sees the write; the fault comes first.
+          submit: { target: "shipped", actions: [{ type: "set", path: "notes", from: "n" }] },
+          "agent.fault": { target: "shipped", guard: { type: "underLimit", params: { n: "{{context.notes}}" } } },
+        },
+      },
+    },
+  };
+  const { ports, def } = rig({ catchError: true });
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const runId = await started(host, unresolved);
+  await waitFor(() => ports.coder.settled.length === 1);
+  ports.coder.fault("the harness went away");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = (await host.read(runId))!;
+  assert.equal(final.status, "done", "the wrapper routed the refusal; the run did not fault");
+  assert.notEqual(final.value, "errored", "a refusal, not a body error");
+  const result = (final.context as { result: { outcome: string; report: string[] } }).result;
+  assert.equal(result.outcome, "refused");
+  assert.match(result.report[0]!, /^\(run time\): Chart reference "context\.notes" resolves to nothing/);
 });
 
 test("the Chart's minted Agent registers its Menu from the Chart's events, and its definition rides the Turn", async () => {
@@ -386,6 +629,7 @@ function plannerMachine(ports: Ports & { planner: MockFlueClient }): AnyStateMac
     },
     guards: { underLimit: ({ context }: { context: { round?: number } }) => (context.round ?? 0) < 3 } as never,
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "planned",
     context: { endpoint: ENDPOINT, task: "add a flag" },
     initial: "planning",
@@ -899,6 +1143,30 @@ test("the lent Effect: an input that resolves to no string is THAT invoke's erro
   assert.equal(ports.exec.starts.length, 0, "the Effect never ran");
 });
 
+test("`jr2.failure` is false for a defect: a plain error takes the next branch, or with none it ends the run `error`", async () => {
+  // The Effect's input resolves to no string: the invoke's error is a plain Error, no Failure.
+  const defect = (branches: unknown): ChartText => ({
+    context: { items: ["a", "b"] },
+    initial: "check",
+    states: {
+      check: { invoke: { src: "tests", input: { filter: "{{context.items}}" }, onError: branches as never } },
+      caught: { type: "final", output: { caught: true } },
+      defect: { type: "final", output: { defect: true } },
+    },
+  });
+  const { def } = rig();
+  const host = newHost({ store: await mkStore() });
+  host.register(def());
+  const branched = await started(host, defect([{ guard: "jr2.failure", target: "caught" }, { target: "defect" }]));
+  assert.deepEqual(await ceilingOf(host, branched), { outcome: "done", output: { defect: true } });
+
+  const only = await started(host, defect({ guard: "jr2.failure", target: "caught" }));
+  await waitFor(() => host.status(only) === undefined);
+  const final = (await host.read(only))!;
+  assert.equal(final.status, "error", "a defect no route takes is a fault, not a Failure");
+  assert.equal(final.output, undefined);
+});
+
 test("D-C: a Chart wrapper invoked by another Machine resolves no name", async () => {
   const ports: Ports = { coder: new MockFlueClient(), minted: new MockFlueClient(), exec: new FakeHarnessExec() };
   const inner = innerChartMachine(ports, { name: "loop" });
@@ -1128,6 +1396,7 @@ test("the Turns ceiling counts a lent Machine's Agent Turns too (ADR-0070: the c
     actors: { worker: agentActorWith(() => coder, coderDefinition) },
     delays: { soon: 5 },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "sub",
     initial: "work",
     states: {

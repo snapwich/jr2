@@ -4,6 +4,7 @@ import {
   agent,
   command,
   defineEvent,
+  fail,
   jr2Setup,
   push,
   workspace,
@@ -53,7 +54,8 @@ type Context = BodyInput & {
   // The commit on the fork, after the push.
   commit?: string;
 };
-type Output = { outcome: "pushed"; branch: string; commit: string } | { outcome: "lost" };
+// The output of a run that ends `done`. A lost Sandbox fails the run, with no output of this type.
+type Output = { outcome: "pushed"; branch: string; commit: string };
 
 // Two guards. A guard with a name shows that name on its arrow in the Console's graph.
 function testsPassed({ event }: { event: { output: CommandOutput } }): boolean {
@@ -83,6 +85,8 @@ const body = jr2Setup({
     tests: command(["node", "--test", "docs/site/tutorial/greet/test/*.test.js"], { timeout: "5m" }),
     // Push the tip of the coder's branch to the Repo of `target`, with the token of `git.credentials`.
     publish: push(),
+    // Fail the run: the end for work that did not succeed. A final state means `done`.
+    fail: fail(),
     // #endregion effects
   },
 }).createMachine({
@@ -185,7 +189,8 @@ const body = jr2Setup({
         commit: context.commit ?? "",
       }),
     },
-    lost: { type: "final", output: { outcome: "lost" } satisfies Output },
+    // Not a final state: the run ends `failed`, and jr2 deletes the Sandbox.
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost, with every commit that was not pushed" } } },
   },
   // The output of the run. xstate reads only this root `output` as the output of the Machine. It
   // gets the output of the final state that ended the run as `event.output`.

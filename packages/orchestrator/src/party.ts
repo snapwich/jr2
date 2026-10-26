@@ -46,7 +46,7 @@ export const SENT_BY = "jr2.sentBy";
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, defineEvent, jr2Setup, sentBy } from "@jr2/orchestrator";
+ * import { agent, defineEvent, fail, jr2Setup, sentBy } from "@jr2/orchestrator";
  *
  * const done = defineEvent({
  *   name: "done",
@@ -62,9 +62,11 @@ export const SENT_BY = "jr2.sentBy";
  *       instructions: "You write release notes.",
  *       workspace: "none",
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "notes",
+ *   on: { "agent.fault": ".failed" },
  *   initial: "drafting",
  *   states: {
  *     drafting: {
@@ -79,6 +81,7 @@ export const SENT_BY = "jr2.sentBy";
  *     },
  *     review: { invoke: { src: "gate" }, on: { done: "published" } },
  *     published: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *   },
  * });
  * ```

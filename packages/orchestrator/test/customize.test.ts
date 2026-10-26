@@ -41,6 +41,7 @@ function research(door?: z.ZodObject) {
     events: [done],
     actors: { coder: agent(coderDef), reviewer: agent(reviewerDef) },
   }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
     id: "research",
     ...(door ? { input: door } : {}),
     initial: "coding",
@@ -118,6 +119,7 @@ test("a child Machine is retuned one level down — the same call, recursing", (
     events: [done],
     actors: { triager: agent({ model: haiku, instructions: "You triage.", workspace: "none" }), child },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "parent",
     initial: "triaging",
     states: {
@@ -305,6 +307,7 @@ function unbound() {
     events: [done],
     actors: { coder: agent({ ...coderDef, model: open }), reviewer: agent({ ...reviewerDef, model: open }) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "unbound",
     initial: "coding",
     states: {

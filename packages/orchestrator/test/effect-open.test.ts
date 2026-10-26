@@ -271,7 +271,7 @@ test("workspace() and pool() are transparent: an Effect in the body is bound wit
   const body = jr2Setup({
     events: [],
     actors: { deploy: commandWith(execs.factory, open, {}), comment: comment() },
-  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const wrapped = workspace(body, { repos, spec });
   const wake = defineEvent({ name: "work_ready", input: z.object({}) });
   const pooled = pool(wrapped, {
@@ -335,7 +335,7 @@ test("jr2 up places what a bound part names: the Instance Effector's fence is th
       comment: comment(),
       release: commandWith(execs.factory, open, { env: { TOKEN: secret("release-token") } }),
     },
-  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const bound = customize(workspace(body, { repos, spec }), {
     effects: {
       comment: { url: "https://tracker.example.com:8443/api" },
@@ -375,6 +375,7 @@ test("the pick-param check runs again on a bound argv: a param the composer's ar
   const deploy = commandWith(execs.factory, open);
   const coder = agentActorWith(() => new MockFlueClient(), coderDefinition);
   const machine = jr2Setup({ events: [ship, finish], actors: { coder, deploy } }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
     id: "shipper",
     initial: "w",
     states: {
@@ -410,6 +411,7 @@ test("a bound argv carries the warnings the same Machine written with that argv 
       actors: { coder, deploy: deploy as EffectLogic<{ env: string }, CommandOutput> },
       actions: { noop: () => {} },
     }).createMachine({
+      on: { "workspace.lost": {}, "agent.fault": {} },
       id: "shipper",
       initial: "w",
       states: {
@@ -463,6 +465,7 @@ test("a bound Machine's warnings, vocabulary, seats and door survive xstate's .p
       actors: { coder, deploy: deploy as EffectLogic<{ env: string }, CommandOutput> },
       actions: { noop: () => {} },
     }).createMachine({
+      on: { "workspace.lost": {}, "agent.fault": {} },
       id: "shipper",
       input: z.object({ ticket: z.string() }),
       context: ({ input }) => ({ ticket: input.ticket }),
@@ -585,6 +588,7 @@ test("an http whose body is a Worktree file may leave its url Open too, and bind
   const report = httpFileWith(ports, { method: "PUT", url: open, body: file("out/report.pdf") });
   assert.ok(isEffect(report));
   const m = jr2Setup({ events: [], actors: { report } }).createMachine({
+    on: { "workspace.lost": {} },
     id: "up",
     initial: "idle",
     states: { idle: {} },
@@ -721,7 +725,7 @@ test("a dispatch inside a Workspace's body never joins its pod: no Sandbox Effec
       next: dispatch("review"),
       away: dispatch("review", { target: { url: "https://ops.example.com", token: secret("ops") } }),
     },
-  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const m = workspace(body, { repos, spec });
   const pods = workspacePodsOf(m);
   assert.equal(pods.length, 1);

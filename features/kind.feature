@@ -361,8 +361,9 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the run's Sandbox is reaped behind its back
       And the orchestrator starts again
       # The Sandbox watch's first list found the CR gone and delivered `workspace.lost` INTO the
-      # body, whose policy settled it (ADR-0063). The unpushed commits are gone; resuming would have been a lie.
-      Then the run's body settled as "lost"
+      # body, whose `lost` state invokes `fail` (ADR-0063, ADR-0073). The unpushed commits are gone;
+      # resuming would have been a lie, and `done` would say that the work succeeded.
+      Then the run failed with reason "the Sandbox was lost"
       And no Sandbox was re-provisioned for the run
 
   Rule: the Agent's only control-plane peer is the Custodian on localhost
@@ -686,7 +687,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # branch and anything unpushed on it go with the pod, as the Gate's park was the window to
       # act on them.
       Then the run's status shows "done"
-      And the run's body settled as "approved"
+      And the run's output names the branch jr2/task-<run id>
       And the run's Sandbox is destroyed
 
   Rule: a Turn's Frame roots the Working tools, so a relative path lands in the Worktree

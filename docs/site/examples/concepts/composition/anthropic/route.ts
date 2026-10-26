@@ -1,6 +1,6 @@
 // #region imports
 import { z } from "zod";
-import { agent, customize, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
+import { agent, customize, defineEvent, fail, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { task } from "@jr2/machines";
 // #endregion imports
 
@@ -45,11 +45,13 @@ export const machine = jr2Setup({
     // Each composed Machine is a slot, like an Agent.
     deep,
     quick,
+    fail: fail(),
   },
 }).createMachine({
   id: "route",
   input: door,
   context: ({ input }) => input,
+  on: { "agent.fault": ".failed" },
   initial: "triaging",
   states: {
     triaging: {
@@ -74,6 +76,7 @@ export const machine = jr2Setup({
       },
     },
     done: { type: "final" },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
 });
 // #endregion machines

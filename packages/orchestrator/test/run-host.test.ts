@@ -857,6 +857,7 @@ const retryTemplate = jr2Setup({
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
 }).createMachine({
+  on: { "agent.fault": {} },
   id: "r",
   context: {},
   initial: "first",
@@ -1094,6 +1095,7 @@ const threeTurnsTemplate = jr2Setup({
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
 }).createMachine({
+  on: { "agent.fault": {} },
   id: "w3",
   context: ({ input }) => ({ sandbox: input.sandbox }),
   initial: "code",
@@ -1496,7 +1498,7 @@ const oneTurn: ChartText = {
   states: {
     work: {
       invoke: { src: "coder", input: { prompt: "work" } },
-      on: { finish: "over" },
+      on: { finish: "over", "agent.fault": {} },
     },
     over: { type: "final", output: { finished: true } },
   },

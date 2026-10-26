@@ -49,6 +49,7 @@ const self = ({ self }: any) => self;
 test("2a an `after` the pick armed, re-armed by an outside event's re-entry, then fires and leaves: none", async () => {
   const r = await rig({ coder: coderDefinition }, ({ coder }) =>
     jr2Setup({ events: [go, bump], actors: { coder, outside } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       invoke: { src: "outside" },
       initial: "w",
@@ -76,6 +77,7 @@ test("2a an `after` the pick armed, re-armed by an outside event's re-entry, the
 test("2a-r an `after` an outside event armed, re-armed by the pick's re-entry, then fires and leaves: pick", async () => {
   const r = await rig({ coder: coderDefinition }, ({ coder }) =>
     jr2Setup({ events: [go, bump], actors: { coder, outside } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       invoke: { src: "outside" },
       initial: "w",
@@ -109,6 +111,7 @@ for (const order of ["pick-then-outside", "outside-then-pick"] as const) {
     const armLeave = (delay: number) => sendTo(self, { type: "leave" }, { delay, id: "x" });
     const r = await rig({ coder: coderDefinition }, ({ coder }) =>
       jr2Setup({ events: [go, bump, leave], actors: { coder, outside } }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         invoke: { src: "outside" },
         initial: "w",
@@ -152,6 +155,7 @@ for (const shared of [true, false]) {
       const outsideDelay = first === "pick" ? 120 : 80;
       const r = await rig({ coder: coderDefinition }, ({ coder }) =>
         jr2Setup({ events: [go, bump, leave], actors: { coder, outside } }).createMachine({
+          on: { "agent.fault": {} },
           id: "t",
           invoke: { src: "outside" },
           initial: "w",
@@ -201,6 +205,7 @@ for (const where of ["below", "root"] as const) {
     });
     const r = await rig({ coder: coderDefinition }, ({ coder }) =>
       jr2Setup({ events: [go, leave], actors: { coder, child } }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         initial: "w",
         ...(where === "root" ? { invoke: { src: "child", id: "child" } } : {}),
@@ -239,6 +244,7 @@ for (const where of ["below", "other-region"] as const) {
       where === "below"
         ? ({ coder }: any) =>
             jr2Setup({ events: [go], actors: { coder, later } }).createMachine({
+              on: { "agent.fault": {} },
               id: "t",
               initial: "w",
               states: {
@@ -254,7 +260,7 @@ for (const where of ["below", "other-region"] as const) {
             jr2Setup({ events: [go, start], actors: { coder, later } }).createMachine({
               id: "t",
               type: "parallel",
-              on: { go: { actions: raise({ type: "start" }) } },
+              on: { "agent.fault": {}, go: { actions: raise({ type: "start" }) } },
               states: {
                 A: {
                   initial: "w",
@@ -287,7 +293,7 @@ test("2i the pick arms a timer in region B; 40 ms later it leaves the Agent's st
     jr2Setup({ events: [go, start], actors: { coder } }).createMachine({
       id: "t",
       type: "parallel",
-      on: { go: { actions: raise({ type: "start" }) } },
+      on: { "agent.fault": {}, go: { actions: raise({ type: "start" }) } },
       states: {
         A: {
           initial: "w",
@@ -309,6 +315,7 @@ test("2i the pick arms a timer in region B; 40 ms later it leaves the Agent's st
 test("2i-b the same, but an outside event arms region B's timer: none", async () => {
   const r = await rig({ coder: coderDefinition }, ({ coder }) =>
     jr2Setup({ events: [bump], actors: { coder, outside } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       type: "parallel",
       invoke: { src: "outside" },
@@ -336,6 +343,7 @@ test("2i-b the same, but an outside event arms region B's timer: none", async ()
 test("O-1 Submission 1 picks `go`, whose route arms a timer that leaves; it completes, and the nudge runs Submission 2; the timer leaves: the Turn's own pick, so `pick` naming Submission 2", async () => {
   const r = await rig({ coder: coderDefinition }, ({ coder }) =>
     jr2Setup({ events: [go, leave], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {
@@ -375,7 +383,7 @@ test("O-2 region B: the pick starts a child Machine whose own `after` reaches it
     jr2Setup({ events: [go, start], actors: { coder, work } }).createMachine({
       id: "t",
       type: "parallel",
-      on: { go: { actions: raise({ type: "start" }) } },
+      on: { "agent.fault": {}, go: { actions: raise({ type: "start" }) } },
       states: {
         A: {
           initial: "w",
@@ -425,7 +433,7 @@ for (const kind of ["callback-sends-at-start", "machine-done-at-start", "machine
       }).createMachine({
         id: "t",
         type: "parallel",
-        on: { go: { actions: raise({ type: "start" }) } },
+        on: { "agent.fault": {}, go: { actions: raise({ type: "start" }) } },
         states: {
           A: {
             initial: "w",
@@ -451,6 +459,7 @@ const finish = ev("finish");
 test("3a a Turn rerolled after a runaway (fresh conversation iid-r1); its own pick then leaves: cause pick, and the sweep names the rerolled Submission", async () => {
   const r = await rig({ coder: coderDefinition }, ({ coder }) =>
     jr2Setup({ events: [leave], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {
@@ -476,6 +485,7 @@ test("3a a Turn rerolled after a runaway (fresh conversation iid-r1); its own pi
 test("3b the first Submission completes with the Turn open; the nudge admits a second; its pick leaves: the sweep names the second", async () => {
   const r = await rig({ coder: coderDefinition }, ({ coder }) =>
     jr2Setup({ events: [leave], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {
@@ -507,6 +517,7 @@ test("2d two runs of one workflow in one host: A's pick-armed timer and B's outs
   });
   const machineOf = ({ coder }: any) =>
     jr2Setup({ events: [go, bump], actors: { coder, outside } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       invoke: { src: "outside" },
       initial: "w",
@@ -559,6 +570,7 @@ test("2e the caller's pick dispatches a run below its state (wait); the callee's
   });
   const callee = ({ reviewer }: any) =>
     jr2Setup({ events: [finish], actors: { reviewer } }).createMachine({
+      on: { "agent.fault": {} },
       id: "callee",
       input: intakeDoor,
       initial: "w",
@@ -576,6 +588,7 @@ test("2e the caller's pick dispatches a run below its state (wait); the callee's
       events: [go],
       actors: { coder, start: dispatch("callee", { input: intakeDoor, wait: true }) as never },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {
@@ -649,6 +662,7 @@ async function restoreRig(machineOf: (agents: any) => any) {
 test("2f a timer the pick armed, then the Orchestrator restarts; the re-armed timer leaves: the stated limit (none)", async () => {
   const r = await restoreRig(({ coder }: any) =>
     jr2Setup({ events: [go], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {
@@ -683,6 +697,7 @@ test("2f-b a pick outstanding on a Gate below, then the Orchestrator restarts; t
   const review = ev("review");
   const r = await restoreRig(({ coder }: any) =>
     jr2Setup({ events: [review, approve], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {
@@ -720,6 +735,7 @@ test("2f-b a pick outstanding on a Gate below, then the Orchestrator restarts; t
 test("3c a Turn rerolled after a runaway, then the Orchestrator restarts; the rerolled conversation's pick leaves: the sweep names the rerolled Submission", async () => {
   const r = await restoreRig(({ coder }: any) =>
     jr2Setup({ events: [leave], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {
@@ -763,6 +779,7 @@ for (const throws of [true, false]) {
     });
     const r = await rig({ coder: coderDefinition }, ({ coder }) =>
       jr2Setup({ events: [go, leave], actors: { coder, helper } }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         invoke: { src: "helper", id: "h", onError: { actions: () => {} } },
         initial: "w",
@@ -798,7 +815,7 @@ test("E4 an outside event makes the root helper throw; the pick's route then pok
     jr2Setup({ events: [go, bump, leave], actors: { coder, helper, out } }).createMachine({
       id: "t",
       invoke: [{ src: "helper", id: "h", onError: { actions: () => {} } }, { src: "out" }],
-      on: { bump: { actions: sendTo("h", { type: "boom" }) } },
+      on: { "agent.fault": {}, bump: { actions: sendTo("h", { type: "boom" }) } },
       initial: "w",
       states: {
         w: {
@@ -836,6 +853,7 @@ for (const [kind, expected] of [
         events: [go, leave],
         actors: { coder, kid: kind === "machine-after" ? kidMachine : kidCallback },
       }).createMachine({
+        on: { "agent.fault": {} },
         id: "t",
         initial: "w",
         states: {
@@ -858,6 +876,7 @@ for (const [kind, expected] of [
 test("N3 sub-1's route arms a timer that leaves; sub-1 completes; the timer fires while the nudge's admission is in flight: the sweep names sub-1, which the Harness no longer runs (the stated limit: aborted)", async () => {
   const r = await rig({ coder: coderDefinition }, ({ coder }) =>
     jr2Setup({ events: [go, leave], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "t",
       initial: "w",
       states: {

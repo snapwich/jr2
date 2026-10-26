@@ -23,6 +23,7 @@ import { assign } from "xstate";
 import {
   agent,
   defineEvent,
+  fail,
   jr2Setup,
   push,
   workspace,
@@ -65,7 +66,7 @@ const record = (output: unknown): PushRecord => {
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [publish, finish],
-  actors: { coder: agent(coder), signed: push({ sign: true }) },
+  actors: { coder: agent(coder), signed: push({ sign: true }), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [], pushes: [] }),
@@ -116,17 +117,22 @@ const body = jr2Setup({
       output: ({ context }) => ({ outcome: "finished", picks: context.picks, pushes: context.pushes }),
     },
     lost: {
-      type: "final",
-      output: ({ context }) => ({ outcome: "lost", picks: context.picks, pushes: context.pushes }),
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Sandbox was lost",
+          detail: { outcome: "lost", picks: context.picks, pushes: context.pushes },
+        }),
+      },
     },
     faulted: {
-      type: "final",
-      output: ({ context }) => ({
-        outcome: "faulted",
-        picks: context.picks,
-        pushes: context.pushes,
-        reason: context.fault,
-      }),
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Agent's Turn could not go on",
+          detail: { outcome: "faulted", picks: context.picks, pushes: context.pushes, reason: context.fault },
+        }),
+      },
     },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,

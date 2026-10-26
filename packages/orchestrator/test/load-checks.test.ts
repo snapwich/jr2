@@ -86,6 +86,7 @@ test("a registered pick that no state handles is refused at build: it is on no M
 
 test("a mode that nothing enters is a warning: its picks are on the Menu and never allowed", () => {
   const m = jr2Setup({ events: [ev("run_tests"), ev("submit")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -109,6 +110,7 @@ test("a mode that nothing enters is a warning: its picks are on the Menu and nev
 
 test("a compound mode that nothing enters is a warning: its own `initial` does not enter it", () => {
   const m = jr2Setup({ events: [ev("run_tests"), ev("submit")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -130,6 +132,7 @@ test("a compound mode that nothing enters is a warning: its own `initial` does n
 
 test("a mode whose only entry is its own transition into itself, or a state nothing enters, is a warning", () => {
   const m = jr2Setup({ events: [ev("a"), ev("b"), ev("submit")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -154,6 +157,7 @@ test("a mode whose only entry is its own transition into itself, or a state noth
 
 test("a mode entered by a target, by being initial, or through a child it contains is no warning", () => {
   const m = jr2Setup({ events: [ev("a"), ev("b"), ev("c")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -176,6 +180,7 @@ test("a mode entered only through a history state's default target is no warning
     events: [ev("pause"), ev("resume"), ev("dig"), ev("submit")],
     actors: { coder: slot() },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -205,6 +210,7 @@ test("a mode entered only through a history state's default target is no warning
 
 test("a history default target the walk cannot follow is a warning that names it", () => {
   const m = jr2Setup({ events: [ev("pause"), ev("resume"), ev("submit")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -228,6 +234,7 @@ test("a history default target the walk cannot follow is a warning that names it
 
 test("a Gate above an Agent's state that takes an unset-audience writing from it is a warning", () => {
   const m = jr2Setup({ events: [ev("finish"), ev("abandon")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "c",
     initial: "job",
     states: {
@@ -252,6 +259,7 @@ test("a Gate above an Agent's state that takes an unset-audience writing from it
 
 test('the same Machine with `audience: "any"` on the pick: both may send it, no warning', () => {
   const m = jr2Setup({ events: [ev("finish"), ev("abandon", "any")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "c",
     initial: "job",
     states: {
@@ -275,6 +283,7 @@ test("two parties' writings of one name on one path: a warning naming both, with
   // send `approve`, and xstate selects the deeper writing — the Agent's — first.
   const build = (marked: boolean) =>
     jr2Setup({ events: [ev("approve")], actors: { coder: slot() } }).createMachine({
+      on: { "agent.fault": {} },
       id: "same",
       initial: "release",
       states: {
@@ -311,6 +320,7 @@ test("the Agent's writing above a party seated below the Agent's state: no warni
   // `sentBy` on it would change nothing, and the warning would ask for one.
   const build = (marked: boolean) =>
     jr2Setup({ events: [ev("stop"), ev("ask")], actors: { coder: slot() } }).createMachine({
+      on: { "agent.fault": {} },
       id: "same",
       initial: "t",
       states: {
@@ -356,6 +366,7 @@ test("the warning names a derived Gate id and says how to name the invoke", () =
 
 test("a mode and a sibling Gate's state writing one name: no warning — they are never selected for each other", () => {
   const m = jr2Setup({ events: [ev("ask"), ev("approve"), ev("to_m")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -376,6 +387,7 @@ test("a mode and a sibling Gate's state writing one name: no warning — they ar
 
 test("a mode and a sibling nested Agent's state writing one name: no warning", () => {
   const m = jr2Setup({ events: [ev("x"), ev("go")], actors: { coder: slot(), reviewer: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -397,7 +409,7 @@ test("the root-writing shape: the root's writing is both parties'; the mode's ta
   const build = (marked: boolean) =>
     jr2Setup({ events: [ev("cancel"), ev("approve")], actors: { coder: slot() } }).createMachine({
       id: "root",
-      on: { cancel: ".cancelled" },
+      on: { "agent.fault": {}, cancel: ".cancelled" },
       initial: "release",
       states: {
         release: {
@@ -431,6 +443,7 @@ test("the root-writing shape: the root's writing is both parties'; the mode's ta
 test("parallel regions: one warning per region, each line on the other region's writing", () => {
   const build = (marked: boolean) =>
     jr2Setup({ events: [ev("go")], actors: { coder: slot() } }).createMachine({
+      on: { "agent.fault": {} },
       id: "par",
       type: "parallel",
       states: {
@@ -471,6 +484,7 @@ test("a sentBy the walk cannot read — under or() — leaves the warning in pla
     actors: { coder: slot() },
     guards: { never: () => false },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "same",
     initial: "release",
     states: {
@@ -495,6 +509,7 @@ test("a sentBy the walk cannot read — under or() — leaves the warning in pla
 
 test("one def, one meaning: one party's writings of one name on one path with different targets warn", () => {
   const m = jr2Setup({ events: [ev("cancel")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "s4",
     initial: "work",
     states: {
@@ -524,6 +539,7 @@ test("one def, one meaning: one party's writings of one name on one path with di
 
 test("one def, one meaning: the same target at both writings is silent", () => {
   const m = jr2Setup({ events: [ev("cancel")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "s4",
     initial: "work",
     states: {
@@ -544,6 +560,7 @@ test("a name on a mode and on a sibling Gate's state with an explicit audience t
     events: [ev("ask"), ev("approve", "external"), ev("to_m")],
     actors: { coder: slot() },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "ticket",
     states: {
@@ -568,6 +585,7 @@ test("a name on a mode and on a sibling Gate's state with an explicit audience t
 
 test("a name on an Agent's state and on its mode is one party's: only the one-meaning warning (the guard fall-through idiom)", () => {
   const m = jr2Setup({ events: [ev("abandon"), ev("go")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "t",
     states: {
@@ -590,6 +608,7 @@ test("a name on an Agent's state and on its mode is one party's: only the one-me
 
 test("the Machine's doc carries who may send what, per state, and its warnings", () => {
   const m = jr2Setup({ events: [ev("finish"), ev("abandon")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "c",
     initial: "job",
     states: {
@@ -619,7 +638,7 @@ test("a parallel region below a state that invokes an Agent is refused at build,
         states: {
           t: {
             invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
-            on: { finish: "d" },
+            on: { "agent.fault": {}, finish: "d" },
             initial: "coding",
             states: {
               coding: {
@@ -649,6 +668,7 @@ test("an Agent's state that is itself parallel is refused: its regions are below
   assert.throws(
     () =>
       jr2Setup({ events: [ev("finish")], actors: { coder: slot() } }).createMachine({
+        on: { "agent.fault": {} },
         id: "par",
         initial: "t",
         states: {
@@ -667,6 +687,7 @@ test("an Agent's state that is itself parallel is refused: its regions are below
 
 test("a parallel state above an Agent's state is legal: background work goes there", () => {
   const m = jr2Setup({ events: [ev("finish")], actors: { coder: slot() } }).createMachine({
+    on: { "agent.fault": {} },
     id: "par",
     type: "parallel",
     states: {
@@ -690,6 +711,7 @@ const restMachine = (states: Record<string, unknown>, actors: Record<string, unk
     events: [ev("ask"), ev("approve"), ev("go"), ev("finish")],
     actors: { coder: slot(), ...actors } as never,
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "r",
     initial: "work",
     states: {

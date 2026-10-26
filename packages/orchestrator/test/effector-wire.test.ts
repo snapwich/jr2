@@ -271,7 +271,7 @@ test("a dispatch's answers decode as a dispatch's outcome set, and its `refused`
   assert.ok(!DispatchOutputShape.safeParse(http).success);
   assert.ok(!DispatchOutputShape.safeParse({ outcome: "refused", status: 400, reason: "x" }).success);
   // A settled status is one the Machine's type names: another word is malformed, never output.
-  for (const status of ["done", "error", "cancelled", "lost", "drifted", "live"]) {
+  for (const status of ["done", "failed", "error", "cancelled", "lost", "drifted", "live"]) {
     assert.ok(DispatchOutputShape.safeParse({ outcome: "settled", run: "r", status }).success, status);
   }
   for (const status of ["active", "stopped", ""]) {

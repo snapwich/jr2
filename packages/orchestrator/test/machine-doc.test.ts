@@ -242,6 +242,7 @@ test("an un-provided template Machine (empty actor slot) serializes the same str
 // it spawns invokes its body as an INLINE machine object. Two different resolutions, one join key.
 
 const body = createMachine({
+  on: { "workspace.lost": {} },
   id: "body",
   initial: "coding",
   states: { coding: { on: { DONE: "shipped" } }, shipped: { type: "final" } },
@@ -474,6 +475,7 @@ test("shape changes ARE drift: a renamed state, a retargeted transition, a moved
 test("drift in a CHILD machine is drift — most of a workflow lives down there", () => {
   const withBody = (bodyInitial: string): AnyStateMachine => {
     const body = createMachine({
+      on: { "workspace.lost": {} },
       id: "body",
       initial: bodyInitial,
       states: { [bodyInitial]: {}, other: {} },
@@ -539,7 +541,12 @@ test("a workspace() body joins on the stable slot name `body`, not a generated k
   // shape change: a snapshot written under the old inline key fingerprints differently and a run
   // parked across the upgrade is refused, which is exactly ADR-0030's contract.
   const { workspace } = await import("../src/workspace.ts");
-  const inner = createMachine({ id: "body", initial: "coding", states: { coding: {}, shipped: { type: "final" } } });
+  const inner = createMachine({
+    on: { "workspace.lost": {} },
+    id: "body",
+    initial: "coding",
+    states: { coding: {}, shipped: { type: "final" } },
+  });
   const wrapped = workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
 
   const doc = serializeMachine("wrapped", wrapped);

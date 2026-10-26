@@ -1,6 +1,6 @@
 import { assign } from "xstate";
 import { z } from "zod";
-import { defineEvent, jr2Setup } from "@jr2/orchestrator";
+import { defineEvent, fail, jr2Setup } from "@jr2/orchestrator";
 
 // The two answers that the Gate takes. A person, a script or a CI job sends one of them.
 const approve = defineEvent({
@@ -11,7 +11,7 @@ const approve = defineEvent({
 const reject = defineEvent({
   name: "reject",
   description: "Do not release this version. Say why.",
-  input: z.object({ reason: z.string() }),
+  input: z.object({ reason: z.string().min(1) }),
 });
 
 type Context = { version: string; reason?: string };
@@ -19,6 +19,7 @@ type Context = { version: string; reason?: string };
 export const machine = jr2Setup({
   types: {} as { input: { version: string }; context: Context },
   events: [approve, reject],
+  actors: { fail: fail() },
 }).createMachine({
   id: "release",
   // jr2 checks each run input against this schema before the run starts.
@@ -36,6 +37,8 @@ export const machine = jr2Setup({
       },
     },
     released: { type: "final" },
-    rejected: { type: "final" },
+    // A person stopped the release, and the run ends here. Not a final state: the run ends
+    // `failed`, with the person's reason.
+    rejected: { invoke: { src: "fail", input: ({ context }) => ({ reason: context.reason! }) } },
   },
 });

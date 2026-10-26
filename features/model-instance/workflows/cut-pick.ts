@@ -15,7 +15,7 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { advisor } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
 
@@ -41,7 +41,7 @@ type Ctx = Input & { picks: string[]; fault?: string };
 export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [runAudit, fileReport, audited],
-  actors: { advisor: agent(advisor) },
+  actors: { advisor: agent(advisor), fail: fail() },
 }).createMachine({
   id: "cut-pick",
   input: door,
@@ -88,8 +88,13 @@ export const machine = jr2Setup({
     },
     filed: { type: "final", output: ({ context }) => ({ outcome: "filed", picks: context.picks }) },
     faulted: {
-      type: "final",
-      output: ({ context }) => ({ outcome: "faulted", picks: context.picks, reason: context.fault }),
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Agent's Turn could not go on",
+          detail: { outcome: "faulted", picks: context.picks, reason: context.fault },
+        }),
+      },
     },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,

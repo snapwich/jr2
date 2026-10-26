@@ -19,7 +19,15 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, jr2Setup, workspace, type HostInjectedInput, type Workspaced } from "@jr2/orchestrator";
+import {
+  agent,
+  defineEvent,
+  fail,
+  jr2Setup,
+  workspace,
+  type HostInjectedInput,
+  type Workspaced,
+} from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
 
@@ -62,18 +70,19 @@ type BodyContext = BodyInput & { picks: string[]; entries: number; commit?: stri
 
 const SHA = /^[0-9a-f]{7,40}$/;
 
+/** The output of a run that ends `done`. A run that is lost or faulted fails (ADR-0073): its
+ * output is the Failure, with this record, `outcome` and all, as its `detail`. */
 export type TicketModesOutput = {
-  outcome: "shipped" | "lost" | "faulted";
+  outcome: "shipped";
   picks: string[];
   entries: number;
   commit?: string;
-  reason?: string;
 };
 
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: TicketModesOutput },
   events: [runTests, testsPassed, testsFailed, revise, submit, ship],
-  actors: { coder: agent(coder) },
+  actors: { coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [], entries: 0 }),
@@ -160,17 +169,22 @@ const body = jr2Setup({
       }),
     },
     lost: {
-      type: "final",
-      output: ({ context }): TicketModesOutput => ({ outcome: "lost", picks: context.picks, entries: context.entries }),
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Sandbox was lost",
+          detail: { outcome: "lost", picks: context.picks, entries: context.entries },
+        }),
+      },
     },
     faulted: {
-      type: "final",
-      output: ({ context }): TicketModesOutput => ({
-        outcome: "faulted",
-        picks: context.picks,
-        entries: context.entries,
-        reason: context.fault,
-      }),
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Agent's Turn could not go on",
+          detail: { outcome: "faulted", picks: context.picks, entries: context.entries, reason: context.fault },
+        }),
+      },
     },
   },
   output: ({ event }) => (event as { output?: TicketModesOutput }).output as TicketModesOutput,

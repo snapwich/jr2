@@ -5,6 +5,8 @@
 // body's: the body is a child actor, and `jr2 status` reports its state under `children`. A driver
 // that waits on the body's state reads it there.
 
+import { isSettled } from "./run-settled.ts";
+
 /** One live child machine under the run, as `jr2 status` reports it. */
 export type RunChild = { id: string; value: unknown; children: RunChild[] };
 
@@ -23,7 +25,7 @@ export function bodyIn(s: { children?: RunChild[] }, name: string): boolean {
  * void: "every trial finished" reads it.
  */
 export function stillStarting(s: { status: string; children?: RunChild[] }): boolean {
-  return s.status !== "done" && s.status !== "error" && bodyIn(s, "starting");
+  return !isSettled(s.status) && bodyIn(s, "starting");
 }
 
 /** The parts of `jr2 status` that say how a run ended. */
@@ -33,27 +35,47 @@ export type RunEnded = {
   context: { output?: Record<string, unknown> };
   /** The error message of a run in status `error` (RunStatus.fault): its reason. */
   fault?: string;
+  /** The run's output (RunStatus.output). For a run in status `failed`, the Failure:
+   * `{ reason, detail? }` (ADR-0073). */
+  output?: unknown;
 };
 
-/** The ends a trial's note explains with the run's final output: it carries the reason. */
-const UNEXPLAINED = new Set(["faulted", "lost"]);
+/** The Run statuses a trial's note explains with the reason: `failed` with its Failure, `error`
+ * with its fault (ADR-0073). Each other end that is not `done` (`cancelled`, `lost`, `drifted`)
+ * prints its final output too. */
+const EXPLAINED_STATUSES = new Set(["failed", "error", "cancelled", "lost", "drifted"]);
 
 /**
  * How a trial's run ended, for its note (ADR-0066): `<status>/<shown>`, where `shown` is the run's
  * `value` for a root Machine and its output's `outcome` for a `workspace()` body. A run that ended
- * faulted, lost or in error also prints its final output, and a run in error its `fault`: the reason
- * is there, and the namespace that held the pod log is gone when the note is read.
+ * `failed`, `error` or in another end that is not `done` also prints its output: for `failed`, the
+ * Failure with its reason; for `error`, the context's output and the `fault`. The reason is there,
+ * and the namespace that held the pod log is gone when the note is read. A run that ended `done`
+ * prints only the head: a claim workflow's `faulted` and `lost` states invoke `fail`.
  */
 export function ended(last: RunEnded, shown: unknown = last.value): string {
   const head = `${last.status}/${typeof shown === "object" && shown !== null ? JSON.stringify(shown) : String(shown)}`;
-  const outcome = last.context.output?.outcome;
-  const bad =
-    last.status === "error" ||
-    UNEXPLAINED.has(String(last.value)) ||
-    (typeof outcome === "string" && UNEXPLAINED.has(outcome));
-  if (!bad) return head;
+  if (!EXPLAINED_STATUSES.has(last.status)) return head;
   const fault = last.fault !== undefined ? ` fault: ${last.fault}` : "";
-  return `${head} ${JSON.stringify(last.context.output ?? last.value)}${fault}`;
+  const output = last.status === "failed" && last.output !== undefined ? last.output : last.context.output;
+  return `${head} ${JSON.stringify(output ?? last.value)}${fault}`;
+}
+
+/**
+ * The record a trial reads off how its run ended (ADR-0066, ADR-0073): the body's output for a run
+ * that ended `done`, and the Failure's `detail` for a run that ended `failed`. Each claim workflow
+ * gives its `faulted` and `lost` states (and `ticket` its `stuck`) the same record, with its
+ * `outcome`, as the `detail` of the `fail` that they invoke, so a driver reads the ledger of a
+ * failed trial as it did when those states were final.
+ */
+export function outputOf(last: {
+  status: string;
+  context: { output?: Record<string, unknown> };
+  output?: unknown;
+}): Record<string, unknown> | undefined {
+  if (last.status !== "failed") return last.context.output;
+  const detail = (last.output as { detail?: unknown } | undefined)?.detail;
+  return typeof detail === "object" && detail !== null ? (detail as Record<string, unknown>) : undefined;
 }
 
 /** One message of a Harness conversation, as its `?view=history` reports it (best-effort, roles
@@ -105,6 +127,6 @@ export function gateWentFirst(
   state: string,
 ): boolean {
   if (!stderr.includes(NO_OPEN_GATE)) return false;
-  if (after.status === "done" || after.status === "error") return true;
+  if (isSettled(after.status)) return true;
   return !bodyIn(after, state) && !(after.gates ?? []).some((g) => g.gate === gate);
 }

@@ -52,9 +52,11 @@ Run [`jr2 status`](../reference/cli.md#status) with the run id:
 jr2 status 3e87
 ```
 
+<!-- output: not run -->
+
 ```text
 → context <context> / namespace <namespace>
-{"runId":"3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e","workflow":"release","instanceId":"8c8b8507-e569-4f2f-9f2e-497f381c5f57","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"6baf269e2cca","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string"}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
+{"runId":"3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e","workflow":"release","instanceId":"8c8b8507-e569-4f2f-9f2e-497f381c5f57","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"6baf269e2cca","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
 ```
 
 `gates` holds each open Gate of the run, as a [`GateView`](../reference/http-api.md#type-gateview):
@@ -81,11 +83,16 @@ jr2 send 3e87 --gate review --event reject --input '{"reason":"The changelog is 
 delivered reject to gate "review" on 3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e
 ```
 
-`jr2 send` prints `delivered` only when the run took the event. In the first terminal, the run ends:
+`jr2 send` prints `delivered` only when the run took the event. In the first terminal, the run ends. A `reject` ends the
+release, so the `rejected` state invokes [`fail`](../reference/authoring-surface/fail.md) with the reason, and the run
+ends `failed`. Its output is the [Failure](../reference/glossary.md#failure), and `jr2 run` exits with `1`:
+
+<!-- output: not run -->
 
 ```text
-  → done "rejected"
-{"runId":"3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e","workflow":"release","instanceId":"8c8b8507-e569-4f2f-9f2e-497f381c5f57","status":"done","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"assembly":"6baf269e2cca"}
+  → failed "rejected"
+failed: The changelog is not ready.
+{"runId":"3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e","workflow":"release","instanceId":"8c8b8507-e569-4f2f-9f2e-497f381c5f57","status":"failed","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"assembly":"6baf269e2cca","output":{"reason":"The changelog is not ready."}}
 ```
 
 The run ended, so its Gate closed. Each example below answers a run that waits. Before each example, start a new run in

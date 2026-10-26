@@ -38,9 +38,12 @@ type Ctx = z.infer<typeof door> & {
   summary?: string;
   reason?: string;
 };
+// The output of the run: the decision. The job of a triage is the decision itself, so "rejected" is a
+// correct answer: a final state, with the reason in the output, and not a Failure.
+type Output = { outcome: "accepted"; summary: string } | { outcome: "rejected"; reason: string };
 
 export const machine = jr2Setup({
-  types: {} as { context: Ctx; input: z.infer<typeof door> },
+  types: {} as { context: Ctx; input: z.infer<typeof door>; output: Output },
   events: [accept, needsInfo, reject, answer],
   actors: {
     triager: agent({
@@ -107,9 +110,11 @@ You have no tools but these three, and you MUST end your turn by calling one of 
         },
       },
     },
-    accepted: { type: "final" },
-    rejected: { type: "final" },
+    accepted: { type: "final", output: ({ context }): Output => ({ outcome: "accepted", summary: context.summary! }) },
+    rejected: { type: "final", output: ({ context }): Output => ({ outcome: "rejected", reason: context.reason! }) },
   },
+  // xstate reads only this root `output`. It gets the output of the final state as `event.output`.
+  output: ({ event }) => event.output as Output,
 });
 
 // The prompt of each Turn: the request, then each question and its answer.

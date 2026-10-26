@@ -50,6 +50,7 @@ function modesMachine(coder: ReturnType<typeof agentActorWith>, tests: ReturnTyp
     events: [run_tests, ask_review, revise, submit, abandon],
     actors: { coder, tests },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "ticket",
@@ -194,6 +195,7 @@ test("a pick written ONLY below a nested Agent's state is that Agent's, never th
       reviewer: agentActorWith(() => inner, { ...coderDefinition, name: "reviewer" } as typeof coderDefinition),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "ticket",
@@ -233,6 +235,7 @@ test("a Gate's state below the Agent's state: its answers never enter the Agent'
     events: [ask_review, approve],
     actors: { coder: agentActorWith(() => outer, coderDefinition) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "ticket",
@@ -305,6 +308,7 @@ test("edge: one pick name in two modes (different targets and guards), and on th
     events: [run_tests, abandon, revise],
     actors: { coder: agentActorWith(() => mock, coderDefinition) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: { ready: false },
     initial: "ticket",
@@ -362,6 +366,7 @@ test("edge: a mode nothing enters still puts its picks on the Menu, never Allowe
     events: [run_tests, submit],
     actors: { coder: agentActorWith(() => mock, coderDefinition) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "ticket",
@@ -392,6 +397,7 @@ test("edge: an `external` event on a child state never enters the Agent's Menu",
     events: [run_tests, approve],
     actors: { coder: agentActorWith(() => mock, coderDefinition) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "ticket",
@@ -441,6 +447,7 @@ test("the ask-again rule: a live Turn whose Allowed picks are EMPTY (a busy mode
     events: [run_tests, submit],
     actors: { coder: agentActorWith(() => new MockFlueClient(), coderDefinition), tests: tests.logic },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "ticket",
@@ -988,6 +995,7 @@ test("a pick on the Menu that ANOTHER state of the Agent handles: answered with 
       events: [x, next, consult],
       actors: { coder, reviewer },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: {},
       initial: "ticket",

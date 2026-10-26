@@ -33,6 +33,7 @@ const def = (model: string, workspaceAccess?: "write" | "read" | "none") => ({
 /** A leaf Machine carrying one Agent under `slot`. */
 function carrier(id: string, slot: string, model: string, workspaceAccess?: "write" | "read" | "none") {
   return jr2Setup({ events: [], actors: { [slot]: agent(def(model, workspaceAccess)) } }).createMachine({
+    on: { "agent.fault": {}, "workspace.lost": {} },
     id,
     initial: "working",
     states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go" } } } },
@@ -135,6 +136,7 @@ test("the walk terminates on a Machine that composes itself", () => {
 
 const NOTHING = {
   agents: [],
+  failures: [],
   effects: [],
   images: [],
   repos: [],
@@ -229,6 +231,7 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
     events: [],
     actors: { coder: agent(def("vllm/qwen")), reviewer: agent(def("anthropic/claude-x", "read")) },
   }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
     id: "body",
     initial: "coding",
     states: { coding: { invoke: { src: "coder", input: { prompt: "go" } } } },
@@ -263,6 +266,8 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
       { name: "coder", definition: def("vllm/qwen") },
       { name: "reviewer", definition: def("anthropic/claude-x", "read") },
     ],
+    // The Pool fails the run when it drains with failures (ADR-0017, ADR-0073).
+    failures: [{ machine: "pool", path: [], slot: "fail", state: "pool.failing" }],
     effects: [],
     images: [
       { url: "file:///srv/pkg/tools", dir: "/srv/pkg/tools", name: "tools" },
@@ -426,6 +431,7 @@ test("customizeLine renders the fix as the nesting `customize()` accepts", () =>
  * model (ADR-0054). */
 function unbound(id: string, slot: string) {
   return jr2Setup({ events: [], actors: { [slot]: agent({ model: open, instructions: "i" }) } }).createMachine({
+    on: { "agent.fault": {}, "workspace.lost": {} },
     id,
     initial: "working",
     states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go" } } } },
@@ -605,7 +611,7 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
         spec: () => ({ branch: "inner" }),
       }),
     },
-  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const outer = workspace(body, {
     repos: { app: "https://example.test/app.git" },
     secrets: ["JIRA_TOKEN"],
@@ -635,7 +641,10 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
 });
 
 test("each Workspace's pod carries the Effects placed in its Sandbox Effector, down to the next workspace(), and its effector image (ADR-0068)", () => {
-  const inner = jr2Setup({ events: [], actors: { ship: push({ sign: true }) } }).createMachine({ id: "inner" });
+  const inner = jr2Setup({ events: [], actors: { ship: push({ sign: true }) } }).createMachine({
+    on: { "workspace.lost": {} },
+    id: "inner",
+  });
   const body = jr2Setup({
     events: [],
     actors: {
@@ -648,7 +657,7 @@ test("each Workspace's pod carries the Effects placed in its Sandbox Effector, d
       }).createMachine({ id: "helper" }),
       nested: workspace(inner, { repos: { lib: "https://example.test/lib.git" }, spec: () => ({ branch: "inner" }) }),
     },
-  }).createMachine({ id: "body", initial: "idle", states: { idle: {} } });
+  }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const ws = workspace(body, {
     repos: { app: "https://example.test/app.git", other: open },
     effector: { image: "registry.example/tools:1" },
@@ -720,6 +729,7 @@ test("the walk carries each Open body, its allowed models, and the Instance Harn
 
   const plain = partsOf([
     jr2Setup({ events: [], actors: { coder } }).createMachine({
+      on: { "agent.fault": {} },
       id: "p",
       initial: "a",
       states: { a: { invoke: { src: "coder", input: { prompt: "x" } } } },
@@ -740,7 +750,12 @@ test("an Open body that allows only a Workspace places its models in that Worksp
         ceilings: { turns: 3, wallClock: "10m", transitions: 100, fanOut: 2, size: 4096 },
       }),
     },
-  }).createMachine({ id: "inner", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  }).createMachine({
+    on: { "workspace.lost": {} },
+    id: "inner",
+    initial: "a",
+    states: { a: { invoke: { src: "body", input: {} } } },
+  });
   const ws = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "feat-1" }) });
   const carried = partsOf([ws]);
   assert.equal(carried.instanceHarness, undefined);
@@ -758,7 +773,12 @@ test("a lent Agent's Turn runs where its own access says, so the allowed models 
       coder: agent({ model: "prov/A", instructions: "code" }),
       body: openBody({ lends: { agents: ["coder"] }, allows: { models: ["prov/B"], workspace: ["none"] }, ceilings }),
     },
-  }).createMachine({ id: "inner", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  }).createMachine({
+    on: { "workspace.lost": {} },
+    id: "inner",
+    initial: "a",
+    states: { a: { invoke: { src: "body", input: {} } } },
+  });
   const ws = workspace(writeLent, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "f" }) });
   assert.deepEqual(workspacePodsOf(ws)[0]!.models, ["prov/A", "prov/B"]);
 

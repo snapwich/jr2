@@ -174,6 +174,11 @@ test("a push claim's published commits come off the Machine's final record, in p
   assert.deepEqual(publishedCommits({ context: {} }), []);
   assert.deepEqual(publishedCommits(undefined), []);
   assert.deepEqual(publishedCommits({ context: { output: { pushes: [{ published: "HEAD; rm -rf /" }] } } }), []);
+
+  // A failed trial carries its pushes in the Failure's detail (ADR-0073).
+  const failed = { status: "failed", context: {}, output: { reason: "r", detail: { pushes: [{ published: b }] } } };
+  assert.deepEqual(publishedCommits(failed), [b]);
+  assert.deepEqual(publishedCommits({ status: "failed", context: {}, output: { reason: "r" } }), []);
 });
 
 test("the push remote's log from main to a published commit: read-only git in push.git, the commit checked", () => {

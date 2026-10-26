@@ -23,6 +23,7 @@ import { assign } from "xstate";
 import {
   command,
   defineEvent,
+  fail,
   jr2Setup,
   push,
   workspace,
@@ -50,6 +51,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
   events: [unused, go],
   actors: {
+    fail: fail(),
     // In the Harness container: the Agent's own work, committed.
     commit: command([
       "sh",
@@ -72,7 +74,7 @@ const body = jr2Setup({
   id: "pushed",
   context: ({ input }) => input,
   initial: "committing",
-  on: { noop: ".settled" },
+  on: { "workspace.lost": { target: ".lost" }, noop: ".settled" },
   states: {
     committing: {
       invoke: {
@@ -111,6 +113,7 @@ const body = jr2Setup({
       },
     },
     settled: { type: "final" },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
   },
   output: ({ context }: { context: BodyContext }) => ({
     first: context.first ?? null,

@@ -61,6 +61,7 @@ test("an in-Turn Gate's caller may send only the Gate's own events — never the
   const [submit, approve, ask] = [ev("submit"), ev("approve"), ev("ask")];
   const coder = new MockFlueClient();
   const m = jr2Setup({ events: [submit, approve, ask], actors: { coder: slot(coder) } }).createMachine({
+    on: { "agent.fault": {} },
     id: "a",
     initial: "ticket",
     states: {
@@ -95,6 +96,7 @@ test("`audience: \"any\"` gives the Agent's pick to an in-Turn Gate's caller too
   const [submit, approve, ask] = [ev("submit", "any"), ev("approve"), ev("ask")];
   const coder = new MockFlueClient();
   const m = jr2Setup({ events: [submit, approve, ask], actors: { coder: slot(coder) } }).createMachine({
+    on: { "agent.fault": {} },
     id: "b",
     initial: "ticket",
     states: {
@@ -125,6 +127,7 @@ test("a Gate on a PARENT state takes the writings beside it: the Agent below can
   const [finish, abandon] = [ev("finish"), ev("abandon")];
   const coder = new MockFlueClient();
   const m = jr2Setup({ events: [finish, abandon], actors: { coder: slot(coder) } }).createMachine({
+    on: { "agent.fault": {} },
     id: "c",
     initial: "job",
     states: {
@@ -158,7 +161,7 @@ test('a root writing belongs to both parties; `audience: "agent"` holds it back 
     }).createMachine({
       id: "e",
       initial: "work",
-      on: { report_blocked: ".blocked", cancel: ".blocked" },
+      on: { "agent.fault": {}, report_blocked: ".blocked", cancel: ".blocked" },
       states: {
         work: { invoke: { src: "coder", input: { prompt: "p", endpoint: EP } }, on: { finish: "review" } },
         review: { invoke: { src: "gate" }, on: { approve: "done" } },
@@ -184,6 +187,7 @@ test("a nested Agent does not get the outer Agent's picks", async () => {
     events: [askReview, finish, verdict],
     actors: { coder: slot(coder), reviewer: slot(reviewer) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "f",
     initial: "coding",
     states: {
@@ -221,6 +225,7 @@ test("a mode's writings are its Agent's, even below a Gate's sibling; a Gate's p
     events: [approve, comment, revise, submit, ask],
     actors: { coder: slot(new MockFlueClient()) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "g",
     initial: "ticket",
     states: {
@@ -259,7 +264,7 @@ test("a wrapper adds no owner: a body's seats are its own Machine's, wrapped or 
   }).createMachine({
     id: "body",
     initial: "work",
-    on: { cancel: ".cancelled" },
+    on: { "workspace.lost": {}, "agent.fault": {}, cancel: ".cancelled" },
     states: {
       work: { invoke: { src: "coder", input: { prompt: "p", endpoint: EP } }, on: { finish: "review" } },
       review: { invoke: { src: "gate" }, on: { approve: "done" } },
@@ -278,6 +283,7 @@ test("an Agent state with a child that runs something and a Gate child: no audie
   const coder = new MockFlueClient();
   const build = fromPromise(async () => ({ ok: false }));
   const m = jr2Setup({ events: [deploy, finish, anyway, skip], actors: { coder: slot(coder), build } }).createMachine({
+    on: { "agent.fault": {} },
     id: "i",
     initial: "working",
     states: {
@@ -319,6 +325,7 @@ test("one state that invokes an Agent AND a Gate: both share its writings", () =
     events: [ev("finish"), ev("abandon")],
     actors: { coder: slot(new MockFlueClient()) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "arr",
     initial: "w",
     states: {
@@ -339,6 +346,7 @@ test("the deepest active writing is another party's: the Agent's send is refused
   const [stop, ask] = [ev("stop"), ev("ask")];
   const coder = new MockFlueClient();
   const m = jr2Setup({ events: [stop, ask], actors: { coder: slot(coder) } }).createMachine({
+    on: { "agent.fault": {} },
     id: "same",
     initial: "t",
     states: {
@@ -374,6 +382,7 @@ test("an explicit audience is by kind over the reach: `external` on an Agent sta
     events: [ev("hand_over", "external"), ev("approve", "agent")],
     actors: { coder: slot(new MockFlueClient()) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "x",
     initial: "t",
     states: {

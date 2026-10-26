@@ -129,15 +129,18 @@ With `--keep`, `CANCEL` does not delete the Sandboxes, so that you can look insi
 [Lease](../reference/glossary.md#lease), so the operator removes each one after its idle timeout of 30 minutes.
 
 A run that has a fault ends with the status `error`. It keeps its Sandboxes, because they are the evidence of the fault.
-The operator removes them after the same idle timeout.
+The operator removes them after the same idle timeout. A run that a Machine fails, with `fail()`, ends with the status
+`failed`, and the Orchestrator deletes its Sandboxes as `CANCEL` does: the Machine chose that end
+([ADR-0073](../reference/decisions/0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)).
 
 `jr2 status` shows a cancelled run with the status `cancelled` and the state that it was in.
 
 ## One week of history
 
 jr2 keeps the row of a run that ended for 7 days after its last write. This is true for each status that is not live:
-`done`, `error`, `cancelled`, `lost` and `drifted`. The Orchestrator deletes the older rows when it starts, and one time
-each hour after that. A live run stays, whatever its age. A run that waits at a Gate for a month is still there.
+`done`, `failed`, `error`, `cancelled`, `lost` and `drifted`. The Orchestrator deletes the older rows when it starts,
+and one time each hour after that. A live run stays, whatever its age. A run that waits at a Gate for a month is still
+there.
 
 You cannot change the 7 days. jr2 is not the record of the results of a run. A Machine sends its results where they
 belong, such as a pull request. `jr2 status` on a run that ended is for debugging. After the 7 days, `jr2 status` says

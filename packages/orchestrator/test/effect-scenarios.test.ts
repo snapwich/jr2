@@ -88,6 +88,7 @@ test("s04 — cross-Turn: the pick ends the Turn; the Effect runs after it; the 
       tests: commandWith(fake.factory, ["pnpm", "test"]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "cross",
     context: {},
     invoke: { src: "ws" },
@@ -150,6 +151,7 @@ function mixed(fake: FakeHarnessExec, coder: MockFlueClient) {
       deployer: commandWith(fake.factory, ["deploy"]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "mixed",
     context: { green: false, notes: [] },
     invoke: { src: "ws" },
@@ -307,6 +309,7 @@ test("s16 — modes with a command: one Menu; the command's pick is held and ans
       tests: commandWith(fake.factory, ["pnpm", "test", "--", arg("filter")]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "modes",
     context: { green: false, approved: false },
     invoke: { src: "ws" },

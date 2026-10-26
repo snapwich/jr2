@@ -30,6 +30,7 @@ function build(input: unknown, actions: unknown[] = [], entry: unknown[] = [], g
     events: [send, finish],
     actors: { coder: coder(), mail },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "w",
@@ -112,6 +113,7 @@ const sendCc = defineEvent({
 });
 function buildCc(input: unknown) {
   return jr2Setup({ events: [sendCc, finish], actors: { coder: coder(), mail } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {
@@ -143,6 +145,7 @@ test("a fromPick param that is no key of the Effect's input is refused: it reach
 const audit = fromPromise(async () => undefined);
 function buildTwo(invokes: unknown[]) {
   return jr2Setup({ events: [send, finish], actors: { coder: coder(), mail, audit } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {
@@ -214,6 +217,7 @@ function buildNested(pick: string, work: Record<string, unknown>) {
     events: [send, finish],
     actors: { coder: coder(), mail },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "w",
@@ -262,6 +266,7 @@ test("a pick that targets a NON-initial child of the state that invokes enters t
 test("a transition inside the state that invokes does not enter it: the Effect is not started by that pick", () => {
   // `send_email` moves `work.a` to `work.inner`; `work` stays active and its Effect keeps running.
   const m = jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {
@@ -287,6 +292,7 @@ test("a transition inside the state that invokes does not enter it: the Effect i
 /** `send_email` enters `prep`, whose eventless `always` enters `sending`, which runs `mail`. */
 function viaAlways(input: unknown, always: Record<string, unknown> = {}) {
   return jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {
@@ -343,6 +349,7 @@ test("a Gate's event below an Agent's state is no pick either; the Agent's pick 
   const ask = defineEvent({ name: "ask_review", input: z.object({}) });
   const machine = (sendingInput: unknown) =>
     jr2Setup({ events: [ok, ask, send, finish], actors: { coder: coder(), tests, mail } }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       initial: "w",
       states: {
@@ -377,6 +384,7 @@ function afterHop(onPick: unknown, input: unknown = ({ event }: { event: { env?:
     events: [deployE, finish],
     actors: { coder: coder(), ship },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     context: {},
     initial: "w",
@@ -432,6 +440,7 @@ test("an action the walk does not run before the timer may read a param: a warni
 
 test("a pick that targets a history state that may enter an Effect's state is a warning, never silent", () => {
   const m = jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {
@@ -480,6 +489,7 @@ test("a child of an Agent's state that invokes something and that nothing enters
   assert.throws(
     () =>
       jr2Setup({ events: [finish], actors: { coder: coder(), mail } }).createMachine({
+        on: { "agent.fault": {} },
         id: "wf",
         initial: "w",
         states: {
@@ -500,6 +510,7 @@ test("a state below an Effect's state that invokes something and that nothing en
   assert.throws(
     () =>
       jr2Setup({ events: [finish], actors: { coder: coder(), mail } }).createMachine({
+        on: { "agent.fault": {} },
         id: "wf",
         initial: "w",
         states: {
@@ -526,6 +537,7 @@ test("a state below an Effect's state that invokes something and that nothing en
  * `waiting`, and `sending` (which invokes `mail`) is entered only through `h`'s default `target`. */
 function historyBuild(target: unknown) {
   return jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {
@@ -575,6 +587,7 @@ test("a history default the walk cannot follow makes the unentered-invoke check 
 
 test("below a state that invokes a Gate the walk does not look: that state is the Gate's", () => {
   const m = jr2Setup({ events: [finish], actors: { coder: coder(), mail } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {
@@ -600,6 +613,7 @@ test("the narrow no-onDone warning: an Effect child with no onDone where the Age
   const lint = defineEvent({ name: "lint", input: z.object({}) });
   const linter = commandWith(never, ["pnpm", "lint"]);
   const m = jr2Setup({ events: [lint, finish], actors: { coder: coder(), linter } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {
@@ -625,6 +639,7 @@ test("an Effect child with no onDone beside mode picks, and no `answer`, is sile
   const lint = defineEvent({ name: "lint", input: z.object({}) });
   const linter = commandWith(never, ["pnpm", "lint"]);
   const m = jr2Setup({ events: [lint, finish], actors: { coder: coder(), linter } }).createMachine({
+    on: { "agent.fault": {} },
     id: "wf",
     initial: "w",
     states: {

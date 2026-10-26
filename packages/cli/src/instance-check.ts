@@ -183,6 +183,18 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
       );
     }
   }
+  // Each state that can fail the run (ADR-0073): every state that invokes a `fail()` slot, in the
+  // registered Machine and in each Machine it composes, read, never run — so an author sees which
+  // ends of a Workflow are `failed` and not `done` before a run.
+  for (const w of workflows) {
+    const failures = partsOf([w.machine]).failures;
+    if (!failures.length) continue;
+    activity(io, `failures: workflow "${w.name}" — the states that fail the run (ADR-0073)`);
+    for (const f of failures) {
+      const where = f.path?.length ? ` (on ${f.path.map((k) => `"${k}"`).join(" → ")})` : "";
+      activity(io, `  ${f.state}${where}: invokes ${f.slot}`);
+    }
+  }
   // An Effect that names a secret the `secrets` list does not hold, and a literal Effect secret too
   // short to scrub (ADR-0068), are refused HERE, off the walk and the config alone — before anything is
   // built or applied (ADR-0050, ADR-0068). `jr2 up` places a secret read from the user's Secret

@@ -4,6 +4,7 @@ import {
   answer,
   command,
   defineEvent,
+  fail,
   jr2Setup,
   push,
   workspace,
@@ -39,10 +40,12 @@ const body = jr2Setup({
     // Two Effects. Each is an actor slot, beside the Agent.
     tests: command(["node", "--test"], { timeout: "5m" }),
     publish: push(),
+    fail: fail(),
   },
 }).createMachine({
   id: "test-and-push",
   context: ({ input }) => input,
+  on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
   initial: "coding",
   states: {
     coding: {
@@ -77,9 +80,11 @@ const body = jr2Setup({
       },
     },
     done: { type: "final" },
-    // A final state ends the body, and jr2 deletes the Sandbox with its commits. To keep them, wait
-    // at a Gate here instead.
-    notPushed: { type: "final" },
+    // A Failure ends the body, and jr2 deletes the Sandbox with its commits. To keep them, wait at
+    // a Gate before this state.
+    notPushed: { invoke: { src: "fail", input: { reason: "the push did not publish the fix" } } },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
   },
 });
 

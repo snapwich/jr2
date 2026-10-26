@@ -40,6 +40,7 @@ import {
 } from "../lib/model-said.ts";
 import { readChartRefusal } from "../lib/model-chart.ts";
 import { FINISHED } from "../lib/model-finished.ts";
+import { isSettled } from "../lib/run-settled.ts";
 import {
   bodyIn,
   ended,
@@ -47,6 +48,7 @@ import {
   newKill,
   nextTurnNoticed,
   noticedAsk,
+  outputOf,
   stillStarting,
   type HistoryMessage,
   type RunChild,
@@ -86,6 +88,9 @@ type Status = {
   held?: Array<{ agent: string; pick: string; since: string }>;
   /** The error message of a run in status `error`: its reason. */
   fault?: string;
+  /** The run's output. For a run in status `failed`, the Failure: `{ reason, detail? }`
+   * (ADR-0073); {@link outputOf} reads its `detail`. */
+  output?: unknown;
 };
 
 type SandboxCR = { metadata: { name: string }; status?: { phase?: string } };
@@ -140,7 +145,7 @@ async function startRun(world: E2EWorld, workflow: string, input: Record<string,
   return runId;
 }
 
-/** Poll until the run settles (`done`/`error`), or `until` a predicate holds. Returns the last
+/** Poll until the run settles (any status that is not live, ADR-0073), or `until` a predicate holds. Returns the last
  * status; the caller decides what a timeout means. */
 async function waitFor(
   world: E2EWorld,
@@ -151,14 +156,14 @@ async function waitFor(
   const deadline = Date.now() + ms;
   let last = await status(world, runId);
   while (!until(last)) {
-    if (Date.now() > deadline || last.status === "done" || last.status === "error") return { hit: false, last };
+    if (Date.now() > deadline || isSettled(last.status)) return { hit: false, last };
     await sleep(2000);
     last = await status(world, runId);
   }
   return { hit: true, last };
 }
 
-const settled = (s: Status): boolean => s.status === "done" || s.status === "error";
+const settled = (s: Status): boolean => isSettled(s.status);
 const parked = (s: Status): boolean => (s.gates?.length ?? 0) > 0;
 
 async function sandboxesFor(world: E2EWorld, runId: string): Promise<SandboxCR[]> {
@@ -184,7 +189,7 @@ async function noReadySandbox(world: E2EWorld, runId: string): Promise<Trial> {
     runId,
     measured: false,
     finished: false,
-    note: `no Ready Sandbox; ended ${ended(last, last.context.output?.outcome)}`,
+    note: `no Ready Sandbox; ended ${ended(last, outputOf(last)?.outcome)}`,
   };
 }
 
@@ -442,7 +447,7 @@ const workdir: Driver = async (world, input) => {
       runId,
       measured: false,
       finished: false,
-      note: `never parked; ended ${ended(last, last.context.output?.outcome)}`,
+      note: `never parked; ended ${ended(last, outputOf(last)?.outcome)}`,
     };
   const gate = last.gates![0]!;
   const worktree = String(gate.meta?.worktree ?? "");
@@ -462,7 +467,7 @@ const workdir: Driver = async (world, input) => {
     runId,
     measured: inside,
     finished: FINISHED.workdir!(end),
-    note: `wrote ${JSON.stringify(found)} (worktree ${worktree}; said ${String(gate.meta?.path)}); ended ${ended(end, end.context.output?.outcome)}`,
+    note: `wrote ${JSON.stringify(found)} (worktree ${worktree}; said ${String(gate.meta?.path)}); ended ${ended(end, outputOf(end)?.outcome)}`,
   };
 };
 
@@ -538,7 +543,7 @@ const noticed: Driver = async (world, input) => {
       runId,
       measured: false,
       finished: false,
-      note: `never reached the \`kill\` Gate; ended ${ended(killing.last, killing.last.context.output?.outcome)}`,
+      note: `never reached the \`kill\` Gate; ended ${ended(killing.last, outputOf(killing.last)?.outcome)}`,
     };
   // A server that outlives its bash call is the model's job, not the claim's.
   if (!(await portAnswers(world, pod, port))) return voided("no server answered when the first Turn ended");
@@ -583,7 +588,7 @@ const noticed: Driver = async (world, input) => {
       runId,
       measured: false,
       finished: false,
-      note: `never parked; ended ${ended(last, last.context.output?.outcome)}`,
+      note: `never parked; ended ${ended(last, outputOf(last)?.outcome)}`,
     };
   const gate = gateNamed(last, "inspect")!;
   const reported = gate.meta?.running;
@@ -602,7 +607,7 @@ const noticed: Driver = async (world, input) => {
       runId,
       measured: false,
       finished: FINISHED.noticed!(end),
-      note: `the second Turn's prompt carried no memory-kill notice, a defect in what jr2 shows the model (ADR-0062); ${seen}; ended ${ended(end, end.context.output?.outcome)}`,
+      note: `the second Turn's prompt carried no memory-kill notice, a defect in what jr2 shows the model (ADR-0062); ${seen}; ended ${ended(end, outputOf(end)?.outcome)}`,
     };
   // The server WAS killed, so a "not running" is the notice read, whatever the model did about it
   // afterwards; a "running" is honest only when the pod agrees.
@@ -610,7 +615,7 @@ const noticed: Driver = async (world, input) => {
     runId,
     measured: reported === false || actual,
     finished: FINISHED.noticed!(end),
-    note: `${seen}; ended ${ended(end, end.context.output?.outcome)}`,
+    note: `${seen}; ended ${ended(end, outputOf(end)?.outcome)}`,
   };
 };
 
@@ -889,7 +894,7 @@ async function pushFollowIn(
       note: `revised after the answer, then not finished within its time: cancelled after ${answers} desk answers`,
     };
   }
-  const ledger = (last.context.output?.picks ?? []) as string[];
+  const ledger = (outputOf(last)?.picks ?? []) as string[];
   const approved = ledger.indexOf(APPROVED);
   if (approved !== 0) {
     return {
@@ -897,7 +902,7 @@ async function pushFollowIn(
       measured: false,
       finished: false,
       void: true,
-      note: `took ${ledger.join(" ")} — not after the answer; ended ${ended(last, last.context.output?.outcome)}`,
+      note: `took ${ledger.join(" ")} — not after the answer; ended ${ended(last, outputOf(last)?.outcome)}`,
     };
   }
   const followed = PUSH_NEW.has(ledger[approved + 1] ?? "");
@@ -906,7 +911,7 @@ async function pushFollowIn(
     measured: followed,
     finished: FINISHED["push-follow"]!(last),
     also,
-    note: `took ${ledger.join(" ")}; ended ${ended(last, last.context.output?.outcome)}`,
+    note: `took ${ledger.join(" ")}; ended ${ended(last, outputOf(last)?.outcome)}`,
   };
 }
 
@@ -1018,14 +1023,14 @@ const cutPick: Driver = async (world, input) => {
 const answered: Driver = async (world, input) => {
   const runId = await startRun(world, "answered", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const ledger = (last.context.output?.picks ?? []) as string[];
+  const ledger = (outputOf(last)?.picks ?? []) as string[];
   const ran = ledger.indexOf("run_tests");
   return {
     runId,
     measured: ran !== -1 && ledger[ran + 1] === "report_failure",
     finished: FINISHED.answered!(last),
     ...(ran === -1 ? { void: true } : {}),
-    note: `took ${ledger.join(" ")}; ended ${ended(last, last.context.output?.outcome)}`,
+    note: `took ${ledger.join(" ")}; ended ${ended(last, outputOf(last)?.outcome)}`,
   };
 };
 
@@ -1042,10 +1047,10 @@ const answered: Driver = async (world, input) => {
 const continueAfterSignedPush: Driver = async (world, input) => {
   const runId = await startRun(world, "continue-after-signed-push", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const pushes = (last.context.output?.pushes ?? []) as PushRecord[];
+  const pushes = (outputOf(last)?.pushes ?? []) as PushRecord[];
   const carried = needsCarried(pushes) ? await pushRemoteCommitsFromMain(pushes[0]!.published!) : undefined;
   const reading = readContinue(pushes, carried);
-  const seen = `pushes ${pushes.map((p) => p.outcome).join(" ") || "none"}; ended ${ended(last, last.context.output?.outcome)}`;
+  const seen = `pushes ${pushes.map((p) => p.outcome).join(" ") || "none"}; ended ${ended(last, outputOf(last)?.outcome)}`;
   return {
     runId,
     measured: reading.measured,
@@ -1082,7 +1087,7 @@ const allowedAfterRoute: Driver = async (world, input) => {
       measured: next !== undefined && ALLOWED_IN_RED.has(next),
       finished: FINISHED["allowed-after-route"]!(last),
       ...(ran === -1 ? { void: true } : {}),
-      note: `ended ${ended(last, last.context.output?.outcome)}`,
+      note: `ended ${ended(last, outputOf(last)?.outcome)}`,
     };
   } finally {
     source.follow.stop();
@@ -1131,7 +1136,7 @@ const unknownOutcome: Driver = async (world, input) => {
         runId,
         measured: false,
         finished: FINISHED["unknown-outcome"]!(last),
-        note: `no re-admission; ended ${ended(last, last.context.output?.outcome)}`,
+        note: `no re-admission; ended ${ended(last, outputOf(last)?.outcome)}`,
       };
     }
     const next = menuCalls(said, DEPLOY_MENU)[0]?.call;
@@ -1139,7 +1144,7 @@ const unknownOutcome: Driver = async (world, input) => {
       runId,
       measured: next === "check_deploy",
       finished: FINISHED["unknown-outcome"]!(last),
-      note: `after the re-admission said ${told(said)}; ended ${ended(last, last.context.output?.outcome)}`,
+      note: `after the re-admission said ${told(said)}; ended ${ended(last, outputOf(last)?.outcome)}`,
     };
   } finally {
     source.follow.stop();
@@ -1520,7 +1525,7 @@ When(
 Then("the run parks at the {string} Gate", { timeout: 3_600_000 }, async function (this: E2EWorld, state: string) {
   assert.ok(this.runId, "a runId was carried from a prior step");
   const { hit, last } = await waitFor(this, this.runId, parked, 3_000_000);
-  assert.ok(hit, `the run never parked (ended ${ended(last, last.context.output?.outcome)})`);
+  assert.ok(hit, `the run never parked (ended ${ended(last, outputOf(last)?.outcome)})`);
   const gate = last.gates![0]!;
   assert.match(gate.gate, new RegExp(`${state}$`), `the Gate id derives from the state key (got ${gate.gate})`);
 });

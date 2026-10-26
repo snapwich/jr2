@@ -68,10 +68,15 @@ Run [`jr2 up`](../reference/cli.md#up) to converge the Instance with the new Wor
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
+failures: workflow "issues" — the states that fail the run (ADR-0073)
+  issues.failing: invokes fail
+  task.lost: invokes fail
 seats: workflow "issues" — who may send what, per state (ADR-0015)
   task.working agent:coder: [finish]
   task.review gate: [approve, request_changes]
@@ -182,16 +187,19 @@ event with [`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#pos
 When the last worker finishes and no issue is ready, the run ends. In the first terminal, `jr2 run` prints the last
 state of the Pool, then the status of the run as JSON:
 
+<!-- output: not run -->
+
 ```text
 …
   → active "discovering"
   → done "drained"
-{"runId":"89b0cf0c-a6a1-4dcb-bfe1-101394f58801","workflow":"issues","instanceId":"1d2a83dc-1496-4d59-87d0-dcbd8547e88d","status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"1d2a83dc-1496-4d59-87d0-dcbd8547e88d"},"cap":2,"active":[],"items":{"issue-12":{"outcome":"approved","branch":"jr2/issue-12"},"issue-13":{"outcome":"approved","branch":"jr2/issue-13"},"issue-14":{"outcome":"approved","branch":"jr2/issue-14"}},"status":"drained"},"children":[],"waiting":[],"held":[],"assembly":"68243a41b295","output":{"status":"drained","items":{"issue-12":{"outcome":"approved","branch":"jr2/issue-12"},"issue-13":{"outcome":"approved","branch":"jr2/issue-13"},"issue-14":{"outcome":"approved","branch":"jr2/issue-14"}}}}
+{"runId":"89b0cf0c-a6a1-4dcb-bfe1-101394f58801","workflow":"issues","instanceId":"1d2a83dc-1496-4d59-87d0-dcbd8547e88d","status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"1d2a83dc-1496-4d59-87d0-dcbd8547e88d"},"cap":2,"active":[],"items":{"issue-12":{"branch":"jr2/issue-12"},"issue-13":{"branch":"jr2/issue-13"},"issue-14":{"branch":"jr2/issue-14"}},"failures":{},"status":"drained"},"children":[],"waiting":[],"held":[],"assembly":"68243a41b295","output":{"status":"drained","items":{"issue-12":{"branch":"jr2/issue-12"},"issue-13":{"branch":"jr2/issue-13"},"issue-14":{"branch":"jr2/issue-14"}},"failures":{}}}
 ```
 
-In the JSON, `context.items` holds the output of each worker, by item id. For this Source, `context.status` is always
-`drained`, because `next` never gives `open`. [Pools and Sources](../concepts/pools-and-sources.md#how-the-run-ends)
-tells what each status means.
+In the JSON, `context.items` holds the output of each worker that finished, by item id. `context.failures` holds the
+[Failure](../reference/glossary.md#failure) of each worker that failed, by item id: here, none. For this Source,
+`context.status` is always `drained`, because `next` never gives `open`.
+[Pools and Sources](../concepts/pools-and-sources.md#how-the-run-ends) tells what each status means.
 
 ## Rules
 
@@ -204,6 +212,12 @@ tells what each status means.
   `task`, `<address>` is `gate/<run id>/<item id>.body.review` or `agent/<run id>/<item id>.body/coder`.
 - `next` gets only `active`: the ids of the items that workers have now. To not give a finished item again, the Source
   must keep the items that it gave.
+- When a worker fails, for example when the Sandbox of a `task` is lost, the Pool keeps the Failure in `failures` and
+  goes on. Only the Sandbox of that worker is deleted. The other workers, and the work in their Sandboxes, stay. A
+  defect in a worker is different: the run stops with the status `error`.
+- When the Pool ends with one or more failures, `drained` or `deadlocked`, the run ends `failed`, with the reason
+  `<n> of <m> items failed`, and `jr2 run` exits 1. The detail of the Failure is `{ status, items, failures }`. With the
+  option `failures: "report"`, the run ends `done`, and the failures are in its output.
 - When `next` rejects, the run stops. Its status is `error`, and its `fault` is the message of the error.
 - `pool()` does not carry the item type of the Source to `itemId` and `itemInput`. Write the type on their parameter, as
   in `(issue: Issue)`.

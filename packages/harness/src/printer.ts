@@ -190,7 +190,7 @@ export function renderEchoEvent(event: EchoEvent | unknown): string[] {
   const e = (event ?? {}) as Partial<Record<string, unknown>>;
   const label = (name: string, body: string): string[] => body.split("\n").map((line) => `[${name}] ${line}`);
   if (e.kind === "status") {
-    // Terminal statuses (`done`, `error`, `cancelled`) ARE the narrative line; while the run is
+    // Terminal statuses (`done`, `failed`, `error`, `cancelled`) ARE the narrative line; while the run is
     // active, where it stands is.
     const body = e.status === "active" && e.value !== undefined ? compactStatus(e.value, e.children) : String(e.status);
     return label("run", `[status] ${body}`);

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
 
 const finish = defineEvent({
   name: "finish",
@@ -38,10 +38,12 @@ const body = jr2Setup({
       workspace: "none",
       thinkingLevel: "low",
     }),
+    fail: fail(),
   },
 }).createMachine({
   id: "fix",
   context: ({ input }) => ({ ...input, summary: "", notes: "" }),
+  on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
   initial: "coding",
   states: {
     coding: {
@@ -77,6 +79,8 @@ const body = jr2Setup({
       on: { finish: { target: "checking", actions: assign({ summary: ({ event }) => event.summary }) } },
     },
     done: { type: "final" },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
   },
 });
 

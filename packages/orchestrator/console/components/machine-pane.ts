@@ -31,9 +31,10 @@ export function MachinePane(props: {
   gates: GateCard[];
   waiting: WaitingLine[];
   held: HeldLine[];
+  failure: string | null;
   api: AppApi;
 }): JSX.Element {
-  const { view, run, selectedNodeId, gates, waiting, held, api } = props;
+  const { view, run, selectedNodeId, gates, waiting, held, failure, api } = props;
   const canvasRef = useRef<HTMLElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -70,6 +71,7 @@ export function MachinePane(props: {
     startedStrip(run),
     rootTransitionStrip(view.doc),
     seatsPanel(view.doc),
+    failureStrip(failure),
     waitingStrip(waiting),
     heldStrip(held),
     h("svg", { id: "machine-svg", ref: svgRef }),
@@ -158,6 +160,13 @@ function seatsPanel(doc: MachineDoc | null): JSX.Element | null {
         )
       : null,
   );
+}
+
+/** Why the selected run failed (ADR-0073): the reason that the Machine gave to `fail`, as `jr2 status`
+ *  prints it. The rail colors a `failed` run for every viewer; the reason is in the run's output,
+ *  which is guarded, so it is here only with a live token. */
+function failureStrip(failure: string | null): JSX.Element {
+  return h("div", { id: "failure", hidden: failure === null }, failure === null ? "" : `failed: ${failure}`);
 }
 
 /** Why the selected run's Workspaces in `placing` wait (ADR-0064), one line each, in the

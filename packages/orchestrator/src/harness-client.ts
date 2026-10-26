@@ -766,8 +766,9 @@ export function createLiveSetPush(options: {
  * The actor of an Agent never finishes, so an `onDone` on its invoke never runs. Give the Agent a
  * pick, such as `finish`, and route on it. When a Turn fails with no pick, jr2 sends the event
  * `agent.fault` to the Machine. It is an event, not an error of the invoke, so an `onError` does
- * not get it. Route it on each state that invokes an Agent: `on: { "agent.fault": "failed" }`.
- * Without the route, the run stays in that state.
+ * not get it. Route it on each state that invokes an Agent, or once on a state above them:
+ * `on: { "agent.fault": "failed" }`. `jr2 check` and `jr2 up` refuse a state that invokes an
+ * Agent with no route for it, and an `agent.fault` that no transition takes ends the run `error`.
  *
  * An Agent with `workspace: "write"` or `"read"` works in a Sandbox, so invoke it inside a
  * `workspace()` body. An Agent with `workspace: "none"` can run anywhere. A model can lack the
@@ -800,7 +801,7 @@ export function createLiveSetPush(options: {
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, defineEvent, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import { agent, defineEvent, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
  *
  * const finish = defineEvent({
  *   name: "finish",
@@ -818,10 +819,12 @@ export function createLiveSetPush(options: {
  *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You fix failing tests. You change no test.",
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "fix",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
  *   initial: "coding",
  *   states: {
  *     coding: {
@@ -836,6 +839,8 @@ export function createLiveSetPush(options: {
  *       on: { finish: "done" },
  *     },
  *     done: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -1027,7 +1032,7 @@ export function createExecPort(options: {
  * @example
  * ```ts
  * import { z } from "zod";
- * import { arg, command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import { arg, command, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
  *
  * const runInput = z.object({ branch: z.string() });
  * type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
@@ -1036,9 +1041,11 @@ export function createExecPort(options: {
  *   types: {} as { input: BodyInput },
  *   actors: {
  *     tests: command(["node", "--test", arg("file")], { timeout: "5m" }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "check",
+ *   on: { "workspace.lost": ".lost" },
  *   initial: "testing",
  *   states: {
  *     testing: {
@@ -1055,7 +1062,9 @@ export function createExecPort(options: {
  *       },
  *     },
  *     passed: { type: "final" },
- *     failed: { type: "final" },
+ *     // Not final states: each one fails the run, and the run ends `failed`.
+ *     failed: { invoke: { src: "fail", input: { reason: "the test did not pass" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *

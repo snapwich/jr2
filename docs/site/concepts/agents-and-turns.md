@@ -185,8 +185,9 @@ the same fact again does no harm.
 ## When a Turn fails
 
 jr2 tries to recover a Turn before it tells the Machine. When it cannot recover the Turn, it sends one event,
-`agent.fault`, to the Machine. The Machine decides what to do next: the state that invokes the Agent can route
-`agent.fault`. jr2 recovers from these failures:
+`agent.fault`, to the Machine. The Machine decides what to do next: the state that invokes the Agent, or a state above
+it, routes `agent.fault`. `jr2 check` refuses a Machine without that route. In a [Chart](charts.md) the route is
+optional. jr2 recovers from these failures:
 
 - **The Harness or the model provider fails.** The Harness tries the model provider again during the Turn. When the Turn
   still fails, jr2 sends `agent.fault`. When a Harness restarts while the state is busy, jr2 starts the Turn again on

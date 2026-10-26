@@ -5,7 +5,14 @@
 // starts here, at `implementing` (ADR-0069).
 
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator/internal";
+import {
+  agent,
+  defineEvent,
+  fail,
+  jr2Setup,
+  type AgentTurnInput,
+  type AgentTurnPlacement,
+} from "@jr2/orchestrator/internal";
 
 const requestReview = defineEvent({
   name: "request_review",
@@ -32,13 +39,14 @@ const coder = agent({
 export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [requestReview, escalate],
-  actors: { coder },
+  actors: { coder, fail: fail() },
 }).createMachine({
   id: "guarded",
   context: ({ input }) => ({
     endpoint: input.endpoint,
     attempts: input.attempts ?? 0,
   }),
+  on: { "agent.fault": { target: ".faulted" } },
   initial: "implementing",
   states: {
     implementing: {
@@ -58,5 +66,6 @@ export const machine = jr2Setup({
       },
     },
     done: { type: "final" },
+    faulted: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
 });

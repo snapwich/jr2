@@ -98,10 +98,11 @@ To use the result of the run, add `wait: true` to the definition:
 `dispatch("triage", { input: triageInput, wait: true })`.
 
 The Effect then ends when the run of `triage` ends, with `{ outcome: "settled", run, status, output }`. `status` is
-`done`, `error`, `cancelled`, `lost` or `drifted`. `output` is the output of the Machine of that run. The default
-timeout is then 10 minutes. Set a different one with `timeout`, such as `timeout: "1h"`. When the timeout comes first,
-`status` is `live`, and the run continues. On a different Orchestrator, the Effect reads the run every 5 seconds. When
-its last read got no answer, the outcome is `unknown`, not `settled`.
+`done`, `failed`, `error`, `cancelled`, `lost` or `drifted`. `output` is the output of the Machine of that run, and for
+`failed` it is the Failure, `{ reason, detail? }`. The default timeout is then 10 minutes. Set a different one with
+`timeout`, such as `timeout: "1h"`. When the timeout comes first, `status` is `live`, and the run continues. On a
+different Orchestrator, the Effect reads the run every 5 seconds. When its last read got no answer, the outcome is
+`unknown`, not `settled`.
 
 `wait` is fixed in the definition. A Machine that starts the same Workflow in the two ways has two slots.
 

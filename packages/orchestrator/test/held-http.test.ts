@@ -27,6 +27,7 @@ async function rig() {
       events: [run_tests, finish],
       actors: { coder, tests },
     }).createMachine({
+      on: { "agent.fault": {} },
       id: "wf",
       context: {},
       initial: "work",

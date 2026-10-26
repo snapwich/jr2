@@ -7,11 +7,14 @@
 import { mock, test } from "node:test";
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
+import { z } from "zod";
+import { defineEvent } from "@jr2/agent-protocol";
 import { assign, fromPromise, setup, spawnChild } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { customize } from "../src/customize.ts";
-import { open, sandboxPartsOf, workspacePodsOf, type PlacementRoute } from "../src/parts.ts";
+import { open, partsOf, sandboxPartsOf, workspacePodsOf, type PlacementRoute } from "../src/parts.ts";
+import { fail, isFailure } from "../src/fail.ts";
 import { workspaceHeldPod } from "../src/held-secrets.ts";
 import {
   leaseDelay,
@@ -486,6 +489,41 @@ test("live reap: the Sandbox goes while the run is UP → workspace.lost, no res
   );
 });
 
+test("a workspace.lost the body takes no transition for faults the run `error`, and its Sandbox stays (ADR-0074)", async () => {
+  // The walk reads a route; it cannot read its guard. This one is false when the loss comes.
+  const guarded = jr2Setup({ events: [approveDef] }).createMachine({
+    id: "guarded-body",
+    on: { "workspace.lost": { guard: () => false, target: ".lost" } },
+    initial: "working",
+    states: {
+      working: { invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } }, on: { approve: "done" } },
+      done: { type: "final" },
+      lost: { type: "final" },
+    },
+  });
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({
+    name: "guarded",
+    machine: workspace(guarded, { repos: { app: { url: APP, ref: "main" } }, spec: () => ({ branch: "feat-1" }) }),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("guarded");
+  await waitFor(() => host.gates(runId).length === 1);
+
+  sandbox.present = false;
+
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.equal(final?.status, "error");
+  assert.match(
+    final?.fault ?? "",
+    /^machine "guarded-body" got "workspace\.lost" in state "working", and no transition took it \(Deleted\)/,
+    "the body's microstep, not the wrapper's: the wrapper always takes its own forwarding transition",
+  );
+  assert.ok(!sandbox.calls.some((c) => c.startsWith("destroy:")), "a fault keeps its Sandbox as evidence");
+});
+
 test("live Lost: same CR, its one pod ended → workspace.lost carrying the pod's reason (ADR-0021)", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
@@ -589,6 +627,7 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
       ),
     },
   }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
     id: "ambient",
     context: {},
     initial: "coding",
@@ -826,6 +865,7 @@ test("two bound Repo Slots and a Turn that frames no cwd: the run is refused, na
     events: [],
     actors: { coder: agentActorWith(() => client, { model: "test/model", instructions: "i" }) },
   }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
     id: "unframed",
     context: {},
     initial: "coding",
@@ -1287,6 +1327,7 @@ test("placing: a cancelled run deletes its Sandbox that never ran", async () => 
 
 /** Two Workspaces under one run, each parked on its own gate in `running`. */
 const holdOther = jr2Setup({ events: [approveDef] }).createMachine({
+  on: { "workspace.lost": {} },
   id: "holdOther",
   initial: "working",
   states: {
@@ -1373,6 +1414,260 @@ test("cancel shrugs off a delete that fails: the run is cancelled, the idle GC h
   await host.cancel(runId);
   assert.equal(destroyed(sandbox).length, 1);
   assert.equal((await host.read(runId))?.status, "cancelled");
+});
+
+// --- A Failure from the body (ADR-0073) ---------------------------------------------------------
+
+const rejectDef = defineEvent({ name: "reject", input: z.object({}) });
+
+/** A body that waits at its gate, then fails on `approve`, or throws a plain error on `reject`. */
+const failingBody = jr2Setup({
+  events: [approveDef, rejectDef],
+  actors: {
+    stop: fail(),
+    boom: fromPromise(async () => {
+      throw new Error("a bug in the step");
+    }),
+  },
+}).createMachine({
+  on: { "workspace.lost": {} },
+  id: "failingBody",
+  initial: "working",
+  states: {
+    working: {
+      invoke: { src: "gate", input: { gate: "hold", accepts: ["approve", "reject"] } },
+      on: { approve: "giving-up", reject: "breaking" },
+    },
+    "giving-up": { invoke: { src: "stop", input: { reason: "the tests did not pass", detail: { failed: 2 } } } },
+    breaking: { invoke: { src: "boom" } },
+  },
+});
+const failingWs = workspace(failingBody, { repos: { app: APP }, spec: () => ({ branch: "feat-f" }) });
+
+test("a Failure from the body: the Workspace deletes its Sandbox, then the run ends `failed` with the Failure", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "wsf", machine: failingWs, provide: () => ({}) });
+  const { runId } = await host.start("wsf");
+  await waitFor(() => host.gates(runId).length === 1);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+
+  const final = await host.read(runId);
+  assert.equal(final?.status, "failed");
+  assert.equal(final?.fault, undefined);
+  assert.deepEqual(final?.output, { reason: "the tests did not pass", detail: { failed: 2 } });
+  assert.deepEqual(final?.value, { failing: "raising" }, "the wrapper sent it up from `failing`");
+  // The wrapper's `failing` deleted it, before the Failure went up. The host's backstop names only
+  // the Workspaces still live, and this one was not, so it is deleted once.
+  assert.equal(destroyed(sandbox).length, 1);
+  assert.deepEqual(lifecycle(sandbox), ["place", "provision", "attach", "destroy"]);
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no lease renews what was deleted");
+});
+
+test("a defect from the body still goes up at once: the run ends `error`, and its Sandbox stays as evidence", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "wsf", machine: failingWs, provide: () => ({}) });
+  const { runId } = await host.start("wsf");
+  await waitFor(() => host.gates(runId).length === 1);
+  host.sendToGate(runId, "hold", { type: "reject" });
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.equal(final?.status, "error");
+  assert.equal(final?.fault, "a bug in the step");
+  assert.deepEqual(destroyed(sandbox), []);
+});
+
+test("a failed run's other Sandboxes go too: the host deletes them after the stop, as a cancel does (ADR-0025)", async () => {
+  const two = setup({
+    actors: {
+      feature: failingWs,
+      other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+    },
+  }).createMachine({
+    id: "two",
+    type: "parallel",
+    states: {
+      a: { invoke: { id: "F-1", src: "feature" } },
+      b: { invoke: { id: "F-2", src: "other" } },
+    },
+  });
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "two", machine: two, provide: () => ({}) });
+  const { runId } = await host.start("two");
+  await waitFor(() => host.gates(runId).length === 2);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+  assert.equal((await host.read(runId))?.status, "failed");
+  await waitFor(() => destroyed(sandbox).length === 2);
+  assert.deepEqual(destroyed(sandbox).sort(), [workspaceName(runId, "F-1"), workspaceName(runId, "F-2")].sort());
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no lease renews what was deleted");
+});
+
+test("a caught Failure deletes the Sandbox of a Workspace in another region of the Machine it ended, once, and the run goes on (ADR-0073)", async () => {
+  // Region `a` holds a Workspace at its Gate; region `b` fails. The Failure ends `inner`, and
+  // `outer` catches it. The host stops the children of `inner`, and a stop skips `teardown`.
+  const inner = jr2Setup({
+    events: [approveDef],
+    actors: {
+      other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+      stop: fail(),
+    },
+  }).createMachine({
+    id: "inner",
+    type: "parallel",
+    states: {
+      a: { invoke: { id: "F-2", src: "other" } },
+      b: {
+        initial: "working",
+        states: {
+          working: {
+            invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } },
+            on: { approve: "giving-up" },
+          },
+          "giving-up": { invoke: { src: "stop", input: { reason: "region b gave up" } } },
+        },
+      },
+    },
+  });
+  const outer = jr2Setup({ events: [approveDef], actors: { inner } }).createMachine({
+    id: "outer",
+    initial: "trying",
+    states: {
+      trying: {
+        invoke: {
+          id: "inner",
+          src: "inner",
+          onError: { guard: ({ event }) => isFailure(event.error), target: "caught" },
+        },
+      },
+      caught: {
+        invoke: { src: "gate", input: { gate: "after", accepts: ["approve"] } },
+        on: { approve: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "outer", machine: outer, provide: () => ({}) });
+  const { runId } = await host.start("outer");
+  await waitFor(() => host.gates(runId).length === 2);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.gates(runId).some((g) => g.gate === "after"));
+
+  await waitFor(() => destroyed(sandbox).length === 1);
+  assert.deepEqual(destroyed(sandbox), [workspaceName(runId, "F-2")]);
+  assert.equal(host.status(runId)?.status, "active", "the parent caught the Failure: the run goes on");
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no lease renews what was deleted");
+
+  host.sendToGate(runId, "after", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+  assert.equal((await host.read(runId))?.status, "done");
+  assert.equal(destroyed(sandbox).length, 1, "deleted once");
+});
+
+test("a parent that catches a Failure and invokes the same Machine again keeps the Sandbox of its new Workspace (ADR-0073)", async () => {
+  // The retry's Workspace has the same invoke id, so it has the same Sandbox name. It is in
+  // `placing` when the host stops the children of the Machine that the Failure ended. The host must
+  // not delete that name: the retry holds it.
+  const inner = jr2Setup({
+    events: [approveDef],
+    actors: {
+      other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+      stop: fail(),
+    },
+  }).createMachine({
+    id: "inner",
+    type: "parallel",
+    states: {
+      a: { invoke: { id: "F-2", src: "other" } },
+      b: {
+        initial: "working",
+        states: {
+          working: {
+            invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } },
+            on: { approve: "giving-up" },
+          },
+          "giving-up": { invoke: { src: "stop", input: { reason: "region b gave up" } } },
+        },
+      },
+    },
+  });
+  const outer = jr2Setup({ actors: { inner } }).createMachine({
+    id: "outer",
+    initial: "trying",
+    states: {
+      trying: {
+        invoke: {
+          id: "inner",
+          src: "inner",
+          onError: { guard: ({ event }) => isFailure(event.error), target: "trying", reenter: true },
+        },
+      },
+    },
+  });
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "outer", machine: outer, provide: () => ({}) });
+  const { runId } = await host.start("outer");
+  await waitFor(() => host.gates(runId).length === 2);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  const name = workspaceName(runId, "F-2");
+  const verbs = (): string[] => sandbox.calls.filter((c) => !c.startsWith("renew:"));
+  await waitFor(() => verbs().filter((c) => c === `attach:${name}`).length === 2);
+  await waitFor(() => host.gates(runId).length === 2);
+
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.deepEqual(destroyed(sandbox), [], "the retry holds the name: the host does not delete it");
+  assert.ok(renews(sandbox) > settled, "the retry's lease is renewed");
+  assert.equal(host.status(runId)?.status, "active", "the run goes on with the retry's Sandbox");
+
+  // The retry's Workspace ends, and its own `teardown` deletes its Sandbox, once.
+  host.sendToGate(runId, "other", { type: "approve" });
+  await waitFor(() => destroyed(sandbox).length === 1);
+  assert.deepEqual(destroyed(sandbox), [name]);
+});
+
+test("a restart in `failing` replays the Failure: the delete runs again, and the same Failure ends the run (ADR-0073)", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const destroy = sandbox.destroy.bind(sandbox);
+  let hang = true;
+  sandbox.destroy = (name) => (hang ? new Promise<void>(() => sandbox.calls.push(`destroy:${name}`)) : destroy(name));
+  const first = new RunHost({ store, sandbox });
+  first.register({ name: "wsf", machine: failingWs, provide: () => ({}) });
+  const { runId } = await first.start("wsf");
+  await waitFor(() => first.gates(runId).length === 1);
+  first.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => destroyed(sandbox).length === 1);
+  await first.stop(runId);
+
+  hang = false;
+  const second = new RunHost({ store, sandbox });
+  second.register({ name: "wsf", machine: failingWs, provide: () => ({}) });
+  await second.restore();
+  await waitFor(() => second.status(runId) === undefined);
+  const final = await second.read(runId);
+  assert.equal(final?.status, "failed");
+  assert.deepEqual(final?.output, { reason: "the tests did not pass", detail: { failed: 2 } });
+  assert.equal(destroyed(sandbox).length, 2, "the restored `failing` deleted it again: a delete is idempotent");
+});
+
+test("the walk does not list the wrapper's own `failing` as a state that fails the run; it lists the body's", () => {
+  assert.deepEqual(
+    partsOf([failingWs]).failures.map((f) => f.state),
+    ["failingBody.giving-up"],
+  );
 });
 
 test("placing: a Sandbox Lost before its node faults the run by name, and is deleted — it never ran", async () => {

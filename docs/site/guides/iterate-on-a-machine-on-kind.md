@@ -27,9 +27,10 @@ jr2 check
 ```
 
 It typechecks the Instance, loads each Workflow and walks its Machine, with no cluster. It prints the typecheck, the
-`effects:` lines and the `seats:` lines, and then `check: passed`. When it refuses, it gives the line that `jr2 up`
-gives, and exits with `1`. `npm run typecheck` runs only the compiler, so it does not find a refusal that occurs when a
-module loads. The checks of `git.credentials` and of the images need the cluster, so only `jr2 up` does them.
+`effects:` lines, the `seats:` lines and the `failures:` lines, and then `check: passed`. When it refuses, it gives the
+line that `jr2 up` gives, and exits with `1`. `npm run typecheck` runs only the compiler, so it does not find a refusal
+that occurs when a module loads. The checks of `git.credentials` and of the images need the cluster, so only `jr2 up`
+does them.
 
 ## Converge the change
 

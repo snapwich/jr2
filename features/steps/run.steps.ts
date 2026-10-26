@@ -95,6 +95,31 @@ Then("stdout is the terminal status with reply {string}", function (this: E2EWor
   assert.equal(s.context.reply, reply);
 });
 
+/** A blocking run with no input: what `jr2 run <workflow>` prints when the run ends. */
+When("I run {string} to its end", async function (this: E2EWorld, wf: string): Promise<void> {
+  await this.runCli(["run", wf]);
+  this.runId = this.resultJson<RunStatus>().runId;
+});
+
+/** The terminal status on stdout (ADR-0073): its Run status, and the output of the run. For a run
+ * that ended `failed`, the output is the Failure, `{ reason, detail? }`, and `fault` stays empty. */
+Then(
+  "stdout is the terminal status {string} with output {string}",
+  function (this: E2EWorld, status: string, output: string): void {
+    const s = this.resultJson<RunStatus & { output?: unknown; fault?: string }>();
+    assert.equal(s.status, status, JSON.stringify(s));
+    assert.deepEqual(s.output, JSON.parse(output));
+    assert.equal(s.fault, undefined, "a Failure is no fault");
+  },
+);
+
+Then("stderr says {string}", function (this: E2EWorld, line: string): void {
+  assert.ok(
+    (this.last?.stderr ?? "").split("\n").some((l) => l.trim() === line),
+    `stderr has the line ${JSON.stringify(line)}:\n${this.last?.stderr}`,
+  );
+});
+
 Then("stdout is a bare runId", function (this: E2EWorld): void {
   const printed = this.resultJson<{ runId?: string }>();
   assert.ok(printed.runId, "detach prints the runId");

@@ -11,17 +11,25 @@
 // never settles (the stub is inert), so both admissions exist at once and the scenario reads them
 // off the stub. Nothing here needs driving — the point is what was admitted, not what came back.
 
-import { agent, customize, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator/internal";
+import {
+  agent,
+  customize,
+  fail,
+  jr2Setup,
+  type AgentTurnInput,
+  type AgentTurnPlacement,
+} from "@jr2/orchestrator/internal";
 
 /** The Machine a package would export: one Agent slot, one state, everything else carried. The
  * stub never runs a model, but a slot IS its definition, so the stock one is stated. */
 const research = jr2Setup({
   types: {} as { context: { endpoint: string }; input: { endpoint: string } },
   events: [],
-  actors: { coder: agent({ model: "stub/base", instructions: "You are the coder." }) },
+  actors: { coder: agent({ model: "stub/base", instructions: "You are the coder." }), fail: fail() },
 }).createMachine({
   id: "research",
   context: ({ input }) => ({ endpoint: input.endpoint }),
+  on: { "agent.fault": { target: ".faulted" } },
   initial: "working",
   states: {
     working: {
@@ -37,6 +45,7 @@ const research = jr2Setup({
         }),
       },
     },
+    faulted: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
 });
 

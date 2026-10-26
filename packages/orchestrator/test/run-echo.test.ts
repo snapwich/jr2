@@ -75,6 +75,7 @@ function echoDef(client: MockFlueClient): WorkflowDef {
       decider: agentActorWith(() => client, { model: "test/model", instructions: "decide" }),
     },
   }).createMachine({
+    on: { "workspace.lost": {}, "agent.fault": {} },
     id: "body",
     context: ({ input }) => ({ tag: input.tag ?? "solo" }),
     initial: "local",

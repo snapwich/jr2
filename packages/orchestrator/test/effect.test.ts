@@ -446,6 +446,7 @@ test("a loop below the Agent's state grows the blob by its tails only while the 
       make: commandWith(instant, ["make"]),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "held-loop",
     context: { n: 0 },
     invoke: { src: "ws" },

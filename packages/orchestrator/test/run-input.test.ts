@@ -47,6 +47,7 @@ const wsBody = jr2Setup({
   types: {} as { context: { repo: string }; input: Workspaced<{ repo: string; branch: string }, "app"> },
   events: [approveDef],
 }).createMachine({
+  on: { "workspace.lost": {} },
   id: "wsbody",
   context: ({ input }) => ({ repo: input.repo }),
   initial: "idle",

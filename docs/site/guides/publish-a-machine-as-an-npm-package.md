@@ -144,10 +144,14 @@ Run [`jr2 up`](../reference/cli.md#up):
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 jr2 up — instance "my-instance" → context <context> / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
+failures: workflow "label" — the states that fail the run (ADR-0073)
+  labeler.failed: invokes fail
 seats: workflow "label" — who may send what, per state (ADR-0015)
   labeler.labeling agent:labeler: [label]
 …

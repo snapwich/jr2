@@ -254,7 +254,7 @@ export type SyncState = SyncAnswer["sync"];
  *
  * @example
  * ```ts
- * import { jr2Setup, push, workspace, type PushOutput, type Workspaced } from "@jr2/orchestrator";
+ * import { fail, jr2Setup, push, type PushOutput, workspace, type Workspaced } from "@jr2/orchestrator";
  *
  * type Input = Workspaced<{ sha: string }, "app">;
  *
@@ -265,10 +265,11 @@ export type SyncState = SyncAnswer["sync"];
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   actors: { publish: push({ pin: true }) },
+ *   actors: { publish: push({ pin: true }), fail: fail() },
  * }).createMachine({
  *   id: "release",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost" },
  *   initial: "publishing",
  *   states: {
  *     publishing: {
@@ -283,8 +284,10 @@ export type SyncState = SyncAnswer["sync"];
  *       },
  *     },
  *     published: { type: "final" },
- *     notPushed: { type: "final" },
- *     unknown: { type: "final" },
+ *     // Not final states: each one fails the run, with its own reason.
+ *     notPushed: { invoke: { src: "fail", input: { reason: "the remote refused the push" } } },
+ *     unknown: { invoke: { src: "fail", input: { reason: "jr2 cannot tell if the push happened" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -1026,6 +1029,7 @@ export function credentialedCommandWith(
  * import {
  *   agent,
  *   defineEvent,
+ *   fail,
  *   jr2Setup,
  *   push,
  *   workspace,
@@ -1049,10 +1053,12 @@ export function credentialedCommandWith(
  *       instructions: "You are a careful engineer.",
  *     }),
  *     publish: push({ sign: true }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "fix-test",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".failed", "agent.fault": ".failed" },
  *   initial: "coding",
  *   states: {
  *     coding: {
@@ -1071,7 +1077,8 @@ export function credentialedCommandWith(
  *       },
  *     },
  *     done: { type: "final" },
- *     failed: { type: "final" },
+ *     // Not a final state: the run ends `failed`, and the Workspace deletes the Sandbox.
+ *     failed: { invoke: { src: "fail", input: { reason: "the fix was not pushed" } } },
  *   },
  * });
  *

@@ -72,6 +72,8 @@ import {
 } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { composesSandbox } from "./parts.ts";
+import { failurePayload, isFailure, type FailureInput } from "./fail.ts";
+import { unroutedMechanismEvent, type MicrostepView } from "./mechanism-routes.ts";
 import { fingerprintOf } from "./fingerprint.ts";
 import {
   serializeMachine,
@@ -345,24 +347,31 @@ function runWaiting(snapshot: unknown, logic?: unknown, path: string[] = []): Ru
  *
  * Left out: a Workspace in `placing`, which deletes its own Sandbox when its wait is aborted — and
  * only once any write in flight has settled, so a delete from here could race the apply and leave
- * the CR behind (ADR-0064); and one that is `done` or ended, whose `teardown` already ran.
+ * the CR behind (ADR-0064); and one that is `done` or ended, whose `teardown` or `failing` already
+ * ran. An actor that ended in `error` is not a Workspace here, but its children are read: a failed
+ * run's root (ADR-0073) is in `error`, and its active children are still in its snapshot, as
+ * `stopTree` reads them.
+ *
+ * With `placing`, a Workspace in `placing` is also named: the names that a live Workspace holds
+ * now, which a delete must leave alone.
  */
-function runSandboxes(actor: AnyActorRef, runId: string): string[] {
+function runSandboxes(actor: AnyActorRef, runId: string, opts: { placing?: boolean } = {}): string[] {
   const out: string[] = [];
   const snap = actor.getSnapshot() as
     | { status?: string; value?: unknown; context?: { wsId?: unknown }; children?: Record<string, AnyActorRef> }
     | undefined;
-  if (snap?.status !== "active") return out;
+  if (snap?.status !== "active" && snap?.status !== "error") return out;
   const logic = (actor as AnyActorRef & { logic?: unknown }).logic;
   if (
+    snap.status === "active" &&
     logic != null &&
     composesSandbox(logic as AnyStateMachine) &&
-    snap.value !== "placing" &&
+    (opts.placing === true || snap.value !== "placing") &&
     typeof snap.context?.wsId === "string"
   ) {
     out.push(workspaceName(runId, snap.context.wsId));
   }
-  for (const child of Object.values(snap.children ?? {})) out.push(...runSandboxes(child, runId));
+  for (const child of Object.values(snap.children ?? {})) out.push(...runSandboxes(child, runId, opts));
   return out;
 }
 
@@ -482,7 +491,8 @@ function heldOf(holds: Iterable<Hold>): RunHeld[] {
 }
 
 /** A run's current observable state. `fault` carries the error message when status is "error"
- * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). */
+ * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). A run that ends
+ * "failed" (ADR-0073) has no `fault`: its `output` is the Failure's `{ reason, detail? }`. */
 export type RunStatus = RunRecord & {
   status: string;
   value: unknown;
@@ -517,7 +527,9 @@ export type RunStatus = RunRecord & {
   /**
    * The Machine's output, for a run that is no longer live (ADR-0071): what a `dispatch` with
    * `wait` settles with, and what `GET /runs/<id>` serves its foreign caller. Never for a live run,
-   * whose Machine has none yet. Behind the token, like `context`: it is the workflow's data.
+   * whose Machine has none yet. For a `failed` run, the Failure's `{ reason, detail? }` (ADR-0073),
+   * not a value of the Machine's output type. Behind the token, like `context`: it is the
+   * workflow's data.
    */
   output?: unknown;
   /** The runs this run's `dispatch` Effects started, oldest first (ADR-0071): the chain's other
@@ -987,6 +999,9 @@ type RunBlob = {
    */
   startedBy?: Record<string, StartedBy>;
   fault?: string;
+  /** The Failure that ended the run `failed` (ADR-0073), as plain data: the run's output. xstate
+   * keeps the error of an errored snapshot, and serializes it to `{}`, so it is kept here. */
+  failure?: FailureInput;
 };
 
 type LiveRun = {
@@ -1011,6 +1026,8 @@ type LiveRun = {
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
+  /** The Failure that ended the run, if it failed (ADR-0073): persisted as `RunBlob.failure`. */
+  failure?: FailureInput;
   /** Per-run observers fed by `persist()` (status) and the actor's `emit` (emit) — SSE/CLI watch. */
   listeners: Set<(e: RunFeedEvent) => void>;
   /** The run's feed-so-far (ADR-0023): what a Workspace attaching mid-run gets replayed as its
@@ -2305,7 +2322,7 @@ export class RunHost {
 
   /**
    * Hear once that a run is no longer live (ADR-0071): `listener` gets its last status — `done`,
-   * `error` or `cancelled` with the Machine's `output`, or the store's `lost` or `drifted` — and is
+   * `failed`, `error` or `cancelled` with its `output`, or the store's `lost` or `drifted` — and is
    * then dropped. Returns the detach. What an in-process `dispatch` with `wait` waits on.
    *
    * Keyed by the run id, not by the run's hosting, so the order of a restore does not matter: a
@@ -2483,8 +2500,12 @@ export class RunHost {
       ...(blob.assembly !== undefined ? { assembly: blob.assembly } : {}),
       ...boundFields(snap),
       ...(blob.dispatchedBy ? { dispatchedBy: blob.dispatchedBy } : {}),
-      // The Machine's output once the row says the run is over (ADR-0071), never while it is live.
-      ...(stored.status !== "live" && snap.output !== undefined ? { output: snap.output } : {}),
+      // The Machine's output once the row says the run is over (ADR-0071), never while it is live;
+      // for a failed run, its Failure (ADR-0073).
+      ...(stored.status !== "live" && blob.failure !== undefined ? { output: blob.failure } : {}),
+      ...(stored.status !== "live" && blob.failure === undefined && snap.output !== undefined
+        ? { output: snap.output }
+        : {}),
       ...dispatchedField(blob.effects ?? {}),
     };
   }
@@ -2622,15 +2643,40 @@ export class RunHost {
     // The run is over, so nothing can use its Workspaces, and each holds its whole Size (ADR-0025).
     // An actor stop skips the wrapper's `teardown` state, so the host runs the same idempotent
     // delete here, after the stop, so no lease renews what was deleted. `keep` leaves them to the
-    // operator's idle timeout, for inspection. A delete that fails is the idle GC's, as in
-    // `teardown` (ADR-0012 backstop): the cancel has already happened.
+    // operator's idle timeout, for inspection.
+    await this.destroySandboxes(runId, sandboxes, "the cancel");
+  }
+
+  /**
+   * End a run `error` because a Machine of its tree dropped a mechanism event (ADR-0074): `fault`
+   * says which. The actor stops as a cancel stops it, so each live Agent's Turn ends, and the run
+   * is persisted terminal. Its Sandboxes stay as evidence, as a fault's do (ADR-0012): the Machine
+   * did not choose this end. Once per run: a second dropped event in the same step adds nothing.
+   */
+  private faultUnrouted(runId: string, binding: RunBinding, fault: string): void {
+    const run = this.runs.get(runId);
+    if (!run || run.binding !== binding || run.fault !== undefined) return;
+    run.fault = fault;
+    run.actor.stop();
+    this.persist(run, "error");
+  }
+
+  /**
+   * Delete the Sandboxes of a run that is over and stopped: a cancelled one (ADR-0025) and a failed
+   * one (ADR-0073). After the stop, so no lease renews what was deleted. The delete is idempotent:
+   * for a failed run, the Workspace a Failure went through deleted its own already, so this is a
+   * backstop for the others. A delete that fails is the idle GC's, as in `teardown` (ADR-0012
+   * backstop): the run has already ended. `why` names that end in the log line of a delete that
+   * fails.
+   */
+  private async destroySandboxes(runId: string, sandboxes: readonly string[], why: string): Promise<void> {
     const port = this.sandbox;
     if (!port) return;
     await Promise.all(
       sandboxes.map((name) =>
         port.destroy(name).catch((err: unknown) => {
           console.error(
-            `run ${runId}: cancel could not delete Sandbox ${name} (the idle timeout will): ` +
+            `run ${runId}: Sandbox ${name} was not deleted at ${why} (the idle timeout will delete it): ` +
               (err instanceof Error ? err.message : String(err)),
           );
         }),
@@ -2710,7 +2756,11 @@ export class RunHost {
       ...(run.def.assembly !== undefined ? { assembly: run.def.assembly } : {}),
       ...boundFields(snap),
       // A Machine that reached its final state has its output (ADR-0071); an active one has none.
-      ...(snap.status !== "active" && snap.output !== undefined ? { output: snap.output } : {}),
+      // A failed run's output is its Failure (ADR-0073).
+      ...(run.failure !== undefined ? { output: run.failure } : {}),
+      ...(run.failure === undefined && snap.status !== "active" && snap.output !== undefined
+        ? { output: snap.output }
+        : {}),
       ...dispatchedField(run.effects),
     };
   }
@@ -3039,7 +3089,44 @@ export class RunHost {
           const target = ev.actorRef as AnyActorRef;
           const source = ev.sourceRef as AnyActorRef | undefined;
           const event = ev.event as AnyEventObject;
-          causes.relayed(source, target, event, () => this.pickCause(record.runId, holds, target, source, event));
+          causes.relayed(
+            source,
+            target,
+            event,
+            () => this.pickCause(record.runId, holds, target, source, event),
+            () => this.table.byRun(record.runId).filter((reg) => reg.kind === "agent"),
+          );
+          // A Failure ended a Machine that a Machine above can catch (ADR-0073). xstate does not stop
+          // the children of a Machine that ends `error`, so the host stops them, as `stopTree` does for
+          // the run: an Agent in that Machine settles its Turn, and a Gate or a timer there does not
+          // wait for nobody. After the parent takes the event, so its exit is recorded first. A stop
+          // skips `teardown`, so a Workspace in another region of that Machine does not delete its
+          // Sandbox: the host names them before the stop and deletes them after it, as for a failed run.
+          // A name that a live Workspace of the run holds after the stop is not deleted: a parent that
+          // invokes the same Machine again gives its new Workspace the same invoke id, and so the same
+          // name, and that Workspace is in `placing` by now.
+          if (
+            source !== undefined &&
+            source._parent === target &&
+            event.type === `xstate.error.actor.${source.id}` &&
+            isFailure((event as { error?: unknown }).error)
+          ) {
+            queueMicrotask(() => {
+              const sandboxes = runSandboxes(source, record.runId);
+              stopTree(source);
+              const run = this.runs.get(record.runId);
+              const held = new Set(run ? runSandboxes(run.actor, record.runId, { placing: true }) : []);
+              const ended = sandboxes.filter((name) => !held.has(name));
+              void this.destroySandboxes(record.runId, ended, "the end of the failed Machine");
+            });
+          }
+        }
+        // A mechanism event that no transition took (ADR-0074): `agent.fault` or `workspace.lost`
+        // that a Machine got and dropped, as a guard that was false when it came. The run would wait
+        // for ever, so it faults. After the macrostep, so the stop does not cut xstate's own step.
+        if (ev.type === "@xstate.microstep") {
+          const unrouted = unroutedMechanismEvent(ev as unknown as MicrostepView);
+          if (unrouted !== undefined) queueMicrotask(() => this.faultUnrouted(record.runId, binding, unrouted));
         }
         // The exit of each Agent's state (`cause.ts`, ADR-0024).
         if (ev.type === "@xstate.microstep") {
@@ -3095,6 +3182,17 @@ export class RunHost {
     // `{}`), then persist: the snapshot's "error" status stores the run and untracks it.
     actor.subscribe({
       error: (err) => {
+        // A Failure that no state caught (ADR-0073): the end the Machine chose, so the run ends
+        // `failed`, with no fault and the Failure as its output, and its Sandboxes go as a cancel's
+        // do (ADR-0025). Named BEFORE the stop, while the tree still says which Workspaces are live.
+        if (isFailure(err)) {
+          run.failure = failurePayload(err);
+          const sandboxes = runSandboxes(actor, record.runId);
+          this.persist(run, "failed");
+          stopTree(actor);
+          void this.destroySandboxes(record.runId, sandboxes, "the end of the failed run");
+          return;
+        }
         run.fault = err instanceof Error ? err.message : String(err);
         this.persist(run);
         // A faulted run stops its actors — each workspace's lease among them (ADR-0021), and a
@@ -3127,9 +3225,12 @@ export class RunHost {
   /**
    * Persist the run's snapshot after a transition; drop it from the registry once final.
    *
-   * `terminal` is the run-lifecycle verdict the MACHINE cannot supply: `cancel()` passes
-   * "cancelled", because xstate only knows its actor was stopped (ADR-0025). It is the stored
-   * status and the one the feeds report.
+   * `terminal` is the run-lifecycle verdict the MACHINE cannot supply. Three callers pass it:
+   * `cancel()` passes "cancelled", because xstate only knows its actor was stopped (ADR-0025); the
+   * error observer passes "failed" for a Failure that no state caught, because xstate gives a
+   * Failure and a defect the same `error` status (ADR-0073); and `faultUnrouted()` passes "error"
+   * for a mechanism event that no transition took, because the host stops the actor and xstate
+   * then knows only that it was stopped (ADR-0074). It is the stored status and the one the feeds report.
    */
   private persist(run: LiveRun, terminal?: string): void {
     // The holds first: an answer read at Rest, and a notice a route out raised, ride this same save.
@@ -3160,6 +3261,7 @@ export class RunHost {
       effects: run.effects,
       startedBy: liveStartedBy(run.startedBy, run.actor),
       fault: run.fault,
+      ...(run.failure !== undefined ? { failure: run.failure } : {}),
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
     // A save that fails is this run's fault, never the process's: an unhandled rejection would end

@@ -16,6 +16,7 @@ import {
   arg,
   command,
   defineEvent,
+  fail,
   jr2Setup,
   workspace,
   type CommandOutput,
@@ -38,6 +39,7 @@ export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: CommandOutput | { outcome: "none" } },
   events: [unused],
   actors: {
+    fail: fail(),
     exit: command(["node", "-e", "process.exit(Number(process.argv[1]))", arg("code")]),
     argv: command(["node", "-e", "console.log(JSON.stringify(process.argv.slice(1)))", arg("text")]),
     timeout: command(["node", "-e", "setInterval(()=>{},1000)"], { timeout: "3s" }),
@@ -47,7 +49,7 @@ export const body = jr2Setup({
   id: "commanded",
   context: ({ input }) => input,
   initial: "choosing",
-  on: { noop: ".settled" },
+  on: { "workspace.lost": { target: ".lost" }, noop: ".settled" },
   states: {
     choosing: {
       always: [
@@ -84,6 +86,7 @@ export const body = jr2Setup({
       },
     },
     settled: { type: "final" },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
   },
   output: ({ context }) => context.output ?? { outcome: "none" },
 });

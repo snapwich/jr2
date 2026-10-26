@@ -64,6 +64,7 @@ test("a sentBy id that is no Agent slot and no Gate invoke id is refused at load
   assert.throws(
     () =>
       jr2Setup({ events: [ev("approve")], actors: { coder: placeholder("coder") } }).createMachine({
+        on: { "agent.fault": {} },
         id: "typo",
         initial: "release",
         states: {

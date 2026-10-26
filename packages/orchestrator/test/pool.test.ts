@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
+import { fail } from "../src/fail.ts";
 import { pool, source } from "../src/pool.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { vocabularyOf } from "../src/vocabulary.ts";
@@ -174,4 +175,146 @@ test("a plain-setup worker with no vocabulary still pools (wake def only)", () =
   const { src } = memorySource([]);
   const machine = pool(bare, { source: src, itemId: (i) => i.id });
   assert.deepEqual([...vocabularyOf(machine)!.keys()], ["work_ready"]);
+});
+
+/** A worker that fails at once when its item's label is `fail`, throws a plain error when it is
+ * `throw`, and is done otherwise. It waits a little first, so the Pool claims every item before a
+ * worker settles. */
+const choosyWorker = setup({
+  types: {} as { context: { item: Item }; input: { item: Item } },
+  actors: {
+    fail: fail(),
+    boom: fromPromise(async () => {
+      throw new Error("a bug");
+    }),
+  },
+}).createMachine({
+  id: "choosy",
+  context: ({ input }) => ({ item: input.item }),
+  initial: "deciding",
+  states: {
+    deciding: {
+      always: [
+        { guard: ({ context }) => context.item.label === "fail", target: "waiting" },
+        { guard: ({ context }) => context.item.label === "throw", target: "throwing" },
+        { target: "working" },
+      ],
+    },
+    waiting: { after: { 1: "failing" } },
+    working: { after: { 5: "done" } },
+    failing: { invoke: { src: "fail", input: ({ context }) => ({ reason: `no ${context.item.id}` }) } },
+    throwing: { invoke: { src: "boom" } },
+    done: { type: "final" },
+  },
+  output: ({ context }) => ({ label: context.item.label }),
+});
+
+async function runChoosy(items: Item[], failures?: "fail" | "report", open?: () => number) {
+  const { src } = memorySource(items, open ? { open } : {});
+  const machine = pool(choosyWorker, {
+    id: "run",
+    source: src,
+    itemId: (i) => i.id,
+    cap: 2,
+    itemInput: (i) => ({ item: i }),
+    ...(failures ? { failures } : {}),
+  });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "run", machine, provide: () => ({}) });
+  const { runId } = await host.start("run");
+  await waitFor(() => host.status(runId) === undefined);
+  return host.read(runId);
+}
+
+test("a worker's Failure is caught, and the Pool goes on; drained with failures, it fails the run by default (ADR-0017, ADR-0073)", async () => {
+  for (const failures of [undefined, "fail"] as const) {
+    const final = await runChoosy(
+      [
+        { id: "F-1", label: "fail" },
+        { id: "F-2", label: "two" },
+        { id: "F-3", label: "three" },
+      ],
+      failures,
+    );
+    assert.equal(final?.status, "failed", String(failures));
+    assert.equal(final?.fault, undefined, "a Failure is not a fault");
+    // The sibling workers went on to their end: one failed item stops no other.
+    assert.deepEqual(final?.output, {
+      reason: "1 of 3 items failed",
+      detail: {
+        status: "drained",
+        items: { "F-2": { label: "two" }, "F-3": { label: "three" } },
+        failures: { "F-1": { reason: "no F-1" } },
+      },
+    });
+  }
+});
+
+test('`failures: "report"`: a drained Pool with failures ends `done`, with the failures in its output (ADR-0017)', async () => {
+  const final = await runChoosy(
+    [
+      { id: "F-1", label: "fail" },
+      { id: "F-2", label: "two" },
+    ],
+    "report",
+  );
+  assert.equal(final?.status, "done");
+  const ctx = final?.context as { status?: string; items?: unknown; failures?: unknown };
+  assert.equal(ctx.status, "drained");
+  assert.deepEqual(ctx.items, { "F-2": { label: "two" } });
+  assert.deepEqual(ctx.failures, { "F-1": { reason: "no F-1" } });
+});
+
+test('a deadlocked Pool with failures fails the run by default, and ends `done` with `failures: "report"` (ADR-0017, ADR-0073)', async () => {
+  // A Source over a tracker that keeps an item open that never becomes ready, as the dependent of a
+  // failed ticket does: when the workers settle, `next` gives `{ item: null, open: 1 }`.
+  const items = (): Item[] => [
+    { id: "F-1", label: "fail" },
+    { id: "F-2", label: "two" },
+  ];
+  for (const failures of [undefined, "fail"] as const) {
+    const final = await runChoosy(items(), failures, () => 1);
+    assert.equal(final?.status, "failed", String(failures));
+    assert.equal(final?.fault, undefined, "a Failure is not a fault");
+    assert.deepEqual(final?.output, {
+      reason: "1 of 2 items failed",
+      detail: {
+        status: "deadlocked",
+        items: { "F-2": { label: "two" } },
+        failures: { "F-1": { reason: "no F-1" } },
+      },
+    });
+  }
+  const reported = await runChoosy(items(), "report", () => 1);
+  assert.equal(reported?.status, "done");
+  const ctx = reported?.context as { status?: string; failures?: unknown };
+  assert.equal(ctx.status, "deadlocked");
+  assert.deepEqual(ctx.failures, { "F-1": { reason: "no F-1" } });
+});
+
+test("a drained Pool with no failures ends `done` in either mode (ADR-0017)", async () => {
+  for (const failures of ["fail", "report"] as const) {
+    const final = await runChoosy([{ id: "F-2", label: "two" }], failures);
+    assert.equal(final?.status, "done", failures);
+  }
+});
+
+test("a worker's defect is not caught: it ends the Pool run error (ADR-0073)", async () => {
+  const final = await runChoosy([{ id: "F-1", label: "throw" }]);
+  assert.equal(final?.status, "error");
+  assert.match(final?.fault ?? "", /a bug/);
+});
+
+test('the walk lists the Pool\'s `failing` state by default, and no such state with `failures: "report"` (ADR-0017, ADR-0073)', async () => {
+  const { partsOf } = await import("../src/parts.ts");
+  const { src } = memorySource([]);
+  const spec = { id: "run", source: src, itemId: (i: Item) => i.id, itemInput: (i: Item) => ({ item: i }) };
+  assert.deepEqual(
+    partsOf([pool(choosyWorker, spec)]).failures.filter((f) => f.machine === "run"),
+    [{ machine: "run", path: [], slot: "fail", state: "run.failing" }],
+  );
+  assert.deepEqual(
+    partsOf([pool(choosyWorker, { ...spec, failures: "report" })]).failures.filter((f) => f.machine === "run"),
+    [],
+  );
 });

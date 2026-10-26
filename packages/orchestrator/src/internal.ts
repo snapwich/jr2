@@ -42,6 +42,10 @@ export * from "./actor.ts";
 // The `gate` actor: jr2Setup pre-registers it and a state invokes it as `src: "gate"`, so no
 // author writes the value (ADR-0015).
 export * from "./gate.ts";
+// The Failure's brand stays in fail.ts, and so does the logic that throws it: the kit makes a Failure
+// only through `fail()` and `workspace()`, which imports that logic from fail.ts (ADR-0073).
+export { failurePayload, isFailSlot } from "./fail.ts";
+export type { Failure, FailSlot, FailureInput } from "./fail.ts";
 export * from "./workspace.ts";
 export * from "./images.ts";
 export * from "./content-hash.ts";

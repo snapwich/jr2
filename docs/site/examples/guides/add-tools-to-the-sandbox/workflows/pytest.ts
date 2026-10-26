@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { command, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+import { command, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
 
 const runInput = z.object({ branch: z.string() });
 type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
@@ -9,9 +9,11 @@ const body = jr2Setup({
   actors: {
     // python and pytest come from the Sandbox Image in ./python.
     tests: command(["python", "-m", "pytest"], { timeout: "15m" }),
+    fail: fail(),
   },
 }).createMachine({
   id: "pytest",
+  on: { "workspace.lost": ".lost" },
   initial: "testing",
   states: {
     testing: {
@@ -27,7 +29,9 @@ const body = jr2Setup({
       },
     },
     passed: { type: "final" },
-    failed: { type: "final" },
+    // Not final states: each one fails the run, and the run ends `failed`.
+    failed: { invoke: { src: "fail", input: { reason: "pytest did not pass" } } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
   },
 });
 

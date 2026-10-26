@@ -62,6 +62,7 @@ import type { PickAnswer } from "./wire.ts";
  *   arg,
  *   command,
  *   defineEvent,
+ *   fail,
  *   jr2Setup,
  *   paramsOf,
  *   workspace,
@@ -91,10 +92,12 @@ import type { PickAnswer } from "./wire.ts";
  *       instructions: "You are a careful engineer.",
  *     }),
  *     test: command(["node", "--test", arg("file")]),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "fix-tests",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
  *   initial: "coding",
  *   states: {
  *     coding: {
@@ -117,6 +120,8 @@ import type { PickAnswer } from "./wire.ts";
  *       },
  *     },
  *     done: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
@@ -193,7 +198,7 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, defineEvent, fromPick, http, jr2Setup } from "@jr2/orchestrator";
+ * import { agent, defineEvent, fail, fromPick, http, jr2Setup } from "@jr2/orchestrator";
  *
  * const postNote = defineEvent({
  *   name: "post_note",
@@ -222,9 +227,11 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *       input: z.object({ text: z.string() }),
  *       request: ({ text }) => ({ json: { text } }),
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "note",
+ *   on: { "agent.fault": ".failed" },
  *   initial: "writing",
  *   states: {
  *     writing: {
@@ -245,6 +252,7 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *       },
  *     },
  *     done: { id: "done", type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *   },
  * });
  * ```
@@ -252,7 +260,7 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, defineEvent, fromPick, http, jr2Setup } from "@jr2/orchestrator";
+ * import { agent, defineEvent, fail, fromPick, http, jr2Setup } from "@jr2/orchestrator";
  *
  * const postNote = defineEvent({
  *   name: "post_note",
@@ -275,9 +283,11 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *       input: z.object({ text: z.string() }),
  *       request: ({ text }) => ({ json: { text } }),
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "note",
+ *   on: { "agent.fault": ".failed" },
  *   initial: "writing",
  *   states: {
  *     // The pick leaves this state, so it ends the Turn of the writer.
@@ -293,6 +303,7 @@ export function isPickMapper(value: unknown): value is PickMapper & ((args: unkn
  *       invoke: { src: "note", input: fromPick(postNote), onDone: "done" },
  *     },
  *     done: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *   },
  * });
  * ```
@@ -316,7 +327,7 @@ export function fromPick<N extends string, I extends z.ZodObject, C, E extends E
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, bearer, defineEvent, fromPick, http, jr2Setup, secret } from "@jr2/orchestrator";
+ * import { agent, bearer, defineEvent, fail, fromPick, http, jr2Setup, secret } from "@jr2/orchestrator";
  *
  * const postComment = defineEvent({
  *   name: "post_comment",
@@ -340,10 +351,12 @@ export function fromPick<N extends string, I extends z.ZodObject, C, E extends E
  *       input: z.object({ ticket: z.string(), body: z.string() }),
  *       request: ({ ticket, body }) => ({ path: [ticket, "comment"], json: { body } }),
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "triage",
  *   context: ({ input }) => input,
+ *   on: { "agent.fault": ".failed" },
  *   initial: "triaging",
  *   states: {
  *     triaging: {
@@ -368,6 +381,7 @@ export function fromPick<N extends string, I extends z.ZodObject, C, E extends E
  *       },
  *     },
  *     done: { id: "done", type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *   },
  * });
  * ```
@@ -625,6 +639,7 @@ export const isAnswer = (action: unknown): boolean =>
  *   answer,
  *   command,
  *   defineEvent,
+ *   fail,
  *   jr2Setup,
  *   workspace,
  *   type Workspaced,
@@ -653,10 +668,12 @@ export const isAnswer = (action: unknown): boolean =>
  *       instructions: "You are a careful engineer.",
  *     }),
  *     tests: command(["npm", "test"]),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "fix-tests",
  *   context: ({ input }) => input,
+ *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
  *   initial: "coding",
  *   states: {
  *     coding: {
@@ -682,6 +699,8 @@ export const isAnswer = (action: unknown): boolean =>
  *       },
  *     },
  *     done: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *

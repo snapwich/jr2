@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup, push, workspace, type Workspaced } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, push, workspace, type Workspaced } from "@jr2/orchestrator";
 
 const finished = defineEvent({
   name: "finished",
@@ -26,13 +26,14 @@ const body = jr2Setup({
     }),
     // Two Repo Slots, so the push names the slot that it pushes.
     publish: push({ slot: "app" }),
+    fail: fail(),
   },
 }).createMachine({
   id: "docs-fix",
   context: ({ input }) => input,
   initial: "working",
-  // The Sandbox is gone, and its unpushed commits with it. This body ends the run.
-  on: { "workspace.lost": ".lost" },
+  // The Sandbox is gone, and its unpushed commits with it. This body fails the run.
+  on: { "agent.fault": ".failed", "workspace.lost": ".lost" },
   states: {
     working: {
       invoke: {
@@ -64,7 +65,9 @@ const body = jr2Setup({
       },
     },
     done: { type: "final" },
-    lost: { type: "final" },
+    // Not final states: a final state means `done`. Each one fails the run, and the run ends `failed`.
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
 });
 

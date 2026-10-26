@@ -24,7 +24,7 @@
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, customize, defineEvent, jr2Setup, open, workspace } from "@jr2/orchestrator";
+ * import { agent, customize, defineEvent, fail, jr2Setup, open, workspace } from "@jr2/orchestrator";
  *
  * const finish = defineEvent({
  *   name: "finish",
@@ -34,9 +34,10 @@
  *
  * const body = jr2Setup({
  *   events: [finish],
- *   actors: { coder: agent({ model: open, instructions: "You fix the failing test." }) },
+ *   actors: { coder: agent({ model: open, instructions: "You fix the failing test." }), fail: fail() },
  * }).createMachine({
  *   id: "fix",
+ *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
  *   initial: "coding",
  *   states: {
  *     coding: {
@@ -44,6 +45,8 @@
  *       on: { finish: "done" },
  *     },
  *     done: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
+ *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *

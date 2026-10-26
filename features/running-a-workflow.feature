@@ -21,6 +21,30 @@ Feature: Running a workflow
       Then stdout is a bare runId
       And the command exits 0
 
+  Rule: a Machine that invokes fail ends its run failed, and a parent can catch the Failure
+    ADR-0073. A final state means `done`. A Machine ends work that did not succeed with `fail()`:
+    the Failure goes up through each parent Machine, an `onError` that `isFailure` guards catches
+    it, and an uncaught one ends the run `failed`, with the reason and the detail as its output.
+    `jr2 run` exits 0 only for `done`, so CI can read a failed run from the exit code.
+
+    Background:
+      Given a fresh instance
+      And the instance also has the "failing" workflow
+      And the instance also has the "recovering" workflow
+      And the orchestrator is serving
+
+    Scenario: an uncaught Failure ends the run failed with its reason, and jr2 run exits 1
+      When I run "failing" to its end
+      Then the run reaches "failed" on stderr
+      And stderr says "failed: the check did not pass"
+      And stdout is the terminal status "failed" with output '{"reason":"the check did not pass","detail":{"failed":2}}'
+      And the command exits 1
+
+    Scenario: a parent catches the Failure of its child with isFailure, and its run ends done
+      When I run "recovering" to its end
+      Then stdout is the terminal status "done" with output '{"caught":"no plan fits the ticket"}'
+      And the command exits 0
+
   Rule: live and settled runs are observable
     A still-running workflow shows up in `jr2 runs`; a settled one is read through to the store by
     `jr2 status`. (The instant `ping` scaffold can't stay live, so this Rule also serves a `loop`.)

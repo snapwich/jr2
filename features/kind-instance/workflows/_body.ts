@@ -8,15 +8,16 @@
 // invoke, so it is `<runId>/body/coder`. Every wrapper of this body derives the same address, which
 // is what lets one set of steps drive them all.
 //
-// The final states carry DISTINCT outputs, and the wrapper's root `output` forwards whichever
-// settled the body: that is what lets a scenario assert which path was taken (finished vs lost)
-// rather than infer it from the run merely being done.
+// The one final state, `finished`, carries an output, and the wrapper's root `output` forwards it.
+// `lost` and `faulted` are not final states: each invokes `fail` (ADR-0073), so the run ends
+// `failed` with a reason, and a scenario reads which path was taken from the status and the
+// Failure, not from the run merely being done.
 //
 // `_`-prefixed, so workflow discovery skips it: this module is imported, never registered.
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, jr2Setup, type HostInjectedInput, type Workspaced } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, type HostInjectedInput, type Workspaced } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
@@ -33,13 +34,13 @@ export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [finish],
   // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.
-  actors: { coder: agent(coder) },
+  actors: { coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
   initial: "coding",
   // The wrapper emits, the body decides (ADR-0012). Our Sandbox is gone: the pod-local clone and
-  // any unpushed commits went with it, so settle as `lost` rather than pretend we can resume.
+  // any unpushed commits went with it, so fail the run rather than pretend we can resume.
   on: { "workspace.lost": { target: ".lost" } },
   states: {
     coding: {
@@ -80,10 +81,15 @@ export const body = jr2Setup({
       },
     },
     finished: { type: "final", output: { outcome: "finished" } },
-    lost: { type: "final", output: { outcome: "lost" } },
+    lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
     /** Carries the reason, not just the word: this is the only place a fault the Orchestrator
      * absorbed and gave up on becomes readable from outside the cluster. */
-    faulted: { type: "final", output: ({ context }) => ({ outcome: "faulted", reason: context.fault }) },
+    faulted: {
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({ reason: "the coder's Turn could not go on", detail: { fault: context.fault } }),
+      },
+    },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,
 });

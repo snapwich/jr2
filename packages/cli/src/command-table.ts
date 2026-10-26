@@ -280,9 +280,10 @@ const TABLE = [
     lines: [
       "--detach: just print the runId and return",
       "a Chart that the door refuses prints one line for each rule that it fails",
+      "exits 0 only for a run that ended done, and 1 for every other end: failed, error, cancelled, lost, drifted, or parked before it settled; a failed run prints its reason",
     ],
     output: RESULT,
-    adrs: ["0009", "0070"],
+    adrs: ["0009", "0070", "0073"],
   },
   {
     verb: "runs",
@@ -306,12 +307,12 @@ const TABLE = [
     flags: [{ ...JSON_REPORT, description: `${JSON_REPORT.description} (without a runId)` }, ...TARGET_FLAGS],
     env: TARGET_ENV,
     summary: "print a run's current status (read-through), or the instance's Repos, per node, when given none",
-    lines: [],
+    lines: ["a failed run prints its reason beside the result: failed: <reason>"],
     output: [
       { kind: "result", form: "status <runId>" },
       { kind: "report", form: "bare status" },
     ],
-    adrs: ["0048", "0051"],
+    adrs: ["0048", "0051", "0073"],
   },
   {
     verb: "logs",

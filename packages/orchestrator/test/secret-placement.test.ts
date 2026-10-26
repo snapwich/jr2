@@ -187,7 +187,7 @@ test("two Workspaces that would share a pod key are refused, never one pod (ADR-
 test("a workspace() reached through another workspace()'s body shares its route, and jr2 up refuses the Machine with the fix, with or without a secret (ADR-0059)", () => {
   const repos = { app: "https://example.test/app.git" };
   const spec = () => ({ branch: "b" });
-  const body = jr2Setup({ events: [] }).createMachine({ id: "body" });
+  const body = jr2Setup({ events: [] }).createMachine({ on: { "workspace.lost": {} }, id: "body" });
   const workers = pool(workspace(body, { repos, spec }), {
     source: source<{ id: string }>({ next: fromPromise(async () => null) }),
     itemId: (i) => i.id,
@@ -215,6 +215,7 @@ test("a workspace() reached through another workspace()'s body shares its route,
   // The fix the refusal names: the inner workspace() under a key of a plain Machine's actors, that
   // Machine the outer one's body. Each Workspace then has a pod of its own.
   const plain = jr2Setup({ events: [], actors: { inner: workspace(body, { repos, spec }) } }).createMachine({
+    on: { "workspace.lost": {} },
     id: "plain",
   });
   const fixed = secretPlacementsOf({}, placementOf("w", workspace(plain, { repos, spec })));
@@ -619,7 +620,10 @@ test("jr2 up accepts a credentialed command beside a GPG-signing push: the Sandb
 test("a file-body http no workspace() invokes is refused by its path, though a workspace() of the same workflow holds a file-body http of the same slot name", () => {
   const report = () =>
     http({ method: "PUT", url: "https://files.example.com/r", body: file("r"), auth: bearer(secret("files")) });
-  const inner = jr2Setup({ events: [], actors: { report: report() } }).createMachine({ id: "inner" });
+  const inner = jr2Setup({ events: [], actors: { report: report() } }).createMachine({
+    on: { "workspace.lost": {} },
+    id: "inner",
+  });
   const outer = jr2Setup({
     events: [],
     actors: {
@@ -667,7 +671,10 @@ test("a file-body http in an inline plain Machine is refused, though another inl
   // two `report`s below the two inline Machines are two Effects, and only one is in a Workspace.
   const report = () =>
     http({ method: "PUT", url: "https://files.example.com/r", body: file("r"), auth: bearer(secret("files")) });
-  const inner = jr2Setup({ events: [], actors: { report: report() } }).createMachine({ id: "inner" });
+  const inner = jr2Setup({ events: [], actors: { report: report() } }).createMachine({
+    on: { "workspace.lost": {} },
+    id: "inner",
+  });
   const withWs = jr2Setup({
     events: [],
     actors: { ws: workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }) },
@@ -698,7 +705,10 @@ test("two Workspaces composed through inline plain Machines each get their own S
   const upload = (name: string) =>
     http({ method: "PUT", url: "https://files.example.com/r", body: file("r"), auth: bearer(secret(name)) });
   const composing = (id: string, name: string) => {
-    const inner = jr2Setup({ events: [], actors: { report: upload(name) } }).createMachine({ id: `${id}-inner` });
+    const inner = jr2Setup({ events: [], actors: { report: upload(name) } }).createMachine({
+      on: { "workspace.lost": {} },
+      id: `${id}-inner`,
+    });
     const ws = workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
     return jr2Setup({ events: [], actors: { ws } }).createMachine({
       id,
@@ -741,7 +751,7 @@ test("a Machine placed twice — { ws: workspace(M), plain: M } — is refused f
   });
   const config: JR2Config = { secrets: [{ name: "files", value: VALUE }] };
   for (const wsFirst of [true, false]) {
-    const m = jr2Setup({ events: [], actors: { report } }).createMachine({ id: "m" });
+    const m = jr2Setup({ events: [], actors: { report } }).createMachine({ on: { "workspace.lost": {} }, id: "m" });
     const ws = workspace(m, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
     const actors = wsFirst ? { ws, plain: m } : { plain: m, ws };
     const root = jr2Setup({ events: [], actors }).createMachine({ id: "w" });
@@ -765,7 +775,7 @@ test("a dispatch with a target sits in the Instance Effector beside the http Eff
       }),
       here: dispatch("review", { wait: true, timeout: "6h" }),
     },
-  }).createMachine({ id: "m", initial: "a", states: { a: {} } });
+  }).createMachine({ on: { "workspace.lost": {} }, id: "m", initial: "a", states: { a: {} } });
   const out = secretPlacementsOf(
     {
       secrets: [

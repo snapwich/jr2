@@ -754,6 +754,7 @@ test("an `after` below a state that invokes an Agent is re-armed; the Turn is re
     events: [doneEvent, requestReviewEvent],
     actors: { coder: agent(coderDefinition) },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "m",
     context: {},
     initial: "active",

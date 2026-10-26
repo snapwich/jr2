@@ -26,8 +26,12 @@ with a [`command`](../reference/authoring-surface/command.md) Effect. When it pi
 :::
 
 The `coding` state routes [`agent.fault`](../reference/mechanism-events.md#agent-fault) to `failed`. jr2 sends it when a
-Turn of the coder fails with no pick. A loop that must end routes it on each state that invokes an Agent. Without the
-route, the run stays in that state.
+Turn of the coder fails with no pick. Each state that invokes an Agent has a route for it, on the state or on a state
+above it: `jr2 check` refuses a Machine without one. When no transition takes the event, the run ends `error`.
+
+`failed`, `notReported` and `lost` are not final states. Each one invokes
+[`fail`](../reference/authoring-surface/fail.md), and the run ends `failed` with its reason: a final state means `done`.
+Do not throw from a promise to fail, because a throw is a defect, and the run ends `error`.
 
 Write your GitHub user name in place of `<you>`. The Agent uses the model of the tab. `https://hooks.example.com/jr2` is
 an example. Write the URL of your own service.
@@ -166,17 +170,23 @@ where. It also shows where each Effect secret goes:
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 effects: workflow "fix-and-report" — what it runs outside itself (ADR-0067)
   test: command ["node","--test","<file>"] — 300s, in the Harness
   report: http POST https://hooks.example.com — 30s, in the Instance Effector, secrets "hook-token"
+failures: workflow "fix-and-report" — the states that fail the run (ADR-0073)
+  fix-and-report.notReported: invokes fail
+  fix-and-report.failed: invokes fail
+  fix-and-report.lost: invokes fail
 …
 secret hook-token: an Effect secret in the Instance Effector (fix-and-report/report)
 …
 ```
 
-`<file>` is the `arg("file")` entry. Each time is in seconds.
+`<file>` is the `arg("file")` entry. Each time is in seconds. `failures` lists each state that can end the run `failed`.
 
 ## Rules
 
