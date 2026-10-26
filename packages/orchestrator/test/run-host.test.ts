@@ -1466,6 +1466,7 @@ function chartWrapper() {
       }),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "charted",
     input: z.object({ endpoint: z.string(), chart: chartSchema }),
     context: ({ input }) => ({ ...input }),

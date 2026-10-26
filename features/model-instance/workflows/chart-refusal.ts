@@ -16,8 +16,8 @@
 // model writes may never end, and the claim measures its admission, not what it does after.
 //
 // `outcomes` keeps each Chart's verdict in order, as the step reads it off `jr2 status`: `refused`,
-// `admitted`, or `errored` (admitted, and its body then failed). A trial whose first Chart never
-// met a refusal at the door is void (`features/lib/model-chart.ts`).
+// `admitted`, or `errored` (admitted, and then its body failed or an Agent faulted). A trial whose
+// first Chart never met a refusal at the door is void (`features/lib/model-chart.ts`).
 //
 // Filename `chart-refusal.ts` → workflow "chart-refusal".
 
@@ -139,6 +139,15 @@ export const machine = jr2Setup({
             // The door admitted the Chart, and its body then failed (a defect, never a refusal,
             // D-A): still an admission, which is what the claim measures.
             onError: {
+              target: "#chart-refusal.admitted",
+              actions: assign({ outcomes: ({ context }) => [...context.outcomes, "errored"] }),
+            },
+          },
+          // An Agent faulted after the door admitted the Chart: an Agent of the Chart, whose fault the
+          // body sends here when the Chart does not route it (ADR-0074), or the planner, whose pick is
+          // held. A refusal settles the body at its start, so this state means an admission.
+          on: {
+            "agent.fault": {
               target: "#chart-refusal.admitted",
               actions: assign({ outcomes: ({ context }) => [...context.outcomes, "errored"] }),
             },

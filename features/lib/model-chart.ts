@@ -6,8 +6,8 @@
 // Charts never reached the door at all, never saw one, and is void. A pick the Menu refused on the
 // grammar (its answer is an error) never reached the door, so it is not the setup; one that comes
 // after the door's refusal is the measured pick, and it is a miss. The Machine's `outcomes` say
-// each door verdict in order: `refused`, `admitted`, or `errored` (the door admitted the Chart and
-// its body then failed, which is still an admission).
+// each door verdict in order: `refused`, `admitted`, or `errored` (the door admitted the Chart, and
+// then its body failed or an Agent faulted, which is still an admission).
 //
 // Two Harness answers say a call is not a door verdict (ADR-0002, ADR-0024). A second pick of one
 // model answer did not run (`STALE`): it is no call the model made of the door, so it is skipped.

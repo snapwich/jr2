@@ -90,9 +90,10 @@ it routes (escalation, a triage/investigator state, a Failure) is workflow polic
 walk refuses a state that invokes an Agent with no `agent.fault` route on itself or an ancestor, and an `agent.fault`
 that no transition takes faults the run
 ([ADR-0074](0074-an-unrouted-mechanism-event-is-refused-at-load-and-faults-the-run.md)). In a Chart the route is
-optional: an unrouted fault ends the Open body as an error ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)).
-Attempts surface as run-feed/visualize telemetry projected to `{ child, attempt }` — no iids on the open observation
-feed ([ADR-0014](0014-observation-is-open-run-state-is-not.md) unchanged).
+optional: the Open body sends an unrouted fault to the Machine that invoked it, whose route takes it
+([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)). Attempts surface as run-feed/visualize telemetry projected
+to `{ child, attempt }` — no iids on the open observation feed ([ADR-0014](0014-observation-is-open-run-state-is-not.md)
+unchanged).
 
 ## Sessions are fresh by default; continuation is opt-in
 

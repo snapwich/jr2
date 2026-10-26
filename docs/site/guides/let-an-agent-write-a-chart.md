@@ -118,8 +118,8 @@ it. Then the Chart ends, and the run ends with the status `done`.
 - A refusal is output, not an error: the Open body ends with `{ outcome: "refused", report }`. A Chart wrapper that
   routes `onDone` back to the state of the pick gives the report to the planner.
 - When the Turn of an Agent of the Chart cannot go on, and no transition of the Chart takes
-  [`agent.fault`](../reference/mechanism-events.md#agent-fault), the Open body ends as an error. An `onError` on the
-  Open body's state catches it. With no `onError` there, as in this wrapper, the run ends `error`.
+  [`agent.fault`](../reference/mechanism-events.md#agent-fault), the Open body sends the event, unchanged, to this
+  wrapper. The wrapper's root route takes it, as it takes the fault of `planner`, so the run ends `failed`.
 - A Chart that gets to a ceiling stops, and the Open body ends with `{ outcome: "ceiling", ceiling, detail }`.
 
 ## Read next

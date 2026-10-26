@@ -202,8 +202,10 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
   it. jr2 sends `agent.fault` when the Turn of the Agent cannot go on. Route it on the state, or one time on the root:
   `machine "<id>": state "<state>" invokes an Agent, and no route for "agent.fault" is on it or on a state above — jr2 sends agent.fault when the Agent's Turn cannot go on, and with no route the run faults: route it on that state or on a state above it, as on: { "agent.fault": "<the state that handles it>" } (ADR-0074)`.
   With more than one such state, the refusal names each one: `states "<state>", "<state>" invoke an Agent` and
-  `is on them`. `jr2 check` and `jr2 up` also refuse this in a Machine that you make with the `setup()` of xstate, and
-  in a child Machine.
+  `is on them`. A state that invokes an [Open body](../concepts/charts.md) that lends an Agent or allows a model gets
+  the same refusal, with `invokes an Open body that can run an Agent`: the Open body sends the `agent.fault` of a
+  Chart's Agent that the Chart does not route to the Machine. `jr2 check` and `jr2 up` also refuse this in a Machine
+  that you make with the `setup()` of xstate, and in a child Machine.
 - `workspace()` refuses a body with a state that is not final when no `workspace.lost` route is on that state or on a
   state above it. `workspace()` sends `workspace.lost` to the body when its Sandbox is gone. Route it on the root of the
   body:

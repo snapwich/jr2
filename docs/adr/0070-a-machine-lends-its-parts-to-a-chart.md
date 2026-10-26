@@ -208,10 +208,11 @@ their own maintainers, and the escapes shipped in systems that used them were in
   on an Agent invoke, because a Turn never settles by itself, it ends on a pick in `on`; no Agent state that nothing can
   end; no parallel state at or below an Agent's. An Agent state of a Chart needs no `agent.fault` route. A state of a
   Machine needs one ([ADR-0074](0074-an-unrouted-mechanism-event-is-refused-at-load-and-faults-the-run.md)). An
-  `agent.fault` that no transition of the Chart takes ends the body as an error at the Open body's invoke, so the
-  wrapper catches it with an `onError` on its Open body state, and with no `onError` there the run ends `error`. A route
-  in the Chart stays legal, and it can read `{{event.reason}}`. The wrapper is the right place: a Chart under a body
-  that lends no `fail` has no correct end for a fault, because a final state means `done`
+  `agent.fault` that no transition of the Chart takes goes, unchanged, to the Machine that invoked the Open body, and
+  that Machine's `agent.fault` route takes it, as it takes the fault of an Agent of its own. So a Machine that invokes
+  an Open body that can run an Agent needs the route too, on that state or above it. A route in the Chart stays legal,
+  and it can read `{{event.reason}}`. The wrapper is the right place: a Chart under a body that lends no `fail` has no
+  correct end for a fault, because a final state means `done`
   ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)) and a state that waits
   holds the run until the wall clock. So the briefing does not teach the route, and the grammar's fragment does not show
   it. And two checks that stand in for the types a Chart does not have. **Dataflow**: every reference a Chart makes,

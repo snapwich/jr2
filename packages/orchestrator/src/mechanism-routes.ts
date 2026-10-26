@@ -1,14 +1,16 @@
 // A mechanism event must have a route (ADR-0074). jr2 sends `agent.fault` to the Machine that
 // invoked an Agent when the Agent's Turn cannot go on (ADR-0016), and `workspace()` sends
-// `workspace.lost` to its body when the Sandbox is gone (ADR-0012). Both go by `sendBack`, and
-// xstate drops an event that no active state handles. So the walk refuses a state that cannot
+// `workspace.lost` to its body when the Sandbox is gone (ADR-0012), and an Open body sends a
+// Chart's unrouted `agent.fault` to the Machine that invoked it (ADR-0070). Each is a relayed
+// event, and xstate drops an event that no active state handles. So the walk refuses a state that cannot
 // route one, and the run host faults a run in which none took one.
 //
-// - `refuseUnroutedAgentFault`: a state that invokes an Agent, when that state and all its
-//   ancestors have no `agent.fault` route. In `jr2Setup().createMachine` and in the load walk
-//   (`partsOf`), beside the lost-output refusal, so `jr2 check`, `jr2 up` and the Orchestrator's load
-//   show it. Not for a compiled Chart: there the route is optional, and the Open body ends as an
-//   error when no transition takes the event (`unroutedFault`, open-body.ts; ADR-0070).
+// - `refuseUnroutedAgentFault`: a state that invokes an Agent, or an Open body that can run one
+//   (it lends an Agent or allows a model), when that state and all its ancestors have no
+//   `agent.fault` route. In `jr2Setup().createMachine` and in the load walk (`partsOf`), beside the
+//   lost-output refusal, so `jr2 check`, `jr2 up` and the Orchestrator's load show it. Not for a
+//   compiled Chart: there the route is optional, and the Open body sends an `agent.fault` that no
+//   transition of the Chart takes to the Machine that invoked it (open-body.ts; ADR-0070).
 // - `refuseUnroutedLost`: a non-final leaf state of a `workspace()` body, when that state and all
 //   its ancestors have no `workspace.lost` route. In `workspace()`, the one place that knows that a
 //   Machine is a body. A compound or parallel state is not judged by itself: an event goes to the
@@ -27,6 +29,7 @@
 
 import type { AnyStateMachine, StateNode } from "xstate";
 import { isAgent } from "./agent.ts";
+import { isOpenBody, openBodyDeclarationOf } from "./open-body.ts";
 
 /** The two mechanism events that must have a route. */
 const ROUTED_MECHANISM_EVENTS = ["agent.fault", "workspace.lost"] as const;
@@ -61,25 +64,42 @@ function quoted(ids: readonly string[]): string {
   return ids.map((id) => `"${id}"`).join(", ");
 }
 
+/** Is this slot an Open body that can run an Agent whose `agent.fault` comes to the Machine? One
+ * that lends an Agent or lets a Chart add its own: the body sends the Machine a Chart's unrouted
+ * `agent.fault`. A lent Machine routes its own Agents, and the walk judges it by itself. */
+function runsChartAgents(logic: unknown): boolean {
+  if (!isOpenBody(logic)) return false;
+  const decl = openBodyDeclarationOf(logic);
+  return (decl.lends.agents?.length ?? 0) > 0 || decl.allows.models.length > 0;
+}
+
 /**
- * Refuse a Machine with a state that invokes an Agent when that state and all its ancestors have no
- * `agent.fault` route (ADR-0074). The Agent slots are the Machine's own `actors` that carry the
- * Agent brand. Throws one line that names each state, the event and the route to write.
+ * Refuse a Machine with a state that invokes an Agent, or an Open body that can run one, when that
+ * state and all its ancestors have no `agent.fault` route (ADR-0074). The slots are the Machine's
+ * own `actors`. Throws one line that names each state, the event and the route to write.
  */
 export function refuseUnroutedAgentFault(machine: AnyStateMachine): void {
   const actors = (machine.implementations.actors ?? {}) as Record<string, unknown>;
-  const unrouted: string[] = [];
+  const agents: string[] = [];
+  const bodies: string[] = [];
   for (const node of statesOf(machine.root as Node)) {
-    const invokesAgent = node.invoke.some((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]));
-    if (invokesAgent && !routedAt(node, "agent.fault")) unrouted.push(node.id);
+    if (routedAt(node, "agent.fault")) continue;
+    const srcs = node.invoke.map((inv) => (typeof inv.src === "string" ? actors[inv.src] : undefined));
+    if (srcs.some((logic) => isAgent(logic))) agents.push(node.id);
+    else if (srcs.some((logic) => runsChartAgents(logic))) bodies.push(node.id);
   }
-  if (!unrouted.length) return;
-  const many = unrouted.length > 1;
+  if (!agents.length && !bodies.length) return;
+  const clause = (ids: string[], what: string) =>
+    `${ids.length > 1 ? "states" : "state"} ${quoted(ids)} ${ids.length > 1 ? "invoke" : "invokes"} ${what}`;
+  const what = [
+    ...(agents.length ? [clause(agents, "an Agent")] : []),
+    ...(bodies.length ? [clause(bodies, "an Open body that can run an Agent")] : []),
+  ].join(", and ");
+  const many = agents.length + bodies.length > 1;
   throw new Error(
-    `machine "${machine.id}": ${many ? "states" : "state"} ${quoted(unrouted)} ${many ? "invoke" : "invokes"} an ` +
-      `Agent, and no route for "agent.fault" is on ${many ? "them" : "it"} or on a state above — jr2 sends ` +
-      `agent.fault when the Agent's Turn cannot go on, and with no route the run faults: route it on that state ` +
-      `or on a state above it, as on: { "agent.fault": "<the state that handles it>" } (ADR-0074)`,
+    `machine "${machine.id}": ${what}, and no route for "agent.fault" is on ${many ? "them" : "it"} or on a state ` +
+      `above — jr2 sends agent.fault when the Agent's Turn cannot go on, and with no route the run faults: route it ` +
+      `on that state or on a state above it, as on: { "agent.fault": "<the state that handles it>" } (ADR-0074)`,
   );
 }
 

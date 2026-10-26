@@ -107,6 +107,7 @@ function chartedMachine(
       : {}) as never,
     delays: { cooldown: 10 },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: opts.id ?? "charted",
     input: z.object({ endpoint: z.string(), task: z.string(), chart: chartSchema }),
     context: ({ input }) => ({ ...input }),

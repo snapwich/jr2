@@ -119,6 +119,7 @@ export function chartedSrc(opts: { id?: string; lendCoder?: boolean; door?: bool
     `  },\n` +
     `  guards: { underLimit: () => true },\n` +
     `}).createMachine({\n` +
+    `  on: { "agent.fault": {} },\n` +
     `  id: ${JSON.stringify(opts.id ?? "charted")},\n` +
     `  input: ${door},\n` +
     `  context: ({ input }) => ({ ...input }),\n` +

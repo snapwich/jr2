@@ -13,6 +13,7 @@ import { agent } from "../src/harness-client.ts";
 import { unroutedMechanismEvent } from "../src/mechanism-routes.ts";
 import { partsOf } from "../src/parts.ts";
 import { RunHost, type RunStatus, type WorkflowDef } from "../src/run-host.ts";
+import { openBody } from "../src/open-body.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
 import { mkStore, waitFor } from "./_fixtures.ts";
@@ -98,6 +99,65 @@ test("a state that invokes no Agent needs no agent.fault route", () => {
     initial: "waiting",
     states: { waiting: { invoke: { src: "gate" }, on: { finish: "done" } }, done: { type: "final" } },
   });
+});
+
+/** A Chart wrapper whose `run` state invokes an Open body that lends and allows what `decl` says. */
+const wrapper = (lends: { agents?: string[] }, models: string[], on?: object) =>
+  jr2Setup({
+    events: [],
+    actors: {
+      coder,
+      body: openBody({
+        lends,
+        allows: { models, workspace: models.length ? ["none"] : [] },
+        ceilings: { turns: 4, wallClock: "5m", transitions: 100, fanOut: 1, size: 65536 },
+      }),
+    },
+  }).createMachine({
+    id: "w",
+    ...(on ? { on } : {}),
+    initial: "run",
+    states: { run: { invoke: { src: "body", input: {} } }, faulted: { type: "final" } },
+  } as never);
+
+const UNROUTED_BODY =
+  /machine "w": state "w\.run" invokes an Open body that can run an Agent, and no route for "agent\.fault" is on it or on a state above/;
+
+test("the walk refuses a state that invokes an Open body that lends an Agent or allows a model, with no agent.fault route", () => {
+  // The Open body sends a Chart's unrouted agent.fault to the Machine that invoked it.
+  assert.throws(() => wrapper({ agents: ["coder"] }, []), UNROUTED_BODY);
+  assert.throws(() => wrapper({}, ["stub/model"]), UNROUTED_BODY);
+  wrapper({ agents: ["coder"] }, ["stub/model"], { "agent.fault": ".faulted" });
+});
+
+test("one refusal line names the Agent states and the Open body states with no route", () => {
+  const both = () =>
+    jr2Setup({
+      events: [finish],
+      actors: {
+        coder,
+        body: openBody({
+          lends: { agents: ["coder"] },
+          allows: { models: [], workspace: [] },
+          ceilings: { turns: 4, wallClock: "5m", transitions: 100, fanOut: 1, size: 65536 },
+        }),
+      },
+    }).createMachine({
+      id: "w",
+      initial: "code",
+      states: {
+        code: { invoke: { src: "coder", input: { prompt: "go" } }, on: { finish: "run" } },
+        run: { invoke: { src: "body", input: {} } },
+      },
+    } as never);
+  assert.throws(
+    both,
+    /machine "w": state "w\.code" invokes an Agent, and state "w\.run" invokes an Open body that can run an Agent, and no route for "agent\.fault" is on them or on a state above/,
+  );
+});
+
+test("an Open body that can run no Agent needs no agent.fault route", () => {
+  wrapper({}, []);
 });
 
 // --- The walk: workspace.lost -----------------------------------------------------------------------

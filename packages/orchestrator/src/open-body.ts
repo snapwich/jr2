@@ -320,7 +320,7 @@ function frozen(decl: OpenBodyDeclaration): OpenBodyDeclaration {
  * ```ts
  * import { assign } from "xstate";
  * import { z } from "zod";
- * import { agent, chartSchema, jr2Setup, openBody, type OpenBodyOutput } from "@jr2/orchestrator";
+ * import { agent, chartSchema, fail, jr2Setup, openBody, type OpenBodyOutput } from "@jr2/orchestrator";
  *
  * // `chart` is a Chart, so a run input can carry one, and Charts can have names.
  * const door = z.object({ topic: z.string(), chart: chartSchema });
@@ -340,11 +340,14 @@ function frozen(decl: OpenBodyDeclaration): OpenBodyDeclaration {
  *       allows: { models: [], workspace: [] },
  *       ceilings: { turns: 6, wallClock: "15m", transitions: 200, fanOut: 1, size: 65536 },
  *     }),
+ *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "notes",
  *   input: door,
  *   context: ({ input }) => ({ ...input }),
+ *   // The fault of `writer` when a Chart does not route it: the Open body sends it here.
+ *   on: { "agent.fault": ".failed" },
  *   initial: "running",
  *   states: {
  *     running: {
@@ -355,6 +358,7 @@ function frozen(decl: OpenBodyDeclaration): OpenBodyDeclaration {
  *       },
  *     },
  *     done: { type: "final" },
+ *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *   },
  * });
  * ```
@@ -967,7 +971,8 @@ export type CompileOptions = OpenBodyOptions & {
  * output }`, its `output` resolved (or, without one, its final state's). The transitions ceiling
  * is xstate's `maxIterations` as well, so a guarded `always` loop that never ends in one macrostep
  * still ends. `jr2Setup`'s own refusals (a parallel state below an Agent's) throw here, but not its
- * `agent.fault` refusal: in a Chart that route is optional (see {@link unroutedFault}).
+ * `agent.fault` refusal: in a Chart that route is optional, and the body sends an `agent.fault` that
+ * no transition of the Chart takes to the Machine that invoked it (ADR-0074).
  */
 export function compileChart(
   admitted: AdmittedChart,
@@ -1005,8 +1010,8 @@ export function compileChart(
             : (event as { output?: unknown } | undefined)?.output,
       }) satisfies OpenBodyOutput,
     options: { maxIterations: decl.ceilings.transitions },
-    // In a Chart the `agent.fault` route is optional (ADR-0070): the Open body ends as an error
-    // when no transition takes the event, so `createMachine` does not refuse a state with none.
+    // In a Chart the `agent.fault` route is optional (ADR-0070): the Open body sends an `agent.fault`
+    // that no transition takes to its parent, so `createMachine` does not refuse a state with none.
     [COMPILED_CHART]: true,
   };
   return jr2Setup({
@@ -1215,21 +1220,6 @@ function takes(machine: AnyStateMachine, snapshot: BodySnapshot, event: AnyEvent
   }
 }
 
-/**
- * The error of an Open body whose Chart got `agent.fault` and took no transition for it (ADR-0070,
- * ADR-0074). In a Chart the route is optional: the body ends as an error, which an `onError` on the
- * Open body's state catches. With no `onError` there, the error goes up as any error does, and the
- * run ends `error`. It is a fault, never a Failure: the Chart did not choose this end.
- */
-export function unroutedFault(chartId: string, value: unknown, reason: unknown): Error {
-  const why = typeof reason === "string" && reason !== "" ? reason : "no reason given";
-  return new Error(
-    `the Chart "${chartId}" got "agent.fault" in state ${JSON.stringify(value ?? null)}, and no transition of ` +
-      `the Chart took it (${why}): the Open body ends as an error, which an onError on the Open body's state ` +
-      `catches (ADR-0070, ADR-0074)`,
-  );
-}
-
 /** The actor logic of an Open body: a custom ActorLogic that delegates to the compiled Chart. */
 export function openBodyLogic(decl: OpenBodyDeclaration, options: OpenBodyOptions = {}): UnknownActorLogic {
   const wallMs = durationMs(decl.ceilings.wallClock) ?? Number.POSITIVE_INFINITY;
@@ -1258,14 +1248,6 @@ export function openBodyLogic(decl: OpenBodyDeclaration, options: OpenBodyOption
     }
     return settled(output, fields, from);
   };
-
-  /** End the body as an error and stop its children: an `agent.fault` that the Chart did not route. */
-  const errored = (error: Error, from: BodySnapshot, fields: BodyFields, scope: AnyActorScope): BodySnapshot => ({
-    ...settleWith({ outcome: "done", output: undefined }, from, fields, scope),
-    status: "error",
-    output: undefined,
-    error,
-  });
 
   /** Settle on a ceiling (ADR-0070): the body's output names it, and its children are stopped. */
   const ceiling = (
@@ -1533,12 +1515,18 @@ export function openBodyLogic(decl: OpenBodyDeclaration, options: OpenBodyOption
           ceiling("transitions", transitionsDetail(fields.counters.transitions), snapshot, fields, scope),
         );
       }
-      // An `agent.fault` that no transition of the Chart takes ends the body as an error (ADR-0070):
-      // in a Chart the route is optional. The body does not give the event to the Chart, so the run
-      // host sees no dropped mechanism event in the Chart; the wrapper gets the body's error.
+      // An `agent.fault` that no transition of the Chart takes goes to the Machine that invoked the
+      // body, unchanged (ADR-0074): in a Chart the route is optional, and the parent's `agent.fault`
+      // route is the route for a Chart's Agents too. The body does not step the Chart: the parent's
+      // route decides, and its exit stops the body. With no parent route that takes it, the run
+      // host faults the run, as for any `agent.fault` that no transition took.
       if (event.type === "agent.fault" && !takes(machine, snapshot, event)) {
-        const error = unroutedFault(machine.id, snapshot.value, (event as { reason?: unknown }).reason);
-        return release(scope.self, errored(error, snapshot, fields, scope));
+        // Relayed from the body, as `sendBack` relays from an Agent: the run host reads a relayed
+        // event's source, so a pick held in the parent is answered as for an Agent of its own.
+        const parent = scope.self._parent;
+        const system = scope.system as unknown as { _relay(from: unknown, to: unknown, e: AnyEventObject): void };
+        if (parent) scope.defer(() => system._relay(scope.self, parent, event));
+        return snapshot;
       }
       return release(
         scope.self,

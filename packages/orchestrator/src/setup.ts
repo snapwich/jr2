@@ -58,8 +58,8 @@ import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } 
 
 /**
  * The marker that `compileChart` puts on the config of a Chart's Machine (ADR-0070). In a Chart the
- * `agent.fault` route is optional: an `agent.fault` that no transition takes ends the Open body as
- * an error, so `createMachine` does not refuse a Chart state with no route. Not on the Authoring
+ * `agent.fault` route is optional: the Open body sends an `agent.fault` that no transition takes to
+ * the Machine that invoked it, so `createMachine` does not refuse a Chart state with no route. Not on the Authoring
  * surface (index.ts). The load walk (`partsOf`) refuses an author's Machine with no route, with or
  * without the marker (ADR-0074).
  */
@@ -193,9 +193,11 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  *   route: ``machine "<id>": state "<state>" invokes an Agent, and no route for "agent.fault" is
  *   on it or on a state above — jr2 sends agent.fault when the Agent's Turn cannot go on, and with
  *   no route the run faults: route it on that state or on a state above it, as on: {
- *   "agent.fault": "<the state that handles it>" } (ADR-0074)``. One route on the root is a route
- *   for each state. A Chart's Machine does not get this refusal: in a Chart the route is optional
- *   (ADR-0070).
+ *   "agent.fault": "<the state that handles it>" } (ADR-0074)``. A state that invokes an Open body
+ *   that lends an Agent or allows a model gets the same line, with `invokes an Open body that can
+ *   run an Agent`: the body sends it a Chart's unrouted `agent.fault`. When both kinds have no route,
+ *   one line names both, joined by `, and`. One route on the root is a route for each state. A
+ *   Chart's Machine does not get this refusal: in a Chart the route is optional (ADR-0070).
  *
  * It also refuses a `sentBy` that names no party (see `sentBy`). It refuses a pick param that
  * nothing reads, where the pick enters a state that invokes an Effect (see `fromPick`). Shapes that
@@ -405,9 +407,9 @@ export function jr2Setup<
     refuseInlineParts(machine);
     // A final state's output with no root output (ADR-0015): the run would end with none.
     refuseLostOutput(machine);
-    // A state that invokes an Agent with no `agent.fault` route (ADR-0074): the run would wait for ever.
-    // Not in a compiled Chart: there the route is optional, and the Open body ends as an error
-    // when no transition takes the event (ADR-0070).
+    // A state that invokes an Agent, or an Open body that can run one, with no `agent.fault` route
+    // (ADR-0074): the run would wait for ever. Not in a compiled Chart: there the route is optional,
+    // and the Open body sends the event that no transition takes to the Machine that invoked it (ADR-0070).
     if (compiledChart !== true) refuseUnroutedAgentFault(machine);
     refuseParallelBelowAgents(machine, def.actors ?? {});
     refuseUnknownSentBy(machine);

@@ -716,7 +716,12 @@ test("the walk carries each Open body, its allowed models, and the Instance Harn
         ceilings: { turns: 3, wallClock: "10m", transitions: 100, fanOut: 2, size: 4096 },
       }),
     },
-  }).createMachine({ id: "charted", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  }).createMachine({
+    on: { "agent.fault": {} },
+    id: "charted",
+    initial: "a",
+    states: { a: { invoke: { src: "body", input: {} } } },
+  });
   const carried = partsOf([wrapper]);
   assert.deepEqual(
     carried.openBodies.map((b) => ({ slot: b.slot, path: b.path, lends: b.declaration.lends })),
@@ -751,7 +756,7 @@ test("an Open body that allows only a Workspace places its models in that Worksp
       }),
     },
   }).createMachine({
-    on: { "workspace.lost": {} },
+    on: { "agent.fault": {}, "workspace.lost": {} },
     id: "inner",
     initial: "a",
     states: { a: { invoke: { src: "body", input: {} } } },
@@ -774,7 +779,7 @@ test("a lent Agent's Turn runs where its own access says, so the allowed models 
       body: openBody({ lends: { agents: ["coder"] }, allows: { models: ["prov/B"], workspace: ["none"] }, ceilings }),
     },
   }).createMachine({
-    on: { "workspace.lost": {} },
+    on: { "agent.fault": {}, "workspace.lost": {} },
     id: "inner",
     initial: "a",
     states: { a: { invoke: { src: "body", input: {} } } },
@@ -794,7 +799,12 @@ test("a lent Agent's Turn runs where its own access says, so the allowed models 
         ceilings,
       }),
     },
-  }).createMachine({ id: "charted", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  }).createMachine({
+    on: { "agent.fault": {} },
+    id: "charted",
+    initial: "a",
+    states: { a: { invoke: { src: "body", input: {} } } },
+  });
   assert.deepEqual(partsOf([noneLent]).instanceHarness, { models: ["prov/B", "prov/C"] });
 });
 

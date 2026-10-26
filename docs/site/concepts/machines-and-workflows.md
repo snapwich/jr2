@@ -106,8 +106,9 @@ with different payloads.
 
 jr2 also sends its own events into each Machine that `jr2Setup` makes: `agent.fault` and `workspace.lost`. They are not
 in the Vocabulary. Their names have a dot, and the name of a workflow event cannot have a dot. Each one must have a
-route: `jr2 check` refuses a state that invokes an Agent with no `agent.fault` route on it or on a state above it, and a
-`workspace()` body with no `workspace.lost` route. [Mechanism events](../reference/mechanism-events.md) gives them.
+route: `jr2 check` refuses a state that invokes an Agent, or an Open body that can run one, with no `agent.fault` route
+on it or on a state above it, and a `workspace()` body with no `workspace.lost` route.
+[Mechanism events](../reference/mechanism-events.md) gives them.
 
 ## The output of a run
 

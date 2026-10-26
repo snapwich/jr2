@@ -882,7 +882,12 @@ test("an Open body's lent names resolve against the setup's own parts, and the s
     guards: { underLimit },
     actions: { note },
     delays: { cooldown: 5 },
-  }).createMachine({ id: "w", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  }).createMachine({
+    on: { "agent.fault": {} },
+    id: "w",
+    initial: "a",
+    states: { a: { invoke: { src: "body", input: {} } } },
+  });
   const lent = lentOf(body)!;
   assert.equal(lent.actors.coder, coder);
   assert.equal(lent.guards.underLimit, underLimit);
@@ -900,7 +905,12 @@ test("an Open body that lends a name the setup lacks, or a part of the wrong kin
         helper: fromCallback(() => {}),
         body: lendingDecl({ agents: ["coder", "tester"], effects: ["helper"], guards: ["ready"] }),
       },
-    }).createMachine({ id: "w", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+    }).createMachine({
+      on: { "agent.fault": {} },
+      id: "w",
+      initial: "a",
+      states: { a: { invoke: { src: "body", input: {} } } },
+    });
   assert.throws(build, (err: Error) => {
     assert.match(err.message, /^machine "w": Open body "body": /);
     assert.match(err.message, /lends\.agents: "tester" is no actor slot of this Machine/);

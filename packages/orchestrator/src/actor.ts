@@ -280,10 +280,11 @@ export type AgentRunInput = {
  * the Turn, or the Agent ended its Turns with no pick after every nudge. The Machine decides what
  * to do next. Route it in the state that invokes the Agent, or in a state above it, with
  * `on: { "agent.fault": … }`; one route on the root is a route for each state. `jr2 check` and
- * `jr2 up` refuse a state that invokes an Agent with no route for it. When the event comes and no
- * transition takes it (the route's guard is false), the run ends `error`, with the event, the state
- * and the reason in its fault. In a Chart the route is optional: when no transition of the Chart
- * takes the event, the Open body ends as an error, which an `onError` on its state catches. */
+ * `jr2 up` refuse a state that invokes an Agent, or an Open body that can run one, with no route for
+ * it. When the event comes and no transition takes it (the route's guard is false), the run ends
+ * `error`, with the event, the state and the reason in its fault. In a Chart the route is optional:
+ * when no transition of the Chart takes the event, the Open body sends it, unchanged, to the Machine
+ * that invoked the body, whose route takes it. */
 export type FaultTelemetry = {
   type: "agent.fault";
   /** The Instance ID of the Agent's conversation that failed: the same id on each Turn that

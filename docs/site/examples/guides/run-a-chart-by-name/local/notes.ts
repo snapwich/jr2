@@ -1,7 +1,7 @@
 // #region imports
 import { assign } from "xstate";
 import { z } from "zod";
-import { agent, chartSchema, jr2Setup, openBody, type OpenBodyOutput } from "@jr2/orchestrator";
+import { agent, chartSchema, fail, jr2Setup, openBody, type OpenBodyOutput } from "@jr2/orchestrator";
 // #endregion imports
 
 // #region model
@@ -33,11 +33,14 @@ export const machine = jr2Setup({
       allows: { models: [], workspace: [] },
       ceilings: { turns: 6, wallClock: "15m", transitions: 200, fanOut: 1, size: 65536 },
     }),
+    fail: fail(),
   },
 }).createMachine({
   id: "notes",
   input: door,
   context: ({ input }) => ({ ...input }),
+  // The fault of `writer` when a Chart does not route it: the Open body sends it here.
+  on: { "agent.fault": ".failed" },
   initial: "running",
   states: {
     running: {
@@ -49,6 +52,7 @@ export const machine = jr2Setup({
       },
     },
     done: { type: "final" },
+    failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
   output: ({ context }) => context.result,
 });

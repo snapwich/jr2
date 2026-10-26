@@ -5556,7 +5556,7 @@ async function withChartWrapper(
       `  body: openBody({ lends: { agents: ["coder"], effects: ["tests"], guards: ["ready"] }, allows: ${JSON.stringify(allows)},\n` +
       `    ceilings: { turns: 6, wallClock: "10m", transitions: 500, fanOut: 2, size: 65536 } }),\n` +
       `}, guards: { ready: () => true } })\n` +
-      `  .createMachine({ id: "charted", input: z.object({ chart: chartSchema }), initial: "run",\n` +
+      `  .createMachine({ id: "charted", on: { "agent.fault": {} }, input: z.object({ chart: chartSchema }), initial: "run",\n` +
       `    states: { run: { invoke: { src: "body", input: ({ event }) => event.input } } } });\n`,
   );
   await mkdir(join(root, "workflows", "charted"), { recursive: true });

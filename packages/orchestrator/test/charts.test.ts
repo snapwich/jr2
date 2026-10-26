@@ -334,6 +334,7 @@ test("one openBody() value in two Machines: each Machine's Charts are admitted a
   });
   const wrapper = (id: string, guards: Record<string, unknown>) =>
     jr2Setup({ events: [], actors: { body }, guards: guards as never }).createMachine({
+      on: { "agent.fault": {} },
       id,
       initial: "a",
       states: { a: { invoke: { src: "body", input: {} } } },
@@ -399,7 +400,12 @@ test("two Open bodies: a named Chart is admitted when one body admits it, as the
     events: [],
     actors: { body: lends(["underLimit"]), review: lends([]) },
     guards: { underLimit: () => true } as never,
-  }).createMachine({ id: "two", initial: "a", states: { a: { invoke: { src: "body", input: {} } } } });
+  }).createMachine({
+    on: { "agent.fault": {} },
+    id: "two",
+    initial: "a",
+    states: { a: { invoke: { src: "body", input: {} } } },
+  });
   const w = chartWrapperOf(machine as never)!;
   const text = {
     initial: "a",

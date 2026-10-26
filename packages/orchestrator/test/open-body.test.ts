@@ -105,6 +105,8 @@ function chartedMachine(
     catchFailure?: boolean;
     /** Catch any error of the body in the wrapper, with an `onError` that keeps its message. */
     catchError?: boolean;
+    /** Make the wrapper's `agent.fault` route a guard that is false, so that no transition takes it. */
+    dropFault?: boolean;
   } = {},
 ): AnyStateMachine {
   const lendGuard = opts.lendGuard ?? true;
@@ -146,6 +148,14 @@ function chartedMachine(
     id: opts.id ?? "charted",
     input: z.object({ endpoint: z.string(), task: z.string(), chart: chartSchema }),
     context: ({ input }) => ({ ...input }),
+    // The route for each Agent fault, the Chart's Agents too: the body sends it a Chart's unrouted one (ADR-0074).
+    on: {
+      "agent.fault": {
+        target: ".faulted",
+        ...(opts.dropFault ? { guard: () => false } : {}),
+        actions: assign({ result: ({ event }) => event.reason }),
+      },
+    },
     // A stand-in Workspace: the lent `command` runs in its Harness (ADR-0067).
     invoke: { src: "ws" },
     initial: "run",
@@ -191,6 +201,7 @@ function chartedMachine(
       refused: { type: "final" },
       caught: { type: "final" },
       errored: { type: "final" },
+      faulted: { type: "final" },
     },
   }) as unknown as AnyStateMachine;
 }
@@ -322,16 +333,12 @@ const UNROUTED: ChartText = {
   },
 };
 
-const UNROUTED_LINE =
-  'the Chart "unrouted" got "agent.fault" in state "draft", and no transition of the Chart took it (the harness ' +
-  "went away): the Open body ends as an error, which an onError on the Open body's state catches (ADR-0070, ADR-0074)";
-
 test("the trial compile admits a Chart state with no agent.fault route: jr2Setup's refusal is not for a Chart", () => {
   const { machine } = rig();
   assert.doesNotThrow(() => admitWrapperChart(machine, UNROUTED));
 });
 
-test("an agent.fault that the Chart does not route ends the Open body as an error, which the wrapper's onError catches", async () => {
+test("an agent.fault that the Chart does not route goes to the wrapper, unchanged, and the wrapper's route takes it", async () => {
   const { ports, def } = rig({ catchError: true });
   const host = newHost({ store: await mkStore() });
   host.register(def());
@@ -340,13 +347,13 @@ test("an agent.fault that the Chart does not route ends the Open body as an erro
   ports.coder.fault("the harness went away");
   await waitFor(() => host.status(runId) === undefined);
   const final = (await host.read(runId))!;
-  assert.equal(final.status, "done", "the wrapper routed the body's error");
-  assert.equal(final.value, "errored");
-  assert.equal((final.context as { result: unknown }).result, UNROUTED_LINE);
+  assert.equal(final.status, "done", "the wrapper routed the fault");
+  assert.equal(final.value, "faulted", "the wrapper's agent.fault route, never its onError");
+  assert.equal((final.context as { result: unknown }).result, "the harness went away");
 });
 
-test("an agent.fault that neither the Chart nor its wrapper routes ends the run `error`, never `failed`", async () => {
-  const { ports, def } = rig();
+test("an agent.fault that neither the Chart nor its wrapper takes ends the run `error`, never `failed`", async () => {
+  const { ports, def } = rig({ dropFault: true });
   const host = newHost({ store: await mkStore() });
   host.register(def());
   const runId = await started(host, UNROUTED);
@@ -355,10 +362,10 @@ test("an agent.fault that neither the Chart nor its wrapper routes ends the run 
   await waitFor(() => host.status(runId) === undefined);
   const final = (await host.read(runId))!;
   assert.equal(final.status, "error", "nobody chose this end: a fault, not a Failure");
-  assert.match(final.fault ?? "", /the Chart "unrouted" got "agent\.fault" in state "draft"/);
+  assert.match(final.fault ?? "", /machine "charted" got "agent\.fault" in state .*\(the harness went away\)/);
 });
 
-test("an agent.fault whose Chart route has a false guard is not routed: the body ends as an error", async () => {
+test("an agent.fault whose Chart route has a false guard is not routed: it goes to the wrapper", async () => {
   const guarded: ChartText = {
     ...UNROUTED,
     states: {
@@ -377,8 +384,8 @@ test("an agent.fault whose Chart route has a false guard is not routed: the body
   ports.coder.fault("the harness went away");
   await waitFor(() => host.status(runId) === undefined);
   const final = (await host.read(runId))!;
-  assert.equal(final.value, "errored");
-  assert.equal((final.context as { result: unknown }).result, UNROUTED_LINE);
+  assert.equal(final.value, "faulted");
+  assert.equal((final.context as { result: unknown }).result, "the harness went away");
 });
 
 test("an agent.fault that the Chart routes is the Chart's: the body stays live and goes on", async () => {
@@ -398,12 +405,12 @@ test("an agent.fault that the Chart routes is the Chart's: the body stays live a
   await waitFor(() => host.status(runId) === undefined);
   const final = (await host.read(runId))!;
   assert.equal(final.status, "done");
-  assert.equal(final.value, "done", "the Chart's own route ended it, so the body is done, not an error");
+  assert.equal(final.value, "done", "the Chart's own route ended it, so the wrapper never saw the fault");
 });
 
-test("an agent.fault that the Chart does not route stops the body's other children: a sibling Turn does not go on", async () => {
-  // Two regions, each with its own pick, so that the sentBy refusal does not apply. xstate does not stop the children
-  // of a custom actor that ends with status `error`, so the Open body must stop them itself.
+test("the wrapper's route for a Chart's agent.fault stops the body's other children: a sibling Turn does not go on", async () => {
+  // Two regions, each with its own pick, so that the sentBy refusal does not apply. The wrapper's route
+  // leaves the Open body's state, and that exit stops the body with every Turn below it.
   const both: ChartText = {
     id: "both",
     events: { submit: { input: { ...EMPTY } }, looked: { input: { ...EMPTY } } },
@@ -428,15 +435,90 @@ test("an agent.fault that the Chart does not route stops the body's other childr
   ports.coder.fault("the harness went away");
   await waitFor(() => host.status(runId) === undefined);
   const final = (await host.read(runId))!;
-  assert.equal(final.value, "errored");
+  assert.equal(final.value, "faulted");
   await tick();
   await tick();
   assert.equal(ports.minted.aborts.length, 1, "the sibling Turn was stopped");
 });
 
+test("a Chart Agent's fault that the body forwards answers a held pick as the fault of an Agent of the Machine does", async () => {
+  // The planner's pick `go` is held while `busy` runs. A route back to the planner's Rest answers the
+  // pick with the fault, whether the Agent ran in a Chart or in the Machine: the body relays the event
+  // from itself, as `sendBack` relays it from an Agent, and the run host reads that source.
+  const go = defineEvent({ name: "go", input: z.object({}) });
+  const plannerDef = { model: "stub/model", instructions: "plan" };
+  const chart: ChartText = {
+    events: { submit: { input: { ...EMPTY } } },
+    initial: "draft",
+    states: {
+      draft: { invoke: { src: "coder", input: { prompt: "do it" } }, on: { submit: "shipped" } },
+      shipped: { type: "final" },
+    },
+  };
+  const answerOf = async (kind: "chart" | "machine") => {
+    const planner = new MockFlueClient();
+    const coder = new MockFlueClient();
+    const busy =
+      kind === "chart"
+        ? { id: "body", src: "body", input: { chart, endpoint: ENDPOINT }, onDone: "#held.done" }
+        : { id: "nested", src: "coder", input: { prompt: "do it", endpoint: ENDPOINT } };
+    const machine = jr2Setup({
+      events: [go],
+      actors: {
+        planner: agentActorWith(() => planner, plannerDef),
+        coder: agentActorWith(() => coder, coderDefinition),
+        body: openBodyWith({
+          lends: { agents: ["coder"] },
+          allows: { models: [], workspace: [] },
+          ceilings: CEILINGS,
+        }),
+      },
+    }).createMachine({
+      id: "held",
+      initial: "plan",
+      states: {
+        plan: {
+          invoke: { src: "planner", input: { prompt: "plan", endpoint: ENDPOINT } },
+          on: { "agent.fault": "#held.done" },
+          initial: "ready",
+          states: { ready: { on: { go: "busy" } }, busy: { invoke: busy, on: { "agent.fault": "ready" } } },
+        },
+        done: { type: "final" },
+      },
+    } as never) as unknown as AnyStateMachine;
+    const host = newHost({ store: await mkStore() });
+    host.register({ name: "held", machine, provide: () => ({}) });
+    await host.start("held");
+    await waitFor(() => planner.admits.length === 1);
+    const iid = planner.admits[0]!.instanceId;
+    const going = host.sendToAgent(iid, { type: "go" });
+    const answered = host.awaitDelivery(iid, going.deliveryId);
+    await waitFor(() => coder.admits.length === 1);
+    coder.fault("the harness went away");
+    const { answer, turnComplete } = (await answered) as {
+      answer?: { event?: string; payload?: { reason?: string } };
+      turnComplete?: boolean;
+    };
+    return {
+      event: answer?.event,
+      reason: answer?.payload?.reason,
+      turnComplete,
+      plannerAborts: planner.aborts.length,
+    };
+  };
+  const machine = await answerOf("machine");
+  assert.deepEqual(machine, {
+    event: "agent.fault",
+    reason: "the harness went away",
+    turnComplete: false,
+    plannerAborts: 0,
+  });
+  assert.deepEqual(await answerOf("chart"), machine);
+});
+
 test("an agent.fault route whose guard reads a context path the run does not hold is a route: the step refuses", async () => {
   // The guard throws when it resolves its params, so the Open body cannot know that the route is not taken. It counts
-  // the guard as a route, and the step's refusal settles the body `refused`; the body does not end as an error.
+  // the guard as a route, and the step's refusal settles the body `refused`; the event does not go to the wrapper.
   const unresolved: ChartText = {
     ...UNROUTED,
     states: {
@@ -460,7 +542,7 @@ test("an agent.fault route whose guard reads a context path the run does not hol
   await waitFor(() => host.status(runId) === undefined);
   const final = (await host.read(runId))!;
   assert.equal(final.status, "done", "the wrapper routed the refusal; the run did not fault");
-  assert.notEqual(final.value, "errored", "a refusal, not a body error");
+  assert.notEqual(final.value, "faulted", "a refusal, not a fault the wrapper routed");
   const result = (final.context as { result: { outcome: string; report: string[] } }).result;
   assert.equal(result.outcome, "refused");
   assert.match(result.report[0]!, /^\(run time\): Chart reference "context\.notes" resolves to nothing/);
@@ -560,6 +642,7 @@ function innerChartMachine(ports: Ports, chart: unknown): AnyStateMachine {
       ),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "inner",
     context: {},
     initial: "run",
@@ -1337,6 +1420,7 @@ function lendingMachine(
     } as never,
     guards: { keepGoing: () => true } as never,
   }).createMachine({
+    on: { "agent.fault": {} },
     id: opts.id ?? "lending",
     input: z.object({ endpoint: z.string(), chart: chartSchema }),
     context: ({ input }: { input: { chart: unknown; endpoint: string } }) => ({ ...input }),
@@ -1524,6 +1608,7 @@ test("the one-shot door leaves `input.*` to the body: a key the wrapper's invoke
       }),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "adds",
     input: z.object({ chart: chartSchema }),
     context: ({ input }) => ({ ...input }),
@@ -1580,6 +1665,7 @@ test("a key the body is sent as undefined is not in the Chart's input: a Chart t
       body: openBodyWith({ lends: {}, allows: { models: ["stub/model"], workspace: ["none"] }, ceilings: CEILINGS }),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "optional",
     context: {},
     initial: "run",
@@ -1617,6 +1703,7 @@ test("a Chart wrapper that is a transparent wrapper's body is the run's Chart wr
       }),
     },
   }).createMachine({
+    on: { "agent.fault": {} },
     id: "inner",
     context: ({ input }: { input: { chart?: unknown; name?: string; endpoint: string } }) => ({ ...input }),
     initial: "run",

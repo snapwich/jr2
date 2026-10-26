@@ -13,13 +13,14 @@
 //
 // The body settles with an output (D-A): `done` with the Chart's output, `refused` with the door's
 // report, or `ceiling`. Each routes to a final state of its own, and the output is kept in
-// `context.output`, which `jr2 status` shows.
+// `context.output`, which `jr2 status` shows. The fault of a lent or a Chart's Agent that the Chart
+// does not route comes to the root's `agent.fault` route (ADR-0074), which fails the run.
 //
 // Filename `charted.ts` → workflow "charted".
 
 import { assign } from "xstate";
 import { z } from "zod";
-import { agent, chartSchema, jr2Setup, openBody, type OpenBodyOutput } from "@jr2/orchestrator";
+import { agent, chartSchema, fail, jr2Setup, openBody, type OpenBodyOutput } from "@jr2/orchestrator";
 
 const door = z.object({ endpoint: z.string(), task: z.string(), chart: chartSchema });
 
@@ -47,6 +48,7 @@ export const machine = jr2Setup({
       allows: { models: ["stub/model"], workspace: ["none", "write"] },
       ceilings: { turns: 6, wallClock: "10m", transitions: 500, fanOut: 2, size: 65536 },
     }),
+    fail: fail(),
   },
   // Lent to the Chart, so it reads the CHART's context: its `round`, which a generic `increment`
   // writes.
@@ -55,6 +57,7 @@ export const machine = jr2Setup({
   id: "charted",
   input: door,
   context: ({ input }) => ({ ...input }),
+  on: { "agent.fault": ".faulted" },
   initial: "running",
   states: {
     running: {
@@ -76,6 +79,7 @@ export const machine = jr2Setup({
     done: { type: "final" },
     refused: { type: "final" },
     ceiling: { type: "final" },
+    faulted: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
   output: ({ context }) => context.output,
 });
