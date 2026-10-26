@@ -19,6 +19,7 @@ import {
   detectKitCheckout,
   formatBytes,
   hostSweepPlan,
+  isMissingHostImage,
   kitImageBuild,
   kitImageLabels,
   kitImageRefs,
@@ -918,4 +919,24 @@ test("no lockfile, two package managers, and yarn are each a named refusal", asy
   const out = await bundleOut();
   await assert.rejects(bundleInstance(none, out, recordingRun().run));
   await assert.rejects(stat(out), "nothing was staged");
+});
+
+test("a missing host image is recognized in each verb's own words, and nothing else is (ADR-0039)", () => {
+  const ref = "jr2-sandbox-x-default:0123456789ab-amd64";
+  for (const said of [
+    `Error: No such image: ${ref}`, // docker image inspect
+    `Error response from daemon: No such image: ${ref}`,
+    `Unable to find image '${ref}' locally\nError response from daemon: pull access denied`, // docker create
+    `ERROR: image: "${ref}" not present locally`, // kind load docker-image
+    `An image does not exist locally with the tag: ${ref}`, // docker push
+  ]) {
+    assert.ok(isMissingHostImage(new Error(`Command failed\n${said}`)), said);
+  }
+  for (const said of [
+    "Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    'ERROR: no nodes found for cluster "jr2"',
+    "denied: requested access to the resource is denied",
+  ]) {
+    assert.ok(!isMissingHostImage(new Error(said)), said);
+  }
 });

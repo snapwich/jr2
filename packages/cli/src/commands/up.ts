@@ -121,6 +121,7 @@ import {
   buildSandboxImage,
   choosePlatforms,
   detectKitCheckout,
+  isMissingHostImage,
   kitImageBuild,
   kitImageRefs,
   normalizeRef,
@@ -129,6 +130,7 @@ import {
   sandboxImageTag,
   KIT_IMAGE_HOME,
   type BuildPort,
+  type ImageFiles,
   type KitImageName,
   type KitImageRefs,
 } from "../build.ts";
@@ -192,6 +194,11 @@ import { activity, chooseOrBail, confirmOrBail, promptLine, readSecretInput, typ
 import { kindCluster, sweepImages } from "../sweep.ts";
 import { chartFilesIn, checkInstance } from "../instance-check.ts";
 import { parseCommand } from "../command-table.ts";
+
+/** How many times one converge rebuilds a host image a sweep took before it uses it (ADR-0039).
+ * A bound, because a tag that is gone again after two rebuilds is not a race to wait out: something
+ * on the host removes it as fast as it is built, and docker's own error is the honest report. */
+const HOST_REBUILDS = 2;
 
 export async function up(args: string[], io: Io): Promise<number> {
   const { values } = parseCommand("up", args);
@@ -525,6 +532,26 @@ export async function up(args: string[], io: Io): Promise<number> {
   const hostBuilt = async (ref: string): Promise<boolean> =>
     values.force !== true && (await hostHeld()).has(normalizeRef(ref));
 
+  // What this converge counts on finding on the host — its own build, or the host-held skip above —
+  // can be gone by the time it is used: another converge's sweep keeps only the roots of ITS context
+  // (ADR-0039), and a ref whose map is not written yet is in none of them. The tag is a content
+  // address and BuildKit's cache is a store no sweep touches, so a ref found missing at its use is
+  // built again (seconds) and the use retried, at most HOST_REBUILDS times. Only a singleton build
+  // lives on the daemon: a multi-platform one is in the registry (ADR-0045), where no sweep reaches.
+  const builders = new Map<string, () => Promise<void>>();
+  const onHost = async <T>(ref: string, use: () => Promise<T>): Promise<T> => {
+    for (let rebuilt = 0; ; rebuilt++) {
+      try {
+        return await use();
+      } catch (err) {
+        const rebuild = builders.get(ref);
+        if (!rebuild || platforms.length > 1 || rebuilt >= HOST_REBUILDS || !isMissingHostImage(err)) throw err;
+        activity(io, `  ${ref}: gone from the host daemon (another converge's sweep took it) — rebuilding`);
+        await rebuild();
+      }
+    }
+  };
+
   // The binfmt preflight (ADR-0045), paid at most once and only when a build is really about to be
   // spent: a steady-state converge must still spend no docker at all, and a foreign-arch build must
   // fail BEFORE minutes of docker rather than mid-`RUN` with `exec format error`.
@@ -545,15 +572,19 @@ export async function up(args: string[], io: Io): Promise<number> {
       return ref;
     }
     assertDeliverable();
+    const buildRef = async (): Promise<void> => {
+      await ensureEmulation();
+      await build.build(kitImageBuild(kitRoot, which, ref, platforms));
+    };
+    builders.set(ref, buildRef);
     if (await hostBuilt(ref)) {
       activity(io, `${which} image: ${ref} (host-built — build skipped, delivering; --force to rebuild)`);
-      await deliver(ref);
+      await onHost(ref, () => deliver(ref));
       return ref;
     }
     activity(io, `${which} image: building ${ref}${values.force === true ? " (--force)" : ""}`);
-    await ensureEmulation();
-    await build.build(kitImageBuild(kitRoot, which, ref, platforms));
-    await deliver(ref);
+    await buildRef();
+    await onHost(ref, () => deliver(ref));
     return ref;
   };
 
@@ -610,6 +641,16 @@ export async function up(args: string[], io: Io): Promise<number> {
       const digest = contextDigests.get(image.dir)!;
       const key = image.reserved ?? digest;
       const ref = sandboxImageTag(name, image.name, digest, { platforms, registry });
+      const buildRef = async (): Promise<void> => {
+        // ONE build of the user's own Dockerfile, straight to its content tag — no wrap, no
+        // intermediate tag, so two converges of one checkout share no mutable image name and
+        // the `@kind` tier's `--parallel` rides on it (ADR-0037).
+        await ensureEmulation();
+        await buildSandboxImage(build, { dir: image.dir, tag: ref, instance: name, platforms });
+      };
+      // Known on every path, the record's skip included: the Effector check reads this ref off the
+      // host daemon later in this converge, whatever decided its build.
+      builders.set(ref, buildRef);
       // A record is only worth skipping on when it is COMPLETE: the ref AND the seat the image
       // declared. A record from a kit that predates `sandboxUser` names the right image and
       // silently drops the fallback fact, which surfaces as a pod that will not start — so it reads
@@ -630,11 +671,7 @@ export async function up(args: string[], io: Io): Promise<number> {
           activity(io, `sandbox image "${image.name}": ${ref} (host-built — build skipped; --force to rebuild)`);
         } else {
           activity(io, `sandbox image "${image.name}": building ${ref}`);
-          // ONE build of the user's own Dockerfile, straight to its content tag — no wrap, no
-          // intermediate tag, so two converges of one checkout share no mutable image name and
-          // the `@kind` tier's `--parallel` rides on it (ADR-0037).
-          await ensureEmulation();
-          await buildSandboxImage(build, { dir: image.dir, tag: ref, instance: name, platforms });
+          await buildRef();
         }
         // The image's own `USER`, read while the image is certainly on this daemon (it was just
         // built, or the host holds it). Recorded because a provision cannot inspect an image, and
@@ -644,10 +681,10 @@ export async function up(args: string[], io: Io): Promise<number> {
         // (ADR-0005), which owes no floor — a distinction only the provision can make (ADR-0031).
         // `platforms` says where to look, not which variant to read (ADR-0045): a singleton build is
         // on this daemon, a multi-platform one is the manifest list buildx just pushed.
-        const user = await build.imageUser(ref, platforms);
+        const user = await onHost(ref, () => build.imageUser(ref, platforms));
         converged.sandboxUser[key] = user;
         activity(io, `  ${user ? `USER ${user}` : "no USER declared — the pod's uid-1000 fallback applies"}`);
-        await deliver(ref);
+        await onHost(ref, () => deliver(ref));
       }
       converged.sandbox[key] = ref;
     }
@@ -868,7 +905,13 @@ export async function up(args: string[], io: Io): Promise<number> {
   // --- what each Sandbox Effector's image owes its pushes (ADR-0068) ------------------------
   // Before anything is applied: an image that lacks a push form's tools, or the passwd entry ssh
   // needs, is refused here with the fix, not at the first push in a pod.
-  await checkEffectorImages(build, config, placements.sandbox, converged, platforms, contextDigests);
+  await checkEffectorImages(
+    (ref, paths) => onHost(ref, () => build.imageFiles(ref, platforms, paths)),
+    config,
+    placements.sandbox,
+    converged,
+    contextDigests,
+  );
 
   // --- push credentials (ADR-0051): one Secret per git.credentials entry, never per pod ----
   // After the deploy keys exist (a generated one included), before anything else is applied: a
@@ -1776,11 +1819,11 @@ async function resolveGitPush(
  * is not read, as its `USER` is not.
  */
 async function checkEffectorImages(
-  build: BuildPort,
+  /** {@link BuildPort.imageFiles} for a ref this converge resolved — rebuilt if a sweep took it. */
+  imageFiles: (ref: string, paths: readonly string[]) => Promise<ImageFiles>,
   config: JR2Config,
   sandbox: readonly SandboxEffectorPlan[],
   converged: ConvergedImages,
-  platforms: readonly string[],
   /** Each `file:` context's key in the map: the digest of its staged copy (ADR-0069). */
   contextDigests: ReadonlyMap<string, string>,
 ): Promise<void> {
@@ -1820,7 +1863,7 @@ async function checkEffectorImages(
       if (refusal) throw new Error(refusal);
       continue;
     }
-    const files = await build.imageFiles(ref, platforms, effectorImagePaths(forms.map((f) => f.form)));
+    const files = await imageFiles(ref, effectorImagePaths(forms.map((f) => f.form)));
     const refusal = effectorImageRefusal({
       label: plan.label,
       ref,

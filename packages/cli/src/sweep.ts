@@ -24,10 +24,11 @@
 // all: a cluster with no Sandbox CRD holds no Sandbox CRs, so that read's "none" is complete (see
 // `listSandboxes`).
 //
-// Accepted, and written down so nobody adds a name filter to "fix" it (ADR-0039): the host keep set
-// only sees the CURRENT context's roots, so a second checkout converging to a different cluster can
-// have its host kit generation swept. The rebuild is BuildKit-cached seconds. Re-introducing a name
-// filter would resurrect the exact primitive this ADR deletes.
+// Written down so nobody adds a name filter to "fix" it (ADR-0039): the host keep set only sees the
+// CURRENT context's roots, so a converge to a different cluster — a second checkout's, or this
+// one's — can lose a host image it built and has not used yet. `jr2 up` answers that itself: a tag
+// it counted on and finds missing is rebuilt (BuildKit-cached seconds) and the use retried.
+// Re-introducing a name filter would resurrect the exact primitive this ADR deletes.
 
 import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@jr2/orchestrator/internal";
 import { formatBytes, mergeSweeps, sweepHost, sweepNodes, type BuildPort, type SweepResult } from "./build.ts";

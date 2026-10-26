@@ -1119,6 +1119,81 @@ test("a silent record consults the host daemon: host-built refs skip their build
   }
 });
 
+test("a host image another converge's sweep took is rebuilt at its use and the use retried, at most twice (ADR-0039)", async () => {
+  const kit = await mkKit();
+  const root = await withImage(
+    await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)),
+    "default",
+  );
+  const first = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], first.io), 0);
+  const images = imagesOf(first);
+  const refs = [images.harness, images.operator, images.orchestrator, images.sandbox.default] as string[];
+  const held = refs.map((t, i) => image({ id: `sha256:held${i}`, tags: [t], bytes: 1 }));
+  const sandbox = images.sandbox.default!;
+  const builds = (w: World, ref: string) => w.built.filter((b) => b === `build ${ref}`).length;
+
+  // Every ref is host-held, so no build is planned — and then a sweep from a converge to another
+  // cluster takes two of them between the listing and their use. Each verb names the loss in its own
+  // words; each lost ref is built again and its use goes on.
+  const swept = mkWorld(root, { kitDir: kit, hostImages: held });
+  const fake = swept.io.build!;
+  const lose = new Map<string, string>([
+    [`kind-load ${images.harness}`, `ERROR: image: "${images.harness}" not present locally`],
+    [`inspect-user ${sandbox}`, `Error: No such image: ${sandbox}`],
+    [`kind-load ${sandbox}`, `ERROR: image: "${sandbox}" not present locally`],
+  ]);
+  const once = (verb: string) => {
+    const message = lose.get(verb);
+    if (message === undefined) return;
+    lose.delete(verb);
+    throw new Error(`Command failed\n${message}`);
+  };
+  swept.io.build = {
+    ...fake,
+    kindLoad: async (tag, cluster) => {
+      once(`kind-load ${tag}`);
+      return fake.kindLoad(tag, cluster);
+    },
+    imageUser: async (ref, platforms) => {
+      once(`inspect-user ${ref}`);
+      return fake.imageUser(ref, platforms);
+    },
+  };
+  assert.equal(await up(["--yes"], swept.io), 0);
+  assert.equal(builds(swept, images.harness!), 1, "the lost kit image was built again, once");
+  assert.equal(builds(swept, sandbox), 2, "the Sandbox Image was built again at each use that missed it");
+  assert.equal(builds(swept, images.operator!), 0, "a ref nothing took is still not built");
+  assert.ok(swept.built.includes(`kind-load ${sandbox} → test`), "…and then delivered");
+  assert.match(swept.err.join("\n"), /gone from the host daemon \(another converge's sweep took it\) — rebuilding/);
+  assert.deepEqual(imagesOf(swept), images, "the map converges to the same refs");
+
+  // A tag gone again after two rebuilds is not a race: docker's own error is the report.
+  const gone = mkWorld(root, { kitDir: kit, hostImages: held });
+  const goneFake = gone.io.build!;
+  gone.io.build = {
+    ...goneFake,
+    kindLoad: async (tag, cluster) => {
+      if (tag === images.harness) throw new Error(`ERROR: image: "${tag}" not present locally`);
+      return goneFake.kindLoad(tag, cluster);
+    },
+  };
+  await assert.rejects(() => up(["--yes"], gone.io), /not present locally/);
+  assert.equal(builds(gone, images.harness!), 2, "two rebuilds, then the error");
+
+  // Any other failure is not a missing image, and is not answered with a build.
+  const down = mkWorld(root, { kitDir: kit, hostImages: held });
+  const downFake = down.io.build!;
+  down.io.build = {
+    ...downFake,
+    kindLoad: async (tag) => {
+      throw new Error(`ERROR: failed to load image ${tag}: no nodes found for cluster`);
+    },
+  };
+  await assert.rejects(() => up(["--yes"], down.io), /no nodes found/);
+  assert.ok(!down.built.some((b) => b.startsWith("build ")), `nothing was built (got: ${down.built.join(", ")})`);
+});
+
 // --- the platform set (ADR-0045): the cluster chooses, the tag says ------------------------------
 
 test("the cluster's schedulable nodes choose the platform set, and every built tag says so", async () => {
@@ -5190,6 +5265,23 @@ test("jr2 up reads the Sandbox Effector's image for what each push form owes, an
     ok.built.some((l) => l.startsWith("inspect-files ")),
     "the Effector's image was read",
   );
+  // The image was delivered and then swept off the host before the read (ADR-0039): it is built
+  // again and read, and the converge goes on.
+  let lost = false;
+  const swept = mkWorld(await sshPushing(), {
+    imageFiles: (image, paths) => {
+      if (!lost) {
+        lost = true;
+        throw new Error(`Unable to find image '${image}' locally\npull access denied for ${image.split(":")[0]}`);
+      }
+      return { present: [...paths], passwd: "u:x:1000:1000::/h:/bin/sh\n" };
+    },
+  });
+  keys(swept);
+  assert.equal(await up(["--yes"], swept.io), 0);
+  const read = swept.built.find((l) => l.startsWith("inspect-files "))!.slice("inspect-files ".length);
+  assert.equal(swept.built.filter((l) => l === `build ${read}`).length, 2, "built, swept, built again");
+  assert.equal(swept.built.filter((l) => l === `inspect-files ${read}`).length, 2, "…and read again");
   // No image named and no images/default: the Effector runs in the stock Harness image, which the
   // kit built with git alone — an ssh push is refused before anything is applied, and no image is
   // read for it.

@@ -83,8 +83,12 @@ parsing names.
   iterations) are cleaned once by hand or with the cluster; `jr2 up --force` re-tags current images with labels.
 - **The sweep reads cluster-wide** (namespaces labeled `jr2.dev/instance`, their ConfigMaps, Sandboxes, and pods), so
   the CLI needs list access beyond its own namespace — true of the admin kubeconfig `jr2 up` already requires.
-- **A second checkout converging to a different cluster can lose its host kit generation** to this one's sweep (the host
-  keep set only sees the current context's roots). Accepted: the rebuild is BuildKit-cached seconds.
+- **A converge to another cluster can take a host image this converge built and has not used yet** — a second checkout's
+  converge, or this checkout's — because the host keep set only sees the current context's roots. `jr2 up` answers it
+  itself: a ref it counted on, its own build or a host-held skip
+  ([ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)), that the daemon no longer holds at its use
+  (the `USER` read, the Effector image read, the `kind load` or the push) is built again from BuildKit's cache, in
+  seconds, and the use is retried, at most twice. A tag gone again after two rebuilds fails with docker's own error.
 - **CRI's image list can outlive containerd's refs**, because a removal that goes through `ctr` does not resync the CRI
   image store: `crictl images` keeps answering for ids whose refs and content are gone. So the node read is filtered
   against `ctr -n k8s.io images ls` — containerd's refs decide what is present, CRI's list only mirrors them — and
@@ -93,12 +97,14 @@ parsing names.
   them by construction rather than reporting them.
 - **A converge in flight is not a root.** An image is needed iff a LIVE root names it — and a converge that has resolved
   its refs but not yet applied them names them nowhere the cluster can see, so a sweep finishing in another namespace
-  can take a ref between its build and its delivery. In the `@kind` tier under `--parallel` this is mostly out of reach:
-  every scenario converges the same checkout, so each worker's own `extraKeep` already holds the identical refs the
-  others are building ([ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)'s build skip narrows the
-  window further — a warm converge builds nothing). It bites two instances on one cluster, or one instance converged
-  twice across a source edit. Recorded as a known limit; the fix — a claim the converge publishes BEFORE it builds,
-  making an in-flight ref a root like any other — is not taken here.
+  can take a ref between its build and its delivery. On the host the rebuild above answers it; on the nodes nothing
+  does, and a ref taken after its `kind load` and before its map lands is an `ImagePullBackOff` at the next provision.
+  In the `@kind` tier under `--parallel` this is mostly out of reach: every scenario converges the same checkout, so
+  each worker's own `extraKeep` already holds the identical refs the others are building
+  ([ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)'s build skip narrows the window further — a
+  warm converge builds nothing). It bites two instances on one cluster, or one instance converged twice across a source
+  edit. Recorded as a known limit; the fix — a claim the converge publishes BEFORE it builds, making an in-flight ref a
+  root like any other — is not taken here.
 - ADR-0038's `jr2 down` prune clause is **superseded by this ADR**; its `imagePullPolicy`/content-address reasoning
   stands untouched, and ADR-0038's seal is what finally makes it true of the Instance's own artifact, its Assembly since
   ADR-0069.

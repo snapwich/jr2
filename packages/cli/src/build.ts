@@ -625,9 +625,10 @@ export type NodeSweepPlan = {
  *
  * Aggressive by ADR-0039: nothing RUNS from the host daemon — its images are scratch awaiting
  * delivery — and BuildKit's cache is a separate store `docker rmi` does not touch, so regenerating
- * a swept tag costs seconds. The accepted cost, written down so nobody adds a name filter to
- * "fix" it: a second checkout converging to a different cluster can have its host kit generation
- * swept, because this keep set only sees the current context's roots.
+ * a swept tag costs seconds. Written down so nobody adds a name filter to "fix" it: this keep set
+ * only sees the current context's roots, so a converge to another cluster — a second checkout's,
+ * or this one's — can lose a host tag it built and has not used yet. `jr2 up` rebuilds a tag it
+ * finds missing at its use and retries ({@link isMissingHostImage}).
  */
 export function hostSweepPlan(images: ObservedImage[], keep: Iterable<string>): HostSweepPlan {
   const reachable = keepSet(keep);
@@ -726,6 +727,16 @@ export function mergeSweeps(...results: SweepResult[]): SweepResult {
  * stores need, since neither `docker rmi` nor `crictl rmi` is idempotent (both exit 1). */
 function isAlreadyGone(err: unknown): boolean {
   return /no such image/i.test(err instanceof Error ? err.message : String(err));
+}
+
+/** A host-daemon read or delivery that found no image under its tag, in each verb's own words:
+ * `docker image inspect`, `docker create`, `kind load docker-image`, `docker push`. The one failure
+ * `jr2 up` answers with a rebuild: another converge's sweep can take a tag between this converge's
+ * build (or host-held skip) and its use (ADR-0039). */
+export function isMissingHostImage(err: unknown): boolean {
+  return /no such image|unable to find image .* locally|not present locally|does not exist locally/i.test(
+    err instanceof Error ? err.message : String(err),
+  );
 }
 
 /**
