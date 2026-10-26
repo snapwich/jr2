@@ -16,8 +16,8 @@ Feature: a real model drives the kit
     just e2e-kind-up                          # the same vanilla kind cluster @kind uses
     JR2_MODEL_ENDPOINT=homelab just e2e-model # probes the endpoint; `skipped:` and exit 0 if none
   The endpoint is a profile (`model-endpoints/<name>.json`); the key rides `JR2_MODEL_API_KEY`
-  alone. The instrument is the weakest model the kit claims to support — today the home-lab vLLM
-  model — because a stronger one obeys either placement and hides the regression.
+  alone. The instrument is a model shown to catch the known regressions — today the home-lab vLLM
+  model — because a stronger one can obey either placement and hide the regression (ADR-0066).
 
   Two kinds of scenario. A CLAIM re-states one ADR's measured claim as trials with a floor: N
   runs, each measured from outside the pod, counted; the cell fails below the floor its scenario
@@ -25,6 +25,156 @@ Feature: a real model drives the kit
   not failed. THE RUN is one workflow through to done on a real task, measured once: the witness
   is the branch in the pod. Every scenario writes its cell to `.tmp/model-scorecard.json`, keyed
   by model id; `model-baselines/` holds what was committed.
+
+  The Rules are in order of how long their scenarios run, the longest first: with `workers` above
+  1, cucumber starts scenarios in file order, so the long claims start at once and the short ones
+  fill the other workers around them. A run is as long as its longest chain of scenarios.
+
+  Rule: a planner told why its Chart was refused picks a Chart the door admits
+    ADR-0070. A Chart the door refuses is the Open body's output (D-A), so the pick that carried it
+    is answered with the door's report: one line per fault, naming the path in the Chart and what
+    the Open body lends. The report is jr2's text, and the claim measures it; the prompt is fixed
+    data. The `chart-refusal` workflow's planner is asked for a Chart that runs "the linter" and
+    then the summarizer, and is told no slot name; its Open body lends `summarizer` alone. The
+    first Chart is expected to name `linter`, and the next `run_chart` is the measurement: the door
+    admits it. A trial whose first Chart admits saw no refusal, and is void. The floor, 7 of 10, was
+    set ahead of a measured run; the `off` cell cleared it on 2026-10-19 and set its baseline. A
+    thinking-on cell was measured once and not kept: 5 of 10, the same misses, a third more wall
+    time (ADR-0070).
+
+    Scenario: after the door refuses its Chart, the planner's next Chart admits
+      Given the model instance is serving
+      When I run the "chart-refusal" workflow 10 times with thinking off
+      Then the pick after the door's refusal admitted in at least 7 trials
+      And every trial finished
+      And the cell "chart-refusal/off" is written to the scorecard
+
+  Rule: a Turn follows its modes, because it obeys the newest Allowed picks it read
+    ADR-0015/0029. A pick written on a child state of the Agent's state is one the Turn may take
+    while that child — a mode — is active; the Menu holds every mode's picks and never changes,
+    and each pick's answer says what the next mode allows. The Briefing's standing part says the
+    newest "Allowed now" holds (ADR-0062). Each floor is ADR-0029/0062's measurement of a list read
+    last — 10/10 obeyed — rounded down as ADR-0066 rounds it, except the correction receipt's,
+    whose origin is ADR-0029's recovery after one refusal (57 of 58).
+
+    Scenario: a model that stopped with nothing allowed is woken when a Gate's answer opens a pick, and picks
+      ADR-0016's ask-again rule, the wake. The `wake` Turn starts with nothing allowed — its picks
+      wait on a release board, a Gate on the state above — and the standing Briefing tells a model
+      with nothing allowed to stop. Once the Turn's Submission has settled, the step answers the
+      board, which allows `release` and `hold`, and jr2 asks the model once, with the nudge's text.
+      The first Menu call after the wake is the measurement. A model that never stopped is void.
+      The floor is push-follow's: a list read last, 10/10, rounded down to 9.
+      Given the model instance is serving
+      When I run the "wake" workflow 10 times with thinking off
+      Then the first Menu call after the wake was an allowed pick in at least 9 trials
+      And every trial finished
+      And the cell "wake/off" is written to the scorecard
+
+    Scenario: a model that stops in an open Turn is asked again, and picks
+      ADR-0016's ask-again rule. The `mode-stop` workflow's prompt asks for a review and to wait;
+      `ask_review` enters a mode whose picks are closed, and its answer is the reviewer's approval,
+      which comes while they are closed, so it allows nothing and the model stops; a timer with no
+      target then opens `revise` and `submit`, and the wake asks the model with the nudge's text and
+      a Turn part that states the Allowed picks last. The first Menu call after the ask is the
+      measurement. A model still working when the picks opened heard them at a step boundary and was
+      never asked: void.
+      Given the model instance is serving
+      When I run the "mode-stop" workflow 10 times with thinking off
+      Then the first pick after the nudge was allowed in at least 9 trials
+      And every trial finished
+      And the cell "mode-stop/off" is written to the scorecard
+
+    Scenario: after a pick changes the mode, the next pick is the new mode's
+      The `mode-follow` workflow's Briefing allows `ask_review` and `add_note`; `ask_review`'s
+      receipt allows `revise` and `submit`. The first Menu call after `ask_review`, read off the
+      printed conversation, is the measurement. A Turn that never asked for review is void.
+      Given the model instance is serving
+      When I run the "mode-follow" workflow 10 times with thinking off
+      Then the first pick after the mode changed was allowed in at least 9 trials
+      And every trial finished
+      And the cell "mode-follow/off" is written to the scorecard
+
+    Scenario: a pick the state does not allow is corrected, and the next call is allowed
+      The `mode-refusal` workflow's reviewer approves the notes, and its approval is `ask_review`'s
+      answer, with `revise` and `submit` allowed. Right after that answer, the workflow changes the
+      Allowed picks under the Turn (a timer with no target shuts the review window, as a Gate's
+      answer would), so the pick made from that list gets the correction receipt naming `publish`.
+      The call after the correction is the measurement. A pick that landed before the window shut
+      was taken, nothing was refused, and the trial is void. A first call after `ask_review` that is
+      `publish` (or anything other than `revise` or `submit`) refused no pick from that list: void.
+      Given the model instance is serving
+      When I run the "mode-refusal" workflow 10 times with thinking off
+      Then the call after the correction receipt was allowed in at least 9 trials
+      And every trial finished
+      And the cell "mode-refusal/off" is written to the scorecard
+
+  Rule: after a signed push the Agent continues on its branch, and its next push publishes
+    ADR-0067. A signed push re-creates the Agent's commits as signed copies with new ids; the sync
+    moves the Agent's branch to them and changes no file. The answer says so, says to continue on
+    the branch, and says that amending, rebasing or resetting the pushed commits makes the next
+    push `diverged` — and never tells the Agent to rebase. The floor's origin is push-follow's:
+    ADR-0029/0062's measurement of a list read last, 10/10, rounded down to 9, because the answer
+    is the newest thing the model read.
+
+    Scenario: the push after a signed push publishes
+      The `continue-after-signed-push` coder fixes the seed's failing test, commits and publishes
+      — a signed push over ssh to the seed's push remote — then commits a comment and publishes
+      again, then finishes. The second push's outcome, from the Machine's own record, is the
+      measurement: `pushed`. A trial whose first push did not publish a signed copy is void, and so
+      is one whose only push already carried two or more commits from `main` (read on the push
+      remote): the model chose its order before it read any post-push text (ADR-0066).
+      Given the seed's push remote trusts this scenario's keys
+      And the model instance is serving
+      When I run the "continue-after-signed-push" workflow 10 times with thinking off
+      Then the push after a signed push was published in at least 9 trials
+      And every trial finished
+      And the cell "continue-after-signed-push/off" is written to the scorecard
+
+  Rule: the kit carries a ticket from a failing test to a verified commit
+    The run (ADR-0066). The seed Repo's `main` holds a small project whose one test fails: the
+    ticket. `ticket` is a `workspace()` workflow with three seats and the paths no scripted tier
+    walks: a Menu-only `planner` reads the ticket and picks `plan`; a `coder` in the Sandbox reads
+    the Repo, edits in the Worktree, runs the test with bash, commits on the run's branch and picks
+    `submit` naming the commit — a guard refuses a `submit` that names none; a `reviewer` in the
+    same Sandbox, read-only (ADR-0028), runs the test itself and picks `approve` or `reject` with
+    reasons, and a `reject` returns to the coder at most twice. Approval parks at the `shipping`
+    Gate — the inspection window (ADR-0012/0054): the Sandbox is alive, and this suite reads the
+    branch and runs the test IN the pod, as a human would before pushing. Nothing is pushed: the
+    Agent holds no credential (ADR-0005/0053), and the push is the caller's.
+
+    What the scenario asserts is what a user would check: the branch is ahead of main, its head is
+    the commit the coder named, the tree is clean, and the test passes there. What it never asserts
+    is the model's: the diff, the commit message, the number of Turns.
+
+    Scenario: a ticket becomes a passing commit on the run's branch
+      Given the model instance is serving
+      When I start the "ticket" workflow with thinking on detached
+      Then the run's Sandbox becomes Ready
+      And the run parks at the "shipping" Gate
+      And the pick ledger runs "plan" first and ends "submit" then "approve"
+      And the branch in the pod is ahead of main, at the named commit, and its test passes
+      When I send "ship" to the Gate
+      Then the run's body settled as "shipped"
+      And the run's Sandbox is destroyed
+      And the cell "ticket/on" is written to the scorecard
+
+    Scenario: one coder Turn walks its modes from a failing test to a passing commit
+      The `ticket-modes` coder's state has three modes — `coding`, `testing`, `reviewing` — and
+      the Turn ends with `submit` (ADR-0015, ADR-0024). The coder runs the test itself and reports
+      it in `testing`, reviews its own diff in `reviewing`, and submits the commit. What is
+      asserted is the Machine's and the pod's: the ledger's shape, one entry into the coder's
+      state, and the branch. Never the diff, the commit message or the number of picks.
+      Given the model instance is serving
+      When I start the "ticket-modes" workflow with thinking on detached
+      Then the run's Sandbox becomes Ready
+      And the run parks at the "shipping" Gate
+      And the pick ledger runs "run_tests" first and ends "tests_passed" then "submit"
+      And the coder's state was entered once
+      And the branch in the pod is ahead of main, at the named commit, and its test passes
+      When I send "ship" to the Gate
+      Then the run's body settled as "shipped"
+      And the run's Sandbox is destroyed
+      And the cell "ticket-modes/on" is written to the scorecard
 
   Rule: a Turn obeys its Allowed picks, because it reads them last
     ADR-0029/0062. The whole Menu is in the tools block, fixed for the conversation; what this Turn
@@ -98,65 +248,6 @@ Feature: a real model drives the kit
       And every trial finished
       And the cell "noticed/off" is written to the scorecard
 
-  Rule: a Turn follows its modes, because it obeys the newest Allowed picks it read
-    ADR-0015/0029. A pick written on a child state of the Agent's state is one the Turn may take
-    while that child — a mode — is active; the Menu holds every mode's picks and never changes,
-    and each pick's answer says what the next mode allows. The Briefing's standing part says the
-    newest "Allowed now" holds (ADR-0062). Each floor is ADR-0029/0062's measurement of a list read
-    last — 10/10 obeyed — rounded down as ADR-0066 rounds it, except the correction receipt's,
-    whose origin is ADR-0029's recovery after one refusal (57 of 58).
-
-    Scenario: after a pick changes the mode, the next pick is the new mode's
-      The `mode-follow` workflow's Briefing allows `ask_review` and `add_note`; `ask_review`'s
-      receipt allows `revise` and `submit`. The first Menu call after `ask_review`, read off the
-      printed conversation, is the measurement. A Turn that never asked for review is void.
-      Given the model instance is serving
-      When I run the "mode-follow" workflow 10 times with thinking off
-      Then the first pick after the mode changed was allowed in at least 9 trials
-      And every trial finished
-      And the cell "mode-follow/off" is written to the scorecard
-
-    Scenario: a pick the state does not allow is corrected, and the next call is allowed
-      The `mode-refusal` workflow's reviewer approves the notes, and its approval is `ask_review`'s
-      answer, with `revise` and `submit` allowed. Right after that answer, the workflow changes the
-      Allowed picks under the Turn (a timer with no target shuts the review window, as a Gate's
-      answer would), so the pick made from that list gets the correction receipt naming `publish`.
-      The call after the correction is the measurement. A pick that landed before the window shut
-      was taken, nothing was refused, and the trial is void. A first call after `ask_review` that is
-      `publish` (or anything other than `revise` or `submit`) refused no pick from that list: void.
-      Given the model instance is serving
-      When I run the "mode-refusal" workflow 10 times with thinking off
-      Then the call after the correction receipt was allowed in at least 9 trials
-      And every trial finished
-      And the cell "mode-refusal/off" is written to the scorecard
-
-    Scenario: a model that stops in an open Turn is asked again, and picks
-      ADR-0016's ask-again rule. The `mode-stop` workflow's prompt asks for a review and to wait;
-      `ask_review` enters a mode whose picks are closed, and its answer is the reviewer's approval,
-      which comes while they are closed, so it allows nothing and the model stops; a timer with no
-      target then opens `revise` and `submit`, and the wake asks the model with the nudge's text and
-      a Turn part that states the Allowed picks last. The first Menu call after the ask is the
-      measurement. A model still working when the picks opened heard them at a step boundary and was
-      never asked: void.
-      Given the model instance is serving
-      When I run the "mode-stop" workflow 10 times with thinking off
-      Then the first pick after the nudge was allowed in at least 9 trials
-      And every trial finished
-      And the cell "mode-stop/off" is written to the scorecard
-
-    Scenario: a model that stopped with nothing allowed is woken when a Gate's answer opens a pick, and picks
-      ADR-0016's ask-again rule, the wake. The `wake` Turn starts with nothing allowed — its picks
-      wait on a release board, a Gate on the state above — and the standing Briefing tells a model
-      with nothing allowed to stop. Once the Turn's Submission has settled, the step answers the
-      board, which allows `release` and `hold`, and jr2 asks the model once, with the nudge's text.
-      The first Menu call after the wake is the measurement. A model that never stopped is void.
-      The floor is push-follow's: a list read last, 10/10, rounded down to 9.
-      Given the model instance is serving
-      When I run the "wake" workflow 10 times with thinking off
-      Then the first Menu call after the wake was an allowed pick in at least 9 trials
-      And every trial finished
-      And the cell "wake/off" is written to the scorecard
-
   Rule: a Turn hears its Allowed picks change under it, at the next step boundary
     ADR-0029. When something other than the Agent's own pick changes its Allowed picks — here a
     Gate's answer — the Harness reads the surface after each step's tool results and restates the
@@ -214,25 +305,6 @@ Feature: a real model drives the kit
       And every trial finished
       And the cell "cut-pick/off" is written to the scorecard
 
-  Rule: a planner told why its Chart was refused picks a Chart the door admits
-    ADR-0070. A Chart the door refuses is the Open body's output (D-A), so the pick that carried it
-    is answered with the door's report: one line per fault, naming the path in the Chart and what
-    the Open body lends. The report is jr2's text, and the claim measures it; the prompt is fixed
-    data. The `chart-refusal` workflow's planner is asked for a Chart that runs "the linter" and
-    then the summarizer, and is told no slot name; its Open body lends `summarizer` alone. The
-    first Chart is expected to name `linter`, and the next `run_chart` is the measurement: the door
-    admits it. A trial whose first Chart admits saw no refusal, and is void. The floor, 7 of 10, was
-    set ahead of a measured run; the `off` cell cleared it on 2026-10-19 and set its baseline. A
-    thinking-on cell was measured once and not kept: 5 of 10, the same misses, a third more wall
-    time (ADR-0070).
-
-    Scenario: after the door refuses its Chart, the planner's next Chart admits
-      Given the model instance is serving
-      When I run the "chart-refusal" workflow 10 times with thinking off
-      Then the pick after the door's refusal admitted in at least 7 trials
-      And every trial finished
-      And the cell "chart-refusal/off" is written to the scorecard
-
   Rule: a command Effect's answer is its output, and the Agent acts on it
     ADR-0067. A pick whose target runs a `command` in the Agent's own Sandbox is outstanding while
     it runs, and answered at Rest with the command's output and the Allowed picks read after the
@@ -277,71 +349,3 @@ Feature: a real model drives the kit
       Then the first pick after an unknown outcome checked before it announced in at least 9 trials
       And every trial finished
       And the cell "unknown-outcome/off" is written to the scorecard
-
-  Rule: after a signed push the Agent continues on its branch, and its next push publishes
-    ADR-0067. A signed push re-creates the Agent's commits as signed copies with new ids; the sync
-    moves the Agent's branch to them and changes no file. The answer says so, says to continue on
-    the branch, and says that amending, rebasing or resetting the pushed commits makes the next
-    push `diverged` — and never tells the Agent to rebase. The floor's origin is push-follow's:
-    ADR-0029/0062's measurement of a list read last, 10/10, rounded down to 9, because the answer
-    is the newest thing the model read.
-
-    Scenario: the push after a signed push publishes
-      The `continue-after-signed-push` coder fixes the seed's failing test, commits and publishes
-      — a signed push over ssh to the seed's push remote — then commits a comment and publishes
-      again, then finishes. The second push's outcome, from the Machine's own record, is the
-      measurement: `pushed`. A trial whose first push did not publish a signed copy is void, and so
-      is one whose only push already carried two or more commits from `main` (read on the push
-      remote): the model chose its order before it read any post-push text (ADR-0066).
-      Given the seed's push remote trusts this scenario's keys
-      And the model instance is serving
-      When I run the "continue-after-signed-push" workflow 10 times with thinking off
-      Then the push after a signed push was published in at least 9 trials
-      And every trial finished
-      And the cell "continue-after-signed-push/off" is written to the scorecard
-
-  Rule: the kit carries a ticket from a failing test to a verified commit
-    The run (ADR-0066). The seed Repo's `main` holds a small project whose one test fails: the
-    ticket. `ticket` is a `workspace()` workflow with three seats and the paths no scripted tier
-    walks: a Menu-only `planner` reads the ticket and picks `plan`; a `coder` in the Sandbox reads
-    the Repo, edits in the Worktree, runs the test with bash, commits on the run's branch and picks
-    `submit` naming the commit — a guard refuses a `submit` that names none; a `reviewer` in the
-    same Sandbox, read-only (ADR-0028), runs the test itself and picks `approve` or `reject` with
-    reasons, and a `reject` returns to the coder at most twice. Approval parks at the `shipping`
-    Gate — the inspection window (ADR-0012/0054): the Sandbox is alive, and this suite reads the
-    branch and runs the test IN the pod, as a human would before pushing. Nothing is pushed: the
-    Agent holds no credential (ADR-0005/0053), and the push is the caller's.
-
-    What the scenario asserts is what a user would check: the branch is ahead of main, its head is
-    the commit the coder named, the tree is clean, and the test passes there. What it never asserts
-    is the model's: the diff, the commit message, the number of Turns.
-
-    Scenario: a ticket becomes a passing commit on the run's branch
-      Given the model instance is serving
-      When I start the "ticket" workflow with thinking on detached
-      Then the run's Sandbox becomes Ready
-      And the run parks at the "shipping" Gate
-      And the pick ledger runs "plan" first and ends "submit" then "approve"
-      And the branch in the pod is ahead of main, at the named commit, and its test passes
-      When I send "ship" to the Gate
-      Then the run's body settled as "shipped"
-      And the run's Sandbox is destroyed
-      And the cell "ticket/on" is written to the scorecard
-
-    Scenario: one coder Turn walks its modes from a failing test to a passing commit
-      The `ticket-modes` coder's state has three modes — `coding`, `testing`, `reviewing` — and
-      the Turn ends with `submit` (ADR-0015, ADR-0024). The coder runs the test itself and reports
-      it in `testing`, reviews its own diff in `reviewing`, and submits the commit. What is
-      asserted is the Machine's and the pod's: the ledger's shape, one entry into the coder's
-      state, and the branch. Never the diff, the commit message or the number of picks.
-      Given the model instance is serving
-      When I start the "ticket-modes" workflow with thinking on detached
-      Then the run's Sandbox becomes Ready
-      And the run parks at the "shipping" Gate
-      And the pick ledger runs "run_tests" first and ends "tests_passed" then "submit"
-      And the coder's state was entered once
-      And the branch in the pod is ahead of main, at the named commit, and its test passes
-      When I send "ship" to the Gate
-      Then the run's body settled as "shipped"
-      And the run's Sandbox is destroyed
-      And the cell "ticket-modes/on" is written to the scorecard

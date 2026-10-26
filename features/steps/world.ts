@@ -24,10 +24,13 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { setWorldConstructor } from "@cucumber/cucumber";
-import { issueCa, issueLeaf, type Pem } from "@jr2/cli";
+import { issueCa, issueLeaf, JR2Client, kubectlKube, type FetchLike, type Pem, type RunStatus } from "@jr2/cli";
 import {
   assemblyHash,
+  INSTANCE_SECRET,
   KIT_VERSION,
+  ORCHESTRATOR_PORT,
+  ORCHESTRATOR_SERVICE,
   packAssembly,
   startStubHarness,
   type Admission,
@@ -35,6 +38,7 @@ import {
 } from "@jr2/orchestrator/internal";
 import type { Browser, Page } from "playwright";
 import { startFakeProvider, type FakeProvider } from "./fake-provider.ts";
+import { suiteOf, takeProfileLock } from "../lib/model-lock.ts";
 import type { InstalledKit } from "./dist-kit.ts";
 
 /** The `jr2` bin (the `.js` shim that type-erases the kit's `.ts` sources), resolved from this
@@ -59,6 +63,10 @@ const KIND_DIR = fileURLToPath(new URL("../kind-instance/", import.meta.url));
 const MODEL_DIR = fileURLToPath(new URL("../model-instance/", import.meta.url));
 /** Where the endpoint profiles live: `<name>.json`, selected by `JR2_MODEL_ENDPOINT`. */
 const MODEL_ENDPOINTS_DIR = fileURLToPath(new URL("../model-endpoints/", import.meta.url));
+/** How long one status read (`readRun`) may take. */
+const READ_RUN_MS = 30_000;
+/** The lock on MODEL_DIR's one profile copy (`lib/model-lock.ts`): one profile per checkout at a time. */
+const MODEL_LOCK = fileURLToPath(new URL("../.tmp/model-endpoint.lock", import.meta.url));
 
 /** An endpoint profile (`features/model-endpoints/<name>.json`, ADR-0066), as the World and the
  * model steps read it. The instance reads the same file under its own name (`_profile.ts`). */
@@ -73,6 +81,8 @@ export type ModelEndpointProfile = {
   thinking?: Partial<Record<"off" | "on", string>>;
   trials?: number;
   parallel?: number;
+  /** How many scenarios run at once: the recipe passes it to cucumber as `--parallel`. */
+  workers?: number;
 };
 
 /** The captured outcome of one `jr2 …` invocation. */
@@ -211,6 +221,9 @@ export class E2EWorld {
   /** @model: the endpoint profile this scenario's instance converged against (ADR-0066) — what
    * names the model id the scorecard is keyed by, and the trial counts the claim steps use. */
   modelProfile?: ModelEndpointProfile;
+  /** @model: the one port-forward to this scenario's Orchestrator that every status read uses
+   * (`readRun`). Opened on the first read, closed in `cleanup`, opened again when it dies. */
+  private orchestrator?: Promise<{ url: string; token: string; close: () => void }>;
   /** Extra env for the `jr2` binary — @kind publishes the fake provider's address here, because a
    * deployment-varying endpoint rides env and never a committed literal (ADR-0019). */
   private extraEnv: Record<string, string> = {};
@@ -289,6 +302,9 @@ export class E2EWorld {
       this.modelProfile.id && this.modelProfile.model && this.modelProfile.baseUrl,
       `the endpoint profile ${name} names id, model and baseUrl`,
     );
+    // The workers of one suite share the lock; any other live suite fails here, whatever its profile.
+    await mkdir(dirname(MODEL_LOCK), { recursive: true });
+    await takeProfileLock(MODEL_LOCK, { profile: name, ...suiteOf(process.env, process) });
     // Replaced by rename, never rewritten in place: another scenario's `jr2 up` may be reading it.
     const tmp = join(MODEL_DIR, `model-endpoint.json.${randomBytes(6).toString("hex")}`);
     await writeFile(tmp, raw);
@@ -323,6 +339,7 @@ export class E2EWorld {
   /** Tear the scenario down: stop the orchestrator (if any) and delete what the scenario owns —
    * its namespace on the cluster (runs, store, Sandboxes go with it) and its temp folder. */
   async cleanup(): Promise<void> {
+    await this.closeOrchestrator();
     await this.stopServer();
     await this.stub?.close();
     this.stub = undefined;
@@ -344,6 +361,48 @@ export class E2EWorld {
   async restartServer(): Promise<void> {
     await this.stopServer();
     await this.bootServer();
+  }
+
+  /**
+   * @model: one run's status, as `jr2 status <runId>` prints it, read from the Orchestrator API that
+   * verb uses (`GET /runs/:runId`) with the same credential: the Instance token from the
+   * `jr2-instance` Secret, over a port-forward of the `jr2-orchestrator` Service (ADR-0019).
+   * `undefined` for a run the Orchestrator does not know.
+   *
+   * Why not the verb: a claim polls every run in flight every 2 s, and each `jr2 status` is a Node
+   * process and a port-forward of its own, about 0.4 host cores per trial in flight. One forward
+   * per scenario costs one kubectl process. A read that fails opens the forward again and reads
+   * once more, so a forward that died costs one read, not the trial.
+   */
+  async readRun(runId: string): Promise<RunStatus | undefined> {
+    for (let attempt = 0; ; attempt++) {
+      const opened = (this.orchestrator ??= this.openOrchestrator());
+      try {
+        const target = await opened;
+        // Bounded, so a forward that hangs, rather than dies, is opened again too.
+        const bounded: FetchLike = (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(READ_RUN_MS) });
+        return await new JR2Client(target.url, bounded, target.token).read(runId);
+      } catch (err) {
+        if (attempt > 0) throw err;
+        // Only the reader that saw this forward fail replaces it: another read may have done so already.
+        if (this.orchestrator === opened) await this.closeOrchestrator();
+      }
+    }
+  }
+
+  private async openOrchestrator(): Promise<{ url: string; token: string; close: () => void }> {
+    const namespace = this.namespace;
+    assert.ok(namespace, "a cluster scenario has its namespace set before it reads a run");
+    const token = await kubectlKube.readSecret({ namespace, name: INSTANCE_SECRET, key: "JR2_INSTANCE_TOKEN" });
+    assert.ok(token, `the ${INSTANCE_SECRET} Secret in ${namespace} holds the Instance token (\`jr2 up\` writes it)`);
+    const fwd = await kubectlKube.portForward({ namespace, service: ORCHESTRATOR_SERVICE, port: ORCHESTRATOR_PORT });
+    return { ...fwd, token };
+  }
+
+  private async closeOrchestrator(): Promise<void> {
+    const opened = this.orchestrator;
+    this.orchestrator = undefined;
+    (await opened?.catch(() => undefined))?.close();
   }
 
   /** The Instance token as a bearer header — what the CLI sends after resolving its target. */

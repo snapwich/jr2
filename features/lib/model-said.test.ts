@@ -16,10 +16,13 @@ import {
   menuCalls,
   modeAtAsk,
   modesOf,
+  ofRun,
+  printedLine,
   restartedHarnessRunning,
   saidAfterPrompt,
   saidIn,
   told,
+  withoutIid,
   type StateNodeLike,
 } from "./model-said.ts";
 
@@ -429,4 +432,97 @@ test("a followed process keeps what it printed to stderr apart: the reason a log
   await f.closed;
   assert.equal(f.text, "");
   assert.match(f.err, /waiting to start/);
+});
+
+test("a printed line carries its Agent and its Instance ID; a line of the run narrative echo carries none (ADR-0023)", () => {
+  assert.deepEqual(printedLine("[advisor] [r1/root/advisor] [prompt] [t0-a] Go."), {
+    agent: "advisor",
+    iid: "r1/root/advisor",
+    rest: "[prompt] [t0-a] Go.",
+  });
+  // A body's later line: no label after the Instance ID.
+  assert.deepEqual(printedLine("[advisor] [r1/root/advisor] - Faster cold start."), {
+    agent: "advisor",
+    iid: "r1/root/advisor",
+    rest: "- Faster cold start.",
+  });
+  // A label never holds a `/`, so the echo, and a line in the shape before the Instance ID, have none.
+  for (const echo of ["[run] [status] running · body: working", "[decisioner] [admitted] go", "[advisor] [prompt] Go."])
+    assert.equal(printedLine(echo), undefined, echo);
+  assert.equal(withoutIid("[advisor] [r1/root/advisor] [submit] {}"), "[advisor] [submit] {}");
+  assert.equal(withoutIid("[run] [status] done"), "[run] [status] done");
+});
+
+test("the readings take the printed shape with the Instance ID, beside the echo lines that carry none", () => {
+  const log = [
+    "[run] [status] running · body: working",
+    "[coder] [r1/body/coder] [prompt] [t0-a] Go.",
+    "[coder] [r1/body/coder] [bash] ls",
+    "[reviewer] [admitted] review it",
+    "[coder] [r1/body/coder] [submit] {}",
+    "[coder] [r1/body/coder] [submit answer] Delivered.",
+    "[coder] [r1/body/coder] Allowed now: none.",
+    "[run] [status] done",
+  ].join("\n");
+  assert.deepEqual(saidIn(log, "coder", "t0-a"), [{ call: "bash" }, { call: "submit" }]);
+  assert.deepEqual(calledIn(log, "t0-a"), [{ call: "bash" }, { call: "submit" }]);
+  assert.deepEqual(answersIn(log, "t0-a"), [
+    { call: "bash", input: "ls" },
+    { call: "submit", input: "{}", answer: "Delivered.\nAllowed now: none." },
+  ]);
+});
+
+/** Two Menu-only trials in flight on the Instance Harness: their lines interleave in one log. */
+const SHARED = [
+  "2026-10-25T10:00:00Z [advisor] [r1/root/advisor] [prompt] [t0-aaaaaa] Draft the notes.",
+  "2026-10-25T10:00:00.5Z [advisor] [r2/root/advisor] [prompt] [t1-bbbbbb] Draft the notes.",
+  "2026-10-25T10:00:01Z [advisor] [r2/root/advisor] [hold] {}",
+  "2026-10-25T10:00:01Z [advisor] [r1/root/advisor] [submit] {}",
+  "2026-10-25T10:00:02Z [advisor] [r1/root/advisor] [submit answer] Delivered.",
+  "2026-10-25T10:00:02Z [advisor] [r2/root/advisor] [hold answer] Delivered.",
+  "2026-10-25T10:00:02Z [advisor] [r1/root/advisor] Allowed now: none.",
+  "--- followed again: the container restarted ---",
+  "2026-10-25T10:00:03Z [advisor] [r1/root/advisor/1] [prompt] Your previous turn was cut.",
+  "2026-10-25T10:00:03Z [advisor] [r2/root/advisor] [prompt] Your previous turn was cut.",
+  "2026-10-25T10:00:04Z [advisor] [r1/root/advisor/1] [file_report] {}",
+  "2026-10-25T10:00:04Z [advisor] [r2/root/advisor] [run_audit] {}",
+  "2026-10-25T10:00:05Z [summarizer] [r1/root/open/summarizer/0a1b2c3d] [prompt] Sum it up.",
+  "2026-10-25T10:00:05Z [advisor] [r10/root/advisor] [prompt] [t2-cccccc] Another run.",
+  "2026-10-25T10:00:06Z [run] [status] done",
+].join("\n");
+
+test("one run's lines of a shared log: by the Instance ID's prefix, untimed, in the shape the readings take", () => {
+  assert.equal(
+    ofRun(SHARED, "r1"),
+    [
+      "[advisor] [prompt] [t0-aaaaaa] Draft the notes.",
+      "[advisor] [submit] {}",
+      "[advisor] [submit answer] Delivered.",
+      "[advisor] Allowed now: none.",
+      // The conversation after one jr2 faulted (`<iid>/<epoch>`) is still the run's.
+      "[advisor] [prompt] Your previous turn was cut.",
+      "[advisor] [file_report] {}",
+      // So is an Agent at another Machine path.
+      "[summarizer] [prompt] Sum it up.",
+    ].join("\n"),
+  );
+  // `r10` is not `r1`: the prefix ends at the `/`.
+  assert.equal(ofRun(SHARED, "r10"), "[advisor] [prompt] [t2-cccccc] Another run.");
+  assert.equal(ofRun(SHARED, "r3"), "");
+});
+
+test("each trial of a shared log reads only its own run: the first call, and the first after a re-admission", () => {
+  assert.deepEqual(saidIn(ofRun(SHARED, "r1"), "advisor", "t0-aaaaaa")?.[0], { call: "submit" });
+  assert.deepEqual(saidIn(ofRun(SHARED, "r2"), "advisor", "t1-bbbbbb")?.[0], { call: "hold" });
+  // Read off the whole log, the other run's interleaved prompt would end the trial at once.
+  assert.deepEqual(saidAfterPrompt(ofRun(SHARED, "r1"), "advisor", "Your previous turn was cut"), [
+    { call: "file_report" },
+  ]);
+  assert.deepEqual(saidAfterPrompt(ofRun(SHARED, "r2"), "advisor", "Your previous turn was cut"), [
+    { call: "run_audit" },
+  ]);
+  assert.deepEqual(answersIn(ofRun(SHARED, "r2"), "t1-bbbbbb"), [
+    { call: "hold", input: "{}", answer: "Delivered." },
+    { call: "run_audit", input: "{}" },
+  ]);
 });

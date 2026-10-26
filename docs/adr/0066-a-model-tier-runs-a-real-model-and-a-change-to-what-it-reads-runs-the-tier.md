@@ -53,15 +53,27 @@ recover, finish — are exercised only one scripted tool call at a time.
   at the floor can hold: 9 of 10 where the ADR measured 10/10. Every run writes a scorecard,
   `features/.tmp/model-scorecard.json`, keyed by model id and cell; a committed baseline per model id sits in
   `features/model-baselines/`, and a cell that fell below its baseline while still above its floor is **reported**, not
-  failed. Drift is a signal to read; a floor is a defect.
-- **The instrument is the weakest model the kit claims to support.** Today that is the home-lab vLLM model
-  (Qwen3.6-35B-A3B). ADR-0029's numbers are the reason: a frontier model obeys either placement and hides the
-  regression. A stronger model must clear the same floors and cannot lower them; adding a model adds a baseline row,
-  never a floor. The run is measured once per invocation, on whichever endpoint is selected, because it costs minutes
-  and its failure is a defect to read, not a rate.
+  failed. Drift is a signal to read; a floor is a defect. Each cell also records what its trials spent: the tokens and
+  the cost summed off each trial's Settlements
+  ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)), in the scorecard and as one line of
+  `features/.tmp/model-usage.jsonl`, and the tier prints the cell's cost beside the cost of the month so far. A trial
+  whose usage cannot be read records that, and never fails.
+- **The instrument is a model shown to catch the known regressions.** Today that is the home-lab vLLM model
+  (Qwen3.6-35B-A3B, FP8 weights). ADR-0029's numbers are why a strong model does not qualify by default: a frontier
+  model obeys either placement and hides the regression. A model qualifies when the known regressions, put back, take
+  their cells below the floor: (a) ADR-0029's, the Allowed picks stated ahead of the prompt (`obedience`; Qwen obeyed 0
+  of 10), and (b) a draft's Chart briefing text that Qwen admitted 5 of 10 times (`chart-refusal`, floor 7; a snapshot
+  kept outside the repo). On 2026-10-25 Claude Haiku 5.5 caught neither: with the picks ahead of the prompt its first
+  call was the allowed `hold` in 20 of 20 trials, and on the draft's text it admitted 10 of 10. So a Haiku run checks
+  the tier's machinery, cheaply, and never a change to what the model reads. The same model served another way is
+  another instrument: NVIDIA's NVFP4 checkpoint on vLLM 0.32 with MTP, about twice the throughput, took `answered` from
+  10 of 10 to 6 of 10 (4 trials fixed the failing test and shipped) and `chart-refusal` to 4 of 10, so the home lab
+  serves the FP8 weights on the image the baselines were measured on. Any other model must clear the same floors and
+  cannot lower them; adding a model adds a baseline row, never a floor. The run is measured once per invocation, on
+  whichever endpoint is selected, because it costs minutes and its failure is a defect to read, not a rate.
 - **The endpoint is a profile, selected by env, and the key never enters a file.**
   `features/model-endpoints/<name>.json` carries `id`, `api`, `baseUrl` and `model`, plus the tier's own `thinking`
-  cells and `trials`, and optionally a `caBundle` path for a private CA
+  cells, `trials`, `parallel` and `workers` (below), and optionally a `caBundle` path for a private CA
   ([ADR-0020](0020-private-ca-trust-is-a-named-concept.md)). A profile is one of two kinds, as a user's instance is. A
   profile with `key` names one of pi's catalog providers (`anthropic`), and the catalog holds the model's limits and
   thinking levels. Its key is a Held secret in `secrets`, under the known model key that `key` names
@@ -70,8 +82,14 @@ recover, finish — are exercised only one scripted tool call at a time.
   `JR2_MODEL_API_KEY` is read from env alone. Before the converge, the fixture copies the selected profile to a fixed
   path inside `features/model-instance/`. The instance's config and Agents import it from there, so the in-cluster
   Orchestrator reads the same values the host did. An env read in a definition is `undefined` in the pod, as the `@kind`
-  config notes. Nothing in the product learns the tier exists. Reachability from the pods is `jr2 up`'s provider
-  preflight, for both kinds of profile. It checks each model from a check pod with a Custodian before it writes anything
+  config notes. That path holds one profile, so a lock on it (`features/lib/model-lock.ts`) records the profile, the
+  suite and the pid that owns the suite. The workers of one suite share it. A second suite in the same checkout fails at
+  once. With another profile, the refusal names that profile, because the suite would converge against it and file its
+  cells under its own key with no error: two profiles at once need two worktrees. With the same profile, it fails too:
+  the lock names one owner, so a later suite with another profile could take it over while the second still converges,
+  and two suites put twice `workers` × `parallel` runs in flight. A lock whose owner is gone is taken over. Nothing in
+  the product learns the tier exists. Reachability from the pods is `jr2 up`'s provider preflight, for both kinds of
+  profile. It checks each model from a check pod with a Custodian before it writes anything
   ([ADR-0019](0019-one-converging-command-against-the-current-context.md)). So a pod with no egress to the provider
   fails the converge at the check pod.
 - **Not in CI. Run by whoever changed what the model reads, before calling the change done.** Not in `pnpm -r test`, not
@@ -115,15 +133,39 @@ recover, finish — are exercised only one scripted tool call at a time.
   gains the tier and the rule about when to run it.
 - New: `features/model.feature`, `features/steps/model.steps.ts`, `features/model-instance/` (config, `_agents.ts`, the
   claim workflows and `ticket.ts`), `features/model-endpoints/homelab.json`, `features/model-baselines/`, the `model`
-  profile in `cucumber.json`, and `just e2e-model`.
+  and `model-warm` profiles in `cucumber.json`, `features/model-warm.feature`, `features/lib/model-lock.ts`, and
+  `just e2e-model` and `just e2e-model-warm`.
 - The seed Repo's `main` gains a small project with one failing test, so the run has a task with a checkable outcome.
   `@kind` reads the seed's refs, never its files, so it is indifferent.
 - ADR-0029's and ADR-0062's measurements become scenarios; their prose keeps the numbers as the origin of the floors.
 - The Menu-only claims read the model's calls off the Instance Harness's printed conversation (ADR-0023) — the one place
-  a refused pick, a nudge and a restated Turn part are all visible — so their trials run one at a time; the Sandbox
-  claims read their pods and run `parallel` at once. A claim whose setup the step must race (a Gate answered while the
-  model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
-  past the bound counts against the floor and prints as a void in the failure list, never as a miss.
+  a refused pick, a nudge and a restated Turn part are all visible. Every line of a conversation carries its Instance
+  ID, which starts with the run id (ADR-0023), so a trial reads only its own run's lines of that one log, and the
+  Menu-only trials run `parallel` at once, as the Sandbox claims, which read their pods, do. Two claims keep fewer in
+  flight. `cut-pick` runs one trial at a time: each of its trials deletes the Instance Harness pod, which would cut the
+  Turn of every other trial in flight there. `noticed` runs at most two: on a loaded host the kernel's OOM killer takes
+  the container before the guard takes the hog, and that trial is void. A claim whose setup the step must race (a Gate
+  answered while the model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are
+  bounded, and a void past the bound counts against the floor and prints as a void in the failure list, never as a miss.
+- **Scenarios run `workers` at once, set per profile.** Each scenario has its own namespace, so scenarios are
+  independent, as `@kind`'s are. The profile's `workers` is how many run at once: `just e2e-model` passes it to cucumber
+  as `--parallel` when it is above 1. It is in the profile and not in `cucumber.json`, because its limits are the
+  endpoint's and the host's, not the tier's. `workers` × `parallel` runs are in flight, and that product must stay
+  within what the endpoint serves (the home-lab vLLM serves 16 streams; a run past them waits in its queue and skews
+  every trial's latency and the runaway bound) and within what the host holds: about 0.85 CPU and 2.2 GiB per scenario,
+  plus 0.5 CPU and 1 GiB per Sandbox trial in flight, on a 16 CPU, 45 GB host that three kind clusters share. The
+  home-lab profile runs 4 × 4: a full run took 26.5 minutes on 2026-10-25, against about 70 one scenario at a time;
+  Haiku's runs 4 × 2, 10.6 minutes. Cucumber starts scenarios in file order, so `model.feature` lists its longest Rules
+  first. `chart-refusal` is the longest, 21 of the 26.5 minutes: its trials write long answers and call `run_chart` up
+  to 16 times. A step reads a run's status from the Orchestrator API that `jr2 status` uses, with the same Instance
+  token, over one port-forward per scenario, opened on the first read and again when it dies; a `jr2 status` process per
+  read every 2 s cost about 0.4 host cores per trial in flight. On a cold host, `just e2e-model-warm` runs one converge
+  first and serially (`features/model-warm.feature`, tagged `@warm` and excluded from the `model` profile), as
+  `e2e-kind-warm` does for `@kind`, so the workers do not each build the same images. Converges on two clusters at the
+  same moment share the host daemon, and one's sweep keeps only its own cluster's images
+  ([ADR-0039](0039-image-garbage-collects-by-reachability.md)), so it can take the other's fresh Sandbox image before
+  its use. `jr2 up` builds a ref it finds missing again from BuildKit's cache and goes on; before it did, 5 of 19
+  converges in one `workers: 4` run failed this way.
 - Each trial's line in the failure list says how its run ended, whatever stopped the trial (a driver that threw prints
   what it threw, and names the run it had started, if any: `threw: <message> (run <id>)`). A run that ended `failed`
   also prints its Failure, and a run in error its fault, which carry the reason (`features/lib/model-status.ts`): the
@@ -135,35 +177,47 @@ recover, finish — are exercised only one scripted tool call at a time.
   - `conversation.txt`: the Harness container's printed conversation (ADR-0023), timestamped. A Sandbox claim's is
     followed from the moment the trial's Sandbox pod exists until the reap at settle takes the pod
     ([ADR-0012](0012-workspace-wrapper-machine.md)), so a read after the settle is never needed, and it is followed
-    again after the container restarts. A Menu-only claim's is the Instance Harness's from the trial's start, followed
-    again after the step deletes that pod and the StatefulSet makes it again. It holds each pick's answer after its
-    call, the text the model read (`[<pick> answer] <text>`, or `[<pick> error] <text>`): the receipt, a command's
-    outcome, a refusal, the paragraph after a signed push. An answer longer than the print's bound (2000 characters, a
-    call input's) is cut in its middle, with the number of characters dropped marked at the cut
-    (`… [<n> characters cut] …`), so the receipt at its head and the end with "Allowed now" both stay; the model read
-    the whole answer, and the cut is the log's copy only (ADR-0023). The Harness prints it (ADR-0023), so the tier keeps
-    it with the conversation, and nothing the model reads changed to keep it. `answersIn` reads each call with its
-    answer; a call a Harness restart cut has jr2's text, which the next container prints before its first prompt, and a
-    call an abort cut while the model was still writing it has jr2's text that it did not reach the workflow, printed
-    before the conversation's next prompt.
+    again after the container restarts. A Menu-only claim's is its own run's lines of the Instance Harness's log from
+    the trial's start, kept by the Instance ID's prefix `<runId>/`, and followed again after the step deletes that pod
+    and the StatefulSet makes it again. A driver reads its measurement from this kept conversation, never from a second
+    read of the log: `kubectl logs` reads only the current container, so a restart or a 10 Mi rotation loses lines that
+    the follow kept. It holds each pick's answer after its call, the text the model read (`[<pick> answer] <text>`, or
+    `[<pick> error] <text>`): the receipt, a command's outcome, a refusal, the paragraph after a signed push. An answer
+    longer than the print's bound (2000 characters, a call input's) is cut in its middle, with the number of characters
+    dropped marked at the cut (`… [<n> characters cut] …`), so the receipt at its head and the end with "Allowed now"
+    both stay; the model read the whole answer, and the cut is the log's copy only (ADR-0023). The Harness prints it
+    (ADR-0023), so the tier keeps it with the conversation, and nothing the model reads changed to keep it. `answersIn`
+    reads each call with its answer; a call a Harness restart cut has jr2's text, which the next container prints before
+    its first prompt, and a call an abort cut while the model was still writing it has jr2's text that it did not reach
+    the workflow, printed before the conversation's next prompt.
   - `effector.txt`: the Sandbox Effector container's log, followed the same way, for a Sandbox claim; it says so when
     the pod has none.
   - `harness-history.txt`: the Harness history view
-    ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)) of each Agent whose prompt printed:
-    each settlement, with the failure text of one that failed. The view is read while the trial runs and again each time
-    a settlement lands, and the last one read is kept. A Sandbox Harness exits at the reap, so the view after a Turn
-    that settled just before it can be too late to read: each Agent's stream is also followed, read as the Orchestrator
-    reads it, and each `submission-settled` it carries that the kept view does not hold is kept after the view.
+    ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)) of each conversation whose prompt
+    printed in the kept conversation, at the Instance ID its lines carry: each settlement, with the failure text of one
+    that failed. The view is read while the trial runs and again each time a settlement lands, and the last one read is
+    kept. A Sandbox Harness exits at the reap, so the view after a Turn that settled just before it can be too late to
+    read: each Agent's stream is also followed, read as the Orchestrator reads it, and each `submission-settled` it
+    carries that the kept view does not hold is kept after the view.
   - `record.json`: the Machine's final record, the last status the driver read of the run.
   - `push-log.txt`, for a push claim: the push remote's log from `main` to each commit the record says was published.
+  - `instance/`, for a Sandbox trial whose Workspace encloses a Menu-only seat (`ticket`'s planner): that seat's
+    `conversation.txt` and `harness-history.txt`, read off the Instance Harness where its Turns run
+    ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), so that its Settlements are in the trial's
+    usage.
+
+  The run keeps its evidence the same way, in its cell's folder, from its start until its cell is written or its
+  scenario ends.
 
   Each file is written when it changes, so a trial that hangs until its timeout leaves what it had. Every probe only
-  reads: a probe that fails writes `<unavailable: why>` into its file, never fails the trial, and never changes what the
-  next trial does. Each trial's note opens with what the model called, read off the kept conversation in the Menu-only
-  notes' form (`said bash (restated) ask_approval submit`) from the lines of the Agents whose prompt printed there (the
-  run narrative echo, `[run] [status]` and `[run] [emit]`, is not a call), or `said <unread: why>` when it cannot be
-  read, and the driver's note follows. A floor failure, a void past the bound and a cell below its baseline are read
-  from these folders before a prompt, a floor or a step is touched. A failed `@model` scenario also writes the `@kind`
+  reads: a probe that fails writes `<unavailable: why>` into its file and never changes what the next trial does. A
+  Menu-only driver measures the kept conversation, so when that follow fails, the trial has nothing to measure and is
+  not measured, as before when its `kubectl logs` read failed. No other probe fails the trial. Each trial's note opens
+  with what the model called, read off the kept conversation in the Menu-only notes' form
+  (`said bash (restated) ask_approval submit`) from the lines of the Agents whose prompt printed there (the run
+  narrative echo, `[run] [status]` and `[run] [emit]`, is not a call), or `said <unread: why>` when it cannot be read,
+  and the driver's note follows. A floor failure, a void past the bound and a cell below its baseline are read from
+  these folders before a prompt, a floor or a step is touched. A failed `@model` scenario also writes the `@kind`
   failure dump, to the same place as a `@kind` one: `features/.tmp/kind-failures/<namespace>-<scenario>/`.
 
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials. After

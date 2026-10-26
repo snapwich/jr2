@@ -1,6 +1,7 @@
 // Steps for the @model tier (ADR-0066): the @kind tier with the last fake removed. Nothing here
 // plays the model — there is no scripted provider to release — so a step's job is to START runs,
-// WAIT, and OBSERVE from outside the pod: `jr2 status` for the Machine, `kubectl` for the cluster,
+// WAIT, and OBSERVE from outside the pod: the run's status for the Machine (the Orchestrator API
+// `jr2 status` reads, over one port-forward per scenario: `world.readRun`), `kubectl` for the cluster,
 // the pod's own printed conversation (ADR-0023) for the one thing neither can see, which tool the
 // model called first.
 //
@@ -10,11 +11,11 @@
 // as …`) and add the in-pod verification of the branch. Every helper here takes the run id
 // explicitly: a claim has many runs in flight, and `world.runId` names one.
 
-import { Given, Then, When } from "@cucumber/cucumber";
+import { After, Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -30,6 +31,7 @@ import {
   modeAtAsk,
   modesOf,
   restartedHarnessRunning,
+  ofRun,
   saidAfterPrompt,
   saidIn,
   told,
@@ -54,8 +56,9 @@ import {
   type RunChild,
 } from "../lib/model-status.ts";
 import { needsCarried, readContinue, type PushRecord } from "../lib/model-continue.ts";
-import { beginEvidence, recordStatus, trialContext, type TrialContext } from "./model-evidence.ts";
-import { cellDir, trialDir } from "../lib/model-evidence.ts";
+import { beginEvidence, keptConversation, recordStatus, trialContext, type TrialContext } from "./model-evidence.ts";
+import { cellDir, menuOnlySeatedWorkflows, tokensOf, trialDir, type Usage } from "../lib/model-evidence.ts";
+import { appendUsage, cellUsage, dollars, mergeCell, monthToDate, type CellUsage } from "../lib/model-scorecard.ts";
 import { ensureSeed, pushRemoteCommitsFromMain, pushRemoteLogFromMain } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
@@ -68,6 +71,8 @@ const INSTANCE_HARNESS = "jr2-instance-harness";
 
 /** Where the run's scorecard goes, and where committed baselines live (ADR-0066). */
 const SCORECARD = fileURLToPath(new URL("../.tmp/model-scorecard.json", import.meta.url));
+/** One line per cell recorded, with what its trials spent: the month's cost is summed off it. */
+const USAGE = fileURLToPath(new URL("../.tmp/model-usage.jsonl", import.meta.url));
 const BASELINES = fileURLToPath(new URL("../model-baselines/", import.meta.url));
 /** Where every trial's evidence is kept, pass or not (ADR-0066): `<model>/<cell>/<runId>/`. */
 const TRIALS = fileURLToPath(new URL("../.tmp/model-trials/", import.meta.url));
@@ -76,8 +81,8 @@ const TRIALS = fileURLToPath(new URL("../.tmp/model-trials/", import.meta.url));
 
 /** One open Gate on the run: the id `jr2 send --gate` takes, and the invoking state's `meta`. */
 type OpenGate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
-/** `jr2 status <runId>`: the root's status and value, the wrapper's context (where a body's
- * output lands), the children, and the open Gates. */
+/** `jr2 status <runId>`, as `world.readRun` reads it: the root's status and value, the wrapper's
+ * context (where a body's output lands), the children, and the open Gates. */
 type Status = {
   status: string;
   value: unknown;
@@ -130,9 +135,8 @@ async function inHarness(world: E2EWorld, pod: string, cmd: string[]): Promise<{
 }
 
 async function status(world: E2EWorld, runId: string): Promise<Status> {
-  const r = await world.runCli(["status", runId]);
-  assert.equal(r.code, 0, `jr2 status ${runId} failed: ${r.stderr}`);
-  const s = world.resultJson<Status>();
+  const s = (await world.readRun(runId)) as Status | undefined;
+  assert.ok(s, `no run "${runId}"`);
   recordStatus(runId, s); // the Machine's final record is the last status a driver read
   return s;
 }
@@ -343,41 +347,32 @@ function followLog(world: E2EWorld, pod: string): Follow {
   return follow("kubectl", ["--namespace", world.namespace, "logs", "-f", `pod/${pod}`, "-c", "harness"]);
 }
 
-/** The printed conversation's source: the Instance Harness's (Menu-only Agents), one Sandbox
- * pod's Harness container read once, or one followed from Ready. */
-type LogSource = { statefulset: string } | { pod: string } | { follow: Follow };
+/** The printed conversation's source: one run's conversations on the Instance Harness (Menu-only
+ * Agents), or one Sandbox pod's Harness container followed from Ready. */
+type LogSource = { run: string } | { follow: Follow };
 
-const INSTANCE_LOG: LogSource = { statefulset: INSTANCE_HARNESS };
+/** One run's lines of the Instance Harness log, as the trial's evidence kept them (ADR-0023,
+ * ADR-0066): the Menu-only trials that run at once all print into that one log, and each reads its
+ * own run's part of it. */
+async function instanceLog(runId: string): Promise<string> {
+  return ofRun(await keptConversation(runId), runId);
+}
 
 /**
  * What the model called and read in the Turn whose prompt carries `marker`, read off a Harness's
- * pod log — `[<agent>] [<tool>] <input>` lines, Menu tools by their bare name (ADR-0023). It runs
- * on through the nudges and the restated Turn parts of that Turn, and stops at the next trial's
- * prompt (another `[<marker>]`). `undefined` while that prompt has not printed.
+ * pod log — `[<agent>] [<iid>] [<tool>] <input>` lines, Menu tools by their bare name (ADR-0023).
+ * It runs on through the nudges and the restated Turn parts of that Turn, and stops at the next
+ * trial's prompt (another `[<marker>]`). `undefined` while that prompt has not printed.
  */
-async function saidAfter(
-  world: E2EWorld,
-  agent: string,
-  marker: string,
-  source = INSTANCE_LOG,
-): Promise<Said[] | undefined> {
-  const log =
-    "follow" in source
-      ? source.follow.text
-      : await kubectl(world, [
-          "logs",
-          "pod" in source ? `pod/${source.pod}` : `statefulset/${source.statefulset}`,
-          "-c",
-          "harness",
-          "--tail=-1",
-        ]);
+async function saidAfter(agent: string, marker: string, source: LogSource): Promise<Said[] | undefined> {
+  const log = "follow" in source ? source.follow.text : await instanceLog(source.run);
   return saidIn(log, agent, marker);
 }
 
 /** The first tool the model called in the Turn whose prompt carries `marker`, before any other
  * prompt — `undefined` when the prompt is not there yet, or no call followed it. */
-async function firstCallAfter(world: E2EWorld, agent: string, marker: string): Promise<string | undefined> {
-  for (const s of (await saidAfter(world, agent, marker)) ?? []) {
+async function firstCallAfter(runId: string, agent: string, marker: string): Promise<string | undefined> {
+  for (const s of (await saidAfter(agent, marker, { run: runId })) ?? []) {
     if ("prompt" in s) return undefined; // the Turn's next prompt: this one made no call first
     return s.call;
   }
@@ -402,8 +397,16 @@ type Trial = {
 };
 
 /** A claim's record, carried between the When and its Then steps. `cell` is the primary claim's;
- * `floors` holds each cell's floor once its Then step has judged it. */
-type Claim = { workflow: string; cell: string; thinking: string; trials: Trial[]; floors: Record<string, number> };
+ * `floors` holds each cell's floor once its Then step has judged it. `spent` is what each trial's
+ * model answers spent, a void trial's too, `undefined` where it could not be read. */
+type Claim = {
+  workflow: string;
+  cell: string;
+  thinking: string;
+  trials: Trial[];
+  floors: Record<string, number>;
+  spent: Array<Usage | undefined>;
+};
 
 /** A trial driver: start one run of the workflow with the cell's input and measure it. */
 type Driver = (world: E2EWorld, input: { thinking: string; marker: string }) => Promise<Trial>;
@@ -415,7 +418,7 @@ const TRIAL_MS = 900_000;
 const obedience: Driver = async (world, input) => {
   const runId = await startRun(world, "obedience", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const first = await firstCallAfter(world, "advisor", input.marker);
+  const first = await firstCallAfter(runId, "advisor", input.marker);
   return {
     runId,
     measured: first === "hold",
@@ -428,7 +431,7 @@ const obedience: Driver = async (world, input) => {
 const advised: Driver = async (world, input) => {
   const runId = await startRun(world, "advised", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const first = await firstCallAfter(world, "advisor", input.marker);
+  const first = await firstCallAfter(runId, "advisor", input.marker);
   const sandboxes = (await sandboxesFor(world, runId)).length;
   return {
     runId,
@@ -627,7 +630,7 @@ const noticed: Driver = async (world, input) => {
 const modeFollow: Driver = async (world, input) => {
   const runId = await startRun(world, "mode-follow", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
+  const said = (await saidAfter("advisor", input.marker, { run: runId })) ?? [];
   const calls = menuCalls(said, new Set(["ask_review", "add_note", "revise", "submit"]));
   const asked = calls.findIndex((c) => c.call === "ask_review");
   const next = asked === -1 ? undefined : calls[asked + 1]?.call;
@@ -650,7 +653,7 @@ const modeFollow: Driver = async (world, input) => {
 const modeRefusal: Driver = async (world, input) => {
   const runId = await startRun(world, "mode-refusal", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
+  const said = (await saidAfter("advisor", input.marker, { run: runId })) ?? [];
   const calls = menuCalls(said, new Set(["ask_review", "revise", "submit", "publish"]));
   const ledger = ((last.context as { picks?: string[] }).picks ?? []) as string[];
   const asked = calls.findIndex((c) => c.call === "ask_review");
@@ -691,7 +694,7 @@ const modeStop: Driver = async (world, input) => {
   const notes = await modeStopNotes();
   const runId = await startRun(world, "mode-stop", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
+  const said = (await saidAfter("advisor", input.marker, { run: runId })) ?? [];
   const modes = modesOf(notes);
   const menu = new Set(Object.values(modes).flatMap((m) => Object.keys(m.picks)));
   const asked = askAfter(said, "ask_review");
@@ -714,17 +717,16 @@ function gateNamed(s: Status, id: string): OpenGate | undefined {
 /** Wait until the Turn whose prompt carries `marker` has printed and what follows it satisfies
  * `until`; the last read either way (empty while the prompt has not printed). */
 async function saidUntil(
-  world: E2EWorld,
   agent: string,
   marker: string,
   until: (said: Said[]) => boolean,
   ms: number,
-  source = INSTANCE_LOG,
+  source: LogSource,
   everyMs = 500,
 ): Promise<{ hit: boolean; said: Said[] }> {
   const deadline = Date.now() + ms;
   for (;;) {
-    const said = await saidAfter(world, agent, marker, source);
+    const said = await saidAfter(agent, marker, source);
     if (said !== undefined && until(said)) return { hit: true, said };
     if (Date.now() > deadline) return { hit: false, said: said ?? [] };
     await sleep(everyMs);
@@ -768,7 +770,7 @@ const wake: Driver = async (world, input) => {
   }
   await sendToGate(world, runId, board.gate, "cleared");
   const { last } = await waitFor(world, runId, settled, 300_000);
-  const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
+  const said = (await saidAfter("advisor", input.marker, { run: runId })) ?? [];
   const asked = said.findIndex(isNudge);
   const first = asked === -1 ? undefined : menuCalls(said, WAKE_MENU, asked)[0]?.call;
   const seen = asked === -1 ? "never woken" : `first after the wake ${first ?? "none"}`;
@@ -817,7 +819,6 @@ async function pushFollowIn(
   source: { follow: Follow },
 ): Promise<Trial> {
   const sleeping = await saidUntil(
-    world,
     "coder",
     input.marker,
     (said) => said.some((s) => "call" in s && s.call === "bash"),
@@ -862,7 +863,7 @@ async function pushFollowIn(
     }
     const refused = `jr2 send approve failed: ${sent.stderr}`;
     const after = await status(world, runId).catch((err: Error) => {
-      throw new Error(`${refused}; then jr2 status failed: ${err.message}`);
+      throw new Error(`${refused}; then the status read failed: ${err.message}`);
     });
     assert.ok(gateWentFirst(sent.stderr, after, desk.gate, "work"), refused);
     last = settled(after) ? after : (await waitFor(world, runId, settled, 120_000)).last;
@@ -881,7 +882,7 @@ async function pushFollowIn(
   }
   // The reap at settle ends the stream; what it held by then is the whole conversation.
   await Promise.race([source.follow.closed, sleep(10_000)]);
-  const said = (await saidAfter(world, "coder", input.marker, source)) ?? [];
+  const said = (await saidAfter("coder", input.marker, source)) ?? [];
   const restated = said.findIndex(isRestatement);
   const firstAfter = restated === -1 ? undefined : menuCalls(said, PUSH_MENU, restated)[0]?.call;
   const also = { "push-no-refusal": firstAfter !== undefined && PUSH_NEW.has(firstAfter) };
@@ -926,7 +927,7 @@ const CHAIN_MENU = new Set(["run_checks", "release", "hold"]);
 const chainAnswer: Driver = async (world, input) => {
   const runId = await startRun(world, "chain-answer", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
+  const said = (await saidAfter("advisor", input.marker, { run: runId })) ?? [];
   const calls = menuCalls(said, CHAIN_MENU);
   const ran = calls.findIndex((c) => c.call === "run_checks");
   const next = ran === -1 ? undefined : calls[ran + 1]?.call;
@@ -951,8 +952,7 @@ const chartRefusal: Driver = async (world, input) => {
   const runId = await startRun(world, "chart-refusal", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
   const outcomes = ((last.context as { outcomes?: string[] }).outcomes ?? []).map(String);
-  const log = await kubectl(world, ["logs", `statefulset/${INSTANCE_HARNESS}`, "-c", "harness", "--tail=-1"]);
-  const reading = readChartRefusal(outcomes, answersIn(log, input.marker));
+  const reading = readChartRefusal(outcomes, answersIn(await instanceLog(runId), input.marker));
   return {
     runId,
     measured: reading.measured,
@@ -969,9 +969,9 @@ const READMITTED = "Your previous turn was cut";
 /**
  * cut-pick (ADR-0031): once `run_audit` is outstanding, the step deletes the Instance Harness pod,
  * waits for the new one, and only then answers the auditor's Gate. jr2 re-admits the Agent on the
- * same conversation; the new pod's log begins at the restart, so the first re-admission prompt in it
- * is this trial's. The first Menu call after it is the measurement: `file_report` — not the cut
- * pick again. A Turn that had not picked when the step looked is void.
+ * same conversation. The run's lines of the log, kept across both pods, hold one re-admission
+ * prompt: this trial's. The first Menu call after it is the measurement: `file_report` — not the
+ * cut pick again. A Turn that had not picked when the step looked is void.
  */
 const cutPick: Driver = async (world, input) => {
   const runId = await startRun(world, "cut-pick", input);
@@ -995,8 +995,7 @@ const cutPick: Driver = async (world, input) => {
   ]);
   assert.equal(r.code, 0, `jr2 send audited failed: ${r.stderr}`);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const log = await kubectl(world, ["logs", `statefulset/${INSTANCE_HARNESS}`, "-c", "harness", "--tail=-1"]);
-  const said = saidAfterPrompt(log, "advisor", READMITTED);
+  const said = saidAfterPrompt(await instanceLog(runId), "advisor", READMITTED);
   if (said === undefined) {
     return {
       runId,
@@ -1078,7 +1077,7 @@ const allowedAfterRoute: Driver = async (world, input) => {
   try {
     const { last } = await waitFor(world, runId, settled, TRIAL_MS);
     await Promise.race([source.follow.closed, sleep(10_000)]);
-    const said = (await saidAfter(world, "coder", input.marker, source)) ?? [];
+    const said = (await saidAfter("coder", input.marker, source)) ?? [];
     const calls = menuCalls(said, ROUTE_MENU);
     const ran = calls.findIndex((c) => c.call === "run_tests");
     const next = ran === -1 ? undefined : calls[ran + 1]?.call;
@@ -1188,8 +1187,9 @@ const DRIVERS: Record<string, Driver> = {
   "chart-refusal": chartRefusal,
 };
 
-/** The Menu-only claims read one shared pod log, so their trials run one at a time. */
-const SERIAL = new Set([
+/** The Menu-only claims: their Agents run on the Instance Harness (ADR-0031), and the trials in
+ * flight all print into its one log. Each trial reads its own run's lines of it (`instanceLog`). */
+const MENU_ONLY = new Set([
   "obedience",
   "advised",
   "mode-follow",
@@ -1201,8 +1201,25 @@ const SERIAL = new Set([
   "chart-refusal",
 ]);
 
+/** The claims that keep fewer trials in flight than the profile's `parallel`, and their bound.
+ * - `cut-pick` runs one at a time: a trial deletes the Instance Harness pod, which would cut the
+ *   Turn of every other trial in flight on it.
+ * - `noticed` runs at most two: each trial's memory hog fills its Sandbox to the limit. On a loaded
+ *   host the kernel's OOM killer takes the container before the guard takes the hog, and that
+ *   trial is void (ADR-0066), so more trials in flight buy fewer measured ones. */
+const TRIAL_CAPS = new Map([
+  ["cut-pick", 1],
+  ["noticed", 2],
+]);
+
 /** The claims whose trials push to the seed's push remote: their evidence logs what it holds. */
 const PUSHES = new Set(["continue-after-signed-push"]);
+
+/** The Sandbox claims whose `workspace()` encloses a Menu-only seat (today `ticket`'s planner):
+ * that seat's Turns run on the Instance Harness, so their evidence keeps it beside the Sandbox's. */
+const MENU_ONLY_SEATED = menuOnlySeatedWorkflows(
+  fileURLToPath(new URL("../model-instance/workflows/", import.meta.url)),
+);
 
 /** What a trial's evidence is read with, bound to the scenario's namespace. */
 function evidenceContext(world: E2EWorld, workflow: string, thinking: string, marker: string): TrialContext {
@@ -1210,8 +1227,9 @@ function evidenceContext(world: E2EWorld, workflow: string, thinking: string, ma
   const model = modelKey(world);
   return {
     marker,
-    sandbox: !SERIAL.has(workflow),
+    sandbox: !MENU_ONLY.has(workflow),
     push: PUSHES.has(workflow),
+    instance: !MENU_ONLY.has(workflow) && MENU_ONLY_SEATED.has(workflow),
     since: new Date().toISOString(),
     dirFor: (runId) => trialDir(TRIALS, model, `${workflow}/${thinking}`, runId),
     probes: {
@@ -1226,7 +1244,8 @@ function evidenceContext(world: E2EWorld, workflow: string, thinking: string, ma
 /**
  * Run `n` trials with at most `parallel` in flight. Every trial gets its own marker, and every
  * trial, pass or not, keeps its evidence (ADR-0066): its note opens with what the model called,
- * read off the conversation kept for it.
+ * read off the conversation kept for it. What each trial spent is summed off its evidence, a void
+ * trial's too: it was spent.
  */
 async function runTrials(
   world: E2EWorld,
@@ -1235,8 +1254,9 @@ async function runTrials(
   n: number,
   parallel: number,
   thinking: string,
-) {
+): Promise<{ trials: Trial[]; spent: Array<Usage | undefined> }> {
   const results: Trial[] = [];
+  const spent: Array<Usage | undefined> = [];
   let next = 0;
   // A void trial is replaced, at most this many times over the whole claim: the claim measures a
   // later Turn, and a setup that never happened says nothing about it.
@@ -1260,17 +1280,18 @@ async function runTrials(
       if (ctx.evidence) await cancelAndSettle(world, ctx.evidence.runId).catch(() => undefined);
       // The note opens with what the model called; the driver's note, which says how the run ended, follows.
       if (ctx.evidence) trial = { ...trial, note: [await ctx.evidence.finish(), trial.note].join("; ") };
+      spent.push(ctx.evidence?.spent());
       if (trial.void && replacements > 0) {
         replacements--;
         next--; // run another in its place
-        console.log(`trial ${trial.runId} void (${trial.note}); replaced`);
+        console.log(`trial ${trial.runId} ${workflow}/${thinking} void (${trial.note}); replaced`);
         continue;
       }
       results.push(trial);
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(parallel, n)) }, worker));
-  return results;
+  return { trials: results, spent };
 }
 
 /** Read the run's status, cancel the run when it has not settled, and read its status until it
@@ -1314,9 +1335,6 @@ function measureOf(claim: Claim, cell: string): (t: Trial) => boolean {
 
 // --- scorecard ------------------------------------------------------------------------------------------
 
-type Cell = { passed: number; trials: number; floor?: number; at: string };
-type Scorecard = Record<string, Record<string, Cell>>;
-
 /** The model's key in the scorecard and its baseline file name: `<id>--<model>`, `/` spelled `--`. */
 function modelKey(world: E2EWorld): string {
   const p = world.modelProfile;
@@ -1325,18 +1343,27 @@ function modelKey(world: E2EWorld): string {
 }
 
 /** Record one cell; fail nothing here — the floor was judged by the step before. Drift below a
- * committed baseline is REPORTED on the step's output (ADR-0066). */
-async function recordCell(world: E2EWorld, cell: string, passed: number, trials: number, floor?: number) {
+ * committed baseline is REPORTED on the step's output (ADR-0066). A cell its trials ran for records
+ * what they spent (`usage`), in the scorecard and as one line of the usage ledger; a second cell
+ * measured on the same trials records none, so nothing is counted twice. */
+async function recordCell(
+  world: E2EWorld,
+  cell: string,
+  passed: number,
+  trials: number,
+  floor?: number,
+  usage?: CellUsage,
+) {
   const key = modelKey(world);
-  await mkdir(fileURLToPath(new URL("../.tmp/", import.meta.url)), { recursive: true });
-  const card: Scorecard = JSON.parse(await readFile(SCORECARD, "utf8").catch(() => "{}")) as Scorecard;
-  (card[key] ??= {})[cell] = {
+  const at = new Date().toISOString();
+  const movedTo = await mergeCell(SCORECARD, key, cell, {
     passed,
     trials,
     ...(floor === undefined ? {} : { floor }),
-    at: new Date().toISOString(),
-  };
-  await writeFile(SCORECARD, `${JSON.stringify(card, null, 2)}\n`);
+    ...(usage === undefined ? {} : { usage }),
+    at,
+  });
+  if (movedTo !== undefined) console.log(`scorecard: the scorecard did not parse; it was moved to ${movedTo}`);
   const baseline = JSON.parse(await readFile(`${BASELINES}${key}.json`, "utf8").catch(() => "null")) as Record<
     string,
     { passed: number; trials: number }
@@ -1348,6 +1375,24 @@ async function recordCell(world: E2EWorld, cell: string, passed: number, trials:
     line += drift < 0 ? ` — BELOW baseline ${base.passed}/${base.trials}` : ` (baseline ${base.passed}/${base.trials})`;
   } else line += " (no baseline)";
   console.log(`scorecard: ${line}`);
+  if (usage !== undefined) await recordUsage(key, cell, usage, at);
+}
+
+/** Append the cell's line to the usage ledger and print what it spent, with the month's cost so
+ * far. Never fails the cell: a ledger that cannot be written or read says so. */
+async function recordUsage(key: string, cell: string, usage: CellUsage, at: string): Promise<void> {
+  const unread = usage.unavailable ? ` (${usage.unavailable} trials unread)` : "";
+  try {
+    await appendUsage(USAGE, { at, model: key, cell, usage });
+    const month = monthToDate(await readFile(USAGE, "utf8"), new Date(at));
+    console.log(
+      `usage: ${key} ${cell}: ${tokensOf(usage)} tokens, ${dollars(usage.cost)}${unread}; month to date ${dollars(month)}`,
+    );
+  } catch (err) {
+    console.log(
+      `usage: ${key} ${cell}: ${tokensOf(usage)} tokens, ${dollars(usage.cost)}${unread}; the usage ledger: ${(err as Error).message}`,
+    );
+  }
 }
 
 // --- given ------------------------------------------------------------------------------------------------
@@ -1366,9 +1411,9 @@ When(
   async function (this: E2EWorld, workflow: string, n: number, thinking: string): Promise<void> {
     const driver = DRIVERS[workflow];
     assert.ok(driver, `no trial driver for workflow "${workflow}" (have: ${Object.keys(DRIVERS).join(", ")})`);
-    const parallel = SERIAL.has(workflow) ? 1 : (this.modelProfile?.parallel ?? 2);
-    const trials = await runTrials(this, workflow, driver, n, parallel, thinking);
-    claims.set(this, { workflow, cell: `${workflow}/${thinking}`, thinking, trials, floors: {} });
+    const parallel = Math.min(TRIAL_CAPS.get(workflow) ?? Infinity, this.modelProfile?.parallel ?? 2);
+    const { trials, spent } = await runTrials(this, workflow, driver, n, parallel, thinking);
+    claims.set(this, { workflow, cell: `${workflow}/${thinking}`, thinking, trials, floors: {}, spent });
   },
 );
 
@@ -1505,21 +1550,41 @@ Then("the cell {string} is written to the scorecard", async function (this: E2EW
     const second = cell.endsWith(`/${claim.thinking}`) && claim.trials.some((t) => t.also !== undefined);
     assert.ok(cell === claim.cell || second, `the scenario names a cell it ran (${claim.cell})`);
     const measure = measureOf(claim, cell);
-    await recordCell(this, cell, claim.trials.filter(measure).length, claim.trials.length, claim.floors[cell]);
+    const usage = cell === claim.cell ? cellUsage(claim.spent) : undefined;
+    await recordCell(this, cell, claim.trials.filter(measure).length, claim.trials.length, claim.floors[cell], usage);
     return;
   }
   // The run: one trial, measured by the steps before this one reaching here.
-  await recordCell(this, cell, 1, 1, 1);
+  await recordCell(this, cell, 1, 1, 1, cellUsage([await finishRun(this)]));
 });
 
 // --- the run ------------------------------------------------------------------------------------------------
 
+/** The run's evidence, kept like a trial's from its start (ADR-0066) and ended when its cell is
+ * written, or at the scenario's end when a step before that failed. */
+const runEvidence = new WeakMap<E2EWorld, TrialContext>();
+
 When(
   "I start the {string} workflow with thinking {word} detached",
   async function (this: E2EWorld, workflow: string, thinking: string): Promise<void> {
-    this.runId = await startRun(this, workflow, { thinking });
+    const ctx = evidenceContext(this, workflow, thinking, "run");
+    runEvidence.set(this, ctx);
+    this.runId = await trialContext.run(ctx, () => startRun(this, workflow, { thinking }));
   },
 );
+
+/** End the run's evidence, once: what its model answers spent, `undefined` when it was not read. */
+async function finishRun(world: E2EWorld): Promise<Usage | undefined> {
+  const ctx = runEvidence.get(world);
+  runEvidence.delete(world);
+  if (ctx?.evidence === undefined) return undefined;
+  await ctx.evidence.finish();
+  return ctx.evidence.spent();
+}
+
+After({ tags: "@model", timeout: 120_000 }, async function (this: E2EWorld): Promise<void> {
+  await finishRun(this);
+});
 
 /** The run's whole path to its Gate, bounded in time: three seats, a bounded reject loop. */
 Then("the run parks at the {string} Gate", { timeout: 3_600_000 }, async function (this: E2EWorld, state: string) {

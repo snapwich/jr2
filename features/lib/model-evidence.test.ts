@@ -1,13 +1,14 @@
 // What the @model tier keeps of every trial (ADR-0066), pinned without a cluster or a model: where a
 // trial's evidence lands, the note's reading of what the model called, the conversation a trial's
-// Harness history is asked for, the push remote's log command, and the follow that outlives a
-// container restart and a pod's reap.
+// Harness history is asked for, the push remote's log command, the Harnesses a trial's usage is
+// summed over, and the follow that outlives a container restart and a pod's reap.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
-  agentsIn,
   containerRun,
+  conversationsIn,
   followAcross,
   historyIid,
   publishedCommits,
@@ -19,7 +20,13 @@ import {
   trialDir,
   cellDir,
   historyFile,
+  trialUsage,
+  trialUsageAcross,
+  enclosesMenuOnlySeat,
+  menuOnlyAgents,
+  menuOnlySeatedWorkflows,
   unavailable,
+  usageOf,
 } from "./model-evidence.ts";
 import { follow } from "./model-said.ts";
 
@@ -119,6 +126,102 @@ test("harness-history with no view read keeps what the stream carried, and says 
   assert.match(historyFile(notOk, new Map([["i", [{ submissionId: "s1", outcome: "completed" }]]]), "x"), /"s1"/);
 });
 
+test("a stream page keeps each settlement's usage", () => {
+  const usage = { input: 40, output: 20, cacheRead: 60, cacheWrite: 0, cost: 0.001 };
+  assert.deepEqual(settledIn([{ type: "submission-settled", submissionId: "s1", outcome: "completed", usage }]), [
+    { submissionId: "s1", outcome: "completed", usage },
+  ]);
+});
+
+test("a trial's usage sums every settlement its evidence kept, each Submission once, from the views and the streams", () => {
+  const u1 = { input: 40, output: 20, cacheRead: 60, cacheWrite: 0, cost: 0.25 };
+  const u2 = { input: 50, output: 30, cacheRead: 90, cacheWrite: 10, cost: 0.5 };
+  const u3 = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0.125 };
+  const view = (settlements: unknown[]) => `read at T\nHTTP 200\n${JSON.stringify({ v: 1, settlements })}\n`;
+  const views = new Map([
+    ["r/body/planner", view([{ submissionId: "p1", outcome: "ended", usage: u1 }])],
+    // s1 is in the view and on the stream: counted once. s0 never had a model answer: no usage.
+    [
+      "r/body/coder",
+      view([
+        { submissionId: "s0", outcome: "aborted" },
+        { submissionId: "s1", outcome: "completed", usage: u2 },
+      ]),
+    ],
+    ["r/body/reviewer", "read at T\nHTTP 404\n{}\n"],
+  ]);
+  const settled = new Map([
+    ["r/body/coder", [{ submissionId: "s1", outcome: "completed", usage: u2 }]],
+    // The Turn settled just before the reap: on the stream alone.
+    ["r/body/reviewer", [{ submissionId: "v1", outcome: "ended", usage: u3 }]],
+  ]);
+  assert.deepEqual(trialUsage(views, settled), { input: 91, output: 52, cacheRead: 153, cacheWrite: 14, cost: 0.875 });
+});
+
+test("a trial whose kept settlements carry no usage has none to read: an older Harness, or no settlement kept", () => {
+  const views = new Map([
+    ["i", 'read at T\nHTTP 200\n{"v":1,"settlements":[{"submissionId":"s1","outcome":"completed"}]}\n'],
+  ]);
+  assert.equal(trialUsage(views, new Map()), undefined);
+  assert.equal(trialUsage(new Map(), new Map()), undefined);
+  assert.equal(trialUsage(new Map([["i", "read at T\nHTTP 200\nnot json"]]), new Map()), undefined);
+});
+
+test("a Sandbox trial's usage adds its Instance Harness side, where a Menu-only seat's Turn runs, each Submission once", () => {
+  const coder = { input: 40, output: 20, cacheRead: 60, cacheWrite: 0, cost: 0.25 };
+  const planner = { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, cost: 0.5 };
+  const view = (settlements: unknown[]) => `read at T\nHTTP 200\n${JSON.stringify({ v: 1, settlements })}\n`;
+  const sandbox = {
+    views: new Map([["r/body/coder", view([{ submissionId: "s1", outcome: "completed", usage: coder }])]]),
+    settled: new Map([["r/body/coder", [{ submissionId: "s1", outcome: "completed", usage: coder }]]]),
+  };
+  // The same Instance ID on both sides is not lost: its Submissions are summed, s1 still once.
+  const instance = {
+    views: new Map([["r/body/coder", view([{ submissionId: "s1", outcome: "completed", usage: coder }])]]),
+    settled: new Map([["r/body/planner", [{ submissionId: "p1", outcome: "ended", usage: planner }]]]),
+  };
+  assert.deepEqual(trialUsageAcross([sandbox, instance]), {
+    input: 45,
+    output: 26,
+    cacheRead: 67,
+    cacheWrite: 8,
+    cost: 0.75,
+  });
+  assert.deepEqual(trialUsageAcross([sandbox]), trialUsage(sandbox.views, sandbox.settled));
+  assert.equal(trialUsageAcross([]), undefined);
+});
+
+test("a workflow keeps the Instance Harness side when its workspace() encloses a Menu-only seat", () => {
+  const agents = `export const coder = {\n  workspace: "write",\n} satisfies AgentDefinition;
+export const planner = {\n  workspace: "none",\n} satisfies AgentDefinition;`;
+  const menuOnly = menuOnlyAgents(agents);
+  assert.deepEqual([...menuOnly], ["planner"]);
+  const head = (names: string) => `import { ${names} } from "./_agents.ts";\n`;
+  assert.equal(
+    enclosesMenuOnlySeat(`${head("coder, planner")}export const machine = workspace(body, {});`, menuOnly),
+    true,
+  );
+  assert.equal(enclosesMenuOnlySeat(`${head("coder")}export const machine = workspace(body, {});`, menuOnly), false);
+  // A Menu-only claim's root runs on the Instance Harness already: there is no second side.
+  assert.equal(
+    enclosesMenuOnlySeat(`${head("planner")}export const machine = setup({}).createMachine({});`, menuOnly),
+    false,
+  );
+});
+
+test("of the tier's claim workflows, only ticket's workspace() encloses a Menu-only seat (its planner)", () => {
+  const workflows = fileURLToPath(new URL("../model-instance/workflows/", import.meta.url));
+  assert.deepEqual([...menuOnlySeatedWorkflows(workflows)], ["ticket"]);
+});
+
+test("a usage is read only when every field is a finite number", () => {
+  const u = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0.5, extra: "kept out" };
+  assert.deepEqual(usageOf(u), { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, cost: 0.5 });
+  assert.equal(usageOf({ ...u, cost: "0.5" }), undefined);
+  assert.equal(usageOf({ input: 1 }), undefined);
+  assert.equal(usageOf(null), undefined);
+});
+
 test("a probe that could not be taken writes why, in the dump's form", () => {
   assert.equal(unavailable("no Sandbox for the run was seen"), "<unavailable: no Sandbox for the run was seen>\n");
 });
@@ -128,6 +231,11 @@ test("the note says what the model called, in the Menu-only notes' form, or why 
     "[advisor] [prompt] [t0-a] Go.\n[advisor] [bash] ls\n[advisor] [prompt] <jr2-turn>\n[advisor] [submit] {}";
   assert.equal(saidNote(kept, "t0-a", "no reason"), "said bash (restated) submit");
   assert.equal(saidNote("[advisor] [prompt] [t0-a] Go.", "t0-a", "no reason"), "said nothing");
+  assert.equal(
+    saidNote("[advisor] [r1/root/advisor] [prompt] [t0-a] Go.\n[advisor] [r1/root/advisor] [hold] {}", "t0-a", "x"),
+    "said hold",
+    "a line that carries its Instance ID (ADR-0023)",
+  );
   assert.equal(
     saidNote(
       "[coder] [prompt] [t0-a] Go.\n[coder] [bash] ls\n[run] [status] running\n[run] [emit] done\n[run] [status] done",
@@ -147,18 +255,24 @@ test("the note says what the model called, in the Menu-only notes' form, or why 
   );
 });
 
-test("the Agents of a kept conversation are the ones whose prompt printed, in order, once each", () => {
+test("the conversations of a kept log are the ones whose prompt printed, by the Instance ID they print, in order, once each", () => {
   const kept = [
-    "2026-10-13T10:00:00Z [planner] [prompt] [t0-a] Plan.",
-    "2026-10-13T10:00:01Z [planner] [plan] {}",
-    "2026-10-13T10:00:02Z [coder] [prompt] Code.",
-    "2026-10-13T10:00:03Z [planner] [prompt] again",
+    "2026-10-13T10:00:00Z [planner] [r1/root/planner] [prompt] [t0-a] Plan.",
+    "2026-10-13T10:00:01Z [planner] [r1/root/planner] [plan] {}",
+    "2026-10-13T10:00:01Z [reviewer] [admitted] the echo prints no Instance ID",
+    "2026-10-13T10:00:02Z [summarizer] [r1/root/open/summarizer/0a1b2c3d] [prompt] Sum it up.",
+    "2026-10-13T10:00:03Z [planner] [r1/root/planner] [prompt] again",
+    "2026-10-13T10:00:04Z [planner] [r1/root/planner/1] [prompt] Your previous turn was cut.",
   ].join("\n");
-  assert.deepEqual(agentsIn(kept), ["planner", "coder"]);
-  assert.deepEqual(agentsIn("nothing printed"), []);
+  assert.deepEqual(conversationsIn(kept), [
+    { agent: "planner", iid: "r1/root/planner" },
+    { agent: "summarizer", iid: "r1/root/open/summarizer/0a1b2c3d" },
+    { agent: "planner", iid: "r1/root/planner/1" },
+  ]);
+  assert.deepEqual(conversationsIn("nothing printed"), []);
 });
 
-test("a claim Agent's conversation is its continued one: the workspace body's in a Sandbox, the root's on the Instance Harness", () => {
+test("before a prompt printed, a claim Agent's conversation is its continued one: the workspace body's in a Sandbox, the root's on the Instance Harness", () => {
   assert.equal(historyIid("r1", true, "coder"), "r1/body/coder");
   assert.equal(historyIid("r1", false, "advisor"), "r1/root/advisor");
 });

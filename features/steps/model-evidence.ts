@@ -8,7 +8,9 @@
 // reads the Harness's history view while the pod lives, and follows each Agent's stream for its
 // settlements, so the one that lands just before the reap is kept too — and writes each file as it changes, so a
 // trial that hangs until its timeout still leaves what it had. Every probe only reads: a probe that
-// fails writes why into its file, never fails the trial, and never changes what the next trial does.
+// fails writes why into its file and never changes what the next trial does. A Menu-only driver
+// measures the kept conversation, so a failed follow leaves that trial unmeasured; no other probe
+// fails the trial.
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -16,8 +18,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  agentsIn,
   containerRun,
+  conversationsIn,
   followAcross,
   historyFile,
   historyIid,
@@ -26,12 +28,14 @@ import {
   settledIn,
   STREAM_NEXT_OFFSET,
   streamPath,
+  trialUsageAcross,
   unavailable,
   type Kept,
   type PodSeen,
   type SettlementSeen,
+  type Usage,
 } from "../lib/model-evidence.ts";
-import { follow } from "../lib/model-said.ts";
+import { follow, keptOfRun } from "../lib/model-said.ts";
 
 /** What the tier reads a trial's evidence with, bound to the scenario's namespace. */
 export type EvidenceProbes = {
@@ -52,6 +56,9 @@ export type TrialContext = {
   sandbox: boolean;
   /** Whether the claim pushes: its record's published commits are logged off the push remote. */
   push: boolean;
+  /** Whether a Sandbox claim's Workspace encloses a Menu-only seat, whose Turns run on the
+   * Instance Harness: its trial keeps that side too, in the trial folder's `instance/`. */
+  instance: boolean;
   /** When the trial began (RFC 3339): the Instance Harness's log is kept from here. */
   since: string;
   /** The trial's folder, once its run id is known. */
@@ -78,6 +85,21 @@ export function beginEvidence(runId: string): void {
   }
 }
 
+/**
+ * The trial's printed conversation as the evidence keeps it (`conversation.txt`), read once the
+ * run's lines stopped changing: the follow streams the log, so the last lines of a Turn that
+ * settled a moment ago can still be on their way. A Menu-only trial's is its own run's lines of the
+ * Instance Harness log. The one source of a driver's measurement and of the kept file, so the
+ * measurement reads every container the follow attached to, where `kubectl logs` reads only the
+ * current one and loses what a restart or a rotation dropped.
+ */
+export async function keptConversation(runId: string): Promise<string> {
+  const evidence = byRun.get(runId);
+  if (evidence === undefined)
+    throw new Error(`no evidence is kept for run ${runId}: the trial's log was never followed`);
+  return evidence.quiet();
+}
+
 /** Record a status a driver read: the Machine's final record is the last one. */
 export function recordStatus(runId: string, status: unknown): void {
   byRun.get(runId)?.record(status);
@@ -97,6 +119,10 @@ const STREAM_READ_MS = 40_000;
 /** How long a Sandbox trial's follows may take to end on their own after the driver returned:
  * the reap at settle ends them. */
 const REAP_GRACE_MS = 30_000;
+/** How long the run's printed lines stay unchanged before a driver reads them, and the longest it
+ * waits for that. */
+const QUIET_MS = 2_000;
+const QUIET_MAX_MS = 15_000;
 
 export class TrialEvidence {
   /** The trial's folder; `undefined` when it could not be named, and then nothing is written. */
@@ -118,18 +144,38 @@ export class TrialEvidence {
   private readonly history = new Map<string, string>();
   private historyWhy = "the history view was never read";
   private readonly loops: Promise<void>[];
+  /** The Instance Harness side of a Sandbox trial whose Workspace encloses a Menu-only seat. It is
+   * not in `byRun`: a status and the kept conversation stay the Sandbox side's. */
+  private readonly instanceSide: TrialEvidence | undefined;
 
   readonly runId: string;
   private readonly ctx: TrialContext;
+  /** This is another evidence's Instance Harness side: the run's status is kept by the Sandbox
+   * side, and only the conversations whose prompt printed here are read. */
+  private readonly side: boolean;
 
-  constructor(runId: string, ctx: TrialContext) {
+  constructor(runId: string, ctx: TrialContext, side = false) {
     this.runId = runId;
     this.ctx = ctx;
+    this.side = side;
     try {
       this.dir = ctx.dirFor(runId);
     } catch {
       this.dir = undefined; // Evidence never fails a trial: the note is still read.
     }
+    if (ctx.sandbox && ctx.instance)
+      this.instanceSide = new TrialEvidence(
+        runId,
+        {
+          ...ctx,
+          sandbox: false,
+          push: false,
+          instance: false,
+          evidence: undefined,
+          dirFor: (id) => join(ctx.dirFor(id), "instance"),
+        },
+        true,
+      );
     this.loops = [
       (ctx.sandbox ? this.watchSandbox() : this.watchInstance()).catch(() => {}),
       this.pollHistory().catch(() => {}),
@@ -149,6 +195,7 @@ export class TrialEvidence {
    * what the model called, read off the kept conversation. Never throws.
    */
   async finish(): Promise<string> {
+    const side = this.instanceSide?.finish();
     try {
       const follows = [this.harness?.closed, this.effector?.closed].filter((p) => p !== undefined);
       if (this.ctx.sandbox && follows.length > 0) await Promise.race([Promise.all(follows), sleep(REAP_GRACE_MS)]);
@@ -169,14 +216,54 @@ export class TrialEvidence {
       this.stopped = true;
       this.abort.abort();
       this.forward?.close();
-      byRun.delete(this.runId);
+      if (byRun.get(this.runId) === this) byRun.delete(this.runId);
+      await side;
     }
     return saidNote(this.conversation(), this.ctx.marker, this.harness?.why ?? this.notSeen);
   }
 
+  /** What the trial's model answers spent: the sum over every settlement its evidence kept, from
+   * the history views and the streams of its own conversations, on each Harness it kept
+   * (`trialUsageAcross`). `undefined` when no kept settlement carries a usage. Read after
+   * `finish`, it is the whole trial's. */
+  spent(): Usage | undefined {
+    try {
+      return trialUsageAcross(this.sides());
+    } catch {
+      return undefined; // Evidence never fails a trial.
+    }
+  }
+
+  /** What this evidence kept off each Harness: its own, then its Instance Harness side's. */
+  private sides(): Array<{ views: Map<string, string>; settled: Map<string, SettlementSeen[]> }> {
+    return [{ views: this.history, settled: this.settled }, ...(this.instanceSide?.sides() ?? [])];
+  }
+
+  /** The kept conversation: a Sandbox's whole Harness log (the pod serves one run), or the run's
+   * own lines of the Instance Harness log, which every Menu-only trial in flight prints into. */
   private conversation(): string {
     if (this.harness === undefined) return unavailable(this.notSeen);
-    return this.harness.text !== "" ? this.harness.text : unavailable(this.harness.why ?? "the log printed nothing");
+    const text = this.harness.text;
+    if (text === "") return unavailable(this.harness.why ?? "the log printed nothing");
+    if (this.ctx.sandbox) return text;
+    const own = keptOfRun(text, this.runId);
+    return own.length > 0 ? `${own.join("\n")}\n` : unavailable(`no line of run ${this.runId} printed in the log`);
+  }
+
+  /** The kept conversation once it has not changed for QUIET_MS, or after QUIET_MAX_MS. */
+  async quiet(): Promise<string> {
+    const deadline = Date.now() + QUIET_MAX_MS;
+    let seen = this.conversation();
+    let since = Date.now();
+    while (Date.now() < deadline && Date.now() - since < QUIET_MS) {
+      await sleep(250);
+      const now = this.conversation();
+      if (now !== seen) {
+        seen = now;
+        since = Date.now();
+      }
+    }
+    return seen;
   }
 
   /** A Sandbox claim: find the run's Sandbox, then follow its pod's Harness and Effector from the
@@ -263,12 +350,11 @@ export class TrialEvidence {
     let lastRead = 0;
     while (!this.stopped) {
       if (this.pod !== undefined) {
-        for (const agent of agentsIn(this.harness?.text ?? "")) {
-          const iid = historyIid(this.runId, this.ctx.sandbox, agent);
+        for (const { agent, iid } of this.conversations()) {
           if (!this.streams.has(iid))
             this.streams.set(
               iid,
-              this.followStream(iid).catch(() => {}),
+              this.followStream(agent, iid).catch(() => {}),
             );
         }
         if (Date.now() - lastRead >= HISTORY_EVERY_MS) {
@@ -280,22 +366,30 @@ export class TrialEvidence {
     }
   }
 
-  /** One read of each Agent's history (or of one, `only`); a 200 replaces the last view kept,
-   * anything else is kept only while there is none. */
-  private async readHistory(only?: string): Promise<void> {
+  /** The conversations whose prompt printed in the kept conversation, each with its Agent. */
+  private conversations(): Array<{ agent: string; iid: string }> {
+    return conversationsIn(this.conversation());
+  }
+
+  /** One read of each conversation's history (or of one, `only`); a 200 replaces the last view
+   * kept, anything else is kept only while there is none. Before any prompt printed, the claim
+   * Agent's continued conversation is asked for, except on a side: its seat's Instance ID is known
+   * only from its prompt. */
+  private async readHistory(only?: { agent: string; iid: string }): Promise<void> {
     if (this.pod === undefined) return;
-    const agents = agentsIn(this.harness?.text ?? "");
-    const iids =
+    const printed = this.conversations();
+    const fallback = this.ctx.sandbox ? "coder" : "advisor";
+    const reads =
       only !== undefined
         ? [only]
-        : (agents.length > 0 ? agents : [this.ctx.sandbox ? "coder" : "advisor"]).map((a) =>
-            historyIid(this.runId, this.ctx.sandbox, a),
-          );
-    for (const iid of iids) {
+        : printed.length > 0
+          ? printed
+          : this.side
+            ? []
+            : [{ agent: fallback, iid: historyIid(this.runId, this.ctx.sandbox, fallback) }];
+    for (const { agent, iid } of reads) {
       try {
-        const res = await this.get(
-          `/agents/${encodeURIComponent(agentOf(iid))}/${encodeURIComponent(iid)}?view=history`,
-        );
+        const res = await this.get(`/agents/${encodeURIComponent(agent)}/${encodeURIComponent(iid)}?view=history`);
         const view = `HTTP ${res.status}\n${await res.text()}\n`;
         if (res.status === 200 || !this.history.has(iid))
           this.history.set(iid, `read at ${new Date().toISOString()}\n${view}`);
@@ -311,13 +405,13 @@ export class TrialEvidence {
    * just before the reap, whose view can be too late to read, is kept off its stream. Each one
    * also has the view read again at once. Ends at the stop, or when a Sandbox pod is reaped.
    */
-  private async followStream(iid: string): Promise<void> {
+  private async followStream(agent: string, iid: string): Promise<void> {
     let offset = "0";
     const kept = this.settled.get(iid) ?? [];
     this.settled.set(iid, kept);
     while (!this.stopped) {
       try {
-        const res = await this.get(streamPath(agentOf(iid), iid, offset), STREAM_READ_MS);
+        const res = await this.get(streamPath(agent, iid, offset), STREAM_READ_MS);
         if (res.status === 200 || res.status === 204) {
           offset = res.headers.get(STREAM_NEXT_OFFSET) ?? offset;
           const fresh =
@@ -327,7 +421,7 @@ export class TrialEvidence {
           if (fresh.length > 0) {
             kept.push(...fresh);
             this.flush();
-            void this.readHistory(iid).catch(() => {});
+            void this.readHistory({ agent, iid }).catch(() => {});
           }
           continue;
         }
@@ -407,7 +501,7 @@ export class TrialEvidence {
       );
     }
     this.keep("harness-history.txt", historyFile(this.history, this.settled, this.historyWhy));
-    if (this.last === undefined) this.keep("record.json", unavailable("no status of the run was read"));
+    if (this.last === undefined && !this.side) this.keep("record.json", unavailable("no status of the run was read"));
   }
 
   /** Write `name` when its content changed; writes are serial, and a failed write is dropped. */
@@ -440,9 +534,6 @@ export class TrialEvidence {
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err)).trim();
-
-/** The Agent an iid's conversation is of: its last part (`<run>/<machine>/<agent>`). */
-const agentOf = (iid: string): string => iid.slice(iid.lastIndexOf("/") + 1);
 
 /**
  * One `kubectl port-forward` to a pod's Harness port, held open for the trial so a long-poll and

@@ -20,12 +20,12 @@ export const isNudge = (s: Said): boolean => "prompt" in s && s.prompt.startsWit
 
 /**
  * What the model called and read in the Turn whose prompt carries `marker`, read off a Harness's
- * log — `[<agent>] [<tool>] <input>` lines, Menu tools by their bare name (ADR-0023). It runs on
- * through the nudges and the restated Turn parts of that Turn, and stops at the next trial's prompt
- * (another `[<marker>]`). `undefined` while that prompt has not printed.
+ * log — `[<agent>] [<iid>] [<tool>] <input>` lines, Menu tools by their bare name (ADR-0023). It
+ * runs on through the nudges and the restated Turn parts of that Turn, and stops at the next
+ * trial's prompt (another `[<marker>]`). `undefined` while that prompt has not printed.
  */
 export function saidIn(log: string, agent: string, marker: string): Said[] | undefined {
-  const lines = log.split("\n");
+  const lines = log.split("\n").map(withoutIid);
   const at = lines.findIndex((l) => l.startsWith(`[${agent}] [prompt] `) && l.includes(`[${marker}]`));
   return at === -1 ? undefined : saidFrom(lines, at, agent);
 }
@@ -33,11 +33,12 @@ export function saidIn(log: string, agent: string, marker: string): Said[] | und
 /**
  * What the model called and read after the FIRST prompt that starts with `opening` — a jr2 prompt
  * that carries no marker, as a re-admission after a Harness restart does (ADR-0031). Read off a log
- * that begins at that restart, so the first such prompt is the trial's. It stops where `saidIn`
+ * that holds one such prompt for the trial: a Sandbox log followed from the restart
+ * (unknown-outcome), or one run's lines (`ofRun`), which hold that run's re-admission alone (cut-pick). It stops where `saidIn`
  * does: at a prompt that carries a trial's marker. `undefined` while it has not printed.
  */
 export function saidAfterPrompt(log: string, agent: string, opening: string): Said[] | undefined {
-  const lines = log.split("\n");
+  const lines = log.split("\n").map(withoutIid);
   const at = lines.findIndex((l) => l.startsWith(`[${agent}] [prompt] ${opening}`));
   return at === -1 ? undefined : saidFrom(lines, at, agent);
 }
@@ -129,7 +130,7 @@ export function answersIn(kept: string, marker: string): Answered[] | undefined 
 /** A kept conversation's (untimed) lines, where its trial starts, and its Agents as a regular
  * expression source — the reading `calledIn` and `answersIn` share. */
 function trialOf(kept: string, marker: string): { lines: string[]; at: number; agent: string } | undefined {
-  const lines = kept.split("\n").map(untimed);
+  const lines = kept.split("\n").map((l) => withoutIid(untimed(l)));
   const agents = promptedAgents(lines);
   if (agents.length === 0) return undefined;
   const agent = `(?:${agents.map(escaped).join("|")})`;
@@ -142,10 +143,48 @@ function trialOf(kept: string, marker: string): { lines: string[]; at: number; a
 export function promptedAgents(lines: readonly string[]): string[] {
   const names = new Set<string>();
   for (const line of lines) {
-    const m = /^\[([^\]]+)\] \[prompt\] /.exec(line);
+    const m = /^\[([^\]]+)\] \[prompt\] /.exec(withoutIid(line));
     if (m) names.add(m[1]!);
   }
   return [...names];
+}
+
+/**
+ * A printed line's Agent and Instance ID: `[<agent>] [<iid>] <rest>` (ADR-0023). An Instance ID
+ * always holds a `/` (`<runId>/<machine path>/<agent>`, ADR-0015), and a label never does, so a
+ * line of the run narrative echo, which carries no Instance ID (`[run] [status] ...`,
+ * `[<agent>] [admitted] ...`), is `undefined`.
+ */
+export function printedLine(line: string): { agent: string; iid: string; rest: string } | undefined {
+  const m = /^\[([^\]]+)\] \[([^\]\s]*\/[^\]\s]*)\] ?(.*)$/.exec(line);
+  return m ? { agent: m[1]!, iid: m[2]!, rest: m[3]! } : undefined;
+}
+
+/** A printed line without its Instance ID, `[<agent>] <rest>`: the shape every reading here takes.
+ * A line with none (the echo) is as it was. */
+export function withoutIid(line: string): string {
+  const p = printedLine(line);
+  return p ? `[${p.agent}] ${p.rest}` : line;
+}
+
+/**
+ * One run's conversations in an Instance Harness log, the shape the readings here take (ADR-0023):
+ * the lines whose Instance ID starts with `<runId>/`, without their timestamps and Instance IDs.
+ * The Instance Harness hosts the Menu-only Agents of every run, so trials that run at once print
+ * into one log; this is one trial's part of it. The prefix, not one Instance ID: the conversation
+ * after one jr2 faulted is `<iid>/<epoch>`, a Turn that does not continue is `<iid>/<8 hex>`, and
+ * a run's Agents sit at more than one Machine path (a Chart's Agent is not at `root`).
+ */
+export function ofRun(log: string, runId: string): string {
+  return keptOfRun(log, runId)
+    .map((l) => withoutIid(untimed(l)))
+    .join("\n");
+}
+
+/** The lines of a kept log (timestamped or not) that are of one run's conversations, as printed. */
+export function keptOfRun(log: string, runId: string): string[] {
+  const prefix = `${runId}/`;
+  return log.split("\n").filter((l) => printedLine(untimed(l))?.iid.startsWith(prefix) === true);
 }
 
 const escaped = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

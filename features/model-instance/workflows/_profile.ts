@@ -42,6 +42,8 @@ export type EndpointProfile = {
   /** Trials per claim cell, and how many runs a claim keeps in flight. */
   trials?: number;
   parallel?: number;
+  /** How many scenarios run at once. The recipe reads it; the instance does not. */
+  workers?: number;
 };
 
 export const profile: EndpointProfile = (() => {

@@ -82,7 +82,11 @@ e2e-kind-up:
 # run the kind e2e tier (needs `just e2e-kind-up`). The tier addresses the kind cluster by its own
 # exported kubeconfig, never the shell's current context: `jr2 up` converges whatever `kubectl`
 # points at (ADR-0019), and a shell pointed at a real cluster would otherwise fail every scenario
-# at "is serving" — or worse, converge into it.
+# at "is serving" — or worse, converge into it. The file is one per cluster
+# (`features/.tmp/kubeconfig-<cluster>`): `kind export kubeconfig` merges into its file and sets
+# that file's current context, and each `jr2` call reads the current context again. With one
+# shared file, a recipe started on jr2-b moves a run on jr2-c from the same checkout to jr2-b in
+# the middle of its run.
 #
 # `parallel` is the worker count, and it is a property of the HOST, not the tier: the profile's
 # default (4, features/cucumber.json) is measured on a dev box, and a scenario's pods ask their
@@ -94,8 +98,8 @@ e2e-kind-up:
 # the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
 # of 47, 2 pass 47 of 47. Requests are the kit's, sized for a real cluster, and are not lowered for a runner.
 e2e-kind parallel="":
-    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:kind {{ if parallel != "" { "--parallel " + parallel } else { "" } }}
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} pnpm --filter @jr2/e2e test:e2e:kind {{ if parallel != "" { "--parallel " + parallel } else { "" } }}
 
 # A COLD host builds every image the tier deploys four times over: the tier runs four workers, and
 # the first scenario of each converges its own namespace from nothing — Harness, operator,
@@ -115,8 +119,8 @@ e2e-kind parallel="":
 # parallel coordinator given zero scenarios starts no worker and waits forever, which is how the
 # v0.3.0 release job sat in this step until its timeout.
 e2e-kind-warm:
-    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e exec cucumber-js --profile kind --parallel 0 --name '^the body works in a real worktree, and its Sandbox is reaped when it finishes$'
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} pnpm --filter @jr2/e2e exec cucumber-js --profile kind --parallel 0 --name '^the body works in a real worktree, and its Sandbox is reaped when it finishes$'
 
 # render the operator install manifest shipped inside the npm package (ADR-0019; check in the result)
 operator-manifest:
@@ -298,8 +302,8 @@ e2e-dist-up:
 
 # run the @dist e2e tier (needs `just e2e-dist-up`, and network on every run — the storage is wiped)
 e2e-dist:
-    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:dist
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} pnpm --filter @jr2/e2e test:e2e:dist
 
 # --- @model e2e tier (ADR-0066; requires docker + kind + a model endpoint) ---
 #
@@ -315,14 +319,38 @@ e2e-dist:
 # It checks each model from a check pod. So a pod with no egress to the API fails the converge at
 # the check pod (ADR-0019, ADR-0066).
 
+# The profile's `workers` is how many scenarios run at once, passed to cucumber as `--parallel`
+# when it is above 1; its `parallel` is how many trials each claim keeps in flight. So `workers` ×
+# `parallel` runs are in flight, and the product must stay within what the endpoint serves (the
+# home-lab vLLM serves 16 streams) and what the host holds (about 0.85 CPU and 2.2 GiB a scenario,
+# plus 0.5 CPU and 1 GiB a Sandbox trial in flight; a 16 CPU, 45 GB host that three kind clusters
+# share). Like `e2e-kind`'s `parallel`, it is a property of the endpoint and the host, so it lives
+# in the profile, not in `cucumber.json`.
+#
+# `JR2_MODEL_SUITE` names this run to the lock on `features/model-instance/`
+# (`features/lib/model-lock.ts`): the workers of this run share it, and a second run in this
+# checkout fails at once, whatever its profile. Two runs at once need two worktrees.
+#
 # run the @model e2e tier against the selected endpoint profile (needs `just e2e-kind-up`)
-e2e-model:
+e2e-model: (_e2e-model "model")
+
+# A COLD host builds every image the tier deploys once per worker, as `e2e-kind-warm` says of the
+# @kind tier. So one converge first, serially, with no trial (`features/model-warm.feature`): it
+# spends every build once (ADR-0041), and the workers that follow find them. The same probe and the
+# same profile as `e2e-model`, because `jr2 up`'s provider preflight needs the endpoint. Not folded
+# into `e2e-model`: a warm host pays a converge for nothing.
+#
+# build the @model tier's images once, serially, before a cold host runs it with several workers
+e2e-model-warm: (_e2e-model "model-warm")
+
+_e2e-model cucumber_profile:
     #!/usr/bin/env bash
     set -euo pipefail
     name="${JR2_MODEL_ENDPOINT:-homelab}"
     profile="features/model-endpoints/${name}.json"
     [ -f "$profile" ] || { echo "error: no endpoint profile ${profile} (JR2_MODEL_ENDPOINT=${name})" >&2; exit 1; }
-    read -r api base key < <(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(p.api, p.baseUrl.replace(/\/+$/,""), p.key ?? "")' "$profile")
+    read -r api base workers key < <(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(p.api, p.baseUrl.replace(/\/+$/,""), p.workers ?? 1, p.key ?? "")' "$profile")
+    [[ "$workers" =~ ^[1-9][0-9]*$ ]] || { echo "error: profile ${name} has workers ${workers}; it must be a whole number of 1 or more" >&2; exit 1; }
     # A catalog-provider profile (`key`) cannot answer without its key: say which variable is unset.
     if [ -n "$key" ] && [ -z "${JR2_MODEL_API_KEY:-}" ]; then
         echo "skipped: JR2_MODEL_API_KEY is not set, and profile ${name} needs it (${key}) — the @model tier did not run"
@@ -345,8 +373,12 @@ e2e-model:
         echo "skipped: the model endpoint at ${base} answered HTTP ${code} (profile ${name}) — the @model tier did not run"
         exit 0
     fi
-    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig JR2_MODEL_ENDPOINT="$name" pnpm --filter @jr2/e2e test:e2e:model
+    # The warm runs its one scenario in-process; the tier runs `workers` at once.
+    parallel=()
+    if [ "{{ cucumber_profile }}" = "model" ] && [ "$workers" -gt 1 ]; then parallel=(--parallel "$workers"); fi
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} JR2_MODEL_ENDPOINT="$name" JR2_MODEL_SUITE="$$-$(date +%s)" \
+        pnpm --filter @jr2/e2e exec cucumber-js --profile {{ cucumber_profile }} ${parallel[@]+"${parallel[@]}"}
 
 # --- the release (ADR-0055; the tag push is the release) ---
 #

@@ -17,10 +17,16 @@
     "tags": "@console"
   },
   "model": {
-    "//": "Serial, like @dist (ADR-0066): the endpoint is one shared capacity, and a claim's cells must be reproducible — four workers hammering one vLLM skew every trial's latency and the runaway bound. Excluded from `kind` by tag, so `just e2e-kind` stays green on a box with no endpoint.",
+    "//": "No `parallel` key: the endpoint profile sets it (ADR-0066). `just e2e-model` reads the profile's `workers` and passes `--parallel <workers>` when it is above 1, because how many scenarios may run at once is a property of the endpoint and the host, not of the tier. Inside a scenario, a claim's trials run `parallel` at once (the profile's `parallel`): a Menu-only trial reads only its own run's lines of the Instance Harness log, by the Instance ID on each line (ADR-0023). So `workers` × `parallel` runs are in flight, and that product must stay within what the endpoint serves (the home-lab vLLM serves 16 streams) and what the host holds (about 0.85 CPU and 2.2 GiB per scenario, plus 0.5 CPU and 1 GiB per Sandbox trial in flight, on a 16 CPU, 45 GB host that three kind clusters share). `cut-pick` runs one trial at a time, because each trial deletes the Instance Harness pod, which would cut every other trial in flight there; `noticed` runs at most two, because under host load the kernel kills the container before the guard kills the hog, which voids the trial. Excluded from `kind` by tag, so `just e2e-kind` stays green on a box with no endpoint, and `@warm` is excluded here: it is `model-warm`'s.",
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
-    "tags": "@model"
+    "tags": "@model and not @warm"
+  },
+  "model-warm": {
+    "//": "`just e2e-model-warm` (ADR-0066): one converge, serially, before a cold host runs the tier with several workers. The first scenario of each worker converges its own namespace, and with no cross-process lock on a build each would build the same images at once. This profile runs the one `@warm` scenario, a converge with no trials, so every build is spent once (ADR-0041) and the workers find them. The `@kind` tier's `e2e-kind-warm` does the same with one of its own scenarios.",
+    "paths": ["*.feature"],
+    "import": ["steps/**/*.ts"],
+    "tags": "@model and @warm"
   },
   "dist": {
     "//": "Deliberately SERIAL — no `parallel` key (ADR-0043). The suite fixture publishes the kit and installs it ONCE per run, and cucumber's parallel workers are separate PROCESSES: each would stand up its own verdaccio on the one port scripts/dist-registry.sh defaults to. Scenarios still isolate the way @kind's do — a fresh namespace and a temp instance folder each — so the serialization costs the publish, not the runs.",

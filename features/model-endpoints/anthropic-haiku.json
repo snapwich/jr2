@@ -1,5 +1,5 @@
 {
-  "//": "Claude Haiku 5.5 on the Anthropic API (ADR-0066), named the way a user names it: pi's catalog provider `anthropic`, and the key as the known model key `ANTHROPIC_API_KEY` in `secrets` (ADR-0059) — a Held secret the Custodian puts into `x-api-key` toward api.anthropic.com alone. `key` names that secret, and so says the profile is a catalog provider, not a `harness.provider`: the catalog holds the model's limits and thinking levels, and `contextWindow`/`maxTokens` here are its values at pi-ai 1.4.0, for the reader. `api` and `baseUrl` are the catalog's too; the recipe's probe reads them. Haiku 5.5 has `off`, so the cells are those the home lab runs.",
+  "//": "Claude Haiku 5.5 on the Anthropic API (ADR-0066), named the way a user names it: pi's catalog provider `anthropic`, and the key as the known model key `ANTHROPIC_API_KEY` in `secrets` (ADR-0059) — a Held secret the Custodian puts into `x-api-key` toward api.anthropic.com alone. `key` names that secret, and so says the profile is a catalog provider, not a `harness.provider`: the catalog holds the model's limits and thinking levels, and `contextWindow`/`maxTokens` here are its values at pi-ai 1.4.0, for the reader. `api` and `baseUrl` are the catalog's too; the recipe's probe reads them. Haiku 5.5 has `off`, so the cells are those the home lab runs. `workers` × `parallel` runs are in flight; `homelab.json` says how to set them. Here the endpoint's limit is the account's rate limit, and the host's limit is the one the home lab has. 4 × 2: a full run took 10.6 minutes on 2026-10-25.",
   "id": "anthropic",
   "api": "anthropic-messages",
   "baseUrl": "https://api.anthropic.com",
@@ -9,5 +9,6 @@
   "maxTokens": 128000,
   "thinking": { "off": "off", "on": "medium" },
   "trials": 10,
-  "parallel": 2
+  "parallel": 2,
+  "workers": 4
 }

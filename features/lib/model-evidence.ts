@@ -7,9 +7,10 @@
 // Effector container's log, the Harness history view (ADR-0027), the Machine's final record, and
 // for a push claim the push remote's log, under one folder per trial. Every probe only reads.
 
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { calledIn, promptedAgents, told, untimed, type Follow } from "./model-said.ts";
+import { calledIn, printedLine, told, untimed, type Follow } from "./model-said.ts";
 import { outputOf } from "./model-status.ts";
 
 /** The characters a folder name keeps as they are; every other byte is spelled `%XX`. */
@@ -59,13 +60,26 @@ export function saidNote(kept: string, marker: string, why: string): string {
   return `said ${told(said) || "nothing"}`;
 }
 
-/** The Agents whose prompt printed in a kept conversation, in order, each once. */
-export const agentsIn = (kept: string): string[] => promptedAgents(kept.split("\n").map(untimed));
+/**
+ * The conversations whose prompt printed in a kept conversation, in order, each once: the Agent and
+ * the Instance ID its lines carry (ADR-0023). The Harness history is asked for these, so a
+ * conversation at another Machine path (a Chart's Agent), or the conversation after one jr2
+ * faulted (`<iid>/<epoch>`), is read where it is.
+ */
+export function conversationsIn(kept: string): Array<{ agent: string; iid: string }> {
+  const out = new Map<string, { agent: string; iid: string }>();
+  for (const line of kept.split("\n")) {
+    const p = printedLine(untimed(line));
+    if (p && p.rest.startsWith("[prompt] ") && !out.has(p.iid)) out.set(p.iid, { agent: p.agent, iid: p.iid });
+  }
+  return [...out.values()];
+}
 
 /**
- * The continued conversation (ADR-0057) a claim Agent's Harness history is asked for: every claim
- * Agent continues, and its Machine is the `workspace()`'s body in a Sandbox, the root on the
- * Instance Harness (ADR-0031).
+ * The continued conversation (ADR-0057) a claim Agent's Harness history is asked for before any of
+ * its prompts printed: every claim Agent continues, and its Machine is the `workspace()`'s body in a
+ * Sandbox, the root on the Instance Harness (ADR-0031). Once a prompt printed, its line names the
+ * Instance ID (`conversationsIn`).
  */
 export const historyIid = (runId: string, sandbox: boolean, agent: string): string =>
   `${runId}/${sandbox ? "body" : "root"}/${agent}`;
@@ -175,8 +189,8 @@ export function followAcross(
 }
 
 /** A settlement as the Harness's history view and its stream's `submission-settled` carry it
- * (ADR-0027): its outcome, and the failure text of one that failed. */
-export type SettlementSeen = { submissionId: string; outcome: string; error?: unknown };
+ * (ADR-0027): its outcome, the failure text of one that failed, and what its model answers spent. */
+export type SettlementSeen = { submissionId: string; outcome: string; error?: unknown; usage?: unknown };
 
 /** The settlements in one page of a conversation's stream, in order. */
 export function settledIn(events: unknown): SettlementSeen[] {
@@ -189,6 +203,7 @@ export function settledIn(events: unknown): SettlementSeen[] {
       submissionId: e.submissionId,
       outcome: e.outcome,
       ...(e.error !== undefined ? { error: e.error } : {}),
+      ...(e.usage !== undefined ? { usage: e.usage } : {}),
     });
   }
   return out;
@@ -206,16 +221,129 @@ export function streamPath(agent: string, iid: string, offset: string): string {
   return `/agents/${encodeURIComponent(agent)}/${encodeURIComponent(iid)}?${q}`;
 }
 
-/** The submission ids a kept history view (`read at ...\nHTTP <status>\n<body>`) holds, when it is a 200. */
-function viewSettled(view: string): Set<string> | undefined {
+/** The settlements a kept history view (`read at ...\nHTTP <status>\n<body>`) holds, when it is a 200. */
+function viewSettlements(view: string): Array<{ submissionId?: unknown; usage?: unknown }> | undefined {
   const m = /^read at [^\n]*\nHTTP 200\n([\s\S]*)$/.exec(view);
   if (!m) return undefined;
   try {
-    const body = JSON.parse(m[1]!) as { settlements?: Array<{ submissionId?: unknown }> };
-    return new Set((body.settlements ?? []).map((s) => String(s.submissionId)));
+    const body = JSON.parse(m[1]!) as { settlements?: Array<{ submissionId?: unknown; usage?: unknown }> };
+    return Array.isArray(body.settlements) ? body.settlements : [];
   } catch {
     return undefined;
   }
+}
+
+/** The submission ids a kept history view holds, when it is a 200. */
+function viewSettled(view: string): Set<string> | undefined {
+  const held = viewSettlements(view);
+  return held === undefined ? undefined : new Set(held.map((s) => String(s?.submissionId)));
+}
+
+/** What a trial's model answers spent (ADR-0027, ADR-0066): tokens, and the cost in US dollars. */
+export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+
+const USAGE_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
+
+export const NO_USAGE: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+
+/** A Settlement's `usage`, when it is one: every field a finite number. */
+export function usageOf(value: unknown): Usage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  if (!USAGE_FIELDS.every((f) => typeof v[f] === "number" && Number.isFinite(v[f]))) return undefined;
+  return { input: v.input, output: v.output, cacheRead: v.cacheRead, cacheWrite: v.cacheWrite, cost: v.cost } as Usage;
+}
+
+/** Two usages summed, field by field. */
+export function addUsage(a: Usage, b: Usage): Usage {
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheWrite: a.cacheWrite + b.cacheWrite,
+    cost: a.cost + b.cost,
+  };
+}
+
+/** Every token of a usage: input, output, and both sides of the cache. */
+export const tokensOf = (u: Usage): number => u.input + u.output + u.cacheRead + u.cacheWrite;
+
+/**
+ * What a trial's model answers spent: the sum of the usage of every settlement its evidence kept,
+ * from the last history view of each conversation and from its stream, each Submission once. A
+ * settlement with no usage adds nothing (its model never answered, or it was lost with a restarted
+ * Harness). `undefined` when no kept settlement carries a usage: the trial's usage was not read.
+ */
+export function trialUsage(
+  views: ReadonlyMap<string, string>,
+  settled: ReadonlyMap<string, readonly SettlementSeen[]>,
+): Usage | undefined {
+  const bySubmission = new Map<string, Usage>();
+  const take = (submissionId: unknown, usage: unknown) => {
+    const u = usageOf(usage);
+    if (typeof submissionId === "string" && u !== undefined && !bySubmission.has(submissionId))
+      bySubmission.set(submissionId, u);
+  };
+  for (const view of views.values()) for (const s of viewSettlements(view) ?? []) take(s?.submissionId, s?.usage);
+  for (const list of settled.values()) for (const s of list) take(s.submissionId, s.usage);
+  if (bySubmission.size === 0) return undefined;
+  return [...bySubmission.values()].reduce(addUsage, NO_USAGE);
+}
+
+/** What a trial kept off one Harness: each conversation's last history view, and its stream's
+ * settlements. */
+export type KeptSide = {
+  views: ReadonlyMap<string, string>;
+  settled: ReadonlyMap<string, readonly SettlementSeen[]>;
+};
+
+/**
+ * `trialUsage` over every Harness a trial kept: a Sandbox trial whose Workspace encloses a
+ * Menu-only seat keeps its Sandbox pod's Harness and the Instance Harness, where that seat's Turns
+ * run. The same Instance ID can be kept on both sides; each Submission still counts once.
+ */
+export function trialUsageAcross(sides: readonly KeptSide[]): Usage | undefined {
+  const views = new Map<string, string>();
+  const settled = new Map<string, readonly SettlementSeen[]>();
+  sides.forEach((side, i) => {
+    for (const [iid, view] of side.views) views.set(`${i} ${iid}`, view);
+    for (const [iid, list] of side.settled) settled.set(`${i} ${iid}`, list);
+  });
+  return trialUsage(views, settled);
+}
+
+/** The names `_agents.ts` exports whose `workspace` is `"none"`: the Menu-only seats (ADR-0031). */
+export function menuOnlyAgents(agentsSource: string): Set<string> {
+  const names = new Set<string>();
+  for (const m of agentsSource.matchAll(/export const (\w+) = \{([\s\S]*?)\} satisfies AgentDefinition/g))
+    if (/\bworkspace:\s*"none"/.test(m[2]!)) names.add(m[1]!);
+  return names;
+}
+
+/**
+ * Whether a claim workflow's `workspace()` encloses a Menu-only seat: its machine is a
+ * `workspace()` and it imports a Menu-only Agent from `_agents.ts`. That seat's Turns run on the
+ * Instance Harness (ADR-0031), not in the Sandbox, so the trial keeps both.
+ */
+export function enclosesMenuOnlySeat(workflowSource: string, menuOnly: ReadonlySet<string>): boolean {
+  if (!/export const machine = workspace\(/.test(workflowSource)) return false;
+  const imported = /import\s*\{([^}]*)\}\s*from\s*"\.\/_agents\.ts"/.exec(workflowSource)?.[1] ?? "";
+  return imported.split(",").some((name) => menuOnly.has(name.trim()));
+}
+
+/** The claim workflows in `dir` (the tier's `workflows/`) whose `workspace()` encloses a Menu-only
+ * seat (`enclosesMenuOnlySeat`), by name. */
+export function menuOnlySeatedWorkflows(dir: string): Set<string> {
+  const menuOnly = menuOnlyAgents(readFileSync(join(dir, "_agents.ts"), "utf8"));
+  const names = new Set<string>();
+  for (const file of readdirSync(dir))
+    if (
+      file.endsWith(".ts") &&
+      !file.startsWith("_") &&
+      enclosesMenuOnlySeat(readFileSync(join(dir, file), "utf8"), menuOnly)
+    )
+      names.add(file.slice(0, -".ts".length));
+  return names;
 }
 
 /**

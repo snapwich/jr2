@@ -66,6 +66,7 @@ of these and did not run it, say so.
 
 ```
 just e2e-kind-up                              # once; the same vanilla kind cluster @kind uses
+just e2e-model-warm                           # on a cold host, before a profile with workers above 1
 just e2e-model                                # JR2_MODEL_ENDPOINT=homelab by default
 JR2_MODEL_ENDPOINT=<name> just e2e-model      # another profile in features/model-endpoints/
 read -rs JR2_MODEL_API_KEY; export JR2_MODEL_API_KEY   # once; the key stays out of shell history
@@ -80,22 +81,35 @@ pass. A key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone. It stay
 command line that is logged. Reachability from the PODS is `jr2 up`'s own provider preflight, per scenario, for every
 profile. It checks each model from a check pod, so a pod with no egress to the API fails the converge at the check pod.
 
-**What it runs.** Nineteen scenarios in `features/model.feature`, serial (the endpoint is one shared capacity).
-Seventeen are CLAIMS — an ADR's measured claim as N trials with a floor: `obedience` (Allowed picks obeyed, thinking off
-and on), `advised` (a Menu-only Agent's first call is its pick), `workdir` (a relative write lands in the Worktree),
-`noticed` (a memory-kill notice is acted on), the mode and step-boundary claims (`mode-follow`, `mode-refusal`,
-`mode-stop`, `wake`, `push-follow`), the held-answer claims (`chain-answer`, `cut-pick`), the command-Effect claims
-(`answered`, `allowed-after-route`, `unknown-outcome`), the push claim (`continue-after-signed-push`: the push after a
-signed push publishes), and the Chart claim (`chart-refusal`: after the door refuses a planner's Chart, its next Chart
-admits; its floor is set ahead of a measured run, ADR-0070). Two are THE RUN — `ticket`: planner, coder, reviewer, and a
-commit verified in the pod (branch ahead of `main`, HEAD is the named commit, tree clean, `node --test` passes); and
-`ticket-modes`, one coder Turn through three modes. The whole tier is about 70 minutes on the home lab (four runs, 65 to
-75); each claim is a few minutes, `mode-stop` and `wake` about ten.
+An agent starts `just e2e-model`, and each other long tier, with the Bash tool's `run_in_background` and waits for its
+completion notice. It never polls with `pgrep -f` on the command line: the pattern also matches the shell that polls, so
+the loop never ends.
+
+**What it runs.** Nineteen scenarios in `features/model.feature`. Seventeen are CLAIMS — an ADR's measured claim as N
+trials with a floor: `obedience` (Allowed picks obeyed, thinking off and on), `advised` (a Menu-only Agent's first call
+is its pick), `workdir` (a relative write lands in the Worktree), `noticed` (a memory-kill notice is acted on), the mode
+and step-boundary claims (`mode-follow`, `mode-refusal`, `mode-stop`, `wake`, `push-follow`), the held-answer claims
+(`chain-answer`, `cut-pick`), the command-Effect claims (`answered`, `allowed-after-route`, `unknown-outcome`), the push
+claim (`continue-after-signed-push`: the push after a signed push publishes), and the Chart claim (`chart-refusal`:
+after the door refuses a planner's Chart, its next Chart admits; its floor is set ahead of a measured run, ADR-0070).
+Two are THE RUN — `ticket`: planner, coder, reviewer, and a commit verified in the pod (branch ahead of `main`, HEAD is
+the named commit, tree clean, `node --test` passes); and `ticket-modes`, one coder Turn through three modes. The whole
+tier is about 27 minutes on the home lab (one run, 2026-10-25; about 70 one scenario at a time) and about 11 on Haiku
+5.5. The scenarios run the profile's `workers` at once (the recipe passes it as `--parallel`), in file order, so
+`model.feature` lists its longest Rules first; `chart-refusal` is the longest, about 21 minutes. Each claim keeps the
+profile's `parallel` trials in flight, so `workers` × `parallel` runs are in flight. That product must stay within what
+the endpoint serves (the home-lab vLLM serves 16 streams) and what the host holds (about 0.85 CPU and 2.2 GiB per
+scenario, plus 0.5 CPU and 1 GiB per Sandbox trial in flight, on a 16 CPU, 45 GB host that three kind clusters share).
+One checkout runs one suite at a time: a second suite fails at once, whatever its profile, and two suites at once need
+two worktrees.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
 `scorecard: <model> <cell>: k/N`. Every trial, pass or not, keeps its evidence in
 `features/.tmp/model-trials/<model>/<cell>/<runId>/` — the printed conversation, the Effector's log, the Harness history
-view, the Machine's final record and, for a push claim, the push remote's log (ADR-0066). Two thresholds, two meanings:
+view, the Machine's final record and, for a push claim, the push remote's log (ADR-0066). Each cell also records the
+tokens and the cost its trials spent, off their Settlements, and prints
+`usage: <model> <cell>: <n> tokens, $<cost>; month to date $<sum>` from `features/.tmp/model-usage.jsonl`. Two
+thresholds, two meanings:
 
 - **A floor** is in the scenario (`at least 9 trials`). Below it the scenario FAILS: a defect in what jr2 shows the
   model, or in the step. Read the failure list — each trial prints its run id and what it observed — and the pod log
@@ -106,16 +120,20 @@ view, the Machine's final record and, for a push claim, the push remote's log (A
   across cells is a regression.
 
 Update a baseline by copying the cells from a run you have read, in the same change that explains them. The instrument
-is the weakest model the kit claims to support (today the home-lab vLLM, Qwen3.6-35B-A3B); a stronger model gets its own
-baseline file and must clear the same floors. It cannot lower them.
+is a model shown to catch the known regressions (today the home-lab vLLM, Qwen3.6-35B-A3B with FP8 weights); another
+model gets its own baseline file and must clear the same floors. It cannot lower them. Haiku 5.5 caught neither known
+regression (ADR-0066), so a Haiku run checks the tier's machinery, not a change to what the model reads.
 
 **Adding a claim.** It qualifies when an ADR states what a correct Agent does differently for it AND a step can observe
 the difference from outside the pod. A workflow in `features/model-instance/workflows/`, a driver in
 `features/steps/model.steps.ts`, a scenario with a floor, and the ADR's measurement as the floor's origin. The Menu-only
 claims read the model's first call off the Instance Harness's printed conversation (ADR-0023) — the only place a refused
-pick is visible — so they run one trial at a time; Sandbox claims read their pods and run `parallel` at once. A trial
-whose SETUP never happened (the claim measures a later Turn) is `void` and replaced, a bounded number of times; it is
-not a failure of the claim.
+pick is visible. Each trial reads only its own run's lines, by the Instance ID on each line, so these trials run
+`parallel` at once, as the Sandbox claims, which read their pods, do. `cut-pick` runs one trial at a time: each trial
+deletes the Instance Harness pod, which would cut every other trial in flight there. `noticed` runs at most two: on a
+loaded host the kernel kills the container before the guard kills the hog, which voids the trial. A trial whose SETUP
+never happened (the claim measures a later Turn) is `void` and replaced, a bounded number of times; it is not a failure
+of the claim.
 
 **What it is not.** Not a benchmark of the model, and not a gate in CI. A prompt in a claim workflow is fixed data:
 tuning it to pass would measure the prompt. The `ticket` run never asserts the diff, the commit message or the Turn

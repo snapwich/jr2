@@ -116,10 +116,11 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   per scenario into a fresh namespace, and behind the Custodian a real endpoint named by a profile
   (`features/model-endpoints/<name>.json`, selected by `JR2_MODEL_ENDPOINT`). Its scenarios are CLAIMS — an ADR's
   measured claim as N trials with a floor, scored into `features/.tmp/model-scorecard.json` against a committed baseline
-  — and THE RUN, one workflow from a failing test to a commit verified in the pod. Serial like `@dist`, for the opposite
-  reason: the endpoint is one shared capacity. Not in CI and not in `pnpm -r test`: `just e2e-model` probes the endpoint
-  and says `skipped:` when nothing answers, and whoever changes what the model reads runs it before calling the change
-  done. A third pi canary.
+  — and THE RUN, one workflow from a failing test to a commit verified in the pod. It runs the endpoint profile's
+  `workers` scenarios at once, and `workers` × the profile's `parallel` runs must stay within what the endpoint serves
+  and what the host holds. Not in CI and not in `pnpm -r test`: `just e2e-model` probes the endpoint and says `skipped:`
+  when nothing answers, and whoever changes what the model reads runs it before calling the change done. A third pi
+  canary.
 - **Shared cluster state is the one thing a scenario cannot own, and the pool is PROCESSES.** `--parallel` runs cucumber
   workers as separate processes, so a fixture memoized "once per process" runs once per WORKER — four times,
   concurrently, against one cluster. The tier has exactly one such fixture: the git seed (`steps/seed.ts`) it serves
