@@ -116,8 +116,8 @@ what runs where.
 `why.md` serves the evaluator. It explains the problems that jr2 solves. Give each problem a section. A section states
 the problem, then says how jr2 answers it, then links to the Concept. The problems are:
 
-1. **Non-determinism.** A Machine is a graph that you can read before it runs. The Console draws the run while it runs.
-   You review how the work happens, not only the code that comes out.
+1. **Determinism.** A Machine is a graph that you can read before it runs. The Console draws the run while it runs. You
+   review how the work happens, not only the code that comes out.
 2. **Isolation.** A filesystem sandbox is not isolation. An Agent that works on a Repo works in a Sandbox: a pod with
    its own filesystem, network and processes, one for each Workspace. A Menu-only Agent has no Sandbox. An Agent never
    holds a model key. When a Lease lapses, the operator removes what the Agents left behind.

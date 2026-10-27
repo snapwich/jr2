@@ -7,11 +7,12 @@ An agentic workflow gives work to a model, and the model decides how to do it. T
 solves for such a workflow. Each section states a problem, says how jr2 answers it, and links to the Concept that
 explains it.
 
-## Non-determinism
+## Determinism
 
-A model does not do the same thing two times. When the steps of a workflow are text in a prompt, the model can skip a
-step or change the order. "You must" and "never" are requests to the model, not rules that it must obey. You can review
-the code that an agentic workflow makes, but you cannot easily review how it made that code.
+A workflow must do the steps that it sets, in the order that it sets. But a model does not do the same thing two times.
+When the steps of a workflow are text in a prompt, the model can skip a step or change the order. "You must" and "never"
+are requests to the model, not rules that it must obey. You can review the code that an agentic workflow makes, but you
+cannot easily review how it made that code.
 
 In jr2, a workflow is a [Machine](reference/glossary.md#machine): an xstate state machine in TypeScript. Its states and
 its transitions are a graph that you can read before a run starts. The [Console](reference/glossary.md#console) draws
@@ -19,7 +20,8 @@ that graph, and while a run runs, it shows the state that the run is in. An [Age
 not move the Machine itself. It picks events from its [Menu](reference/glossary.md#menu), and the Machine refuses a pick
 that is not one of its [Allowed picks](reference/glossary.md#allowed-picks) now. Thus the model makes the decisions in
 each state, and the Machine sets the transitions that each decision can cause. You review how the work happens, not only
-the code that comes out of it.
+the code that comes out of it. The model is not deterministic, but the Machine is: in one state, one pick always causes
+the same transition.
 
 Read [Machines and Workflows](concepts/machines-and-workflows.md) and [The Menu](concepts/the-menu.md).
 
