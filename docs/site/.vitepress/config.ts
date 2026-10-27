@@ -10,8 +10,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type MarkdownRenderer } from "vitepress";
 import { tabsMarkdownPlugin } from "vitepress-plugin-tabs";
+import { relativeHref } from "../build/links.ts";
 import { headingSlug } from "../build/markdown.ts";
-import { GLOSSARY_PAGE } from "../build/reference/glossary.ts";
+import { DECISIONS_PAGE, GLOSSARY_PAGE } from "../build/reference/glossary.ts";
 import type { Sitemap } from "../build/sitemap.ts";
 import { withoutRegions } from "../build/vitepress.ts";
 import { navOf, sidebarOf } from "./nav.ts";
@@ -23,6 +24,9 @@ const map = JSON.parse(readFileSync(join(SITE, "sitemap.json"), "utf8")) as Site
 const version = (
   JSON.parse(readFileSync(join(SITE, "../../packages/orchestrator/package.json"), "utf8")) as { version: string }
 ).version;
+
+/** An ADR's page (`reference/decisions/0001-….md`), with its number. */
+const ADR_PAGE = /^reference\/decisions\/(\d{4})-[^/]+\.md$/;
 
 // The token of a fence, with the `src` that VitePress's snippet plugin adds for a `<<<`.
 type Token = {
@@ -153,6 +157,29 @@ export default defineConfig({
         if ((state.env as { relativePath?: string }).relativePath !== GLOSSARY_PAGE) return;
         state.tokens = glossaryTerms(state.tokens as unknown as Token[], state.Token as unknown as TokenOf) as never;
       });
+      // An ADR's page opens with its number and what it is, linked to the Decisions page, so that a
+      // reader who follows a link straight to it knows that it is an ADR. The bundle's copy is the
+      // ADR as it is.
+      md.core.ruler.push("jr2-adr", (state) => {
+        const page = (state.env as { relativePath?: string }).relativePath ?? "";
+        const n = ADR_PAGE.exec(page)?.[1];
+        if (!n) return;
+        const at = state.tokens.findIndex((t) => t.type === "heading_open" && t.tag === "h1");
+        const token = (type: string, tag: string, nesting: -1 | 0 | 1, content = "") =>
+          Object.assign(new state.Token(type, tag, nesting), { content });
+        const link = token("link_open", "a", 1);
+        link.attrSet("href", relativeHref(page, DECISIONS_PAGE));
+        const label = token("inline", "", 0, "Architecture decision record");
+        label.children = [
+          token("html_inline", "", 0, `<span class="adr-number">ADR-${n}</span> `),
+          link,
+          token("text", "", 0, "Architecture decision record"),
+          token("link_close", "a", -1),
+        ];
+        const open = token("paragraph_open", "p", 1);
+        open.attrSet("class", "adr-label");
+        state.tokens.splice(Math.max(at, 0), 0, open, label, token("paragraph_close", "p", -1));
+      });
       // A whole-file `<<<` shows the file without its region markers, as the bundle does.
       // VitePress strips them from a region only. A `mermaid` fence is the theme's
       // MermaidDiagram, which imports mermaid only on a page that has one.
@@ -178,6 +205,11 @@ export default defineConfig({
     search: { provider: "local" },
     socialLinks: [{ icon: "github", link: "https://github.com/snapwich/jr2" }],
     footer: { message: `The docs of Kit version ${version}. Each page is also at its .md URL.` },
+  },
+  // An ADR's tab and search title carry its number, as every page cites it: `ADR-0001: …`.
+  transformPageData(pageData) {
+    const n = ADR_PAGE.exec(pageData.relativePath)?.[1];
+    if (n) pageData.title = `ADR-${n}: ${pageData.title}`;
   },
   transformHead({ pageData, siteConfig }) {
     // The 404 page has no bundle file, so it has no .md URL.

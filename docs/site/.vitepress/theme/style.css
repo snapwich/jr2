@@ -66,3 +66,34 @@
   font-size: 24px;
   line-height: 32px;
 }
+
+/* The label above an ADR's title (jr2-adr in ../config.ts): its number as a badge, then what the
+   page is, linked to the Decisions page. */
+.vp-doc p.adr-label {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .adr-number {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background-color: var(--vp-c-brand-soft);
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc p.adr-label a {
+  font-weight: 500;
+  text-decoration: none;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc p.adr-label a:hover {
+  color: var(--vp-c-brand-1);
+}

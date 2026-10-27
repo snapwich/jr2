@@ -1,7 +1,8 @@
 // The site's own config (ADR-0072), socket-free: the markdown renderer VitePress builds from it, and
-// the options it sets. Four fixes are held here: the H1 that the site adds gets its anchor (so the
+// the options it sets. Five fixes are held here: the H1 that the site adds gets its anchor (so the
 // local search files each section under its page), a mermaid fence becomes the theme's lazy
-// component, a Glossary term is a `<dl>`, and the site writes sitemap.xml.
+// component, a Glossary term is a `<dl>`, an ADR's page says that it is one, and the site writes
+// sitemap.xml.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -67,6 +68,32 @@ test("a Glossary term with no Avoid list has no Avoid line", async () => {
 test("only the Glossary page changes: a bold lead elsewhere, or not a term there, stays a paragraph", async () => {
   assert.match(await render(`---\ntitle: T\n---\n\n${TERMS}`), /<p><strong>jr2 CLI<\/strong>:/);
   assert.equal(await glossary("A **bold**: word.\n"), "<p>A <strong>bold</strong>: word.</p>\n");
+});
+
+test("an ADR's page opens with its number and a link to the Decisions page, before its H1", async () => {
+  const adr = "reference/decisions/0001-operator-owned-generic-sandbox.md";
+  const html = await md.render("# Sandboxes\n\nText.\n", { path: `${site}${adr}`, relativePath: adr });
+  assert.ok(
+    html.startsWith(
+      '<p class="adr-label"><span class="adr-number">ADR-0001</span> ' +
+        '<a href="./../decisions.html">Architecture decision record</a></p><h1 id="sandboxes"',
+    ),
+    html,
+  );
+});
+
+test("the Decisions page and every other page have no ADR label", async () => {
+  const decisions = "reference/decisions.md";
+  const index = await md.render("Text.\n", { path: `${site}${decisions}`, relativePath: decisions });
+  assert.doesNotMatch(index + (await render("# T\n")), /adr-label/);
+});
+
+test("an ADR's title carries its number; another page's title stays as it is", () => {
+  const adr = { relativePath: "reference/decisions/0066-a-model-tier.md", title: "A tier" };
+  const other = { relativePath: "reference/glossary.md", title: "Glossary" };
+  for (const p of [adr, other]) config.transformPageData!(p as never, {} as never);
+  assert.equal(adr.title, "ADR-0066: A tier");
+  assert.equal(other.title, "Glossary");
 });
 
 test("the site writes sitemap.xml for its base on GitHub Pages", () => {
