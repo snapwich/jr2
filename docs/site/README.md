@@ -735,8 +735,6 @@ The user must decide these items. Until then, obey the rule for each item.
 
 - **The fork and its tags.** No test shows that a fork with "Copy the main branch only" cleared has the release tags.
   The manual check confirms it.
-- **The diagram of Home.** Grill Q4 gave Home one diagram. Until the user decides, Home has no diagram and links to How
-  jr2 works.
 - **The output.** The writers of stage 3 have no cluster, no key and no model endpoint. Write the output from the code,
   and mark each output block with the comment `<!-- output: not run -->` on the line before it. The manual check runs
   each command, replaces the output, and removes the comment. `scripts/publish.sh` refuses a release while a page of the

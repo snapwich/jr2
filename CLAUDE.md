@@ -13,6 +13,24 @@ jr2 is greenfield. Nothing currently runs in production. Therefore:
   make the next decision easier or harder? Is the name correct?
 - A wrong design costs more here than in a mature codebase, because everything written later builds on it.
 
+## Docs (ADR-0072)
+
+The docs ship in the Kit and on the site (https://snapwich.github.io/jr2/). Their source is `docs/site/`. **Read
+[docs/site/README.md](./docs/site/README.md) before you write or change a page**: it sets the voice (ASD-STE100), the
+kinds of page, glossary links, tabs, diagrams (`::: diagram`; no mermaid), graphs (`::: graph`, for complete examples
+only) and the tutorial facts.
+
+A change is not done until the docs agree with it:
+
+- **The Reference is generated** by `docs:build`: the CLI, config, HTTP API, Authoring surface, `@jr2/machines`, the
+  glossary and the ADRs. To change it, change its source (the TSDoc, GLOSSARY.md, an ADR), not a page.
+- **The hand-written pages are not checked against the code.** When a change alters what a page says (a name, a default,
+  a flag, a refusal, an output), `git grep` the term in `docs/site/` and update each page in the same change.
+- **Code on a page is a file in `docs/site/examples/`.** `pnpm typecheck` checks it, and its graph is drawn from it.
+- **The site describes the latest release only.** The `pages` job of `release.yml` deploys it on a `v*` tag.
+- **Verify** with `pnpm docs:site` (a CI gate: no dead link, every page compiles) and
+  `pnpm --filter @jr2/docs-site test`.
+
 ## Testing strategy (ADR-0010, ADR-0027)
 
 Three tiers plus one in-package suite. **Unit/integration:** `node --test` per package, in-process + socket-free
