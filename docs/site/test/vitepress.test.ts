@@ -98,6 +98,31 @@ test("a code group is a bold label line, then the fence without its title, for e
   );
 });
 
+test("a diagram is its bold title, then the list that it holds, as it is", () => {
+  const list =
+    "- **You**: start runs\n  - jr2 CLI\n- ↓ a run starts · ↑ a Gate asks\n- **Orchestrator**\n  - plan → code";
+  assert.equal(
+    ok(`Before.\n\n::: diagram layers The parts\n\n${list}\n\n:::\n\nAfter.`),
+    `Before.\n\n**The parts**\n\n${list}\n\nAfter.`,
+  );
+  assert.equal(
+    ok("::: diagram steps\n\n1. **One.** Text.\n2. **Two.**\n   More.\n\n:::"),
+    "1. **One.** Text.\n2. **Two.**\n   More.",
+  );
+});
+
+test("a diagram names a layout that the site draws, and holds one tight list of that layout's kind", () => {
+  const message = (text: string) => convert(text).errors.map((e) => e.message);
+  assert.match(message("::: diagram\n\n- a\n\n:::")[0]!, /names its layout, one of layers, steps/);
+  assert.match(message("::: diagram graph\n\n- a\n\n:::")[0]!, /names its layout/);
+  assert.match(message("::: diagram layers\n\nText.\n\n:::")[0]!, /holds a bullet list \(- …\) only/);
+  assert.match(message("::: diagram steps\n\n- a\n\n:::")[0]!, /holds an ordered list \(1\. …\) only/);
+  assert.match(message("::: diagram layers\n\n- a\n\n- b\n\n:::")[0]!, /one tight list, with no empty line/);
+  assert.match(message("::: diagram layers\n\n:::")[0]!, /holds no list/);
+  assert.match(message("::: diagram layers\n\n```ts\nx\n```\n\n:::")[0]!, /one list, and no container or code/);
+  assert.match(message("::: diagram layers\n\n- a")[0]!, /::: diagram is not closed/);
+});
+
 test("an aside inside tabs nests, when the tabs have more colons", () => {
   const text = ":::: tabs key:provider\n\n== A\n\n::: tip\n\nHi.\n\n:::\n\n::::";
   assert.equal(ok(text), "**A**\n\n> **Tip**\n>\n> Hi.");

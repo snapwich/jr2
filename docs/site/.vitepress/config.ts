@@ -15,6 +15,7 @@ import { headingSlug } from "../build/markdown.ts";
 import { DECISIONS_PAGE, GLOSSARY_PAGE } from "../build/reference/glossary.ts";
 import type { Sitemap } from "../build/sitemap.ts";
 import { withoutRegions } from "../build/vitepress.ts";
+import { diagramPlugin } from "./diagram.ts";
 import { navOf, sidebarOf } from "./nav.ts";
 
 const SITE = fileURLToPath(new URL("..", import.meta.url));
@@ -128,6 +129,8 @@ export default defineConfig({
     config(md: MarkdownRenderer) {
       // The plugin is typed against a newer @types/markdown-it than VitePress's; the runtime is one.
       md.use(tabsMarkdownPlugin as unknown as Parameters<MarkdownRenderer["use"]>[0]);
+      // `::: diagram <layout>`: the site draws the list that it holds (diagram.ts).
+      diagramPlugin(md);
       // `:tada:` is not CommonMark: the site shows it as the bundle does, as text.
       md.core.ruler.disable("emoji");
       // Vue compiles a page's HTML, and VitePress gives a fence `v-pre` but not a code span. So

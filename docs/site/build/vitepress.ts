@@ -7,6 +7,8 @@
 //   ::: code-group, fences [X]      **X**, then the fence without its title, for each fence
 //   <<< @/examples/f.ts#region      a fenced block of the file, or of its region; language from
 //                                   `{lang}` or from the file's extension
+//   ::: diagram layers|steps [title] **title**, then the list it holds, as it is: the site draws the
+//                                   list (.vitepress/diagram.ts), and the list is the diagram's text
 //
 // Mermaid fences are code, so they pass as they are. markdown-it-container ends a container at the
 // first closing line with at least as many colons, and does not count the containers inside it.
@@ -25,6 +27,9 @@ type AsideKind = keyof typeof ASIDES;
 const ASIDE_OPEN = /^(:{3,}) (info|tip|warning|danger)$/;
 const TABS_OPEN = /^(:{3,}) tabs(?: key:([\w-]+))?$/;
 const GROUP_OPEN = /^(:{3,}) code-group$/;
+/** `::: diagram <layout> [title]`: the layouts that .vitepress/diagram.ts draws. */
+export const DIAGRAM_LAYOUTS = ["layers", "steps"] as const;
+const DIAGRAM_OPEN = /^(:{3,}) diagram(?: (\S+))?(?: (\S.*))?$/;
 const CLOSE = /^(:{3,})$/;
 const TAB = /^== (\S.*)$/;
 /** `<<< @/<path>[#region][{lang}][ [title]]`: the part of VitePress's snippet syntax the format
@@ -92,6 +97,7 @@ type Node =
   | { kind: "line"; text: string }
   | { kind: "aside"; aside: AsideKind; children: Node[] }
   | { kind: "tabs"; tabs: { label: string; children: Node[] }[] }
+  | { kind: "diagram"; title?: string; children: Node[] }
   | { kind: "code"; label?: string; body: string; lang: string };
 
 export type ConvertOptions = {
@@ -117,13 +123,14 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
     | { kind: "root"; children: Node[] }
     | { kind: "aside"; aside: AsideKind; colons: number; children: Node[]; line: number }
     | { kind: "tabs"; colons: number; tabs: { label: string; children: Node[] }[]; line: number }
-    | { kind: "group"; colons: number; fences: Extract<Node, { kind: "code" }>[]; line: number };
+    | { kind: "group"; colons: number; fences: Extract<Node, { kind: "code" }>[]; line: number }
+    | { kind: "diagram"; colons: number; layout: string; title?: string; children: Node[]; line: number };
   const root: Frame = { kind: "root", children: [] };
   const stack: Frame[] = [root];
   const top = () => stack[stack.length - 1]!;
   const push = (n: Node, i: number) => {
     const t = top();
-    if (t.kind === "root" || t.kind === "aside") return void t.children.push(n);
+    if (t.kind === "root" || t.kind === "aside" || t.kind === "diagram") return void t.children.push(n);
     if (t.kind === "tabs") {
       const tab = t.tabs[t.tabs.length - 1];
       if (tab) return void tab.children.push(n);
@@ -186,6 +193,11 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
       if (nest(m[1]!.length, i)) stack.push({ kind: "tabs", colons: m[1]!.length, tabs: [], line: i });
     } else if ((m = GROUP_OPEN.exec(line))) {
       if (nest(m[1]!.length, i)) stack.push({ kind: "group", colons: m[1]!.length, fences: [], line: i });
+    } else if ((m = DIAGRAM_OPEN.exec(line))) {
+      if (!(DIAGRAM_LAYOUTS as readonly string[]).includes(m[2] ?? ""))
+        err(i, `a diagram names its layout, one of ${DIAGRAM_LAYOUTS.join(", ")}: "::: diagram layers [title]"`);
+      if (nest(m[1]!.length, i))
+        stack.push({ kind: "diagram", colons: m[1]!.length, layout: m[2] ?? "", title: m[3], children: [], line: i });
     } else if ((m = TAB.exec(line)) && top().kind === "tabs") {
       (top() as Extract<Frame, { kind: "tabs" }>).tabs.push({ label: m[1]!, children: [] });
     } else if ((m = CLOSE.exec(line))) {
@@ -200,7 +212,11 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
       }
       stack.pop();
       if (t.kind === "aside") push({ kind: "aside", aside: t.aside, children: t.children }, i);
-      else if (t.kind === "tabs") {
+      else if (t.kind === "diagram") {
+        const err_ = diagramList(t.layout, t.children);
+        if (err_) err(t.line, err_);
+        push({ kind: "diagram", title: t.title, children: t.children }, i);
+      } else if (t.kind === "tabs") {
         if (t.tabs.length === 0) err(t.line, "::: tabs holds no tab");
         push({ kind: "tabs", tabs: t.tabs }, i);
       } else {
@@ -223,10 +239,31 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
   }
   for (const f of stack.slice(1).reverse()) {
     if (f.kind === "root") continue;
-    const name = f.kind === "aside" ? `::: ${f.aside}` : f.kind === "tabs" ? "::: tabs" : "::: code-group";
+    const name =
+      f.kind === "aside"
+        ? `::: ${f.aside}`
+        : f.kind === "tabs"
+          ? "::: tabs"
+          : f.kind === "diagram"
+            ? "::: diagram"
+            : "::: code-group";
     err(f.line, `${name} is not closed`);
   }
   return { text: render(root.children).join("\n"), errors };
+}
+
+/** Why a diagram's body is not the one list that its layout draws, or undefined when it is: a
+ * `layers` diagram holds a bullet list, and a `steps` diagram an ordered list. */
+function diagramList(layout: string, children: Node[]): string | undefined {
+  const lines = trimmed(children.map((c) => (c.kind === "line" ? c.text : "\0")));
+  if (lines.some((l) => l === "\0" || FENCE_OPEN.test(l.trim())))
+    return "a diagram holds one list, and no container or code";
+  const item = layout === "steps" ? /^\d+\. / : /^- /;
+  const kind = layout === "steps" ? "an ordered list (1. …)" : "a bullet list (- …)";
+  if (lines.length === 0) return "::: diagram holds no list";
+  if (lines.some((l) => l.trim() === "")) return `a diagram holds one tight list, with no empty line: ${kind}`;
+  if (!lines.every((l) => item.test(l) || /^\s/.test(l))) return `a ${layout} diagram holds ${kind} only`;
+  return undefined;
 }
 
 /** The line that closes the fence that line `i` opens, or the last line when it is not closed. */
@@ -299,6 +336,8 @@ function render(nodes: Node[]): string[] {
           ">",
           ...trimmed(render(n.children)).map((l) => (l.trim() === "" ? ">" : `> ${l}`)),
         ];
+      case "diagram":
+        return [...(n.title ? [`**${n.title}**`, ""] : []), ...trimmed(render(n.children))];
       case "tabs":
         return n.tabs.flatMap((t, i) => [
           ...(i === 0 ? [] : [""]),

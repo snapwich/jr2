@@ -108,31 +108,51 @@ The site and the bundle describe the release that they ship in, and nothing else
 
 3. Links to Why jr2, Get started, Concepts, Guides and Reference, with one sentence for each.
 
-Home has no diagram. Only four diagrams exist, and each is on its Concept page. Link to Architecture for the picture of
-what runs where.
+Home has no diagram. Link to Why jr2 for the picture of jr2 as a whole.
 
 #### Why jr2
 
-`why.md` serves the evaluator. It explains the problems that jr2 solves. Give each problem a section. A section states
-the problem, then says how jr2 answers it, then links to the Concept. The problems are:
+`why.md` serves the evaluator and the Instance user. It shows jr2 as a whole, and it explains the problems that jr2
+solves, so that a reader sees what jr2 does for them before they read a Concept. It has these parts, in this order:
 
-1. **Determinism.** A Machine is a graph that you can read before it runs. The Console draws the run while it runs. You
-   review how the work happens, not only the code that comes out.
-2. **Isolation.** A filesystem sandbox is not isolation. An Agent that works on a Repo works in a Sandbox: a pod with
-   its own filesystem, network and processes, one for each Workspace. A Menu-only Agent has no Sandbox. An Agent never
-   holds a model key. When a Lease lapses, the operator removes what the Agents left behind.
-3. **Distribution.** The compute is remote. The Orchestrator holds only the Actor, and the Harness runs where the
-   cluster puts it.
-4. **Composition.** Workspace, Pool, Source and Gate wrap a body that does not know about them. Each state frames one
-   Turn, so that an Agent does one thing at a time.
-5. **Model agnostic.** One Harness, jr2's own, speaks to each provider. An Agent is a model and its instructions.
-6. **Headless.** The Orchestrator is an HTTP API. The CLI, the Console and a webhook are its clients.
-7. **One converging command.** `jr2 up` converges the same Instance folder into kind on a laptop or into a shared
-   cluster. Only the kubectl context changes.
-8. **A typed Instance.** The typecheck and `jr2 up` find an error in a Machine or in the config before a run starts.
+1. What jr2 does, in at most three lines: a Machine is a graph of states, an Agent does the work in each state, and the
+   Machine decides which state comes next. Keep it short, so that the diagram starts above the fold.
+2. The parts: a `layers` diagram, from the reader to the world outside the cluster. The bands are You, the Orchestrator,
+   the Sandbox, and the world outside. A bracket labelled `jr2 up` holds the Orchestrator and the Sandbox: it is the
+   cluster, and `jr2 up` sets it up. The Orchestrator band holds the example Machine, in the state `review`. The Menu of
+   the reviewer shows the events out of `review`, so that the reader sees where a Menu comes from. Two lines join
+   `approval` and You: a Gate asks you, and you answer. The Agents are in the Harness, in the Sandbox. The lines to the
+   world outside start at the Custodian and the Effector, because they hold the credentials. Each of the two holds any
+   key: the model key and a git credential are examples only.
+3. One section for each problem, in the order of the diagram from top to bottom. A section states the problem, then says
+   how jr2 answers it, then links to the Concept. The answer starts with the part of the diagram that solves the
+   problem. The problems are:
+   1. **Headless.** The You band. The Orchestrator is an HTTP API. The CLI, the Console and a webhook are its clients.
+      You answer a Gate from any of them.
+   2. **Determinism.** The Machine in the Orchestrator band. A Machine is a graph that you can read before it runs, and
+      it can have loops. The Console draws the run while it runs. The Menu is the events out of the current state. You
+      review how the work happens, not only the code that comes out.
+   3. **Composition.** Workspace, Pool, Source and Gate wrap a body that does not know about them. Each state frames one
+      Turn, so that an Agent does one thing at a time.
+   4. **Isolation.** The Sandbox band. A filesystem sandbox is not isolation. An Agent that works on a Repo works in a
+      Sandbox: a pod with its own filesystem, network and processes, one for each Workspace. A Menu-only Agent has no
+      Sandbox. Then the keys: the Custodian holds the Held secrets, and the Effector holds the Effect secrets. Tell when
+      a key goes in the Custodian, when it goes in the Effector, and that one key can be in both. When a Lease lapses,
+      the operator removes what the Agents left behind.
+   5. **Model agnostic.** The line from the Custodian to the model provider. One Harness, jr2's own, speaks to each
+      provider. An Agent is a model and its instructions.
+   6. **Distribution.** The bracket: the compute is in your cluster. The Orchestrator holds only the Actor, and the
+      Harness runs where the cluster puts it.
+   7. **One converging command.** The label of the bracket. `jr2 up` converges the same Instance folder into kind on a
+      laptop or into a shared cluster. Only the kubectl context changes. It does not start a Sandbox: the operator makes
+      one for each Workspace during a run.
+   8. **A typed Instance.** The typecheck and `jr2 up` find an error in a Machine or in the config before a run starts.
+4. `## One run`: a `steps` diagram that follows one run of the example Machine through the bands. The example Machine is
+   one that the reader writes, not one that jr2 ships: its states are `code`, `review`, `approval` and `done`. Then a
+   link to [`task`](../../packages/machines/src/task.ts), the Machine of this kind that jr2 ships.
 
 The sources are the talk (`docs/intro/slides/index.html`) and "The problems" in `docs/architecture.md` before commit
-`9dfe862`. Use their text only. Why jr2 has no diagram. Do not name other products, and do not judge them.
+`9dfe862`. Use their text only. Do not name other products, and do not judge them.
 
 #### Get started
 
@@ -168,8 +188,8 @@ A Concept page explains one idea. It has these parts, in this order:
 4. Its rules: what jr2 does, and what it refuses. Give the rule. The Guide gives the refusal text.
 5. `## Read next`: links to the Guides, to the Reference entries, and to the ADRs.
 
-A Concept page has no procedure. The Guides hold the procedures. A Concept page has one diagram at most, and only the
-four pages in [The four diagrams](#the-four-diagrams) have one.
+A Concept page has no procedure. The Guides hold the procedures. A Concept page has a diagram only when the diagram
+shows its idea better than the text. See [When to draw a diagram](#when-to-draw-a-diagram).
 
 Each term has one Concept page that explains it. The table gives the terms that each page owns (from grill Q7). Another
 page that uses a term links to the page that owns it, and does not explain the term again.
@@ -322,23 +342,33 @@ The key `provider` makes each tab set on the site show the tab that the reader c
 - `pnpm typecheck` checks each `.ts` file in `examples/`. Run `pnpm --filter @jr2/docs-site typecheck` after you change
   one. `pnpm format` formats them.
 
-### The four diagrams
+### When to draw a diagram
 
-A diagram answers one question. Use few boxes. Do not put a label on an arrow when the text gives the same information.
-Use a `mermaid` code block.
+Draw a diagram when it shows a point faster than the text. Each diagram answers one question. Use as many diagrams as
+the docs need, and no more.
 
-Only these four diagrams exist. Each one is on one page:
+- Group more than you wire. A diagram shows a few groups. Each group has a name, a few words on what it does, and its
+  parts. A flowchart of many nodes and edges is hard to read. Draw a line from one part to another part only when the
+  point is which part does a thing, such as the parts that hold the credentials.
+- Use few words. A part has a name, and a few words on its job at most.
+- Put text next to the diagram. The text explains each group, and links each term to the Glossary.
+- Draw each diagram from the code. The talk (`docs/intro/slides/index.html`) shows the style, but some of its facts are
+  old. Do not use the old diagrams in `docs/architecture.md` before commit `9dfe862`.
+- Do not copy a diagram to a second page. Link to it.
+
+These diagrams exist:
 
 | Diagram              | Page                        | The question                                                              |
 | -------------------- | --------------------------- | ------------------------------------------------------------------------- |
+| The parts            | `why`                       | What are the parts of jr2, and what does each part do for you?            |
+| One run              | `why`                       | What happens in one run, from its start to its end?                       |
 | One Turn             | `concepts/agents-and-turns` | What happens in one Turn, from the Frame to the Agent's pick?             |
 | Composing a Workflow | `concepts/composition`      | How do a Workflow, the Machines in it and their bound parts fit together? |
 | What runs where      | `concepts/architecture`     | What runs on your computer, in the cluster, and in a Sandbox?             |
 | Setup and usage      | `concepts/converge`         | What does `jr2 up` make, and what do `jr2 run` and `jr2 send` use?        |
 
-- Do not add a diagram. Do not copy a diagram to a different page. Link to it.
-- Do not use the old diagrams from git history, such as those in `docs/architecture.md` before commit `9dfe862`. Draw
-  each diagram again, from the code.
+The last four are `mermaid` diagrams. They are nodes and edges, so they do not obey the first rule. Replace each one
+with a `::: diagram` when you change it.
 
 ## The source format
 
@@ -470,9 +500,55 @@ a `<<<` of a file outside `examples/`. `pnpm typecheck` checks every `.ts` file 
 
 ### Diagrams
 
-Use a `mermaid` fenced code block. The site draws it with mermaid, in the light theme and in the dark theme. The theme's
-`MermaidDiagram` loads mermaid only on a page that has a diagram, and shows the source of the diagram until then. Only
-four diagrams exist. See [Diagrams](#the-four-diagrams) for the rule and the list.
+Use `::: diagram <layout> [title]`, with one tight list in it. The site draws the list (`.vitepress/diagram.ts`), in the
+light theme and in the dark theme. The bundle keeps the list as it is, after the title in bold. Thus the list is also
+the text of the diagram for an Assistant. `docs:build` refuses a layout that it does not know, and a body that is not
+one tight list of the kind of its layout.
+
+- `layers` holds a bullet list. Each item is a band: `**Name**: what it does`. The items in it are its parts, each
+  `**Name**: what it does` or a name only. A part with items in it is a group, such as a container and what runs in it.
+  A kind in brackets after the name, such as `**coder** (Agent): edits and commits`, is a badge. The site gives each
+  Agent the same colour, so that a reader sees which parts are Agents.
+- An item that starts with `↓` or `↑` is the link between two bands. `·` puts two labels on one link. A label
+  `From → To`, with the names of two parts, is a line from the one part to the other, and the site draws it in place of
+  the label. A state of a Machine is a part too. When one of the two names is a band, the line goes straight between the
+  part and that band. A line goes up when `From` is under `To`, and a line and the line back run side by side. Text
+  after `: `, as in `approval → You: a Gate asks you`, is the label of the line, and the site shows it beside the line.
+  On a phone the parts stack, so the site shows the text of the link there.
+- An item that holds bands and a link between them is a bracket, such as `**your cluster**: \`jr2 up\` sets it up`. The
+  site draws a line on the left of those bands, with the name of the bracket on its side. On a phone it is an outline
+  around them, with its name at the top. A code span in the name of a bracket is a command, not an event. Each band has
+  a colour of its own, in the order of the bands, in a bracket or not, and the last band is grey.
+- A part that has `→` in its text is a Machine: `● → code → **review** → ◉ done`. `●` marks the initial state, `◉` marks
+  a final state, and the bold state is the state that the run is in. Each item in it is a transition, such as
+  `` review → code: `changes` ``. A transition to the next state labels its arrow. Each other transition is a loop under
+  the row.
+- Each other code span in a `layers` diagram is an event. The site shows each event as the same pill, so that a reader
+  can match an event on a transition to the same event on a Menu.
+- `steps` holds an ordered list. Each item is one step: `**What happens.** More text.`
+
+```md
+::: diagram layers The parts of jr2
+
+- **Orchestrator**: runs your Machine
+  - ● → code → **review** → ◉ done
+    - review → done: `approved`
+    - review → code: `changes`
+- ↓ `review` gives the reviewer a Turn and its Menu · ↑ the reviewer picks `approved`
+- **Sandbox**: one pod for each Workspace
+  - **Harness**: runs each Turn
+    - **reviewer**: its Menu: `approved` `changes`
+  - **Custodian**: holds the model key
+- ↓ Custodian → Outside
+- **Outside**
+  - model provider
+
+:::
+```
+
+A `mermaid` fenced code block is the older form. The site draws it with mermaid. The theme's `MermaidDiagram` loads
+mermaid only on a page that has one, and shows its source until then. Do not add a `mermaid` diagram. See
+[When to draw a diagram](#when-to-draw-a-diagram).
 
 ### What not to use
 
@@ -633,8 +709,8 @@ The user must decide these items. Until then, obey the rule for each item.
 
 - **The fork and its tags.** No test shows that a fork with "Copy the main branch only" cleared has the release tags.
   The manual check confirms it.
-- **The diagram of Home.** Grill Q4 gave Home one diagram. The rule of four diagrams gives Home none. Until the user
-  decides, Home has no diagram and links to Architecture.
+- **The diagram of Home.** Grill Q4 gave Home one diagram. Until the user decides, Home has no diagram and links to How
+  jr2 works.
 - **The output.** The writers of stage 3 have no cluster, no key and no model endpoint. Write the output from the code,
   and mark each output block with the comment `<!-- output: not run -->` on the line before it. The manual check runs
   each command, replaces the output, and removes the comment. `scripts/publish.sh` refuses a release while a page of the

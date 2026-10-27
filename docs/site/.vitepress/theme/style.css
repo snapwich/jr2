@@ -102,3 +102,528 @@
 .vp-doc table.flag-table td:first-child code {
   white-space: nowrap;
 }
+
+/* Diagrams (../diagram.ts). A diagram groups and does not wire: each band is a group, in a colour
+   of its own, with its name and what it does on the left and its parts on the right. */
+
+.vp-doc figure.dg {
+  margin: 32px 0;
+}
+
+.vp-doc figure.dg figcaption {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .dg-layers {
+  display: flex;
+  flex-direction: column;
+}
+
+.vp-doc .dg-band {
+  --dg-c: var(--vp-c-indigo-1);
+  --dg-soft: var(--vp-c-indigo-soft);
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 20px;
+  border: 1px solid var(--dg-c);
+  border-radius: 12px;
+  background-color: var(--dg-soft);
+}
+
+.vp-doc .dg-tone-2 {
+  --dg-c: var(--vp-c-green-1);
+  --dg-soft: var(--vp-c-green-soft);
+}
+
+.vp-doc .dg-tone-3 {
+  --dg-c: var(--vp-c-purple-1);
+  --dg-soft: var(--vp-c-purple-soft);
+}
+
+.vp-doc .dg-tone-4 {
+  --dg-c: var(--vp-c-yellow-1);
+  --dg-soft: var(--vp-c-yellow-soft);
+}
+
+.vp-doc .dg-tone-5,
+.vp-doc .dg-tone-last {
+  --dg-c: var(--vp-c-text-2);
+  --dg-soft: var(--vp-c-default-soft);
+}
+
+.vp-doc .dg-head .dg-name {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--dg-c);
+}
+
+.vp-doc .dg-head .dg-role {
+  display: block;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .dg-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* A bracket around bands: a line on their left, with its label on its side. */
+.vp-doc .dg-bracket {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+}
+
+.vp-doc .dg-bracket-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vp-doc .dg-bracket-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vp-doc .dg-bracket-head::after {
+  content: "";
+  align-self: stretch;
+  width: 8px;
+  border: 2px solid var(--vp-c-text-3);
+  border-right: 0;
+  border-radius: 8px 0 0 8px;
+}
+
+.vp-doc .dg-bracket-head > span {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+}
+
+.vp-doc .dg-bracket-head .dg-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc .dg-bracket-head .dg-role {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--vp-c-text-2);
+}
+
+/* A command in the label of a bracket, such as `jr2 up`, is code, not an event. */
+.vp-doc .dg-layers .dg-bracket-head code {
+  padding: 2px 4px;
+  border-radius: 4px;
+  background-color: var(--vp-c-default-soft);
+  color: var(--vp-c-text-1);
+}
+
+/* A Machine is wider than a phone: its band scrolls, and the page does not. */
+.vp-doc .dg-band > .dg-parts:has(> .dg-machine) {
+  overflow-x: auto;
+}
+
+.vp-doc .dg-part:not(.dg-flow),
+.vp-doc .dg-step {
+  padding: 6px 10px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background-color: var(--vp-c-bg);
+}
+
+/* A part's words wrap before the part gets wide, so that parts sit side by side. */
+.vp-doc .dg-part:not(.dg-group, .dg-machine) {
+  max-width: 200px;
+}
+
+.vp-doc .dg-part .dg-name {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc .dg-part .dg-role {
+  display: block;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .dg-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.vp-doc .dg-step {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc .dg-arrow {
+  color: var(--vp-c-text-3);
+}
+
+.vp-doc .dg-link {
+  display: flex;
+  justify-content: center;
+  gap: 48px;
+  padding: 8px 0;
+}
+
+.vp-doc .dg-link-label {
+  padding: 4px 0 4px 10px;
+  border-left: 2px dashed var(--vp-c-divider);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--vp-c-text-2);
+}
+
+@media (max-width: 640px) {
+  .vp-doc .dg-band {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .vp-doc .dg-link {
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 20px;
+  }
+
+  /* A bracket on a phone: an outline around its bands, with its name at the top. */
+  .vp-doc .dg-bracket {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 8px;
+    border: 2px solid var(--vp-c-text-3);
+    border-radius: 16px;
+  }
+
+  .vp-doc .dg-bracket-head::after {
+    display: none;
+  }
+
+  .vp-doc .dg-bracket-head > span {
+    writing-mode: horizontal-tb;
+    transform: none;
+  }
+
+  .vp-doc .dg-bracket-head {
+    padding: 0 4px;
+  }
+}
+
+/* A steps diagram: each step a numbered circle on a line that joins them. */
+.vp-doc ol.dg-steps-list {
+  padding: 0;
+  list-style: none;
+  counter-reset: dg-step;
+}
+
+.vp-doc ol.dg-steps-list > li {
+  position: relative;
+  margin: 0;
+  padding: 0 0 20px 48px;
+  counter-increment: dg-step;
+}
+
+.vp-doc ol.dg-steps-list > li::before {
+  content: counter(dg-step);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background-color: var(--vp-c-brand-soft);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 28px;
+  text-align: center;
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc ol.dg-steps-list > li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 32px;
+  bottom: 4px;
+  left: 13px;
+  border-left: 2px solid var(--vp-c-divider);
+}
+
+.vp-doc ol.dg-steps-list > li > strong:first-child {
+  display: block;
+  font-size: 16px;
+  line-height: 28px;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc figure.dg {
+  position: relative;
+}
+
+/* An event in a diagram (a code span): the same pill on a transition and in a Menu. */
+.vp-doc .dg-layers code {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background-color: var(--vp-c-brand-soft);
+  font-size: 12px;
+  color: var(--vp-c-brand-1);
+}
+
+/* A group: a part with parts in it, such as a container and what runs in it. */
+.vp-doc .dg-part.dg-group {
+  padding: 8px 10px 10px;
+  border: 1px dashed var(--dg-c);
+}
+
+.vp-doc .dg-group > .dg-parts {
+  margin-top: 8px;
+  gap: 6px;
+}
+
+.vp-doc .dg-group .dg-part:not(.dg-group) {
+  background-color: var(--dg-soft);
+}
+
+/* The kind of a part (`**coder** (Agent)`): a badge after its name. An Agent has a colour of its
+   own, so that the reader sees which parts are Agents. */
+.vp-doc .dg-kind {
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background-color: var(--vp-c-default-soft);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .dg-part.dg-kind-agent,
+.vp-doc .dg-group .dg-part.dg-kind-agent {
+  border-color: var(--vp-c-yellow-1);
+  background-color: var(--vp-c-yellow-soft);
+}
+
+.vp-doc .dg-kind-agent .dg-kind {
+  background-color: var(--vp-c-yellow-1);
+  color: var(--vp-c-white);
+}
+
+/* A Machine: its states in a row, an arrow to each next state, its events on the arrows, and each
+   other transition as a loop under the row. */
+.vp-doc .dg-part.dg-machine {
+  position: relative;
+  flex: 1 1 100%;
+  min-width: calc(var(--dg-n) * 80px);
+  padding: 24px 0 calc(20px + var(--dg-loops) * 28px);
+  border: none;
+  background: none;
+}
+
+.vp-doc .dg-states {
+  display: grid;
+  grid-template-columns: repeat(var(--dg-n), 1fr);
+}
+
+.vp-doc .dg-cell {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.vp-doc .dg-cell:not(:last-child)::after {
+  content: "→";
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translate(50%, -50%);
+  color: var(--vp-c-text-3);
+}
+
+.vp-doc .dg-state {
+  position: relative;
+  z-index: 1;
+  padding: 4px 10px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 16px;
+  background-color: var(--vp-c-bg);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc .dg-state.dg-now {
+  border: 2px solid var(--dg-c);
+  padding: 3px 9px;
+  font-weight: 600;
+  color: var(--dg-c);
+}
+
+.vp-doc .dg-state.dg-final {
+  border: 3px double var(--vp-c-text-3);
+  padding: 2px 8px;
+}
+
+.vp-doc .dg-state.dg-initial::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -14px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--vp-c-text-2);
+  transform: translateY(-50%);
+}
+
+.vp-doc .dg-arrow-label {
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  transform: translateX(-50%);
+  line-height: 20px;
+}
+
+.vp-doc .dg-loop {
+  position: absolute;
+  top: 54px;
+  height: calc(22px + var(--dg-depth) * 28px);
+  border: 1.5px solid var(--vp-c-text-3);
+  border-top: none;
+  border-radius: 0 0 12px 12px;
+}
+
+/* The head of a loop: up, into the state that it goes to. */
+.vp-doc .dg-loop::before {
+  content: "";
+  position: absolute;
+  top: -2px;
+  border: 5px solid transparent;
+  border-bottom: 7px solid var(--vp-c-text-3);
+  border-top: none;
+}
+
+.vp-doc .dg-loop-back::before {
+  left: -6px;
+}
+
+.vp-doc .dg-loop-on::before {
+  right: -6px;
+}
+
+.vp-doc .dg-loop-label {
+  position: absolute;
+  bottom: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  line-height: 20px;
+}
+
+/* A link from a part to a part: theme/wires.ts draws its lines, and hides its text when it has. */
+.vp-doc .dg-link.dg-wires {
+  justify-content: center;
+  min-height: 48px;
+  align-items: center;
+}
+
+.vp-doc .dg-wires-text {
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .dg-wired .dg-wires-text {
+  visibility: hidden;
+}
+
+.vp-doc .dg-wire-lines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+  color: var(--vp-c-text-3);
+}
+
+.vp-doc .dg-wire-lines > path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+/* The label of a line: beside it, at the height where it crosses the gap. */
+.vp-doc .dg-wire-label {
+  position: absolute;
+  transform: translateY(-50%);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: var(--vp-c-text-2);
+  pointer-events: none;
+}
+
+.vp-doc .dg-wire-label-left {
+  transform: translate(calc(-100% - 10px), -50%);
+}
+
+.vp-doc .dg-wire-label-right {
+  margin-left: 10px;
+}
+
+/* The parts of a band stack on a phone, so a line from a part would cross the parts below it:
+   the link shows its text instead. After the rules above, so that it wins. */
+@media (max-width: 640px) {
+  .vp-doc .dg-wire-lines,
+  .vp-doc .dg-wire-label {
+    display: none;
+  }
+
+  .vp-doc .dg-wired .dg-wires-text {
+    visibility: visible;
+  }
+}
+
+/* A state on a phone: smaller, so that a Machine of four states fits its band. */
+@media (max-width: 640px) {
+  .vp-doc .dg-part.dg-machine {
+    min-width: calc(var(--dg-n) * 70px);
+  }
+
+  .vp-doc .dg-state {
+    padding: 3px 7px;
+    font-size: 13px;
+  }
+
+  .vp-doc .dg-state.dg-now {
+    padding: 2px 6px;
+  }
+
+  .vp-doc .dg-state.dg-final {
+    padding: 1px 5px;
+  }
+}

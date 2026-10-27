@@ -26,7 +26,7 @@ tutorial gives these steps one at a time, and then runs `ping`.
 
 ## Where to go next
 
-- [Why jr2](why.md) gives the problems that jr2 solves.
+- [Why jr2](why.md) shows the parts of jr2, gives the problems that each part solves, and follows one run through them.
 - [Get started](get-started/install.md) is a tutorial. It goes from the install to a branch that an Agent fixed and that
   you approved.
 - [Concepts](concepts/machines-and-workflows.md) explains each idea of jr2. For the picture of what runs where, read
