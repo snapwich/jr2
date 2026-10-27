@@ -200,6 +200,10 @@ Sandbox waits in a state that is not final, such as at a Gate. The Sandbox stays
 A Failure also deletes the Sandbox, with each commit in it. To keep the work for a person to read, wait at a Gate before
 the state that fails.
 
+A parent that invokes the same Machine again, with the same invoke id, gives the new Workspace the same Sandbox. That
+happens on a retry after it catches a Failure, or when it enters the state again. jr2 does not delete that Sandbox. The
+new Workspace takes it over, with the Worktree and each commit of the attempt before it, as a restore does.
+
 When a run faults after its Sandbox was placed, the Sandbox stays, so that you can look inside it. jr2's operator
 removes it after an idle timeout of 30 minutes. jr2 immediately deletes a Sandbox that it never placed. `CANCEL` deletes
 the Workspaces of the run, unless you send it with `--keep` (see [`jr2 send`](../reference/cli.md#send)).
