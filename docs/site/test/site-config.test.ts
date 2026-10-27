@@ -1,8 +1,8 @@
 // The site's own config (ADR-0072), socket-free: the markdown renderer VitePress builds from it, and
-// the options it sets. Five fixes are held here: the H1 that the site adds gets its anchor (so the
+// the options it sets. Six fixes are held here: the H1 that the site adds gets its anchor (so the
 // local search files each section under its page), a mermaid fence becomes the theme's lazy
-// component, a Glossary term is a `<dl>`, an ADR's page says that it is one, and the site writes
-// sitemap.xml.
+// component, a Glossary term is a `<dl>`, an ADR's page says that it is one, a table of flags has
+// the class that keeps each flag on one line, and the site writes sitemap.xml.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -94,6 +94,14 @@ test("an ADR's title carries its number; another page's title stays as it is", (
   for (const p of [adr, other]) config.transformPageData!(p as never, {} as never);
   assert.equal(adr.title, "ADR-0066: A tier");
   assert.equal(other.title, "Glossary");
+});
+
+test("a table whose first header is Flag has the flag-table class; another table has none", async () => {
+  const html = await render(
+    "| Flag | Description |\n| --- | --- |\n| `--skip-provider-preflight` | x |\n\n" +
+      "| Variable | Description |\n| --- | --- |\n| `NO_COLOR` | y |\n",
+  );
+  assert.deepEqual(html.match(/<table[^>]*>/g), ['<table class="flag-table" tabindex="0">', '<table tabindex="0">']);
 });
 
 test("the site writes sitemap.xml for its base on GitHub Pages", () => {

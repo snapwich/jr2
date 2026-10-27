@@ -180,6 +180,15 @@ export default defineConfig({
         open.attrSet("class", "adr-label");
         state.tokens.splice(Math.max(at, 0), 0, open, label, token("paragraph_close", "p", -1));
       });
+      // A table of flags (its first header is "Flag") gets a class, so that the theme keeps each
+      // flag on one line: a browser breaks a line after a hyphen, and `--skip-provider-preflight`
+      // then wraps at each one. VitePress's table rule prints a fixed tag, so the class goes in here.
+      const tableOpen = md.renderer.rules.table_open!;
+      md.renderer.rules.table_open = (tokens, idx, options, env, self) => {
+        const html = tableOpen(tokens, idx, options, env, self);
+        const header = tokens.slice(idx).find((t) => t.type === "inline")?.content;
+        return header === "Flag" ? html.replace(/^<table/, '<table class="flag-table"') : html;
+      };
       // A whole-file `<<<` shows the file without its region markers, as the bundle does.
       // VitePress strips them from a region only. A `mermaid` fence is the theme's
       // MermaidDiagram, which imports mermaid only on a page that has one.

@@ -97,3 +97,8 @@
 .vp-doc p.adr-label a:hover {
   color: var(--vp-c-brand-1);
 }
+
+/* A table of flags (the table_open rule in ../config.ts): each flag on one line. */
+.vp-doc table.flag-table td:first-child code {
+  white-space: nowrap;
+}
