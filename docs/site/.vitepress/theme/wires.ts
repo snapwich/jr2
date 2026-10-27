@@ -42,10 +42,11 @@ export const DiagramWires = defineComponent({
         Array.from(figure.querySelectorAll("[data-name]")).find((e) => e.dataset.name === name);
       const gap = row.getBoundingClientRect();
       const drawn: Line[] = [];
-      // The head of a band names the band: a line between a part and a band is straight, at the part.
+      // The head of a band or a bracket names it: a line between a part and a band is straight, at the part.
       const end = (name: string) => {
         const e = named(name);
-        const band = e?.classList.contains("dg-head") ? e.parentElement : undefined;
+        const band =
+          e?.classList.contains("dg-head") || e?.classList.contains("dg-bracket-head") ? e.parentElement : undefined;
         const at = (band ?? e)?.getBoundingClientRect();
         return at && { at, band: !!band, x: at.left + at.width / 2 - origin.left };
       };
@@ -64,16 +65,23 @@ export const DiagramWires = defineComponent({
         const y2 = (up ? to.at.bottom + 2 : to.at.top - 2) - origin.top;
         // Each line turns at its own height in the gap, so that two lines do not run as one.
         const mid = gap.top - origin.top + (gap.height * (k + 1)) / (wires.length + 1);
-        // Its label is beside it, at the middle of the gap, as the text labels of a link are: on
-        // the outer side of a line that has a line back.
+        // Its label is beside it, at the middle of the gap, as the text labels of a link are.
+        const y = gap.top - origin.top + gap.height / 2;
         drawn.push({
           d: `M ${x1} ${y1} V ${mid} H ${x2} V ${y2}`,
           label: w.label,
-          x: x2,
-          y: gap.top - origin.top + gap.height / 2,
-          side: shift < 0 ? "left" : "right",
+          x: mid > y ? x1 : x2,
+          y,
+          side: "right",
         });
+        if (shift < 0) drawn.at(-1)!.side = "left";
       });
+      // A label goes on the outer side of a line that has a line back, and on the left of the line
+      // furthest to the left when the row has two or more, so that two labels do not meet.
+      if (drawn.length > 1 && drawn.every((l) => l.side === "right")) {
+        const first = drawn.reduce((a, l) => (l.x < a.x ? l : a));
+        first.side = "left";
+      }
       box.value = { width: origin.width, height: origin.height };
       lines.value = drawn;
       row.classList.toggle("dg-wired", drawn.length === wires.length);

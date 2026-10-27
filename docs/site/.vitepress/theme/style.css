@@ -122,9 +122,14 @@
   flex-direction: column;
 }
 
-.vp-doc .dg-band {
+.vp-doc .dg-band,
+.vp-doc .dg-seq-head,
+.vp-doc .dg-life {
   --dg-c: var(--vp-c-indigo-1);
   --dg-soft: var(--vp-c-indigo-soft);
+}
+
+.vp-doc .dg-band {
   display: grid;
   grid-template-columns: 130px 1fr;
   gap: 16px;
@@ -176,6 +181,11 @@
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+}
+
+/* Two bands with no link between them still have space between them. */
+.vp-doc :is(.dg-band, .dg-bracket) + :is(.dg-band, .dg-bracket) {
+  margin-top: 12px;
 }
 
 /* A bracket around bands: a line on their left, with its label on its side. */
@@ -248,7 +258,7 @@
 
 /* A part's words wrap before the part gets wide, so that parts sit side by side. */
 .vp-doc .dg-part:not(.dg-group, .dg-machine) {
-  max-width: 200px;
+  max-width: 190px;
 }
 
 .vp-doc .dg-part .dg-name {
@@ -310,6 +320,17 @@
     padding-left: 20px;
   }
 
+  /* The heads of a sequence on a phone: narrow, so that a long name fits its column. */
+  .vp-doc .dg-seq-head {
+    margin: 0 3px;
+    padding: 8px 4px;
+  }
+
+  .vp-doc .dg-seq-head .dg-name {
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
   /* A bracket on a phone: an outline around its bands, with its name at the top. */
   .vp-doc .dg-bracket {
     grid-template-columns: 1fr;
@@ -331,6 +352,119 @@
   .vp-doc .dg-bracket-head {
     padding: 0 4px;
   }
+}
+
+/* A sequence diagram: each part a head in the colour of its band, with its line down, and each
+   message an arrow between two lines, with its label over it. */
+.vp-doc .dg-seq-heads {
+  display: flex;
+}
+
+.vp-doc .dg-seq-head {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--dg-c);
+  border-radius: 12px;
+  background-color: var(--dg-soft);
+  text-align: center;
+}
+
+.vp-doc .dg-seq-head .dg-name {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--dg-c);
+}
+
+.vp-doc .dg-seq-head .dg-role {
+  display: block;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .dg-seq-body {
+  position: relative;
+  padding: 12px 0 20px;
+}
+
+.vp-doc .dg-life {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 2px dashed var(--dg-c);
+  opacity: 0.5;
+}
+
+.vp-doc .dg-msg {
+  position: relative;
+  padding: 6px 0;
+}
+
+.vp-doc .dg-msg-arrow {
+  position: relative;
+  display: block;
+  padding: 0 10px 4px;
+  border-bottom: 1.5px solid var(--vp-c-text-2);
+  text-align: center;
+}
+
+.vp-doc .dg-msg-arrow::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  width: 8px;
+  height: 8px;
+  border-top: 1.5px solid var(--vp-c-text-2);
+  border-right: 1.5px solid var(--vp-c-text-2);
+}
+
+.vp-doc .dg-msg-right::after {
+  right: 0;
+  transform: rotate(45deg);
+}
+
+.vp-doc .dg-msg-left::after {
+  left: 0;
+  transform: rotate(-135deg);
+}
+
+.vp-doc .dg-msg-label {
+  position: relative;
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--vp-c-text-1);
+  background-color: var(--vp-c-bg);
+}
+
+.vp-doc .dg-seq-loop {
+  position: relative;
+  margin: 6px 0;
+  padding: 26px 0 6px;
+}
+
+.vp-doc .dg-seq-loop::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--dg-left) - 28px);
+  right: calc(var(--dg-right) - 28px);
+  border: 1px dashed var(--vp-c-text-3);
+  border-radius: 10px;
+}
+
+.vp-doc .dg-seq-loop-label {
+  position: absolute;
+  top: 4px;
+  left: calc(var(--dg-left) - 20px);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--vp-c-text-2);
 }
 
 /* A steps diagram: each step a numbered circle on a line that joins them. */

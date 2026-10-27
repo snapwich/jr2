@@ -74,16 +74,23 @@ A composed Machine is a part of the run of its parent:
 
 ### Composing a Workflow
 
-```mermaid
-flowchart TD
-  wf["Workflow route<br/>workflows/route.ts"] --> route["Machine route"]
-  route --> triager["Agent triager"]
-  route --> deep["deep"]
-  route --> quick["quick"]
-  deep --> coding["coding<br/>Repo Slot target, coder model"]
-  quick --> coding
-  coding --> task["task, from @jr2/machines<br/>Open: Repo Slots, coder model"]
-```
+::: diagram layers The Workflow route, and the Machines that it composes
+
+- **route**: the Machine that workflows/route.ts registers as the Workflow route
+  - **triager** (Agent): picks deep or quick
+  - **deep** (Machine): thinking high
+  - **quick** (Machine): thinking low
+- ↓ deep → coding: customize() · quick → coding: customize()
+- **coding**: binds the Open parts of task
+  - **Repo Slot target**: your app
+  - **coder model**: the model of the tab
+- ↓ coding is a customize() of task
+- **task**: from @jr2/machines
+  - **coder** (Agent): edits and commits
+  - **Repo Slots**: Open
+  - **coder model**: Open
+
+:::
 
 The file `workflows/route.ts` registers the Machine `route` as the Workflow `route`. The Machine declares three slots of
 its own: the Agent `triager` and the two Machines `deep` and `quick`. Each of the two is a `customize()` of `coding`,

@@ -19,7 +19,6 @@
     "@jr2/machines": "workspace:*",
     "@jr2/orchestrator": "workspace:*",
     "@types/node": "^26.0.1",
-    "mermaid": "11.17.2",
     "typescript": "^5.6.0",
     "vitepress": "1.6.4",
     "vitepress-plugin-tabs": "0.9.1",

@@ -1,13 +1,11 @@
 // The site's own config (ADR-0072), socket-free: the markdown renderer VitePress builds from it, and
-// the options it sets. Seven fixes are held here: the H1 that the site adds gets its anchor (so the
-// local search files each section under its page), a mermaid fence becomes the theme's lazy
-// component, a Glossary term is a `<dl>`, an ADR's page says that it is one, a table of flags has
+// the options it sets. Six fixes are held here: the H1 that the site adds gets its anchor (so the
+// local search files each section under its page), a Glossary term is a `<dl>`, an ADR's page says that it is one, a table of flags has
 // the class that keeps each flag on one line, a `::: diagram` is drawn from its list, and the site
 // writes sitemap.xml.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { createMarkdownRenderer } from "vitepress";
 import config from "../.vitepress/config.ts";
 
@@ -24,21 +22,6 @@ test("a page's H1 comes from its frontmatter, before the anchor rule, so it has 
 test("a page that has an H1 already gets no second one", async () => {
   const html = await render("---\ntitle: Gates\n---\n\n# Reference\n\nText.\n");
   assert.equal(html.match(/<h1/g)?.length, 1);
-});
-
-test("a mermaid fence is the MermaidDiagram component, with its source URI-encoded", async () => {
-  const graph = "flowchart LR\n  a --> b\n";
-  const html = await render(`---\ntitle: T\n---\n\n\`\`\`mermaid\n${graph}\`\`\`\n`);
-  assert.ok(html.includes(`<MermaidDiagram graph="${encodeURIComponent(graph)}" />`), html);
-  assert.doesNotMatch(html, /<pre/);
-});
-
-test("the component imports mermaid only when it mounts, never statically", async () => {
-  const src = await readFile(new URL("../.vitepress/theme/mermaid.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(src, /^import [^;]*from "mermaid"/m, "a static import would load mermaid on every page");
-  assert.match(src, /import\("mermaid"\)/);
-  const theme = await readFile(new URL("../.vitepress/theme/index.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(theme, /from "mermaid"|vitepress-plugin-mermaid/);
 });
 
 const glossary = (src: string) =>
@@ -121,7 +104,7 @@ test("a layers diagram draws each item as a band, a part in it as a part, and an
       "</div></section>" +
       '<div class="dg-link"><span class="dg-link-label">↓ a run starts</span>' +
       '<span class="dg-link-label">↑ a Gate asks</span></div>' +
-      '<section class="dg-band dg-tone-last"><div class="dg-head" data-name="Sandbox"><span class="dg-name">Sandbox</span></div>' +
+      '<section class="dg-band dg-tone-3"><div class="dg-head" data-name="Sandbox"><span class="dg-name">Sandbox</span></div>' +
       '<div class="dg-parts"><div class="dg-part dg-group" data-name="Harness"><span class="dg-name">Harness</span>' +
       '<span class="dg-role">runs each Turn</span><div class="dg-parts">' +
       '<div class="dg-part" data-name="coder"><span class="dg-name">coder</span></div></div></div></div></section>' +
@@ -211,6 +194,32 @@ test("an item that holds bands and a link is a bracket, and each band has its co
   );
   assert.match(html, /<section class="dg-band dg-tone-3"><div class="dg-head" data-name="Sandbox">/);
   assert.match(html, /<\/div><\/div><section class="dg-band dg-tone-last"><div class="dg-head" data-name="Outside">/);
+});
+
+test("a sequence diagram draws its parts as columns, each message as an arrow, and a loop as a frame", async () => {
+  const html = await render(
+    "::: diagram sequence\n\n- **Orchestrator**: the state\n- **Harness**\n- **model provider**\n" +
+      "- Orchestrator → Harness: the Frame\n- zero or more times\n  - model provider → Harness: a tool call\n\n:::\n",
+  );
+  assert.ok(html.startsWith('<figure class="dg dg-sequence"><div class="dg-seq" style="--dg-n: 3">'), html);
+  // Each part of jr2 has the colour that it has in each diagram, by its name.
+  assert.match(html, /<div class="dg-seq-head dg-tone-2" data-name="Orchestrator">/);
+  assert.match(html, /<div class="dg-seq-head dg-tone-3" data-name="Harness">/);
+  assert.match(html, /<span class="dg-life dg-tone-last" style="left: 83\.33%"><\/span>/);
+  assert.ok(
+    html.includes(
+      '<div class="dg-msg"><span class="dg-msg-arrow dg-msg-right" style="margin-left: 16.67%; width: 33.33%">' +
+        '<span class="dg-msg-label">the Frame</span></span></div>',
+    ),
+    html,
+  );
+  assert.ok(
+    html.includes(
+      '<div class="dg-seq-loop" style="--dg-left: 50%; --dg-right: 16.67%"><span class="dg-seq-loop-label">zero or more times</span>' +
+        '<div class="dg-msg"><span class="dg-msg-arrow dg-msg-left" style="margin-left: 50%; width: 33.33%">',
+    ),
+    html,
+  );
 });
 
 test("a steps diagram is its ordered list, with the class that numbers each step", async () => {

@@ -100,22 +100,22 @@ and only `fixing` sets a Dial. The checker's Turn has no `cwd`, because it has n
 
 ## One Turn
 
-```mermaid
-sequenceDiagram
-  participant S as Machine state
-  participant H as Harness
-  participant M as Model
-  S->>H: the definition, the Frame and the Dials
-  H->>M: instructions, prompt and Briefing
-  loop zero or more times
-    M->>H: a Working tool call
-    H-->>M: its result
-  end
-  M->>H: a pick from the Menu
-  H->>S: the pick, as an event
-  S-->>H: the answer to the pick
-  H-->>M: the answer
-```
+::: diagram sequence One Turn, from the state that invokes the Agent to the answer to its pick
+
+- **Orchestrator**: the state that invokes the Agent
+- **Harness**: runs the Turn
+- **model provider**: the model of the Agent
+- Orchestrator → Harness: the definition, the Frame and the Dials
+- Harness → model provider: the instructions, the prompt and the Briefing
+- zero or more times
+  - model provider → Harness: a Working tool call
+  - Harness → model provider: its result
+- model provider → Harness: a pick from the Menu
+- Harness → Orchestrator: the pick, as an event
+- Orchestrator → Harness: the answer to the pick
+- Harness → model provider: the answer
+
+:::
 
 The [Briefing](../reference/glossary.md#briefing) is the text that jr2 itself adds. The loop can run zero times: a
 Menu-only Agent has no Working tools. The answer to the pick tells the model if its Turn is over.

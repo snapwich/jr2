@@ -193,12 +193,10 @@ export default defineConfig({
         return header === "Flag" ? html.replace(/^<table/, '<table class="flag-table"') : html;
       };
       // A whole-file `<<<` shows the file without its region markers, as the bundle does.
-      // VitePress strips them from a region only. A `mermaid` fence is the theme's
-      // MermaidDiagram, which imports mermaid only on a page that has one.
+      // VitePress strips them from a region only.
       const fence = md.renderer.rules.fence!;
       md.renderer.rules.fence = (tokens, idx, options, env, self) => {
         const t = tokens[idx] as unknown as Token;
-        if (t.info.trim() === "mermaid") return `<MermaidDiagram graph="${encodeURIComponent(t.content)}" />\n`;
         if (t.src && !t.src[1]) {
           (env as { includes?: string[] }).includes?.push(t.src[0]);
           t.content = withoutRegions(readFileSync(t.src[0], "utf8").replace(/\r\n/g, "\n"));
@@ -235,8 +233,4 @@ export default defineConfig({
     for (const f of files.filter((f) => f.endsWith(".md") || f === "llms.txt"))
       if (f !== "agents-block.md") await cp(join(BUNDLE, f), join(siteConfig.outDir, f));
   },
-  // mermaid's CommonJS dependencies are not hoisted into docs/site by pnpm, so docs:dev would send
-  // CommonJS dayjs to the browser. Pre-bundled with mermaid, they resolve. The build is not
-  // affected (Rollup converts CommonJS).
-  vite: { optimizeDeps: { include: ["mermaid"] } },
 });

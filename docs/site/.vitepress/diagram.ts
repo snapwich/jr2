@@ -8,6 +8,9 @@
 //           label `From → To[: label]` is a line from a part to a part, or between a part and a band.
 //           An item that holds bands and the links between them is a bracket around those bands. A part whose
 //           text has ` → ` is a Machine: its states in a row, and its transitions as its items.
+//   sequence  a bullet list. An item `**Name**: what it does` is a part, and the parts are the heads
+//           of the columns, in order. An item `From → To: what goes` is a message, an arrow from the
+//           one column to the other. An item with messages in it is a loop around them.
 //   steps   an ordered list: each item is a step, `**What happens.** More text`.
 //
 // A diagram groups more than it wires: a line from a part to a part is for the point that a
@@ -106,6 +109,19 @@ const plain = (children: Token[]) =>
     .join("")
     .trim();
 
+/** The parts of jr2 that more than one diagram shows: each has the same colour in each diagram. A
+ * band or a part of a sequence with another name has the colour of its place, and the last is grey. */
+const TONES: Record<string, string> = {
+  You: "1",
+  Orchestrator: "2",
+  Instance: "2",
+  Harness: "3",
+  Sandbox: "3",
+  "jr2-system": "4",
+  Outside: "last",
+  "model provider": "last",
+};
+
 /** A link from a part to a part: `From → To`, the two parts named as they are in the diagram, and
  * the text after `: ` as its label, if it has one. */
 export type Wire = { from: string; to: string; label?: string };
@@ -139,6 +155,12 @@ function draw(layout: string, title: string, inner: Token[], Tok: TokenOf): Toke
   /** `tokens` with `lead` taken off the start of its first text. */
   const strip = (tokens: Token[], lead: RegExp) =>
     tokens[0]?.type === "text" ? [text(tokens[0].content.replace(lead, "")), ...tokens.slice(1)] : tokens;
+  /** The name of an item: its bold lead, or all of its text when it has none. */
+  const nameOf = (item: Item) => {
+    const c = tokensOf(item);
+    const lead = c[0]?.type === "strong_open" ? c.findIndex((t) => t.type === "strong_close") : -1;
+    return plain(lead < 0 ? c : c.slice(1, lead));
+  };
   const bold = (tokens: Token[]) =>
     tokens[0]?.type === "strong_open" && tokens.at(-1)?.type === "strong_close" ? tokens.slice(1, -1) : undefined;
 
@@ -227,8 +249,59 @@ function draw(layout: string, title: string, inner: Token[], Tok: TokenOf): Toke
     html("</div>");
   };
 
+  /** A sequence: the parts in columns, each with its line down, and each message an arrow from
+   * the line of the one part to the line of the other, in the order of the list. */
+  const sequence = (items: Item[]) => {
+    const isMessage = (item: Item) => item.children.length === 0 && cut(tokensOf(item), " → ").length > 1;
+    const heads = items.filter((i) => !isMessage(i) && i.children.length === 0);
+    const names = heads.map(nameOf);
+    const n = heads.length;
+    const center = (i: number) => ((i + 0.5) / n) * 100;
+    const tone = (i: number) => TONES[names[i]!] ?? (i === n - 1 && n > 1 ? "last" : String((i % 5) + 1));
+    const message = (item: Item) => {
+      const [head, ...label] = cut(tokensOf(item), ": ");
+      const [from, to] = cut(head ?? [], " → ").map((t) => names.indexOf(plain(t)));
+      if (from === undefined || to === undefined || from < 0 || to < 0 || from === to) return;
+      const [lo, hi] = from < to ? [from, to] : [to, from];
+      html('<div class="dg-msg">');
+      html(
+        `<span class="dg-msg-arrow ${to < from ? "dg-msg-left" : "dg-msg-right"}" style="margin-left: ${pct(center(lo))}; width: ${pct(center(hi) - center(lo))}">`,
+      );
+      html('<span class="dg-msg-label">');
+      inline(label.flatMap((t, k) => (k ? [text(": "), ...t] : t)));
+      html("</span></span></div>");
+    };
+    html(`<div class="dg-seq" style="--dg-n: ${n}">`);
+    html('<div class="dg-seq-heads">');
+    heads.forEach((h, i) => part(h, `dg-seq-head dg-tone-${tone(i)}`));
+    html("</div>");
+    html('<div class="dg-seq-body">');
+    heads.forEach((_, i) => html(`<span class="dg-life dg-tone-${tone(i)}" style="left: ${pct(center(i))}"></span>`));
+    for (const item of items) {
+      if (isMessage(item)) message(item);
+      else if (item.children.length) {
+        // A loop: a frame around its messages, from the first column that they use to the last.
+        const used = item.children.flatMap((m) =>
+          cut(cut(tokensOf(m), ": ")[0] ?? [], " → ").map((t) => names.indexOf(plain(t))),
+        );
+        const lo = Math.min(...used.filter((u) => u >= 0));
+        const hi = Math.max(...used);
+        html(`<div class="dg-seq-loop" style="--dg-left: ${pct(center(lo))}; --dg-right: ${pct(100 - center(hi))}">`);
+        html('<span class="dg-seq-loop-label">');
+        inline(tokensOf(item));
+        html("</span>");
+        for (const m of item.children) message(m);
+        html("</div>");
+      }
+    }
+    html("</div></div>");
+  };
+
   html(`<figure class="dg dg-${layout}">`);
-  if (layout === "steps") {
+  if (layout === "sequence") {
+    const at = inner.findIndex((t) => t.type === "bullet_list_open");
+    sequence(at < 0 ? [] : listAt(inner, at)[0]);
+  } else if (layout === "steps") {
     const ol = inner.find((t) => t.type === "ordered_list_open");
     ol?.attrSet("class", "dg-steps-list");
     out.push(...inner);
@@ -236,8 +309,8 @@ function draw(layout: string, title: string, inner: Token[], Tok: TokenOf): Toke
     const at = inner.findIndex((t) => t.type === "bullet_list_open");
     const [items] = at < 0 ? [[]] : listAt(inner, at);
     const isLink = (item: Item) => ARROW.test(item.inline?.content ?? "");
-    // An item that holds a link holds bands, not parts: it is a bracket around those bands.
-    const isBracket = (item: Item) => item.children.some(isLink);
+    // An item that holds a link, or a bracket, holds bands, not parts: it is a bracket around them.
+    const isBracket = (item: Item): boolean => item.children.some((c) => isLink(c) || isBracket(c));
     const count = (list: Item[]): number =>
       list.reduce((n, i) => n + (isLink(i) ? 0 : isBracket(i) ? count(i.children) : 1), 0);
     const total = count(items);
@@ -284,7 +357,7 @@ function draw(layout: string, title: string, inner: Token[], Tok: TokenOf): Toke
         }
         // Each band has a colour of its own, in the order of the bands, and the last band is grey.
         n++;
-        html(`<section class="dg-band dg-tone-${n === total ? "last" : ((n - 1) % 5) + 1}">`);
+        html(`<section class="dg-band dg-tone-${TONES[nameOf(band)] ?? (n === total ? "last" : ((n - 1) % 5) + 1)}">`);
         part(band, "dg-head");
         if (band.children.length) {
           html('<div class="dg-parts">');

@@ -7,10 +7,11 @@
 //   ::: code-group, fences [X]      **X**, then the fence without its title, for each fence
 //   <<< @/examples/f.ts#region      a fenced block of the file, or of its region; language from
 //                                   `{lang}` or from the file's extension
-//   ::: diagram layers|steps [title] **title**, then the list it holds, as it is: the site draws the
+//   ::: diagram layers|sequence|steps [title]
+//                                   **title**, then the list it holds, as it is: the site draws the
 //                                   list (.vitepress/diagram.ts), and the list is the diagram's text
 //
-// Mermaid fences are code, so they pass as they are. markdown-it-container ends a container at the
+// A `mermaid` fence fails: the site draws no mermaid, and a diagram is a `::: diagram`. markdown-it-container ends a container at the
 // first closing line with at least as many colons, and does not count the containers inside it.
 // So a container inside another has fewer colons than its parent, and a close has exactly the
 // colons of its open: then the stack below reads a page as VitePress does.
@@ -28,7 +29,7 @@ const ASIDE_OPEN = /^(:{3,}) (info|tip|warning|danger)$/;
 const TABS_OPEN = /^(:{3,}) tabs(?: key:([\w-]+))?$/;
 const GROUP_OPEN = /^(:{3,}) code-group$/;
 /** `::: diagram <layout> [title]`: the layouts that .vitepress/diagram.ts draws. */
-export const DIAGRAM_LAYOUTS = ["layers", "steps"] as const;
+export const DIAGRAM_LAYOUTS = ["layers", "sequence", "steps"] as const;
 const DIAGRAM_OPEN = /^(:{3,}) diagram(?: (\S+))?(?: (\S.*))?$/;
 const CLOSE = /^(:{3,})$/;
 const TAB = /^== (\S.*)$/;
@@ -165,6 +166,7 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
       } else {
         if (info !== "" && !/^[\w+#.-]+$/.test(info))
           err(i, `a fence's info is its language only, not "${info}": the bundle is plain Markdown`);
+        if (info === "mermaid") err(i, "the site draws no mermaid: write a ::: diagram (see docs/site/README.md)");
         for (const l of block) push({ kind: "line", text: l }, i);
       }
       i = j;
@@ -253,7 +255,7 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
 }
 
 /** Why a diagram's body is not the one list that its layout draws, or undefined when it is: a
- * `layers` diagram holds a bullet list, and a `steps` diagram an ordered list. */
+ * `layers` or a `sequence` diagram holds a bullet list, and a `steps` diagram an ordered list. */
 function diagramList(layout: string, children: Node[]): string | undefined {
   const lines = trimmed(children.map((c) => (c.kind === "line" ? c.text : "\0")));
   if (lines.some((l) => l === "\0" || FENCE_OPEN.test(l.trim())))

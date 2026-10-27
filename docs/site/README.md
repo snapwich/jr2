@@ -354,7 +354,8 @@ the docs need, and no more.
 - Put text next to the diagram. The text explains each group, and links each term to the Glossary.
 - Draw each diagram from the code. The talk (`docs/intro/slides/index.html`) shows the style, but some of its facts are
   old. Do not use the old diagrams in `docs/architecture.md` before commit `9dfe862`.
-- Do not copy a diagram to a second page. Link to it.
+- Do not copy a diagram to a second page. Link to it. A part that two diagrams show has the same name in each, so that
+  it has the same colour in each.
 
 These diagrams exist:
 
@@ -366,9 +367,6 @@ These diagrams exist:
 | Composing a Workflow | `concepts/composition`      | How do a Workflow, the Machines in it and their bound parts fit together? |
 | What runs where      | `concepts/architecture`     | What runs on your computer, in the cluster, and in a Sandbox?             |
 | Setup and usage      | `concepts/converge`         | What does `jr2 up` make, and what do `jr2 run` and `jr2 send` use?        |
-
-The last four are `mermaid` diagrams. They are nodes and edges, so they do not obey the first rule. Replace each one
-with a `::: diagram` when you change it.
 
 ## The source format
 
@@ -517,14 +515,20 @@ one tight list of the kind of its layout.
   On a phone the parts stack, so the site shows the text of the link there.
 - An item that holds bands and a link between them is a bracket, such as `**your cluster**: \`jr2 up\` sets it up`. The
   site draws a line on the left of those bands, with the name of the bracket on its side. On a phone it is an outline
-  around them, with its name at the top. A code span in the name of a bracket is a command, not an event. Each band has
-  a colour of its own, in the order of the bands, in a bracket or not, and the last band is grey.
+  around them, with its name at the top. A code span in the name of a bracket is a command, not an event.
+- Each band has a colour of its own, in the order of the bands, in a bracket or not, and the last band is grey. The
+  parts of jr2 that more than one diagram shows have one colour in every diagram: You, Orchestrator (and Instance),
+  Sandbox (and Harness), jr2-system, and Outside (and model provider). `TONES` in `.vitepress/diagram.ts` lists them.
 - A part that has `→` in its text is a Machine: `● → code → **review** → ◉ done`. `●` marks the initial state, `◉` marks
   a final state, and the bold state is the state that the run is in. Each item in it is a transition, such as
   `` review → code: `changes` ``. A transition to the next state labels its arrow. Each other transition is a loop under
   the row.
 - Each other code span in a `layers` diagram is an event. The site shows each event as the same pill, so that a reader
   can match an event on a transition to the same event on a Menu.
+- `sequence` holds a bullet list. Each item `**Name**: what it does` is a part, and the parts are the columns, in order,
+  each with its line down. Each item `From → To: what goes` is a message: an arrow from the line of the one part to the
+  line of the other, in the order of the list. An item with messages in it is a loop: its text is the label of a frame
+  around them, such as `zero or more times`.
 - `steps` holds an ordered list. Each item is one step: `**What happens.** More text.`
 
 ```md
@@ -546,8 +550,7 @@ one tight list of the kind of its layout.
 :::
 ```
 
-A `mermaid` fenced code block is the older form. The site draws it with mermaid. The theme's `MermaidDiagram` loads
-mermaid only on a page that has one, and shows its source until then. Do not add a `mermaid` diagram. See
+The site draws no `mermaid`, and `docs:build` refuses a `mermaid` fenced code block. See
 [When to draw a diagram](#when-to-draw-a-diagram).
 
 ### What not to use
@@ -594,7 +597,7 @@ A page in the bundle keeps its frontmatter, then gets its title as its H1. `docs
 - In tabs, each tab becomes a line with its label in bold, then the content of the tab. In a code group, each fence
   becomes a line with its title in bold, then the fence with only its language.
 - `<<<` becomes a fenced code block of the file or of its region, without the region markers.
-- A `mermaid` code block does not change.
+- A `::: diagram` becomes its title in bold, then its list.
 
 It also changes each relative link:
 

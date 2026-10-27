@@ -26,32 +26,29 @@ and, for a cluster that is not kind, the value that [`registry`](../reference/co
 The diagram shows what `jr2 up` makes, and what [`jr2 run`](../reference/cli.md#run) and
 [`jr2 send`](../reference/cli.md#send) use after it.
 
-```mermaid
-flowchart LR
-  subgraph computer["Your computer"]
-    folder["Instance folder"]
-    up["jr2 up"]
-    use["jr2 run, jr2 send"]
-  end
-  subgraph cluster["Cluster of the current kubectl context"]
-    operator["operator, in jr2-system"]
-    images["images"]
-    subgraph ns["namespace of the Instance"]
-      secret["jr2-instance Secret"]
-      orch["Orchestrator"]
-      assembly["Assembly"]
-    end
-  end
-  folder --> up
-  up --> images
-  up --> operator
-  up --> secret
-  up --> orch
-  up --> assembly
-  orch --- assembly
-  use --> secret
-  use --> orch
-```
+::: diagram layers What jr2 up makes, and what jr2 run and jr2 send use
+
+- **You**: the Instance folder, on your computer
+  - **jr2 up**: converges the cluster
+  - **jr2 run, jr2 send**: use what jr2 up made
+- ↓ jr2 up → the cluster: applies, then publishes · ↓ jr2 run, jr2 send → Orchestrator: read the token, then call
+- **the cluster**: of the current kubectl context
+  - **Instance**: in the namespace of the Instance
+    - **Orchestrator**: loads your Workflows
+      - **Assembly**: your Workflows and your config
+    - **jr2-instance Secret**: holds the Instance token
+    - **Instance Harness**: when an Agent is Menu-only
+    - **Instance Effector**: when an Effect runs there
+    - **Repo cache**: when a Machine has a Sandbox
+  - ↓ the Orchestrator asks for each Sandbox · ↑ the operator makes its pod
+  - **jr2-system**: one for each cluster
+    - **operator**: makes each Sandbox pod
+  - **images**: that the pods run
+    - **Kit images**: jr2 up pulls them
+    - **Pinned image**: the Envoy of the Custodian
+    - **Sandbox Images**: jr2 up builds them
+
+:::
 
 `jr2 up` reads the Instance folder. It applies the objects, and then it publishes the Assembly to the Orchestrator,
 which loads it. `jr2 run` and `jr2 send` do not apply objects to the cluster. They read the Instance token from the

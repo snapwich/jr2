@@ -113,7 +113,7 @@ test("a diagram is its bold title, then the list that it holds, as it is", () =>
 
 test("a diagram names a layout that the site draws, and holds one tight list of that layout's kind", () => {
   const message = (text: string) => convert(text).errors.map((e) => e.message);
-  assert.match(message("::: diagram\n\n- a\n\n:::")[0]!, /names its layout, one of layers, steps/);
+  assert.match(message("::: diagram\n\n- a\n\n:::")[0]!, /names its layout, one of layers, sequence, steps/);
   assert.match(message("::: diagram graph\n\n- a\n\n:::")[0]!, /names its layout/);
   assert.match(message("::: diagram layers\n\nText.\n\n:::")[0]!, /holds a bullet list \(- …\) only/);
   assert.match(message("::: diagram steps\n\n- a\n\n:::")[0]!, /holds an ordered list \(1\. …\) only/);
@@ -157,9 +157,13 @@ test("an include whose text holds a fence gets a longer fence", async () => {
   assert.equal(ok("<<< @/examples/doc.md"), "````md\n```ts\nx\n```\n````");
 });
 
-test("a mermaid fence, and a container inside any fence, stay as they are", () => {
-  const text = "```mermaid\nflowchart LR\n  a --> b\n```\n\n```md\n::: tip\n\n:::\n```";
+test("a container inside a fence stays as it is", () => {
+  const text = "```md\n::: tip\n\n:::\n```";
   assert.equal(ok(text), text);
+});
+
+test("a mermaid fence fails: the site draws no mermaid", () => {
+  assert.match(convert("```mermaid\nflowchart LR\n```").errors[0]!.message, /the site draws no mermaid/);
 });
 
 test("a <<< of a missing file or region fails; for a missing region, VitePress would show the whole file", () => {

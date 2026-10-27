@@ -29,39 +29,36 @@ pod can reach. Thus jr2 puts each thing that the Agent must not touch in a diffe
 
 ## What runs where
 
-```mermaid
-flowchart LR
-  subgraph computer["Your computer"]
-    cli["jr2 CLI"]
-    browser["Console in a browser"]
-  end
-  subgraph cluster["The cluster"]
-    operator["The operator"]
-    subgraph ns["The namespace of the Instance"]
-      orch["Orchestrator"]
-      ih["Instance Harness: Harness and Custodian"]
-      ie["Instance Effector"]
-      cache["Repo cache, one pod on each Sandbox node"]
-      subgraph sandbox["A Sandbox pod"]
-        harness["Harness"]
-        custodian["Custodian"]
-        effector["Sandbox Effector"]
-      end
-    end
-  end
-  model["Model provider"]
-  cli --> orch
-  browser --> orch
-  orch --> ih
-  ih --> orch
-  orch --> ie
-  orch --> sandbox
-  sandbox --> orch
-  operator --> sandbox
-  cache --> sandbox
-  ih --> model
-  sandbox --> model
-```
+::: diagram layers What runs where, from your computer to the world outside the cluster
+
+- **You**: your computer, where no part of a run executes
+  - jr2 CLI
+  - **Console**: in a browser
+  - **Assistant**: writes your Machines
+- ↓ the HTTP API, through a port forward
+- **the cluster**
+  - **Instance**: in the namespace of the Instance, one of each
+    - **Orchestrator**: runs your Machines, and keeps each run
+    - **Instance Harness**: runs the Turns of the Menu-only Agents
+      - Harness
+      - Custodian
+    - **Instance Effector**: runs the Effects that read no Worktree file
+    - **Repo cache**: one pod on each Sandbox node
+  - ↓ a Turn, an Effect · ↑ a pick, through the Custodian · ↓ the Repo cache gives each Repo
+  - **Sandbox**: one pod for each Workspace, in the same namespace
+    - **Harness**: runs the Turns of the Agents that work on a Repo
+    - **Custodian**: holds the Held secrets of the pod
+    - **Sandbox Effector**: runs the Effects that work on the Worktree
+    - **User Container**: when the Workspace names one
+  - ↑ the operator makes the pod of each Sandbox
+  - **jr2-system**: one for each cluster
+    - **operator**: makes each Sandbox pod, and removes it when its Lease lapses
+- ↓ the Custodians call the model provider · ↓ the Repo cache fetches from the git host
+- **Outside**: what the work uses
+  - model provider
+  - git host
+
+:::
 
 The [Instance Harness](../reference/glossary.md#instance-harness), the
 [Instance Effector](../reference/glossary.md#instance-effector), the Repo cache and the
