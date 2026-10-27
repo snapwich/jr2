@@ -1,7 +1,7 @@
 // The site's own config (ADR-0072), socket-free: the markdown renderer VitePress builds from it, and
-// the options it sets. Three fixes are held here: the H1 that the site adds gets its anchor (so the
+// the options it sets. Four fixes are held here: the H1 that the site adds gets its anchor (so the
 // local search files each section under its page), a mermaid fence becomes the theme's lazy
-// component, and the site writes sitemap.xml.
+// component, a Glossary term is a `<dl>`, and the site writes sitemap.xml.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -37,6 +37,36 @@ test("the component imports mermaid only when it mounts, never statically", asyn
   assert.match(src, /import\("mermaid"\)/);
   const theme = await readFile(new URL("../.vitepress/theme/index.ts", import.meta.url), "utf8");
   assert.doesNotMatch(theme, /from "mermaid"|vitepress-plugin-mermaid/);
+});
+
+const glossary = (src: string) =>
+  md.render(src, { path: `${site}reference/glossary.md`, relativePath: "reference/glossary.md" });
+const TERMS =
+  '<a id="jr2-cli"></a>\n\n**jr2 CLI**:\nThe `jr2` binary.\nMore text.\n_Avoid_: cli tool,\nlauncher\n\n' +
+  '<a id="writing"></a>\n\n**writing**:\nNo Avoid list.\n';
+
+test("a Glossary term is a <dl>: the term with the anchor's id, its definition, then its Avoid list", async () => {
+  const html = await glossary(TERMS);
+  assert.ok(
+    html.startsWith(
+      '<dl class="glossary-term"><dt id="jr2-cli">jr2 CLI <a class="glossary-anchor" href="#jr2-cli"' +
+        ' aria-label="Permalink to this term">#</a></dt><dd>The <code v-pre>jr2</code> binary.\nMore text.</dd>' +
+        '<dd class="glossary-avoid"><span class="glossary-avoid-label">Avoid</span> cli tool,\nlauncher</dd></dl>',
+    ),
+    html,
+  );
+  assert.doesNotMatch(html, /<a id=/, "the anchor paragraph gives way to the term's id");
+});
+
+test("a Glossary term with no Avoid list has no Avoid line", async () => {
+  const html = await glossary(TERMS);
+  assert.match(html, /<dt id="writing">writing .*<\/dt><dd>No Avoid list\.<\/dd><\/dl>/s);
+  assert.equal(html.match(/glossary-avoid"/g)?.length, 1);
+});
+
+test("only the Glossary page changes: a bold lead elsewhere, or not a term there, stays a paragraph", async () => {
+  assert.match(await render(`---\ntitle: T\n---\n\n${TERMS}`), /<p><strong>jr2 CLI<\/strong>:/);
+  assert.equal(await glossary("A **bold**: word.\n"), "<p>A <strong>bold</strong>: word.</p>\n");
 });
 
 test("the site writes sitemap.xml for its base on GitHub Pages", () => {

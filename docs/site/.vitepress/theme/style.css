@@ -1,0 +1,68 @@
+/* The Glossary's terms (glossaryTerms in ../config.ts): a rule between terms, the term on a line of
+   its own, and the Avoid list quieter than the definition, behind a label. */
+
+.vp-doc dl.glossary-term {
+  margin: 0;
+  padding: 20px 0;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc h3 + dl.glossary-term {
+  border-top: none;
+  padding-top: 16px;
+}
+
+.vp-doc dl.glossary-term dt {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc dl.glossary-term dd {
+  margin: 4px 0 0;
+}
+
+.vp-doc dl.glossary-term dd.glossary-avoid {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .glossary-avoid-label {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background-color: var(--vp-c-default-soft);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .glossary-anchor {
+  margin-left: 4px;
+  font-weight: 500;
+  text-decoration: none;
+  color: var(--vp-c-brand-1);
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+.vp-doc dt:hover .glossary-anchor,
+.vp-doc .glossary-anchor:focus {
+  opacity: 1;
+}
+
+/* A section of the Glossary (an H3 before its first term) is a divider, not one more bold line:
+   larger, with a rule in the brand colour under it, so that it does not read as a term. */
+.vp-doc h3:has(+ dl.glossary-term) {
+  margin-top: 56px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--vp-c-brand-1);
+  font-size: 24px;
+  line-height: 32px;
+}

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig, type MarkdownRenderer } from "vitepress";
 import { tabsMarkdownPlugin } from "vitepress-plugin-tabs";
 import { headingSlug } from "../build/markdown.ts";
+import { GLOSSARY_PAGE } from "../build/reference/glossary.ts";
 import type { Sitemap } from "../build/sitemap.ts";
 import { withoutRegions } from "../build/vitepress.ts";
 import { navOf, sidebarOf } from "./nav.ts";
@@ -31,7 +32,80 @@ type Token = {
   content: string;
   children: Token[] | null;
   src?: [string, string];
+  attrSet(name: string, value: string): void;
 };
+type TokenOf = new (type: string, tag: string, nesting: number) => Token;
+
+/** The anchor that the bundle puts before a Glossary term (build/reference/glossary.ts): a
+ * paragraph of its own, since `<a>` is inline HTML. */
+const TERM_ANCHOR = /^<a id="([^"]+)"><\/a>$/;
+
+/** A Glossary term's paragraph (`**Term**:`, its definition, `_Avoid_: …`) as a `<dl>`: the term,
+ * its definition and its Avoid list each on a line of their own, so that a reader can tell them
+ * apart. The term takes the id of the anchor paragraph before it. Any other paragraph stays as it
+ * is. */
+function glossaryTerms(tokens: Token[], Tok: TokenOf): Token[] {
+  const make = (type: string, tag: string, nesting: number, attrs: Record<string, string> = {}) => {
+    const t = new Tok(type, tag, nesting);
+    for (const [k, v] of Object.entries(attrs)) t.attrSet(k, v);
+    return t;
+  };
+  const html = (content: string) => Object.assign(new Tok("html_inline", "", 0), { content });
+  const text = (content: string) => Object.assign(new Tok("text", "", 0), { content });
+  /** An inline token of `children`, without empty text or the line breaks at its ends. */
+  const inline = (children: Token[]) => {
+    const kept = children.filter((t) => !(t.type === "text" && t.content === ""));
+    while (kept[0]?.type === "softbreak") kept.shift();
+    while (kept.at(-1)?.type === "softbreak") kept.pop();
+    return Object.assign(new Tok("inline", "", 0), { children: kept, content: kept.map((c) => c.content).join("") });
+  };
+  const out: Token[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const p = tokens[i]!;
+    const c = tokens[i + 1]?.children?.filter((t) => !(t.type === "text" && t.content === ""));
+    const isTerm =
+      p.type === "paragraph_open" &&
+      c?.[0]?.type === "strong_open" &&
+      c[2]?.type === "strong_close" &&
+      c[3]?.type === "text" &&
+      c[3].content.startsWith(":");
+    if (!isTerm) {
+      out.push(p);
+      continue;
+    }
+    const id = out.at(-3)?.type === "paragraph_open" ? TERM_ANCHOR.exec(out.at(-2)!.content)?.[1] : undefined;
+    if (id) out.splice(-3);
+    const rest = [text(c[3]!.content.slice(1).trimStart()), ...c.slice(4)];
+    const avoid = rest.findIndex(
+      (t, k) => t.type === "em_open" && rest[k + 1]?.content === "Avoid" && rest[k + 2]?.type === "em_close",
+    );
+    const definition = avoid < 0 ? rest : rest.slice(0, avoid);
+    const self = id
+      ? [html(` <a class="glossary-anchor" href="#${id}" aria-label="Permalink to this term">#</a>`)]
+      : [];
+    out.push(
+      make("dl_open", "dl", 1, { class: "glossary-term" }),
+      make("dt_open", "dt", 1, id ? { id } : {}),
+      inline([c[1]!, ...self]),
+      make("dt_close", "dt", -1),
+      make("dd_open", "dd", 1),
+      inline(definition),
+      make("dd_close", "dd", -1),
+    );
+    if (avoid >= 0) {
+      const words = rest.slice(avoid + 3);
+      if (words[0]?.type === "text") words[0] = text(words[0].content.replace(/^:\s*/, ""));
+      out.push(
+        make("dd_open", "dd", 1, { class: "glossary-avoid" }),
+        inline([html('<span class="glossary-avoid-label">Avoid</span> '), ...words]),
+        make("dd_close", "dd", -1),
+      );
+    }
+    out.push(make("dl_close", "dl", -1));
+    i += 2; // the inline and the paragraph_close
+  }
+  return out;
+}
 
 export default defineConfig({
   base: "/jr2/",
@@ -73,6 +147,11 @@ export default defineConfig({
         inline.content = title;
         inline.children = [text];
         state.tokens.unshift(open, inline, new state.Token("heading_close", "h1", -1));
+      });
+      // The Glossary's terms, each as a `<dl>` (glossaryTerms). The bundle keeps GLOSSARY.md's form.
+      md.core.ruler.push("jr2-glossary", (state) => {
+        if ((state.env as { relativePath?: string }).relativePath !== GLOSSARY_PAGE) return;
+        state.tokens = glossaryTerms(state.tokens as unknown as Token[], state.Token as unknown as TokenOf) as never;
       });
       // A whole-file `<<<` shows the file without its region markers, as the bundle does.
       // VitePress strips them from a region only. A `mermaid` fence is the theme's
