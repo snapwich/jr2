@@ -162,6 +162,17 @@ test("a container inside a fence stays as it is", () => {
   assert.equal(ok(text), text);
 });
 
+test("a graph shows nothing in the bundle: the code of its example is on the page", () => {
+  assert.equal(ok("Before.\n\n::: graph @/examples/fix.ts\n\n:::\n\nAfter."), "Before.\n\nAfter.");
+});
+
+test("a graph names an example that exists, holds nothing, and is closed", () => {
+  const message = (text: string) => convert(text).errors.map((e) => e.message);
+  assert.match(message("::: graph @/examples/nope.ts\n\n:::")[0]!, /names examples\/nope\.ts, which does not exist/);
+  assert.match(message("::: graph @/examples/fix.ts\n\nText.\n\n:::")[0]!, /::: graph holds nothing/);
+  assert.match(message("::: graph @/examples/fix.ts\n\nText.")[0]!, /::: graph is not closed/);
+});
+
 test("a mermaid fence fails: the site draws no mermaid", () => {
   assert.match(convert("```mermaid\nflowchart LR\n```").errors[0]!.message, /the site draws no mermaid/);
 });

@@ -7,6 +7,8 @@
 //   ::: code-group, fences [X]      **X**, then the fence without its title, for each fence
 //   <<< @/examples/f.ts#region      a fenced block of the file, or of its region; language from
 //                                   `{lang}` or from the file's extension
+//   ::: graph @/examples/f.ts       nothing: the site draws the graph of the Machine that the
+//                                   example exports (.vitepress/graph.ts), and the code is there
 //   ::: diagram layers|sequence|steps [title]
 //                                   **title**, then the list it holds, as it is: the site draws the
 //                                   list (.vitepress/diagram.ts), and the list is the diagram's text
@@ -16,7 +18,7 @@
 // So a container inside another has fewer colons than its parent, and a close has exactly the
 // colons of its open: then the stack below reads a page as VitePress does.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join, relative } from "node:path";
 import { codeLines, fenced, proseLines, type BuildError } from "./markdown.ts";
 
@@ -31,6 +33,8 @@ const GROUP_OPEN = /^(:{3,}) code-group$/;
 /** `::: diagram <layout> [title]`: the layouts that .vitepress/diagram.ts draws. */
 export const DIAGRAM_LAYOUTS = ["layers", "sequence", "steps"] as const;
 const DIAGRAM_OPEN = /^(:{3,}) diagram(?: (\S+))?(?: (\S.*))?$/;
+/** `::: graph @/examples/<file>.ts`, then its close: the graph of the Machine that the file exports. */
+export const GRAPH_OPEN = /^(:{3,}) graph @\/(examples\/\S+\.ts)$/;
 const CLOSE = /^(:{3,})$/;
 const TAB = /^== (\S.*)$/;
 /** `<<< @/<path>[#region][{lang}][ [title]]`: the part of VitePress's snippet syntax the format
@@ -195,6 +199,17 @@ export function toPlainMarkdown(text: string, opts: ConvertOptions): { text: str
       if (nest(m[1]!.length, i)) stack.push({ kind: "tabs", colons: m[1]!.length, tabs: [], line: i });
     } else if ((m = GROUP_OPEN.exec(line))) {
       if (nest(m[1]!.length, i)) stack.push({ kind: "group", colons: m[1]!.length, fences: [], line: i });
+    } else if ((m = GRAPH_OPEN.exec(line))) {
+      // A graph holds nothing, and the bundle shows nothing for it: the code of the example is on
+      // the page, and the graph is a picture of that code.
+      let close = i + 1;
+      while (close < lines.length && lines[close]!.trimEnd() !== m[1]) close++;
+      if (close === lines.length) err(i, "::: graph is not closed");
+      if (lines.slice(i + 1, close).some((l) => l.trim() !== ""))
+        err(i, "::: graph holds nothing: write its close next");
+      if (!existsSync(join(opts.site, m[2]!))) err(i, `::: graph names ${m[2]}, which does not exist`);
+      // The empty line before it stays, so the one after it goes.
+      i = lines[close + 1]?.trim() === "" ? close + 1 : close;
     } else if ((m = DIAGRAM_OPEN.exec(line))) {
       if (!(DIAGRAM_LAYOUTS as readonly string[]).includes(m[2] ?? ""))
         err(i, `a diagram names its layout, one of ${DIAGRAM_LAYOUTS.join(", ")}: "::: diagram layers [title]"`);

@@ -94,6 +94,10 @@ Make the file `workflows/task.ts`. Replace `<you>` and `<version>` in it:
 
 :::
 
+::: graph @/examples/get-started/an-agent-in-a-sandbox/anthropic/task.ts
+
+:::
+
 - `target` is the name of the Repo Slot. The coder works in the first Repo Slot.
 - `ref` is the release tag. The branch of the Agent starts from it, so each reader of a release starts from the same
   fixture.

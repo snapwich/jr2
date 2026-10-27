@@ -115,8 +115,9 @@ Home has no diagram. Link to Why jr2 for the picture of jr2 as a whole.
 `why.md` serves the evaluator and the Instance user. It shows jr2 as a whole, and it explains the problems that jr2
 solves, so that a reader sees what jr2 does for them before they read a Concept. It has these parts, in this order:
 
-1. What jr2 does, in at most three lines: a Machine is a graph of states, an Agent does the work in each state, and the
-   Machine decides which state comes next. Keep it short, so that the diagram starts above the fold.
+1. What jr2 does, in at most three lines: a Machine is a graph of states, in a state an Agent or an Effect does the work
+   or a Gate waits for an answer, and the Machine decides which state comes next. Keep it short, so that the diagram
+   starts above the fold.
 2. The parts: a `layers` diagram, from the reader to the world outside the cluster. The bands are You, the Orchestrator,
    the Sandbox, and the world outside. A bracket labelled `jr2 up` holds the Orchestrator and the Sandbox: it is the
    cluster, and `jr2 up` sets it up. The Orchestrator band holds the example Machine, in the state `review`. The Menu of
@@ -552,6 +553,28 @@ one tight list of the kind of its layout.
 
 The site draws no `mermaid`, and `docs:build` refuses a `mermaid` fenced code block. See
 [When to draw a diagram](#when-to-draw-a-diagram).
+
+### Graphs
+
+Put `::: graph @/examples/<file>.ts`, then its close, directly after the code of a complete example Machine: after its
+`<<<`, or after the `::: tabs` that hold it. The site shows a Graph tab at the right of the tabs of that code, or a Code
+tab and a Graph tab for one code block. The Graph tab shows the graph of the Machine that the file exports as `machine`.
+
+- `build/machine-doc.ts` loads the file and serializes its Machine with the serializer that the Console uses. Thus the
+  graph is the graph of the code. A state that runs a child Machine holds that Machine, so a `workspace()` shows its own
+  states, and its body in `running`. A `workspace()` in a child Machine is a frame around its body, `in a workspace()`,
+  so that two copies stay small. A transition of a Machine itself is a line of text, because it runs from each state.
+- A label is in words, not in xstate's code: `place ends` and `body fails` for the end of an invoke, `a child ends` for
+  any child, and `at once` for an eventless transition. When one event has two or more transitions from one state, each
+  label has the number of its turn (①, ②) and the last one is `else`, because xstate tries them in order. A transition
+  that jr2 or xstate takes, and not a party, has a dashed grey line.
+- The theme's `MachineGraph` lays out the graph with elk, as the Console does. The page loads elk only when the reader
+  opens the tab.
+- The bundle shows nothing for a graph: the code is on the page. `docs:build` refuses a graph that holds text, that is
+  not closed, or that names a file that does not exist.
+
+Give a graph to a complete Machine on a page that many readers open: Get started and the Concepts. Do not give one to a
+snippet: show the whole file in the tabs, and give the graph after them.
 
 ### What not to use
 

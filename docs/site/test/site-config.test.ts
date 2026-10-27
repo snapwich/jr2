@@ -1,8 +1,9 @@
 // The site's own config (ADR-0072), socket-free: the markdown renderer VitePress builds from it, and
-// the options it sets. Six fixes are held here: the H1 that the site adds gets its anchor (so the
-// local search files each section under its page), a Glossary term is a `<dl>`, an ADR's page says that it is one, a table of flags has
-// the class that keeps each flag on one line, a `::: diagram` is drawn from its list, and the site
-// writes sitemap.xml.
+// the options it sets. Seven fixes are held here: the H1 that the site adds gets its anchor (so the
+// local search files each section under its page), a Glossary term is a `<dl>`, an ADR's page says
+// that it is one, a table of flags has the class that keeps each flag on one line, a `::: diagram`
+// is drawn from its list, a `::: graph` is the graph of its example's Machine, and the site writes
+// sitemap.xml.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -219,6 +220,18 @@ test("a sequence diagram draws its parts as columns, each message as an arrow, a
         '<div class="dg-msg"><span class="dg-msg-arrow dg-msg-left" style="margin-left: 50%; width: 33.33%">',
     ),
     html,
+  );
+});
+
+test("a graph is the MachineGraph of its example, with the graph of the Machine that it exports", async () => {
+  const html = await render("::: graph @/examples/get-started/a-model-decides/anthropic/triage.ts\n\n:::\n");
+  const m = /^<MachineGraph doc="([^"]+)" \/>/.exec(html);
+  assert.ok(m, html);
+  const graph = JSON.parse(decodeURIComponent(m[1]!)) as { title: string; nodes: { title: string }[] };
+  assert.equal(graph.title, "triage");
+  assert.deepEqual(
+    graph.nodes.map((n) => n.title),
+    ["triaging", "clarify", "accepted", "rejected"],
   );
 });
 

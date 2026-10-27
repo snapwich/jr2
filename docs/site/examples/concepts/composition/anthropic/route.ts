@@ -1,14 +1,9 @@
-// #region imports
 import { z } from "zod";
 import { agent, customize, defineEvent, fail, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { task } from "@jr2/machines";
-// #endregion imports
 
-// #region model
 const model = "anthropic/claude-haiku-5-5";
-// #endregion model
 
-// #region machines
 // Bind the two Open parts of `task`: the Repo that the coder works in, and the coder's model.
 const coding = customize(task, {
   repos: { target: { url: "https://github.com/you/app.git" } },
@@ -79,4 +74,3 @@ export const machine = jr2Setup({
     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
 });
-// #endregion machines

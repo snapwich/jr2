@@ -3,9 +3,10 @@ title: Why jr2
 description: The parts of jr2, the problems of agentic workflows that each part solves, and one run through them.
 ---
 
-jr2 runs an agentic workflow as a [Machine](reference/glossary.md#machine): a graph of states that you write. In each
-state, an [Agent](reference/glossary.md#agent) does the work, and the Machine decides which state comes next. The
-diagram shows the parts of jr2, from you to the world outside your cluster.
+jr2 runs an agentic workflow as a [Machine](reference/glossary.md#machine): a graph of states that you write. In a
+state, an [Agent](reference/glossary.md#agent) or an [Effect](reference/glossary.md#effect) does the work, or a
+[Gate](reference/glossary.md#gate) waits for an answer. The Machine decides which state comes next. The diagram shows
+the parts of jr2, from you to the world outside your cluster.
 
 ::: diagram layers The parts of jr2, from you to the world outside your cluster
 

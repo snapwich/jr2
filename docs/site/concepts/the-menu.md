@@ -56,6 +56,10 @@ and it finishes with `done`:
 
 :::
 
+::: graph @/examples/concepts/the-menu/anthropic/notes.ts
+
+:::
+
 The writer's Menu is `ask` and `done`. The `reply` event belongs to the Gate in `asking`, so it is not on the Menu.
 `jr2 up` prints who can send what at each state. The Console shows the same seats in the "who may send what" panel of
 the graph:

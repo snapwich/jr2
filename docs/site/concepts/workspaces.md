@@ -38,6 +38,10 @@ pushes the branch:
 
 :::
 
+::: graph @/examples/concepts/workspaces/anthropic/docs-fix.ts
+
+:::
+
 [Agents and Turns](agents-and-turns.md) tells how to define an Agent.
 
 The options of `workspace()` say what the Sandbox is. [`jr2 up`](../reference/cli.md#up) reads them before a run starts.

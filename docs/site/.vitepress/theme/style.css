@@ -761,3 +761,193 @@
     padding: 1px 5px;
   }
 }
+
+/* The graph of an example Machine (machine-graph.ts): a tab on the right of its set of tabs, and in
+   the box of that set, the graph in place of the code. */
+.vp-doc .plugin-tabs--tab-list:has(.mg-tab) {
+  display: flex;
+}
+
+.vp-doc .plugin-tabs--tab.mg-tab {
+  margin-left: auto;
+}
+
+.vp-doc .plugin-tabs.mg-open > .plugin-tabs--content {
+  display: none;
+}
+
+.vp-doc .plugin-tabs.mg-open .plugin-tabs--tab[aria-selected="true"]:not(.mg-tab) {
+  color: var(--vp-plugin-tabs-tab-text-color);
+}
+
+.vp-doc .plugin-tabs.mg-open .plugin-tabs--tab[aria-selected="true"]:not(.mg-tab)::after {
+  background-color: transparent;
+}
+
+.vp-doc .plugin-tabs.mg-made > .plugin-tabs--content {
+  padding: 16px;
+}
+
+/* The tabs plugin scopes the style of its content to its own component, so a set of tabs that
+   machine-graph.ts makes around one code block gets the same style here. */
+.vp-doc .plugin-tabs.mg-made > .plugin-tabs--content > div[class*="language-"] {
+  margin: 0;
+  border-radius: 8px;
+}
+
+:root:not(.dark) .vp-doc .plugin-tabs.mg-made > .plugin-tabs--content > div[class*="language-"] {
+  background-color: var(--vp-c-bg);
+}
+
+.vp-doc .mg.mg-in-tabs:not(.mg-shown) {
+  display: none;
+}
+
+.vp-doc .mg.mg-in-tabs {
+  padding: 20px 16px;
+  border-radius: 0 0 8px 8px;
+  background-color: var(--vp-code-block-bg);
+}
+
+.vp-doc .mg-scroll {
+  overflow-x: auto;
+}
+
+/* As wide as its natural width at most, and narrower on a narrow screen, so that it fits. */
+.vp-doc .mg-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 auto;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .mg-wait {
+  margin: 0;
+  font-size: 14px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .mg-toggle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc .mg-box {
+  fill: var(--vp-c-bg);
+  stroke: var(--vp-c-green-1);
+  stroke-width: 1.5;
+}
+
+.vp-doc .mg-frame > .mg-box {
+  fill: var(--vp-c-green-soft);
+  stroke-dasharray: 4 3;
+}
+
+/* A child Machine, in the state that runs it: a frame of its own, so that a reader sees where the
+   Machine that they wrote starts. */
+.vp-doc .mg-machine > .mg-box {
+  fill: var(--vp-c-bg);
+  stroke: var(--vp-c-text-3);
+  stroke-dasharray: none;
+}
+
+.vp-doc .mg-row {
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+  fill: var(--vp-c-text-2);
+}
+
+.vp-doc .mg-any {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc .mg-box-inner {
+  fill: none;
+  stroke: var(--vp-c-green-1);
+  stroke-width: 1;
+}
+
+.vp-doc .mg-title {
+  font-size: 14px;
+  font-weight: 600;
+  fill: var(--vp-c-text-1);
+}
+
+.vp-doc .mg-sub {
+  fill: var(--vp-c-default-soft);
+}
+
+.vp-doc .mg-sub-text {
+  font-size: 12px;
+  font-weight: 500;
+  fill: var(--vp-c-text-2);
+}
+
+/* The Agent that a state invokes has the colour of an Agent, and a Gate the colour of You. */
+.vp-doc .mg-agent .mg-sub {
+  fill: var(--vp-c-yellow-soft);
+  stroke: var(--vp-c-yellow-1);
+}
+
+.vp-doc .mg-agent .mg-sub-text {
+  fill: var(--vp-c-yellow-1);
+}
+
+.vp-doc .mg-gate .mg-sub {
+  fill: var(--vp-c-indigo-soft);
+  stroke: var(--vp-c-indigo-1);
+}
+
+.vp-doc .mg-gate .mg-sub-text {
+  fill: var(--vp-c-indigo-1);
+}
+
+.vp-doc .mg-fail .mg-sub {
+  fill: var(--vp-c-danger-soft);
+}
+
+.vp-doc .mg-fail .mg-sub-text {
+  fill: var(--vp-c-danger-1);
+}
+
+.vp-doc .mg-initial {
+  fill: var(--vp-c-text-2);
+}
+
+.vp-doc .mg-edge {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.vp-doc .mg-edge.mg-quiet {
+  stroke-dasharray: 4 3;
+  opacity: 0.6;
+}
+
+.vp-doc .mg-label .mg-label-bg {
+  fill: var(--vp-code-block-bg);
+}
+
+.vp-doc .mg-label .mg-label-pill {
+  fill: var(--vp-c-brand-soft);
+}
+
+.vp-doc .mg-label text {
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+  font-weight: 500;
+  fill: var(--vp-c-brand-1);
+}
+
+.vp-doc .mg-label.mg-quiet .mg-label-pill {
+  fill: var(--vp-c-default-soft);
+}
+
+.vp-doc .mg-label.mg-quiet text {
+  fill: var(--vp-c-text-2);
+}

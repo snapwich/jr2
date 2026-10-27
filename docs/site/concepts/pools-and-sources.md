@@ -28,6 +28,10 @@ example runs with no model. A worker is usually a Machine with an [Agent](../ref
 
 <<< @/examples/concepts/pools-and-sources/tickets.ts
 
+::: graph @/examples/concepts/pools-and-sources/tickets.ts
+
+:::
+
 The Pool asks for work, starts workers, and waits:
 
 - The Pool calls the `next` of its Source when the run starts. It gives `next` the ids of the items that its workers

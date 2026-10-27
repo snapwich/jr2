@@ -49,6 +49,10 @@ This Workflow takes a refund request, and it waits for a person to approve or re
 
 <<< @/examples/concepts/machines-and-workflows/refund.ts
 
+::: graph @/examples/concepts/machines-and-workflows/refund.ts
+
+:::
+
 The parts of this file are the subjects of the sections below: the door (`runInput`), the
 [Vocabulary](../reference/glossary.md#vocabulary) (`approve` and `reject`), and the
 [Emit](../reference/glossary.md#emit) (`decided`). The `review` state invokes a [Gate](../reference/glossary.md#gate),

@@ -95,6 +95,10 @@ changes, the coder continues its conversation and thinks harder on that Turn:
 
 :::
 
+::: graph @/examples/concepts/agents-and-turns/anthropic/fix.ts
+
+:::
+
 The two Agents use the model of the tab. The `coding` and `fixing` states invoke the same Agent with different prompts,
 and only `fixing` sets a Dial. The checker's Turn has no `cwd`, because it has no Working tools.
 

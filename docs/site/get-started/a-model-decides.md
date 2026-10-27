@@ -34,6 +34,10 @@ is `triage`. Copy this code into the file:
 
 :::
 
+::: graph @/examples/get-started/a-model-decides/anthropic/triage.ts
+
+:::
+
 The two tabs are different only in the `model` line and its comment. The file has five parts:
 
 - **The run input.** `door` is a zod schema. A run of `triage` starts with one `request`.

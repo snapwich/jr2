@@ -24,6 +24,10 @@ answers the second one:
 
 <<< @/examples/concepts/gates/ci-release.ts
 
+::: graph @/examples/concepts/gates/ci-release.ts
+
+:::
+
 You do not import the `gate` actor. `jr2Setup` adds it, and a state invokes it as `invoke: { src: "gate" }`. Its input
 is optional. It can hold `meta`, and an authored `gate` id.
 

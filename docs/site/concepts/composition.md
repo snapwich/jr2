@@ -33,27 +33,23 @@ This Machine composes the shipped Machine [`task`](../reference/machines.md#task
 [Menu](../reference/glossary.md#menu)-only Agent, `triager`, reads the prompt first. Then the run goes to one of the two
 copies of `task`. The copies differ only in the thinking level of their coder.
 
-The imports:
-
-<<< @/examples/concepts/composition/anthropic/route.ts#imports
-
-The model of the tab:
+The Workflow, with the model of the tab:
 
 ::: tabs key:provider
 
 == Anthropic
 
-<<< @/examples/concepts/composition/anthropic/route.ts#model
+<<< @/examples/concepts/composition/anthropic/route.ts
 
 == Local
 
-<<< @/examples/concepts/composition/local/route.ts#model
+<<< @/examples/concepts/composition/local/route.ts
 
 :::
 
-The Machines and the Workflow:
+::: graph @/examples/concepts/composition/anthropic/route.ts
 
-<<< @/examples/concepts/composition/anthropic/route.ts#machines
+:::
 
 To use `@jr2/machines`, add it to the Instance at the [Kit version](../reference/glossary.md#kit-version):
 `npm install --save-exact @jr2/machines@<version>`. `<version>` is the version of `@jr2/orchestrator` in your

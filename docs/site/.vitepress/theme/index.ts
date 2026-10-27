@@ -1,11 +1,13 @@
 // The default theme, with the components of vitepress-plugin-tabs: `::: tabs key:provider` shares
 // the reader's choice of provider across every tab set on every page. And the lines of a
-// `::: diagram` from a part to a part (wires.ts). And the styles of the site's own forms
+// `::: diagram` from a part to a part (wires.ts). And the graph of an example Machine, which loads
+// elk only when the reader opens it (machine-graph.ts). And the styles of the site's own forms
 // (style.css).
 
 import type { Theme } from "vitepress";
 import DefaultTheme from "vitepress/theme";
 import { enhanceAppWithTabs } from "vitepress-plugin-tabs/client";
+import { MachineGraph } from "./machine-graph.ts";
 import { DiagramWires } from "./wires.ts";
 import "./style.css";
 
@@ -14,5 +16,6 @@ export default {
   enhanceApp({ app }) {
     enhanceAppWithTabs(app);
     app.component("DiagramWires", DiagramWires);
+    app.component("MachineGraph", MachineGraph);
   },
 } satisfies Theme;

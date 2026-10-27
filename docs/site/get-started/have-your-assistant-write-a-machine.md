@@ -293,6 +293,10 @@ This is one `fix.ts` that does what the prompt asks, with the model of the tab:
 
 :::
 
+::: graph @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts
+
+:::
+
 Read it in the order of the graph. Each part below links to its entry in the Reference.
 
 **The events.** Each [`defineEvent`](../reference/authoring-surface/defineevent.md) is an event that the Machine takes.

@@ -39,6 +39,10 @@ the branch:
 
 :::
 
+::: graph @/examples/concepts/effects/anthropic/test-and-push.ts
+
+:::
+
 [Agents and Turns](agents-and-turns.md) tells how to define an Agent.
 
 The Effect has the life of the state that invokes it. It starts when the run enters the state, and it stops when the run

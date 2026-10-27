@@ -16,6 +16,7 @@ import { DECISIONS_PAGE, GLOSSARY_PAGE } from "../build/reference/glossary.ts";
 import type { Sitemap } from "../build/sitemap.ts";
 import { withoutRegions } from "../build/vitepress.ts";
 import { diagramPlugin } from "./diagram.ts";
+import { graphPlugin } from "./graph.ts";
 import { navOf, sidebarOf } from "./nav.ts";
 
 const SITE = fileURLToPath(new URL("..", import.meta.url));
@@ -131,6 +132,8 @@ export default defineConfig({
       md.use(tabsMarkdownPlugin as unknown as Parameters<MarkdownRenderer["use"]>[0]);
       // `::: diagram <layout>`: the site draws the list that it holds (diagram.ts).
       diagramPlugin(md);
+      // `::: graph @/examples/<file>.ts`: the graph of the Machine that the example exports (graph.ts).
+      graphPlugin(md);
       // `:tada:` is not CommonMark: the site shows it as the bundle does, as text.
       md.core.ruler.disable("emoji");
       // Vue compiles a page's HTML, and VitePress gives a fence `v-pre` but not a code span. So
