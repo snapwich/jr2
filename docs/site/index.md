@@ -4,7 +4,7 @@ description: jr2 is a Kit for agentic workflows. You write each one as an xstate
 ---
 
 jr2 is a Kit for agentic workflows. Each workflow is written as an [xstate](https://xstate.js.org)
-[Machine](reference/glossary.md#machine), and jr2 runs it on Kubernetes. An [Agent](reference/glossary.md#agent) that
+[Machine](https://stately.ai/docs/machines), and jr2 runs it on Kubernetes. An [Agent](reference/glossary.md#agent) that
 works on a [Repo](reference/glossary.md#repo) works in a [Sandbox](reference/glossary.md#sandbox): a pod with its own
 filesystem, network and processes. Your [Assistant](reference/glossary.md#assistant) writes the Machines, and you review
 the graph.

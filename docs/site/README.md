@@ -100,7 +100,9 @@ The site and the bundle describe the release that they ship in, and nothing else
 `index.md` serves the evaluator and the Instance user. It has these parts, in this order:
 
 1. What jr2 is, in one paragraph. jr2 is a Kit. Each agentic workflow is written as an xstate Machine, and jr2 runs it
-   on Kubernetes. An Agent that works on a Repo works in a Sandbox.
+   on Kubernetes. An Agent that works on a Repo works in a Sandbox. "Machine" here links to xstate's page on state
+   machines (`https://stately.ai/docs/machines`), not to the Glossary, so that a new reader knows what kind of machine
+   it is.
 2. The two ways to use jr2, in one short paragraph. The Machine decides the order of the work, or an Agent decides it
    and the Machine runs each step. In both ways, the Machine sets what each step does. An Agent can also write a Chart.
    Link to the section of The Menu that tells how to choose.
