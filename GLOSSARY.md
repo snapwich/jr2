@@ -156,7 +156,14 @@ _Avoid_: humanGate (humans are one caller among many), approval (one possible ev
 **Sender**:
 The party that delivered an event: an Agent or a Gate. Only the Orchestrator writes the Sender, on each event that a
 party delivers, and the Machine's own events have none.
-_Avoid_: origin, caller (the human or system behind a Gate)
+_Avoid_: origin, Caller (the holder of the credential behind a Gate's answer)
+
+**Caller**:
+The holder of a credential that acts on an Instance from outside its Machines, such as a person, a CI job or a bridge
+to a chat service: it starts a run, answers a Gate or cancels a run. A Caller can act **on behalf of** another party,
+but that is the Caller's claim, which jr2 does not check.
+_Avoid_: principal (it brings policies and roles that an Instance does not have), user (a CI job is a Caller), actor
+(xstate's word), Sender (a party inside the run)
 
 **Emit**:
 A message of progress or notice that a Machine's author sends from it to whoever watches the run, beside its
