@@ -29,15 +29,21 @@ version, images, gate, trigger.
   every manifest and the template, runs the unit gate (`init.test.ts` is the tripwire), commits, and tags `v<ver>`.
   Nothing rewrites a version at publish time: a loop that edits manifests tests edited manifests (ADR-0043), and a
   checkout `KIT_VERSION` must read the number the checkout will ship.
-- **The tag push is the release, and one job does the whole train in order.** `release.yml` runs on `v*`; it refuses
-  first if the tag disagrees with any manifest. Then the full gate — unit, harness conformance, the default e2e profile,
-  the docs site build, the Custodian suite, and `@kind` and `@dist` on a kind cluster the job creates on the runner (the
-  operator's own e2e job already works this way) — so the installed path is proven on the tree that publishes, not on a
-  maintainer's box the day before. Then `scripts/kit-push.sh ghcr.io/snapwich` (multi-arch, `GITHUB_TOKEN` with
-  `packages: write`), and **only then** npm: each public package is packed with pnpm, which rewrites `workspace:*` to
-  the exact version, and **staged** with `npm stage publish`, the client that speaks trusted publishing — in pnpm's
-  topological order, dependencies first, skipping a version npm already holds live so a re-run converges. The order is
-  the contract: a package whose images are not at the home fails at pull on the user's first `jr2 up`
+- **The tag push is the release, and the train runs in order.** `release.yml` runs on `v*`. Its first job refuses if the
+  tag disagrees with any manifest, and then asks every other refusal of the publish
+  (`scripts/publish.sh --stage --check`: the tree, the ref, the strict docs build, no output block not yet run). These
+  take seconds, so a tag that cannot publish starts no tier. Then the full gate, as parallel jobs that each need that
+  first one — unit, harness conformance, the default e2e profile, the docs site build and the Custodian suite in one
+  job; `@kind` as four shards, each on a kind cluster its own runner creates (the operator's own e2e job already works
+  this way); and `@dist` on one more — so the installed path is proven on the tree that publishes, not on a maintainer's
+  box the day before. The tiers are jobs and not steps of one job because one runner ran them in series: v0.5.0's job
+  spent 37 minutes in `@kind` alone, two workers being the most a 4-vCPU runner holds, and then failed at a refusal of
+  the publish that takes a second. Only when every tier job passes does the one job that holds the rights run:
+  `scripts/kit-push.sh ghcr.io/snapwich` (multi-arch, `GITHUB_TOKEN` with `packages: write`), and **only then** npm:
+  each public package is packed with pnpm, which rewrites `workspace:*` to the exact version, and **staged** with
+  `npm stage publish`, the client that speaks trusted publishing — in pnpm's topological order, dependencies first,
+  skipping a version npm already holds live so a re-run converges. The order is the contract: a package whose images are
+  not at the home fails at pull on the user's first `jr2 up`
   ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)); images with no package are inert,
   and stay so while the packages sit staged. A second job, `pages`, follows the release job and deploys the docs site of
   the same tree to GitHub Pages

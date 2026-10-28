@@ -1,0 +1,21 @@
+# pnpm, Node and the workspace's dependencies: the first steps of every job in release.yml. One
+# place for the pins, so the jobs cannot drift onto two Nodes. The caller clones the code first.
+name: Setup the workspace
+description: pnpm, Node from engines.node, and a frozen install
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4.4.0
+
+    - name: Setup Node
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      with:
+        node-version-file: package.json # engines.node, the one place it is written
+        cache: pnpm
+        registry-url: https://registry.npmjs.org
+
+    - name: Install
+      shell: bash
+      run: pnpm install --frozen-lockfile

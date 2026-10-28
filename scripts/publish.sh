@@ -7,10 +7,15 @@
 #   publish.sh linux/arm64          by hand, one arch (the home cluster's) — a quick 0.x release
 #                                   that the job's multi-arch push overwrites when it lands
 #   publish.sh --stage              the release job: the same walk, `npm stage publish`
+#   publish.sh --stage --check      the release job's first job: every refusal below, then stop
+#                                   before the first push
 #
 # The job (.github/workflows/release.yml) and a maintainer at a shell are two EXECUTORS of one
-# train; the tag is the release either way. The job proves every tier on the tree that ships and
-# takes the better part of an hour; the maintainer proved what they chose to and pays the docker.
+# train; the tag is the release either way. The job proves every tier on the tree that ships, about
+# half an hour of runners in parallel; the maintainer proved what they chose to and pays the docker.
+#
+# `--check` exists because the refusals are seconds and the tiers are not. v0.5.0's job passed
+# every tier, about an hour, and then this script refused the docs. The job now asks first.
 # The two converge on the same result: a version already live on npm is skipped, not failed, and
 # a Kit image pushed twice from one source is one image.
 #
@@ -29,11 +34,13 @@ die() {
 }
 
 stage=0
+check=0
 platforms=""
 for arg in "$@"; do
   case "$arg" in
     --stage) stage=1 ;;
-    -*) echo "usage: $(basename "$0") [--stage] [platforms]" >&2 && exit 2 ;;
+    --check) check=1 ;;
+    -*) echo "usage: $(basename "$0") [--stage] [--check] [platforms]" >&2 && exit 2 ;;
     *) platforms="$arg" ;;
   esac
 done
@@ -66,6 +73,11 @@ pnpm docs:build
 # a release does not.
 if grep -rl 'output: not run' packages/orchestrator/docs; then
   die "docs: output blocks not yet run (docs/site/README.md, Open items)"
+fi
+
+if [[ "$check" == 1 ]]; then
+  echo "publish: $tag can publish — every refusal passed; nothing was pushed"
+  exit 0
 fi
 
 # Images FIRST (ADR-0044): a package whose images are not at the home fails at pull on the user's

@@ -97,9 +97,14 @@ e2e-kind-up:
 # Sandbox Pending, `0/1 nodes are available: 1 Insufficient cpu`). Two at once ask 2.8, which fits;
 # the release job passes 2. Measured on a kind node capped at 4 allocatable cpu: 4 workers fail 34
 # of 47, 2 pass 47 of 47. Requests are the kit's, sized for a real cluster, and are not lowered for a runner.
-e2e-kind parallel="":
+#
+# `shard` (`<i>/<n>`, from 1) runs every n-th scenario of the tier, starting at the i-th: cucumber's
+# own `--shard`. The release job runs the tier as four shards on four runners, each with its own
+# cluster, because two workers on one runner took 37 minutes (v0.5.0). The n shards together run
+# every scenario once.
+e2e-kind parallel="" shard="":
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig-{{ cluster }}
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} pnpm --filter @jr2/e2e test:e2e:kind {{ if parallel != "" { "--parallel " + parallel } else { "" } }}
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig-{{ cluster }} pnpm --filter @jr2/e2e test:e2e:kind {{ if parallel != "" { "--parallel " + parallel } else { "" } }} {{ if shard != "" { "--shard " + shard } else { "" } }}
 
 # A COLD host builds every image the tier deploys four times over: the tier runs four workers, and
 # the first scenario of each converges its own namespace from nothing — Harness, operator,
@@ -385,8 +390,9 @@ _e2e-model cucumber_profile:
 # LOCKSTEP: one version across every manifest and the scaffold's exact pins, bumped together here,
 # never rewritten at publish time. The recipe bumps, runs the unit gate, commits `release: <ver>`
 # and tags `v<ver>`; the human pushes `main` and the tag, and .github/workflows/release.yml does
-# the rest in order — check the tag against the manifests, every tier on a runner kind cluster,
-# Kit images to their home, THEN the packages STAGED on npm — a 2FA approval per package makes them
+# the rest in order — check the tag against the manifests and every refusal of the publish, every
+# tier (each heavy tier on its own runner kind cluster, @kind as four shards), Kit images to their
+# home, THEN the packages STAGED on npm — a 2FA approval per package makes them
 # live. `just publish` is the same irreversible half run by hand from the pushed tag, for a 0.x
 # release that cannot wait on the job: a 2FA prompt per package instead of an approval, and the
 # job converges behind it (live versions skipped). The guard against an accidental publish is the

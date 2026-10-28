@@ -1,0 +1,40 @@
+# A runner with room for the heavy tiers, and a VANILLA kind cluster on it (ADR-0038): the first
+# steps of each @kind shard and of @dist in release.yml. Each job has its own runner, so each
+# creates its own cluster.
+name: kind cluster
+description: free the runner's disk, install the pinned kind, create the cluster
+
+runs:
+  using: composite
+  steps:
+    # PINNED, unlike the operator's own e2e job: this is the one workflow whose outcome cannot be
+    # re-run into a different result, so a kind release that changes the node image or the
+    # containerd config deploy/kind.yaml patches (ADR-0044) must not be able to make a tag
+    # unpublishable, or a release from last month unreproducible.
+    - name: Install kind
+      shell: bash
+      env:
+        KIND_VERSION: v0.33.0
+      run: |
+        curl -Lo ./kind "https://kind.sigs.k8s.io/dl/$KIND_VERSION/kind-linux-$(dpkg --print-architecture)"
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+        kind version
+
+    # The hosted runner starts with ~14 GB free, and the heavy tiers spend more than that: every
+    # image the tiers build lands three times — in the daemon, as the tar `kind load` writes to
+    # /tmp, and in the node's containerd — and the first tagged run died at exactly that point
+    # (`docker save … no space left on device`, after 17 of 22 @kind scenarios). The runner image
+    # ships toolchains these jobs never touch; deleting them frees ~25-30 GB. `df` before and after,
+    # so the next disk failure is read off the log instead of guessed at.
+    - name: Free runner disk
+      shell: bash
+      run: |
+        df -h /
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+        sudo docker image prune --all --force >/dev/null
+        df -h /
+
+    - name: Create the cluster
+      shell: bash
+      run: just e2e-kind-up
