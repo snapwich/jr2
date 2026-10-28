@@ -8,6 +8,7 @@
 //           label `From → To[: label]` is a line from a part to a part, or between a part and a band.
 //           An item that holds bands and the links between them is a bracket around those bands. A part whose
 //           text has ` → ` is a Machine: its states in a row, and its transitions as its items.
+//           A band or a part that is `one <noun> for each …` is a stack: there are many of it.
 //   sequence  a bullet list. An item `**Name**: what it does` is a part, and the parts are the heads
 //           of the columns, in order. An item `From → To: what goes` is a message, an arrow from the
 //           one column to the other. An item with messages in it is a loop around them.
@@ -122,6 +123,11 @@ const TONES: Record<string, string> = {
   "model provider": "last",
 };
 
+/** A band or a part whose role is `one <noun> for each …`, such as `**Sandbox**: one pod for each
+ * Workspace`: a run has many of it, so the site draws it as a stack. The text says it, and the
+ * stack shows it. */
+const MANY = /^one \S+ for each /;
+
 /** A link from a part to a part: `From → To`, the two parts named as they are in the diagram, and
  * the text after `: ` as its label, if it has one. */
 export type Wire = { from: string; to: string; label?: string };
@@ -160,6 +166,12 @@ function draw(layout: string, title: string, inner: Token[], Tok: TokenOf): Toke
     const c = tokensOf(item);
     const lead = c[0]?.type === "strong_open" ? c.findIndex((t) => t.type === "strong_close") : -1;
     return plain(lead < 0 ? c : c.slice(1, lead));
+  };
+  /** Is the item a stack: is its role, after its bold lead and its kind, `one <noun> for each …`? */
+  const many = (item: Item) => {
+    const c = tokensOf(item);
+    const lead = c[0]?.type === "strong_open" ? c.findIndex((t) => t.type === "strong_close") : -1;
+    return lead >= 0 && MANY.test(plain(c.slice(lead + 1)).replace(/^(?:\([^)]+\))?:?\s*/, ""));
   };
   const bold = (tokens: Token[]) =>
     tokens[0]?.type === "strong_open" && tokens.at(-1)?.type === "strong_close" ? tokens.slice(1, -1) : undefined;
@@ -230,7 +242,12 @@ function draw(layout: string, title: string, inner: Token[], Tok: TokenOf): Toke
     const kind = after[0]?.type === "text" ? /^\s*\(([^)]+)\)/.exec(after[0].content)?.[1] : undefined;
     const role = strip(after, /^\s*(?:\([^)]+\))?:?\s*/);
     const group = cls === "dg-part" && item.children.length > 0;
-    const classes = [cls, group && "dg-group", kind && `dg-kind-${kind.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`];
+    const classes = [
+      cls,
+      group && "dg-group",
+      cls === "dg-part" && many(item) && "dg-stack",
+      kind && `dg-kind-${kind.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+    ];
     html(`<div class="${classes.filter(Boolean).join(" ")}" data-name="${escape(plain(name))}">`);
     html('<span class="dg-name">');
     inline(name);
@@ -357,7 +374,8 @@ function draw(layout: string, title: string, inner: Token[], Tok: TokenOf): Toke
         }
         // Each band has a colour of its own, in the order of the bands, and the last band is grey.
         n++;
-        html(`<section class="dg-band dg-tone-${TONES[nameOf(band)] ?? (n === total ? "last" : ((n - 1) % 5) + 1)}">`);
+        const tone = TONES[nameOf(band)] ?? (n === total ? "last" : ((n - 1) % 5) + 1);
+        html(`<section class="dg-band dg-tone-${tone}${many(band) ? " dg-stack" : ""}">`);
         part(band, "dg-head");
         if (band.children.length) {
           html('<div class="dg-parts">');

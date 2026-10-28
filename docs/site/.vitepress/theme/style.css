@@ -183,6 +183,18 @@
   min-width: 0;
 }
 
+/* A stack (`one pod for each Workspace`): two outlines behind the box, so that a reader sees that
+   there are many of it. The outlines are shadows, so they take no space; the margin gives it. */
+.vp-doc .dg-stack {
+  --dg-step: 5px;
+  margin: 0 calc(2 * var(--dg-step)) calc(2 * var(--dg-step)) 0;
+  box-shadow:
+    var(--dg-step) var(--dg-step) 0 -1px var(--vp-c-bg),
+    var(--dg-step) var(--dg-step) 0 0 var(--dg-c),
+    calc(2 * var(--dg-step)) calc(2 * var(--dg-step)) 0 -1px var(--vp-c-bg),
+    calc(2 * var(--dg-step)) calc(2 * var(--dg-step)) 0 0 var(--dg-c);
+}
+
 /* Two bands with no link between them still have space between them. */
 .vp-doc :is(.dg-band, .dg-bracket) + :is(.dg-band, .dg-bracket) {
   margin-top: 12px;

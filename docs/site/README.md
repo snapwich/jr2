@@ -527,6 +527,9 @@ one tight list of the kind of its layout.
 - An item that holds bands and a link between them is a bracket, such as `**your cluster**: \`jr2 up\` sets it up`. The
   site draws a line on the left of those bands, with the name of the bracket on its side. On a phone it is an outline
   around them, with its name at the top. A code span in the name of a bracket is a command, not an event.
+- A band or a part whose text after the name starts `one <noun> for each`, such as
+  `**Sandbox**: one pod for each Workspace`, is a stack: the site draws two outlines behind it, because a run has many
+  of it. To show a stack, write that text; the text and the picture then say the same thing.
 - Each band has a colour of its own, in the order of the bands, in a bracket or not, and the last band is grey. The
   parts of jr2 that more than one diagram shows have one colour in every diagram: You, Orchestrator (and Instance),
   Sandbox (and Harness), jr2-system, and Outside (and model provider). `TONES` in `.vitepress/diagram.ts` lists them.

@@ -131,6 +131,17 @@ test("a part's kind, in brackets after its name, is a badge and a class", async 
   );
 });
 
+test("a band or a part that is `one <noun> for each …` is a stack, and `one for each …` is not", async () => {
+  const html = await render(
+    "::: diagram layers\n\n- **Sandbox**: one pod for each Workspace\n  - **coder** (Agent): one Turn for each step\n" +
+      "- **jr2-system**: one for each cluster\n  - **operator**: makes each pod\n\n:::\n",
+  );
+  assert.match(html, /<section class="dg-band dg-tone-3 dg-stack">/);
+  assert.match(html, /<div class="dg-part dg-stack dg-kind-agent" data-name="coder">/);
+  assert.match(html, /<section class="dg-band dg-tone-4">/);
+  assert.match(html, /<div class="dg-part" data-name="operator">/);
+});
+
 test("a → part is a Machine: its states, the one it is in, its final state, its events and its loops", async () => {
   const html = await render(
     "::: diagram layers\n\n- **Orchestrator**\n  - ● → code → **review** → ◉ done\n" +
