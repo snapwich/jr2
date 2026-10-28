@@ -37,7 +37,7 @@ jr2 run release --input '{"version":"1.4.0"}'
 
 ```text
 → context <context> / namespace <namespace>
-run 3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e (release) — attached
+run 2319932e-02c1-4f9d-98db-3c5a410395da (release) — attached
   → active "review"
 ```
 
@@ -49,14 +49,12 @@ next steps in a second terminal. [Start a run](start-a-run.md) gives the other w
 Run [`jr2 status`](../reference/cli.md#status) with the run id:
 
 ```sh
-jr2 status 3e87
+jr2 status 2319
 ```
-
-<!-- output: not run -->
 
 ```text
 → context <context> / namespace <namespace>
-{"runId":"3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e","workflow":"release","instanceId":"8c8b8507-e569-4f2f-9f2e-497f381c5f57","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"6baf269e2cca","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
+{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","instanceId":"c898d8c7-e48b-4a56-8101-7148905b6aed","status":"active","value":"review","context":{"version":"1.4.0"},"children":[],"waiting":[],"held":[],"assembly":"83858e28b054","gates":[{"gate":"review","path":["review"],"accepts":[{"name":"approve","description":"Release this version.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}},{"name":"reject","description":"Do not release this version. Say why.","input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"reason":{"type":"string","minLength":1}},"required":["reason"],"additionalProperties":false}}],"acceptsNow":["approve","reject"],"meta":{"version":"1.4.0"}}]}
 ```
 
 `gates` holds each open Gate of the run, as a [`GateView`](../reference/http-api.md#type-gateview):
@@ -75,24 +73,23 @@ Run [`jr2 send`](../reference/cli.md#send). Give the Gate in `--gate`, the event
 event as a JSON object in `--input`:
 
 ```sh
-jr2 send 3e87 --gate review --event reject --input '{"reason":"The changelog is not ready."}'
+jr2 send 2319 --gate review --event reject --input '{"reason":"The changelog is not ready."}'
 ```
 
 ```text
 → context <context> / namespace <namespace>
-delivered reject to gate "review" on 3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e
+delivered reject to gate "review" on 2319932e-02c1-4f9d-98db-3c5a410395da
 ```
 
 `jr2 send` prints `delivered` only when the run took the event. In the first terminal, the run ends. A `reject` ends the
 release, so the `rejected` state invokes [`fail`](../reference/authoring-surface/fail.md) with the reason, and the run
 ends `failed`. Its output is the [Failure](../reference/glossary.md#failure), and `jr2 run` exits with `1`:
 
-<!-- output: not run -->
-
 ```text
+  → active "rejected"
   → failed "rejected"
 failed: The changelog is not ready.
-{"runId":"3e879f2d-e6ab-4f7d-a47a-83fa924f4a1e","workflow":"release","instanceId":"8c8b8507-e569-4f2f-9f2e-497f381c5f57","status":"failed","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"assembly":"6baf269e2cca","output":{"reason":"The changelog is not ready."}}
+{"runId":"2319932e-02c1-4f9d-98db-3c5a410395da","workflow":"release","instanceId":"c898d8c7-e48b-4a56-8101-7148905b6aed","status":"failed","value":"rejected","context":{"version":"1.4.0","reason":"The changelog is not ready."},"children":[],"waiting":[],"held":[],"assembly":"83858e28b054","output":{"reason":"The changelog is not ready."}}
 ```
 
 The run ended, so its Gate closed. Each example below answers a run that waits. Before each example, start a new run in

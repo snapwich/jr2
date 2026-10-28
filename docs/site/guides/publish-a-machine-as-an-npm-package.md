@@ -144,8 +144,6 @@ Run [`jr2 up`](../reference/cli.md#up):
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 jr2 up — instance "my-instance" → context <context> / namespace my-instance

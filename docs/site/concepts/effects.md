@@ -65,8 +65,6 @@ The first line gives the name of the Workflow. Each next line gives the slot of 
 `jr2 up` also lists each state that invokes [`fail`](../reference/authoring-surface/fail.md), because each one ends the
 run `failed`:
 
-<!-- output: not run -->
-
 ```text
 failures: workflow "test-and-push" — the states that fail the run (ADR-0073)
   test-and-push.notPushed: invokes fail

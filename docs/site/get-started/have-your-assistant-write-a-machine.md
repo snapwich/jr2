@@ -269,8 +269,6 @@ List the branches of `fix` on your fork:
 git ls-remote https://github.com/<you>/jr2.git 'jr2/fix-*'
 ```
 
-<!-- output: not run -->
-
 ```text
 <commit>	refs/heads/jr2/fix-<instance id>
 ```

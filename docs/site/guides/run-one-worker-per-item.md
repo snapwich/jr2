@@ -68,8 +68,6 @@ Run [`jr2 up`](../reference/cli.md#up) to converge the Instance with the new Wor
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
@@ -77,10 +75,12 @@ typecheck: tsc --noEmit (the instance's own compiler)
 failures: workflow "issues" — the states that fail the run (ADR-0073)
   issues.failing: invokes fail
   task.lost: invokes fail
+…
 seats: workflow "issues" — who may send what, per state (ADR-0015)
   task.working agent:coder: [finish]
   task.review gate: [approve, request_changes]
-agents: coder (carried by 2 workflow machine(s))
+…
+agents: coder, triager (carried by 4 workflow machine(s))
 …
 sandbox nodes: jr2-control-plane
 …
@@ -103,9 +103,10 @@ jr2 run issues --input '{"workers":2}'
 ```text
 …
 → context kind-jr2 / namespace my-instance
-run 89b0cf0c-a6a1-4dcb-bfe1-101394f58801 (issues) — attached
-  → active "saturated"
-  → active "saturated"
+run e1effd33-9bf6-4137-ae70-3aa504910784 (issues) — attached
+  → active "discovering"
+  → active "discovering"
+  → active "discovering"
 …
 ```
 
@@ -127,7 +128,7 @@ jr2 status <run id>
 ```text
 …
 → context kind-jr2 / namespace my-instance
-{"runId":"89b0cf0c-a6a1-4dcb-bfe1-101394f58801","workflow":"issues",…,"gates":[{"gate":"source",…},{"gate":"issue-12.body.review",…},{"gate":"issue-13.body.review",…}]}
+{"runId":"e1effd33-9bf6-4137-ae70-3aa504910784","workflow":"issues",…,"gates":[{"gate":"source",…},{"gate":"issue-3.body.review",…},{"gate":"issue-2.body.review",…}]}
 ```
 
 In the JSON that it prints, `gates` holds each open Gate of the run:
@@ -146,16 +147,16 @@ holds its item id: `ws-<first 8 characters of the run id>-<item id>-<hash>`.
 Push the branch before you approve. `approve` ends that worker and removes its Sandbox, and the commits that you did not
 push are lost. [Look inside a Sandbox](look-inside-a-sandbox.md#push-the-branch) tells how to push.
 
-Then send `approve` to the Gate of the worker. This example approves issue 12:
+Then send `approve` to the Gate of the worker. This example approves issue 2:
 
 ```sh
-jr2 send <run id> --gate issue-12.body.review --event approve
+jr2 send <run id> --gate issue-2.body.review --event approve
 ```
 
 ```text
 …
 → context kind-jr2 / namespace my-instance
-delivered approve to gate "issue-12.body.review" on 89b0cf0c-a6a1-4dcb-bfe1-101394f58801
+delivered approve to gate "issue-2.body.review" on e1effd33-9bf6-4137-ae70-3aa504910784
 ```
 
 The Pool then calls `next` again, and starts a worker for the next issue.
@@ -176,7 +177,7 @@ jr2 send <run id> --gate source --event issues_changed
 ```text
 …
 → context kind-jr2 / namespace my-instance
-delivered issues_changed to gate "source" on 89b0cf0c-a6a1-4dcb-bfe1-101394f58801
+delivered issues_changed to gate "source" on e1effd33-9bf6-4137-ae70-3aa504910784
 ```
 
 Without the event, the Pool calls `next` again when a worker finishes, or after `pollEvery`. A webhook can send the same
@@ -187,13 +188,11 @@ event with [`POST /runs/:runId/gates/:gate/events`](../reference/http-api.md#pos
 When the last worker finishes and no issue is ready, the run ends. In the first terminal, `jr2 run` prints the last
 state of the Pool, then the status of the run as JSON:
 
-<!-- output: not run -->
-
 ```text
 …
   → active "discovering"
   → done "drained"
-{"runId":"89b0cf0c-a6a1-4dcb-bfe1-101394f58801","workflow":"issues","instanceId":"1d2a83dc-1496-4d59-87d0-dcbd8547e88d","status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"1d2a83dc-1496-4d59-87d0-dcbd8547e88d"},"cap":2,"active":[],"items":{"issue-12":{"branch":"jr2/issue-12"},"issue-13":{"branch":"jr2/issue-13"},"issue-14":{"branch":"jr2/issue-14"}},"failures":{},"status":"drained"},"children":[],"waiting":[],"held":[],"assembly":"68243a41b295","output":{"status":"drained","items":{"issue-12":{"branch":"jr2/issue-12"},"issue-13":{"branch":"jr2/issue-13"},"issue-14":{"branch":"jr2/issue-14"}},"failures":{}}}
+{"runId":"e1effd33-9bf6-4137-ae70-3aa504910784","workflow":"issues","instanceId":"db9712c8-7c19-4d18-8fb1-8c01d326808f","status":"done","value":"drained","context":{"runInput":{"workers":2,"instanceId":"db9712c8-7c19-4d18-8fb1-8c01d326808f"},"cap":2,"active":[],"items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{},"status":"drained"},"children":[],"waiting":[],"held":[],"assembly":"ca3b0e760c85","output":{"status":"drained","items":{"issue-2":{"branch":"jr2/issue-2"},"issue-3":{"branch":"jr2/issue-3"},"issue-1":{"branch":"jr2/issue-1"}},"failures":{}}}
 ```
 
 In the JSON, `context.items` holds the output of each worker that finished, by item id. `context.failures` holds the

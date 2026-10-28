@@ -74,14 +74,12 @@ pod uses the Harness Kit image and the Envoy image of the Custodian, so it needs
 
 `jr2 up` builds each image for the platforms of the nodes. It reads the architecture of each node on which a pod can
 run, and of each [Sandbox node](../reference/glossary.md#sandbox-node). jr2 releases its images for `linux/amd64` and
-`linux/arm64` only. `jr2 up` skips a node of a different architecture, and tells you. In this output, `<arch>` is the
-architecture of that node:
-
-<!-- output: not run -->
+`linux/arm64` only. `jr2 up` skips a node of a different architecture, and tells you. This output is from a cluster with
+one `amd64` node and one `s390x` node:
 
 ```text
-platforms: linux/amd64 (from 3 schedulable node(s))
-  skipping node arch <arch> — the kit publishes no Kit image for it, so no pod there could run
+platforms: linux/amd64 (from 2 schedulable node(s))
+  skipping node arch s390x — the kit publishes no Kit image for it, so no pod there could run
 ```
 
 When the cluster has nodes of the two architectures, `jr2 up` builds each image for both, and pushes it as one manifest

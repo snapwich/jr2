@@ -110,7 +110,7 @@ jr2 run rollout --input '{"service":"billing","version":"1.4.0"}'
 
 ```text
 → context kind-jr2 / namespace my-instance
-run 921d9a0a-da2d-4caf-bb32-5f95acfd3a59 (rollout) — attached
+run b7c3d871-e3ae-46af-8bb3-774913bcd6cc (rollout) — attached
   → active "canary"
 ```
 
@@ -124,20 +124,19 @@ jr2 send <run id> --gate canary --event roll_back --input '{"reason":"The error 
 
 ```text
 → context kind-jr2 / namespace my-instance
-delivered roll_back to gate "canary" on 921d9a0a-da2d-4caf-bb32-5f95acfd3a59
+delivered roll_back to gate "canary" on b7c3d871-e3ae-46af-8bb3-774913bcd6cc
 ```
 
 In the first terminal, the run ends. A `roll_back` ends the rollout, so the run ends `failed`, with the reason of the
 person as its output, and `jr2 run` exits with `1`. Its `context` holds the default of `canaryPercent`, the `instanceId`
 that jr2 added, and the `reason`:
 
-<!-- output: not run -->
-
 ```text
   emit {"type":"decided","promoted":false}
+  → active "rolledBack"
   → failed "rolledBack"
 failed: The error rate went up.
-{"runId":"921d9a0a-da2d-4caf-bb32-5f95acfd3a59","workflow":"rollout","instanceId":"b5d9ee34-69c3-4b0f-9438-403e19898953","status":"failed","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"b5d9ee34-69c3-4b0f-9438-403e19898953","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"assembly":"a44731886e21","output":{"reason":"The error rate went up."}}
+{"runId":"b7c3d871-e3ae-46af-8bb3-774913bcd6cc","workflow":"rollout","instanceId":"b79e7e8b-6289-4dbc-a9a3-be945f8b1173","status":"failed","value":"rolledBack","context":{"service":"billing","version":"1.4.0","canaryPercent":10,"instanceId":"b79e7e8b-6289-4dbc-a9a3-be945f8b1173","reason":"The error rate went up."},"children":[],"waiting":[],"held":[],"assembly":"83858e28b054","output":{"reason":"The error rate went up."}}
 ```
 
 Your instance id and your `assembly` hash are different.
