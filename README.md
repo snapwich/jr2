@@ -1,4 +1,9 @@
-# jr2
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/site/public/jr2-mark-dark.svg">
+    <img alt="jr2" src="docs/site/public/jr2-mark-light.svg" height="96">
+  </picture>
+</h1>
 
 Next-generation [`jr`](https://www.richsnapp.com/article/2026/03-30-automating-your-agents) orchestrator. A kit for
 building agentic workflows modeled as [xstate](https://stately.ai/docs) state machines, where each Agent runs in its own

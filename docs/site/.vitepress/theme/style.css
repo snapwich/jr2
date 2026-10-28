@@ -951,3 +951,31 @@
 .vp-doc .mg-label.mg-quiet text {
   fill: var(--vp-c-text-2);
 }
+
+/* The mark (public/jr2-mark-*.svg): in the nav, a little taller than the default logo, so that its
+   letters read; on Home, in place of the title (home-mark.ts), the image of the active theme. */
+.VPNavBarTitle .logo {
+  height: 32px;
+}
+
+/* VitePress makes each img a block, so a flex row centers it. */
+.vp-doc h1 .home-mark {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0 40px;
+}
+
+.vp-doc h1 .home-mark img {
+  height: 120px;
+  width: auto;
+  max-width: 100%;
+}
+
+.home-mark-dark,
+.dark .home-mark-light {
+  display: none;
+}
+
+.dark .home-mark-dark {
+  display: block;
+}

@@ -17,6 +17,7 @@ is for contributors. It is not a page of the docs.
 | `guides/`         | The Guides pages.                                                                  |
 | `tutorial/greet/` | The tutorial fixture: a small Node CLI with one failing test. Get started uses it. |
 | `examples/`       | The code that a page imports. `pnpm typecheck` checks it against the Kit.          |
+| `public/`         | The mark of jr2 and the tab icon. The site and the repo README show them.          |
 | `build/`          | `docs:build`: it makes the bundle and generates the Reference.                     |
 | `.vitepress/`     | The site: the VitePress config, the theme, and the nav from `sitemap.json`.        |
 | `test/`           | The tests for `sitemap.json`, the tutorial fixture, `docs:build`, and the nav.     |

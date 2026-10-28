@@ -113,11 +113,15 @@ function glossaryTerms(tokens: Token[], Tok: TokenOf): Token[] {
   return out;
 }
 
+const BASE = "/jr2/";
+
 export default defineConfig({
-  base: "/jr2/",
+  base: BASE,
   title: "jr2",
   description: "A kit for agentic workflows as xstate Machines, run on Kubernetes.",
   srcExclude: ["README.md", "tutorial/**", "examples/**", "build/**", "test/**"],
+  // The tab icon: the final state "2" of the mark (public/). A `head` link is not given the base.
+  head: [["link", { rel: "icon", type: "image/svg+xml", href: `${BASE}favicon.svg` }]],
   markdown: {
     // The bundle's anchor rule (README "Citations"), so that a link works in both.
     anchor: { slugify: headingSlug },
@@ -145,17 +149,20 @@ export default defineConfig({
       // A page's title is its frontmatter's: the source has no H1, so the site adds it, as the
       // bundle does. A generated page has its H1 already. Before the anchor rule, so that the H1
       // gets its `id`, and the local search indexes the page's title and the text before its
-      // first H2 under it.
+      // first H2 under it. Home's H1 is the mark (HomeMark), with the name as hidden text for a
+      // screen reader and the search; the bundle's Home keeps its title.
       md.core.ruler.before("anchor", "jr2-title", (state) => {
         const tokens = state.tokens as unknown as Token[];
         const title = (state.env as { frontmatter?: { title?: string } }).frontmatter?.title;
         if (!title || tokens.some((t) => t.type === "heading_open" && t.tag === "h1")) return;
+        const home = (state.env as { relativePath?: string }).relativePath === "index.md";
         const open = new state.Token("heading_open", "h1", 1);
         const inline = new state.Token("inline", "", 0);
         const text = new state.Token("text", "", 0);
-        text.content = title;
-        inline.content = title;
-        inline.children = [text];
+        text.content = home ? "jr2" : title;
+        inline.content = text.content;
+        const html = (content: string) => Object.assign(new state.Token("html_inline", "", 0), { content });
+        inline.children = home ? [html('<HomeMark /><span class="visually-hidden">'), text, html("</span>")] : [text];
         state.tokens.unshift(open, inline, new state.Token("heading_close", "h1", -1));
       });
       // The Glossary's terms, each as a `<dl>` (glossaryTerms). The bundle keeps GLOSSARY.md's form.
@@ -212,6 +219,9 @@ export default defineConfig({
   // https://snapwich.github.io/jr2/sitemap.xml, for a search engine.
   sitemap: { hostname: "https://snapwich.github.io/jr2/" },
   themeConfig: {
+    // The mark is the name: j, r and 2 as the states of a Machine, so the nav shows no title beside it.
+    logo: { light: "/jr2-mark-light.svg", dark: "/jr2-mark-dark.svg", alt: "jr2" },
+    siteTitle: false,
     nav: navOf(map),
     sidebar: sidebarOf(map),
     outline: [2, 3],

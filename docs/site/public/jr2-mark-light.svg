@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -16 210 72" role="img" aria-label="jr2">
+  <title>jr2</title>
+  <g fill="none" stroke="#3c3c43" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 28 H27 M72 28 H91 M136 28 H151" stroke-width="3"/>
+    <rect x="32" y="8" width="40" height="40" rx="10" stroke-width="3"/>
+    <rect x="96" y="8" width="40" height="40" rx="10" stroke-width="3"/>
+    <path d="M180 4 C180 -18 116 -18 116 2" stroke-width="2.5"/>
+    <path d="M47 21.5 H56 V38 Q56 43.5 50.5 43.5 H46" stroke-width="4.5"/>
+    <path d="M106 21.5 H110 V37 M110 28 Q111 21.5 118 21.5 H124" stroke-width="4.5"/>
+    <path d="M172.5 22 Q173.5 16.5 180 16.5 Q187 16.5 187 22.5 Q187 26.5 182 30 L172.5 37.5 H188" stroke-width="4.5"/>
+  </g>
+  <g fill="#3c3c43">
+    <circle cx="56" cy="14.5" r="2.75"/>
+    <path d="M25 23 L31 28 L25 33 Z M89 23 L95 28 L89 33 Z M149 23 L155 28 L149 33 Z M111 0 L116 7 L121 0 Z"/>
+  </g>
+  <circle cx="8" cy="28" r="5" fill="#3451b2"/>
+  <g fill="none" stroke="#3451b2">
+    <rect x="156" y="4" width="48" height="48" rx="13" stroke-width="3"/>
+    <rect x="161" y="9" width="38" height="38" rx="9" stroke-width="2"/>
+  </g>
+</svg>
