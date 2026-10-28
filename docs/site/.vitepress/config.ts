@@ -146,6 +146,10 @@ export default defineConfig({
       const codeInline = md.renderer.rules.code_inline!;
       md.renderer.rules.code_inline = (tokens, idx, options, env, self) =>
         codeInline(tokens, idx, options, env, self).replace(/^<code/, "<code v-pre");
+      // Vue condenses whitespace that holds a line break between two elements to nothing. So a
+      // line that wraps between two links (or a code span and a link) would join them, as in
+      // "xstateMachine". A space is the same to the browser, and Vue keeps it.
+      md.renderer.rules.softbreak = () => " ";
       // A page's title is its frontmatter's: the source has no H1, so the site adds it, as the
       // bundle does. A generated page has its H1 already. Before the anchor rule, so that the H1
       // gets its `id`, and the local search indexes the page's title and the text before its
