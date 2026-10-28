@@ -131,6 +131,32 @@ When the route leaves the Agent's state, the Turn ends, and jr2 keeps the answer
 pick continues a conversation (`continue: true`), the next Turn on that conversation reads the notice. If it does not,
 no Agent reads the answer.
 
+## Keep the Turn or end it
+
+The target of a pick decides who controls the order of the work. When the target is inside the Agent's state, the Agent
+decides when each step runs. When the target is outside it, the Machine decides the next step. Choose the target by what
+the Agent must do next:
+
+| The Agent must                                  | Put the target of the pick                          | The Agent reads the result              |
+| ----------------------------------------------- | --------------------------------------------------- | --------------------------------------- |
+| use the result of a step to continue its work   | in a child state that runs the step                 | as the answer to the pick, in this Turn |
+| make only the picks that are correct now        | in a mode, or behind a guard that reads the context | in its Allowed picks, after each answer |
+| stop, because the Machine decides the next step | in a state outside the Agent's state                | in the prompt of a later Turn           |
+
+In the example on this page, the writer uses the first two kinds. `ask` opens a Gate in `asking`, and the writer reads
+the editor's reply as the answer to `ask`, in the same Turn. The guard on `done` keeps `done` out of the Allowed picks
+until the editor replies. Then `done` leaves `writing`, and that ends the Turn.
+
+Use the third kind when the next step is not the choice of the Agent. Use it also when the next step needs a different
+prompt, a different Agent or different [Dials](../reference/glossary.md#dials). On the transition, `assign` the result
+to the context, and write the prompt of the next state from the context. When the Agent must keep its conversation, set
+`continue: true` on its Turns (see [Continue a conversation](agents-and-turns.md#continue-a-conversation)). In the
+[example of Agents and Turns](agents-and-turns.md#an-example), `request_changes` moves the run to `fixing`. The prompt
+of `fixing` gives the notes of the checker to the coder.
+
+The first two kinds keep the Agent in its work: the result is the answer to its own call, not a new task. The third kind
+gives the Agent a new task. One Machine can use all three kinds.
+
 ## The Sender
 
 Each event that a party sends carries its [Sender](../reference/glossary.md#sender), as `event.sender`. The Sender is

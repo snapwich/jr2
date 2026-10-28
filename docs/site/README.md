@@ -96,9 +96,12 @@ The site and the bundle describe the release that they ship in, and nothing else
 
 `index.md` serves the evaluator and the Instance user. It has these parts, in this order:
 
-1. What jr2 is, in one paragraph. jr2 is a Kit. You write agentic workflows as xstate Machines, and jr2 runs them on
-   Kubernetes. An Agent that works on a Repo works in a Sandbox.
-2. The start, in three commands. Link to [Install](get-started/install.md) for the tools that they need first:
+1. What jr2 is, in one paragraph. jr2 is a Kit. Each agentic workflow is written as an xstate Machine, and jr2 runs it
+   on Kubernetes. An Agent that works on a Repo works in a Sandbox.
+2. The two ways to use jr2, in one short paragraph. The Machine decides the order of the work, or an Agent decides it
+   and the Machine runs each step. In both ways, the Machine sets what each step does. An Agent can also write a Chart.
+   Link to the section of The Menu that tells how to choose.
+3. The start, in three commands. Link to [Install](get-started/install.md) for the tools that they need first:
 
    ```sh
    npm i -g @jr2/cli
@@ -106,7 +109,7 @@ The site and the bundle describe the release that they ship in, and nothing else
    jr2 up
    ```
 
-3. Links to Why jr2, Get started, Concepts, Guides and Reference, with one sentence for each.
+4. Links to Why jr2, Get started, Concepts, Guides and Reference, with one sentence for each.
 
 Home has no diagram. Link to Why jr2 for the picture of jr2 as a whole.
 
@@ -132,7 +135,9 @@ solves, so that a reader sees what jr2 does for them before they read a Concept.
       You answer a Gate from any of them.
    2. **Determinism.** The Machine in the Orchestrator band. A Machine is a graph that you can read before it runs, and
       it can have loops. The Console draws the run while it runs. The Menu is the events out of the current state. You
-      review how the work happens, not only the code that comes out.
+      review how the work happens, not only the code that comes out. A pick can also keep the Turn: the Machine runs the
+      work of the pick and answers it, and a mode or a guard limits the next picks. Thus the Agent can decide the order
+      of the work, and the Machine still decides what each step does. An Agent can also write a Chart.
    3. **Composition.** Workspace, Pool, Source and Gate wrap a body that does not know about them. Each state frames one
       Turn, so that an Agent does one thing at a time.
    4. **Isolation.** The Sandbox band. A filesystem sandbox is not isolation. An Agent that works on a Repo works in a

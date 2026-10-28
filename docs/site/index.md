@@ -3,11 +3,17 @@ title: Home
 description: jr2 is a Kit for agentic workflows. You write each one as an xstate Machine, and jr2 runs it.
 ---
 
-jr2 is a Kit for agentic workflows. You write each workflow as an xstate [Machine](reference/glossary.md#machine), and
+jr2 is a Kit for agentic workflows. Each workflow is written as an xstate [Machine](reference/glossary.md#machine), and
 jr2 runs it on Kubernetes. An [Agent](reference/glossary.md#agent) that works on a [Repo](reference/glossary.md#repo)
-works in a [Sandbox](reference/glossary.md#sandbox): a pod with its own filesystem, network and processes. jr2 is for
-you if you want Agents to do work on a cluster, and you want to read the steps of that work before it starts. Your
-[Assistant](reference/glossary.md#assistant) can write the Machines, and you review their graphs.
+works in a [Sandbox](reference/glossary.md#sandbox): a pod with its own filesystem, network and processes. Your
+[Assistant](reference/glossary.md#assistant) writes the Machines, and you review the graph.
+
+jr2 supports two primary patterns for making Agent-enabled workflows. You can let the Machine decide the order of the
+work, and give each Agent one step of it in a [Turn](reference/glossary.md#turn). Or an Agent can decide when each step
+runs, and the Machine runs that step and limits the next choices
+([how to choose](concepts/the-menu.md#keep-the-turn-or-end-it)). In both patterns, the Machine sets what each step does.
+An Agent can also write a [Chart](reference/glossary.md#chart), much like a "dynamic workflow": jr2 checks it against
+the parts that your Machine lends it, and then executes it at runtime.
 
 ## Start in three commands
 

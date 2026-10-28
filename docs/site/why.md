@@ -74,7 +74,14 @@ ends its Turn with one pick from its Menu, and the Machine refuses a pick that i
 Machine sets the transition that each decision causes. You review how the work happens, not only the code that comes out
 of it. The model is not deterministic, but the Machine is: in one state, one pick always causes the same transition.
 
-Read [Machines and Workflows](concepts/machines-and-workflows.md) and [The Menu](concepts/the-menu.md).
+The Agent can also decide the order of the work. A pick whose target is inside the Agent's state does not end the Turn.
+The Machine runs the work of the pick, such as an Effect or a Gate, and answers the pick with the result. A
+[mode](reference/glossary.md#mode) or a guard sets which picks the Agent can make next. Thus the Agent decides when each
+step runs, and the Machine decides what each step does. An Agent can also write a [Chart](reference/glossary.md#chart):
+a Machine as data, which jr2 checks before it runs.
+
+Read [Machines and Workflows](concepts/machines-and-workflows.md),
+[The Menu](concepts/the-menu.md#keep-the-turn-or-end-it) and [Charts](concepts/charts.md).
 
 ## Composition
 
