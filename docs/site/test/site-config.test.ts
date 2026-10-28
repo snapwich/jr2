@@ -25,6 +25,13 @@ test("a page that has an H1 already gets no second one", async () => {
   assert.equal(html.match(/<h1/g)?.length, 1);
 });
 
+test("a line that wraps between two links keeps a space between them, which Vue would condense away", async () => {
+  const html = await render(
+    "---\ntitle: x\n---\n\nAn [xstate](https://xstate.js.org)\n[Machine](reference/glossary.md#machine).\n",
+  );
+  assert.match(html, /xstate<\/a> <a /);
+});
+
 const glossary = (src: string) =>
   md.render(src, { path: `${site}reference/glossary.md`, relativePath: "reference/glossary.md" });
 const TERMS =
@@ -36,8 +43,8 @@ test("a Glossary term is a <dl>: the term with the anchor's id, its definition, 
   assert.ok(
     html.startsWith(
       '<dl class="glossary-term"><dt id="jr2-cli">jr2 CLI <a class="glossary-anchor" href="#jr2-cli"' +
-        ' aria-label="Permalink to this term">#</a></dt><dd>The <code v-pre>jr2</code> binary.\nMore text.</dd>' +
-        '<dd class="glossary-avoid"><span class="glossary-avoid-label">Avoid</span> cli tool,\nlauncher</dd></dl>',
+        ' aria-label="Permalink to this term">#</a></dt><dd>The <code v-pre>jr2</code> binary. More text.</dd>' +
+        '<dd class="glossary-avoid"><span class="glossary-avoid-label">Avoid</span> cli tool, launcher</dd></dl>',
     ),
     html,
   );
