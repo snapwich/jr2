@@ -96,7 +96,9 @@ case "${1:-}" in
     printf '//localhost:%s/:_authToken="jr2-dist"\n' "$port" > "$dir/npmrc"
     # Job control, so the background job leads its own process group (see `stop`).
     set -m
-    VERDACCIO_STORAGE_PATH="$dir/registry" nohup npx --yes verdaccio \
+    # An exact version: verdaccio 7 refuses the fake publish token above, so an unpinned npx broke
+    # this loop the day 7.0.0 became `latest`.
+    VERDACCIO_STORAGE_PATH="$dir/registry" nohup npx --yes verdaccio@6.11.1 \
       --config "$root/deploy/verdaccio.yaml" --listen "$port" > "$log_file" 2>&1 &
     echo $! > "$pid_file"
     set +m
