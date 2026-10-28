@@ -114,7 +114,7 @@ it. Then the Chart ends, and the run ends with the status `done`.
     then what a write supplies
   - `<path>: "<reference>" is not a reference: it starts at context, event or input (a reference is a path, never an expression)`
 - The door then compiles the Chart as the Open body does. A line of this last check starts with `(chart):`, and names a
-  state by its xstate id (for example `body.writing`), not by its path in the Chart.
+  state by its [xstate](https://xstate.js.org) id (for example `body.writing`), not by its path in the Chart.
 - A refusal is output, not an error: the Open body ends with `{ outcome: "refused", report }`. A Chart wrapper that
   routes `onDone` back to the state of the pick gives the report to the planner.
 - When the Turn of an Agent of the Chart cannot go on, and no transition of the Chart takes

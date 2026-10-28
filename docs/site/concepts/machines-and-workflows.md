@@ -3,11 +3,12 @@ title: Machines and Workflows
 description: What a Machine and a Workflow are, the door of a run, the Vocabulary, and Emits.
 ---
 
-A [Machine](../reference/glossary.md#machine) is an xstate state machine that you write. It holds the control flow of
-your work. The control flow is the states, the events that move a run between them, and what each state does. A
-[Workflow](../reference/glossary.md#workflow) is a Machine that your [Instance](../reference/glossary.md#instance)
-registers under a name. You start a run of a Workflow with `jr2 run <name>`. This page tells how a Machine gets the
-input of a run, which events it takes, and how it tells you what it does.
+A [Machine](../reference/glossary.md#machine) is an [xstate](https://xstate.js.org) state machine that you write. It
+holds the control flow of your work. The control flow is the states, the events that move a run between them, and what
+each state does. A [Workflow](../reference/glossary.md#workflow) is a Machine that your
+[Instance](../reference/glossary.md#instance) registers under a name. You start a run of a Workflow with
+`jr2 run <name>`. This page tells how a Machine gets the input of a run, which events it takes, and how it tells you
+what it does.
 
 ## Why the control flow is a Machine
 

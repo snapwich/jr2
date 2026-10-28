@@ -97,7 +97,7 @@ publishes to it, and it keeps each Assembly on its volume. [Converge](converge.m
 
 The Orchestrator does these things:
 
-- It runs each Machine as an xstate actor, and holds the state of each run.
+- It runs each Machine as an [xstate](https://xstate.js.org) actor, and holds the state of each run.
 - It serves the HTTP API that the CLI, the Console, a webhook and the Custodians call. See the
   [HTTP API](../reference/http-api.md).
 - It sends each Turn to a Harness, and judges each pick that comes back.

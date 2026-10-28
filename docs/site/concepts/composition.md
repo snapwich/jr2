@@ -26,8 +26,8 @@ missing part does not become a run that spends money on a model that nobody chos
 
 ## A Machine inside a Machine
 
-A Machine composes a different Machine as an xstate child. It imports the Machine, puts it under `actors`, and a state
-invokes it by its key. The key is a slot, the same as the slot of an Agent.
+A Machine composes a different Machine as an [xstate](https://xstate.js.org) child. It imports the Machine, puts it
+under `actors`, and a state invokes it by its key. The key is a slot, the same as the slot of an Agent.
 
 This Machine composes the shipped Machine [`task`](../reference/machines.md#task) two times. A
 [Menu](../reference/glossary.md#menu)-only Agent, `triager`, reads the prompt first. Then the run goes to one of the two

@@ -38,10 +38,10 @@ The parts of the module:
   move the Machine. Declare its type in `types.emitted`.
 
 A Machine with a door uses `jr2Setup`, also when it takes no workflow event. Then leave out `events`, as in
-`jr2Setup()`. The `setup()` of xstate does not read the `input` of `createMachine`. TypeScript accepts a zod `input`
-there, but no door reads it, so `jr2 up` refuses that Machine. Without the refusal, a run would start with any input,
-and the Console start form would be only a field for JSON. Only a Machine with no door and no workflow event can use
-`setup()`, as the `ping` Workflow that `jr2 init` writes does.
+`jr2Setup()`. The `setup()` of [xstate](https://xstate.js.org) does not read the `input` of `createMachine`. TypeScript
+accepts a zod `input` there, but no door reads it, so `jr2 up` refuses that Machine. Without the refusal, a run would
+start with any input, and the Console start form would be only a field for JSON. Only a Machine with no door and no
+workflow event can use `setup()`, as the `ping` Workflow that `jr2 init` writes does.
 
 ## Give the run an output
 

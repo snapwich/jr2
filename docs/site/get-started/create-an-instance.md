@@ -52,9 +52,10 @@ Open the folder in your editor. Each file has a job:
 | `AGENTS.md`                 | The instructions for your [Assistant](../reference/glossary.md#assistant). `jr2 init` and `jr2 up` write the index of the jr2 docs between the two `jr2-docs` markers. Write your own instructions after the `END` marker.                                      |
 | `CLAUDE.md`                 | One line, `@AGENTS.md`. Claude Code reads `CLAUDE.md`, and this line tells it to read `AGENTS.md` too.                                                                                                                                                          |
 
-Open `workflows/ping.ts`. Its last part is the Machine: an xstate state machine with two states. In `responding`, the
-Machine calls a function that replies `pong: <message>`, where `<message>` is the `message` of the run input. Then it
-goes to `done`, its final state. `ping` uses no model and no Sandbox, so it runs before you connect a model.
+Open `workflows/ping.ts`. Its last part is the Machine: an [xstate](https://xstate.js.org) state machine with two
+states. In `responding`, the Machine calls a function that replies `pong: <message>`, where `<message>` is the `message`
+of the run input. Then it goes to `done`, its final state. `ping` uses no model and no Sandbox, so it runs before you
+connect a model.
 
 ## Install the dependencies
 

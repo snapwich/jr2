@@ -61,10 +61,11 @@ When the steps of a workflow are text in a prompt, the model can skip a step or 
 are requests to the model, not rules that it must obey. You can review the code that an agentic workflow makes, but you
 cannot easily review how it made that code.
 
-In jr2, a workflow is a Machine: an xstate state machine in TypeScript. The Orchestrator band of the diagram holds an
-example Machine, with the states `code`, `review` and `approval`, and the final state `done`. Its states and its
-transitions are a graph that you can read before a run starts. The Console draws that graph, and while a run runs, it
-shows the state that the run is in. A Machine can have loops: in the diagram, `changes` sends the run back to `code`.
+In jr2, a workflow is a Machine: an [xstate](https://xstate.js.org) state machine in TypeScript. The Orchestrator band
+of the diagram holds an example Machine, with the states `code`, `review` and `approval`, and the final state `done`.
+Its states and its transitions are a graph that you can read before a run starts. The Console draws that graph, and
+while a run runs, it shows the state that the run is in. A Machine can have loops: in the diagram, `changes` sends the
+run back to `code`.
 
 An Agent does not move the Machine itself. A [Turn](reference/glossary.md#turn) is one piece of work for one Agent. The
 state that the run is in gives the Agent a prompt and a [Menu](reference/glossary.md#menu): the events that go out of

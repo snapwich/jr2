@@ -120,9 +120,9 @@ state. An event from a party below it is also a reply: a Gate's event, or the pi
 the pick, oldest first, is the [Chain](../reference/glossary.md#chain).
 
 To give the Agent a different answer, write [`answer`](../reference/authoring-surface/answer.md) on the route. It is an
-xstate action. It reads the context, the event and the Chain, and its value is the answer. In the example, the writer
-reads `The editor replied: <text>` and not the raw `reply` event. Where you write `answer` decides which pick it
-answers. The Reference entry gives the rule.
+[xstate](https://xstate.js.org) action. It reads the context, the event and the Chain, and its value is the answer. In
+the example, the writer reads `The editor replied: <text>` and not the raw `reply` event. Where you write `answer`
+decides which pick it answers. The Reference entry gives the rule.
 
 The error of a child is not a reply, and the Agent does not see it. To tell the Agent about an error, write `answer` on
 the `onError` route.

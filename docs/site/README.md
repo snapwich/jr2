@@ -89,6 +89,8 @@ The site and the bundle describe the release that they ship in, and nothing else
   `[Repo Slot](../reference/glossary.md#repo-slot)`.
 - Do not put a link in a heading. If a term is first in a heading, link its first use in the text.
 - A name in code, such as `customize()`, links to its Reference entry, not to the Glossary.
+- xstate is not a glossary term, but use the same rule: link its first use in the text of a page to
+  `[xstate](https://xstate.js.org)`. Do not link a package name in code, such as `xstate` in `peerDependencies`.
 - Do not copy a Glossary definition or the reasons of an ADR. Explain the idea in your own words, and link to them.
 
 ### The kinds of page

@@ -42,7 +42,7 @@ runs: in the Sandbox of its `workspace()`, or on the [Instance Harness](../refer
 
 ## What a Chart holds
 
-A Chart is xstate's own JSON config, with these limits:
+A Chart is [xstate](https://xstate.js.org)'s own JSON config, with these limits:
 
 - States, transitions, `after` delays, and nested and parallel states. A Chart has 200 states at most, 8 levels deep.
 - Each `invoke.src` is a lent slot key or an Agent of the Chart. Each guard, action and delay is a lent name. Each Chart

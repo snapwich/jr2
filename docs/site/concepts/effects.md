@@ -18,7 +18,7 @@ Effect gives the Machine its own result, and the Machine routes on it.
 An Effect also keeps a credential away from the Agent. A `push` uses a push credential, and an `http` call uses an
 [Effect secret](../reference/glossary.md#effect-secret). The Agent never reads either one. jr2 also records each Effect
 before it starts, so that a restart of the [Orchestrator](../reference/glossary.md#orchestrator) does not do the work
-two times. A plain xstate promise has no such record.
+two times. A plain [xstate](https://xstate.js.org) promise has no such record.
 
 ## An Effect is an actor slot
 

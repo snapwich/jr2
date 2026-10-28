@@ -67,8 +67,8 @@ The parts of the run then continue:
   gone too. The Workspace then sends [`workspace.lost`](../reference/mechanism-events.md#workspace-lost) to its body,
   and the Machine decides what to do. jr2 never makes the Sandbox again for that Workspace.
   [Workspaces](workspaces.md#lease-and-continuity) explains how the operator decides to remove a Sandbox.
-- **Timers.** A timer, such as an xstate `after`, fires after the time that remained. A timer whose time passed while
-  the Orchestrator was stopped fires at once.
+- **Timers.** A timer, such as an [xstate](https://xstate.js.org) `after`, fires after the time that remained. A timer
+  whose time passed while the Orchestrator was stopped fires at once.
 - **Effects.** jr2 runs an Effect a second time only when that is safe. When the Orchestrator cannot find out if an
   Effect finished, the result of the Effect is `unknown`. [Effects](effects.md) gives the rules.
 

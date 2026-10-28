@@ -129,7 +129,8 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
   ``error: this instance's TypeScript compiler is missing — install its dependencies (npm, pnpm, or bun), then re-run `jr2 up`.``
 - The Instance must typecheck: `refusing: this instance does not typecheck — nothing was built and nothing was applied`
 - A registered Machine with a door must be made by [`jr2Setup`](../reference/authoring-surface/jr2setup.md), because the
-  `setup()` of xstate does not read the `input` of `createMachine`. See [Write a Workflow](write-a-workflow.md):
+  `setup()` of [xstate](https://xstate.js.org) does not read the `input` of `createMachine`. See
+  [Write a Workflow](write-a-workflow.md):
   ``refusing: workflow "<workflow>": machine "<id>" has a zod `input` on createMachine, but jr2Setup did not make this Machine, so no door reads that input: a run starts with any input, and the Console start form is only a field for JSON — make the Machine with jr2Setup in place of setup() or createMachine() (leave out `events` if it takes no workflow event) (ADR-0033)``
 - A registered Machine must have no [Open](../reference/glossary.md#open) part. The refusal gives the
   [`customize()`](../reference/authoring-surface/customize.md) line that binds the part. Put it in

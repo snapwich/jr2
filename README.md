@@ -6,7 +6,7 @@
 </h1>
 
 Next-generation [`jr`](https://www.richsnapp.com/article/2026/03-30-automating-your-agents) orchestrator. A kit for
-building agentic workflows modeled as [xstate](https://stately.ai/docs) state machines, where each Agent runs in its own
+building agentic workflows modeled as [xstate](https://xstate.js.org) state machines, where each Agent runs in its own
 host-isolated Kubernetes pod (Sandbox), hosted by jr2's own Harness (ADR-0027, built on
 [pi-agent-core](https://github.com/earendil-works/pi)). Local development runs on [kind](https://kind.sigs.k8s.io/)
 (Kubernetes in Docker).

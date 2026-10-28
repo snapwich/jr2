@@ -90,8 +90,8 @@ A Pool is a Machine. It can be the root of a Workflow, or a different Machine ca
 [`source(spec)`](../reference/authoring-surface/source.md) declares where a Pool gets its items. A Source has three
 parts ([`SourceSpec`](../reference/authoring-surface/type-sourcespec.md)):
 
-- `next`: an xstate promise actor that claims the next ready item. Its input is `{ active }`, the ids of the items that
-  workers have now.
+- `next`: an [xstate](https://xstate.js.org) promise actor that claims the next ready item. Its input is `{ active }`,
+  the ids of the items that workers have now.
 - `wake`: an optional event, made with [`defineEvent`](../reference/authoring-surface/defineevent.md), that tells the
   Pool that new work is ready.
 - `pollEvery`: an optional time in milliseconds. While the Pool waits, it calls `next` again at this interval.
