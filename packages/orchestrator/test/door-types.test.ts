@@ -27,7 +27,11 @@
 //      removes the `Record<string, never>` that `z.infer` gives it, and `spec` reads `instanceId`
 //      (HostInjectedInput) as a string, on each door; a body that writes `z.infer` of the empty door
 //      is still accepted, and one that demands a field the empty door does not carry is refused;
-//      a parent can give `instanceId` to a nested empty-door wrapper.
+//      a parent can give `instanceId` to a nested empty-door wrapper;
+//  12. a `workspace()` that leaves `repos` out has no Repo Slot (ADR-0051): its body is
+//      `Workspaced<…, never>`, whose handles are `{ repos: {} }` with no branch; a body that names a
+//      slot or reads a branch is refused there, on both overloads; its `spec` is optional, and a
+//      `branch` or a `reviewSha` in it is refused.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -75,8 +79,8 @@ const outputting = setup({
 });
 
 const specOf = (input: Door): WorkspaceSpec => ({ branch: input.branch });
-/** Every wrapper below attaches one bound slot: these claims are about the DOOR, and a `workspace()`
- * always declares at least one Repo Slot (ADR-0051). */
+/** Every wrapper below attaches one bound slot: these claims are about the DOOR. A `workspace()`
+ * with no Repo Slot is claim 12's. */
 const repos = { app: "https://example.test/app.git" } as const;
 
 // --- 1/2: the door constrains the body, in ONE direction ---------------------------------------
@@ -411,6 +415,26 @@ void workspace(exact, {
   },
 });
 
+// --- 12: no Repo Slot ---------------------------------------------------------------------------
+
+const slotless = bodyTakingInput<Workspaced<Door, never>>();
+const job = workspace(slotless, { input: door });
+// The handles of a Workspace with no Repo Slot hold no path and no branch.
+const slotlessHandles: Eq<WorkspaceHandles<never>, { repos: Record<never, string> }> = true;
+const jobDoorIsTheInput: Eq<InputFrom<typeof job>, Door> = true;
+void workspace(slotless, { input: door, spec: () => ({ workGroup: 3000 }) });
+void workspace(slotless, {});
+// A body that never reads the handles is fed more than it declared, as with slots.
+void workspace(ignoresHandles, { input: door });
+// @ts-expect-error `app` is a slot this wrapper never declared — it has no Repo Slot
+void workspace(wantsApp, { input: door });
+// @ts-expect-error refused on the door-less path too
+void workspace(wantsApp, {});
+// @ts-expect-error a Workspace with no Repo Slot has no branch to name
+void workspace(slotless, { input: door, spec: () => ({ branch: "feat" }) });
+// @ts-expect-error nor a review Worktree
+void workspace(slotless, { input: door, spec: () => ({ reviewSha: "a".repeat(40) }) });
+
 test("the door's type-level claims are the compiler's; this run pins the runtime half", () => {
   assert.equal(inputSchemaOf(wrapped), door, "the declared door rides the WRAPPER, not the body");
   assert.equal(inputSchemaOf(permissive), undefined, "no schema declared → the door stays permissive");
@@ -424,6 +448,8 @@ test("the door's type-level claims are the compiler's; this run pins the runtime
       emptyHoldsOnlyTheHandles &&
       emptyDoorIsTheInput &&
       instanceIdStays &&
-      mapStays,
+      mapStays &&
+      slotlessHandles &&
+      jobDoorIsTheInput,
   );
 });

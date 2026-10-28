@@ -1,13 +1,15 @@
 ---
 title: Workspaces
-description: How a Workflow gets a git Worktree in a Sandbox, and how long it keeps it.
+description: How a Workflow gets a Sandbox with a git Worktree or a shared folder, and how long it keeps it.
 ---
 
 A [Workspace](../reference/glossary.md#workspace) is a [Machine](../reference/glossary.md#machine) that runs a body
-Machine in a [Sandbox](../reference/glossary.md#sandbox). The Sandbox is a pod of its own, with a git
-[Worktree](../reference/glossary.md#worktree) of each [Repo](../reference/glossary.md#repo) on one branch. You make a
-Workspace with [`workspace()`](../reference/authoring-surface/workspace.md). The Workspace makes the Sandbox when the
-run enters it, and deletes the Sandbox when the body reaches a final state.
+Machine in a [Sandbox](../reference/glossary.md#sandbox). The Sandbox is a pod of its own, with a folder, `/work`, that
+the Agents and Effects of the body share. When the Workspace names [Repos](../reference/glossary.md#repo), `/work` holds
+a git [Worktree](../reference/glossary.md#worktree) of each Repo on one branch. A Workspace that names no Repo has only
+the folder (see [A Workspace with no Repo](#a-workspace-with-no-repo)). You make a Workspace with
+[`workspace()`](../reference/authoring-surface/workspace.md). The Workspace makes the Sandbox when the run enters it,
+and deletes the Sandbox when the body reaches a final state.
 
 ## Why Workspaces exist
 
@@ -49,7 +51,7 @@ Only `spec` and a per-run [Repo Slot](../reference/glossary.md#repo-slot) read t
 
 - `input` is the schema of the run input: what [`jr2 run`](../reference/cli.md#run) gives with `--input`. Put it on the
   `workspace()`, not on the body.
-- `repos` gives the Repo Slots that the Sandbox clones.
+- `repos` gives the Repo Slots that the Sandbox clones. Leave it out for a Workspace with no Repo.
 - `spec` is a function from the run input to the branch. Its input also holds `instanceId` (see
   [`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md)).
 - `resources` is the [Size](../reference/glossary.md#size). `image`, `user` and `effector` name the images of the pod's
@@ -110,6 +112,42 @@ two runs do not push to one branch. Make it from a field of the run input, or fr
 no field that is different for each run: ``spec: ({ input }) => ({ branch: `fix/${input.instanceId}` })``. Only a root
 `workspace()` gets `instanceId` from jr2. A `workspace()` that a different Machine invokes gets it only when its parent
 gives it.
+
+## A Workspace with no Repo
+
+Some work has no Repo: get data, write a report from it, edit the report, and send it. For this work, leave `repos` out.
+The Sandbox then has only `/work`, and the steps of the body share it. A step is an Agent's Turn or an Effect of the
+body. This is like one job of a GitHub Actions workflow, whose steps share one folder. Two Workspaces are two jobs, and
+they share nothing.
+
+::: tabs key:provider
+
+== Anthropic
+
+<<< @/examples/concepts/workspaces/anthropic/weekly-report.ts
+
+== Local
+
+<<< @/examples/concepts/workspaces/local/weekly-report.ts
+
+:::
+
+::: graph @/examples/concepts/workspaces/anthropic/weekly-report.ts
+
+:::
+
+In a Workspace with no Repo:
+
+- Type the body's input as `Workspaced<RunInput, never>`. The handles are `{ repos: {} }`, with no branch.
+- An Agent's Turn that gives no `cwd` works in `/work`. The Agent's `workspace` access is the same as in each Workspace:
+  `"write"` gives it `write`, `edit` and `bash`, and `"read"` gives it `bash` only.
+- A `command` with no Effect secret runs in `/work`.
+- An `http` Effect sends a file of `/work` with `file(path)`. The path is relative to `/work`.
+- `spec` is optional, and gives only `workGroup`.
+- A `push` needs a branch, and a `command` with an Effect secret runs on a commit. Thus `jr2 up` refuses both.
+
+jr2 deletes `/work` with the Sandbox. Send what must stay before the body ends, as the example does with `upload`. A
+Lost Sandbox has lost all of its work, because no commit was pushed.
 
 ## The pod
 
@@ -189,7 +227,8 @@ A Workspace goes through these states:
 
 1. `placing`: jr2 writes the Sandbox, and waits for a node.
 2. `provisioning`: the pod starts.
-3. `attaching`: the Harness clones each Repo Slot and makes its Worktree.
+3. `attaching`: the Harness clones each Repo Slot and makes its Worktree. With no Repo Slot, this state has nothing to
+   do.
 4. `running`: the body runs.
 5. `teardown`: the body is in a final state, and jr2 deletes the Sandbox.
 6. `failing`: the body invoked [`fail`](../reference/authoring-surface/fail.md), and jr2 deletes the Sandbox. Then the
@@ -232,13 +271,16 @@ the Harness container does not lose the Workspace: the pod and `/work` stay.
 ## Rules
 
 - `workspace()` takes the run input in `input`. It refuses a body that declares its own `input`.
-- `repos` names at least one Repo Slot, or is `open`. A slot key starts with a letter, because it is a folder name.
+- `repos` names at least one Repo Slot, or is `open`, or is not there. jr2 refuses `repos: {}`. A slot key starts with a
+  letter, because it is a folder name.
 - `jr2 up` refuses a Workflow with an Open Repo Slot that nobody bound.
 - A per-run url must match an entry of [`git.credentials`](../reference/config.md#git-credentials). jr2 refuses the url
   before it makes the Sandbox when no entry matches it. Thus a run cannot send the cluster's credentials to a host that
   it chooses.
 - `spec` returns a `branch`. When a run enters the Workspace, it faults if `spec` gives no `branch`, or the branch
-  `default`, because `default` is the folder of the clone.
+  `default`, because `default` is the folder of the clone. With no Repo Slot, it faults if `spec` gives a `branch` or a
+  `reviewSha`.
+- With no Repo Slot, `jr2 up` refuses a `push`, and a `command` that names an Effect secret.
 - A Size has only `limits.memory` and `limits.cpu`. jr2 refuses `requests` and each other key.
 - `jr2 up` refuses a Size that leaves the Harness container less than 256Mi of memory, or no cpu.
 - Under a Workspace with more than one Repo Slot, a Turn states its `cwd`, and a `command` and a `push` name their slot.

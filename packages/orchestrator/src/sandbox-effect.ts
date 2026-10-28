@@ -53,7 +53,7 @@ import type {
   PushParts,
   Unknown,
 } from "./effect.ts";
-import { lastPushOf, pushPairsOf } from "./effect.ts";
+import { lastPushOf, needsASlot, pushPairsOf } from "./effect.ts";
 import {
   createEffectorClient,
   EffectorForged,
@@ -126,10 +126,28 @@ function slotOf(kind: string, slot: string, named: string | undefined, ambient: 
     return named;
   }
   if (slots.length === 1) return slots[0]!;
+  const why = slots.length === 0 ? needsASlot(kind) : undefined;
+  if (why !== undefined)
+    throw new Error(`${kind} "${slot}" runs under a Workspace with no Repo Slot: ${why} (ADR-0051)`);
   throw new Error(
     `${kind} "${slot}" runs under a Workspace carrying ${slots.length === 0 ? "no" : "more than one"} Repo Slot ` +
       `(${slots.join(", ") || "none"}) — say which: { slot: "<slot>" } (ADR-0051)`,
   );
+}
+
+/** Where a file body's path is read from, relative to the work root: the Repo Slot's Worktree, or
+ * the work root itself (`.`) in a Workspace with no Repo Slot, whose steps share `/work` (ADR-0051).
+ * The Effector opens the file beneath it either way (ADR-0067). */
+function fileRootOf(slot: string, named: string | undefined, ambient: AmbientHandles): string {
+  if (named === undefined && Object.keys(ambient.repos).length === 0) return ".";
+  return posix.relative(WORK_ROOT, ambient.repos[slotOf("http", slot, named, ambient)]!);
+}
+
+/** The branch of a Workspace with Repo Slots. A kind that reads it resolved a slot first, and a
+ * Workspace with a slot always has a branch, so its absence is a jr2 defect. */
+function branchOf(ambient: AmbientHandles): string {
+  if (ambient.branch === undefined) throw new Error("a Workspace with a Repo Slot has no branch — a jr2 defect");
+  return ambient.branch;
 }
 
 /** The slot's repositories, relative to the work root: the Agent's common git dir is the pod-local
@@ -202,6 +220,9 @@ export type PushOptions = {
    *   (ADR-0051)`
    * - a `slot` that the Workspace does not have: `push "<slot>" names Repo Slot "<name>", which
    *   its Workspace does not carry (<slots>)`
+   * - a Workspace with no Repo Slot: `push "<slot>" runs under a Workspace with no Repo Slot: a
+   *   push publishes a Repo Slot's branch, and there is none — declare one: repos: { app: "<url>" }
+   *   (ADR-0051)`. `jr2 up` refuses it first, with the same reason.
    */
   slot?: string;
   /**
@@ -851,7 +872,7 @@ export function pushWith<const O extends PushOptions>(
     build: (input, ambient, slot, pinned, extra) => {
       const repoSlot = slotOf("push", slot, parts.slot, ambient);
       const ref = repoRefOf(ambient, repoSlot);
-      const req = pushStartOf(parts, ref, ambient.branch, input as { sha?: string; message?: string }, extra?.pairs);
+      const req = pushStartOf(parts, ref, branchOf(ambient), input as { sha?: string; message?: string }, extra?.pairs);
       if (pinned) req.push.pin = pinned;
       return req;
     },
@@ -869,7 +890,7 @@ export function pushWith<const O extends PushOptions>(
         const answer = await syncOf(ctx).sync(
           {
             worktree: worktreeOf(ctx),
-            branch: ctx.ambient.branch,
+            branch: branchOf(ctx.ambient),
             published: output.published,
             source: output.source,
             ...(typeof output.bundle === "string" ? { bundle: output.bundle } : {}),
@@ -895,7 +916,7 @@ export function pushWith<const O extends PushOptions>(
       const answer = await syncOf(ctx).sync(
         {
           worktree: worktreeOf(ctx),
-          branch: ctx.ambient.branch,
+          branch: branchOf(ctx.ambient),
           published: o.published,
           source: o.source,
           ...(o.bundle !== undefined ? { bundle: o.bundle } : {}),
@@ -951,7 +972,10 @@ export function httpFileWith<S extends z.ZodType | undefined = undefined>(
     kind: "http",
     idempotent: parts.idempotent,
     repeatsPinned: false,
-    label: () => `http ${parts.method} ${parts.target.scheme}://${parts.target.host} (a Worktree file)`,
+    // With no Repo Slot the file is in `/work`, which is no Worktree (ADR-0051).
+    label: (ambient) =>
+      `http ${parts.method} ${parts.target.scheme}://${parts.target.host} ` +
+      (Object.keys(ambient.repos).length === 0 && body.slot === undefined ? "(a file of /work)" : "(a Worktree file)"),
     repoOf: (ambient, slot) => slotOf("http", slot, body.slot, ambient),
     build: (input, ambient, slot) => {
       let value: unknown = input;
@@ -960,8 +984,7 @@ export function httpFileWith<S extends z.ZodType | undefined = undefined>(
         if (!parsed.success) throw new Error(`http "${slot}": its input does not match the definition's input schema`);
         value = parsed.data;
       }
-      const repoSlot = slotOf("http", slot, body.slot, ambient);
-      const worktree = posix.relative(WORK_ROOT, ambient.repos[repoSlot]!);
+      const worktree = fileRootOf(slot, body.slot, ambient);
       const segments = fromInput<readonly string[]>(body.segments, value);
       return fileStartOf(parts, worktree, {
         path: fromInput<string>(body.path, value)!,
@@ -996,7 +1019,7 @@ export function credentialedCommandWith(
         parts,
         argvOf(input, slot),
         ref,
-        ambient.branch,
+        branchOf(ambient),
         pinned ?? (approved as string | undefined),
       );
     },

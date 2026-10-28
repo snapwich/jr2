@@ -273,7 +273,10 @@ test("a wrapper adds no owner: a body's seats are its own Machine's, wrapped or 
     },
   });
   const before = seats(body);
-  workspace(body as never, { repos: { app: { url: "https://example.invalid/app.git" } } } as never);
+  workspace(
+    body as never,
+    { repos: { app: { url: "https://example.invalid/app.git" } }, spec: () => ({ branch: "b" }) } as never,
+  );
   assert.deepEqual(seats(body), before);
   assert.deepEqual(before, ["body.work agent:coder: [cancel, finish]", "body.review gate: [approve, cancel]"]);
 });

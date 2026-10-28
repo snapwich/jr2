@@ -666,7 +666,8 @@ export type Duration = `${number}s` | `${number}m` | `${number}h`;
 export type CommandOptions = {
   /**
    * The Repo Slot whose Worktree is the working directory of the command. Write it only when the
-   * Workspace has more than one Repo Slot.
+   * Workspace has more than one Repo Slot. In a Workspace with no Repo Slot, the command starts in
+   * `/work`, the folder that the steps of the Workspace share.
    *
    * The command starts in the root of that Worktree. To run it in a subfolder, give the path as an
    * argument, or write `["sh", "-c", "cd <dir> && <program>"]`.
@@ -678,7 +679,9 @@ export type CommandOptions = {
    *   the text is `command "<slot>" runs under a Workspace carrying more than one Repo Slot
    *   (<slots>) — say which: { slot: "<slot>" } (ADR-0051)`.
    * - with an Effect secret in `env`, a Workspace with no Repo Slot: `command "<slot>" runs under
-   *   a Workspace carrying no Repo Slot (none) — say which: { slot: "<slot>" } (ADR-0051)`.
+   *   a Workspace with no Repo Slot: a command with an Effect secret runs against one commit of a
+   *   Repo Slot's branch, and there is none — declare a Repo Slot, or name no secret in its env, and
+   *   it runs in /work beside the Agent (ADR-0051)`.
    * - a `slot` that the Workspace does not have: `command "<slot>" names Repo Slot "<name>", which
    *   its Workspace does not carry (<slots>)`.
    */
@@ -729,6 +732,26 @@ export type CommandOptions = {
 export type EnvOpenParts<Opt> = Opt extends { readonly env: infer E }
   ? OpenSecretIn<E extends Readonly<Record<string, infer V>> ? V : never>
   : never;
+
+/**
+ * Why an Effect kind cannot run in a Workspace with no Repo Slot (ADR-0051, ADR-0067), or undefined
+ * when it can: a `push` and a credentialed `command` run on a commit of a slot's branch, and that
+ * Workspace has none. The invoke and the `jr2 up` walk refuse with the same words.
+ */
+export function needsASlot(kind: string): string | undefined {
+  if (kind === "push")
+    return 'a push publishes a Repo Slot\'s branch, and there is none — declare one: repos: { app: "<url>" }';
+  if (kind === "command") {
+    return (
+      "a command with an Effect secret runs against one commit of a Repo Slot's branch, and there is none — " +
+      "declare a Repo Slot, or name no secret in its env, and it runs in /work beside the Agent"
+    );
+  }
+  return undefined;
+}
+
+/** The work root of a Sandbox pod (ADR-0004): where a command runs in a Workspace with no Repo Slot. */
+const WORK_ROOT = "/work";
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_TAIL = 4096;
@@ -1124,8 +1147,10 @@ function argvOf(slot: string, parts: CommandParts, input: unknown): string[] {
 
 /**
  * The cwd: a Repo Slot's Worktree (ADR-0051). Named by `slot`, or the one slot where the Workspace
- * carries one; a Workspace with none keeps the Harness's own (`/work`). Several and none named is
- * refused, as a Turn's Frame is (ADR-0057): the kit gives no slot a meaning.
+ * carries one; a Workspace with none runs it in `/work`, which its steps share. Named, never left to
+ * the Harness: a spawn with no cwd runs in the Sandbox Image's own `WORKDIR`, which is the image's.
+ * Several and none named is refused, as a Turn's Frame is (ADR-0057): the kit gives no slot a
+ * meaning.
  */
 function cwdOf(slot: string, parts: CommandParts, ambient: AmbientHandles): { cwd?: string } {
   const slots = Object.keys(ambient.repos);
@@ -1139,7 +1164,7 @@ function cwdOf(slot: string, parts: CommandParts, ambient: AmbientHandles): { cw
     }
     return { cwd };
   }
-  if (slots.length === 0) return {};
+  if (slots.length === 0) return { cwd: WORK_ROOT };
   if (slots.length === 1) return { cwd: ambient.repos[slots[0]!]! };
   throw new Error(
     `command "${slot}" runs under a Workspace carrying more than one Repo Slot (${slots.join(", ")}) and names ` +

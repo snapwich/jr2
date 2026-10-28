@@ -504,7 +504,8 @@ export type FromInput<S, T> = T | ((input: S extends z.ZodType ? z.infer<S> : vo
 /** `file(path, { slot?, segments?, contentType? })`: a Worktree file as an `http` body. */
 export type FileBody<S extends z.ZodType | undefined = undefined> = {
   readonly file: {
-    /** The file, relative to the Repo Slot's Worktree. */
+    /** The file, relative to the Repo Slot's Worktree, or to `/work` in a Workspace with no Repo
+     * Slot. */
     readonly path: FromInput<S, string>;
     /** The Repo Slot whose Worktree holds it. Write it only when the Workspace has more than one.
      */
@@ -521,8 +522,9 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
 /**
  * Make a Worktree file the body of an `http` Effect: `body: file("dist/report.pdf")`. The Effect
  * then runs in the Sandbox Effector of the Workspace whose body invokes it. That Effector opens the
- * file in the Worktree and sends it. Use it with `PUT`, `POST` or `PATCH`. `path` and `segments`
- * can be functions of the input of the Effect.
+ * file in the Worktree and sends it. In a Workspace with no Repo Slot, the path is relative to
+ * `/work`, the folder that its steps share. Use it with `PUT`, `POST` or `PATCH`. `path` and
+ * `segments` can be functions of the input of the Effect.
  *
  * Some paths and files give the output `refused`, and then nothing is sent. The path has a symlink
  * in it, has `..`, or is absolute. Or the file is a FIFO, a directory, or a file with more than one
@@ -546,8 +548,8 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
  * there is no Worktree to read; invoke it from a workspace()'s body, or send a json or text body
  * (ADR-0068)`.
  *
- * @param path - The file, relative to the Worktree of the Repo Slot: a string, or a function of
- *   the input of the Effect that gives one.
+ * @param path - The file, relative to the Worktree of the Repo Slot, or to `/work` in a Workspace
+ *   with no Repo Slot: a string, or a function of the input of the Effect that gives one.
  * @param options - Optional. Each field says what it does.
  * @returns The `body` of an `http` Effect.
  *

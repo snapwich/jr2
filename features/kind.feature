@@ -312,6 +312,28 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the held Effect is released, and the takeover writes down its start
       Then the takeover got a signed start that carries no secret, and the Effect failed closed
 
+  Rule: a Workspace with no Repo Slot has only /work, and its steps share it
+    ADR-0051. The `shared` workflow leaves `repos` out, as a GitHub Actions job has one folder its
+    steps share. The Sandbox names no Repo, so no cache is mounted and the attach is skipped. A
+    command with no Effect secret writes data.txt in `/work`, which the start names, never the
+    Sandbox Image's WORKDIR. The writer's Turn frames no `cwd`, so its `write` lands notes.md in
+    `/work`; the editor, a second Agent, joins both into report.txt; and a file-body `http` sends
+    report.txt from the Sandbox Effector, its path relative to `/work`. Only one folder that every
+    step shares makes the upload hold both lines.
+
+    Scenario: a command, two Agents and a file-body http share /work, and no Repo is attached
+      Given the kind instance is serving
+      When I start the "shared" workflow in mode "job" detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox names no Repo
+      When the Agent writes "notes.md" through its write Working tool
+      And the Agent in the Sandbox calls "drafted" with summary "wrote the notes"
+      And the Agent runs "cat data.txt notes.md > report.txt && echo shared-in-$(pwd)" through its bash Working tool
+      Then the model was shown the tool result "shared-in-/work"
+      When the Agent in the Sandbox calls "edited" with summary "joined the notes"
+      Then the upload holds the command's line and the writer's, and the command ran in the shared folder
+      And the run's Sandbox is destroyed
+
   Rule: a signed push leaves the Sandbox Effector signed, and the sync moves the Agent's branch to it
     ADR-0067, ADR-0051. The `pushed` workflow binds the seed's push remote over ssh; its
     `git.credentials` entry names the deploy key the seed's sshd authorizes and the key the

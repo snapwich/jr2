@@ -220,6 +220,8 @@ jr2 send <run id> --gate body.notPushed --event approve
 
 `jr2 up` refuses:
 
+- a push in a Workspace with no Repo Slot:
+  `workflow "<workflow>": push "<slot>" runs in Workspace of workflow "<workflow>", which has no Repo Slot: a push publishes a Repo Slot's branch, and there is none — declare one: repos: { app: "<url>" } (ADR-0051)`
 - a signed push whose entry has no `sign` field. `<push>` is
   `workflow "<workflow>": push "<slot>" pushes Repo Slot "<name>" (<url>)`:
   `<push> signed, and git.credentials entry "<match>" holds no sign field — add sign: { sshKey: "<a Secret with identity>", name: "<committer name>", email: "<committer email>" } to it; the email must belong to the forge account that holds the key (ADR-0051, ADR-0067)`
@@ -267,6 +269,8 @@ When a `push` starts, it refuses:
   `push "<slot>" runs under a Workspace carrying more than one Repo Slot (<slots>) — say which: { slot: "<slot>" } (ADR-0051)`
 - a `slot` that the Workspace does not have:
   `push "<slot>" names Repo Slot "<name>", which its Workspace does not carry (<slots>)`
+- a Workspace with no Repo Slot:
+  `push "<slot>" runs under a Workspace with no Repo Slot: a push publishes a Repo Slot's branch, and there is none — declare one: repos: { app: "<url>" } (ADR-0051)`
 - with `pin: true`, a `sha` that is not a full commit id:
   `push({ pin: true }): its input's sha is not a full commit id (got <sha>)`
 - with `squash: true`, an input with no message: `push({ squash: true }): its input carries no message`

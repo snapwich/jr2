@@ -56,7 +56,9 @@ export function attacher(opts: { paths?: AttachPaths; env?: NodeJS.ProcessEnv } 
 
 async function attach(req: AttachRequest, paths: AttachPaths, env?: NodeJS.ProcessEnv): Promise<AttachResponse> {
   if (req.slots.length === 0) {
-    throw new AttachFault("the attach names no Repo Slot — nothing to attach (a workspace() declares at least one)");
+    throw new AttachFault(
+      "the attach names no Repo Slot — nothing to attach (a Workspace with no Repo Slot skips the attach, ADR-0051)",
+    );
   }
   const git = (step: string, slot: string | undefined, args: string[]) => runGit(step, slot, args, env);
   // The cache is written by the node's cache agent and read here as the Harness's unprivileged uid
@@ -137,7 +139,7 @@ export function attachFault(body: unknown): string | undefined {
     return "the attach's reviewSha must be a non-empty string";
   }
   if (!Array.isArray(b.slots) || b.slots.length === 0) {
-    return "the attach names no Repo Slot — nothing to attach (a workspace() declares at least one)";
+    return "the attach names no Repo Slot — nothing to attach (a Workspace with no Repo Slot skips the attach, ADR-0051)";
   }
   const seen = new Set<string>();
   for (const s of b.slots as Array<Partial<Record<keyof AttachSlot, unknown>>>) {

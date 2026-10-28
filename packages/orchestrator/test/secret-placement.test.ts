@@ -409,6 +409,32 @@ test("jr2 up refuses an http whose body is a Worktree file and that no workspace
   assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn([fileBodyHttp("report", ["files"])])));
 });
 
+test("jr2 up refuses a push and a credentialed command in a Workspace with no Repo Slot, by reason; a file-body http stays (ADR-0051)", () => {
+  const config: JR2Config = {
+    secrets: [
+      { name: "aws", value: VALUE },
+      { name: "files", value: VALUE },
+    ],
+  };
+  const slotless = (effects: CarriedEffect[]) => {
+    const pod = ws({ effects, noSlot: true });
+    return walk({ effects: effects.map((effect) => ({ workflow: "ticket", effect })), workspaces: [pod] });
+  };
+  for (const check of [refuseEffectSecrets, secretPlacementsOf]) {
+    assert.throws(
+      () => check(config, slotless([pusher("publish")])),
+      /workflow "ticket": push "publish" runs in Workspace of workflow "ticket", which has no Repo Slot: a push publishes a Repo Slot's branch, and there is none/,
+    );
+    assert.throws(
+      () => check(config, slotless([credentialed("deploy", ["aws"])])),
+      /command "deploy" runs in Workspace of workflow "ticket", which has no Repo Slot: a command with an Effect secret runs against one commit .*name no secret in its env, and it runs in \/work/,
+    );
+  }
+  assert.doesNotThrow(() => refuseEffectSecrets(config, slotless([fileBodyHttp("report", ["files"])])));
+  // An Open map has no binding `jr2 up` can read either, and it is not "no slot": nothing is refused.
+  assert.doesNotThrow(() => refuseEffectSecrets(config, placedIn([pusher("publish")], {})));
+});
+
 test("a secret a credentialed command or a file-body http names is an Effect secret in its Workspace's Sandbox Effector, never 'named by nothing'", () => {
   const config: JR2Config = {
     secrets: [

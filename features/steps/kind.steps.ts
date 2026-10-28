@@ -2847,6 +2847,34 @@ Then(
   },
 );
 
+/** A Workspace with no Repo Slot (ADR-0051): the Sandbox CR the provision wrote names no Repo, so
+ * the operator mounts no cache and gates on none. */
+Then("the run's Sandbox names no Repo", async function (this: E2EWorld): Promise<void> {
+  const out = await kubectl(this, ["get", "sandbox", "-l", `jr2.dev/run=${this.runId}`, "-o", "json"]);
+  const [sandbox] = (JSON.parse(out) as { items: Array<{ spec?: { repos?: unknown[] } }> }).items;
+  assert.ok(sandbox, "the run has a Sandbox");
+  assert.deepEqual(sandbox.spec?.repos ?? [], [], "a Workspace with no Repo Slot names no Repo");
+});
+
+/** The `shared` workflow's output: the command's answer, and the upload's. The upload's body is
+ * report.txt, which the editor joined from the command's data.txt and the writer's notes.md — so
+ * both lines in it are the claim that one `/work` held every step's file. */
+Then(
+  "the upload holds the command's line and the writer's, and the command ran in the shared folder",
+  async function (this: E2EWorld): Promise<void> {
+    const output = (await httpOutput(this)) as {
+      prepared?: { outcome?: string; code?: number; tail?: string };
+      upload?: { outcome?: string; status?: number; body?: string };
+    };
+    assert.equal(output.prepared?.outcome, "exited", JSON.stringify(output));
+    assert.equal(output.prepared?.code, 0);
+    assert.equal(output.prepared?.tail, "/work\n", "the command's cwd is the folder the steps share");
+    assert.equal(output.upload?.outcome, "response", JSON.stringify(output));
+    assert.equal(output.upload?.status, 200);
+    assert.match(String(output.upload?.body), /\nbody from the command\nwritten by the coder\n/);
+  },
+);
+
 Then(
   "the credentialed command read its secret from env and from its file, and its output names it",
   async function (this: E2EWorld): Promise<void> {

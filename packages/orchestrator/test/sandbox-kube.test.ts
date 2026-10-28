@@ -213,8 +213,7 @@ const provisionable = {
   repos: fakeRepos().port,
 };
 
-/** One bound slot, as every provision that is not about Repos names it (a workspace() always
- * declares at least one — ADR-0051). */
+/** One bound slot, as every provision that is not about Repos names it (ADR-0051). */
 const APP_URL = "https://example.test/app.git";
 const APP_KEY = repoKey(APP_URL);
 const app: ProvisionedRepo = { slot: "app", url: APP_URL, perRun: false };

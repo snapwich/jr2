@@ -60,11 +60,17 @@ const ws = () => ({
   bindings: { app: "https://github.com/ourorg/app.git" },
 });
 
-function machineOf(effect: AnyEffect, input: object = { path: "dist/report.pdf" }) {
+/** A Workspace with no Repo Slot (ADR-0051): no path, no Binding, no branch. */
+const slotless = () => {
+  const { branch: _branch, ...rest } = handles({});
+  return rest;
+};
+
+function machineOf(effect: AnyEffect, input: object = { path: "dist/report.pdf" }, h = ws()) {
   return jr2Setup({
     types: {} as { context: Ctx },
     events: [go],
-    actors: { ws: fakeWorkspace(ws()), effect },
+    actors: { ws: fakeWorkspace(h), effect },
   }).createMachine({
     id: "wf",
     context: {},
@@ -89,10 +95,10 @@ function machineOf(effect: AnyEffect, input: object = { path: "dist/report.pdf" 
 const target = { effector: () => ({ placement: "sandbox" as const, service: "ws-1:8082", key: EFFECTOR_KEY }) };
 const port = (fake: FakeEffector) => () => createEffectorClient({ key: EFFECTOR_KEY, transport: fake.transport });
 
-async function started(effect: AnyEffect, store?: SnapshotStore, input?: object) {
+async function started(effect: AnyEffect, store?: SnapshotStore, input?: object, h?: ReturnType<typeof ws>) {
   const s = store ?? (await mkStore());
   const host = new RunHost({ store: s, ...target });
-  host.register({ name: "fx", machine: machineOf(effect, input), provide: () => ({}) });
+  host.register({ name: "fx", machine: machineOf(effect, input, h), provide: () => ({}) });
   const { runId } = await host.start("fx");
   host.sendToGate(runId, "start", { type: "go" });
   return { host, store: s, runId };
@@ -509,6 +515,42 @@ test("an http whose body is a Worktree file names it, in the Sandbox Effector; r
   await waitFor(() => twice.starts.length === 2);
   twice.settle({ outcome: "response", status: 201, headers: {}, contentType: "", size: 0 });
   await waitFor(() => host2.status(rig2.runId)?.value === "done");
+});
+
+test("no Repo Slot: a file body is read from /work; a push and a credentialed command are refused at invoke, by reason (ADR-0051)", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const upload = httpFileWith(port(fake), {
+    method: "PUT",
+    url: "https://files.example.com/reports",
+    auth: bearer(secret("files")),
+    body: file("report.md"),
+  }) as AnyEffect;
+  const rig = await started(upload, undefined, {}, slotless() as never);
+  await waitFor(() => fake.starts.length === 1);
+  // `.` is the work root itself: the Effector opens the file beneath `/work`.
+  assert.deepEqual((fake.starts[0]!.req as { body: unknown }).body, { file: { worktree: ".", path: "report.md" } });
+  await rig.host.stop(rig.runId);
+
+  const refused = async (effect: AnyEffect, why: RegExp) => {
+    const r = await started(effect, undefined, {}, slotless() as never);
+    await waitFor(() => r.host.status(r.runId)?.value === "faulted");
+    assert.match((r.host.status(r.runId)?.context as Ctx).fault!, why);
+  };
+  const none = new FakeEffector(["sandbox"]);
+  await refused(
+    pushWith(port(none), {}) as AnyEffect,
+    /push "effect" runs under a Workspace with no Repo Slot: a push publishes a Repo Slot's branch/,
+  );
+  await refused(
+    commandWith(
+      new FakeHarnessExec().factory,
+      ["terraform", "apply"],
+      { env: { TOKEN: secret("tf") } },
+      port(none),
+    ) as AnyEffect,
+    /command "effect" runs under a Workspace with no Repo Slot: a command with an Effect secret runs against one commit/,
+  );
+  assert.equal(none.starts.length, 0, "nothing reached the Effector");
 });
 
 test("a file body has one content type: file()'s contentType and a content-type header together are refused (ADR-0067)", () => {

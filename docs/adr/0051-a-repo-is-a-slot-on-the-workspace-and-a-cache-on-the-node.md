@@ -28,9 +28,10 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   `{ url, ref? }`), **open** (the `open` sentinel — someone downstream binds it), or **per-run** (a mapper over the
   wrapper's door: `feature: ({ input }) => ({ url: input.feature.repo, ref: input.feature.baseRef })`). `ref` is the
   base the branch worktree is cut from; absent, the repository's own default branch. The spec no longer carries repos —
-  it is `{ branch, workGroup?, reviewSha? }`. The body's handles are keyed by slot (`workspace.repos.target`), and so
-  are the in-pod paths (`/work/<slot>/<branch>`): a slot key is collision-free by construction and the same in every
-  Instance that consumes the package, so a prompt can name a path and be right everywhere.
+  it is `{ branch, workGroup?, reviewSha? }`, or `{ workGroup? }` for a Workspace with no slot (below). The body's
+  handles are keyed by slot (`workspace.repos.target`), and so are the in-pod paths (`/work/<slot>/<branch>`): a slot
+  key is collision-free by construction and the same in every Instance that consumes the package, so a prompt can name a
+  path and be right everywhere.
 
 - **The handles are the slot map and the branch — no slot is the `workdir`.** `workspace.repos` keeps the slots in
   declaration order, and jr2 reads nothing into that order. Which checkout an Agent works in is a fact about that
@@ -54,6 +55,27 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   actually knows. Rejected: a second Machine of the consumer's own, wrapping the exported body with more slots —
   composition is the right act for a different BODY, but the same body with more checkouts beside it is a binding, and
   `customize` is where bindings go.
+
+- **A Workspace with no Repo Slot leaves `repos` out.** A Workspace is a Sandbox bound to one unit of work, and a
+  repository is something it may attach, not what makes it one. Some work has no repository: fetch data, write a report,
+  have a second Agent edit it, upload it. Its steps share `/work`, as the steps of one GitHub Actions job share that
+  job's folder; two Workspaces are two jobs and share nothing. So `workspace(body, { input })` with no `repos` is a
+  Workspace with no Repo Slot: the attach is skipped (there is nothing to clone, and the pod's `fsGroup` already makes
+  `/work` the work group's), the body's handles are `{ repos: {} }` with no branch, typed `Workspaced<…, never>`, and a
+  Turn that frames no `cwd` and a `command` both work in `/work`. The spec has nothing to cut a branch in: `spec` is
+  optional, gives only `workGroup`, and a `branch` or a `reviewSha` in it is refused — at the type, and when the run
+  enters, since a value jr2 silently ignores is the failure the refusals exist for. `repos: {}` is refused with the
+  pointer to leaving it out, so "none" has one spelling and an empty map never reads as one somebody forgot to fill. An
+  Open map still asks `customize` for at least one slot: Open says the composer names the slots, and a body that
+  enumerates its checkouts (`task`) has nothing to do with none. Two Effects need a slot and are refused there, by
+  `jr2 up` and at invoke, with one reason: a `push` publishes a slot's branch, and a `command` with an Effect secret
+  runs against one commit of it (ADR-0067). A file-body `http` reads `/work` and stays. `/work` is an `emptyDir`, so a
+  Lost Sandbox takes everything with it — with a repository, pushed commits outlive the pod; here only what an Effect
+  sent out does, and the body hears `workspace.lost` as any body does. Storage that outlives the pod, the job's
+  "artifacts", is a decision of its own. Rejected: a placeholder repository bound to satisfy the rule — a clone nobody
+  uses, a branch that means nothing, a Worktree that becomes every Agent's default `cwd`, and a cache entry to warm.
+  Rejected: a new term for the repository-less Sandbox — the Glossary's Workspace never named a repository, so none was
+  needed.
 
 - **The consumer binds with `customize`**, in the same call as Agents and the image, nested through `actors` like every
   other part: `customize(codeReview, { repos: { target: "git@github.com:ourorg/app.git" } })`. Any of the three forms is
@@ -185,12 +207,12 @@ decision: **what a Machine says about a repository, and what the cluster does wi
 - The operator becomes git-aware, which ADR-0001 kept it from being: the `Repo` CRD and the cache agent are its. The
   Sandbox CRD stays free of git semantics beyond a list of identities; clone and worktree remain the Orchestrator's
   post-`Ready` step (ADR-0004).
-- `workspace()`'s `repos` is required with at least one slot, or `open` whole — in which case the `customize` that names
-  the map is held to the same rule; a Machine that composes no Sandbox has no repos to customize, and the data-plane
-  switch ("does this Instance need Sandboxes") is "a registered Machine composes a Sandbox", read off the walk, not
-  "config has repos". That switch decides what `jr2 up` DEPLOYS for Sandboxes, the cache agent and the Sandbox Images; a
-  deployed Orchestrator wires its kube client whatever its current Assembly composes, because a publish can bring the
-  first `workspace()` without a roll
+- `workspace()`'s `repos` names at least one slot, or is `open` whole — in which case the `customize` that names the map
+  is held to the same rule — or is left out, for a Workspace with no Repo Slot; a Machine that composes no Sandbox has
+  no repos to customize, and the data-plane switch ("does this Instance need Sandboxes") is "a registered Machine
+  composes a Sandbox", read off the walk, not "config has repos". That switch decides what `jr2 up` DEPLOYS for
+  Sandboxes, the cache agent and the Sandbox Images; a deployed Orchestrator wires its kube client whatever its current
+  Assembly composes, because a publish can bring the first `workspace()` without a roll
   ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)).
 - Every slot gets a branch worktree cut at the run's branch, a reference checkout included. A slot has no read-only
   mode; that is a decision of its own if it is ever wanted.

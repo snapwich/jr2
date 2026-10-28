@@ -956,7 +956,8 @@ export function createExecPort(options: {
  *
  * Where it runs:
  * - With no Effect secret in `env`, in the Harness container of the enclosing Workspace's Sandbox.
- *   It runs in the Worktree of a Repo Slot. The Agent's Working tools also run in this container.
+ *   It runs in the Worktree of a Repo Slot, or in `/work` in a Workspace with no Repo Slot. The
+ *   Agent's Working tools also run in this container.
  * - With an Effect secret in `env`, in the Sandbox Effector, against a commit of the branch. This
  *   is the branch tip when it starts, or with `pin: true` the commit that the invoke's `input.sha`
  *   names. The output then says `dirty: true` when the Worktree held edits that the command did
@@ -1009,8 +1010,10 @@ export function createExecPort(options: {
  * - no `slot` under a Workspace with more than one Repo Slot: `command "<slot>" runs under a
  *   Workspace carrying more than one Repo Slot (<slots>) — say which: { slot: "<slot>" }
  *   (ADR-0051)`
- * - a Workspace with no Repo Slot: `command "<slot>" runs under a Workspace carrying no Repo Slot
- *   (none) — say which: { slot: "<slot>" } (ADR-0051)`
+ * - a Workspace with no Repo Slot: `command "<slot>" runs under a Workspace with no Repo Slot: a
+ *   command with an Effect secret runs against one commit of a Repo Slot's branch, and there is
+ *   none — declare a Repo Slot, or name no secret in its env, and it runs in /work beside the Agent
+ *   (ADR-0051)`. `jr2 up` refuses it first, with the same reason
  * - a `slot` that the Workspace does not have: `command "<slot>" names Repo Slot "<name>", which
  *   its Workspace does not carry (<slots>)`
  * - `pin: true` and an `input.sha` that is not a full commit id: `command "<slot>" (pin): its

@@ -319,6 +319,13 @@ test("refused outside a Workspace, and under several Repo Slots with none named:
   void named;
 });
 
+test("a command in a Workspace with no Repo Slot runs in /work, named, never the image's WORKDIR (ADR-0051)", async () => {
+  const fake = new FakeHarnessExec();
+  await started(fake.factory, undefined, {});
+  await waitFor(() => fake.starts.length === 1);
+  assert.equal(fake.starts[0]!.req.cwd, "/work", "the folder the Workspace's steps share");
+});
+
 test("real processes through the Harness's own exec: a metacharacter stays inside its one argument", async () => {
   const execs = new Execs();
   const echo = commandWith(execsPort(execs), [
@@ -330,7 +337,7 @@ test("real processes through the Harness's own exec: a metacharacter stays insid
   const machine = jr2Setup({
     types: {} as { context: Ctx },
     events: [go],
-    actors: { ws: fakeWorkspace(handles({})), echo },
+    actors: { ws: fakeWorkspace(handles({ app: process.cwd() })), echo },
   }).createMachine({
     id: "real",
     context: {},
@@ -530,7 +537,7 @@ test("D1 holds a fast exit through the real exec: a kill that overtakes its star
   const machine = jr2Setup({
     types: {} as { context: Ctx },
     events: [begin, leave],
-    actors: { ws: fakeWorkspace(handles({})), writes },
+    actors: { ws: fakeWorkspace(handles({ app: process.cwd() })), writes },
   }).createMachine({
     id: "fast",
     context: {},
@@ -634,7 +641,7 @@ function onceMachine(id: string, logic: EffectLogic<void, CommandOutput>) {
   return jr2Setup({
     types: {} as { context: Ctx },
     events: [begin],
-    actors: { ws: fakeWorkspace(handles({})), logic },
+    actors: { ws: fakeWorkspace(handles({ app: process.cwd() })), logic },
   }).createMachine({
     id,
     context: {},

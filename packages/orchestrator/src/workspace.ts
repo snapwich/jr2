@@ -124,6 +124,13 @@ export type WorkspaceSpec = {
   reviewSha?: string;
 };
 
+// A Workspace with no Repo Slot (ADR-0051) attaches nothing, so a branch and a review sha name
+// nothing: `never` refuses them where the spec is written, and `assertSpec` refuses them at run
+// time for the caller the types do not see.
+/** What the `spec` of a `workspace()` with no Repo Slot returns: only `workGroup`. There is no
+ * branch and no review Worktree, because the Workspace has no Repo Slot. */
+export type NoSlotSpec = Pick<WorkspaceSpec, "workGroup"> & { branch?: never; reviewSha?: never };
+
 // What the workspace hands the BODY (ADR-0012, ADR-0016): worktree geography only, keyed by Repo
 // Slot (ADR-0051) — so a path a prompt names is right in every Instance that consumes the Machine.
 // `endpoint` and `sandbox` are mechanism-internal — the Agent actor resolves them ambiently from
@@ -143,9 +150,17 @@ export type WorkspaceSpec = {
  *
  * `TSlots` is the names of the Repo Slots that the body reads. `workspace()` refuses a body that
  * names a slot that the Workspace does not have. Write `string` for a body that names no slot and
- * reads the Worktrees in the order of `repos`, as under `repos: open`.
+ * reads the Worktrees in the order of `repos`, as under `repos: open`. Write `never` for a
+ * Workspace with no Repo Slot: its handles are `{ repos: {} }`, with no branch, and its Agents work
+ * in `/work`.
  */
-export type WorkspaceHandles<TSlots extends string> = {
+// `[TSlots] extends [never]`, not `TSlots extends never`: a bare `never` would distribute to `never`.
+export type WorkspaceHandles<TSlots extends string> = [TSlots] extends [never]
+  ? { repos: Record<never, string> }
+  : SlotHandles<TSlots>;
+
+/** The handles of a Workspace that declares Repo Slots. @internal */
+type SlotHandles<TSlots extends string> = {
   // The kit gives no slot a privileged meaning — there is no `workdir` — because which tree an
   // Agent works in is a fact about that Agent's Turn, not about the Workspace: a body that names
   // its slots frames each Agent with its own, and a body that names none may give the order a
@@ -180,8 +195,8 @@ export type WorkspaceHandles<TSlots extends string> = {
  *
  * The first argument is the run input: the `input` schema of the `workspace()`. The second is the
  * Repo Slots that the body reads, by name (`"app"` or `"app" | "docs"`). Under `repos: open`, write
- * `string`: the body cannot know the names, so it reads the slots in order. The second argument
- * has no default.
+ * `string`: the body cannot know the names, so it reads the slots in order. For a `workspace()`
+ * with no `repos`, write `never`. The second argument has no default.
  *
  * A body under a root `workspace()` also gets the fields of `HostInjectedInput`. Add them when the
  * body reads them: `Workspaced<HostInjectedInput & RunInput, "app">`.
@@ -473,7 +488,7 @@ type WsContext = {
   /** This invocation's stable identity (the actor id the parent invoked/spawned us under). */
   wsId: string;
   /** The resolved spec — computed once from input and persisted, like any other context data. */
-  spec: WorkspaceSpec;
+  spec: AnySpec;
   /** Every slot's resolved Binding, by slot, in declaration order — assigned at provision. */
   bindings?: Record<string, ResolvedBinding>;
   endpoint?: string;
@@ -655,14 +670,16 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
    * `customize(machine, { resources })`.
    */
   resources?: Size;
-  // The handles keep this map's order, and the kit reads nothing into it (ADR-0051). Required, at
-  // least one: a Workspace exists to work on a repository. `repos: open` is the shape a packaged
+  // The handles keep this map's order, and the kit reads nothing into it (ADR-0051). Required
+  // here, at least one; a Workspace with no Repo Slot leaves it out, which is the
+  // `NoSlotWorkspaceOptions` overload, not an empty map. `repos: open` is the shape a packaged
   // Machine takes when its body enumerates its checkouts rather than naming them
   // (`@jr2/machines`'s `task`, whose first slot is the one the coder edits).
   /**
    * The Repo Slots: the repositories that the Sandbox clones, each under a name of your Machine's
    * choice. The name is the key of `workspace.repos` in the body and the directory under `/work`.
-   * Required, with at least one slot. Each value is one of:
+   * At least one slot. Leave `repos` out for a Workspace with no Repo Slot (see
+   * {@link NoSlotWorkspaceOptions}). Each value is one of:
    * - a url, or `{ url, ref }`, where `ref` is the branch or commit that the Worktree starts from
    *   (default: the Repo's default branch);
    * - `open`, for the Instance that registers the Machine to bind with `customize()`;
@@ -751,6 +768,33 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
   spec: (args: { input: TInput }) => WorkspaceSpec;
 };
 
+// A Workspace with no Repo Slot (ADR-0051): a Sandbox for one unit of work whose Agents and
+// Effects share `/work`, and no Worktree is in it — the steps of one job. Its own option types, not a
+// conditional on `TSlots`, because the slot overloads infer `TSlots` from `repos`, and no
+// inference reaches through a conditional type.
+/** The options of a `workspace()` with no Repo Slot that declares the input that starts a run.
+ * `repos` is left out, and `spec` is optional. */
+export type NoSlotWorkspaceOptions<TSchema extends z.ZodObject> = Omit<SandboxOptions<never>, "repos"> & {
+  /** Not present: the Workspace has no Repo Slot. Its Agents work in `/work`. */
+  repos?: never;
+  /** The input that starts a run, as a `z.object`, as in {@link WorkspaceOptions}. */
+  input: TSchema;
+  /** A function from the run input to the Workspace's {@link NoSlotSpec}: only `workGroup`.
+   * Default: no `workGroup`. */
+  spec?: (args: { input: WithoutEmptyIndex<z.infer<TSchema>> & HostInjectedInput }) => NoSlotSpec;
+};
+
+/** The options of a `workspace()` with no Repo Slot and no `input`: it starts with any input. */
+export type PermissiveNoSlotWorkspaceOptions<TInput = unknown> = Omit<SandboxOptions<never>, "repos"> & {
+  /** Not present: the Workspace has no Repo Slot. Its Agents work in `/work`. */
+  repos?: never;
+  /** Not present: a `workspace()` without `input` starts with any input. */
+  input?: never;
+  /** A function from the input to the Workspace's {@link NoSlotSpec}: only `workGroup`. Default:
+   * no `workGroup`. */
+  spec?: (args: { input: TInput }) => NoSlotSpec;
+};
+
 /**
  * Run a body Machine in a Sandbox: a pod of its own, with a Worktree of each Repo Slot on one
  * branch. The result is a Machine. Register it as a Workflow, or invoke it from another Machine as
@@ -763,6 +807,13 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  * with `workspace: "none"` runs on the Instance Harness. When the body reaches a final state, the
  * Workspace deletes the Sandbox, and its output is the body's output. Push the branch before
  * then: jr2 deletes the Sandbox's commits with it.
+ *
+ * Leave out `repos` for a Workspace with no Repo Slot: its Agents and `command` Effects share
+ * `/work`, as the steps of one job share a folder, and `spec` is optional and gives only
+ * `workGroup`. The body's input is then `Workspaced<RunInput, never>`. An `http` Effect sends a
+ * file of `/work` with `file(path)`. A `push`, and a `command` with an Effect secret in its `env`,
+ * need a Repo Slot, so jr2 refuses them there. jr2 deletes `/work` with the Sandbox: send what
+ * must stay before the body ends.
  *
  * Give each run a different branch, so that two runs do not push to one branch. Make it from a
  * field of the run input, or from `instanceId` when the run input has no field that is different
@@ -796,10 +847,15 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  * - an empty `image`: ``workspace(): `image` must be a non-empty string (got <value>) — either a
  *   `file:` URL to a docker context this module ships (`import.meta.resolve("./image")`) or a
  *   registry ref (ADR-0037).``
- * - no Repo Slot: ``workspace(): `repos` must name at least one Repo Slot — `repos: { app:
- *   "https://…" }`, or `open` for a slot the consumer binds, or a mapper over the door for one the
- *   run chooses — or be `open` whole, for a map the consumer names (ADR-0051).``
+ * - an empty `repos`: ``workspace(): `repos: {}` names no Repo Slot — leave `repos` out for a
+ *   Workspace with no Repo Slot, or name a slot: `repos: { app: "https://…" }` (ADR-0051).``
+ * - a `repos` that is not a map or `open`: ``workspace(): `repos` must be a map of Repo Slots —
+ *   `repos: { app: "https://…" }` — or `open` whole, for a map the consumer names; leave it out
+ *   for a Workspace with no Repo Slot (ADR-0051).``
  * - a bad Repo Slot name or value (see {@link RepoSlot})
+ * - a `spec` that is not a function, or no `spec` on a Workspace with Repo Slots: ``workspace():
+ *   `spec` must be a function from the run input to the spec — spec: ({ input }) => ({ branch }) —
+ *   and only a Workspace with no Repo Slot may leave it out (ADR-0051).``
  * - a bad `secrets` list: ``workspace(): `secrets` must be a list of distinct names from
  *   jr2.config.ts's `secrets` list (got <value>) — secrets: ["JIRA_TOKEN"] (ADR-0059).``
  * - a bad `effector`: ``workspace(): `effector` is { image } — a `file:` URL to a docker context
@@ -817,7 +873,10 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  *
  * And when a run enters it, a spec without a `branch` (or with `branch: "default"`), or with a bad
  * `reviewSha` or `workGroup`: ``workspace spec invalid: <fields> — the spec derives from run input;
- * does `jr2 run --input` carry every field this workflow's workspace() mapping reads?``
+ * does `jr2 run --input` carry every field this workflow's workspace() mapping reads?``. With no
+ * Repo Slot, a spec with a `branch` or a `reviewSha`: ``workspace spec invalid: <field> (the
+ * Workspace has no Repo Slot, so it has no branch and no review Worktree; its spec gives only
+ * workGroup) …``
  *
  * @param body - The Machine to run in the Sandbox. Its input is `Workspaced<RunInput, Slots>`.
  * @param options - What the Sandbox is made of (`image`, `user`, `resources`, `effector`), the
@@ -938,9 +997,12 @@ export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> 
  * @see docs/reference/decisions/0012-workspace-wrapper-machine.md
  * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
  */
-export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMachine, TSlots extends string>(
+// `TSlots` defaults to `never`: with `repos` left out there is nothing to infer it from, and the
+// Workspace has no Repo Slot (ADR-0051). The no-slot options are a union member, not overloads of
+// their own, so a call with slots reports its error where it always did.
+export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMachine, TSlots extends string = never>(
   body: TBody & BodyAcceptsDoor<TBody, z.infer<TSchema>, TSlots>,
-  options: WorkspaceOptions<TSchema, TSlots>,
+  options: WorkspaceOptions<TSchema, TSlots> | NoSlotWorkspaceOptions<TSchema>,
   // The input is the door without the empty door's `Record<string, never>` (`{}` for `z.object({})`), so
   // a parent can give `instanceId` to a nested `spec` that reads it (ADR-0033).
 ): WorkspaceMachine<WithoutEmptyIndex<z.infer<TSchema>>, OutputFrom<TBody>, TBody, TSlots>;
@@ -957,13 +1019,17 @@ export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMac
  * @see docs/concepts/workspaces.md
  * @see docs/reference/decisions/0033-a-machine-declares-the-input-that-starts-it.md
  */
-export function workspace<TBody extends AnyStateMachine, TSlots extends string, TInput = unknown>(
+export function workspace<TBody extends AnyStateMachine, TSlots extends string = never, TInput = unknown>(
   body: TBody & BodyAcceptsSlots<TBody, TSlots>,
-  options: PermissiveWorkspaceOptions<TSlots, TInput>,
+  options: PermissiveWorkspaceOptions<TSlots, TInput> | PermissiveNoSlotWorkspaceOptions<TInput>,
 ): WorkspaceMachine<TInput, OutputFrom<TBody>, TBody, TSlots>;
 export function workspace(
   body: AnyStateMachine,
-  options: SandboxOptions<string, any> & { input?: z.ZodObject; spec: (args: { input: any }) => WorkspaceSpec },
+  options: Omit<SandboxOptions<string, any>, "repos"> & {
+    repos?: SandboxOptions<string, any>["repos"];
+    input?: z.ZodObject;
+    spec?: (args: { input: any }) => WorkspaceSpec | NoSlotSpec;
+  },
 ): AnyStateMachine {
   // `spec` maps the wrapper's input to the workspace-domain spec (ADR-0012); the body receives
   // the wrapper's input plus the handles — `Workspaced<TInput, TSlots>`, which is also what the
@@ -1005,16 +1071,22 @@ export function workspace(
   // any key Substrate would refuse, is a dependency the move to it would drop.
   if (options.resources !== undefined) assertSize("workspace(): resources", options.resources);
   // The slots, checked NOW for the same reason (ADR-0051): every value is one of the three forms,
-  // every key is a directory name, and there is at least one — a Workspace exists to work on a
-  // repository, and a wrapper with no slot would attach nothing and hand the body no checkout.
-  // An Open map defers all of that to the `customize` that fills it, which runs the same checks.
-  const repos = options.repos;
+  // and every key is a directory name. Left out, the Workspace has no Repo Slot and its steps share
+  // `/work`; written empty, it is refused, so "no slot" has one spelling and an empty map never
+  // reads as a map someone forgot to fill. An Open map defers all of that to the `customize` that
+  // fills it, which still asks for at least one: an Open map says the composer names the slots.
+  const repos = options.repos ?? {};
   if (repos !== open) {
-    if (typeof repos !== "object" || repos === null || Array.isArray(repos) || Object.keys(repos).length === 0) {
+    if (typeof repos !== "object" || repos === null || Array.isArray(repos)) {
       throw new Error(
-        'workspace(): `repos` must name at least one Repo Slot — `repos: { app: "https://…" }`, or ' +
-          "`open` for a slot the consumer binds, or a mapper over the door for one the run chooses — or be " +
-          "`open` whole, for a map the consumer names (ADR-0051).",
+        'workspace(): `repos` must be a map of Repo Slots — `repos: { app: "https://…" }` — or `open` whole, ' +
+          "for a map the consumer names; leave it out for a Workspace with no Repo Slot (ADR-0051).",
+      );
+    }
+    if (options.repos !== undefined && Object.keys(repos).length === 0) {
+      throw new Error(
+        "workspace(): `repos: {}` names no Repo Slot — leave `repos` out for a Workspace with no Repo Slot, " +
+          'or name a slot: `repos: { app: "https://…" }` (ADR-0051).',
       );
     }
     for (const [slot, value] of Object.entries(repos)) assertRepoSlot("workspace()", slot, value);
@@ -1046,7 +1118,15 @@ export function workspace(
         `${JSON.stringify(effector)}) — effector: { image: import.meta.resolve("./effector") } (ADR-0068).`,
     );
   }
-  const wrapper = buildWorkspaceMachine(body, options.spec);
+  // A Workspace with slots cuts a branch, so it needs `spec`; one with none may leave it out. The
+  // types say so; this says so to a caller the types do not see, by name, before any run.
+  if (options.spec !== undefined ? typeof options.spec !== "function" : repos === open || Object.keys(repos).length) {
+    throw new Error(
+      "workspace(): `spec` must be a function from the run input to the spec — spec: ({ input }) => ({ branch }) — " +
+        "and only a Workspace with no Repo Slot may leave it out (ADR-0051).",
+    );
+  }
+  const wrapper = buildWorkspaceMachine(body, options.spec ?? (() => ({})));
   // The wrapper is TRANSPARENT to its body (ADR-0049): `customize(machine, { agents })` on a
   // Workspace means the Machine inside, so the composer never spells `body` and never has to know
   // that jr2 wrapped anything.
@@ -1083,16 +1163,29 @@ export function workspace(
  * unchecked, it survives until the attach script's string ops and dies as "Cannot read properties
  * of undefined", with a Sandbox already provisioned and nothing pointing back at the input.
  */
-function assertSpec(spec: WorkspaceSpec): void {
+function assertSpec(spec: AnySpec, noSlot: boolean): void {
+  if (typeof spec !== "object" || spec === null) {
+    throw new Error(
+      `workspace spec invalid: the spec is ${JSON.stringify(spec)}, not an object — \`spec\` returns one, ` +
+        "such as { branch } (ADR-0051)",
+    );
+  }
   const bad: string[] = [];
-  if (typeof spec?.branch !== "string" || !spec.branch) bad.push(`branch (got ${JSON.stringify(spec?.branch)})`);
+  // No Repo Slot, nothing attached (ADR-0051): a branch or a review sha would name nothing, and a
+  // value jr2 silently ignores is the failure the refusals exist for.
+  const nothing =
+    "(the Workspace has no Repo Slot, so it has no branch and no review Worktree; its spec gives only workGroup)";
+  if (noSlot) {
+    if (spec?.branch !== undefined) bad.push(`branch ${nothing}`);
+    if (spec?.reviewSha !== undefined) bad.push(`reviewSha ${nothing}`);
+  } else if (typeof spec?.branch !== "string" || !spec.branch) bad.push(`branch (got ${JSON.stringify(spec?.branch)})`);
   // The branch Worktree is a SIBLING of the pod-local clone at `<slot>/default/` (ADR-0004), so
   // the one branch name that is not a worktree directory is `default`.
   else if (spec.branch === "default")
     bad.push(
       'branch "default" (the pod-local clone\'s own directory — a branch Worktree sits beside `default/`, ADR-0004)',
     );
-  if (spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
+  if (!noSlot && spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
     bad.push(`reviewSha (got ${JSON.stringify(spec?.reviewSha)})`);
   // A gid, so an integer — a float or a negative becomes a pod the API server rejects at
   // admission, which surfaces as "never reached Ready" with nothing pointing back at the spec.
@@ -1161,6 +1254,15 @@ function resolveBindings(
   return bindings;
 }
 
+/** A spec as the wrapper holds it: a Workspace's with Repo Slots, or one with none (ADR-0051). */
+type AnySpec = WorkspaceSpec | NoSlotSpec;
+
+/** Does this Workspace declare no Repo Slot (ADR-0051)? An Open map is not "none": its slots are
+ * the composer's, and `customize()` names at least one. */
+function noSlot(slots: SandboxParts["repos"]): boolean {
+  return slots !== open && Object.keys(slots).length === 0;
+}
+
 /** The port-facing view of the persisted bindings, in declaration order. */
 function attachedRepos(bindings: Record<string, ResolvedBinding>): Array<{ slot: string; url: string; ref?: string }> {
   return Object.entries(bindings).map(([slot, b]) => ({
@@ -1170,7 +1272,7 @@ function attachedRepos(bindings: Record<string, ResolvedBinding>): Array<{ slot:
   }));
 }
 
-function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
+function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any }) => AnySpec): AnyStateMachine {
   /**
    * `placing` (ADR-0064): write the Sandbox and wait, with no deadline, for its pod to be
    * scheduled. jr2 cannot tell "full now" from "never fits", so a bound is the Machine's own
@@ -1196,9 +1298,8 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
    */
   const place = fromPromise<
     { bindings: Record<string, ResolvedBinding> },
-    { wsId: string; spec: WorkspaceSpec; runInput: unknown }
+    { wsId: string; spec: AnySpec; runInput: unknown }
   >(async ({ input, self, system, signal }) => {
-    assertSpec(input.spec); // before the port: a bad spec must never cost a pod
     const binding = runBindingOf(system);
     // The images and the slots come off the WRAPPER, at invoke time, not out of context and not
     // out of a build-time closure (ADR-0049, ADR-0051). This state re-runs on every restore, so
@@ -1207,6 +1308,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     // content-addressed tag, which would outlive the image it names. The RESOLVED bindings are
     // persisted, because a per-run mapper's answer is this run's fact.
     const parts = sandboxPartsOf(invokingMachine(self));
+    assertSpec(input.spec, noSlot(parts.repos)); // before the port: a bad spec must never cost a pod
     const user = userSeatOf(parts.user);
     const path = actorSlotPath(self._parent);
     // Read before the port: a Workspace no walk can see placed nothing, and is refused with the slot form.
@@ -1295,8 +1397,11 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
 
   const attach = fromPromise<
     { repos: Record<string, string>; review?: Record<string, string>; stale?: Record<string, string> },
-    { wsId: string; spec: WorkspaceSpec; bindings: Record<string, ResolvedBinding> }
+    { wsId: string; spec: AnySpec; bindings: Record<string, ResolvedBinding> }
   >(async ({ input, system, signal }) => {
+    // No Repo Slot, nothing to clone (ADR-0051): the Harness's attach would refuse an empty list,
+    // and `/work` needs nothing from it — the pod's `fsGroup` already makes it the work group's.
+    if (Object.keys(input.bindings).length === 0) return { repos: {} };
     const port = sandboxOf(system);
     const name = workspaceName(runBindingOf(system).runId, input.wsId);
     // The attach is loss-aware (ADR-0021): a Sandbox gone or Lost under it fails the attach at
@@ -1315,7 +1420,9 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     signal.addEventListener("abort", () => unsubscribe(), { once: true });
     let out: Awaited<ReturnType<typeof port.attach>>;
     try {
-      out = await Promise.race([port.attach({ name, spec: input.spec, repos: attachedRepos(input.bindings) }), loss]);
+      // A Workspace with slots holds a `WorkspaceSpec`: `place` refused one without a branch.
+      const spec = input.spec as WorkspaceSpec;
+      out = await Promise.race([port.attach({ name, spec, repos: attachedRepos(input.bindings) }), loss]);
     } finally {
       unsubscribe();
     }
@@ -1527,7 +1634,8 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
                     ...(ctx.bindings
                       ? { bindings: Object.fromEntries(Object.entries(ctx.bindings).map(([s, b]) => [s, b.url])) }
                       : {}),
-                    branch: ctx.spec.branch,
+                    // No branch with no Repo Slot (ADR-0051): nothing was cut.
+                    ...(ctx.spec.branch !== undefined ? { branch: ctx.spec.branch } : {}),
                     ...(out.review ? { review: out.review } : {}),
                   };
                 },
@@ -1553,11 +1661,11 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
             input: ({ context }: { context: WsContext }) => {
               const ctx = context;
               const { repos, branch, review } = ctx.handles!;
-              // Body-facing subset only (ADR-0016): endpoint/sandbox are mechanism-internal.
-              return {
-                ...ctx.runInput,
-                workspace: { repos, branch, ...(review ? { review } : {}) } satisfies WorkspaceHandles<string>,
-              };
+              // Body-facing subset only (ADR-0016): endpoint/sandbox are mechanism-internal. With
+              // no Repo Slot the handles are `{ repos: {} }` (WorkspaceHandles<never>).
+              const handles: WorkspaceHandles<string> | WorkspaceHandles<never> =
+                branch === undefined ? { repos: {} } : { repos, branch, ...(review ? { review } : {}) };
+              return { ...ctx.runInput, workspace: handles };
             },
             onDone: {
               target: "teardown",

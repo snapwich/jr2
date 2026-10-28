@@ -290,8 +290,8 @@ export function sandboxPartsOf(machine: AnyStateMachine | undefined): SandboxPar
 
 /** Does this Machine COMPOSE a Sandbox — i.e. is it a `workspace()` wrapper? Distinct from
  * `sandboxPartsOf(m)` naming no image: a wrapper that names neither image still owns the two
- * seats, which is what `customize({ image })` retunes (ADR-0049) — and it always carries at least
- * one Repo Slot (ADR-0051). Also the data-plane switch, read off the walk: an Instance needs
+ * seats, which is what `customize({ image })` retunes (ADR-0049) — and it may carry no Repo Slot
+ * at all (ADR-0051). Also the data-plane switch, read off the walk: an Instance needs
  * Sandboxes exactly when a registered Machine composes one. A logic with no `config` (an Effect's,
  * ADR-0067) composes none. */
 export function composesSandbox(machine: AnyStateMachine): boolean {
@@ -1047,6 +1047,9 @@ export type WorkspacePod = {
   /** Each Repo Slot's Binding url as the Machine binds it, by slot, in order; undefined for an open
    * or per-run slot, whose url `jr2 up` cannot read. A push resolves its credential through it. */
   bindings: Record<string, string | undefined>;
+  /** The `workspace()` declares no Repo Slot (ADR-0051): it has only `/work`, which its steps
+   * share. Absent for one with slots, and for an Open map, whose slots the composer names. */
+  noSlot?: true;
 };
 
 /**
@@ -1127,6 +1130,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
         ...(parts.effector ? { effector: { ...parts.effector } } : {}),
         ...(parts.image !== undefined ? { image: parts.image } : {}),
         bindings,
+        ...(parts.repos !== open && Object.keys(parts.repos).length === 0 ? { noSlot: true as const } : {}),
       });
     }
     const body = wrapperBodyOf(machine);

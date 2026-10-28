@@ -192,14 +192,15 @@ function paramFields(ctx: RefContext, param: ts.ParameterDeclaration): Field[] |
 }
 
 /** The names of the documented types that a param's type is: the type itself, the constraint of a
- * type param, or each member of an intersection. `undefined` when one part has no page. */
+ * type param, or each member of an intersection or of a union (`workspace()`'s options, with Repo
+ * Slots or with none). `undefined` when one part has no page. */
 function documentedTypes(
   ctx: RefContext,
   d: ts.FunctionDeclaration,
   node: ts.TypeNode | undefined,
 ): string[] | undefined {
   if (!node) return undefined;
-  if (ts.isIntersectionTypeNode(node)) {
+  if (ts.isIntersectionTypeNode(node) || ts.isUnionTypeNode(node)) {
     const parts = node.types.map((t) => documentedTypes(ctx, d, t));
     return parts.every(Boolean) ? parts.flatMap((p) => p!) : undefined;
   }
@@ -237,7 +238,9 @@ function renderDoc(
       // A param whose type a page documents links there; its fields are in that entry.
       const named = documentedTypes(ctx, d, p.type);
       const links = (named ?? []).filter((n) => !text?.includes(`{@link ${n}}`)).map((n) => `[${code(n)}](${link(n)})`);
-      const type = links.length ? ` (${links.join(" & ")})` : "";
+      // A union's members are its forms: one or the other, never both.
+      const join = p.type && ts.isUnionTypeNode(p.type) ? " | " : " & ";
+      const type = links.length ? ` (${links.join(join)})` : "";
       const head = `- ${code(name)}${type}${text ? `: ${prose(text)}` : ""}`;
       if (named) return hang(head, 2);
       // An overload's param with the same type as an earlier overload's has its fields there.

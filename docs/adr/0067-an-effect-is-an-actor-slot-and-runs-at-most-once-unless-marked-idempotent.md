@@ -85,7 +85,8 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   no credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route
   (ADR-0058); the Instance Harness holds no Workspace and refuses it (ADR-0031). Outside a `workspace()` a command is
   refused at invoke. Its cwd is a Repo Slot's Worktree: the one slot, or the slot it names (`slot`); several and none
-  named is refused (ADR-0051).
+  named is refused (ADR-0051). In a Workspace with no Repo Slot its cwd is `/work`, which the Workspace's steps share —
+  named in the start, never left to the Harness, whose own cwd is the Sandbox Image's `WORKDIR`.
 - **Every outcome is output**: `exited | timeout | killed | unknown` for a `command` (`killed` with the signal that
   ended it; a stopped credentialed command's is `exited` with the stop's signal, D1);
   `response | unreachable | refused | unknown` for an `http` Effect; `pushed | rejected | diverged | unknown` for a
@@ -108,17 +109,18 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   Agent's param reaches a path segment or a body, never the host, a header or a secret. It runs in the Instance
   Effector, which builds the request and holds the secrets (ADR-0068); the Orchestrator signs the call and holds none.
   Its body may instead be a Worktree file, `body: file(path, { slot?, segments?, contentType? })`: the file's path
-  relative to the Repo Slot's Worktree (the one slot, or the one `slot` names), and the url's path segments — each a
-  value or a function of the input; no `request` is written beside it, since `file()` carries the run's part. Such an
-  `http` is placed in the Sandbox Effector of the Workspace whose body invokes it, and `jr2 up` refuses one that no
-  `workspace()` invokes, where no Worktree exists to read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox
-  Effector opens the file with `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
-  `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_XDEV`, non-blocking — then `fstat`: a symlink at any component (one that stays
-  inside included), `..`, an absolute path, a FIFO, a directory and a file with more than one link are refused, in
-  words, as output. The content type is `file()`'s `contentType` or a `content-type` header of the definition's, not
-  both: a definition with both is refused when the Machine loads ("write one of them", as for `auth` beside an
-  `authorization` header). With neither it is `application/octet-stream`. A later body form (a multipart file and
-  fields) is one more body on `http`, never a kind.
+  relative to the Repo Slot's Worktree (the one slot, or the one `slot` names) — or to `/work` itself in a Workspace
+  with no Repo Slot (ADR-0051), the folder its steps share — and the url's path segments — each a value or a function of
+  the input; no `request` is written beside it, since `file()` carries the run's part. Such an `http` is placed in the
+  Sandbox Effector of the Workspace whose body invokes it, and `jr2 up` refuses one that no `workspace()` invokes, where
+  no Worktree exists to read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox Effector opens the file with
+  `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`,
+  `RESOLVE_NO_XDEV`, non-blocking — then `fstat`: a symlink at any component (one that stays inside included), `..`, an
+  absolute path, a FIFO, a directory and a file with more than one link are refused, in words, as output. The content
+  type is `file()`'s `contentType` or a `content-type` header of the definition's, not both: a definition with both is
+  refused when the Machine loads ("write one of them", as for `auth` beside an `authorization` header). With neither it
+  is `application/octet-stream`. A later body form (a multipart file and fields) is one more body on `http`, never a
+  kind.
 - **A credentialed `command`: `command(argv, { env: { NAME: secret("x") | secret("x").path }, pin? })`.** Naming a
   secret is what places it: it runs in the Sandbox Effector of the Workspace whose body invokes it, with no `placement:`
   key — and so does an env that names `secret(open)`, whose name the composer binds (ADR-0054). Its child runs as the
@@ -142,7 +144,10 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   files of every other secret and of the Effector's key), the tool sees a pinned commit and not the live Worktree, and
   the output is scrubbed. Landlock governs files, not `connect()`, and a GPG-signed push holds the signing key on a
   `gpg-agent` socket while it signs; so the Sandbox Effector never runs the two at once: one lock over two classes,
-  `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068). A Workspace may hold both.
+  `gpg` and `command`, and a waiter that settles timed out past its own timeout (ADR-0068). A Workspace may hold both. A
+  Workspace with no Repo Slot has no commit to run it against, so there it is refused — by `jr2 up` and at invoke, with
+  the fix: declare a slot, or name no secret, and it runs in `/work` beside the Agent (ADR-0051). A run of the live
+  files under a credential is the claim this kind exists not to make.
 - **A `push` pushes the Workspace's branch to its Repo Slot's Binding**, from the Sandbox Effector, with no input:
   `push({ pin?, sign?, squash?, force?, slot?, timeout? })`. Its credential is the push credential of the
   `git.credentials` entry the Repo Slot's url falls under (ADR-0051): the provision matches the url the run binds —
@@ -170,7 +175,8 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   entry names no committer, its `sign` field's name and email. `jr2 up` refuses `squash` without `sign` only when the
   matched entry has neither `sign` nor `committer`, naming both fixes (a `committer`, or a signed push and its `sign`
   field), and the provision refuses it the same way for a slot the run or a `customize()` binds. `force` replaces what
-  the remote holds.
+  the remote holds. A Workspace with no Repo Slot has no branch to push, so a `push` there is refused, by `jr2 up` and
+  at invoke (ADR-0051).
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The

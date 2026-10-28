@@ -25,7 +25,8 @@ export type AmbientHandles = {
   repos: Record<string, string>;
   /** Every Repo Slot's Binding url, by slot (ADR-0051): where a push goes. */
   bindings?: Record<string, string>;
-  branch: string;
+  /** The branch the Worktrees are on. Absent for a Workspace with no Repo Slot (ADR-0051). */
+  branch?: string;
   /** Detached review-worktree paths, when the spec carried `reviewSha` (ADR-0028). */
   review?: Record<string, string>;
 };

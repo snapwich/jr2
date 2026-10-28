@@ -559,8 +559,8 @@ const READMIT_PROMPT =
  * slot's Worktree, which privileges nothing because there is nothing to choose between (ADR-0051);
  * a Workspace with more REFUSES the Turn, naming the slots in declaration order and the line that
  * ends it, because the kit gives no slot a meaning and a wrong guess is the silent failure
- * ADR-0057 was written for; and a run outside any Workspace frames nothing, so the Harness keeps
- * `/work`.
+ * ADR-0057 was written for; and a Workspace with no Repo Slot, or a run outside any Workspace,
+ * frames nothing, so the Harness keeps `/work`, the folder a slotless Workspace's steps share.
  *
  * Resolution counts SLOTS, and a slot's Worktree is the writable branch checkout. The detached
  * review Worktree (`AmbientHandles.review`, ADR-0028's reviewer seat) is never resolved to: it is

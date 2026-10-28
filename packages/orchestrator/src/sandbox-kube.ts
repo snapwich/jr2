@@ -1394,7 +1394,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       const endpoint = sandbox?.status?.endpoint;
       if (!endpoint) throw new Error(`Sandbox "${req.name}" has no endpoint to attach through — is it gone?`);
       if (req.repos.length === 0) {
-        throw new Error("the attach names no Repo Slot — nothing to attach (a workspace() declares at least one)");
+        throw new Error(
+          "the attach names no Repo Slot — nothing to attach (a Workspace with no Repo Slot skips the attach, ADR-0051)",
+        );
       }
       const body: AttachRequest = {
         slots: req.repos.map((r) => {

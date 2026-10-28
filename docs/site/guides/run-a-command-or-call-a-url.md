@@ -65,8 +65,10 @@ The options:
 - `slot`: the [Repo Slot](../reference/glossary.md#repo-slot) whose [Worktree](../reference/glossary.md#worktree) the
   program runs in. Write it only when the Workspace has more than one Repo Slot.
 
-The program starts in the root of the Worktree. To run it in a subfolder, give the path as an argument, such as
-`["node", "--test", "<dir>/test/*.test.js"]`, or write `["sh", "-c", "cd <dir> && <program>"]`.
+The program starts in the root of the Worktree. In a Workspace with no Repo Slot, it starts in `/work`, the folder that
+the steps of the Workspace share (see [Workspaces](../concepts/workspaces.md#a-workspace-with-no-repo)). To run it in a
+subfolder, give the path as an argument, such as `["node", "--test", "<dir>/test/*.test.js"]`, or write
+`["sh", "-c", "cd <dir> && <program>"]`.
 
 A `command` with no Effect secret runs in the [Harness](../reference/glossary.md#harness) container of the
 [Sandbox](../reference/glossary.md#sandbox), in the Worktree, beside the
@@ -121,8 +123,8 @@ image must hold the program.
 - `maxBody`: how many bytes of a text body the output keeps. The default is 65536.
 - `idempotent`: `true` when a second call is safe. The default is `false`. See [Effects](../concepts/effects.md).
 
-To send a file of the Worktree as the body, use [`file(path)`](../reference/authoring-surface/file.md) as `body`. jr2
-sends a file body only with `PUT`, `POST` or `PATCH`.
+To send a file of the Worktree as the body, use [`file(path)`](../reference/authoring-surface/file.md) as `body`. In a
+Workspace with no Repo Slot, the path is relative to `/work`. jr2 sends a file body only with `PUT`, `POST` or `PATCH`.
 
 An `http` Effect runs in the [Instance Effector](../reference/glossary.md#instance-effector). The
 [Effector](../reference/glossary.md#effector) puts the value of each Effect secret into the call. The Agent never reads
@@ -212,7 +214,7 @@ When a `command` starts, it refuses:
   With an Effect secret in `env`, the text is
   `command "<slot>" runs under a Workspace carrying more than one Repo Slot (<slots>) — say which: { slot: "<slot>" } (ADR-0051)`
 - with an Effect secret in `env`, a Workspace with no Repo Slot:
-  `command "<slot>" runs under a Workspace carrying no Repo Slot (none) — say which: { slot: "<slot>" } (ADR-0051)`
+  `command "<slot>" runs under a Workspace with no Repo Slot: a command with an Effect secret runs against one commit of a Repo Slot's branch, and there is none — declare a Repo Slot, or name no secret in its env, and it runs in /work beside the Agent (ADR-0051)`
 - a `slot` that the Workspace does not have:
   `command "<slot>" names Repo Slot "<name>", which its Workspace does not carry (<slots>)`
 - an `arg()` with no string in the input. The angle brackets around the name are in the text, and `<type>` is `nothing`
@@ -279,6 +281,8 @@ When you call `secret()`, `bearer()` or `text`, they refuse:
 
 `jr2 up` refuses:
 
+- a `command` with an Effect secret in a Workspace with no Repo Slot:
+  `workflow "<workflow>": command "<slot>" runs in Workspace of workflow "<workflow>", which has no Repo Slot: a command with an Effect secret runs against one commit of a Repo Slot's branch, and there is none — declare a Repo Slot, or name no secret in its env, and it runs in /work beside the Agent (ADR-0051)`
 - an Effect secret that the `secrets` list does not have:
   ``workflow "<workflow>": the <kind> Effect "<slot>" names secret("<name>"), which the `secrets` list does not hold — add it: secrets: [{ name: "<name>", value: process.env.<NAME> }] (ADR-0068)``
 - an Effect secret with no value, for example when `HOOK_TOKEN` is not in `.env`. `<name>` is the `name` of the entry,

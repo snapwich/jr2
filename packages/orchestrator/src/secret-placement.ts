@@ -28,6 +28,7 @@ import {
   type HeldLookups,
 } from "./held-secrets.ts";
 import type { JR2Config } from "./config.ts";
+import { needsASlot } from "./effect.ts";
 import { declaredPushKinds, pushRefusal } from "./git-push.ts";
 import { INSTANCE_HARNESS_HELD_POD } from "./names.ts";
 import { routeText, type CarriedEffect, type WorkspacePod } from "./parts.ts";
@@ -141,7 +142,29 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
     // An empty value is refused later with the list's own rule (`sourceOf`): it is an unset variable.
     if (namedBy.has(e.name) && e.value) shortRefusal(e, e.value.length);
   }
-  for (const ws of walk.workspaces) pushesOf(config, ws);
+  for (const ws of walk.workspaces) {
+    refuseWithNoSlot(ws);
+    pushesOf(config, ws);
+  }
+}
+
+/**
+ * A Workspace with no Repo Slot (ADR-0051) has no branch and no commit, so the two Sandbox Effector kinds that
+ * run on a commit of a slot's branch have none: a `push`, and a `command` with an Effect secret
+ * (ADR-0067). Refused here, before anything is built, as the invoke would refuse them mid-run. A
+ * file-body `http` reads `/work` and stays.
+ */
+function refuseWithNoSlot(ws: PlacedWorkspace): void {
+  if (!ws.pod.noSlot) return;
+  for (const effect of ws.pod.effects) {
+    // Every `command` placed in a Sandbox Effector names a secret: the others run beside the Agent.
+    const why = needsASlot(effect.kind);
+    if (why === undefined) continue;
+    throw new Error(
+      `workflow "${ws.workflow}": ${effect.kind} "${effect.name}" runs in ${workspaceLabel(ws)}, which has no Repo ` +
+        `Slot: ${why} (ADR-0051)`,
+    );
+  }
 }
 
 /**
@@ -268,6 +291,7 @@ function sandboxPlanOf(
       x.scheme === t.scheme && x.host === t.host && x.port === t.port && x.secrets.join() === t.secrets.join();
     if (!targets.some(same)) targets.push(t);
   }
+  refuseWithNoSlot(ws);
   const pushes = pushesOf(config, ws);
   const commands = ws.pod.effects.some((e) => e.kind === "command" && (e.secrets?.length ?? 0) > 0);
   return {

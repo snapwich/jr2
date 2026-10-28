@@ -122,7 +122,10 @@ session user in the work group itself (`groupadd -g 2000 work && usermod -aG wor
 **The promise is scoped to repo trees.** An ad-hoc path at `/work`'s top level — either seat's `mkdir /work/scratch` —
 carries no default ACL, so files there fall back to the writer's umask. The Harness runs at `umask 002` (itself and
 every tool child) and the attach script opens with the same line, so jr2's own writes are group-writable even there;
-what a User Container session writes outside a repo tree is its own business.
+what a User Container session writes outside a repo tree is its own business. A Workspace with no Repo Slot (ADR-0051)
+has no repo tree: its steps share `/work` itself, every Agent and `command` of it in the one Harness container as one
+uid, so they need no ACL; a User Container's writes there have this paragraph's limit, until a user of that seat needs
+more.
 
 ## Constraints on the seat
 

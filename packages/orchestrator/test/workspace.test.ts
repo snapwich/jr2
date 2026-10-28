@@ -28,6 +28,7 @@ import {
   type SandboxLoss,
   type SandboxPort,
   type WorkspaceSpec,
+  type Workspaced,
 } from "../src/workspace.ts";
 import { observe, RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { approveDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
@@ -324,6 +325,141 @@ test("restore-reconcile: Sandbox present → the body resumes parked, nothing is
   second.sendToGate(runId, "hold", { type: "approve" });
   await waitFor(() => second.status(runId) === undefined);
   assert.equal((await second.read(runId))?.status, "done");
+});
+
+/** A body under a Workspace with no Repo Slot (ADR-0051): it parks on a gate, then answers with
+ * the handles it was handed, so a test reads exactly what the wrapper gave it. */
+const slotlessBody = jr2Setup({
+  types: {} as { context: { handles: unknown }; input: Workspaced<{}, never> },
+  events: [approveDef],
+}).createMachine({
+  id: "slotless",
+  context: ({ input }) => ({ handles: input.workspace }),
+  on: { "workspace.lost": ".lost" },
+  initial: "working",
+  states: {
+    working: { invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } }, on: { approve: "done" } },
+    done: { type: "final", output: ({ context }) => ({ handles: context.handles }) },
+    lost: { type: "final" },
+  },
+  output: ({ event }) => (event as { output?: unknown }).output,
+});
+
+test("no Repo Slot: place with no Repo, no attach, the body gets { repos: {} } and no branch (ADR-0051)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "job", machine: workspace(slotlessBody, {}), provide: () => ({}) });
+  const { runId } = await host.start("job");
+  await waitFor(() => host.gates(runId).length === 1);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+
+  // The Harness's attach refuses an empty list, and `/work` needs nothing from it.
+  assert.deepEqual(lifecycle(sandbox), ["place", "provision", "destroy"]);
+  assert.deepEqual(sandbox.repos, [[]], "the Sandbox names no Repo, so no cache is mounted");
+  const final = await host.read(runId);
+  assert.equal(final?.status, "done");
+  assert.deepEqual((final?.context as { output?: unknown }).output, { handles: { repos: {} } });
+});
+
+test("no Repo Slot: `spec` is optional and gives only workGroup", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({
+    name: "job",
+    machine: workspace(slotlessBody, { spec: () => ({ workGroup: 3000 }) }),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("job");
+  await waitFor(() => host.gates(runId).length === 1);
+  assert.deepEqual(sandbox.composition, [{ user: undefined, workGroup: 3000 }]);
+  await host.stop(runId);
+});
+
+test("no Repo Slot: a spec with a branch or a review sha faults BEFORE any pod exists", async () => {
+  for (const [field, extra] of [
+    ["branch", { branch: "feat" }],
+    ["reviewSha", { reviewSha: "a".repeat(40) }],
+  ] as const) {
+    const sandbox = new FakeSandbox();
+    const host = new RunHost({ store: await mkStore(), sandbox });
+    // The types refuse it (`NoSlotSpec`); a spec built at run time is refused all the same.
+    const named = workspace(slotlessBody, { spec: () => extra as never });
+    host.register({ name: "job", machine: named, provide: () => ({}) });
+    const { runId } = await host.start("job");
+    await waitFor(() => host.status(runId) === undefined);
+    const final = await host.read(runId);
+    assert.equal(final?.status, "error");
+    assert.match(final?.fault ?? "", new RegExp(`workspace spec invalid: ${field} \\(the Workspace has no Repo Slot`));
+    assert.ok(!sandbox.calls.some((c) => c.startsWith("place:")), `${field}: faulted before the port`);
+  }
+});
+
+test("no Repo Slot: a restore resumes the parked body, and the handles still hold no branch", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const job = () => ({ name: "job", machine: workspace(slotlessBody, {}), provide: () => ({}) });
+  const first = new RunHost({ store, sandbox });
+  first.register(job());
+  const { runId } = await first.start("job");
+  await waitFor(() => first.gates(runId).length === 1);
+  await first.stop(runId);
+
+  const second = new RunHost({ store, sandbox });
+  second.register(job());
+  await second.restore();
+  await waitFor(() => second.gates(runId).length === 1);
+  second.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => second.status(runId) === undefined);
+  assert.deepEqual(lifecycle(sandbox), ["place", "provision", "destroy"], "placed once, never attached");
+  assert.deepEqual(((await second.read(runId))?.context as { output?: unknown }).output, { handles: { repos: {} } });
+});
+
+test("no Repo Slot: `spec` may be left out only there; customize() binds no slot onto it (ADR-0051)", () => {
+  assert.throws(
+    () => workspace(body as never, { repos: { app: APP } } as never),
+    /`spec` must be a function .* only a Workspace with no Repo Slot may leave it out/,
+  );
+  assert.throws(() => workspace(slotlessBody, { spec: "b" } as never), /`spec` must be a function/);
+  assert.throws(() => workspace(body as never, { repos: open, spec: undefined } as never), /`spec` must be a function/);
+  assert.throws(
+    () => customize(workspace(slotlessBody, {}), { repos: { app: APP } } as never),
+    /customize\(\): machine "workspace" declares no Repo Slot "app" — its slots are: /,
+  );
+  // A customize() that retunes the pod keeps it a Workspace with no slot.
+  const [pod] = workspacePodsOf(customize(workspace(slotlessBody, {}), { resources: { limits: { memory: "4Gi" } } }));
+  assert.equal(pod?.noSlot, true);
+});
+
+test("no Repo Slot: a spec that is not an object faults before any pod, by name", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({
+    name: "job",
+    machine: workspace(slotlessBody, { spec: () => undefined as never }),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("job");
+  await waitFor(() => host.status(runId) === undefined);
+  assert.match((await host.read(runId))?.fault ?? "", /workspace spec invalid: the spec is undefined, not an object/);
+  assert.equal(sandbox.calls.length, 0);
+});
+
+test("no Repo Slot: the walk says so, and an Open map is not 'no slot' (ADR-0051)", () => {
+  const [none] = workspacePodsOf(workspace(slotlessBody, {}));
+  assert.equal(none?.noSlot, true);
+  assert.deepEqual(none?.bindings, {});
+  const [some] = workspacePodsOf(wrapped);
+  assert.equal(some?.noSlot, undefined);
+  const openBody = jr2Setup({ types: {} as { input: Workspaced<{}, string> } }).createMachine({
+    id: "enumerates",
+    on: { "workspace.lost": ".done" },
+    initial: "done",
+    states: { done: { type: "final" } },
+  });
+  const [opened] = workspacePodsOf(workspace(openBody, { repos: open, spec: () => ({ branch: "b" }) }));
+  assert.equal(opened?.noSlot, undefined, "an Open map's slots are the composer's, and customize() names one");
+  assert.ok(partsOf([workspace(slotlessBody, {})]).repos.length === 0, "no Repo to warm");
 });
 
 test("a branch named `default` faults BEFORE any pod exists — that directory is the clone's (ADR-0004)", async () => {
@@ -1019,10 +1155,15 @@ test("restore into `attaching` reuses the PERSISTED bindings — a per-run mappe
   await second.stop(runId);
 });
 
-test("workspace() refuses a missing, empty, or malformed `repos` at build time, by slot", () => {
+test("workspace() refuses an empty or malformed `repos` at build time, by slot", () => {
   const spec = () => ({ branch: "b" });
-  assert.throws(() => workspace(body, { spec } as never), /`repos` must name at least one Repo Slot/);
-  assert.throws(() => workspace(body, { repos: {}, spec } as never), /at least one Repo Slot/);
+  // Left out is a Workspace with no Repo Slot; written empty is refused, so "none" has one spelling.
+  assert.throws(
+    () => workspace(body as never, { repos: {}, spec } as never),
+    /`repos: \{\}` names no Repo Slot — leave `repos` out/,
+  );
+  assert.throws(() => workspace(body as never, { repos: [], spec } as never), /`repos` must be a map of Repo Slots/);
+  assert.throws(() => workspace(body as never, { repos: "app", spec } as never), /`repos` must be a map of Repo Slots/);
   assert.throws(() => workspace(body, { repos: { app: "" }, spec }), /Repo Slot "app" is bound to an empty url/);
   assert.throws(
     () => workspace(body, { repos: { app: { url: APP, ref: "" } }, spec }),
