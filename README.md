@@ -11,10 +11,24 @@ host-isolated Kubernetes pod (Sandbox), hosted by jr2's own Harness (ADR-0027, b
 [pi-agent-core](https://github.com/earendil-works/pi)). Local development runs on [kind](https://kind.sigs.k8s.io/)
 (Kubernetes in Docker).
 
-See [GLOSSARY.md](./GLOSSARY.md) for the glossary (the terms below are defined there), the
-[docs site](https://snapwich.github.io/jr2/) for the concepts, the guides and the reference (its source is
-[docs/site/](./docs/site/), and [Architecture](./docs/site/concepts/architecture.md) tells what runs where), and
-[docs/adr/](./docs/adr/) for architecture decisions.
+## Documentation
+
+The documentation is on the **[docs site](https://snapwich.github.io/jr2/)**. It describes the latest release. Its
+source is [docs/site/](./docs/site/).
+
+| Section                                                                    | Read it to                                                                                                           |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| [Why jr2](https://snapwich.github.io/jr2/why)                              | Learn which problem jr2 solves.                                                                                      |
+| [Get started](https://snapwich.github.io/jr2/get-started/install)          | Install the CLI, create an Instance, connect a model and run an Agent in a Sandbox.                                  |
+| [Concepts](https://snapwich.github.io/jr2/concepts/machines-and-workflows) | Learn what you write (Machines, Agents, Gates, Effects, Workspaces) and what runs where.                             |
+| [Guides](https://snapwich.github.io/jr2/guides/start-a-run)                | Do one task, for example start a run, answer a Gate, use a hosted provider or push a branch.                         |
+| [Reference](https://snapwich.github.io/jr2/reference/cli)                  | Find the CLI, `jr2.config.ts`, the HTTP API, the Authoring surface, `@jr2/machines`, the glossary and the decisions. |
+
+In this repository:
+
+- [GLOSSARY.md](./GLOSSARY.md) defines the terms. This README and the docs use each term with that meaning only.
+- [docs/adr/](./docs/adr/) records the architecture decisions (ADRs).
+- [docs/site/README.md](./docs/site/README.md) tells how to write a page for the docs site.
 
 ## Packages
 
