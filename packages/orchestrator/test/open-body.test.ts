@@ -39,7 +39,7 @@ import { observe, RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { invokingMachine, vocabularyOf } from "../src/vocabulary.ts";
-import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
+import { fakeWorkspace, FakeHarnessExec, handles } from "./_effects.ts";
 import { mkStore, MockFlueClient, tick, waitFor } from "./_fixtures.ts";
 
 const ENDPOINT = "http://harness.invalid";
@@ -119,7 +119,7 @@ function chartedMachine(
     events: [],
     actors: {
       coder: agent(coderDefinition),
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       tests: commandWith(ports.exec.factory, ["pnpm", "test", arg("filter")]),
       body: openBodyWith(
         {
@@ -1182,7 +1182,9 @@ test("customize: a wrapper's retuned lent Agent is the one its Open body lends, 
   const compiled = compileChart(admitted, lent, decl, {
     mintAgent: (_s, d) => agentActorWith(() => new MockFlueClient(), d),
   });
-  assert.equal((compiled.implementations.actors as Record<string, unknown>).coder, lent.actors.coder);
+  // A Chart invokes an Agent through its start check, and the check inherits every other method.
+  const borrowed = (compiled.implementations.actors as Record<string, unknown>).coder;
+  assert.equal(Object.getPrototypeOf(borrowed), lent.actors.coder);
 });
 
 test("the lent Effect: a Chart's invoke fills its input slots, and its output routes the Chart", async () => {

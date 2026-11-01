@@ -188,8 +188,7 @@ const READ: AgentDefinition = { model: "test/model", instructions: "i", workspac
 const AMBIENT: AmbientHandles = {
   endpoint: "http://ws-1.harness.local:8080",
   sandbox: "ws-1",
-  repos: { app: "/work/app/main" },
-  branch: "main",
+  repos: { app: "/work/app" },
 };
 
 test('explicit input.endpoint wins over everything — even a "none" definition with an Instance Harness', async () => {
@@ -247,7 +246,14 @@ test('definition-wins: "none" inside an enclosing workspace() still lands on the
 
 test("everyone else resolves the enclosing workspace(): ambient endpoint AND sandbox", async () => {
   const mock = new MockFlueClient();
-  const { endpoints, table } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, READ, {}, AMBIENT);
+  const { endpoints, table } = harness(
+    mock,
+    { ...baseInput, endpoint: undefined, cwd: "/work/app/fix" },
+    undefined,
+    READ,
+    {},
+    AMBIENT,
+  );
   await tick();
 
   assert.deepEqual(endpoints, ["http://ws-1.harness.local:8080"]);
@@ -266,7 +272,7 @@ test("the port is built with the bearer of the placement the Turn resolved — p
   });
   const ambient = harness(
     new MockFlueClient(),
-    { ...baseInput, endpoint: undefined },
+    { ...baseInput, endpoint: undefined, cwd: "/work/app/fix" },
     undefined,
     READ,
     { harnessBearer: bearerFor },
@@ -307,13 +313,13 @@ test('the loud no-Harness error names the definition\'s own workspace value ("re
   assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "read"/);
 });
 
-// --- The Frame's cwd (ADR-0057): the Turn's own → "none" → the one Repo Slot → refusal → none ---
+// --- The Frame's cwd (ADR-0057, ADR-0075): the Turn's own → "none" → refusal under Repo Slots → none ---
 
-/** A two-slot Workspace — the case with no answer, because the kit gives no slot a meaning
- * (ADR-0051): the state must say which Worktree the Turn works in. */
+/** A two-slot Workspace. The kit gives no slot a meaning (ADR-0051), and a Workspace that only clones
+ * has no Worktree for a default to name (ADR-0075), so the state says where the Turn works. */
 const TWO_SLOTS: AmbientHandles = {
   ...AMBIENT,
-  repos: { target: "/work/target/main", docs: "/work/docs/main" },
+  repos: { target: "/work/target", docs: "/work/docs" },
 };
 
 test("the Turn's own cwd is the Frame — it wins over every resolution (ADR-0057)", async () => {
@@ -324,13 +330,22 @@ test("the Turn's own cwd is the Frame — it wins over every resolution (ADR-005
   assert.equal(mock.admitted?.cwd, "/work/target/review", "what the state said, not what the Workspace holds");
 });
 
-test("under a Workspace with ONE Repo Slot an absent cwd resolves to that slot's Worktree (ADR-0057)", async () => {
+test("under a Workspace with ONE Repo Slot an absent cwd REFUSES the Turn too: no Worktree is the default (ADR-0075)", async () => {
   const mock = new MockFlueClient();
-  harness(mock, { ...baseInput, endpoint: undefined }, undefined, READ, {}, AMBIENT);
+  const { received } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, READ, {}, AMBIENT);
   await tick();
 
-  // With one slot there is nothing to privilege, so no convention is smuggled in (ADR-0051).
-  assert.equal(mock.admitted?.cwd, "/work/app/main");
+  const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
+  assert.match(String(errEvent?.error?.message), /Repo Slots \(app\)/);
+  assert.deepEqual(mock.admits, [], "refused before any admission");
+});
+
+test('a Turn that wants /work states it: `cwd: "/work"` is a Frame like any other (ADR-0075)', async () => {
+  const mock = new MockFlueClient();
+  harness(mock, { ...baseInput, endpoint: undefined, cwd: "/work" }, undefined, READ, {}, AMBIENT);
+  await tick();
+
+  assert.equal(mock.admitted?.cwd, "/work");
 });
 
 test('a workspace: "none" Agent frames no directory — only Working tools consume one (ADR-0028/0057)', async () => {
@@ -384,7 +399,7 @@ test("more than one Repo Slot and no cwd REFUSES the Turn, naming the slots and 
   const message = String(errEvent?.error?.message);
   assert.match(message, /agent "coder"/, "names the slot, like the Open-model fence");
   assert.match(message, /target, docs/, "names the slots, in declaration order");
-  assert.match(message, /cwd: context\.workspace\.repos\.<slot>/, "names the exact line to add");
+  assert.match(message, /`cwd: "\/work"`/, "names the line to add, for the Turn that means above the Worktrees");
   assert.doesNotMatch(message, /repos\.target/, "and privileges no slot while it says the kit privileges none");
   assert.match(message, /ADR-0057/);
   assert.deepEqual(mock.admits, [], "refused BEFORE any admission — no pod is spent on it");

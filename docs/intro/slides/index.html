@@ -721,8 +721,9 @@ stateDiagram-v2
                other), ADR-0037 (the Harness runtime mounts at /opt/jr2 into the Sandbox Image), ADR-0058 (the
                Orchestrator alone may drive a Harness), ADR-0031 (Instance Harness). The Workspace: ADR-0051 (the
                node cache clones with the Repo CR's secretRef; the Orchestrator's attach is `git clone --shared` off
-               the read-only mount, worktree beside it), ADR-0053 (fetch: ext:: → Custodian → Orchestrator → cache;
-               the push url is the caller's own spelling, no credential in the pod).
+               the read-only mount, and the Machine cuts each worktree beside it, ADR-0075), ADR-0053 (fetch:
+               ext:: → Custodian → Orchestrator → cache; the push url is the caller's own spelling, no credential in
+               the pod).
                ADR-0059: the model key is a held secret; the Harness container holds its Stand-in, and the Custodian
                (upstream Envoy, pinned by digest) swaps in the value toward the key's host only. Limit: the Agent can
                still SPEND a key through the Custodian while its pod lives. -->
@@ -754,7 +755,8 @@ stateDiagram-v2
               <div class="vol">
                 <strong>/work</strong>
                 <p>
-                  the Workspace, set up by the Orchestrator: a clone off the node's repo cache, then a branch worktree.
+                  the Workspace, set up by the Orchestrator: a clone off the node's repo cache. The Machine cuts each
+                  worktree.
                   <span>No git credential in the pod: a fetch asks the cache, and a push has none.</span>
                 </p>
               </div>

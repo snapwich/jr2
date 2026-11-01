@@ -1,15 +1,15 @@
 # `workspace()` wraps a body Machine and owns only Sandbox lifecycle
 
 jr2 provides Workspaces as a helper so workflows never provision Sandboxes themselves:
-`workspace(body, { input, repos, spec })` is a statically-imported factory (per
-[ADR-0011](0011-workflow-defined-events.md)'s import doctrine) returning a Machine that provisions a Sandbox and its
-worktrees, runs the author's **body** Machine inside it, and tears the Sandbox down when the body finishes. This makes
-GLOSSARY.md's "Workspace = child Machine bound to a unit of work" concrete.
+`workspace(body, { input, repos })` is a statically-imported factory (per [ADR-0011](0011-workflow-defined-events.md)'s
+import doctrine) returning a Machine that provisions a Sandbox and clones its Repos, runs the author's **body** Machine
+inside it, and tears the Sandbox down when the body finishes. This makes GLOSSARY.md's "Workspace = child Machine bound
+to a unit of work" concrete.
 
 ```
 placing:       create Sandbox CR → await the pod scheduled, no deadline (ADR-0064)
-provisioning:  await phase: Ready (watched, ADR-0063) → Harness /attach repos/worktrees (ADR-0004)
-running:       invoke body; input = parent input + { workspace: { repos, branch } }
+provisioning:  await phase: Ready (watched, ADR-0063) → Harness /attach repos (ADR-0004)
+running:       invoke body; input = parent input + { workspace: { repos } }
 teardown:      destroy the CR
 done:          final; workspace output = body output
 ```
@@ -25,29 +25,29 @@ already is. When the guarantee still fails (`kill -9`, hard cancel), the operato
 (ADR-0001) — the reason ADR-0001 made the CR the durable desired state. Author-assembled provisioning/cleanup states
 (the obvious alternative) put the guarantee in every workflow's hands to forget, on every error path.
 
-## Boundary: the spec speaks workspace vocabulary only
+## Boundary: the options speak workspace vocabulary only
 
-The spec — `{ branch, workGroup?, reviewSha? }` — is mapped from the parent's context by the author, but its _shape_ is
-workspace-domain: the branch to cut, and what the attach needs to cut it. The branch itself is the author's: its name
-and its granularity (per feature, per task, from a ticket, from run input) are the Machine's policy, not jr2's; the
-workspace only cuts it. Which Repos to attach is not per-run at all: they are slots on the wrapper's options
+The wrapper's options are workspace-domain. Which Repos to attach is not per-run at all: they are slots on the options
 (`repos: { target: open, docs: { url, ref } }`, ADR-0051), static so `jr2 up` can see them, each bound by the Machine,
-by a composer's `customize`, or by a mapper over the door. Workflow configuration (review rounds, budgets, ticket data)
-passes through to the body untouched; the workspace never sees it. In return the body gets what it needs to operate
-inside the Sandbox: `{ repos: Record<slot, path>, branch }`, the handles keyed by the slots the wrapper declared, in
-declaration order. No handle names a primary checkout: which tree an Agent works in is a fact about that Agent's Turn,
-which the body states (ADR-0051). The Harness `endpoint` and the Sandbox name are mechanism-facing, not body-facing —
-`agentRun` resolves them **ambiently** from the enclosing wrapper (a registrar actor co-invoked in `running`, ADR-0016),
-so the body cannot mis-thread them. Keeping this boundary is what lets one helper serve any workflow rather than
-coupling to coding-shaped ones.
+by a composer's `customize`, or by a mapper over the door. The Workspace only clones. A branch and a Worktree are the
+body's: their names and their granularity (per feature, per task, from a ticket, from run input) are the Machine's
+policy, not jr2's, and the body cuts each Worktree with `worktree()`
+([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). Workflow configuration (review rounds,
+budgets, ticket data) passes through to the body untouched; the workspace never sees it. In return the body gets what it
+needs to operate inside the Sandbox: `{ repos: Record<slot, path> }`, the handles keyed by the slots the wrapper
+declared, in declaration order. A handle is the slot's folder, `/work/<slot>`, and not a Worktree. No handle names a
+primary checkout: which tree an Agent works in is a fact about that Agent's Turn, which the body states (ADR-0051). The
+Harness `endpoint` and the Sandbox name are mechanism-facing, not body-facing — `agentRun` resolves them **ambiently**
+from the enclosing wrapper (a registrar actor co-invoked in `running`, ADR-0016), so the body cannot mis-thread them.
+Keeping this boundary is what lets one helper serve any workflow rather than coupling to coding-shaped ones.
 
-The wrapper's `input` beside it is the door the spec maps FROM — the wrapper's own declared run-input schema, which also
-types the mapping ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)). It sits on the wrapper and not on
-the body precisely because of the injection above: the body's input is the door plus `workspace`, which no caller sends.
-That same composition is what the door checks the body against, one way only — the body may not demand more than the
-wrapper hands it; demanding less is safe — so the injection is a compile-time contract, not just a comment. The host's
-own injection into a root machine's input (`instanceId`) counts as handed over for that check, because whether it
-actually reaches this body depends on where the wrapper sits and no type can see that
+The wrapper's `input` is its door — the wrapper's own declared run-input schema, which also types a per-run slot's
+mapper ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)). It sits on the wrapper and not on the body
+precisely because of the injection above: the body's input is the door plus `workspace`, which no caller sends. That
+same composition is what the door checks the body against, one way only — the body may not demand more than the wrapper
+hands it; demanding less is safe — so the injection is a compile-time contract, not just a comment. The host's own
+injection into a root machine's input (`instanceId`) counts as handed over for that check, because whether it actually
+reaches this body depends on where the wrapper sits and no type can see that
 ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)).
 
 ## An Effect runs in its Workspace: the Harness container or the Sandbox Effector
@@ -58,8 +58,8 @@ Worktree file and a `command` that names a secret run in that Workspace's Sandbo
 container ([ADR-0005](0005-sandbox-pod-composition.md),
 [ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), which the provision adds only when an
 Effect below the `workspace()` is placed there; its image is the Sandbox Image unless the `workspace()` names
-`effector: { image }`. Each one's Worktree follows the Turn's rule (ADR-0057): the one Repo Slot's, or the slot it names
-with `slot`; a Workspace with several and none named refuses it. A push goes to that slot's Binding, and after every
+`effector: { image }`. Each one's Worktree follows the Turn's rule (ADR-0057): its input names it, and under Repo Slots
+it must. A push goes to the Binding of its Repo Slot, the one slot or the one its static `slot` names, and after every
 push whose published commit is not the Agent's own — signed copies, or one squashed commit, signed or not — the
 Workspace's Harness moves the Agent's branch to the published commits (the sync, ADR-0067). An Effect of these kinds
 outside any `workspace()` is refused at invoke, as an error, never as output. A `command` that names a secret runs
@@ -86,8 +86,8 @@ the same contract as a temp directory.
 
 ## Consequences
 
-- ADR-0004's single-active-Agent-per-Workspace invariant becomes structural: one sequential body per workspace, no lock
-  machinery.
+- The body chooses how many Agents work in its Workspace (ADR-0004, ADR-0075). The wrapper has no lock machinery for
+  them.
 - The workspace labels the CR with its run (`jr2.dev/run`, `jr2.dev/workflow`), which is what `jr2 ls` groups by
   (ADR-0009).
 - **Lost workspace: the wrapper emits, the body decides.** While the body runs, a lease actor beside it renews the

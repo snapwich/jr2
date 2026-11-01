@@ -56,6 +56,7 @@ import { isImageContext } from "./images.ts";
 import { isOpenBody, openBodyDeclarationOf, type OpenBodyDeclaration } from "./open-body.ts";
 import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
+import { refuseUnroutedOutcome } from "./effect-checks.ts";
 import { refuseUnroutedAgentFault } from "./mechanism-routes.ts";
 import { refuseLostOutput } from "./run-output.ts";
 import { userSeatOf, type Size, type UserContainer } from "./size.ts";
@@ -75,9 +76,9 @@ import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 export { open } from "./open.ts";
 
 /**
- * The repository of a Repo Slot: `{ url, ref }`. `url` is the Repo's git url. `ref` is the branch
- * or commit that the branch Worktree starts from; absent, the Repo's default branch. Where only a
- * url is needed, a string is enough.
+ * The repository of a Repo Slot: `{ url, ref }`. `url` is the Repo's git url. `ref` is the branch,
+ * the tag or the commit that the clone stays on, and that a new branch starts from; absent, the
+ * Repo's default branch. Where only a url is needed, a string is enough.
  *
  * `workspace()` and `customize()` refuse:
  * - an empty `url`: ``<where>: Repo Slot "<slot>" is bound to an empty url (got <value>) — a slot
@@ -102,7 +103,6 @@ export { open } from "./open.ts";
  *
  * export const machine = workspace(body, {
  *   repos: { app },
- *   spec: () => ({ branch: "jr2/hotfix" }),
  * });
  * ```
  *
@@ -113,8 +113,8 @@ export { open } from "./open.ts";
 export type Binding = {
   /** The Repo's git url. */
   url: string;
-  /** The branch or commit that the branch Worktree starts from. Default: the Repo's default
-   * branch. */
+  /** The branch, tag or commit that the clone stays on, and that a new branch starts from. Default:
+   * the Repo's default branch. */
   ref?: string;
 };
 
@@ -130,10 +130,11 @@ export type Binding = {
  * - a function of the run input, `({ input }) => url` or a {@link Binding}: each run chooses. The
  *   url must match an entry of `git.credentials` in `jr2.config.ts`, or the run cannot use it.
  *
- * The key of the slot is a directory name under `/work`. It starts with a letter, and
- * `workspace()` and `customize()` refuse a key that does not: ``<where>: Repo Slot key "<key>" is
- * not a directory name — a slot becomes `/work/<slot>` and its order matters, so it starts with a
- * letter and matches /^[A-Za-z][A-Za-z0-9._-]*$/ (ADR-0051).`` They refuse a value of another
+ * The key of the slot is a directory name under `/work`. It starts with a letter, so never with
+ * `.`: `/work/.jr2/` is reserved for jr2. `workspace()` and `customize()` refuse a key that does
+ * not: ``<where>: Repo Slot key "<key>" is not a directory name — a slot becomes `/work/<slot>`,
+ * `/work/.jr2/` is reserved for jr2, and its order matters, so it starts with a letter and matches
+ * /^[A-Za-z][A-Za-z0-9._-]*$/ (ADR-0051, ADR-0075).`` They refuse a value of another
  * shape: ``<where>: Repo Slot "<slot>" is <what> — a slot is `open`, a url, `{ url, ref? }`, or a
  * mapper `({ input }) => url | { url, ref? }` over the door (ADR-0051).``
  *
@@ -163,7 +164,6 @@ export type Binding = {
  *     docs: "https://github.com/you/docs.git",
  *     config: open,
  *   },
- *   spec: ({ input }) => ({ branch: `deploy/${input.service}` }),
  * });
  * ```
  *
@@ -195,12 +195,13 @@ export function repoSlotState(value: RepoSlot<any>): RepoSlotState {
  * carry — and to what a prompt can name without quoting. It starts with a LETTER: the handles
  * keep declaration order, which a Machine may give a meaning to (`task`: the first slot is the
  * one the coder edits), and JS puts an integer-like key such as `"1"` ahead of every other key in
- * `Object.keys`, wherever the author wrote it. */
+ * `Object.keys`, wherever the author wrote it. So a key never starts with `.`, and `/work/.jr2/`
+ * stays jr2's (ADR-0075). */
 export const REPO_SLOT_KEY = /^[A-Za-z][A-Za-z0-9._-]*$/;
 
 /**
- * Refuse a malformed slot value BY NAME, at build time — the same derives-from-a-typo class the
- * spec guard catches for the branch, one build earlier. A bound url is also parsed here: an
+ * Refuse a malformed slot value BY NAME, at build time — a derives-from-a-typo fault, one build
+ * earlier. A bound url is also parsed here: an
  * identity the walk cannot derive (a relative path, an unknown scheme) is refused where the
  * author wrote it rather than at the converge that walks it. `where` names the caller
  * (`workspace()`, `customize()`).
@@ -209,8 +210,8 @@ export function assertRepoSlot(where: string, slot: string, value: unknown): ass
   if (!REPO_SLOT_KEY.test(slot)) {
     throw new Error(
       `${where}: Repo Slot key ${JSON.stringify(slot)} is not a directory name — a slot becomes ` +
-        "`/work/<slot>` and its order matters, so it starts with a letter and matches " +
-        "/^[A-Za-z][A-Za-z0-9._-]*$/ (ADR-0051).",
+        "`/work/<slot>`, `/work/.jr2/` is reserved for jr2, and its order matters, so it starts with a letter " +
+        "and matches /^[A-Za-z][A-Za-z0-9._-]*$/ (ADR-0051, ADR-0075).",
     );
   }
   if (value === open || typeof value === "function") return;
@@ -242,9 +243,8 @@ export function assertRepoSlot(where: string, slot: string, value: unknown): ass
  * to a concrete ref on the port's side, which is what keeps the Machine cluster-agnostic. The
  * Repos are Slots, each bound, open, or per-run.
  *
- * They are options rather than `WorkspaceSpec` fields because they are STATIC: `jr2 up` must find
- * them by walking the Machine, and a per-run spec is a function of run input that no walk can
- * evaluate.
+ * They are static options because `jr2 up` must find them by walking the Machine, and no walk can
+ * evaluate a function of run input.
  */
 export type SandboxParts = {
   /** The Sandbox Image. Absent → the Instance's `images/default`, then the stock Harness. */
@@ -258,6 +258,8 @@ export type SandboxParts = {
   /** The Size the Machine states (ADR-0060) — the `workspace()`'s, with any `customize()` layered
    * over it. Absent → the Instance's `sandbox.resources`, then the kit default. */
   resources?: Size;
+  /** The pod's work group (ADR-0005). Absent: the port's default. */
+  workGroup?: number;
   /** The Held secrets this Workspace's pod gets beside its Agents' model keys (ADR-0059): names of
    * the `secrets` list. Naming is placement — no other pod gets a name for being listed here. */
   secrets?: string[];
@@ -561,14 +563,15 @@ export type CarriedEffect = {
   (| {
         kind: "command";
         argv: string[];
-        slot?: string;
         secrets?: string[];
         pin?: true;
         open?: Array<"argv" | "secret">;
+        /** A `worktree()`: its `expect`. A report prints it in place of the kit program's argv. */
+        cut?: { expect?: "new" | "existing" };
       }
     /** An http Effect (ADR-0068): its method, its fixed target, and the secrets it names — what
      * places each secret, and what its Effector's config allows. `file`: its body is a Worktree
-     * file (ADR-0067), so it runs in its Workspace's Sandbox Effector, on Repo Slot `slot` when named.
+     * file (ADR-0067), so it runs in its Workspace's Sandbox Effector.
      * An Open url has no target, and names only the secrets its headers and auth name. */
     | {
         kind: "http";
@@ -577,10 +580,9 @@ export type CarriedEffect = {
         secrets: string[];
         idempotent: boolean;
         file?: true;
-        slot?: string;
         open?: Array<"url" | "secret">;
       }
-    /** A push (ADR-0067, ADR-0051): the Workspace's branch to its Repo Slot's Binding. It names no
+    /** A push (ADR-0067, ADR-0075): a cut Worktree's branch to its Repo Slot's Binding. It names no
      * secret: `jr2 up` resolves its credential through `git.credentials`. */
     | { kind: "push"; slot?: string; sign: boolean; squash: boolean; force: boolean; pin: boolean; secrets: string[] }
     /** A dispatch (ADR-0071): the Workflow it starts a run of, as `jr2 run` names it, whether it
@@ -808,6 +810,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     refuseInlineParts(machine);
     refuseLostOutput(machine);
     refuseUnroutedAgentFault(machine);
+    refuseUnroutedOutcome(machine);
     const parts = sandboxPartsOf(machine);
     const user = userSeatOf(parts.user);
     collectImage(parts.image);
@@ -968,7 +971,6 @@ export function carriedEffectOf(
       idempotent: parts.idempotent,
       timeoutMs: parts.timeoutMs,
       ...(parts.file ? { file: true as const } : {}),
-      ...(parts.file?.slot !== undefined ? { slot: parts.file.slot } : {}),
     };
   }
   if (parts.kind === "push") {
@@ -988,7 +990,7 @@ export function carriedEffectOf(
       ...(slot !== undefined ? { slot } : {}),
     };
   }
-  const { argv, timeoutMs, slot, secrets, pin } = parts;
+  const { argv, timeoutMs, secrets, pin } = parts;
   return {
     name,
     path,
@@ -997,10 +999,10 @@ export function carriedEffectOf(
     placement,
     argv: argvText(argv),
     timeoutMs,
-    ...(slot !== undefined ? { slot } : {}),
     ...(secrets?.length ? { secrets: [...secrets] } : {}),
     ...(pin ? { pin } : {}),
     ...(openParts.length ? { open: openParts as Array<"argv" | "secret"> } : {}),
+    ...(parts.cut ? { cut: { ...parts.cut } } : {}),
   };
 }
 
@@ -1039,6 +1041,9 @@ export type WorkspacePod = {
    * credentialed `command` slot below the `workspace()`, down to the next `workspace()` — read off
    * their plain data, statically. Empty → the pod gets no Sandbox Effector and no Secret. */
   effects: CarriedEffect[];
+  /** The slot of each `worktree()` below the `workspace()`, down to the next `workspace()`. A cut runs
+   * in the Harness container, so `effects` does not hold it. Absent when there is none. */
+  cuts?: string[];
   /** The `workspace()`'s `effector: { image }`, as written. Absent → the Sandbox Image. */
   effector?: { image: string };
   /** The `workspace()`'s own `image`, as written — its Sandbox Image. Absent → `images/default`,
@@ -1067,6 +1072,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
     models: Set<string>,
     on: Set<AnyStateMachine>,
     effects: Map<string, CarriedEffect>,
+    cuts: Set<string>,
     path: OpenSlot["path"],
     route: PlacementRoute,
   ): void => {
@@ -1074,7 +1080,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
     on.add(machine);
     const body = wrapperBodyOf(machine);
     const visit = (child: AnyStateMachine, at: OpenSlot["path"], to: PlacementRoute) => {
-      if (!composesSandbox(child)) modelsIn(child, models, on, effects, at, to);
+      if (!composesSandbox(child)) modelsIn(child, models, on, effects, cuts, at, to);
     };
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) {
@@ -1093,6 +1099,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
       if (isEffect(logic)) {
         const effect = carriedEffectOf(name, path, route, logic.effect);
         if (effect.placement === "sandbox") effects.set(JSON.stringify([route, name]), effect);
+        if (logic.effect.kind === "command" && logic.effect.cut) cuts.add(name);
         continue;
       }
       const child = asMachine(logic);
@@ -1112,7 +1119,8 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
     if (composesSandbox(machine)) {
       const models = new Set<string>();
       const effects = new Map<string, CarriedEffect>();
-      modelsIn(machine, models, new Set(), effects, path, route);
+      const cuts = new Set<string>();
+      modelsIn(machine, models, new Set(), effects, cuts, path, route);
       const parts = sandboxPartsOf(machine);
       const bindings: Record<string, string | undefined> = {};
       if (parts.repos !== open) {
@@ -1127,6 +1135,7 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
         secrets: [...(parts.secrets ?? [])],
         models: [...models].sort(),
         effects: [...effects.values()],
+        ...(cuts.size ? { cuts: [...cuts] } : {}),
         ...(parts.effector ? { effector: { ...parts.effector } } : {}),
         ...(parts.image !== undefined ? { image: parts.image } : {}),
         bindings,

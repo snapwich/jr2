@@ -216,7 +216,7 @@ file whose name starts with `_`, or a `.d.ts` file. Thus put the code that two W
   not an empty one. The run ends `error`, and its fault is:
   `fail: the input must be { reason: string; detail?: unknown } with a reason that is not empty (got <value>) — invoke: { src: "fail", input: { reason: "the tests failed" } } (ADR-0073)`.
 - `workspace()` refuses a body that declares a door. Declare the door with the `input` option of `workspace()`:
-  ``workspace(): the body "<id>" declares its own run input, which nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` handles, so the body's schema is not the door. Move it to the wrapper: workspace(body, { input, spec }) (ADR-0033).``
+  ``workspace(): the body "<id>" declares its own run input, which nothing will ever serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` handles, so the body's schema is not the door. Move it to the wrapper: workspace(body, { input }) (ADR-0033).``
 - `jr2 up` prints each refusal of `defineEvent`, `createMachine` and `workspace()` as `error: <refusal>`, and exits with
   `1`. It changes nothing in the cluster.
 - The Orchestrator refuses a start whose input does not agree with the door, with the status code `400`:

@@ -10,34 +10,37 @@
 //   1. a body that demands MORE than the door provides is rejected, naming the fix;
 //   2. a body that demands LESS is accepted — it is fed a superset;
 //   3. the injected handles cannot be passed from outside; the door never asks for them;
-//   4. the spec mapper's `input` is the PARSED door, with no annotation at the call site;
+//   4. a per-run Repo Slot's mapper reads the PARSED door, with no annotation at the call site;
 //   5. the wrapper's output is the body's, so a parent's `onDone` is typed;
 //   6. a parent invoking the wrapper has its input mapper checked against the door;
-//   7. with no door declared the mapper's `input` is `unknown` — an honest "jr2 does not know",
-//      not `any`;
+//   7. with no door declared the wrapper's input is what the body declares, less the handles; a
+//      body that declares none leaves the mapper's `input` `unknown` — an honest "jr2 does not
+//      know", not `any`;
 //   8. what the HOST injects beside the door is outside the check — and only that;
-//   9. a per-run Repo Slot's mapper reads the same PARSED door as `spec` (ADR-0051), on the
-//      wrapper itself: `unknown` on the permissive path, and an annotation that contradicts the
-//      door is refused;
+//   9. a per-run Repo Slot's mapper seat is the wrapper itself (ADR-0051): an open slot rides beside
+//      it, `unknown` on the permissive path, and an annotation that contradicts the door is refused;
 //  10. the handles are keyed by the wrapper's DECLARED Repo Slots (ADR-0050): a body names the
 //      slots it reads, an undeclared one is refused at the `workspace()` call — on BOTH overloads,
 //      since the slots are declared on the door-less path exactly as on the other — and no type
 //      on the seam defaults its slots to `string`, which would widen `repos` to `Record<string, …>`;
-//  11. a door with no fields (`z.object({})`) types a body and its `spec` with no cast: `Workspaced`
-//      removes the `Record<string, never>` that `z.infer` gives it, and `spec` reads `instanceId`
-//      (HostInjectedInput) as a string, on each door; a body that writes `z.infer` of the empty door
-//      is still accepted, and one that demands a field the empty door does not carry is refused;
-//      a parent can give `instanceId` to a nested empty-door wrapper;
+//  11. a door with no fields (`z.object({})`) types a body with no cast:
+//      `Workspaced` removes the `Record<string, never>` that `z.infer` gives it; a body that writes
+//      `z.infer` of the empty door is still accepted, and one that demands a field the empty door
+//      does not carry is refused; a parent can give `instanceId` to a nested empty-door wrapper;
 //  12. a `workspace()` that leaves `repos` out has no Repo Slot (ADR-0051): its body is
-//      `Workspaced<…, never>`, whose handles are `{ repos: {} }` with no branch; a body that names a
-//      slot or reads a branch is refused there, on both overloads; its `spec` is optional, and a
-//      `branch` or a `reviewSha` in it is refused.
+//      `Workspaced<…, never>`, whose handles are `{ repos: {} }`; a body that names a slot is refused
+//      there, on both overloads; `workGroup` is an option; no `workspace()` takes a `spec` (ADR-0075).
+//  13. a mapper bound by `customize()` reads an `input` that is never `undefined`, also when every
+//      field of the door is optional: the wrapper gives it `{}`.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, setup, type InputFrom, type OutputFrom } from "xstate";
+import { assign, fromPromise, setup, type InputFrom, type OutputFrom } from "xstate";
 import { z } from "zod";
+import { customize } from "../src/customize.ts";
 import { open } from "../src/parts.ts";
+import { jr2Setup } from "../src/setup.ts";
+import { pool, source, type PoolNextInput } from "../src/pool.ts";
 import {
   workspace,
   type PermissiveWorkspaceOptions,
@@ -45,7 +48,6 @@ import {
   type WorkspaceHandles,
   type WorkspaceMachine,
   type WorkspaceOptions,
-  type WorkspaceSpec,
   type Workspaced,
 } from "../src/workspace.ts";
 import { inputSchemaOf, type HostInjectedInput } from "../src/vocabulary.ts";
@@ -78,25 +80,24 @@ const outputting = setup({
   output: () => ({ outcome: "approved" as const }),
 });
 
-const specOf = (input: Door): WorkspaceSpec => ({ branch: input.branch });
 /** Every wrapper below attaches one bound slot: these claims are about the DOOR. A `workspace()`
  * with no Repo Slot is claim 12's. */
 const repos = { app: "https://example.test/app.git" } as const;
 
 // --- 1/2: the door constrains the body, in ONE direction ---------------------------------------
 
-const wrapped = workspace(exact, { input: door, repos, spec: ({ input }) => specOf(input) });
+const wrapped = workspace(exact, { input: door, repos });
 // Requiring a SUBSET is safe: the wrapper hands it the door plus the handles, a superset of what
 // it asked for. This is why the check is assignability and not equality.
-void workspace(needsLess, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(needsLess, { input: door, repos });
 // A body that never reads the handles is the same case — it is simply fed more than it declared.
-void workspace(ignoresHandles, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(ignoresHandles, { input: door, repos });
 // @ts-expect-error the body demands `reason`, which nothing at this door ever provides — rejected
 // with the guard's named key ("the body's declared input must accept the door plus the injected
 // handles"). This is the claim the whole formulation exists to make.
-void workspace(needsMore, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(needsMore, { input: door, repos });
 // @ts-expect-error no overlap at all, rejected the same way
-void workspace(unrelated, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(unrelated, { input: door, repos });
 
 // --- 10: the handles are keyed by the wrapper's DECLARED slots ----------------------------------
 
@@ -105,29 +106,27 @@ void workspace(unrelated, { input: door, repos, spec: ({ input }) => specOf(inpu
 // than the wrapper declares — is fine.
 const wantsApp = bodyTakingInput<Workspaced<Door, "app">>();
 const wantsDocs = bodyTakingInput<Workspaced<Door, "app" | "docs">>();
-void workspace(wantsApp, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(wantsApp, { input: door, repos });
 void workspace(wantsApp, {
   input: door,
   repos: { app: "https://a.test/a.git", docs: "https://a.test/d.git" },
-  spec: ({ input }) => specOf(input),
 });
 // @ts-expect-error `docs` is a slot this wrapper never declared — the body would read a path that does not exist
-void workspace(wantsDocs, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(wantsDocs, { input: door, repos });
 
 // The door-less overload leaves the DOOR unchecked because it is unknown (claim 7) — but the slots
 // are declared on this path exactly as on the other, so it holds the body to them the same way:
 // the handles it will inject must satisfy what the body declares for them. Every kind-tier
 // workflow and jr's pool worker are this overload, so a hole here would be a hole everywhere.
-void workspace(wantsApp, { repos, spec: () => ({ branch: "feat" }) });
+void workspace(wantsApp, { repos });
 void workspace(wantsApp, {
   repos: { app: "https://a.test/a.git", docs: "https://a.test/d.git" },
-  spec: () => ({ branch: "feat" }),
 });
 // @ts-expect-error `docs` is a slot this wrapper never declared — refused on the door-less path too
-void workspace(wantsDocs, { repos, spec: () => ({ branch: "feat" }) });
-// And with the door stated by annotation (claim 7's `itemFed`), the slot check still runs.
+void workspace(wantsDocs, { repos });
+// And with the door stated by annotation, the slot check still runs.
 // @ts-expect-error the mapper's annotation types the door; it does not excuse an undeclared slot
-void workspace(wantsDocs, { repos, spec: ({ input }: { input: { ticket: Door } }) => specOf(input.ticket) });
+void workspace(wantsDocs, { repos: { app: ({ input }: { input: { ticket: Door } }) => input.ticket.repo } });
 
 // No type on the seam defaults its slots to `string` either — `WorkspaceMachine` is what a package
 // author annotates an export with, and under `JR2Repos<string>` `customize()` would offer every
@@ -145,7 +144,7 @@ type DefaultedPermissive = PermissiveWorkspaceOptions;
 type Defaulted = DefaultedMachine | DefaultedSandbox | DefaultedOptions | DefaultedPermissive;
 void (null as unknown as Defaulted);
 // Named, the slots type an options value as the inferred path would: `docs` is refused against it.
-const namedOptions: PermissiveWorkspaceOptions<"app"> = { repos, spec: () => ({ branch: "feat" }) };
+const namedOptions: PermissiveWorkspaceOptions<"app"> = { repos };
 void workspace(wantsApp, namedOptions);
 // @ts-expect-error `docs` is not a slot the annotated options declare
 void workspace(wantsDocs, namedOptions);
@@ -162,7 +161,7 @@ type Slotless = SlotlessBody | SlotlessHandles | Misspelled;
 void (null as unknown as Slotless);
 // And a named slot is the only key the body can read: a misspelling is a compile error on the
 // read, which is what lets a prompt name a path and be right everywhere (ADR-0051).
-const appPathIsAString: Eq<WorkspaceHandles<"app">["repos"]["app"], string> = true;
+const appPathIsItsFolder: Eq<WorkspaceHandles<"app">["repos"]["app"], "/work/app"> = true;
 // @ts-expect-error `taregt` is not a slot this body named
 type Misspelled = WorkspaceHandles<"app">["repos"]["taregt"];
 
@@ -173,7 +172,7 @@ const fromOutside: InputFrom<typeof wrapped> = {
   branch: "feat",
   // @ts-expect-error a caller cannot send `workspace` — the handles do not exist until a Sandbox
   // is provisioned and attached, which is the whole reason the door sits on the wrapper.
-  workspace: { repos: {}, branch: "feat" },
+  workspace: { repos: {} },
 };
 void fromOutside;
 
@@ -181,13 +180,13 @@ void fromOutside;
 
 void workspace(exact, {
   input: door,
-  repos,
-  spec: ({ input }) => {
-    const repo: string = input.repo; // inferred from the schema; no annotation anywhere
-    void repo;
-    // @ts-expect-error `title` is not on this door
-    void input.title;
-    return specOf(input);
+  repos: {
+    app: ({ input }) => {
+      const repo: string = input.repo; // inferred from the schema; no annotation anywhere
+      // @ts-expect-error `title` is not on this door
+      void input.title;
+      return repo;
+    },
   },
 });
 
@@ -196,7 +195,7 @@ void workspace(exact, {
 /** True only when A and B are the same type, both ways — assignability would let `any` pass. */
 type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 
-const withOutput = workspace(outputting, { input: door, repos, spec: ({ input }) => specOf(input) });
+const withOutput = workspace(outputting, { input: door, repos });
 const doorIsTheInput: Eq<InputFrom<typeof wrapped>, Door> = true;
 const bodyOutputIsTheOutput: Eq<OutputFrom<typeof withOutput>, { outcome: "approved" }> = true;
 
@@ -230,24 +229,24 @@ void setup({ actors: { work: wrapped } }).createMachine({
 
 // --- 7: no door declared → `unknown`, not `any` -------------------------------------------------
 
-const permissive = workspace(ignoresHandles, {
-  repos,
-  spec: ({ input }) => {
-    // @ts-expect-error nothing is known about what starts this wrapper; the mapper must narrow
-    void input.repo;
-    return { branch: "feat" };
+// With nothing declared on the wrapper, the body says what the wrapper is fed, which is what a pool
+// worker or a nested invoke is fed. No door is claimed: nothing serves or validates it.
+const permissive = workspace(ignoresHandles, { repos });
+const permissiveDoorIsTheBodys: Eq<InputFrom<typeof permissive>, Omit<Door, "workspace">> = true;
+const itemFed = workspace(bodyTakingInput<Workspaced<{ ticket: Door }, "app">>(), { repos });
+const bodyInputFlows: Eq<InputFrom<typeof itemFed>, Omit<Workspaced<{ ticket: Door }, "app">, "workspace">> = true;
+
+// A body that declares no input leaves nothing known.
+const undeclared = workspace(bodyTakingInput<unknown>(), {
+  repos: {
+    app: ({ input }) => {
+      // @ts-expect-error nothing is known about what starts this wrapper; the mapper must narrow
+      void input.repo;
+      return "https://a.test/a.git";
+    },
   },
 });
-const permissiveDoorIsUnknown: Eq<InputFrom<typeof permissive>, unknown> = true;
-
-// A wrapper fed by something other than a caller (a pool worker, a nested invoke) may STATE what
-// it is fed by annotating the mapper — which types the wrapper's input too, without claiming a
-// door that nothing serves or validates.
-const itemFed = workspace(ignoresHandles, {
-  repos,
-  spec: ({ input }: { input: { ticket: Door } }) => specOf(input.ticket),
-});
-const annotatedInputFlows: Eq<InputFrom<typeof itemFed>, { ticket: Door }> = true;
+const undeclaredDoorIsUnknown: Eq<InputFrom<typeof undeclared>, unknown> = true;
 
 // --- 8: the host's own injection is outside the check -------------------------------------------
 
@@ -257,18 +256,18 @@ const annotatedInputFlows: Eq<InputFrom<typeof itemFed>, { ticket: Door }> = tru
 // workflows do) must NOT be told to widen its door: the field is host-supplied, never sent, never
 // served (ADR-0033). So the guard adds those keys to what it counts as PROVIDED.
 const wantsHostInjection = bodyTakingInput<Workspaced<Door, "app"> & HostInjectedInput>();
-void workspace(wantsHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(wantsHostInjection, { input: door, repos });
 // Exactly those keys and no more: one extra field beside them is still rejected, so the carve-out
 // is not a hole in claim 1.
 const wantsMoreThanHostInjection = bodyTakingInput<Workspaced<Door, "app"> & HostInjectedInput & { reason: string }>();
 // @ts-expect-error `reason` is nobody's to inject — neither the door, the handles, nor the host
-void workspace(wantsMoreThanHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(wantsMoreThanHostInjection, { input: door, repos });
 // And the keys are still TYPED. Widening the provided side is what buys this: SUBTRACTING them
 // from what the body demands (`Omit<InputFrom<TBody>, keyof HostInjectedInput>`) would drop the
 // wrong declaration along with the key, and admit this.
 const mistypesHostInjection = bodyTakingInput<Workspaced<Door, "app"> & { instanceId: number }>();
 // @ts-expect-error the host injects an Instance ID string; a body asking for a number never gets one
-void workspace(mistypesHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(mistypesHostInjection, { input: door, repos });
 
 // A UNION input is checked member-by-member, for the same reason. Subtracting keys compares
 // against a union's SHARED keys only, so `reason`/`other` would vanish from the check and every
@@ -277,10 +276,10 @@ const unionDemandsMore = bodyTakingInput<
   Workspaced<Door & { reason: string }, "app"> | Workspaced<Door & { other: string }, "app">
 >();
 // @ts-expect-error no member of the union is satisfied by the door plus the handles
-void workspace(unionDemandsMore, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(unionDemandsMore, { input: door, repos });
 // A union whose members are each satisfied is still fine — one direction, as ever.
 const unionNeedsLess = bodyTakingInput<Workspaced<{ repo: string }, "app"> | Workspaced<Door, "app">>();
-void workspace(unionNeedsLess, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(unionNeedsLess, { input: door, repos });
 
 // --- 9: a per-run slot's mapper reads the door, on the wrapper itself ---------------------------
 
@@ -291,41 +290,26 @@ void workspace(unionNeedsLess, { input: door, repos, spec: ({ input }) => specOf
 const perRun = workspace(wantsApp, {
   input: door,
   repos: { app: ({ input }) => input.repo, docs: open },
-  spec: ({ input }) => specOf(input),
 });
 // The per-run and open slots are slots like any other: the body is handed their handles too.
 const mapperSlotsAreSlots: Eq<InputFrom<typeof perRun>, Door> = true;
 void workspace(wantsDocs, {
   input: door,
   repos: { app: ({ input }) => ({ url: input.repo, ref: input.branch }), docs: open },
-  spec: ({ input }) => specOf(input),
 });
 void workspace(wantsApp, {
   input: door,
   // @ts-expect-error `title` is not on this door — the mapper reads what the schema parses, nothing more
   repos: { app: ({ input }) => input.title },
-  spec: ({ input }) => specOf(input),
 });
+// @ts-expect-error a mapper annotated against a shape the door does not serve is refused, like a body would be
 void workspace(wantsApp, {
   input: door,
-  // @ts-expect-error a mapper annotated against a shape the door does not serve is refused, like a body would be
   repos: { app: ({ input }: { input: { other: string } }) => input.other },
-  spec: ({ input }) => specOf(input),
 });
-// No door declared → the mapper's `input` is `unknown`, the same honesty as `spec`'s (claim 7).
-void workspace(ignoresHandles, {
-  repos: {
-    app: ({ input }) => {
-      // @ts-expect-error nothing is known about what starts this wrapper; the mapper must narrow
-      return input.repo;
-    },
-  },
-  spec: () => ({ branch: "feat" }),
-});
-// And when the permissive path is annotated, the slot mapper and `spec` state the SAME thing.
-void workspace(ignoresHandles, {
+// No door declared and an annotated mapper: the annotation states what the wrapper is fed.
+void workspace(bodyTakingInput<unknown>(), {
   repos: { app: ({ input }: { input: { ticket: Door } }) => input.ticket.repo },
-  spec: ({ input }: { input: { ticket: Door } }) => specOf(input.ticket),
 });
 
 // --- 11: a door with no fields needs no cast ----------------------------------------------------
@@ -350,17 +334,9 @@ const emptyBody = setup({
     done: { type: "final" },
   },
 });
-const emptyWrapped = workspace(emptyBody, {
-  input: emptyDoor,
-  repos,
-  spec: ({ input }) => {
-    // @ts-expect-error the empty door holds no field, so a misspelled read is refused, not `never`
-    void input.ticket;
-    return { branch: `fix/${input.instanceId}` };
-  },
-});
+const emptyWrapped = workspace(emptyBody, { input: emptyDoor, repos });
 // The wrapper's input is the empty door without its `Record<string, never>`: `{}`, so a parent can
-// give `instanceId` to a nested `spec` that reads it.
+// give it `instanceId`.
 const emptyDoorIsTheInput: Eq<InputFrom<typeof emptyWrapped>, {}> = true;
 void setup({ types: {} as { context: HostInjectedInput }, actors: { work: emptyWrapped } }).createMachine({
   context: { instanceId: "parent" },
@@ -374,55 +350,39 @@ void setup({ types: {} as { context: HostInjectedInput }, actors: { work: emptyW
 // composition as for any other door.
 type EmptyRootBody = Workspaced<HostInjectedInput & z.infer<typeof emptyDoor>, "app">;
 const instanceIdStays: Eq<EmptyRootBody["instanceId"], string> = true;
-void workspace(bodyTakingInput<EmptyRootBody>(), { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
+void workspace(bodyTakingInput<EmptyRootBody>(), { input: emptyDoor, repos });
 
 // A body that writes the empty door's own type, alone or with the handles, is accepted as on main:
 // the raw door stays on the provided side of the guard (the empty-door twin of `ignoresHandles`).
 void workspace(bodyTakingInput<z.infer<typeof emptyDoor>>(), {
   input: emptyDoor,
   repos,
-  spec: () => ({ branch: "feat" }),
 });
 void workspace(bodyTakingInput<z.infer<typeof emptyDoor> & { workspace: WorkspaceHandles<"app"> }>(), {
   input: emptyDoor,
   repos,
-  spec: () => ({ branch: "feat" }),
 });
 // The guard still refuses what the empty door does not carry.
 // @ts-expect-error the body demands `ticket`, which the empty door does not carry
-void workspace(unrelated, { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
+void workspace(unrelated, { input: emptyDoor, repos });
 const wrongInstanceId = bodyTakingInput<Workspaced<{ instanceId: number }, "app">>();
 // @ts-expect-error the host injects an Instance ID string, never a number
-void workspace(wrongInstanceId, { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
+void workspace(wrongInstanceId, { input: emptyDoor, repos });
 const demandsReason = bodyTakingInput<Workspaced<{ reason: string }, "app">>();
 // @ts-expect-error the body demands `reason`, which the empty door does not carry
-void workspace(demandsReason, { input: emptyDoor, repos, spec: () => ({ branch: "feat" }) });
+void workspace(demandsReason, { input: emptyDoor, repos });
 
 // Only an index signature whose value is `never` goes: an input that is a real map is not changed.
 const mapStays: Eq<Workspaced<Record<string, string>, "app">["anyKey"], string> = true;
-
-// `spec` reads `instanceId` on a door with fields too, typed as the string the host injects. The
-// wrapper's own input is still the door alone: no caller sends `instanceId`.
-void workspace(exact, {
-  input: door,
-  repos,
-  spec: ({ input }) => {
-    const id: string = input.instanceId;
-    // @ts-expect-error the host injects an Instance ID string, never a number
-    const wrong: number = input.instanceId;
-    void wrong;
-    return { branch: `${input.branch}-${id}` };
-  },
-});
 
 // --- 12: no Repo Slot ---------------------------------------------------------------------------
 
 const slotless = bodyTakingInput<Workspaced<Door, never>>();
 const job = workspace(slotless, { input: door });
-// The handles of a Workspace with no Repo Slot hold no path and no branch.
+// The handles of a Workspace with no Repo Slot hold no path.
 const slotlessHandles: Eq<WorkspaceHandles<never>, { repos: Record<never, string> }> = true;
 const jobDoorIsTheInput: Eq<InputFrom<typeof job>, Door> = true;
-void workspace(slotless, { input: door, spec: () => ({ workGroup: 3000 }) });
+void workspace(slotless, { input: door, workGroup: 3000 });
 void workspace(slotless, {});
 // A body that never reads the handles is fed more than it declared, as with slots.
 void workspace(ignoresHandles, { input: door });
@@ -430,10 +390,101 @@ void workspace(ignoresHandles, { input: door });
 void workspace(wantsApp, { input: door });
 // @ts-expect-error refused on the door-less path too
 void workspace(wantsApp, {});
-// @ts-expect-error a Workspace with no Repo Slot has no branch to name
+// @ts-expect-error `spec` is gone: the Workspace clones, and a Machine cuts each Worktree
 void workspace(slotless, { input: door, spec: () => ({ branch: "feat" }) });
-// @ts-expect-error nor a review Worktree
-void workspace(slotless, { input: door, spec: () => ({ reviewSha: "a".repeat(40) }) });
+// @ts-expect-error nor beside a Repo Slot
+void workspace(wantsApp, { input: door, repos, spec: () => ({ branch: "feat" }) });
+// @ts-expect-error nor on the door-less path
+void workspace(wantsApp, { repos, spec: () => ({ workGroup: 3000 }) });
+
+// A door-less Workspace whose body asks only for the handles or for optional fields: a typed parent
+// has nothing that it must give, so its invoke needs no `input`. A body that asks for a required
+// field still needs one.
+const handlesOnly = workspace(
+  jr2Setup({ types: {} as { input: Workspaced<{}, "app"> } }).createMachine({
+    id: "handlesOnly",
+    initial: "done",
+    states: { done: { type: "final" } },
+  }),
+  { repos },
+);
+const onlyOptionalFields = workspace(
+  jr2Setup({ types: {} as { input: Workspaced<{ note?: string }, "app"> } }).createMachine({
+    id: "onlyOptionalFields",
+    initial: "done",
+    states: { done: { type: "final" } },
+  }),
+  { repos },
+);
+// The `undefined` that frees the invoke does not reach a per-run Repo Slot: a run with no input gives
+// the mapper `{}`.
+export const aMapperUnderOptionalFields = workspace(
+  jr2Setup({ types: {} as { input: Workspaced<{ note?: string }, "app"> } }).createMachine({
+    id: "aMapperUnderOptionalFields",
+    initial: "done",
+    states: { done: { type: "final" } },
+  }),
+  { repos: { app: ({ input }) => input.note ?? "https://x/y.git" } },
+);
+// A mapper that states its input keeps working.
+export const anAnnotatedMapperUnderARequiredField = workspace(
+  jr2Setup({ types: {} as { input: Workspaced<{ prompt: string }, "app"> } }).createMachine({
+    id: "anAnnotatedMapperUnderARequiredField",
+    initial: "done",
+    states: { done: { type: "final" } },
+  }),
+  { repos: { app: ({ input }: { input: { prompt: string } }) => input.prompt } },
+);
+const asksForAField = workspace(
+  jr2Setup({ types: {} as { input: Workspaced<{ prompt: string }, "app"> } }).createMachine({
+    id: "asksForAField",
+    initial: "done",
+    states: { done: { type: "final" } },
+  }),
+  { repos },
+);
+export const noInputAtTheInvoke = jr2Setup({ events: [], actors: { handlesOnly } }).createMachine({
+  id: "parent",
+  initial: "a",
+  states: { a: { invoke: { src: "handlesOnly" } } },
+});
+export const noInputForOptionalFields = jr2Setup({ events: [], actors: { onlyOptionalFields } }).createMachine({
+  id: "parent",
+  initial: "a",
+  states: { a: { invoke: { src: "onlyOptionalFields" } } },
+});
+export const anOptionalFieldAtTheInvoke = jr2Setup({ events: [], actors: { onlyOptionalFields } }).createMachine({
+  id: "parent",
+  initial: "a",
+  states: { a: { invoke: { src: "onlyOptionalFields", input: { note: "n" } } } },
+});
+export const anInputAtTheInvoke = jr2Setup({ events: [], actors: { asksForAField } }).createMachine({
+  id: "parent",
+  initial: "a",
+  // @ts-expect-error the body asks for `prompt`, so the invoke must give it
+  states: { a: { invoke: { src: "asksForAField" } } },
+});
+
+// A Source that does not read the Pool's input needs no word of the door's type, under a typed door.
+const typedDoor = z.object({ workers: z.number() });
+export const untypedSourceUnderADoor = pool(jr2Setup({}).createMachine({ id: "worker" }), {
+  input: typedDoor,
+  source: source<{ id: string }>({
+    next: fromPromise<{ id: string } | null, PoolNextInput>(async () => null),
+  }),
+  itemId: (item: { id: string }) => item.id,
+  cap: ({ input }) => input.workers,
+});
+
+// Claim 13: `input.note` compiles with no `?.`, and the required field reads as before.
+const onlyOptional = workspace(bodyTakingInput<Workspaced<{ note?: string }, "app">>(), { repos: { app: open } });
+export const mapperOverOptionalFields = customize(onlyOptional, {
+  repos: { app: ({ input }) => input.note ?? "https://example.com/app.git" },
+});
+const oneRequired = workspace(bodyTakingInput<Workspaced<{ note: string }, "app">>(), { repos: { app: open } });
+export const mapperOverARequiredField = customize(oneRequired, {
+  repos: { app: ({ input }) => input.note },
+});
 
 test("the door's type-level claims are the compiler's; this run pins the runtime half", () => {
   assert.equal(inputSchemaOf(wrapped), door, "the declared door rides the WRAPPER, not the body");
@@ -441,10 +492,11 @@ test("the door's type-level claims are the compiler's; this run pins the runtime
   assert.ok(
     doorIsTheInput &&
       bodyOutputIsTheOutput &&
-      permissiveDoorIsUnknown &&
-      annotatedInputFlows &&
+      permissiveDoorIsTheBodys &&
+      bodyInputFlows &&
+      undeclaredDoorIsUnknown &&
       mapperSlotsAreSlots &&
-      appPathIsAString &&
+      appPathIsItsFolder &&
       emptyHoldsOnlyTheHandles &&
       emptyDoorIsTheInput &&
       instanceIdStays &&

@@ -86,6 +86,13 @@ has a door of its own. It does not use the door of the Machine inside it, becaus
 item. Thus the wrapper declares the door, with its `input` option. `workspace()` refuses a body that has a zod `input`,
 also a body that `setup()` made.
 
+A `workspace()` that a parent Machine invokes parses its door too, before it makes a pod. When the parent passes less
+than the door requires, the invoke fails with `workspace input invalid, before any pod: <zod message>`, and the parent's
+`onError` takes it. This is a defect of the parent, so no pod is spent on it. The body gets the parsed value, as it does
+on a root run: defaults are applied and unknown keys are removed. A `pool()` with a door does the same, and its error
+starts `pool input invalid, before any worker`. The door of a plain child Machine is a type, and nothing parses it at
+run time.
+
 ## The Vocabulary
 
 The Vocabulary of a Machine is the list of the workflow events that it takes. Each event comes from
@@ -196,6 +203,8 @@ moves a Machine.
 - A payload schema is a flat `z.object`, and it has no `sender` field. jr2 writes `sender` on each event that a party
   sends.
 - When a Machine declares a door, the Orchestrator refuses a start whose input does not agree with it.
+- A `workspace()` or a `pool()` under a parent parses its door before it makes a pod. An input that does not agree fails
+  the invoke.
 - The body of a `workspace()` declares no door. `workspace()` refuses a body that declares one.
 - The output of a run is the root `output` of its Machine. jr2 refuses an `output` on a final state directly below the
   root when the root has no `output`.

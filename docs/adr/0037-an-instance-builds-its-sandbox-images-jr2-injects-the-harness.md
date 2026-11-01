@@ -101,14 +101,14 @@ every build) and promotes incidental image properties into contract items.
   its first provision, in the `preflight` init container's log, with an error that names the fix (because "node did not
   execute" is not actionable) — never as a mid-turn tool failure, and never as a converge refusal for a contract the
   image was not under.
-- **`workspace()` names the image as a STATIC OPTION, never in the per-run spec** — what the Sandbox is _made of_ is the
-  wrapper's business in the same way its worktrees are, but it is a fact about the MACHINE, not about a run: `jr2 up`
-  finds it by walking the registered Machines ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)),
-  and a spec is a function of run input that no walk can evaluate. The User Container rides the same rule and the same
-  resolution as one more option beside `image` (`user?: string`, [ADR-0005](0005-sandbox-pod-composition.md)). Neither
-  is ever persisted: the option rides the Machine (a parts map keyed on `machine.config`, as the vocabulary is) and the
-  provisioning state re-reads it at invoke time, so a restore provisions what the Machine carries now — and a resolved
-  content-addressed tag, which would outlive the image it names, never leaves the port's side of the seam at all.
+- **`workspace()` names the image as a STATIC OPTION, never from run input** — what the Sandbox is _made of_ is the
+  wrapper's business in the same way its clones are, and it is a fact about the MACHINE, not about a run: `jr2 up` finds
+  it by walking the registered Machines ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), and no
+  walk can evaluate a function of run input. The User Container rides the same rule and the same resolution as one more
+  option beside `image` (`user?: string`, [ADR-0005](0005-sandbox-pod-composition.md)). Neither is ever persisted: the
+  option rides the Machine (a parts map keyed on `machine.config`, as the vocabulary is) and the provisioning state
+  re-reads it at invoke time, so a restore provisions what the Machine carries now — and a resolved content-addressed
+  tag, which would outlive the image it names, never leaves the port's side of the seam at all.
 - **A Menu-only Agent never gets a Sandbox Image.** `workspace: "none"` withholds the entire Working toolset (ADR-0028),
   so there is no tooling to carry; the Instance Harness (ADR-0031) runs the stock image permanently. The feature has
   exactly one seat, and it is the Workspace.

@@ -13,8 +13,8 @@ instructions that say "Do not modify the code yourself".
 [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md) already established what that means: the same
 prompt, model, and state produce compliance on one run and not the next, "which is what rules out fixing this with
 words." The prose ban is a persona, not a boundary. ADR-0024 also named the stakes — an Agent with write access is a
-concurrent writer in a Workspace the Machine believes is single-threaded — and
-[ADR-0012](0012-workspace-wrapper-machine.md) puts coder and reviewer in that one Workspace on purpose.
+writer that the Machine did not plan for — and [ADR-0012](0012-workspace-wrapper-machine.md) puts coder and reviewer in
+one Workspace on purpose.
 
 Under the retired flue runtime this had no seat — its tool list was take-it-or-replace-it, and the only recorded out was
 ejecting to a foreign harness project. [ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)
@@ -41,19 +41,20 @@ definition can state.
   tools (the tool set that the Harness gives the loop for each Submission). `bash` stays — the reviewer's own
   instructions require running the tests — and the ADR says plainly what that means: a shell can write, so the tool
   layer states intent and stops the honest path. It is known leaky, and it is not the guarantee.
-- **The worktree layer contains the blast radius: a reviewer works in a detached review worktree.** The attach step —
-  already jr2-owned (`sandbox-kubectl.ts`'s `attachScript`) — adds a worktree at the sha under review with a detached
-  HEAD, sibling to the branch worktree per the Project layout. A write there cannot move the branch or dirty the coder's
-  worktree; a rogue commit lands on a detached HEAD and evaporates with the checkout. This is not a permission boundary
-  — it is containment, the property ADR-0024 bought for turns, bought for the filesystem.
+- **The worktree layer contains the blast radius: a reviewer works in a detached review Worktree.** The Machine cuts it
+  with `worktree()`, `{ path, detach: sha }`, at the sha under review, with a detached HEAD, sibling to the coder's
+  Worktree per the Project layout ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). A write
+  there cannot move the branch or dirty the coder's Worktree; a rogue commit lands on a detached HEAD and goes when the
+  next cut forces the folder. This is not a permission boundary — it is containment, the property ADR-0024 bought for
+  turns, bought for the filesystem.
 - **Two layers, one structure: the tool list is the hint, the worktree is the guarantee** — the same shape as ADR-0024's
   receipt (hint) and abort (guarantee). Neither layer alone: tools without the worktree leak through bash; the worktree
   without tools invites the model to fight its checkout instead of declining politely.
-- **The reviewing state requests the review worktree per round.** The sha under review moves between rounds, so the
-  detached worktree is attached (idempotently, by sha) on entry to the reviewing state, and its path frames the
-  reviewer's turn — cwd and prompt — instead of the branch worktree. The exact Workspace-port verb is settled at
-  implementation; what is decided here is the seat: worktree mechanics stay in the attach step and the Workspace
-  wrapper, never in Agent instructions.
+- **A state before the reviewing state cuts the review Worktree on each round.** The sha under review moves between
+  rounds, so each round cuts the one folder again at the new sha. The cut forces the folder to the commit and cleans it
+  with `-ffd`. Ignored files stay, because the reviewer runs the tests. The folder's path frames the reviewer's turn —
+  cwd and prompt — instead of the coder's Worktree. What is decided here is the seat: worktree mechanics stay in
+  `worktree()` and the Machine's states, never in Agent instructions.
 
 ## Considered options
 

@@ -52,10 +52,10 @@ The file has five parts:
   When no issue is ready, it gives `null`. The request has no token, so the Repo must be public. Without a token, GitHub
   allows 60 requests in each hour. The example reads only the first page of issues: at most 100. When the request fails
   while workers run, `next` gives `null` in place of the error, so that the failure does not stop the run.
-- **The record of the Source.** `next` keeps each issue that it gives in the `Set` `claimed`, and skips the issues in
-  `active`. The `Set` is in the memory of the [Orchestrator](../reference/glossary.md#orchestrator), and each run of the
-  Workflow uses the same `Set`. A restart of the Orchestrator empties it. Then `next` can give a finished issue again,
-  but never an issue that a worker of this run has now.
+- **The record of the Source.** The Source keeps no record of its own. `next` skips each issue in `active` and in
+  `settled`. The Pool holds both, so they stay across a restart of the
+  [Orchestrator](../reference/glossary.md#orchestrator). Each run of the Workflow has its own lists, so a new run can
+  give an issue that is still open.
 - **The worker.** `fixer` is `task` with its two [Open](../reference/glossary.md#open) parts bound: the Repo and the
   model of the coder. [Bind a shipped Machine's Open parts](bind-open-parts.md) tells more.
 - **The run input.** `door` is the run input of the Pool. `cap` reads `workers` from it. A worker never gets it.
@@ -68,12 +68,18 @@ Run [`jr2 up`](../reference/cli.md#up) to converge the Instance with the new Wor
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
+effects: workflow "issues" — what it runs outside itself (ADR-0067)
+  cut: worktree — 600s, in the Harness
 failures: workflow "issues" — the states that fail the run (ADR-0073)
   issues.failing: invokes fail
+  task.noBranch: invokes fail
+  task.notCut: invokes fail
   task.lost: invokes fail
 …
 seats: workflow "issues" — who may send what, per state (ADR-0015)
@@ -209,8 +215,8 @@ In the JSON, `context.items` holds the output of each worker that finished, by i
   workers register the same Gate or [Agent](../reference/glossary.md#agent), the run stops with the status `error`, and
   its `fault` is `registration address "<address>" is already live (two concurrent registrations share an id)`. For
   `task`, `<address>` is `gate/<run id>/<item id>.body.review` or `agent/<run id>/<item id>.body/coder`.
-- `next` gets only `active`: the ids of the items that workers have now. To not give a finished item again, the Source
-  must keep the items that it gave.
+- `next` gets `active`, the ids of the items that workers have now, and `settled`, the ids of the finished and failed
+  items. It also gets `input`, the input of the Pool. To not give a finished item again, skip each id in `settled`.
 - When a worker fails, for example when the Sandbox of a `task` is lost, the Pool keeps the Failure in `failures` and
   goes on. Only the Sandbox of that worker is deleted. The other workers, and the work in their Sandboxes, stay. A
   defect in a worker is different: the run stops with the status `error`.

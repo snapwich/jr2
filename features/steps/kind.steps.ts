@@ -19,6 +19,7 @@ import { After, AfterAll, Given, Then, When, type ITestCaseHookParameter } from 
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,8 +36,13 @@ import {
   type RepoStatus,
 } from "@jr2/orchestrator/internal";
 import {
+  dropSeedRepo,
+  ensureLargeSeed,
   ensureSeed,
   gpgRemoteCommit,
+  moveLargeSeed,
+  ownSeedRepo,
+  pushRemoteBranch,
   pushRemoteTip,
   pushToSeed,
   seedKeys,
@@ -198,7 +204,8 @@ async function waitForAttached(world: E2EWorld): Promise<WsStatus> {
   let last: WsStatus | undefined;
   for (let i = 0; i < 120; i++) {
     last = await wsStatus(world);
-    if (last.value === "running") return last;
+    // A body's first state cuts its Worktree: the wrapper in `running` is not the Worktree there.
+    if (last.value === "running" && !anyChildIn(last.children, "cutting")) return last;
     await sleep(500);
   }
   throw new Error(`the workspace never finished attaching (last: ${JSON.stringify(last)})`);
@@ -590,16 +597,14 @@ Then("the connection never completes", function (this: E2EWorld): void {
 });
 
 /**
- * The detached review worktree (ADR-0028), attached the way the attach step does: the same
- * idempotent git steps the Harness's `POST /attach` runs with a `reviewSha` (ADR-0063), exec'd in
- * the Harness container. Played from here rather than through a workflow because the Workspace-port verb
- * that requests it per review round is a later phase — what this tier pins is the containment
- * property of the worktree itself, on a real pod with the real shared clone.
+ * A detached Worktree (ADR-0028), made with the same git steps as a detached cut (ADR-0075), exec'd
+ * in the Harness container. Played from here rather than through a workflow because what this tier
+ * pins is the containment property of the Worktree itself, on a real pod with the real shared clone.
  */
 When(
   "a detached review worktree is attached for repo {string} at the head of branch {string}",
   async function (this: E2EWorld, repo: string, branch: string): Promise<void> {
-    await waitForAttached(this); // attach is post-Ready — the branch worktree must exist first
+    await waitForAttached(this); // attach is post-Ready — the clone must exist first
     const pod = (await waitForReadySandbox(this)).metadata.name;
     const dflt = `/work/${repo}/default`;
     const review = `/work/${repo}/${branch}-review`;
@@ -3325,3 +3330,424 @@ Then(
     assert.match(raw, /^author jr2 e2e <e2e@jr2\.test> /m, "the author is the Agent's");
   },
 );
+
+// --- Worktrees in a real pod ---------------------------------------------------------------------
+
+/** The bash of a scripted coder: a file, a commit, in its Frame. */
+const commitIn = (name: string, where = ".") =>
+  `cd ${where} && printf '${name}\n' > ${name}.txt && git add ${name}.txt && git -c user.name=e -c user.email=e@e commit -qm ${name} && echo committed-${name}`;
+
+async function shell(world: E2EWorld, script: string): Promise<string> {
+  const pod = await sandboxPodOf(world);
+  return kubectl(world, ["exec", pod, "-c", "harness", "--", "sh", "-c", script]);
+}
+
+async function sendGate(world: E2EWorld, event: string, input?: unknown): Promise<void> {
+  const gate = await openGate(world);
+  const r = await world.runCli([
+    "send",
+    world.runId!,
+    "--gate",
+    gate.gate,
+    "--event",
+    event,
+    ...(input === undefined ? [] : ["--input", JSON.stringify(input)]),
+  ]);
+  assert.equal(r.code, 0, `jr2 send ${event} failed: ${r.stderr}`);
+}
+
+async function startWt(world: E2EWorld, wf: string, input: unknown): Promise<void> {
+  const r = await world.runCli(["run", wf, "--detach", "--input", JSON.stringify(input)]);
+  assert.equal(r.code, 0, `jr2 run ${wf}: ${r.stderr}`);
+  world.runId = world.resultJson<{ runId: string }>().runId;
+}
+
+const WT_DRIVERS: Record<string, (w: E2EWorld, m: string) => Promise<void>> = {
+  // One coder, a read slot, a Gate, a push. The branch is a door value, the folder is a word.
+  async s1(w, m) {
+    await startWt(w, "wt-s1", { ticket: m, prompt: "fix the docs" });
+    await w.provider!.release("bash", { command: commitIn("s1") });
+    await w.provider!.release("finished", {});
+    assert.match(await shell(w, "git -C /work/handbook/default branch --show-current"), /main/);
+    await sendGate(w, "approve");
+    const settled = await waitSettled(w);
+    assert.equal(settled.status, "done");
+    assert.ok(await pushRemoteTip(`docs/${m}`), "the remote holds the door's branch");
+  },
+  // `task` under a Pool: the kit's Machine, one Workspace for each item.
+  async s2(w) {
+    const r = await w.runCli(["run", "wt-s2", "--detach"]);
+    assert.equal(r.code, 0, r.stderr);
+    w.runId = w.resultJson<{ runId: string }>().runId;
+    await w.provider!.release("finish", { summary: "done" });
+    await waitPool(w, "approve");
+    assert.equal((await waitSettled(w)).status, "done");
+  },
+  // Two rounds, a reviewer's own `git switch`, a signed push of exactly the reviewed commit.
+  async s3(w, m) {
+    await startWt(w, "wt-s3", { prompt: "fix it", branch: `rev-${m}` });
+    await w.provider!.release("bash", { command: commitIn("round1") });
+    await w.provider!.release("finished", {});
+    await w.provider!.release("bash", { command: "git switch -q -c look-around && echo moved" });
+    await w.provider!.release("revise", { notes: "once more" });
+    await w.provider!.release("bash", { command: commitIn("round2") });
+    await w.provider!.release("finished", {});
+    await w.provider!.release("bash", { command: "ls round2.txt && git status --porcelain" });
+    await w.provider!.release("pass", {});
+    await sendGate(w, "approve");
+    assert.equal((await waitSettled(w)).status, "done");
+    assert.ok(await pushRemoteTip(`rev-${m}`), "the reviewed commit is on the remote");
+  },
+  // A planner's list, a Pool of coders in one clone, a local merge, one push.
+  async s4(w, m) {
+    await startWt(w, "wt-s4", { goal: "split it", branch: `merge-${m}` });
+    await w.provider!.release("plan", {
+      tasks: [
+        { id: `a-${m}`, title: "first" },
+        { id: `b-${m}`, title: "second" },
+      ],
+    });
+    await w.provider!.release("bash", { command: commitIn(`a-${m}`) });
+    await w.provider!.release("bash", { command: commitIn(`b-${m}`) });
+    await w.provider!.release("done", {});
+    await w.provider!.release("done", {});
+    assert.equal((await waitSettled(w)).status, "done");
+    assert.ok(await pushRemoteTip(`merge-${m}`), "the merge is on the remote");
+  },
+  // An existing remote branch with a slash, tracked, pushed to. A typo makes nothing.
+  async s5(w, m) {
+    const before = await pushRemoteBranch(`feature/${m}`);
+    await startWt(w, "wt-s5", { pr: `feature/${m}`, prompt: "add to it" });
+    await w.provider!.release("bash", { command: commitIn("s5") });
+    await w.provider!.release("committed", {});
+    assert.equal((await waitSettled(w)).status, "done");
+    assert.notEqual(await pushRemoteTip(`feature/${m}`), before, "the push moved the colleague's branch");
+    await startWt(w, "wt-s5", { pr: `feature/typo-${m}`, prompt: "add to it" });
+    const typo = await waitSettled(w);
+    assert.equal(typo.status, "failed");
+  },
+  // A planner's bad name at the Menu, a collision at the cut, then the run.
+  async s6(w, m) {
+    const taken = `taken-${m}`;
+    await pushToSeed(taken);
+    await startWt(w, "wt-s6", {});
+    await w.provider!.release("plan", { plan: "p", branch: "-bad" });
+    await w.provider!.release("plan", { plan: "p", branch: taken });
+    await w.provider!.release("plan", { plan: "p", branch: `fresh-${m}` });
+    await w.provider!.release("bash", { command: commitIn("s6") });
+    const sha = (await shell(w, "git -C /work/app/ticket rev-parse HEAD")).trim();
+    await w.provider!.release("submit", { commit: sha, summary: "done" });
+    await w.provider!.release("approve", { notes: "good" });
+    const gate = await openGate(w);
+    assert.equal(gate.meta?.branch, `fresh-${m}`);
+    await sendGate(w, "ship");
+    assert.equal((await waitSettled(w)).status, "done");
+  },
+  // One branch name, two Worktrees, two pushes, one Sandbox.
+  async s7(w, m) {
+    await startWt(w, "wt-s7", { ticket: `t-${m}`, prompt: "change both" });
+    await w.provider!.release("bash", { command: `${commitIn("api")} && ${commitIn("web", "/work/web/change")}` });
+    await w.provider!.release("finished", {});
+    assert.equal((await waitSettled(w)).status, "done");
+    assert.ok(await pushRemoteTip(`t-${m}`), "the first remote has it");
+  },
+  // A Failure of the body, a new Sandbox, and a Machine that tries again.
+  // Each try has a new pod, so `found` reads the remote: nothing the first time, nothing after
+  // commits that were not pushed, and the branch once a push reached it.
+  async s8(w, m) {
+    const branch = `s8-${m}`;
+    await startWt(w, "wt-s8", { branch, prompt: "try" });
+    await frameShows(w, /try 0\. The cut found none\./);
+    await w.provider!.release("bash", { command: commitIn("unpushed") });
+    await w.provider!.holding("give_up");
+    await w.provider!.release("give_up", {});
+    await frameShows(w, /try 1\. The cut found none\./);
+    assert.equal(await shell(w, "test -e /work/app/run/unpushed.txt && echo here || echo gone"), "gone\n");
+    const pushed = await pushToSeed(branch);
+    await w.provider!.release("give_up", {});
+    await frameShows(w, new RegExp(`try 2\\. The cut found remote\\.[^"]*at ${pushed}`));
+    await w.provider!.release("finished", {});
+    assert.equal((await waitSettled(w)).status, "done");
+  },
+  // A Failure ABOVE the Workspace: the Sandbox stays for the same invoke id, the cut says `held`, and
+  // the Turn is told. The kept commit and an uncommitted file are in the pod.
+  async s8b(w, m) {
+    await startWt(w, "wt-s8b", { branch: `s8b-${m}`, prompt: "try" });
+    await w.provider!.release("bash", { command: `${commitIn("kept")} && echo left > uncommitted.txt` });
+    await w.provider!.holding("finished");
+    const pod = await sandboxPodOf(w);
+    // The budget fires, the attempt fails, and the Machine tries again.
+    for (let i = 0; i < 120; i++) {
+      const calls = w.provider!.calls.filter((c) => c.stream && /your earlier work is in this Worktree/.test(c.raw));
+      if (calls.length > 0) break;
+      assert.notEqual(i, 119, "the second Turn was told of the earlier work");
+      await sleep(1000);
+    }
+    assert.equal(await sandboxPodOf(w), pod, "one Sandbox");
+    assert.match(await shell(w, "ls /work/app/run"), /kept\.txt[\s\S]*uncommitted\.txt/);
+    await w.provider!.release("finished", {});
+    assert.equal((await waitSettled(w)).status, "done");
+  },
+  // The docs' removal recipe. The first cut's record stays, so the same path and branch cut again.
+  async removed(w, m) {
+    const branch = `removed-${m}`;
+    await startWt(w, "wt-removed", { branch });
+    await w.provider!.release("bash", { command: commitIn("kept") });
+    await w.provider!.holding("finished");
+    const head = (await shell(w, "git -C /work/app/run rev-parse HEAD")).trim();
+    await w.provider!.release("finished", {});
+    const settled = await waitSettled(w);
+    assert.equal(settled.status, "done", JSON.stringify(settled));
+    const { removed, again, pushed } = settled.output as {
+      removed: { outcome: string; code?: number; tail?: string };
+      again: { outcome: string; found?: string; head?: string; reason?: string };
+      pushed: { outcome: string; published?: string; reason?: string };
+    };
+    assert.equal(removed.outcome, "exited", JSON.stringify(removed));
+    assert.equal(removed.code, 0, JSON.stringify(removed));
+    assert.equal(again.outcome, "ready", JSON.stringify(again));
+    assert.equal(again.found, "local", JSON.stringify(again));
+    assert.equal(again.head, head, "the branch stayed, so the new folder holds the commit");
+    assert.equal(pushed.outcome, "pushed", JSON.stringify(pushed));
+    assert.equal(await pushRemoteTip(branch), head, "the remote holds the branch of the cut");
+    const status = await w.runCli(["status", w.runId!]);
+    assert.equal(status.code, 0, status.stderr);
+    assert.match(status.stdout + status.stderr, new RegExp(`worktree: /work/app/run \\(app\\), branch ${branch}\\b`));
+  },
+  // A planner's Chart: a literal Worktree, `jr2.ready`, a Turn, a lent force push. Its door says no to `to`.
+  async s9(w, m) {
+    const chart = (extra: object) => ({
+      events: { committed: { input: { type: "object", properties: {}, additionalProperties: false } } },
+      initial: "cutting",
+      states: {
+        cutting: {
+          invoke: {
+            src: "cut",
+            input: { path: "/work/app/run", branch: `chart-${m}` },
+            onDone: [{ guard: "jr2.ready", target: "working" }, { target: "blocked" }],
+          },
+        },
+        working: {
+          invoke: { src: "coder", input: { prompt: "work", cwd: "/work/app/run" } },
+          on: { committed: "pushing" },
+        },
+        pushing: { invoke: { src: "publish", input: { worktree: "/work/app/run", ...extra }, onDone: "finished" } },
+        finished: { type: "final" },
+        blocked: { invoke: { src: "fail", input: { reason: "no Worktree" } } },
+      },
+    });
+    const refused = await w.runCli([
+      "run",
+      "wt-s9",
+      "--detach",
+      "--input",
+      JSON.stringify({ chart: chart({ to: "main" }) }),
+    ]);
+    assert.notEqual(refused.code, 0, "the door refuses `to`");
+    assert.match(refused.stderr + refused.stdout, /not its input: to/);
+    await startWt(w, "wt-s9", { chart: chart({}) });
+    await w.provider!.release("bash", { command: commitIn("s9") });
+    await w.provider!.release("committed", {});
+    assert.equal((await waitSettled(w)).status, "done");
+    assert.ok(await pushRemoteTip(`chart-${m}`), "the Chart's push went to the cut's branch");
+  },
+  // The cut's process and its git die. The run goes on, and the next cut in the clone repairs it.
+  "kill-cut": (w, m) => killedCut(w, m, "cut"),
+  // The Harness dies, and its container restarts. The cut goes again under its id and settles.
+  "kill-harness": (w, m) => killedCut(w, m, "harness"),
+  // The remote is gone after the attach: what the clone holds is cut `stale`, and a new name is refused.
+  async dead(w, m) {
+    const repo = `dead-${m}`;
+    const held = `held-${m}`;
+    const fresh = `fresh-${m}`;
+    await startWt(w, "wt-dead", { repo: await ownSeedRepo(repo, 1, [held]), held, fresh });
+    await openGate(w);
+    await dropSeedRepo(repo);
+    await sendGate(w, "go");
+    const out = (await httpOutput(w)) as Record<
+      string,
+      { outcome?: string; found?: string; stale?: string; reason?: string }
+    >;
+    assert.equal(out.heldCut?.outcome, "ready", JSON.stringify(out));
+    assert.equal(out.heldCut?.found, "remote", JSON.stringify(out));
+    assert.match(out.heldCut?.stale ?? "", /the clone is as of/, JSON.stringify(out));
+    assert.equal(out.freshCut?.outcome, "refused", JSON.stringify(out));
+    assert.match(out.freshCut?.reason ?? "", /the remote did not answer, so it may exist there/, JSON.stringify(out));
+  },
+};
+
+/** A Turn's Frame showed this: the words of a Machine reach the model's request. */
+async function frameShows(world: E2EWorld, words: RegExp): Promise<void> {
+  for (let i = 0; i < 240; i++) {
+    if (world.provider!.calls.some((c) => c.stream && words.test(c.raw))) return;
+    await sleep(1000);
+  }
+  assert.fail(`no Turn was told ${words}`);
+}
+
+/** The pod's view of a cut's traces in the clone, for a path and a branch. */
+async function cutTraces(world: E2EWorld, name: string, branch: string): Promise<string> {
+  return shell(
+    world,
+    [
+      `cd /work/app/default`,
+      `ls ../${name} >/dev/null 2>&1 && echo folder`,
+      `git -c safe.directory='*' worktree list --porcelain | grep -q "^worktree /work/app/${name}$" && echo listed`,
+      `ls .git/worktrees/${name}/locked >/dev/null 2>&1 && echo locked`,
+      `git -c safe.directory='*' rev-parse -q --verify refs/heads/${branch} >/dev/null && echo branch`,
+      `grep -so '"state":"[a-z]*"' .git/jr2-cuts/${name}.json`,
+      `true`,
+    ].join("\n"),
+  );
+}
+
+/** The file that the kill writes in the clone, just before it kills. It outlives the Harness. */
+const KILL_MARK = "/work/app/default/.git/killed-in-add";
+
+/**
+ * A kill in the middle of `git worktree add`: the folder exists, and the admin entry has `locked` and
+ * `index.lock`, which git holds through the checkout. The kill goes to the cut's process group, or to
+ * the Harness, the parent of the cut. The script waits inside the pod, because the window is seconds,
+ * and it marks the file `armed` first, so that the step sends the cut only after the kill is in place.
+ * `[s]` keeps this script's own command line out of its match.
+ */
+const KILL_AT_CUT = (what: "cut" | "harness") => `
+: > /tmp/armed
+deadline=$(($(date +%s) + 120))
+admin=/work/app/default/.git/worktrees/run
+until [ -d /work/app/run ] && [ -e "$admin/locked" ] && [ -e "$admin/index.lock" ]; do
+  [ "$(date +%s)" -lt "$deadline" ] || { echo no-cut; exit 3; }
+done
+for p in /proc/[0-9]*; do
+  c=$(tr '\\0' ' ' < "$p/cmdline" 2>/dev/null) || continue
+  case "$c" in
+    */src/cut.t[s]" "*)
+      read -r pid comm st ppid pgrp rest < "$p/stat"
+      : > ${KILL_MARK}
+      ${what === "cut" ? `kill -9 -"$pgrp"` : `kill -9 "$ppid"`}
+      echo killed
+      exit 0
+      ;;
+  esac
+done
+echo no-process
+exit 4
+`;
+
+/** Arm the kill, send the cut, and wait for the kill. A killed Harness takes the exec with it. */
+async function killDuringCut(world: E2EWorld, what: "cut" | "harness"): Promise<void> {
+  const killing = shell(world, KILL_AT_CUT(what));
+  const killer = what === "cut" ? killing : killing.catch(() => "");
+  for (let i = 0; ; i++) {
+    if ((await shell(world, "ls /tmp/armed 2>/dev/null; true")).includes("armed")) break;
+    assert.notEqual(i, 60, "the kill was armed in the pod");
+    await sleep(500);
+  }
+  await sendGate(world, "go");
+  // The Harness's kill is proved by the container's restart count: the kill ends this exec too.
+  const said = await killer;
+  if (what === "cut") assert.equal(said.trim(), "killed", "the cut's process was killed in the middle");
+}
+
+async function restartsOf(world: E2EWorld): Promise<number> {
+  const pod = await sandboxPodOf(world);
+  const out = await kubectl(world, [
+    "get",
+    "pod",
+    pod,
+    "-o",
+    `jsonpath={.status.containerStatuses[?(@.name=="harness")].restartCount}`,
+  ]);
+  return Number(out);
+}
+
+/** The Worktree's name a killed cut held, and the run that goes on. */
+async function killedCut(w: E2EWorld, m: string, what: "cut" | "harness"): Promise<void> {
+  const repo = `kill-${m}`;
+  const branch = `killed-${m}`;
+  const url = await ownSeedRepo(repo, 20_000);
+  await startWt(w, "wt-kill", { repo: url, branch });
+  await openGate(w);
+  await killDuringCut(w, what);
+  await openGate(w);
+  assert.match(await shell(w, `ls ${KILL_MARK}`), /killed-in-add/, "the kill came in the middle of the add");
+  if (what === "cut") {
+    assert.match(
+      await cutTraces(w, "run", branch),
+      /folder\nlisted\nlocked\nbranch\n"state":"cutting"/,
+      "the kill left a partial Worktree and the cut's record",
+    );
+  } else {
+    assert.ok((await restartsOf(w)) > 0, "the Harness container restarted");
+  }
+  await sendGate(w, "look");
+  await openGate(w);
+  if (what === "cut") {
+    assert.equal((await cutTraces(w, "run", branch)).trim(), "", "the next cut repaired the killed cut");
+  } else {
+    assert.match(await cutTraces(w, "run", branch), /folder[\s\S]*listed[\s\S]*branch[\s\S]*"state":"done"/);
+  }
+  await sendGate(w, "check");
+  await w.provider!.release("bash", { command: commitIn("after-kill") });
+  await w.provider!.release("finished", {});
+  const out = (await httpOutput(w)) as Record<
+    string,
+    { outcome?: string; found?: string; reason?: string } | undefined
+  >;
+  assert.equal(out.next?.outcome, "ready", JSON.stringify(out));
+  assert.equal(out.again?.outcome, "ready", JSON.stringify(out));
+  if (what === "cut") {
+    assert.equal(out.first?.outcome, "unknown", JSON.stringify(out));
+    assert.equal(out.again?.found, "none", "the repaired name is new again");
+  } else {
+    // The same Effect went again under its id, so it answers as a first cut.
+    assert.equal(out.first?.outcome, "ready", JSON.stringify(out));
+    assert.equal(out.first?.found, "none", JSON.stringify(out));
+    assert.equal(out.again?.found, "held", JSON.stringify(out));
+  }
+  await dropSeedRepo(repo);
+}
+
+/** The Pool's item Gate: a run's Gates, the first that opens. */
+async function waitPool(world: E2EWorld, event: string): Promise<void> {
+  await sendGate(world, event);
+}
+
+When("the worktree scenario {string} runs", { timeout: 600_000 }, async function (this: E2EWorld, id: string) {
+  await WT_DRIVERS[id]!(this, `m${randomBytes(4).toString("hex")}`);
+  this.worktreeHeld = id;
+});
+
+Then("the worktree scenario {string} held", function (this: E2EWorld, id: string) {
+  assert.equal(this.worktreeHeld, id);
+});
+
+When(
+  "the Worktree load runs with {int} coders for {int} seconds",
+  { timeout: 900_000 },
+  async function (this: E2EWorld, coders: number, seconds: number): Promise<void> {
+    await ensureSeed();
+    await ensureLargeSeed();
+    await startWt(this, "wt-load", { seconds: String(seconds), coders: String(coders) });
+    let moves = 0;
+    const moving = (async () => {
+      for (;;) {
+        const s = await wsStatus(this).catch(() => undefined);
+        if (s?.status && s.status !== "live" && s.status !== "active") return;
+        await moveLargeSeed(moves++);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    })();
+    const settled = await waitSettled(this);
+    await moving.catch(() => {});
+    const report = { moves, status: settled.status, output: settled.context };
+    this.worktreeLoad = report;
+    mkdirSync(".tmp", { recursive: true });
+    writeFileSync(`.tmp/worktree-load-${coders}-${seconds}.json`, JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(report));
+  },
+);
+
+Then("the Worktree load is reported", function (this: E2EWorld) {
+  assert.ok(this.worktreeLoad);
+});

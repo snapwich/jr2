@@ -242,6 +242,11 @@
               "source": "page"
             },
             {
+              "slug": "guides/cut-a-worktree",
+              "title": "Cut a Worktree",
+              "source": "page"
+            },
+            {
               "slug": "guides/run-a-command-or-call-a-url",
               "title": "Run a command or call a URL with an Effect",
               "source": "page"

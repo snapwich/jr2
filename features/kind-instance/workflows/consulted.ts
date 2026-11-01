@@ -19,6 +19,8 @@ import {
   workspace,
   type HostInjectedInput,
   type Workspaced,
+  isReady,
+  worktree,
 } from "@jr2/orchestrator";
 import { advisor, coder } from "./_agents.ts";
 
@@ -30,13 +32,21 @@ type BodyInput = Workspaced<HostInjectedInput, "app">;
 const body = jr2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [advise, finish],
-  actors: { advisor: agent(advisor), coder: agent(coder), fail: fail() },
+  actors: { cut: worktree(), advisor: agent(advisor), coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
   on: { "workspace.lost": { target: ".lost" }, "agent.fault": { target: ".faulted" } },
-  initial: "consulting",
+  initial: "cutting",
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/feat-e2e", branch: "feat-e2e" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "consulting" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     consulting: {
       invoke: {
         src: "advisor",
@@ -54,12 +64,9 @@ const body = jr2Setup({
       invoke: {
         src: "coder",
         // Ambient (ADR-0016): the enclosing workspace()'s Sandbox — the nearest-wins case the
-        // advisor above is the exception to. The one Repo Slot's Worktree is the Frame's `cwd`,
-        // resolved by the actor because there is nothing to privilege (ADR-0057).
-        input: () => ({
-          prompt: "implement the advice",
-          continue: true,
-        }),
+        // advisor above is the exception to. The Worktree that the Machine cut is the Frame's
+        // `cwd`, which is required under Repo Slots (ADR-0057).
+        input: () => ({ cwd: "/work/app/feat-e2e", prompt: "implement the advice", continue: true }),
       },
       on: { finish: { target: "finished" } },
     },
@@ -72,5 +79,4 @@ const body = jr2Setup({
 
 export const machine = workspace(body, {
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  spec: () => ({ branch: "feat-e2e" }),
 });

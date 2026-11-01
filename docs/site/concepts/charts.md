@@ -37,8 +37,10 @@ it bad text.
   and the size of the Chart in bytes.
 
 A Chart gets nothing else. A lent Effect keeps its url, its argv and its secrets, so a Chart fills only its input. A
-Chart has no url, no secret, no image and no Repo of its own. The Open body also decides where each Turn of the Chart
-runs: in the Sandbox of its `workspace()`, or on the [Instance Harness](../reference/glossary.md#instance-harness).
+lent [`worktree()`](../reference/authoring-surface/worktree.md) must state `expect`, because a Chart cannot state it. A
+Chart reads the cut with the kit guard `jr2.ready`, then gives the same literal path as `cwd` and `worktree`. A Chart
+has no url, no secret, no image and no Repo of its own. The Open body also decides where each Turn of the Chart runs: in
+the Sandbox of its `workspace()`, or on the [Instance Harness](../reference/glossary.md#instance-harness).
 
 ## What a Chart holds
 
@@ -46,7 +48,8 @@ A Chart is [xstate](https://xstate.js.org)'s own JSON config, with these limits:
 
 - States, transitions, `after` delays, and nested and parallel states. A Chart has 200 states at most, 8 levels deep.
 - Each `invoke.src` is a lent slot key or an Agent of the Chart. Each guard, action and delay is a lent name. Each Chart
-  also has the guard `jr2.failure`, which is true on an `onError` when the error is a Failure.
+  also has the guard `jr2.failure`, which is true on an `onError` when the error is a Failure, and the guard
+  `jr2.ready`, which is true on an `onDone` when the cut is `ready`.
 - A state that invokes an Agent can route [`agent.fault`](../reference/mechanism-events.md#agent-fault) in its `on`, but
   it does not have to. When no transition of the Chart takes `agent.fault`, the Open body sends it, unchanged, to the
   Chart wrapper. The wrapper's own `agent.fault` route takes it, as for an Agent of the wrapper, so one route on the

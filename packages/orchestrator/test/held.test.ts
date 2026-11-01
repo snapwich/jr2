@@ -18,7 +18,7 @@ import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { HarnessRestarts, SandboxPort } from "../src/workspace.ts";
-import { pool, source } from "../src/pool.ts";
+import { pool, source, type PoolNextInput } from "../src/pool.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const ev = (name: string, input: z.ZodObject = z.object({})) => defineEvent({ name, input });
@@ -1858,7 +1858,7 @@ test("a pool of two workers: a child `job` one worker's timer started leaves the
   const machine = pool(worker, {
     id: "run",
     source: source<Item>({
-      next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+      next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
         const item = items.find((i) => !input.active.includes(i.id)) ?? null;
         if (item) items.splice(items.indexOf(item), 1);
         return { item, open: 0 };

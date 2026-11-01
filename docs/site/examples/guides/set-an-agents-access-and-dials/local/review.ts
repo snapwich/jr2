@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, isReady, jr2Setup, workspace, worktree, type Workspaced } from "@jr2/orchestrator";
 
 const approve = defineEvent({
   name: "approve",
@@ -22,6 +22,10 @@ const finished = defineEvent({
 const runInput = z.object({ branch: z.string(), sha: z.string(), model: z.string().optional() });
 type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
 type Context = BodyInput & { notes: string; summary: string };
+
+// Two Worktrees of one clone: the coder's branch, and the commit that the reviewer reads.
+const coderTree = (context: BodyInput) => `${context.workspace.repos.app}/work` as const;
+const reviewTree = (context: BodyInput) => `${context.workspace.repos.app}/review` as const;
 
 const body = jr2Setup({
   types: {} as { input: BodyInput; context: Context },
@@ -45,21 +49,38 @@ const body = jr2Setup({
       workspace: "none",
       thinkingLevel: "low",
     }),
+    cut: worktree(),
     fail: fail(),
   },
 }).createMachine({
   id: "review",
   context: ({ input }) => ({ ...input, notes: "", summary: "" }),
   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
-  initial: "reviewing",
+  initial: "cutting",
   states: {
+    // The Workspace only clones. The Machine cuts the Worktree that the Agent works in.
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: coderTree(context), branch: context.branch }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "detaching" }, { target: "notCut" }],
+      },
+    },
+    // The second cut has no branch: the Worktree holds the commit, detached.
+    detaching: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: reviewTree(context), detach: context.sha }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "reviewing" }, { target: "notCut" }],
+      },
+    },
     reviewing: {
       invoke: {
         src: "reviewer",
         input: ({ context }) => ({
           prompt: `Review commit ${context.sha}.`,
-          // The review Worktree holds the commit of `reviewSha`, detached from the branch.
-          cwd: context.workspace.review?.app ?? context.workspace.repos.app,
+          // The review Worktree holds the commit, detached from the branch.
+          cwd: reviewTree(context),
           // A Dial: this Turn thinks harder than the default of the model.
           thinkingLevel: "high",
         }),
@@ -74,7 +95,7 @@ const body = jr2Setup({
         src: "coder",
         input: ({ context }) => ({
           prompt: `Change the code on the branch as the review asks:\n\n${context.notes}`,
-          cwd: context.workspace.repos.app,
+          cwd: coderTree(context),
           // Each Turn of the coder continues the same conversation.
           continue: true,
           // A Dial: the model of this Turn, from the run input. Absent, the model of the definition.
@@ -96,6 +117,7 @@ const body = jr2Setup({
       },
     },
     done: { type: "final" },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
   },
@@ -104,5 +126,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: runInput,
   repos: { app: "https://github.com/<you>/app.git" },
-  spec: ({ input }) => ({ branch: input.branch, reviewSha: input.sha }),
 });

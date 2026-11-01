@@ -7,10 +7,10 @@
 //      fills it: a default ACL is inherited at creation, never retrofitted.
 //   2. `git clone --shared /repos/<key> <slot>/default` — pod-local, borrowing objects from the
 //      node's read-only cache.
-//   3. `git worktree add <slot>/<branchDir> -b <branch> <base>` — the branch worktree, a sibling.
+//   3. Place `default/` on the Binding's base, once. A Machine cuts every
+//      other Worktree with `worktree()` (cut.ts).
 //   4. origin's fetch url → the node cache program (ADR-0053), its push url → the real remote
-//      (ADR-0005), `protocol.ext.allow user`.
-//   5. with a `reviewSha`, the detached review worktree (ADR-0028), forced and cleaned every time.
+//      (ADR-0005), `protocol.ext.allow user`, and `gc.auto=0` with `maintenance.auto=false`.
 //
 // Every step is guarded or naturally idempotent, so a second attach (a restarted Orchestrator,
 // ADR-0012) finds everything present and answers the same paths. As a child of the Harness it
@@ -68,14 +68,12 @@ async function attach(req: AttachRequest, paths: AttachPaths, env?: NodeJS.Proce
   await git("trust the pod's paths", undefined, ["config", "--global", "safe.directory", "*"]);
 
   const repos: Record<string, string> = {};
-  const review: Record<string, string> = {};
-  const branchDir = req.branch.replace(/\//g, "-");
+  const bases: Record<string, string> = {};
   for (const s of req.slots) {
     const slotDir = `${paths.workRoot}/${s.slot}`;
     const dflt = `${slotDir}/default`;
-    const worktree = `${slotDir}/${branchDir}`;
     const cache = `${paths.reposMount}/${s.key}`;
-    repos[s.slot] = worktree;
+    repos[s.slot] = slotDir;
 
     await mkdir(slotDir, { recursive: true });
     // On a filesystem without POSIX ACLs the helper warns and exits 0, degrading to the umask.
@@ -83,12 +81,9 @@ async function attach(req: AttachRequest, paths: AttachPaths, env?: NodeJS.Proce
     if (!(await exists(`${dflt}/.git`))) {
       await git("git clone --shared", s.slot, ["clone", "--shared", "--", cache, dflt]);
     }
-    if (!(await exists(worktree))) {
-      // No ref → the Repo's own default branch: this clone's `origin/HEAD` tracks the cache's HEAD,
-      // which the cache agent's clone pointed at the remote's default (ADR-0004).
-      const base = s.ref === undefined ? "origin/HEAD" : await baseOf(dflt, s.ref, env);
-      await git("git worktree add", s.slot, ["-C", dflt, "worktree", "add", worktree, "-b", req.branch, base]);
-    }
+    // A guard, so that a second attach changes nothing: an Agent's edit in `default/`, or a fetch that
+    // moved the remote-tracking refs, is no reason for a checkout here (SandboxPort: idempotent).
+    bases[s.slot] = await placeDefault(dflt, s, env);
     // Fetch/push split (ADR-0005). The FETCH url is a command, not a path (ADR-0053): git's
     // built-in `ext::` transport runs the program on the runtime volume, which asks the node cache
     // to fetch the remote, waits for the landing, then serves the cache — so every fetch inside the
@@ -102,42 +97,48 @@ async function attach(req: AttachRequest, paths: AttachPaths, env?: NodeJS.Proce
     // cannot smuggle a program in through a url jr2 did not write (ADR-0053). Repo-level: the
     // linked worktrees share this config.
     await git("allow the ext transport", s.slot, ["-C", dflt, "config", "protocol.ext.allow", "user"]);
-
-    if (req.reviewSha !== undefined) {
-      // The reviewer's seat (ADR-0028): a DETACHED HEAD at the sha under review, forced and cleaned
-      // on every attach — a previous round's rogue edits and leftovers must not survive.
-      const reviewDir = `${worktree}-review`;
-      review[s.slot] = reviewDir;
-      if (!(await exists(reviewDir))) {
-        await git("add the review worktree", s.slot, [
-          "-C",
-          dflt,
-          "worktree",
-          "add",
-          "--detach",
-          reviewDir,
-          req.reviewSha,
-        ]);
-      }
-      await git("force the review worktree", s.slot, ["-C", reviewDir, "checkout", "--detach", "-f", req.reviewSha]);
-      await git("clean the review worktree", s.slot, ["-C", reviewDir, "clean", "-fd"]);
-    }
+    // A fixed rule (ADR-0004): Agents share this clone, and a `gc` beside a cut or a commit prunes
+    // what another Worktree needs. Every git in the pod reads the clone's config.
+    await git("turn off gc", s.slot, ["-C", dflt, "config", "gc.auto", "0"]);
+    await git("turn off maintenance", s.slot, ["-C", dflt, "config", "maintenance.auto", "false"]);
   }
-  return { repos, ...(req.reviewSha !== undefined ? { review } : {}) };
+  return { repos, bases };
+}
+
+/**
+ * Put `default/` on the Binding's base, one time. The answer is the base that each cut sends (a
+ * branch name, a tag or a commit), held in the clone's config, because an Agent can move HEAD.
+ *
+ * No `ref`, or a `ref` that IS the default branch: the clone's own attached branch, and nothing else.
+ * Another branch: that branch, attached and tracked. A tag or a commit: detached there. In the last
+ * two, the local default branch goes: it holds no work, nothing holds it, and it would freeze at the
+ * clone, so a cut of it finds `origin/<default>` and tracks it.
+ */
+async function placeDefault(dflt: string, s: AttachSlot, env?: NodeJS.ProcessEnv): Promise<string> {
+  const placed = await exec("git", ["-C", dflt, "config", "--local", "jr2.base"], env);
+  if (placed.code === 0 && placed.stdout.trim() !== "") return placed.stdout.trim();
+  const git = (step: string, args: string[]) => runGit(step, s.slot, ["-C", dflt, ...args], env);
+  const head = await exec("git", ["-C", dflt, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], env);
+  const dfltBranch = head.stdout.trim().replace(/^origin\//, "");
+  const base = s.ref ?? dfltBranch;
+  if (base !== dfltBranch) {
+    const tracked = await exec("git", ["-C", dflt, "rev-parse", "--verify", "-q", `refs/remotes/origin/${base}`], env);
+    if (tracked.code === 0) await git("check out the base", ["checkout", "--track", "-b", base, `origin/${base}`]);
+    else await git("check out the base", ["checkout", "--detach", await baseOf(dflt, base, env)]);
+    if (dfltBranch !== "") await git("drop the frozen default branch", ["branch", "-D", "--", dfltBranch]);
+  }
+  await git("record the base", ["config", "--local", "jr2.base", base]);
+  return base;
 }
 
 /**
  * Why a body is not an `AttachRequest`, or undefined when it is. The slot and the key become
- * directory names under `/work` and `/repos`, so neither may be a path out of them.
+ * directory names under `/work` and `/repos`, so neither may be a path out of them. A slot cannot
+ * start with `.`, so that it cannot reach `/work/.jr2/`.
  */
 export function attachFault(body: unknown): string | undefined {
   const b = body as Partial<AttachRequest> | undefined;
-  if (b === null || typeof b !== "object")
-    return "the attach body must be an AttachRequest { slots, branch } (ADR-0063)";
-  if (typeof b.branch !== "string" || b.branch === "") return "the attach names no branch";
-  if (b.reviewSha !== undefined && (typeof b.reviewSha !== "string" || b.reviewSha === "")) {
-    return "the attach's reviewSha must be a non-empty string";
-  }
+  if (b === null || typeof b !== "object") return "the attach body must be an AttachRequest { slots } (ADR-0063)";
   if (!Array.isArray(b.slots) || b.slots.length === 0) {
     return "the attach names no Repo Slot — nothing to attach (a Workspace with no Repo Slot skips the attach, ADR-0051)";
   }
@@ -145,6 +146,9 @@ export function attachFault(body: unknown): string | undefined {
   for (const s of b.slots as Array<Partial<Record<keyof AttachSlot, unknown>>>) {
     if (s === null || typeof s !== "object") return "each attach slot must be { slot, url, identity, key, ref? }";
     if (!isName(s.slot)) return `attach slot ${JSON.stringify(s.slot)}: the slot must be a plain directory name`;
+    if (s.slot.startsWith(".")) {
+      return `attach slot "${s.slot}": a Repo Slot name cannot start with ".", because /work/.jr2/ is reserved for jr2 (ADR-0075)`;
+    }
     if (seen.has(s.slot)) return `attach slot "${s.slot}" is named twice`;
     seen.add(s.slot);
     for (const field of ["url", "identity"] as const) {

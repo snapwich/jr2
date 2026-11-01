@@ -11,6 +11,7 @@ import {
   dispatchedLines,
   failureActivity,
   renderInstanceStatus,
+  worktreeLines,
 } from "../src/commands/status.ts";
 import type { Io } from "../src/output.ts";
 
@@ -183,4 +184,31 @@ test("`jr2 status <run>` of a failed run prints its reason on stderr and exits 0
   assert.equal(await main(["status", runId], io), 0);
   assert.deepEqual((JSON.parse(out.join("")) as { output: unknown }).output, output);
   assert.match(err.join(""), /^failed: the push was refused$/m);
+});
+
+test("`jr2 status <run>` prints one `worktree:` line per cut on stderr, and the result carries `worktrees`", async () => {
+  const runId = "0b9c2f3e-1111-4222-8333-444455558888";
+  const worktrees = [
+    { slot: "app", path: "/work/app/fix", branch: "docs/123" },
+    { slot: "app", path: "/work/app/review", branch: null },
+  ];
+  const s = { runId, workflow: "w", instanceId: "i", status: "active", value: "x", context: {}, worktrees };
+  assert.deepEqual(worktreeLines(s), [
+    "worktree: /work/app/fix (app), branch docs/123",
+    "worktree: /work/app/review (app), detached",
+  ]);
+  assert.deepEqual(worktreeLines({ ...s, worktrees: undefined }), []);
+  const out: string[] = [];
+  const err: string[] = [];
+  const io: Io = {
+    stdout: (x) => out.push(x),
+    stderr: (x) => err.push(x),
+    env: { JR2_URL: "http://test" },
+    cwd: "/",
+    fetch: async (url) =>
+      new URL(url).pathname === `/runs/${runId}` ? Response.json(s) : new Response("{}", { status: 404 }),
+  };
+  assert.equal(await main(["status", runId], io), 0);
+  assert.deepEqual((JSON.parse(out.join("")) as { worktrees: unknown }).worktrees, worktrees);
+  assert.match(err.join(""), /^worktree: \/work\/app\/fix \(app\), branch docs\/123$/m);
 });

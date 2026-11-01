@@ -107,12 +107,18 @@ does these two steps of `jr2 up`, with no cluster, and gives the same refusals. 
 When `fix` is correct, `jr2 up` tells you what the Machine runs outside itself, and who may send each event. Your lines
 can differ when your Assistant used other names. Other Workflows of the Instance add lines too:
 
+<!-- output: not run -->
+
 ```text
 …
 typecheck: tsc --noEmit (the instance's own compiler)
 effects: workflow "fix" — what it runs outside itself (ADR-0067)
+  cut: worktree — 600s, in the Harness
   tests: command ["node","--test","docs/site/tutorial/greet/test/*.test.js"] — 300s, in the Harness
   publish: push — 300s, in the Sandbox Effector
+failures: workflow "fix" — the states that fail the run (ADR-0073)
+  fix.notCut: invokes fail
+  fix.lost: invokes fail
 seats: workflow "fix" — who may send what, per state (ADR-0015)
   fix.working agent:coder: [finish]
   fix.review gate: [approve, request_changes]
@@ -126,8 +132,9 @@ git.credentials "*": push Secret jr2-git-push-684888c0 — pushes over https
 
 Read these lines as a first check:
 
-- `effects` shows two Effects: a command and a push. A Workflow that pushes with no
+- `effects` shows three Effects: the cut, a command and a push. A Workflow that pushes with no
   [Gate](../reference/glossary.md#gate) before the push shows the same lines. The graph shows where the push is.
+- `failures` shows the two states that end the run as `failed`.
 - `seats` shows that the coder can send only `finish`. Only the Gate in `review` can send `approve` and
   `request_changes`.
 - The `warning` line is about git over ssh. The `jr2-git-ssh` Secret is for an ssh key, and it does not exist. Your fork
@@ -223,10 +230,12 @@ jr2 status <run id>
 Gate of `review`. Its `gate` is `body.review`. Give that value to `--gate`. The `meta` of the Gate gives the coder's
 `summary`, the `branch` and the `worktree`:
 
+<!-- output: not run -->
+
 ```text
 …
 → context kind-jr2 / namespace my-instance
-{…,"gates":[{"gate":"body.review",…,"meta":{"summary":"Fixed the \"trims the name\" test failure in docs/site/tutorial/greet/src/greet.js by adding .trim() to the name parsing. The name \" ada \" was not being trimmed, causing the greeting to include extra whitespace. Changed `args.find((a) => !a.startsWith(\"-\")) ?? \"world\"` to `(args.find((a) => !a.startsWith(\"-\")) ?? \"world\").trim()`.","branch":"jr2/fix-336ae477-2a46-49c2-b142-b81e705bb3f8","worktree":"/work/target/jr2-fix-336ae477-2a46-49c2-b142-b81e705bb3f8"}}]}
+{…,"gates":[{"gate":"body.review",…,"meta":{"summary":"Fixed the \"trims the name\" test failure in docs/site/tutorial/greet/src/greet.js by adding .trim() to the name parsing. The name \" ada \" was not being trimmed, causing the greeting to include extra whitespace. Changed `args.find((a) => !a.startsWith(\"-\")) ?? \"world\"` to `(args.find((a) => !a.startsWith(\"-\")) ?? \"world\").trim()`.","branch":"jr2/fix-336ae477-2a46-49c2-b142-b81e705bb3f8","worktree":"/work/target/fix"}}]}
 ```
 
 The `summary` is in the words of the model, so your summary is different.
@@ -305,15 +314,22 @@ that. The seats show the result.
 
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#events
 
-**The Effects.** `tests` and `publish` are actor slots, as the coder is. A state runs one when it invokes it.
-[`command()`](../reference/authoring-surface/command.md) takes a list of arguments, not a line of shell text. It runs in
-the [Worktree](../reference/glossary.md#worktree) of the one [Repo Slot](../reference/glossary.md#repo-slot). A command
-runs in the root of the Worktree, so `tests` names the test files by their path from that root.
-[`push()`](../reference/authoring-surface/push.md) pushes the tip of the coder's branch.
+**The Effects.** `cut`, `tests` and `publish` are actor slots, as the coder is. A state runs one when it invokes it.
+[`worktree()`](../reference/authoring-surface/worktree.md) cuts a [Worktree](../reference/glossary.md#worktree) of the
+[Repo Slot](../reference/glossary.md#repo-slot). [`command()`](../reference/authoring-surface/command.md) takes a list
+of arguments, not a line of shell text. Its input names the Worktree. A command runs in the root of the Worktree, so
+`tests` names the test files by their path from that root. [`push()`](../reference/authoring-surface/push.md) pushes the
+tip of the coder's branch. Its input names the Worktree too, and jr2 reads the branch from the cut.
 [`fail()`](../reference/authoring-surface/fail.md) is a Part, not an Effect. The `lost` state invokes it to end the run
 `failed`, because a final state means `done`.
 
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#effects
+
+**The cut.** The Workspace only clones. `cutting` is the first state, and it makes the coder's Worktree. The path is
+`/work/target/fix`, and the branch has the Instance ID of the run in it. See
+[Cut a Worktree](../guides/cut-a-worktree.md).
+
+<<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#cutting
 
 **The coder's state.** `working` invokes the coder. Each [Turn](../reference/glossary.md#turn) gets a prompt and the
 folder to work in. `continue: true` keeps one conversation, so the coder remembers its last Turn. `finish` is the
@@ -342,7 +358,7 @@ commits in it. See [`PushOutput`](../reference/authoring-surface/type-pushoutput
 
 **The Workspace.** [`workspace()`](../reference/authoring-surface/workspace.md) runs the body in a Sandbox. `input` is
 the schema of the run input that `jr2 run --input` sends. `repos` binds the Repo Slot `target` to your fork, at the
-release tag. `spec` gives the branch. The input of `spec` also holds `instanceId`, an id that jr2 makes for each run, so
+release tag. A new branch starts from that tag. The body also gets `instanceId`, an id that jr2 makes for each run, so
 each run gets a branch of its own.
 
 <<< @/examples/get-started/have-your-assistant-write-a-machine/anthropic/fix.ts#workspace

@@ -151,8 +151,8 @@ export function refuseEffectSecrets(config: JR2Config, walk: PlacementWalk): voi
 /**
  * A Workspace with no Repo Slot (ADR-0051) has no branch and no commit, so the two Sandbox Effector kinds that
  * run on a commit of a slot's branch have none: a `push`, and a `command` with an Effect secret
- * (ADR-0067). Refused here, before anything is built, as the invoke would refuse them mid-run. A
- * file-body `http` reads `/work` and stays.
+ * (ADR-0067). A `worktree()` has no clone to cut from (ADR-0075). Refused here, before anything is
+ * built, as the invoke would refuse them mid-run. A file-body `http` reads `/work` and stays.
  */
 function refuseWithNoSlot(ws: PlacedWorkspace): void {
   if (!ws.pod.noSlot) return;
@@ -163,6 +163,13 @@ function refuseWithNoSlot(ws: PlacedWorkspace): void {
     throw new Error(
       `workflow "${ws.workflow}": ${effect.kind} "${effect.name}" runs in ${workspaceLabel(ws)}, which has no Repo ` +
         `Slot: ${why} (ADR-0051)`,
+    );
+  }
+  const [cut] = ws.pod.cuts ?? [];
+  if (cut !== undefined) {
+    throw new Error(
+      `workflow "${ws.workflow}": worktree "${cut}" runs in ${workspaceLabel(ws)}, which has no Repo Slot: ` +
+        `${needsASlot("worktree")} (ADR-0075)`,
     );
   }
 }

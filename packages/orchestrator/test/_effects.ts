@@ -11,6 +11,23 @@ import type { ExecOutcome, ExecRead, ExecRequest } from "../src/wire.ts";
 /** One exec the fake Harness was asked to start. */
 export type FakeExec = { id: string; req: ExecRequest; endpoint: string; bearer?: string; output?: ExecOutcome };
 
+/** A Harness that answers each cut at once: `ready`, with the path and the branch of its request. */
+export const readyCuts: ExecPortFactory = () => {
+  const asked = new Map<string, { path: string; branch: string }>();
+  return {
+    start: async (id, req) => void asked.set(id, JSON.parse(req.argv.at(-1)!)),
+    read: async (id) => {
+      const { path, branch } = asked.get(id)!;
+      const slot = path.split("/")[2];
+      const ready = { outcome: "ready", slot, path, branch, head: "a".repeat(40), found: "none" };
+      const output = { outcome: "exited" as const, code: 0, tail: JSON.stringify(ready) };
+      return { state: "settled", stream: "", next: 0, output };
+    },
+    kill: async () => {},
+    forget: async () => {},
+  };
+};
+
 /**
  * A fake Harness exec. `starts` is every exec started; `settle` ends the newest (or the named one);
  * `forgetAll` is a Harness restart — every exec unknown after it. A read of a running exec parks
@@ -99,8 +116,8 @@ export function execsPort(execs: Execs): ExecPortFactory {
 }
 
 /** The handles a stand-in Workspace registers: one Harness, one Sandbox, its Repo Slots. */
-export function handles(repos: Record<string, string> = { app: "/work/app/run-1" }): AmbientHandles {
-  return { endpoint: "http://harness.invalid", sandbox: "ws-1", repos, branch: "jr2/run-1" };
+export function handles(repos: Record<string, string> = { app: "/work/app" }): AmbientHandles {
+  return { endpoint: "http://harness.invalid", sandbox: "ws-1", repos };
 }
 
 /**

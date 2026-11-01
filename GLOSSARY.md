@@ -475,16 +475,23 @@ each run's input; jr2 gives it no meaning.
 _Avoid_: role, alias, repo name, workdir, primary repo
 
 **Binding**:
-What a Repo Slot resolves to: a Repo's url and an optional base from which the Worktree is cut. With no base, the
-Worktree is cut from the Repo's own default branch.
+What a Repo Slot resolves to: a Repo's url and an optional base. The Sandbox's own clone stays on that base, and a new
+branch starts from it. With no base, both use the Repo's own default branch.
 _Avoid_: config, catalog entry
 
 **Project layout**:
 The convention for the checkouts in a Sandbox: under each Repo Slot, the Sandbox's own clone of the Repo, with the
-Worktrees beside it. The node's cache of the Repo is not part of the layout.
+Worktrees beside it. An Agent reads the clone and works in a Worktree. The node's cache of the Repo is not part of the
+layout.
 _Avoid_: directory structure, repo tree
 
 **Worktree**:
-A git worktree of a Repo Slot for the one branch that its Workspace works on, beside the Sandbox's own clone. Its work
-is sequential commits on that branch, not separate worktrees; the Machine, not jr2, chooses the branch and its scope.
-_Avoid_: per-task worktree, task branch
+A git worktree of a Repo Slot, in a folder that a Machine names, beside the Sandbox's own clone. It holds one branch, or
+one commit with no branch. The Machine, not jr2, chooses how many Worktrees it cuts, their branches, and which Agents
+work in them.
+_Avoid_: checkout, task branch
+
+**Cut**:
+An Effect's act that makes a Worktree, or reads the one that a cut already made at that path. A cut that cannot happen
+changes nothing.
+_Avoid_: attach (the Workspace's step, which only clones), provision

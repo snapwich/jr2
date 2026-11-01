@@ -8,8 +8,9 @@ Run a program in the [Workspace](../reference/glossary.md#workspace), or call a 
 
 Put the Effect under `actors` in [`jr2Setup`](../reference/authoring-surface/jr2setup.md), beside the
 [Agents](../reference/glossary.md#agent). Then invoke it by its key from a state, and route on its output in `onDone`.
-In this [Workflow](../reference/glossary.md#workflow), a coder fixes the tests. It picks `run_test` to run one test file
-with a [`command`](../reference/authoring-surface/command.md) Effect. When it picks `finished`, an
+In this [Workflow](../reference/glossary.md#workflow), the Machine cuts a [Worktree](../reference/glossary.md#worktree),
+and a coder fixes the tests there. It picks `run_test` to run one test file with a
+[`command`](../reference/authoring-surface/command.md) Effect. When it picks `finished`, an
 [`http`](../reference/authoring-surface/http.md) Effect posts its summary to a URL. Save the file as
 `workflows/fix-and-report.ts` in your [Instance](../reference/glossary.md#instance):
 
@@ -29,7 +30,7 @@ The `coding` state routes [`agent.fault`](../reference/mechanism-events.md#agent
 Turn of the coder fails with no pick. Each state that invokes an Agent has a route for it, on the state or on a state
 above it: `jr2 check` refuses a Machine without one. When no transition takes the event, the run ends `error`.
 
-`failed`, `notReported` and `lost` are not final states. Each one invokes
+`notCut`, `failed`, `notReported` and `lost` are not final states. Each one invokes
 [`fail`](../reference/authoring-surface/fail.md), and the run ends `failed` with its reason: a final state means `done`.
 Do not throw from a promise to fail, because a throw is a defect, and the run ends `error`.
 
@@ -62,25 +63,24 @@ The options:
 - `timeout`: how long the program can run, such as `"90s"`, `"10m"` or `"1h"`. The default is `"10m"`. After it, jr2
   kills the process group, and the outcome is `timeout`.
 - `tail`: how many characters of the end of the output the Machine gets. The default is 4096.
-- `slot`: the [Repo Slot](../reference/glossary.md#repo-slot) whose [Worktree](../reference/glossary.md#worktree) the
-  program runs in. Write it only when the Workspace has more than one Repo Slot.
 
-The program starts in the root of the Worktree. In a Workspace with no Repo Slot, it starts in `/work`, the folder that
-the steps of the Workspace share (see [Workspaces](../concepts/workspaces.md#a-workspace-with-no-repo)). To run it in a
-subfolder, give the path as an argument, such as `["node", "--test", "<dir>/test/*.test.js"]`, or write
-`["sh", "-c", "cd <dir> && <program>"]`.
+The input of the Effect says where the program runs. Under [Repo Slots](../reference/glossary.md#repo-slot), `worktree`
+is required: the path of a Worktree that a cut made, or `/work/<slot>/default`. The program starts in the root of that
+folder. In a Workspace with no Repo Slot, it starts in `/work`, the folder that the steps of the Workspace share (see
+[Workspaces](../concepts/workspaces.md#a-workspace-with-no-repo)). To run it in a subfolder, give the path as an
+argument, such as `["node", "--test", "<dir>/test/*.test.js"]`, or write `["sh", "-c", "cd <dir> && <program>"]`.
 
 A `command` with no Effect secret runs in the [Harness](../reference/glossary.md#harness) container of the
-[Sandbox](../reference/glossary.md#sandbox), in the Worktree, beside the
-[Working tools](../reference/glossary.md#working-tools) of the Agent. It uses the tools of the
-[Sandbox Image](../reference/glossary.md#sandbox-image). Thus invoke it in the body of a
+[Sandbox](../reference/glossary.md#sandbox), beside the [Working tools](../reference/glossary.md#working-tools) of the
+Agent. It uses the tools of the [Sandbox Image](../reference/glossary.md#sandbox-image). Thus invoke it in the body of a
 [`workspace()`](../reference/authoring-surface/workspace.md).
 
 Each outcome is output for `onDone`, also a failure. Route on `outcome`
 ([`CommandOutput`](../reference/authoring-surface/type-commandoutput.md)):
 
 - `exited`, with `code` and `tail`. A test that fails is `exited` with a `code` that is not 0. A program that the
-  container does not have is `exited` with code 127.
+  container does not have is `exited` with code 127. A bad `worktree` is `exited` with code 127 too, and `tail` gives
+  the reason. A bad path does not add an outcome.
 - `timeout`, with `tail`.
 - `killed`, with `signal` and `tail`.
 - `unknown`, with `reason`: jr2 cannot tell what the program did. jr2 does not run it again.
@@ -93,13 +93,14 @@ the value. `secret("<name>").path` gives the path of a file that holds the value
 list of `jr2.config.ts`, as for `hook-token`.
 
 A `command` with an Effect secret in `env` does not run beside the Agent. It runs in the
-[Sandbox Effector](../reference/glossary.md#sandbox-effector), a container that the Agent cannot reach. It runs against
-one commit of the branch, not against the live Worktree:
+[Sandbox Effector](../reference/glossary.md#sandbox-effector), a container that the Agent cannot reach. Its `worktree`
+must be a branch Worktree that a cut made in this Sandbox, because a path alone does not name the target of a
+credential. It runs against one commit of that branch, not against the live Worktree:
 
 - By default, the commit is the tip of the branch when the Effect starts. When the Worktree holds changes that the
   program did not see, its output has `dirty: true`.
-- With `pin: true`, the commit is the `sha` of the input of the Effect: `{ sha: "<full commit id>" }`. Use it for a
-  commit that a [Gate](../reference/glossary.md#gate) approved.
+- With `pin: true`, the commit is the `sha` of the input of the Effect: `{ worktree, sha: "<full commit id>" }`. Use it
+  for a commit that a [Gate](../reference/glossary.md#gate) approved.
 
 The Sandbox Effector runs in the Sandbox Image, or in the image of the `effector` option of `workspace()`. Thus that
 image must hold the program.
@@ -123,8 +124,10 @@ image must hold the program.
 - `maxBody`: how many bytes of a text body the output keeps. The default is 65536.
 - `idempotent`: `true` when a second call is safe. The default is `false`. See [Effects](../concepts/effects.md).
 
-To send a file of the Worktree as the body, use [`file(path)`](../reference/authoring-surface/file.md) as `body`. In a
-Workspace with no Repo Slot, the path is relative to `/work`. jr2 sends a file body only with `PUT`, `POST` or `PATCH`.
+To send a file of a Worktree as the body, use [`file(path)`](../reference/authoring-surface/file.md) as `body`. The
+input of the Effect names the Worktree, `{ worktree }`, and a cut in this Sandbox must have made it. The path is
+relative to that Worktree. In a Workspace with no Repo Slot, the input has no `worktree`, and the path is relative to
+`/work`. jr2 sends a file body only with `PUT`, `POST` or `PATCH`.
 
 An `http` Effect runs in the [Instance Effector](../reference/glossary.md#instance-effector). The
 [Effector](../reference/glossary.md#effector) puts the value of each Effect secret into the call. The Agent never reads
@@ -172,12 +175,16 @@ where. It also shows where each Effect secret goes:
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 effects: workflow "fix-and-report" — what it runs outside itself (ADR-0067)
+  cut: worktree — 600s, in the Harness
   test: command ["node","--test","<file>"] — 300s, in the Harness
   report: http POST https://hooks.example.com — 30s, in the Instance Effector, secrets "hook-token"
 failures: workflow "fix-and-report" — the states that fail the run (ADR-0073)
+  fix-and-report.notCut: invokes fail
   fix-and-report.notReported: invokes fail
   fix-and-report.failed: invokes fail
   fix-and-report.lost: invokes fail
@@ -201,20 +208,19 @@ When you call `command()`, it refuses:
 - `pin: true` with no Effect secret in `env`:
   ``command(argv, { pin: true }) names no secret in its env: `pin` chooses the commit a credentialed command runs against in the Sandbox Effector, and a command that names no secret runs in the live Worktree (ADR-0067) — name its secret, command(argv, { env: { NAME: secret("x") }, pin: true }), or drop `pin` ``
 
+`workspace()` refuses a body with an invoke that does not say where it works, when it can read the input:
+``workspace(): state "<state>": "<slot>" names no `<key>`, and a Workspace with Repo Slots says where each Turn and Effect works: a Worktree, or `cwd: "/work"` for a Turn (ADR-0057)``
+
 When a `command` starts, it refuses:
 
 - a state outside a `workspace()`. With no Effect secret in `env`:
   `command "<slot>" runs in the Harness container of a Workspace, and its state is not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`.
   With one:
   `command "<slot>" runs in the Sandbox Effector of a Workspace, and its state is not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`
-- no `slot` under a Workspace with more than one Repo Slot:
-  `command "<slot>" runs under a Workspace carrying more than one Repo Slot (<slots>) and names none — say which Worktree it runs in: command(argv, { slot: "<slot>" }) (ADR-0051)`.
-  With an Effect secret in `env`, the text is
-  `command "<slot>" runs under a Workspace carrying more than one Repo Slot (<slots>) — say which: { slot: "<slot>" } (ADR-0051)`
+- no `worktree` under Repo Slots, with no Effect secret in `env`:
+  ``command "<slot>" runs under a Workspace with Repo Slots (<slots>) and its input names no `worktree`: say which, a Worktree that a cut gave or `<slot>/default` ``
 - with an Effect secret in `env`, a Workspace with no Repo Slot:
   `command "<slot>" runs under a Workspace with no Repo Slot: a command with an Effect secret runs against one commit of a Repo Slot's branch, and there is none — declare a Repo Slot, or name no secret in its env, and it runs in /work beside the Agent (ADR-0051)`
-- a `slot` that the Workspace does not have:
-  `command "<slot>" names Repo Slot "<name>", which its Workspace does not carry (<slots>)`
 - an `arg()` with no string in the input. The angle brackets around the name are in the text, and `<type>` is `nothing`
   when the input has no such key:
   `command "<slot>": argv slot <<name>> has no string value in its input (got <type>) — map it in the invoke's input`
@@ -238,7 +244,7 @@ When you call `http()`, it refuses:
 - a file body with a method other than `PUT`, `POST` or `PATCH`:
   `http({ method: "<method>", body: file(...) }): a file body is sent with PUT, POST, PATCH (ADR-0068)`
 - a `body` that is not `file()`:
-  ``http({ body }): a body is file(path, { slot?, segments?, contentType? }) — json and text come from `request` ``
+  ``http({ body }): a body is file(path, { segments?, contentType? }) — json and text come from `request` ``
 - a `content-type` header beside the `contentType` of `file()`:
   `http({ headers, body: file(path, { contentType }) }): "content-type" is set by file()'s contentType — write one of them (ADR-0067)`
 - a `request` with a file body:
@@ -250,9 +256,16 @@ When an `http` Effect starts, it refuses an input that its `input` schema does n
 `http "<slot>": its input does not match the definition's input schema — <path>: <message>`. With a file body, the text
 ends after `input schema`.
 
-An `http` Effect with a file body runs in the Sandbox Effector. When it starts, it refuses a state outside a
-`workspace()`:
-`http "<slot>" runs in the Sandbox Effector of a Workspace, and its state is not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`
+An `http` Effect with a file body runs in the Sandbox Effector. When it starts, it refuses:
+
+- a state outside a `workspace()`:
+  `http "<slot>" runs in the Sandbox Effector of a Workspace, and its state is not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`
+- no `worktree` under Repo Slots:
+  ``http "<slot>" reads a Worktree file, under a Workspace with Repo Slots, and its input names no `worktree` ``
+
+A bad `worktree` is output, because a word of a run can cause it. An `http` Effect with a file body settles `refused`. A
+`command` settles `exited` with code 127, with the reason in `tail`. A credentialed `command` and a file body need a
+cut: `no cut made <path> in this Sandbox: cut it with worktree()`
 
 When you call `secret()`, `bearer()` or `text`, they refuse:
 
@@ -295,6 +308,7 @@ When you call `secret()`, `bearer()` or `text`, they refuse:
 - [Secrets and trust](../concepts/secrets-and-trust.md): who holds an Effect secret.
 - [The Menu](../concepts/the-menu.md): how a pick waits for its answer.
 - [Push and sign a branch](push-and-sign-a-branch.md): the `push` Effect.
+- [Cut a Worktree](cut-a-worktree.md): the Worktree that a `command` runs in, and the removal of a Worktree.
 - Reference: [`command`](../reference/authoring-surface/command.md),
   [`CommandOptions`](../reference/authoring-surface/type-commandoptions.md),
   [`http`](../reference/authoring-surface/http.md), [`secret`](../reference/authoring-surface/secret.md),

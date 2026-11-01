@@ -36,7 +36,7 @@ function carrier(id: string, slot: string, model: string, workspaceAccess?: "wri
     on: { "agent.fault": {}, "workspace.lost": {} },
     id,
     initial: "working",
-    states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go" } } } },
+    states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go", cwd: "/work" } } } },
   });
 }
 
@@ -73,7 +73,6 @@ test("the walk reaches a workspace() body and a pool() worker — the kit's own 
   // jr-shaped workflow.
   const wrapped = workspace(carrier("body", "coder", "vllm/qwen"), {
     repos: { app: "https://example.test/app.git" },
-    spec: () => ({ branch: "feat-1" }),
   });
   assert.deepEqual(partsOf([wrapped]).agents, [{ name: "coder", definition: def("vllm/qwen") }]);
 
@@ -162,11 +161,10 @@ const ws = (image?: string, user?: string) =>
     ...(image !== undefined ? { image } : {}),
     ...(user !== undefined ? { user } : {}),
     repos: { app: "https://example.test/app.git" },
-    spec: () => ({ branch: "feat-1" }),
   });
 
 test("a `file:` image is a context to build; a registry ref is not, and neither is silence", () => {
-  // The whole reason the image is an OPTION and not a spec field: `jr2 up` must find it statically.
+  // The image is an OPTION because `jr2 up` must find it statically.
   // A ref is deployed-never-built (ADR-0037/0039 — what jr2 did not stamp, jr2 does not touch), and
   // an absent one is the `images/default` fallback, which is a path convention `jr2 up` checks
   // itself rather than something a Machine carries.
@@ -208,7 +206,7 @@ test("the image is found through composition, not just at the root", () => {
 });
 
 test("workspace() refuses an empty image at build time, not at the first provision", () => {
-  // Static, so checkable now: the same derives-from-a-typo bug `assertSpec` catches for the spec.
+  // Static, so checkable now, one build ahead of the provision that would fail on it.
   assert.throws(
     () => ws(""),
     (err: Error) => {
@@ -234,14 +232,13 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
     on: { "workspace.lost": {}, "agent.fault": {} },
     id: "body",
     initial: "coding",
-    states: { coding: { invoke: { src: "coder", input: { prompt: "go" } } } },
+    states: { coding: { invoke: { src: "coder", input: { prompt: "go", cwd: "/work" } } } },
   });
 
   const feature = workspace(body, {
     image: "file:///srv/pkg/tools",
     user: "file:///srv/pkg/sshd",
     repos: { app: "git@github.com:acme/app.git", docs: open },
-    spec: () => ({ branch: "feat-1" }),
   });
 
   const worker = jr2Setup({
@@ -299,7 +296,7 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
 const APP_KEY = repoKey("https://github.com/acme/app");
 
 const wsRepos = (repos: Record<string, RepoSlot> | typeof open) =>
-  workspace(carrier("body", "coder", "vllm/qwen"), { repos, spec: () => ({ branch: "feat-1" }) });
+  workspace(carrier("body", "coder", "vllm/qwen"), { repos });
 
 test("bound urls are collected with their identity and key, deduped by IDENTITY across spellings", () => {
   // Two Machines — or two slots — spelling one repository two ways are one Repo and one cache
@@ -434,7 +431,7 @@ function unbound(id: string, slot: string) {
     on: { "agent.fault": {}, "workspace.lost": {} },
     id,
     initial: "working",
-    states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go" } } } },
+    states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go", cwd: "/work" } } } },
   });
 }
 
@@ -454,7 +451,7 @@ test("an Open Agent is reported beside the open Repo Slots, and names no model t
 });
 
 test("an Open Agent is located by the same `customize()` route a Repo Slot is — through wrappers and all", () => {
-  const packaged = workspace(unbound("body", "coder"), { repos: { target: open }, spec: () => ({ branch: "b" }) });
+  const packaged = workspace(unbound("body", "coder"), { repos: { target: open } });
   const host = jr2Setup({ events: [], actors: { review: packaged } }).createMachine({
     id: "host",
     initial: "reviewing",
@@ -540,13 +537,11 @@ test("the stamps are read by a SECOND copy of this module — the installed CLI'
 test("the walk reports every workspace()'s Size and User Container split, located like an Open slot (ADR-0060)", () => {
   const sized = workspace(carrier("inner", "coder", "p/m"), {
     repos: { app: "https://example.test/app.git" },
-    spec: () => ({ branch: "b" }),
     resources: { limits: { memory: "3Gi" } },
     user: { image: "ghcr.io/acme/sshd:1", resources: { limits: { memory: "256Mi" } } },
   });
   const unsized = workspace(carrier("other", "coder", "p/m"), {
     repos: { app: "https://example.test/app.git" },
-    spec: () => ({ branch: "b" }),
   });
   const top = setup({ actors: { review: sized } }).createMachine({
     id: "top",
@@ -569,13 +564,13 @@ test("the walk reports every workspace()'s Size and User Container split, locate
 
 // --- the Effects (ADR-0067) ---------------------------------------------------------------------
 
-test("an Effect slot is carried as plain data: its kind, where it runs, its argv, its timeout, its Repo Slot", () => {
+test("an Effect slot is carried as plain data: its kind, where it runs, its argv, its timeout", () => {
   const lint = commandWith(
     () => {
       throw new Error("never run");
     },
     ["pnpm", "lint", arg("path")],
-    { timeout: "2m", slot: "docs" },
+    { timeout: "2m" },
   );
   const machine = setup({ actors: { lint } }).createMachine({ id: "m", initial: "a", states: { a: {} } });
   assert.deepEqual(partsOf([machine]).effects, [
@@ -587,7 +582,6 @@ test("an Effect slot is carried as plain data: its kind, where it runs, its argv
       placement: "harness",
       argv: ["pnpm", "lint", "<path>"],
       timeoutMs: 120_000,
-      slot: "docs",
     },
   ]);
 });
@@ -608,14 +602,12 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
       nested: workspace(carrier("inner", "fixer", "xai/grok"), {
         repos: { app: "https://example.test/app.git" },
         secrets: ["INNER_KEY"],
-        spec: () => ({ branch: "inner" }),
       }),
     },
   }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const outer = workspace(body, {
     repos: { app: "https://example.test/app.git" },
     secrets: ["JIRA_TOKEN"],
-    spec: () => ({ branch: "feat-1" }),
   });
   const root = jr2Setup({ events: [], actors: { a: outer, b: outer } }).createMachine({
     id: "root",
@@ -655,13 +647,12 @@ test("each Workspace's pod carries the Effects placed in its Sandbox Effector, d
         events: [],
         actors: { report: http({ method: "PUT", url: "https://files.example.com/r", body: file("r") }) },
       }).createMachine({ id: "helper" }),
-      nested: workspace(inner, { repos: { lib: "https://example.test/lib.git" }, spec: () => ({ branch: "inner" }) }),
+      nested: workspace(inner, { repos: { lib: "https://example.test/lib.git" } }),
     },
   }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
   const ws = workspace(body, {
     repos: { app: "https://example.test/app.git", other: open },
     effector: { image: "registry.example/tools:1" },
-    spec: () => ({ branch: "feat-1" }),
   });
   const [outer, nested] = workspacePodsOf(ws);
   assert.deepEqual(
@@ -682,7 +673,6 @@ test("each Workspace's pod carries the Effects placed in its Sandbox Effector, d
       workspace(body, {
         repos: { app: "https://example.test/app.git" },
         effector: { img: "x" } as never,
-        spec: () => ({ branch: "b" }),
       }),
     /`effector` is \{ image \}/,
   );
@@ -695,7 +685,6 @@ test("workspace() refuses a secrets list that is not distinct names", () => {
         workspace(carrier("body", "coder", "vllm/qwen"), {
           repos: { app: "https://example.test/app.git" },
           secrets: secrets as never,
-          spec: () => ({ branch: "feat-1" }),
         }),
       /`secrets` must be a list of distinct names/,
     );
@@ -761,7 +750,7 @@ test("an Open body that allows only a Workspace places its models in that Worksp
     initial: "a",
     states: { a: { invoke: { src: "body", input: {} } } },
   });
-  const ws = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "feat-1" }) });
+  const ws = workspace(body, { repos: { app: "https://example.test/app.git" } });
   const carried = partsOf([ws]);
   assert.equal(carried.instanceHarness, undefined);
   assert.deepEqual(carried.models, ["openai/gpt-5"]);
@@ -784,7 +773,7 @@ test("a lent Agent's Turn runs where its own access says, so the allowed models 
     initial: "a",
     states: { a: { invoke: { src: "body", input: {} } } },
   });
-  const ws = workspace(writeLent, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "f" }) });
+  const ws = workspace(writeLent, { repos: { app: "https://example.test/app.git" } });
   assert.deepEqual(workspacePodsOf(ws)[0]!.models, ["prov/A", "prov/B"]);
 
   // A "none" Agent lent by a body that allows Chart Agents "write" only: its Turn runs at the

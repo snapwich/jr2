@@ -22,24 +22,24 @@ ADR-0018 and GLOSSARY.md said `cwd` is identity, never per Turn. The decided thi
   default: `agent({ model, instructions, workspace?, thinkingLevel?, description? })`.
 
 - **The Frame is `prompt` and `cwd`: what this Turn is about and where it works.** Neither identity nor a Dial. A
-  worktree path is per run by nature — `/work/<slot>/<branch>` exists only once a run has a branch — so no definition
-  can name it, and a directory is not a property of a persona any more than a prompt is. `cwd` leaves `AgentDefinition`.
-  The Harness roots the Working tools at the Frame's `cwd`, which rides the admit body beside the prompt and the Dials.
+  worktree path is per run by nature — `/work/<slot>/<name>` exists only once a run cuts it — so no definition can name
+  it, and a directory is not a property of a persona any more than a prompt is. `cwd` leaves `AgentDefinition`. The
+  Harness roots the Working tools at the Frame's `cwd`, which rides the admit body beside the prompt and the Dials.
 
 - **The Briefing is not the Frame.** jr2's Turn part
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)) follows the prompt — the resolved working
   directory, the Allowed picks and any notices — in a block of its own. The prompt stays the Machine state's words
   alone; jr2 never writes into it.
 
-- **Under a Workspace, an absent `cwd` resolves to the only Repo Slot's Worktree, and is refused when there is more than
-  one.** With one slot there is no choice, so no convention is being smuggled in (ADR-0051: the kit gives no slot a
-  meaning). With two or more, the state must say which — `cwd: context.workspace.repos.target` — and the actor refuses
-  the Turn before admission, naming the slots and the line to add. The trap is accepted with open eyes: a composer who
-  adds a second slot on the `customize` line can make a Machine that ran yesterday refuse today, in a file the Machine's
-  author never sees. The refusal is explicit, at the first Turn, before any pod is spent; `jr2 up` cannot see it because
-  the invoke's input is a function. A `workspace: "none"` Agent has no Working tools and no `cwd` (ADR-0028); a
-  stub-Harness run with no Workspace keeps `/work`. `task` always passes its `cwd`, because "the first slot is the one
-  the coder edits" is its convention and a convention is stated, not defaulted.
+- **Under Repo Slots, `cwd` is required.** A Workspace that only clones has no Worktree for a default to name
+  ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), and `/work` is the wrong default: an
+  Agent's search hits `default/`, and a relative write lands outside each Worktree, which is the incident above. So the
+  state says where — `cwd: "/work/target/fix"` — and the actor refuses the Turn before admission, naming the slots and
+  the line to add; `jr2 up` cannot see it because the invoke's input is a function. A Turn that wants `/work` states it.
+  A Workspace with no Repo Slot needs no `cwd`: its Turns work in `/work` (ADR-0051). A `workspace: "none"` Agent has no
+  Working tools and no `cwd` (ADR-0028); a stub-Harness run with no Workspace keeps `/work`. `task` passes its `cwd` as
+  any Machine does: "the first slot is the one the coder edits" is its convention, and a convention is stated, not
+  defaulted.
 
 - **`continue: true` is the whole continuation surface.** Absent, every invocation is a fresh conversation — jr's lossy
   handoff, ADR-0016's default, unchanged. Present, the Turn lands on **this Agent's one conversation in this Machine
@@ -112,11 +112,11 @@ ADR-0018 and GLOSSARY.md said `cwd` is identity, never per Turn. The decided thi
   that is wrong under every `workspace()` is not a default.
 - **`cwd` as a third Dial.** Rejected on the word: Dials say how hard to run. A directory says where, which is the same
   kind of fact as the prompt — hence Frame.
-- **Default `cwd` to the first Repo Slot.** Rejected: reverses ADR-0051 ("there is no `workdir`"). The single-slot
-  default is not the same thing — with one slot there is nothing to privilege.
-- **Refuse an absent `cwd` under every Workspace.** The safer twin of the single-slot default: one line per invoke, no
-  composition trap. Not taken: the trap's failure is explicit and early, and the line is noise for the common
-  single-repo Machine.
+- **Default `cwd` to the first Repo Slot.** Rejected: reverses ADR-0051 ("there is no `workdir`").
+- **Default `cwd` to the only Repo Slot's Worktree.** Rejected: a Workspace that only clones has no such Worktree. And a
+  refusal under every Workspace with Repo Slots has no composition trap: with a default, a composer who adds a second
+  slot on the `customize` line makes a Machine that ran yesterday refuse today, in a file the Machine's author never
+  sees. The cost is one line per invoke.
 - **A caller-chosen conversation key (`conversation: "coder"`).** Rejected: it either restates the structure or
   contradicts it. Path-scoping the key was proposed and made the key redundant — once the id is
   `<run>/<machine path>/<agent>`, the author has nothing left to name.
@@ -133,19 +133,19 @@ ADR-0018 and GLOSSARY.md said `cwd` is identity, never per Turn. The decided thi
 - `AgentTurnInput` is `{ prompt, cwd?, continue?, model?, thinkingLevel? }`; `AgentDefinition` loses `cwd`. The Harness
   admit body gains the Frame's `cwd`; `ResolvedDefinition.cwd` resolves from it, not the definition; the Harness stops
   validating `description`, which the Orchestrator strips before admission (it is Console material).
-- **A Frame's `cwd` is absolute or the admission is refused**, naming the Frame. Absent is the one silent case, and it
-  says `/work` — a stated default. A relative path has no such answer: it would resolve against whatever directory the
-  Harness process sits in, which is the silent wrong directory this ADR was written for, one level further from the
-  author. The refusal is a 400 at admission, before a pod is spent.
-- `task` passes `cwd: worktreeOf(context).path` and `continue: true`, and drops `generation` (and its `scope`). It keeps
-  `turns`, reset on `agent.fault`, because re-briefing is prompt policy.
+- **A Frame's `cwd` is absolute or the admission is refused**, naming the Frame. Absent is the one silent case, it
+  reaches a Harness only where no Repo Slot is, and it says `/work` — a stated default. A relative path has no such
+  answer: it would resolve against whatever directory the Harness process sits in, which is the silent wrong directory
+  this ADR was written for, one level further from the author. The refusal is a 400 at admission, before a pod is spent.
+- `task` passes the path of the Worktree it cuts as `cwd`, and `continue: true`, and drops `generation` (and its
+  `scope`). It keeps `turns`, reset on `agent.fault`, because re-briefing is prompt policy.
 - The ledger record for a continued conversation carries its epoch; the input mapper reads it at mint time, so the
   minted id persists with the input and restore re-attaches the same conversation (ADR-0016's mapper rule holds — the
   fresh suffix is still the random component).
 - The `@kind` fixtures drop `tools:` and `instanceId:`; the steps compute the continued id from the actor path, as they
   already computed today's pin.
 - A regression scenario for the silent success: a `task` whose model uses relative paths must produce its file inside
-  the worktree, and a multi-slot Machine with no `cwd` must be refused with the slots named.
+  the worktree, and a Machine under Repo Slots with no `cwd` must be refused with the slots named.
 - GLOSSARY.md: **Frame** enters; **Dials** loses `cwd`; **Instance ID** states the `continue` scope and that a faulted
   conversation is not continued. ADR-0016 (continuation), ADR-0018 (identity line), ADR-0031 (placement scenario),
   ADR-0035 (reroll gate wording), ADR-0049 (persona hazard), and ADR-0054 (`task`'s continuation) are edited to state

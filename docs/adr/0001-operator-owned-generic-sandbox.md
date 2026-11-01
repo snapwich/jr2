@@ -34,7 +34,7 @@ Sandbox will run must be in the spec at spin-up.
 
 One Harness **image** serves many **Agents** — the Harness resolves model, instructions, and its Menu at runtime without
 a rebuild, reading the definition each admission carries (ADR-0018, ADR-0049) and reading the Menu through the Custodian
-per turn (ADR-0013). So the Orchestrator injects a fixed Harness image plus **config** (env + the prepared worktree),
+per turn (ADR-0013). So the Orchestrator injects a fixed Harness image plus **config** (env + the prepared clones),
 never a per-Agent image build. The HTTP prompt body itself carries only `{message, images}`, so anything persona-shaping
 is set at provision time, not per request.
 

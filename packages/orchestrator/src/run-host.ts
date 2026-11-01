@@ -536,7 +536,16 @@ export type RunStatus = RunRecord & {
    * direction, read off the caller's own ledger rows. A foreign dispatch's run is a run of the
    * Orchestrator its target names. Absent when it started none. */
   dispatched?: Dispatched[];
+  /** The Worktrees this run's cuts made, oldest first (ADR-0075), read off its ledger's settled
+   * `ready` rows, so an Agent's `git switch` does not change them. A re-cut of one path and branch
+   * is one entry. Behind the token, like `context`: a branch name is the workflow's data. Absent
+   * when the run cut none. */
+  worktrees?: RunWorktree[];
 };
+
+/** One Worktree a `worktree()` Effect of this run cut (ADR-0075): its Repo Slot, its path, and the
+ * branch of the cut. `branch` is `null` for a detached Worktree. */
+export type RunWorktree = { slot: string; path: string; branch: string | null };
 
 /** One run a `dispatch` Effect of this run started (ADR-0071): its slot, the run, and when the
  * ledger row was written. */
@@ -2507,6 +2516,7 @@ export class RunHost {
         ? { output: snap.output }
         : {}),
       ...dispatchedField(blob.effects ?? {}),
+      ...worktreesField(blob.effects ?? {}),
     };
   }
 
@@ -2762,6 +2772,7 @@ export class RunHost {
         ? { output: snap.output }
         : {}),
       ...dispatchedField(run.effects),
+      ...worktreesField(run.effects),
     };
   }
 
@@ -3331,8 +3342,6 @@ function atOrBelow(actor: AnyActorRef, ref: AnyActorRef): boolean {
   return false;
 }
 
-/** A status's bound fields (ADR-0070): `bound`, and the hashes of the Charts bound, distinct and
- * sorted. Both absent when the snapshot binds no Chart. */
 /** The runs a run's `dispatch` Effects started (ADR-0071), from its ledger: an intent row the
  * start's answer re-wrote with its run, a settled row whose output names one (`started`,
  * `settled`), and an aborted row that kept it. A row that never learned its run names none. */
@@ -3350,6 +3359,26 @@ function dispatchedField(effects: Record<string, EffectRow>): { dispatched?: Dis
   return out.length ? { dispatched: out } : {};
 }
 
+/** The Worktrees a run's cuts made (ADR-0075), from the settled `ready` rows of its ledger, in the
+ * order of each Worktree's first cut. A cut also reads a Worktree, so one path and branch has many
+ * rows and one entry. */
+function worktreesField(effects: Record<string, EffectRow>): { worktrees?: RunWorktree[] } {
+  const rows = Object.values(effects).flatMap((row) =>
+    row.state === "settled" && row.cut !== undefined && row.repo !== undefined
+      ? [{ at: row.at, slot: row.repo, ...row.cut }]
+      : [],
+  );
+  rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  const out = new Map<string, RunWorktree>();
+  for (const { slot, path, branch } of rows) {
+    const key = JSON.stringify([path, branch]);
+    if (!out.has(key)) out.set(key, { slot, path, branch });
+  }
+  return out.size ? { worktrees: [...out.values()] } : {};
+}
+
+/** A status's bound fields (ADR-0070): `bound`, and the hashes of the Charts bound, distinct and
+ * sorted. Both absent when the snapshot binds no Chart. */
 function boundFields(snap: unknown): { bound?: true; chartHashes?: string[] } {
   const hashes = [...new Set(boundChartRoutesOf(snap).map((route) => route.chartHash))].sort();
   return hashes.length ? { bound: true, chartHashes: hashes } : {};

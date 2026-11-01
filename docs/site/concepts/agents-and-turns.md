@@ -67,9 +67,10 @@ The field also tells where the Turn runs. An Agent with `"write"` or `"read"` wo
 The `input` of the invoke is the Turn. It has five keys, and no other:
 
 - **The [Frame](../reference/glossary.md#frame): `prompt` and `cwd`.** The prompt tells what this Turn is about. `cwd`
-  is the directory where the Working tools work. A definition cannot hold a `cwd`, because the Worktree of a run exists
-  only when the run starts. Under a Workspace with one [Repo Slot](../reference/glossary.md#repo-slot), the default
-  `cwd` is the Worktree of that slot.
+  is the directory where the Working tools work. A definition cannot hold a `cwd`, because a Worktree exists only after
+  a run cuts it. Under a Workspace with [Repo Slots](../reference/glossary.md#repo-slot), a Turn of an Agent with
+  Working tools states its `cwd`. A Turn that wants `/work` states it too. There is no default, because a search in
+  `/work` hits `default/`, and a relative write lands outside each Worktree.
 - **The [Dials](../reference/glossary.md#dials): `model` and `thinkingLevel`.** They tell how hard the Agent works on
   this Turn, and they replace the values of the definition for this Turn only. The Agent stays the same Agent.
 - **`continue`.** It tells if the Turn continues the conversation of the Agent. See
@@ -233,8 +234,8 @@ the model in `models`. A model with no context window gets no Compaction.
   different key.
 - A Turn cannot set `instructions` or `workspace`.
 - `cwd` is an absolute path. The Harness refuses a Turn with a relative `cwd`.
-- Under a Workspace with more than one Repo Slot, each Turn of an Agent with Working tools sets `cwd`. jr2 refuses the
-  Turn without it.
+- Under a Workspace with Repo Slots, each Turn of an Agent with Working tools sets `cwd`. jr2 refuses the Turn without
+  it.
 - An Agent with `"write"` or `"read"` runs in the body of a `workspace()`. jr2 refuses its Turn outside one.
 - `jr2 up` sees only the models of the definitions. It cannot see a model that a Turn sets as a Dial. The Harness
   refuses a model that it cannot find when the Turn starts.

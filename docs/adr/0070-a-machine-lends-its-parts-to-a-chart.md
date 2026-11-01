@@ -60,8 +60,10 @@ their own maintainers, and the escapes shipped in systems that used them were in
   `gate`, `fail`, a generic action's name or an integer, because those are the kit's; the Gate itself is lent as
   `gate: true`, and the Part that fails the run as `fail: true`
   ([ADR-0073](0073-a-machine-fails-a-run-with-fail-and-an-uncaught-failure-ends-it-failed.md)), because the Machine
-  decides which ends a Chart can choose. The guard `jr2.failure`, which tells a Failure from a defect on an `onError`,
-  is in every Chart, as `jr2.sentBy` is: it is a predicate and gives no capability.
+  decides which ends a Chart can choose. The guards `jr2.failure`, which tells a Failure from a defect on an `onError`,
+  and `jr2.ready`, which says that a cut settled `ready`
+  ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), are in every Chart, as `jr2.sentBy` is:
+  each is a predicate and gives no capability.
 - **Constants for authority, references for data.** `invoke.src`, guard and action `type`s, delay names and event names
   are constants, checked against the lent set and the Chart's own declarations at admission. Data flows through
   references: a placeholder `{{context.ticket.title}}`, or `{ "$ref": "event.summary" }`, in an invoke's `input`, an
@@ -130,11 +132,14 @@ their own maintainers, and the escapes shipped in systems that used them were in
   briefing names the lent Agents, and a body that allows no model has NO `agents` in its grammar and a briefing that
   says so: a planner reads a field it cannot fill as one to fill (measured: eight of ten first Charts minted under a
   `never` model, and read "must not have additional properties" for it), and a Chart that brings `agents` anyway reads
-  at the door why there is none. And the Agent's surface MARKS a pick whose parameter is a Chart with that grammar's
-  briefing (`SurfaceEvent.briefing`, by schema identity), so the Harness says the text in the Turn part, right before
-  "Allowed now", on every Turn where that pick is Allowed, and on a restatement that opens it
-  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). Nowhere else: the standing Briefing stays
-  Chart-agnostic, the tools block stays the same bytes on every Turn
+  at the door why there is none. The briefing of a body that lends an Effect says how a Chart works under Repo Slots:
+  work happens in a Worktree; a lent cut takes a `path` of `/work/<slot>/<name>` and a `branch`, and `<name>` is not the
+  branch; its `onDone` has an edge with the guard `jr2.ready` and an edge with no guard, for a refused cut; and that one
+  literal path is the `cwd` of each Turn and the `worktree` of each Effect there. And the Agent's surface MARKS a pick
+  whose parameter is a Chart with that grammar's briefing (`SurfaceEvent.briefing`, by schema identity), so the Harness
+  says the text in the Turn part, right before "Allowed now", on every Turn where that pick is Allowed, and on a
+  restatement that opens it ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). Nowhere else: the
+  standing Briefing stays Chart-agnostic, the tools block stays the same bytes on every Turn
   ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)), and a seat whose Menu
   holds no Chart pick reads not a word of it. The cost is the author's to scope: a seat whose Menu holds a Chart pick
   carries the grammar as cached tool parameters on every Turn, so an author who wants a planner that only sometimes
@@ -224,12 +229,17 @@ their own maintainers, and the escapes shipped in systems that used them were in
   is refused. The fields a Chart declares are its types. **Lent input shapes**: an Effect carries an `input` schema and
   an Agent's Turn input is a fixed key set (`prompt`, `cwd`, `continue`, `model`, `thinkingLevel`, no placement), so the
   literal parts of a Chart's `input` objects are validated at the door and the resolved object again at invoke time,
-  where a failure is that invoke's error and never a mid-Turn surprise. Last, the door compiles the Chart as the body
-  would: `jr2Setup`'s own refusals (less its `agent.fault` refusal), and the load warnings a hand-written Machine gets
-  (an unentered mode), are refusal lines for a Chart, because a planner reads a report and nobody reads a warning. A
-  refusal is the body's OUTPUT, `{ outcome: "refused", report }`, routed by the wrapper's `onDone` with a guard on
-  `outcome`, so a wrapper whose `onDone` returns to the planning state hands it to the planner as the output link in its
-  Chain ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)): "Chart refused:
+  where a failure is that invoke's error and never a mid-Turn surprise. Then the rules of a Worktree (ADR-0075). Under
+  Repo Slots, a Turn's `cwd` and an Effect's `worktree` are required, and the door refuses a `cwd` that is a slot's
+  folder. A cut lent to a Chart must state `expect`, which is static, so a Chart cannot change it. The door refuses
+  `expect: "existing"` beside a lent force push, because together they let a Chart force-push any existing branch that
+  `default/` does not hold. A Chart's payload has no `pattern`, so a bad branch name reaches the cut, and the cut
+  refuses it. Last, the door compiles the Chart as the body would: `jr2Setup`'s own refusals (less its `agent.fault`
+  refusal), and the load warnings a hand-written Machine gets (an unentered mode), are refusal lines for a Chart,
+  because a planner reads a report and nobody reads a warning. A refusal is the body's OUTPUT,
+  `{ outcome: "refused", report }`, routed by the wrapper's `onDone` with a guard on `outcome`, so a wrapper whose
+  `onDone` returns to the planning state hands it to the planner as the output link in its Chain
+  ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)): "Chart refused:
   `src: "linter"` is not a lent actor; lent: coder, reviewer, push", and the planner answers with a corrected Chart. It
   is not the body's error, because a child's error is a defect that never reaches the model (ADR-0067, which stands); at
   the HTTP door it is 422 with the same report. No new mechanism: an Agent reads its children's outputs through the

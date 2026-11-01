@@ -1,5 +1,5 @@
-// Package pushkind runs the `push` kind in the Sandbox Effector (ADR-0067, ADR-0051): the
-// Workspace's branch to its Repo Slot's Binding, with the push credential of the
+// Package pushkind runs the `push` kind in the Sandbox Effector (ADR-0067, ADR-0051): the branch
+// of the cut's settled row (ADR-0075) to its Repo Slot's Binding, with the push credential of the
 // `git.credentials` entry the url falls under — and, with `sign`, as signed copies of the Agent's
 // commits.
 //

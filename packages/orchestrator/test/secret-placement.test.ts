@@ -186,15 +186,14 @@ test("two Workspaces that would share a pod key are refused, never one pod (ADR-
 
 test("a workspace() reached through another workspace()'s body shares its route, and jr2 up refuses the Machine with the fix, with or without a secret (ADR-0059)", () => {
   const repos = { app: "https://example.test/app.git" };
-  const spec = () => ({ branch: "b" });
   const body = jr2Setup({ events: [] }).createMachine({ on: { "workspace.lost": {} }, id: "body" });
-  const workers = pool(workspace(body, { repos, spec }), {
+  const workers = pool(workspace(body, { repos }), {
     source: source<{ id: string }>({ next: fromPromise(async () => null) }),
     itemId: (i) => i.id,
   });
   const shapes = {
-    "workspace(workspace(...))": workspace(workspace(body, { repos, spec }), { repos, spec }),
-    "workspace(pool(workspace(...)))": workspace(workers, { repos, spec }),
+    "workspace(workspace(...))": workspace(workspace(body, { repos }), { repos }),
+    "workspace(pool(workspace(...)))": workspace(workers, { repos }),
   };
   for (const [shape, root] of Object.entries(shapes)) {
     const placed = placementOf("w", root);
@@ -214,11 +213,11 @@ test("a workspace() reached through another workspace()'s body shares its route,
   }
   // The fix the refusal names: the inner workspace() under a key of a plain Machine's actors, that
   // Machine the outer one's body. Each Workspace then has a pod of its own.
-  const plain = jr2Setup({ events: [], actors: { inner: workspace(body, { repos, spec }) } }).createMachine({
+  const plain = jr2Setup({ events: [], actors: { inner: workspace(body, { repos }) } }).createMachine({
     on: { "workspace.lost": {} },
     id: "plain",
   });
-  const fixed = secretPlacementsOf({}, placementOf("w", workspace(plain, { repos, spec })));
+  const fixed = secretPlacementsOf({}, placementOf("w", workspace(plain, { repos })));
   const keys = fixed.held.map((p) => p.pod);
   assert.equal(new Set(keys).size, 2, `two pod keys: ${keys.join(", ")}`);
 });
@@ -654,7 +653,7 @@ test("a file-body http no workspace() invokes is refused by its path, though a w
     events: [],
     actors: {
       report: report(),
-      ws: workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }),
+      ws: workspace(inner, { repos: { app: "https://example.test/app.git" } }),
     },
   }).createMachine({ id: "outer" });
   const placed = placementOf("w", outer);
@@ -703,7 +702,7 @@ test("a file-body http in an inline plain Machine is refused, though another inl
   });
   const withWs = jr2Setup({
     events: [],
-    actors: { ws: workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }) },
+    actors: { ws: workspace(inner, { repos: { app: "https://example.test/app.git" } }) },
   }).createMachine({ id: "withWs", initial: "a", states: { a: { invoke: { src: "ws" } } } });
   const bare = jr2Setup({ events: [], actors: { report: report() } }).createMachine({ id: "bare" });
   const root = jr2Setup({ events: [] }).createMachine({
@@ -735,7 +734,7 @@ test("two Workspaces composed through inline plain Machines each get their own S
       on: { "workspace.lost": {} },
       id: `${id}-inner`,
     });
-    const ws = workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
+    const ws = workspace(inner, { repos: { app: "https://example.test/app.git" } });
     return jr2Setup({ events: [], actors: { ws } }).createMachine({
       id,
       initial: "a",
@@ -778,7 +777,7 @@ test("a Machine placed twice — { ws: workspace(M), plain: M } — is refused f
   const config: JR2Config = { secrets: [{ name: "files", value: VALUE }] };
   for (const wsFirst of [true, false]) {
     const m = jr2Setup({ events: [], actors: { report } }).createMachine({ on: { "workspace.lost": {} }, id: "m" });
-    const ws = workspace(m, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
+    const ws = workspace(m, { repos: { app: "https://example.test/app.git" } });
     const actors = wsFirst ? { ws, plain: m } : { plain: m, ws };
     const root = jr2Setup({ events: [], actors }).createMachine({ id: "w" });
     assert.throws(

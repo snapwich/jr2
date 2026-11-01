@@ -13,5 +13,4 @@ import { body } from "./_body.ts";
 export const machine = workspace(body, {
   input: z.object({ repo: z.string() }),
   repos: { app: ({ input }) => ({ url: input.repo, ref: "main" }) },
-  spec: () => ({ branch: "feat-e2e" }),
 });

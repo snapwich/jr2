@@ -11,5 +11,4 @@ import { body } from "./_body.ts";
 
 export const machine = workspace(body, {
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/missing.git", ref: "main" } },
-  spec: () => ({ branch: "feat-e2e" }),
 });

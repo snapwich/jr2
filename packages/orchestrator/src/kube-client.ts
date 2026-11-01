@@ -108,7 +108,7 @@ export interface KubeClient {
   /** Create; an existing object is a {@link KubeError} with status 409. */
   create<T extends KubeObject>(kind: KubeKind, namespace: string, body: T): Promise<T & KubeObject>;
   /** Delete; true when there was one to delete, false when it was already gone. */
-  delete(kind: KubeKind, namespace: string, name: string): Promise<boolean>;
+  delete(kind: KubeKind, namespace: string, name: string, opts?: { foreground?: boolean }): Promise<boolean>;
   /** A JSON merge patch — `null` removes a key. `status` patches the status subresource. Answers
    * the object as it stands after the patch. */
   patch<T extends KubeObject>(
@@ -216,9 +216,12 @@ export function kubeClient(opts: KubeClientOptions = {}): KubeClient {
       });
     },
 
-    delete(kind: KubeKind, ns: string, name: string) {
+    delete(kind: KubeKind, ns: string, name: string, opts: { foreground?: boolean } = {}) {
       return writes(async () => {
-        const res = await send("DELETE", pathOf(kind, ns, name));
+        // Foreground: the object stays until its dependents, a Sandbox's pod, are gone.
+        const res = await send("DELETE", pathOf(kind, ns, name), {
+          ...(opts.foreground ? { query: { propagationPolicy: "Foreground" } } : {}),
+        });
         if (res.status === 404) {
           await res.body?.cancel();
           return false;

@@ -25,6 +25,8 @@ import {
   fail,
   jr2Setup,
   workspace,
+  isReady,
+  worktree,
   type HostInjectedInput,
   type Workspaced,
 } from "@jr2/orchestrator";
@@ -65,13 +67,21 @@ type BodyContext = BodyInput & { picks: string[]; fault?: string };
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [askApproval, runTests, revise, submit, approve],
-  actors: { coder: agent(coder), fail: fail() },
+  actors: { cut: worktree(), coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [] }),
-  initial: "work",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/model-push", branch: "model-push" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "work" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     work: {
       invoke: [
         {
@@ -80,7 +90,7 @@ const body = jr2Setup({
             prompt:
               `[${context.marker}] Run exactly \`sleep 20 && ls\` in your working directory and read ` +
               `what it lists. Then call the workflow tool that fits.`,
-            cwd: context.workspace.repos.app,
+            cwd: "/work/app/model-push",
             continue: true,
             ...dialFor(context.thinking as ThinkingCell),
           }),
@@ -140,5 +150,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  spec: () => ({ branch: "model-push" }),
 });

@@ -27,6 +27,11 @@
 //     Agent reads the Effect's output, not the answer. Everywhere else a settled child with no
 //     `onDone` is Rest, and the one-line form is correct — silent on purpose.
 //
+//   - AN onDone WITH NO LAST ARM (ADR-0075, `refuseUnroutedOutcome`). Each Effect outcome is open,
+//     so an `onDone` that an output can miss holds the run in the state and shows no fault. A type
+//     cannot see the missing arm, so the walk refuses it. No `onDone` at all is Rest, as above: the
+//     author routes nothing, so no outcome can miss a route.
+//
 // The probe reads, it never runs work: a mapper is called with a Proxy event whose reads are
 // recorded, and a context and self that survive any read. A guard and an assign are pure by
 // contract, and only they are probed; any other action may do work, and is never run.
@@ -34,11 +39,42 @@
 import type { AnyStateMachine, UnknownActorLogic } from "xstate";
 import type { EventDef } from "@jr2/agent-protocol";
 import { isAgent } from "./agent.ts";
-import { inputKeysOf, isEffect } from "./effect.ts";
+import { inputKeysOf, inputShapeOf, isEffect } from "./effect.ts";
 import { mayTake, partiesAt } from "./party.ts";
 import { isAnswer, isPickMapper } from "./pick.ts";
 
 type Node = AnyStateMachine["root"];
+
+/**
+ * Refuse a Machine with a state that invokes an Effect when the last arm of that `onDone` has a
+ * guard (ADR-0075). The slots are the Machine's own `actors`. Thrown at build by
+ * `jr2Setup.createMachine`, so also at a Chart's door, and at load by `partsOf`, so a Machine built
+ * with xstate's own `createMachine` is refused where `jr2 check`, `jr2 up` and the Orchestrator read
+ * it. Throws one line that names each state and the arm to write.
+ */
+export function refuseUnroutedOutcome(machine: AnyStateMachine): void {
+  const actors = (machine.implementations.actors ?? {}) as Record<string, unknown>;
+  const unrouted: string[] = [];
+  const visit = (node: Node): void => {
+    for (const inv of node.invoke) {
+      if (typeof inv.src !== "string" || !isEffect(actors[inv.src])) continue;
+      const arms = node.transitions.get(`xstate.done.actor.${inv.id}`);
+      if (arms !== undefined && (arms.length === 0 || arms.at(-1)!.guard !== undefined)) {
+        unrouted.push(`"${node.id}" (Effect "${inv.src}")`);
+      }
+    }
+    for (const child of Object.values(node.states)) visit(child);
+  };
+  visit(machine.root);
+  if (!unrouted.length) return;
+  const many = unrouted.length > 1;
+  throw new Error(
+    `machine "${machine.id}": ${many ? "states" : "state"} ${unrouted.join(", ")} ${many ? "have" : "has"} an ` +
+      `onDone with no unguarded last arm — an Effect's outcomes are open, and an output that no arm matches holds ` +
+      `the run in that state with no fault: add a last arm with no guard, as onDone: [..., { target: "<the state ` +
+      `that handles the rest>" }] (ADR-0075)`,
+  );
+}
 
 /** What the walk found: refusals, and warnings. */
 export type EffectFindings = { errors: string[]; warnings: string[] };
@@ -47,6 +83,7 @@ export function effectChecks(
   machine: AnyStateMachine,
   actors: Record<string, UnknownActorLogic>,
   defs: Map<string, EventDef>,
+  chart = false,
 ): EffectFindings {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -220,6 +257,15 @@ export function effectChecks(
       };
     });
     const effects = invokes.filter((inv) => inv.effect !== undefined);
+    // xstate's `input` is optional for an actor: a kit Effect that takes a key refuses an invoke
+    // with no input when `jr2Setup` or `customize()` builds the Machine.
+    for (const inv of effects) {
+      const shape = inputShapeOf(inv.effect!);
+      const needs = [...(shape?.required ?? []), ...(shape?.oneOf ?? [])];
+      if (inv.mapper === undefined && needs.length > 0) {
+        errors.push(`state "${n.id}": Effect "${inv.slot}" has no \`input\`, and it takes ${needs.join(", ")}`);
+      }
+    }
     if (!effects.length) continue;
     const at = `state "${n.id}" (Effect${effects.length > 1 ? "s" : ""} ${effects.map((e) => `"${e.slot}"`).join(", ")})`;
     for (const [event, { pick, ...reads }] of entering.get(n) ?? []) {
@@ -276,7 +322,8 @@ export function effectChecks(
             });
           } catch (err) {
             probed = false;
-            warnings.push(`${own}: could not probe the input mapper (${messageOf(err)}); its params are unchecked`);
+            if (!chart)
+              warnings.push(`${own}: could not probe the input mapper (${messageOf(err)}); its params are unchecked`);
           }
         }
       }
@@ -289,7 +336,7 @@ export function effectChecks(
       const picked = effects.filter((e) => isPickMapper(e.mapper));
       if (probed && lost.length && probe.unrun.length) {
         // Any other action may do work, so the probe never runs one; it may read the param.
-        warnings.push(unrunWarning(where, lost, probe.unrun));
+        if (!chart) warnings.push(unrunWarning(where, lost, probe.unrun));
       } else if (probed && lost.length && picked.length) {
         const inputs =
           picked.length === 1

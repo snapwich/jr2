@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, isReady, jr2Setup, workspace, worktree, type Workspaced } from "@jr2/orchestrator";
 
 const finish = defineEvent({
   name: "finish",
@@ -22,6 +22,9 @@ const runInput = z.object({ branch: z.string() });
 type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
 type Context = BodyInput & { summary: string; notes: string };
 
+// The Worktree of each Turn of the coder.
+const fixTree = (context: BodyInput) => `${context.workspace.repos.app}/fix` as const;
+
 const body = jr2Setup({
   types: {} as { input: BodyInput; context: Context },
   events: [finish, approve, requestChanges],
@@ -38,21 +41,30 @@ const body = jr2Setup({
       workspace: "none",
       thinkingLevel: "low",
     }),
+    cut: worktree(),
     fail: fail(),
   },
 }).createMachine({
   id: "fix",
   context: ({ input }) => ({ ...input, summary: "", notes: "" }),
   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
-  initial: "coding",
+  initial: "cutting",
   states: {
+    // The Workspace only clones. The Machine cuts the Worktree that the Agent works in.
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: fixTree(context), branch: context.branch }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+      },
+    },
     coding: {
       invoke: {
         src: "coder",
         // The Frame (prompt and cwd) and continue. This Turn starts the coder's conversation.
         input: ({ context }) => ({
           prompt: "Make `node --test` pass, then commit.",
-          cwd: context.workspace.repos.app,
+          cwd: fixTree(context),
           continue: true,
         }),
       },
@@ -71,7 +83,7 @@ const body = jr2Setup({
         // The same conversation as in coding, with a Dial: the coder thinks harder on this Turn.
         input: ({ context }) => ({
           prompt: `The fix is not complete: ${context.notes}\nFix it, then commit.`,
-          cwd: context.workspace.repos.app,
+          cwd: fixTree(context),
           continue: true,
           thinkingLevel: "high",
         }),
@@ -79,6 +91,7 @@ const body = jr2Setup({
       on: { finish: { target: "checking", actions: assign({ summary: ({ event }) => event.summary }) } },
     },
     done: { type: "final" },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
   },
@@ -87,5 +100,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: runInput,
   repos: { app: "https://github.com/you/app.git" },
-  spec: ({ input }) => ({ branch: input.branch }),
 });

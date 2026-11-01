@@ -6,10 +6,10 @@ description: How a Workflow gets a Sandbox with a git Worktree or a shared folde
 A [Workspace](../reference/glossary.md#workspace) is a [Machine](../reference/glossary.md#machine) that runs a body
 Machine in a [Sandbox](../reference/glossary.md#sandbox). The Sandbox is a pod of its own, with a folder, `/work`, that
 the Agents and Effects of the body share. When the Workspace names [Repos](../reference/glossary.md#repo), `/work` holds
-a git [Worktree](../reference/glossary.md#worktree) of each Repo on one branch. A Workspace that names no Repo has only
-the folder (see [A Workspace with no Repo](#a-workspace-with-no-repo)). You make a Workspace with
-[`workspace()`](../reference/authoring-surface/workspace.md). The Workspace makes the Sandbox when the run enters it,
-and deletes the Sandbox when the body reaches a final state.
+a clone of each Repo. The body cuts each git [Worktree](../reference/glossary.md#worktree) that it needs. A Workspace
+that names no Repo has only the folder (see [A Workspace with no Repo](#a-workspace-with-no-repo)). You make a Workspace
+with [`workspace()`](../reference/authoring-surface/workspace.md). The Workspace makes the Sandbox when the run enters
+it, and deletes the Sandbox when the body reaches a final state.
 
 ## Why Workspaces exist
 
@@ -25,8 +25,8 @@ Agent.
 ## A Workspace and its body
 
 This example is a [Workflow](../reference/glossary.md#workflow). A coder changes the `app` Repo, and reads the
-`handbook` Repo beside it. Then a person approves the change at a [Gate](../reference/glossary.md#gate), and the Machine
-pushes the branch:
+`handbook` Repo beside it. The Machine first cuts the coder's Worktree. Then a person approves the change at a
+[Gate](../reference/glossary.md#gate), and the Machine pushes the branch:
 
 ::: tabs key:provider
 
@@ -47,21 +47,20 @@ pushes the branch:
 [Agents and Turns](agents-and-turns.md) tells how to define an Agent.
 
 The options of `workspace()` say what the Sandbox is. [`jr2 up`](../reference/cli.md#up) reads them before a run starts.
-Only `spec` and a per-run [Repo Slot](../reference/glossary.md#repo-slot) read the run input:
+Only a per-run [Repo Slot](../reference/glossary.md#repo-slot) reads the run input:
 
 - `input` is the schema of the run input: what [`jr2 run`](../reference/cli.md#run) gives with `--input`. Put it on the
   `workspace()`, not on the body.
 - `repos` gives the Repo Slots that the Sandbox clones. Leave it out for a Workspace with no Repo.
-- `spec` is a function from the run input to the branch. Its input also holds `instanceId` (see
-  [`HostInjectedInput`](../reference/authoring-surface/type-hostinjectedinput.md)).
 - `resources` is the [Size](../reference/glossary.md#size). `image`, `user` and `effector` name the images of the pod's
   containers.
 - `secrets` names the [Held secrets](../reference/glossary.md#held-secret) that the Sandbox can use (see
   [Secrets and trust](secrets-and-trust.md)).
+- `workGroup` is the group id that owns the files in `/work`. The default is 2000.
 
 The body gets the run input, plus `workspace`: the handles of the Workspace (see
-[`WorkspaceHandles`](../reference/authoring-surface/type-workspacehandles.md)). `workspace.repos` gives the absolute
-path of each Worktree, and `workspace.branch` gives the branch. Give a path to an Agent's
+[`WorkspaceHandles`](../reference/authoring-surface/type-workspacehandles.md)). `workspace.repos` gives the folder of
+each Repo Slot, `/work/<slot>`. This folder is not a Worktree. Give the path of a Worktree to an Agent's
 [Turn](../reference/glossary.md#turn) as its `cwd`, as the example does. Type the body's input with
 [`Workspaced`](../reference/authoring-surface/type-workspaced.md), also when the run input is `z.object({})`.
 
@@ -79,7 +78,8 @@ A Repo Slot is a key of the `repos` option. The key is your Machine's name for t
 Repo under `/work`. Each slot is one of three kinds:
 
 - **Bound**: the Machine gives the url, or a [Binding](../reference/glossary.md#binding) `{ url, ref }`. `ref` is the
-  branch or the commit that the Worktree starts from. Without `ref`, the Worktree starts from the Repo's default branch.
+  branch, the tag or the commit that the clone stays on, and a new branch starts from it. Without `ref`, it is the
+  Repo's default branch.
 - **[Open](../reference/glossary.md#open)**: the Machine gives [`open`](../reference/authoring-surface/open.md). The
   [Instance](../reference/glossary.md#instance) that registers the Machine binds the slot with
   [`customize()`](../reference/authoring-surface/customize.md) (see [Composition](composition.md)).
@@ -87,7 +87,7 @@ Repo under `/work`. Each slot is one of three kinds:
 
 A Machine that names no slot writes `repos: open` for the whole map. Then the composer names each slot.
 `workspace.repos` keeps the slots in the order that `repos` declares them. jr2 gives no slot a special meaning. Your
-Machine says which Worktree each Agent works in.
+Machine says where each Agent works.
 
 The cluster keeps one read-only cache of each Repo on each node. A Sandbox clones from that cache, and a fetch in the
 pod goes through it. [Architecture](architecture.md) tells about the Repo cache. Run
@@ -95,23 +95,44 @@ pod goes through it. [Architecture](architecture.md) tells about the Repo cache.
 
 ## The folders in the Sandbox
 
-Each Repo Slot gets a folder under `/work`. The clone of the Repo is `/work/<slot>/default/`. The Worktree of the branch
-is beside it, at `/work/<slot>/<branch>`. In the folder name, each `/` of the branch becomes `-`. For example, the
-branch `docs/T-12` of the slot `app` is at `/work/app/docs-T-12`. This is the
-[Project layout](../reference/glossary.md#project-layout).
+Each Repo Slot gets a folder under `/work`. The clone of the Repo is `/work/<slot>/default/`. It stays on the base of
+the Binding: a branch is attached, and a tag or a commit is detached. No work happens in `default/`. A slot that an
+Agent only reads needs nothing more: the Agent reads `/work/<slot>/default`. This is the
+[Project layout](../reference/glossary.md#project-layout). `/work/.jr2/` is reserved for jr2.
 
-`spec` returns a [`WorkspaceSpec`](../reference/authoring-surface/type-workspacespec.md). It gives the branch, and two
-optional fields:
+The Workspace only clones. Your Machine cuts each Worktree with the
+[`worktree()`](../reference/authoring-surface/worktree.md) Effect, in a state of the body. You give the path, and the
+branch or the commit:
 
-- `reviewSha`: a commit for a reviewer. jr2 checks it out in a second Worktree, at `/work/<slot>/<branch>-review`. The
-  body gets its paths as `workspace.review`.
-- `workGroup`: the group id that owns the files in `/work`. The default is 2000.
+- `{ path: "/work/app/fix", branch: "docs/123" }` cuts a branch Worktree. The cut finds a local branch, then
+  `origin/<branch>`, tracked, after a fetch. With neither, it makes a new branch from `from` or the base of the Binding.
+- `{ path: "/work/app/review", detach: sha }` cuts a detached Worktree for a reviewer. Each cut forces it to the commit
+  and cleans it. Ignored files stay, so that the reviewer can run the tests.
 
-Your Machine chooses the branch name. jr2 makes the branch in each Repo Slot. Give each run a different branch, so that
-two runs do not push to one branch. Make it from a field of the run input, or from `instanceId` when the run input has
-no field that is different for each run: ``spec: ({ input }) => ({ branch: `fix/${input.instanceId}` })``. Only a root
-`workspace()` gets `instanceId` from jr2. A `workspace()` that a different Machine invokes gets it only when its parent
-gives it.
+The path is exactly `/work/<slot>/<name>`. The name is one segment that is not `default` and starts with neither `.` nor
+`-`. So your Machine knows the path before the cut, and the folder name does not change with the branch name.
+
+The output of a cut is `ready`, `refused` or `unknown`. A later outcome can come, so route the last arm of `onDone` with
+no guard. A bad path or a bad branch name is `refused`, and nothing changes. A cut is idempotent: the same cut again
+reads the same Worktree, and its `head` is the tip of the branch.
+
+`worktree({ expect: "new" })` refuses a branch that exists. `worktree({ expect: "existing" })` refuses a branch that
+does not exist, and makes nothing.
+
+The author chooses how many Agents work in a Workspace. Agents in one Worktree share git, as people in one checkout do.
+Each coder that needs its own branch gets its own Worktree of the one clone.
+
+Your Machine chooses the branch name. Give each run a different branch, so that two runs do not push to one branch. Make
+it from a field of the run input, or from `instanceId` when the run input has no field that is different for each run.
+Only a root `workspace()` gets `instanceId` from jr2. A `workspace()` that a different Machine invokes gets it only when
+its parent gives it.
+
+An Agent, a `command`, a `push`, and an `http` Effect with a file body each name their Worktree by its path: `cwd` for a
+Turn, `worktree` for an Effect. A `push` has no branch in its input. jr2 reads the branch from the cut of that path. So
+an Agent that moves `HEAD` does not change what is pushed.
+
+jr2 has no Effect that removes a Worktree. To remove one, run `git worktree remove` in a `command`.
+[Cut a Worktree](../guides/cut-a-worktree.md) gives the procedure.
 
 ## A Workspace with no Repo
 
@@ -138,13 +159,13 @@ they share nothing.
 
 In a Workspace with no Repo:
 
-- Type the body's input as `Workspaced<RunInput, never>`. The handles are `{ repos: {} }`, with no branch.
+- Type the body's input as `Workspaced<RunInput, never>`. The handles are `{ repos: {} }`.
 - An Agent's Turn that gives no `cwd` works in `/work`. The Agent's `workspace` access is the same as in each Workspace:
   `"write"` gives it `write`, `edit` and `bash`, and `"read"` gives it `bash` only.
 - A `command` with no Effect secret runs in `/work`.
 - An `http` Effect sends a file of `/work` with `file(path)`. The path is relative to `/work`.
-- `spec` is optional, and gives only `workGroup`.
-- A `push` needs a branch, and a `command` with an Effect secret runs on a commit. Thus `jr2 up` refuses both.
+- A `worktree()` needs a Repo Slot, a `push` needs a branch, and a `command` with an Effect secret runs on a commit.
+  Thus `jr2 up` refuses all three.
 
 jr2 deletes `/work` with the Sandbox. Send what must stay before the body ends, as the example does with `upload`. A
 Lost Sandbox has lost all of its work, because no commit was pushed.
@@ -227,8 +248,7 @@ A Workspace goes through these states:
 
 1. `placing`: jr2 writes the Sandbox, and waits for a node.
 2. `provisioning`: the pod starts.
-3. `attaching`: the Harness clones each Repo Slot and makes its Worktree. With no Repo Slot, this state has nothing to
-   do.
+3. `attaching`: the Harness clones each Repo Slot. With no Repo Slot, this state has nothing to do.
 4. `running`: the body runs.
 5. `teardown`: the body is in a final state, and jr2 deletes the Sandbox.
 6. `failing`: the body invoked [`fail`](../reference/authoring-surface/fail.md), and jr2 deletes the Sandbox. Then the
@@ -277,29 +297,37 @@ the Harness container does not lose the Workspace: the pod and `/work` stay.
 - A per-run url must match an entry of [`git.credentials`](../reference/config.md#git-credentials). jr2 refuses the url
   before it makes the Sandbox when no entry matches it. Thus a run cannot send the cluster's credentials to a host that
   it chooses.
-- `spec` returns a `branch`. When a run enters the Workspace, it faults if `spec` gives no `branch`, or the branch
-  `default`, because `default` is the folder of the clone. With no Repo Slot, it faults if `spec` gives a `branch` or a
-  `reviewSha`.
-- With no Repo Slot, `jr2 up` refuses a `push`, and a `command` that names an Effect secret.
+- `jr2 up` refuses a Repo Slot name that starts with `.`, because `/work/.jr2/` is reserved for jr2.
+- A cut of the branch that `default/` holds is `refused`, and the reason names `/work/<slot>/default`.
+- With no Repo Slot, `jr2 up` refuses a `worktree()`, a `push`, and a `command` that names an Effect secret.
 - A Size has only `limits.memory` and `limits.cpu`. jr2 refuses `requests` and each other key.
 - `jr2 up` refuses a Size that leaves the Harness container less than 256Mi of memory, or no cpu.
-- Under a Workspace with more than one Repo Slot, a Turn states its `cwd`, and a `command` and a `push` name their slot.
+- Under a Workspace with Repo Slots, a Turn states its `cwd`, and a `command`, a `push` and an `http` Effect with a file
+  body state their `worktree`. A Turn that wants `/work` states `cwd: "/work"`. An Agent with `workspace: "none"` needs
+  no `cwd`.
+- A `push`, a `command` that names an Effect secret, and an `http` Effect with a file body need a Worktree that a cut of
+  this run made.
+- Under a Workspace with more than one Repo Slot, a `push` names its `slot`.
 
 The guides and the Reference give the refusal text of each rule.
 
 ## Read next
 
+- [Cut a Worktree](../guides/cut-a-worktree.md)
 - [Look inside a Sandbox](../guides/look-inside-a-sandbox.md)
 - [Add tools to the Sandbox](../guides/add-tools-to-the-sandbox.md)
 - [Size a Workspace](../guides/size-a-workspace.md)
 - [Give the cluster git credentials](../guides/give-the-cluster-git-credentials.md)
 - [Effects](effects.md), [Composition](composition.md), [Architecture](architecture.md)
 - Reference: [`workspace`](../reference/authoring-surface/workspace.md),
+  [`worktree`](../reference/authoring-surface/worktree.md),
   [`RepoSlot`](../reference/authoring-surface/type-reposlot.md), [`Size`](../reference/authoring-surface/type-size.md),
   [`UserContainer`](../reference/authoring-surface/type-usercontainer.md),
   [`workspace.lost`](../reference/mechanism-events.md#workspace-lost), [`sandbox`](../reference/config.md#sandbox)
 - [ADR-0012](../reference/decisions/0012-workspace-wrapper-machine.md): `workspace()` wraps a body Machine and owns only
   Sandbox lifecycle
+- [ADR-0075](../reference/decisions/0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md): a Machine cuts a
+  Worktree, and the Workspace only clones
 - [ADR-0051](../reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md): a Repo is a slot
   on the `workspace()` and a cache on the node
 - [ADR-0060](../reference/decisions/0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md): a Workspace states

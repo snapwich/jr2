@@ -1403,12 +1403,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           const { identity, key } = repoIdentity(r.url);
           return { slot: r.slot, url: r.url, identity, key, ...(r.ref !== undefined ? { ref: r.ref } : {}) };
         }),
-        branch: req.spec.branch,
-        ...(req.spec.reviewSha ? { reviewSha: req.spec.reviewSha } : {}),
       };
-      const { repos, review } = await postAttach(req.name, endpoint, body);
+      const { repos, bases } = await postAttach(req.name, endpoint, body);
       const stale = staleSlots(req.repos, staleByName.get(req.name));
-      return { repos, ...(review ? { review } : {}), ...(stale ? { stale } : {}) };
+      return { repos, bases, ...(stale ? { stale } : {}) };
     },
 
     leaseIntervalMs,
@@ -1458,7 +1456,20 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     async destroy(name) {
       staleByName.delete(name);
       // The token Secret is the CR's child from birth, so deleting the CR reaps it (ADR-0001).
-      await kube().delete(SANDBOXES, ns, name);
+      await kube().delete(SANDBOXES, ns, name, { foreground: true });
+      // A retry of the same invoke id takes the same name, and the pod takes it too: a new Sandbox
+      // must not find the old pod on its way out, and read `Lost` (ADR-0075). So the wait is
+      // for the pod as well: foreground keeps the CR until the pod is gone. Bounded: a stuck finalizer
+      // is the operator's to report, and the run does not wait on it for ever.
+      for (let i = 0; i < 120; i++) {
+        if (
+          (await kube()
+            .get<SandboxObject>(SANDBOXES, ns, name)
+            .catch(() => undefined)) === undefined
+        )
+          return;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
     },
   };
 }

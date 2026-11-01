@@ -23,6 +23,7 @@ import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const EP = "http://harness.invalid";
+const WT = "/work/app/run-1";
 const ok = (o: CommandOutput) => o.outcome === "exited" && o.code === 0;
 const ev = <const N extends string, I extends z.ZodObject = z.ZodObject<{}>>(
   name: N,
@@ -52,6 +53,7 @@ test("s01 — a test gate with no Agent: `onDone` routes on the exit code", asyn
         testing: {
           invoke: {
             src: "tests",
+            input: { worktree: WT },
             onDone: [{ guard: ({ event }) => ok(event.output), target: "green" }, { target: "red" }],
           },
         },
@@ -102,6 +104,7 @@ test("s04 — cross-Turn: the pick ends the Turn; the Effect runs after it; the 
           input: ({ context }) => ({
             prompt: context.tests ? `The tests: ${JSON.stringify(context.tests)}` : "Fix the bug.",
             endpoint: EP,
+            cwd: WT,
             continue: true,
           }),
         },
@@ -113,6 +116,7 @@ test("s04 — cross-Turn: the pick ends the Turn; the Effect runs after it; the 
       run_tests: {
         invoke: {
           src: "tests",
+          input: { worktree: WT },
           onDone: { target: "working", actions: assign({ tests: ({ event }) => event.output }) },
         },
       },
@@ -158,17 +162,18 @@ function mixed(fake: FakeHarnessExec, coder: MockFlueClient) {
     initial: "working",
     states: {
       working: {
-        invoke: { src: "coder", input: { prompt: "Work.", endpoint: EP, continue: true } },
+        invoke: { src: "coder", input: { prompt: "Work.", endpoint: EP, cwd: WT, continue: true } },
         initial: "rest",
         states: {
           rest: {},
           lint: {
             invoke: {
               src: "linter",
+              input: { worktree: WT },
               onDone: { target: "rest", actions: assign({ green: ({ event }) => ok(event.output) }) },
             },
           },
-          comment: { invoke: { src: "poster", input: fromPick(comment), onDone: "rest" } },
+          comment: { invoke: { src: "poster", input: fromPick(comment, () => ({ worktree: WT })), onDone: "rest" } },
         },
         on: {
           lint: ".lint",
@@ -178,7 +183,7 @@ function mixed(fake: FakeHarnessExec, coder: MockFlueClient) {
           finish: "done",
         },
       },
-      deploying: { invoke: { src: "deployer", onDone: "working" } },
+      deploying: { invoke: { src: "deployer", input: { worktree: WT }, onDone: "working" } },
       done: { type: "final" },
     },
   });
@@ -256,10 +261,11 @@ test("s12 — must-finish: its state shadows the ancestor's `cancel` and is not 
       initial: "building",
       on: { cancel: ".cancelled" },
       states: {
-        building: { invoke: { src: "build", onDone: "publishing" } },
+        building: { invoke: { src: "build", input: { worktree: WT }, onDone: "publishing" } },
         publishing: {
           invoke: {
             src: "publish",
+            input: { worktree: WT },
             onDone: [{ guard: ({ context }) => context.cancelled, target: "cancelled" }, { target: "done" }],
           },
           on: { cancel: { actions: assign({ cancelled: true }) } },
@@ -316,14 +322,14 @@ test("s16 — modes with a command: one Menu; the command's pick is held and ans
     initial: "ticket",
     states: {
       ticket: {
-        invoke: { src: "coder", input: { prompt: "Fix the ticket.", endpoint: EP } },
+        invoke: { src: "coder", input: { prompt: "Fix the ticket.", endpoint: EP, cwd: WT } },
         initial: "coding",
         states: {
           coding: { on: { run_tests: "testing", ask_review: "reviewing" } },
           testing: {
             invoke: {
               src: "tests",
-              input: fromPick(runTests),
+              input: fromPick(runTests, () => ({ worktree: WT })),
               onDone: { target: "coding", actions: assign({ green: ({ event }) => ok(event.output) }) },
             },
           },

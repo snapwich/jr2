@@ -29,6 +29,8 @@ import {
   workspace,
   type HostInjectedInput,
   type Workspaced,
+  isReady,
+  worktree,
 } from "@jr2/orchestrator";
 
 /** The seed's push remote (`steps/seed.ts`). */
@@ -51,6 +53,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
   events: [unused, go],
   actors: {
+    cut: worktree(),
     fail: fail(),
     // In the Harness container: the Agent's own work, committed.
     commit: command([
@@ -73,18 +76,28 @@ const body = jr2Setup({
 }).createMachine({
   id: "pushed",
   context: ({ input }) => input,
-  initial: "committing",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" }, noop: ".settled" },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: `/work/app/pushed-${context.marker}`, branch: `pushed-${context.marker}` }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "committing" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     committing: {
       invoke: {
         src: "commit",
+        input: ({ context }) => ({ worktree: `/work/app/pushed-${context.marker}` }),
         onDone: [{ guard: ({ context }) => context.mode === "signed", target: "editing" }, { target: "publishing" }],
       },
     },
     editing: {
       invoke: {
         src: "edit",
+        input: ({ context }) => ({ worktree: `/work/app/pushed-${context.marker}` }),
         onDone: { target: "holding", actions: assign({ before: ({ event }) => event.output }) },
       },
     },
@@ -92,6 +105,7 @@ const body = jr2Setup({
     publishing: {
       invoke: {
         src: "publish",
+        input: ({ context }) => ({ worktree: `/work/app/pushed-${context.marker}` }),
         onDone: [
           {
             guard: ({ context }) => context.mode === "signed",
@@ -103,12 +117,23 @@ const body = jr2Setup({
       },
     },
     looking: {
-      invoke: { src: "look", onDone: { target: "settled", actions: assign({ after: ({ event }) => event.output }) } },
+      invoke: {
+        src: "look",
+        input: ({ context }) => ({ worktree: `/work/app/pushed-${context.marker}` }),
+        onDone: { target: "settled", actions: assign({ after: ({ event }) => event.output }) },
+      },
     },
-    amending: { invoke: { src: "amend", onDone: "republishing" } },
+    amending: {
+      invoke: {
+        src: "amend",
+        input: ({ context }) => ({ worktree: `/work/app/pushed-${context.marker}` }),
+        onDone: "republishing",
+      },
+    },
     republishing: {
       invoke: {
         src: "publish",
+        input: ({ context }) => ({ worktree: `/work/app/pushed-${context.marker}` }),
         onDone: { target: "settled", actions: assign({ second: ({ event }) => event.output }) },
       },
     },
@@ -126,6 +151,5 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: REMOTE },
-  spec: ({ input }) => ({ branch: `pushed-${input.marker}` }),
   effector: { image: import.meta.resolve("../images/effector") },
 });

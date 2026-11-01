@@ -51,7 +51,7 @@ test("a Machine in a workspace() shows the Workspace's states, and its body in r
   assert.deepEqual(body.rows, ["any state: workspace.lost → lost"]);
   assert.deepEqual(
     body.children.map((n) => n.title),
-    ["working", "review", "done", "lost"],
+    ["starting", "cutting", "working", "review", "done", "noBranch", "notCut", "lost"],
   );
   assert.deepEqual(find(g.nodes, "workspace.running>task.working")!.sub, { text: "coder", kind: "agent" });
   assert.ok(g.edges.some((e) => e.source === "workspace.running>task.review" && e.label === "request_changes"));
@@ -79,6 +79,6 @@ test("a Workspace in a child Machine is a frame around its body, and its initial
   const g = graphOf("route", await load("concepts/composition/anthropic/route.ts"));
   const deep = find(g.nodes, "route.deep>task")!;
   assert.deepEqual(deep.rows, ["in a workspace()", "any state: workspace.lost → lost"]);
-  assert.equal(deep.initial, "route.deep>task.working");
+  assert.equal(deep.initial, "route.deep>task.starting");
   assert.equal(find(g.nodes, "route.deep>workspace.placing"), undefined);
 });

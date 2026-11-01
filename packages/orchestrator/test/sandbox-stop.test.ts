@@ -8,12 +8,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { commandWith, type EffectLogic } from "../src/effect.ts";
+import { commandWith, type EffectLogic, type ExecPortFactory } from "../src/effect.ts";
 import { createEffectorClient } from "../src/effector-wire.ts";
 import { bearer, file, secret } from "../src/http-effect.ts";
 import { RunHost } from "../src/run-host.ts";
 import { httpFileWith, pushWith } from "../src/sandbox-effect.ts";
 import { jr2Setup } from "../src/setup.ts";
+import { worktreeWith } from "../src/worktree.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
 import { fakeWorkspace, handles, FakeHarnessExec } from "./_effects.ts";
 import { mkStore, waitFor } from "./_fixtures.ts";
@@ -25,22 +26,50 @@ const finish = defineEvent({ name: "finish", input: z.object({}) });
 type AnyEffect = EffectLogic<any, unknown>;
 
 const ws = () => ({
-  ...handles({ app: "/work/app/jr2-run-1" }),
+  ...handles({ app: "/work/app" }),
   bindings: { app: "https://git.example.com/ourorg/app.git" },
 });
 
-/** A Machine whose `running` state invokes the Effect beside a Gate `exit`; `leave` exits it, and
- * `finish` exits it into the run's final state. */
+const WORKTREE = "/work/app/run";
+
+/** A Harness whose one program is the cut, which is `ready` at once: each Effect here names a Worktree,
+ * and a credentialed command, a push and a file body each need the cut's row (ADR-0075). */
+function readyCut(): ExecPortFactory {
+  const harness = new FakeHarnessExec();
+  const row = { outcome: "ready", slot: "app", path: WORKTREE, branch: "b", head: "a".repeat(40), found: "none" };
+  return (endpoint, bearer) => {
+    const port = harness.port(endpoint, bearer);
+    return {
+      ...port,
+      start: async (id, req, signal) => {
+        await port.start(id, req, signal);
+        harness.settle({ outcome: "exited", code: 0, tail: JSON.stringify(row) }, id);
+      },
+    };
+  };
+}
+
+/** A Machine that cuts a Worktree, then invokes the Effect in `running` beside a Gate `exit`; `leave`
+ * exits it, and `finish` exits it into the run's final state. */
 function machineOf(effect: AnyEffect) {
-  return jr2Setup({ events: [go, leave, finish], actors: { ws: fakeWorkspace(ws()), effect } }).createMachine({
+  const actors = { ws: fakeWorkspace(ws()), cut: worktreeWith(readyCut()), effect };
+  return jr2Setup({ events: [go, leave, finish], actors }).createMachine({
     id: "wf",
     invoke: { src: "ws" },
     initial: "waiting",
     states: {
-      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "running" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "cutting" } },
+      cutting: {
+        invoke: { src: "cut", input: { path: WORKTREE, branch: "b" }, onDone: "running", onError: "faulted" },
+      },
       running: {
         invoke: [
-          { src: "effect", input: () => ({ path: "dist/report.pdf" }) as never, onDone: "done", onError: "faulted" },
+          {
+            src: "effect",
+            input: () => ({ worktree: WORKTREE, path: "dist/report.pdf" }) as never,
+            onDone: "done",
+            onError: "faulted",
+          },
           { src: "gate", id: "exit" },
         ],
         on: { leave: "left", finish: "finished" },

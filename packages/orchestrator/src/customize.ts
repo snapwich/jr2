@@ -45,6 +45,8 @@
 // its slot MAP Open (`repos: open`, ADR-0051) declared exactly this: every slot is the composer's
 // to name, so the map they write is the declaration, not an addition to one.
 
+import type { CallbackActorLogic } from "xstate";
+import type { AgentRunReceiveEvent } from "./actor.ts";
 import { StateMachine, type AnyStateMachine, type InputFrom, type ProvidedActor, type UnknownActorLogic } from "xstate";
 import type { AgentLogic } from "./actor.ts";
 import { isAgent, type AgentDefinition } from "./agent.ts";
@@ -128,8 +130,10 @@ type LogicAt<M extends AnyStateMachine, K extends string> = Extract<SlotsOf<M>, 
  *
  * @internal
  */
-type AgentSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AgentLogic }>["src"];
-
+type AgentSlots<M extends AnyStateMachine> = Extract<
+  SlotsOf<M>,
+  { logic: CallbackActorLogic<AgentRunReceiveEvent, any> }
+>["src"];
 /** The Effect slots with an Open part — told by the phantom `OpenEffect` their constructor's
  * overload states for an `open` url or argv, or a `secret(open)` (open-effect.ts).
  *
@@ -311,7 +315,11 @@ export type Customize<M extends AnyStateMachine> = {
    * the Machine does not declare does not compile. Some Machines, such as `task`, leave their
    * whole slot map Open. Then you name every slot, and at least one. The keys are your names for
    * the Repos, and the Machine says what their order means. */
-  repos?: [RepoSlotsOf<M>] extends [never] ? never : { [K in RepoSlotsOf<M>]?: RepoSlot<InputFrom<WorkspaceOf<M>>> };
+  // A Workspace with only optional fields can start with no input, but the wrapper gives a mapper `{}`,
+  // so its `input` is never `undefined`.
+  repos?: [RepoSlotsOf<M>] extends [never]
+    ? never
+    : { [K in RepoSlotsOf<M>]?: RepoSlot<Exclude<InputFrom<WorkspaceOf<M>>, undefined>> };
 };
 
 /** The same shape with the types erased — what the implementation walks. */

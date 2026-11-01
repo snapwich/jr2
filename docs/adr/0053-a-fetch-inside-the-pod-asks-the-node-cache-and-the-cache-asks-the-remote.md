@@ -54,7 +54,17 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   budget lets the program fall through to the objects the cache holds — ADR-0051's stance for attach — and writes one
   line to stderr, which git passes through verbatim:
   `warning: jr2: remote fetch failed (<git's error>); serving the cache as of <lastFetched>`. The budget is the cache
-  agent's one on-demand number; the program's wait is that plus watch slack, and nothing else owns a timeout.
+  agent's one on-demand number; the program's wait is that plus watch slack, and nothing else owns a timeout. A cut
+  reads that line too: its output carries the line in `stale`, and the cut uses what the clone holds. A branch name that
+  the clone does not hold is then `refused`, because the remote cannot confirm that it is new
+  ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)).
+- **One fetch at a time in a clone.** All Worktrees of a clone share `refs/remotes/origin/*`, and git updates a ref only
+  if it still holds the value that the fetch read. So two fetches that overlap on a moved remote can fail with
+  `cannot lock ref`. The failure does no harm, but it costs a Turn. So the program takes a per-clone lock after the ask,
+  so a dead remote does not make coders wait in line. `git upload-pack` can end before the fetch writes its refs: that
+  happens when a pack moves. In a shared clone, git often keeps the connection open to the end. The lock must last to
+  the end of the fetch in both cases, so a small child process that the program leaves watches the fetch and holds the
+  lock. ADR-0075 holds the measurements.
 - **Every seat that holds the checkouts holds the program.** The fetch url lives in the shared `default/.git/config`, so
   a seat without the program has checkouts whose `git fetch` dies. That is ADR-0005's own argument for `/repos` — half
   of one exception, not a second — applied once more: the pod's `/opt/jr2` volume is mounted read-only into the User

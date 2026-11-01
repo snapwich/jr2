@@ -163,7 +163,10 @@ test('a root writing belongs to both parties; `audience: "agent"` holds it back 
       initial: "work",
       on: { "agent.fault": {}, report_blocked: ".blocked", cancel: ".blocked" },
       states: {
-        work: { invoke: { src: "coder", input: { prompt: "p", endpoint: EP } }, on: { finish: "review" } },
+        work: {
+          invoke: { src: "coder", input: { prompt: "p", endpoint: EP, cwd: "/work" } },
+          on: { finish: "review" },
+        },
         review: { invoke: { src: "gate" }, on: { approve: "done" } },
         blocked: { type: "final" },
         done: { type: "final" },
@@ -266,17 +269,14 @@ test("a wrapper adds no owner: a body's seats are its own Machine's, wrapped or 
     initial: "work",
     on: { "workspace.lost": {}, "agent.fault": {}, cancel: ".cancelled" },
     states: {
-      work: { invoke: { src: "coder", input: { prompt: "p", endpoint: EP } }, on: { finish: "review" } },
+      work: { invoke: { src: "coder", input: { prompt: "p", endpoint: EP, cwd: "/work" } }, on: { finish: "review" } },
       review: { invoke: { src: "gate" }, on: { approve: "done" } },
       cancelled: { type: "final" },
       done: { type: "final" },
     },
   });
   const before = seats(body);
-  workspace(
-    body as never,
-    { repos: { app: { url: "https://example.invalid/app.git" } }, spec: () => ({ branch: "b" }) } as never,
-  );
+  workspace(body as never, { repos: { app: { url: "https://example.invalid/app.git" } } } as never);
   assert.deepEqual(seats(body), before);
   assert.deepEqual(before, ["body.work agent:coder: [cancel, finish]", "body.review gate: [approve, cancel]"]);
 });

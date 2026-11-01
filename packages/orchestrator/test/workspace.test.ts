@@ -1,4 +1,4 @@
-// workspace(body, { repos, spec }) — ADR-0012, ADR-0051. Driven through a REAL RunHost (store +
+// workspace(body, { repos, workGroup }) — ADR-0012, ADR-0051, ADR-0075. Driven through a REAL RunHost (store +
 // binding + restore) against a fake SandboxPort at the seam, so lifecycle, input passthrough,
 // parked-body retention, the Repo Slots' three states, and the restore-reconcile `workspace.lost`
 // path are exercised the way a run experiences them. The kind-backed port has its own suite; the
@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { assign, fromPromise, setup, spawnChild } from "xstate";
+import { assign, fromPromise, setup, spawnChild, type AnyStateMachine } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { customize } from "../src/customize.ts";
@@ -27,7 +27,6 @@ import {
   type ProvisionedRepo,
   type SandboxLoss,
   type SandboxPort,
-  type WorkspaceSpec,
   type Workspaced,
 } from "../src/workspace.ts";
 import { observe, RunHost, type WorkflowDef } from "../src/run-host.ts";
@@ -107,7 +106,7 @@ class FakeSandbox implements SandboxPort {
 
   /** The Sandbox Image NAME each provision was asked for (ADR-0037) — resolution is the port's. */
   images: Array<string | undefined> = [];
-  /** The pod-composition fields the spec carries beside it (ADR-0005), same passthrough rule. */
+  /** The pod-composition fields beside it (ADR-0005), same passthrough rule. */
   composition: Array<{ user?: string; workGroup?: number }> = [];
   /** The Repo Slots each provision resolved (ADR-0051), in declaration order. */
   repos: ProvisionedRepo[][] = [];
@@ -146,13 +145,11 @@ class FakeSandbox implements SandboxPort {
   }
   async attach(req: {
     name: string;
-    spec: WorkspaceSpec;
     repos: Array<{ slot: string; url: string; ref?: string }>;
   }): Promise<{ repos: Record<string, string> }> {
     this.calls.push(`attach:${req.name}`);
     this.attached.push(req.repos);
-    const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
-    return { repos };
+    return { repos: Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}`])) };
   }
   async renew(name: string): Promise<void> {
     this.calls.push(`renew:${name}`);
@@ -188,9 +185,9 @@ const renews = (sandbox: FakeSandbox): number => sandbox.calls.filter((c) => c.s
  * the wrapper PROPAGATES this vocabulary onto the exported machine (ADR-0015). */
 const body = jr2Setup({
   types: {} as {
-    context: { handles?: { repos: Record<string, string>; branch: string }; loss?: string };
+    context: { handles?: { repos: Record<string, string> }; loss?: string };
     // Body-facing handles only (ADR-0016): endpoint/sandbox never reach workflow code.
-    input: { workspace: { repos: Record<string, string>; branch: string } };
+    input: { workspace: { repos: Record<string, string> } };
   },
   events: [approveDef],
 }).createMachine({
@@ -217,7 +214,7 @@ const body = jr2Setup({
 });
 
 const APP = "https://example.test/app.git";
-const wrapped = workspace(body, { repos: { app: { url: APP, ref: "main" } }, spec: () => ({ branch: "feat-1" }) });
+const wrapped = workspace(body, { repos: { app: { url: APP, ref: "main" } } });
 
 function wsDef(): WorkflowDef {
   return { name: "ws", machine: wrapped, provide: () => ({}) };
@@ -276,7 +273,7 @@ test("lifecycle: place → provision → attach → body(input+handles) → body
   const final = await host.read(runId);
   assert.equal(final?.status, "done");
   const ctx = final?.context as { output?: { status: string; app?: string } };
-  assert.deepEqual(ctx.output, { status: "done", app: "/work/app/feat-1" });
+  assert.deepEqual(ctx.output, { status: "done", app: "/work/app" });
 });
 
 test("restore-reconcile: Sandbox CR gone → workspace.lost lands in the restored body's policy", async () => {
@@ -362,36 +359,20 @@ test("no Repo Slot: place with no Repo, no attach, the body gets { repos: {} } a
   assert.deepEqual((final?.context as { output?: unknown }).output, { handles: { repos: {} } });
 });
 
-test("no Repo Slot: `spec` is optional and gives only workGroup", async () => {
+test("`workGroup` is a static option, with or without a Repo Slot, and a Workspace reads it (ADR-0075)", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
-  host.register({
-    name: "job",
-    machine: workspace(slotlessBody, { spec: () => ({ workGroup: 3000 }) }),
-    provide: () => ({}),
-  });
+  host.register({ name: "job", machine: workspace(slotlessBody, { workGroup: 3000 }), provide: () => ({}) });
   const { runId } = await host.start("job");
   await waitFor(() => host.gates(runId).length === 1);
   assert.deepEqual(sandbox.composition, [{ user: undefined, workGroup: 3000 }]);
   await host.stop(runId);
 });
 
-test("no Repo Slot: a spec with a branch or a review sha faults BEFORE any pod exists", async () => {
-  for (const [field, extra] of [
-    ["branch", { branch: "feat" }],
-    ["reviewSha", { reviewSha: "a".repeat(40) }],
-  ] as const) {
-    const sandbox = new FakeSandbox();
-    const host = new RunHost({ store: await mkStore(), sandbox });
-    // The types refuse it (`NoSlotSpec`); a spec built at run time is refused all the same.
-    const named = workspace(slotlessBody, { spec: () => extra as never });
-    host.register({ name: "job", machine: named, provide: () => ({}) });
-    const { runId } = await host.start("job");
-    await waitFor(() => host.status(runId) === undefined);
-    const final = await host.read(runId);
-    assert.equal(final?.status, "error");
-    assert.match(final?.fault ?? "", new RegExp(`workspace spec invalid: ${field} \\(the Workspace has no Repo Slot`));
-    assert.ok(!sandbox.calls.some((c) => c.startsWith("place:")), `${field}: faulted before the port`);
+test("a `workGroup` that is not a gid is refused when the Machine is built, so it never costs a pod", () => {
+  for (const workGroup of [2000.5, -1, "2000" as never]) {
+    assert.throws(() => workspace(slotlessBody, { workGroup }), /workspace\(\): `workGroup` must be a gid/);
+    assert.throws(() => workspace(body, { repos: { app: APP }, workGroup }), /`workGroup` must be a gid/);
   }
 });
 
@@ -415,13 +396,7 @@ test("no Repo Slot: a restore resumes the parked body, and the handles still hol
   assert.deepEqual(((await second.read(runId))?.context as { output?: unknown }).output, { handles: { repos: {} } });
 });
 
-test("no Repo Slot: `spec` may be left out only there; customize() binds no slot onto it (ADR-0051)", () => {
-  assert.throws(
-    () => workspace(body as never, { repos: { app: APP } } as never),
-    /`spec` must be a function .* only a Workspace with no Repo Slot may leave it out/,
-  );
-  assert.throws(() => workspace(slotlessBody, { spec: "b" } as never), /`spec` must be a function/);
-  assert.throws(() => workspace(body as never, { repos: open, spec: undefined } as never), /`spec` must be a function/);
+test("no Repo Slot: customize() binds no slot onto it (ADR-0051)", () => {
   assert.throws(
     () => customize(workspace(slotlessBody, {}), { repos: { app: APP } } as never),
     /customize\(\): machine "workspace" declares no Repo Slot "app" — its slots are: /,
@@ -429,20 +404,6 @@ test("no Repo Slot: `spec` may be left out only there; customize() binds no slot
   // A customize() that retunes the pod keeps it a Workspace with no slot.
   const [pod] = workspacePodsOf(customize(workspace(slotlessBody, {}), { resources: { limits: { memory: "4Gi" } } }));
   assert.equal(pod?.noSlot, true);
-});
-
-test("no Repo Slot: a spec that is not an object faults before any pod, by name", async () => {
-  const sandbox = new FakeSandbox();
-  const host = new RunHost({ store: await mkStore(), sandbox });
-  host.register({
-    name: "job",
-    machine: workspace(slotlessBody, { spec: () => undefined as never }),
-    provide: () => ({}),
-  });
-  const { runId } = await host.start("job");
-  await waitFor(() => host.status(runId) === undefined);
-  assert.match((await host.read(runId))?.fault ?? "", /workspace spec invalid: the spec is undefined, not an object/);
-  assert.equal(sandbox.calls.length, 0);
 });
 
 test("no Repo Slot: the walk says so, and an Open map is not 'no slot' (ADR-0051)", () => {
@@ -457,58 +418,175 @@ test("no Repo Slot: the walk says so, and an Open map is not 'no slot' (ADR-0051
     initial: "done",
     states: { done: { type: "final" } },
   });
-  const [opened] = workspacePodsOf(workspace(openBody, { repos: open, spec: () => ({ branch: "b" }) }));
+  const [opened] = workspacePodsOf(workspace(openBody, { repos: open }));
   assert.equal(opened?.noSlot, undefined, "an Open map's slots are the composer's, and customize() names one");
   assert.ok(partsOf([workspace(slotlessBody, {})]).repos.length === 0, "no Repo to warm");
 });
 
-test("a branch named `default` faults BEFORE any pod exists — that directory is the clone's (ADR-0004)", async () => {
+test("the Workspace reads no branch from the run input: a run with none clones, and its handle is the slot's folder (ADR-0075)", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
-  const clash = workspace(body, { repos: { app: APP }, spec: () => ({ branch: "default" }) });
-  host.register({ name: "clash", machine: clash, provide: () => ({}) });
-  const { runId } = await host.start("clash", { prompt: "x" });
+  host.register({ name: "clones", machine: workspace(body, { repos: { app: APP } }), provide: () => ({}) });
+  const { runId } = await host.start("clones", { prompt: "fix it" }); // no branch
+  await waitFor(() => host.gates(runId).length === 1);
+  assert.deepEqual(lifecycle(sandbox).slice(0, 3), ["place", "provision", "attach"]);
+  host.sendToGate(runId, "hold", { type: "approve" });
   await waitFor(() => host.status(runId) === undefined);
   const final = await host.read(runId);
-  assert.equal(final?.status, "error");
-  assert.match(final?.fault ?? "", /workspace spec invalid: branch "default"/);
-  assert.ok(!sandbox.calls.some((c) => c.startsWith("place:")), "faulted before the port");
+  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "done", app: "/work/app" });
 });
 
-test("a spec deriving undefined fields (missing run input) faults BEFORE any pod exists", async () => {
-  const sandbox = new FakeSandbox();
-  const host = new RunHost({ store: await mkStore(), sandbox });
-  // The task-with-review shape: the mapping reads input fields this `jr2 run --input` never carried.
-  const sloppy = workspace(body, {
-    repos: { app: APP },
-    spec: ({ input }: { input: { branch?: string } }) => ({ branch: input.branch as string }),
+/** A parent that invokes a `workspace()` with a door, and passes it `passed`. With `catches`, its
+ * `onError` keeps the error's message and ends the run. */
+const doorParent = (passed: unknown, catches: boolean) =>
+  jr2Setup({
+    types: {} as { context: { why?: string } },
+    actors: { child: workspace(slotlessBody, { input: z.object({ ticket: z.string() }) }) },
+  }).createMachine({
+    id: "door-parent",
+    context: {},
+    initial: "running",
+    states: {
+      running: {
+        invoke: {
+          src: "child",
+          input: () => passed as { ticket: string },
+          onDone: "done",
+          ...(catches
+            ? {
+                onError: {
+                  target: "caught",
+                  actions: assign({ why: ({ event }) => (event.error as Error).message }),
+                },
+              }
+            : {}),
+        },
+      },
+      caught: { type: "final" },
+      done: { type: "final" },
+    },
+    output: ({ context }) => ({ why: context.why }),
   });
-  host.register({ name: "sloppy", machine: sloppy, provide: () => ({}) });
 
-  const { runId } = await host.start("sloppy", { prompt: "fix it" }); // no branch
+test("a parent that passes less than a workspace()'s door requires fails the invoke before any pod, and its onError takes it (ADR-0033)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "parent", machine: doorParent({ nope: 1 }, true), provide: () => ({}) });
+  const { runId } = await host.start("parent");
+  await waitFor(() => host.status(runId) === undefined);
+
+  const final = await host.read(runId);
+  assert.equal(final?.status, "done", "the parent's onError took the failure");
+  const { why } = final?.output as { why: string };
+  assert.match(why, /^workspace input invalid, before any pod: /);
+  assert.match(why, /ticket/, "the zod message names the field");
+  assert.deepEqual(sandbox.calls, [], "a door value that is wrong costs no pod");
+});
+
+test("a parent with no onError ends `error` on a door value that is wrong, and no pod is spent (ADR-0033)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "parent", machine: doorParent({ nope: 1 }, false), provide: () => ({}) });
+  const { runId } = await host.start("parent");
   await waitFor(() => host.status(runId) === undefined);
 
   const final = await host.read(runId);
   assert.equal(final?.status, "error");
-  assert.match(final?.fault ?? "", /workspace spec invalid: branch/);
-  assert.match(final?.fault ?? "", /run input/, "the fault points back at `jr2 run --input`");
-  assert.ok(
-    !sandbox.calls.some((c) => c.startsWith("place:")),
-    "faulted before the port — a bad spec never costs a pod",
-  );
+  assert.match(final?.fault ?? "", /workspace input invalid, before any pod: /);
+  assert.deepEqual(sandbox.calls, [], "a door value that is wrong costs no pod");
 });
 
-test("the image is a STATIC option read off the Machine at invoke time, never the spec", async () => {
-  // ADR-0049: what the Sandbox is MADE OF moved out of the per-run spec and onto the wrapper,
-  // because `jr2 up` must find it by WALKING the Machine and a spec is a function of run input.
-  // Resolution to a ref is still the port's, so the Machine stays cluster-agnostic and no
+test("a parent that passes what the door requires places the Workspace", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "parent", machine: doorParent({ ticket: "T-1" }, true), provide: () => ({}) });
+  const { runId } = await host.start("parent");
+  await waitFor(() => host.gates(runId).length === 1);
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+
+  const final = await host.read(runId);
+  assert.equal(final?.status, "done");
+  assert.deepEqual(lifecycle(sandbox), ["place", "provision", "destroy"]);
+  assert.deepEqual(final?.output, {}, "the onError never ran");
+});
+
+/** A body that parks on a gate, then answers with the input it was handed. */
+const echoBody = jr2Setup({
+  types: {} as { context: { seen: unknown }; input: Workspaced<{}, never> },
+  events: [approveDef],
+}).createMachine({
+  id: "echo",
+  context: ({ input }) => ({ seen: input }),
+  on: { "workspace.lost": ".lost" },
+  initial: "working",
+  states: {
+    working: { invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } }, on: { approve: "done" } },
+    done: { type: "final", output: ({ context }) => context.seen },
+    lost: { type: "final" },
+  },
+  output: ({ event }) => (event as { output?: unknown }).output,
+});
+
+/** What the body of `machine` read when `host.start` gave it `input`. */
+const bodyInput = async (machine: AnyStateMachine, input?: Record<string, unknown>) => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "job", machine, provide: () => ({}) });
+  const { runId, instanceId } = await host.start("job", input);
+  await waitFor(() => host.gates(runId).length === 1 || host.status(runId) === undefined);
+  assert.equal(host.gates(runId).length, 1, (await host.read(runId))?.fault ?? "no Gate");
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+  const { workspace: _handles, ...seen } = (await host.read(runId))?.output as Record<string, unknown>;
+  return { seen, instanceId };
+};
+
+/** A parent that invokes `child` and passes it `passed`. */
+const parentOf = (child: AnyStateMachine, passed: Record<string, unknown>) =>
+  jr2Setup({ actors: { child } }).createMachine({
+    id: "door-parent",
+    initial: "running",
+    states: {
+      running: { invoke: { src: "child", input: () => passed as never, onDone: { target: "done" } } },
+      done: { type: "final", output: ({ event }) => (event as { output?: unknown }).output },
+    },
+    output: ({ event }) => (event as { output?: unknown }).output,
+  });
+
+test("a root run's strict door refuses no key the host added: the door is parsed once, by RunHost (ADR-0033)", async () => {
+  const root = workspace(echoBody, { input: z.strictObject({ ticket: z.string() }) });
+  const { seen, instanceId } = await bodyInput(root, { ticket: "T-1" });
+  assert.deepEqual(seen, { ticket: "T-1", instanceId });
+});
+
+test("a root run's door transforms a value once, so a transform that takes the raw value still runs (ADR-0033)", async () => {
+  const root = workspace(echoBody, { input: z.object({ n: z.string().transform((s) => s.split(",")) }) });
+  const { seen, instanceId } = await bodyInput(root, { n: "a,b" });
+  assert.deepEqual(seen, { n: ["a", "b"], instanceId });
+});
+
+test("under a parent the body gets the door's parsed shape: a default applied, an unknown key stripped (ADR-0033)", async () => {
+  const child = workspace(echoBody, { input: z.object({ workers: z.number().default(2) }) });
+  const { seen } = await bodyInput(parentOf(child, { extra: "unknown key" }));
+  assert.deepEqual(seen, { workers: 2 });
+});
+
+test("under a parent `instanceId` stays out of the door's parse, and the body gets it if the parent gave it", async () => {
+  const child = workspace(echoBody, { input: z.strictObject({ ticket: z.string() }) });
+  const { seen } = await bodyInput(parentOf(child, { ticket: "T-1", instanceId: "given" }));
+  assert.deepEqual(seen, { ticket: "T-1", instanceId: "given" });
+});
+
+test("the image is a STATIC option read off the Machine at invoke time", async () => {
+  // ADR-0049: what the Sandbox is MADE OF rides the wrapper, because `jr2 up` must find it by
+  // WALKING the Machine. Resolution to a ref is still the port's, so the Machine stays cluster-agnostic and no
   // content-addressed tag ever lands in a snapshot.
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   const named = workspace(body, {
     image: "file:///srv/pkg/image",
     repos: { app: APP },
-    spec: () => ({ branch: "b" }),
   });
   host.register({ name: "named", machine: named, provide: () => ({}) });
 
@@ -522,47 +600,30 @@ test("the image is a STATIC option read off the Machine at invoke time, never th
     "and it is nowhere in the persisted context: a restore re-reads what the Machine carries NOW",
   );
 
-  // And NEVER the spec (ADR-0051: `WorkspaceSpec = { branch, workGroup?, reviewSha? }`): an
-  // `image` a spec mapper smuggles in is not a name the port ever sees — the request carries what
-  // the wrapper carries, and this wrapper carries none.
-  const unnamed = workspace(body, {
-    repos: { app: APP },
-    spec: () => ({ branch: "b", image: "file:///srv/pkg/image" }) as { branch: string },
-  });
+  // The request carries what the wrapper carries, and this wrapper carries none.
+  const unnamed = workspace(body, { repos: { app: APP } });
   host.register({ name: "unnamed", machine: unnamed, provide: () => ({}) });
   const second = await host.start("unnamed");
   await waitFor(() => host.gates(second.runId).length === 1);
   assert.deepEqual(sandbox.images, ["file:///srv/pkg/image", undefined]);
 });
 
-test("pod composition: `user` is a static option too, `workGroup` stays per-run spec", async () => {
+test("pod composition: `user` and `workGroup` are static options too", async () => {
   // ADR-0005/0037/0049: the User Container's image rides the same rule as the Sandbox Image's —
-  // two origins, one resolution, static so the converge can build it. The work GROUP is not an
-  // image and nothing walks it, so it stays where a run's own facts live.
+  // two origins, one resolution, static so the converge can build it (ADR-0075).
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   const composed = workspace(body, {
     image: "ghcr.io/acme/toolchain:2024-11",
     user: "ghcr.io/acme/sshd:1",
     repos: { app: APP },
-    spec: () => ({ branch: "b", workGroup: 4000 }),
+    workGroup: 4000,
   });
   host.register({ name: "composed", machine: composed, provide: () => ({}) });
   const { runId } = await host.start("composed");
   await waitFor(() => host.gates(runId).length === 1);
   assert.deepEqual(sandbox.images, ["ghcr.io/acme/toolchain:2024-11"]);
   assert.deepEqual(sandbox.composition, [{ user: "ghcr.io/acme/sshd:1", workGroup: 4000 }]);
-
-  // A gid that is not an integer becomes a pod the API server rejects at admission — which
-  // surfaces as "never reached Ready" with nothing pointing back at the run input.
-  const bad = new FakeSandbox();
-  const host2 = new RunHost({ store: await mkStore(), sandbox: bad });
-  const wrong = workspace(body, { repos: { app: APP }, spec: () => ({ branch: "b", workGroup: 2000.5 }) });
-  host2.register({ name: "wrong", machine: wrong, provide: () => ({}) });
-  const run2 = await host2.start("wrong");
-  await waitFor(() => host2.status(run2.runId) === undefined);
-  assert.match((await host2.read(run2.runId))?.fault ?? "", /workGroup \(got 2000\.5; want a gid\)/);
-  assert.deepEqual(bad.calls, [], "a bad spec never costs a pod");
 });
 
 test("a terminal fault after placing leaves the pod inspectable, and its lease stops (idle GC reaps it)", async () => {
@@ -641,7 +702,7 @@ test("a workspace.lost the body takes no transition for faults the run `error`, 
   const host = new RunHost({ store: await mkStore(), sandbox });
   host.register({
     name: "guarded",
-    machine: workspace(guarded, { repos: { app: { url: APP, ref: "main" } }, spec: () => ({ branch: "feat-1" }) }),
+    machine: workspace(guarded, { repos: { app: { url: APP, ref: "main" } } }),
     provide: () => ({}),
   });
   const { runId } = await host.start("guarded");
@@ -751,7 +812,7 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
   const endpoints: string[] = [];
   const client = new MockFlueClient();
   const ambientBody = jr2Setup({
-    types: {} as { context: Record<string, never>; input: { workspace: { branch: string } } },
+    types: {} as { context: Record<string, never>; input: Workspaced<{}, "app"> },
     events: [approveDef],
     actors: {
       coder: agentActorWith(
@@ -769,13 +830,13 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
     initial: "coding",
     states: {
       coding: {
-        invoke: { src: "coder", input: { prompt: "go" } },
+        invoke: { src: "coder", input: { prompt: "go", cwd: "/work/app/fix" } },
         on: { approve: "done" },
       },
       done: { type: "final" },
     },
   });
-  const wrappedAmbient = workspace(ambientBody, { repos: { app: APP }, spec: () => ({ branch: "amb" }) });
+  const wrappedAmbient = workspace(ambientBody, { repos: { app: APP } });
 
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
@@ -797,8 +858,8 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
 /** A body that records the handles it was given and finishes — the geography is the claim. */
 const recorder = jr2Setup({
   types: {} as {
-    context: { handles?: { repos: Record<string, string>; branch: string } };
-    input: { workspace: { repos: Record<string, string>; branch: string } };
+    context: { handles?: { repos: Record<string, string> } };
+    input: { workspace: { repos: Record<string, string> } };
   },
   events: [],
 }).createMachine({
@@ -814,7 +875,7 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
   // the route off the live actor (`actorRoute`). A Workspace, like every Part, is a key of `actors`,
   // and the build refuses the inline form with the slot form; a plain Machine invoked inline above
   // it is a hop of its own — xstate's generated src, which the walk computes from the state node.
-  const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
+  const ws = workspace(recorder, { repos: { app: APP } });
   // A plain Machine that holds no Workspace and never finishes: it fills an invoke index.
   const idle = jr2Setup({ events: [] }).createMachine({ id: "idle", initial: "w", states: { w: {} } });
   const invoking = (id: string, src: unknown, actors: Record<string, unknown> = {}) =>
@@ -897,7 +958,7 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
 test("two plain Machines invoked inline in one state place two Workspaces, each with a pod key of its own (ADR-0059)", async () => {
   // The invoke index is the half of the inline hop that tells them apart: the same Machine object
   // at index 0 and index 1 of one state is two placements, two routes, two pods.
-  const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
+  const ws = workspace(recorder, { repos: { app: APP } });
   const named = jr2Setup({ events: [], actors: { review: ws } }).createMachine({
     id: "named",
     initial: "x",
@@ -925,7 +986,7 @@ test("two plain Machines invoked inline in one state place two Workspaces, each 
 
 test("a Workspace reached through a Machine handed to spawnChild as an object fails at provision with the slot form (ADR-0059)", async () => {
   // No walk can see it, so jr2 up placed nothing for it: its provision names the fix, never a pod.
-  const ws = workspace(recorder, { repos: { app: APP }, spec: () => ({ branch: "b" }) });
+  const ws = workspace(recorder, { repos: { app: APP } });
   const holder = jr2Setup({ events: [], actors: { review: ws } }).createMachine({
     id: "holder",
     initial: "x",
@@ -954,7 +1015,6 @@ test("slots resolve in declaration order; the handles are keyed by slot, in that
   const host = new RunHost({ store: await mkStore(), sandbox });
   const two = workspace(recorder, {
     repos: { docs: { url: "https://example.test/handbook.git", ref: "v3" }, app: APP },
-    spec: () => ({ branch: "feat/x" }),
   });
   host.register({ name: "two", machine: two, provide: () => ({}) });
   const { runId } = await host.start("two");
@@ -975,10 +1035,10 @@ test("slots resolve in declaration order; the handles are keyed by slot, in that
     ],
   ]);
   const out = (await host.read(runId))?.context as { output?: Record<string, unknown> };
-  // The kit gives no slot a privileged meaning (ADR-0051): the handles are the map and the branch.
+  // The kit gives no slot a privileged meaning (ADR-0051): the handles are the map of folders.
   // What it does promise is the ORDER — a Machine may read a meaning into it (`task` does).
-  assert.deepEqual(Object.keys(out.output ?? {}).sort(), ["branch", "repos"]);
-  assert.deepEqual(out.output?.repos, { docs: "/work/docs/feat/x", app: "/work/app/feat/x" });
+  assert.deepEqual(Object.keys(out.output ?? {}).sort(), ["repos"]);
+  assert.deepEqual(out.output?.repos, { docs: "/work/docs", app: "/work/app" });
   assert.deepEqual(
     Object.keys(out.output?.repos as object),
     ["docs", "app"],
@@ -986,37 +1046,39 @@ test("slots resolve in declaration order; the handles are keyed by slot, in that
   );
 });
 
-test("two bound Repo Slots and a Turn that frames no cwd: the run is refused, naming the slots (ADR-0057)", async () => {
-  // The composition trap ADR-0057 accepted with open eyes: a Machine that ran yesterday under one
-  // Repo Slot refuses today under two, in a `customize` line its author never sees. `jr2 up`
-  // cannot see it either — the invoke's input is a function — so the refusal has to be explicit at
-  // the FIRST Turn, and it is asserted here against a real two-slot Machine rather than a
-  // hand-registered handle, because it is the WORKSPACE's slot count that decides.
+test("a Turn that frames no cwd under Repo Slots: a literal input is refused at build, a mapper's at its first Turn (ADR-0057, ADR-0075)", async () => {
+  // A Workspace that only clones has no Worktree for a default to name. The walk reads a literal
+  // input; only the start can read a mapper's answer, so the refusal there is explicit at the FIRST
+  // Turn, and it is asserted against a real Machine, because the WORKSPACE's slots decide.
   const client = new MockFlueClient();
-  const unframed = jr2Setup({
-    types: {} as {
-      context: Record<string, never>;
-      input: { workspace: { repos: Record<string, string>; branch: string } };
-    },
-    events: [],
-    actors: { coder: agentActorWith(() => client, { model: "test/model", instructions: "i" }) },
-  }).createMachine({
-    on: { "workspace.lost": {}, "agent.fault": {} },
-    id: "unframed",
-    context: {},
-    initial: "coding",
-    // The Frame is a prompt and nothing else — which is legal under one slot and a refusal here.
-    states: { coding: { invoke: { src: "coder", input: { prompt: "go" } } } },
-  });
+  const unframed = (input: unknown) =>
+    jr2Setup({
+      types: {} as { context: Record<string, never>; input: { workspace: { repos: Record<string, string> } } },
+      events: [],
+      actors: { coder: agentActorWith(() => client, { model: "test/model", instructions: "i" }) },
+    }).createMachine({
+      on: { "workspace.lost": {}, "agent.fault": {} },
+      id: "unframed",
+      context: {},
+      initial: "coding",
+      // The Frame is a prompt and nothing else.
+      states: { coding: { invoke: { src: "coder", input: input as never } } },
+    });
+  const repos = { docs: { url: "https://example.test/handbook.git", ref: "v3" }, app: APP };
+
+  assert.throws(
+    () => workspace(unframed({ prompt: "go" }), { repos }),
+    /workspace\(\): state "unframed\.coding": "coder" names no `cwd`, and a Workspace with Repo Slots says where/,
+  );
 
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   host.register({
     name: "twoSlots",
-    machine: workspace(unframed, {
-      repos: { docs: { url: "https://example.test/handbook.git", ref: "v3" }, app: APP },
-      spec: () => ({ branch: "feat-2" }),
-    }),
+    machine: workspace(
+      unframed(() => ({ prompt: "go" })),
+      { repos },
+    ),
     provide: () => ({}),
   });
   const { runId } = await host.start("twoSlots");
@@ -1026,8 +1088,8 @@ test("two bound Repo Slots and a Turn that frames no cwd: the run is refused, na
   assert.equal((await host.read(runId))?.status, "error");
   // The slots in DECLARATION order, which is the order the composer wrote and the only order that
   // helps them pick (ADR-0051) — and the line that ends it.
-  assert.match(fault, /agent "coder" works under a Workspace carrying more than one Repo Slot \(docs, app\)/);
-  assert.match(fault, /cwd: context\.workspace\.repos\.<slot>/);
+  assert.match(fault, /agent "coder" works under a Workspace with Repo Slots \(docs, app\)/);
+  assert.match(fault, /say where it works, a Worktree, or `cwd: "\/work"` above them/);
   assert.deepEqual(client.admits, [], "refused BEFORE admission — no Turn, so no model was spent");
 });
 
@@ -1039,7 +1101,6 @@ test("a per-run slot's mapper is called with the run input, validated, and flagg
       target: ({ input }: { input: { repo: string; base?: string } }) => ({ url: input.repo, ref: input.base }),
       docs: APP,
     },
-    spec: () => ({ branch: "b" }),
   });
   host.register({ name: "perRun", machine: perRun, provide: () => ({}) });
   const { runId } = await host.start("perRun", { repo: "git@github.com:acme/app.git" });
@@ -1052,7 +1113,7 @@ test("a per-run slot's mapper is called with the run input, validated, and flagg
   ]);
 
   // A mapper that derives nothing (the input never carried the field) faults BEFORE the port,
-  // pointing at `jr2 run --input` — the same class assertSpec catches for the branch.
+  // pointing at `jr2 run --input`.
   const bad = new FakeSandbox();
   const host2 = new RunHost({ store: await mkStore(), sandbox: bad });
   host2.register({ name: "perRun", machine: perRun, provide: () => ({}) });
@@ -1060,7 +1121,7 @@ test("a per-run slot's mapper is called with the run input, validated, and flagg
   await waitFor(() => host2.status(run2.runId) === undefined);
   const final = await host2.read(run2.runId);
   assert.equal(final?.status, "error");
-  assert.match(final?.fault ?? "", /workspace spec invalid: repos\.target mapper returned url \(got undefined\)/);
+  assert.match(final?.fault ?? "", /workspace invalid: repos\.target mapper returned url \(got undefined\)/);
   assert.match(final?.fault ?? "", /run input/);
   assert.deepEqual(bad.calls, [], "a bad binding never costs a pod");
 });
@@ -1068,7 +1129,7 @@ test("a per-run slot's mapper is called with the run input, validated, and flagg
 test("an OPEN slot nobody bound faults before the port, naming the customize line that binds it", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
-  const packaged = workspace(recorder, { repos: { target: open }, spec: () => ({ branch: "b" }) });
+  const packaged = workspace(recorder, { repos: { target: open } });
   host.register({ name: "packaged", machine: packaged, provide: () => ({}) });
   const { runId } = await host.start("packaged");
   await waitFor(() => host.status(runId) === undefined);
@@ -1101,7 +1162,7 @@ test("an OPEN slot nobody bound faults before the port, naming the customize lin
   const host4 = new RunHost({ store: await mkStore(), sandbox: new FakeSandbox() });
   host4.register({
     name: "mapped",
-    machine: workspace(recorder, { repos: open, spec: () => ({ branch: "b" }) }),
+    machine: workspace(recorder, { repos: open }),
     provide: () => ({}),
   });
   const run4 = await host4.start("mapped");
@@ -1137,7 +1198,6 @@ test("restore into `attaching` reuses the PERSISTED bindings — a per-run mappe
   const first = new RunHost({ store, sandbox });
   const perRun = workspace(body, {
     repos: { target: ({ input }: { input: { repo: string } }) => input.repo },
-    spec: () => ({ branch: "b" }),
   });
   first.register({ name: "perRun", machine: perRun, provide: () => ({}) });
   const { runId } = await first.start("perRun", { repo: APP });
@@ -1156,41 +1216,33 @@ test("restore into `attaching` reuses the PERSISTED bindings — a per-run mappe
 });
 
 test("workspace() refuses an empty or malformed `repos` at build time, by slot", () => {
-  const spec = () => ({ branch: "b" });
   // Left out is a Workspace with no Repo Slot; written empty is refused, so "none" has one spelling.
   assert.throws(
-    () => workspace(body as never, { repos: {}, spec } as never),
+    () => workspace(body as never, { repos: {} } as never),
     /`repos: \{\}` names no Repo Slot — leave `repos` out/,
   );
-  assert.throws(() => workspace(body as never, { repos: [], spec } as never), /`repos` must be a map of Repo Slots/);
-  assert.throws(() => workspace(body as never, { repos: "app", spec } as never), /`repos` must be a map of Repo Slots/);
-  assert.throws(() => workspace(body, { repos: { app: "" }, spec }), /Repo Slot "app" is bound to an empty url/);
-  assert.throws(
-    () => workspace(body, { repos: { app: { url: APP, ref: "" } }, spec }),
-    /"app" is bound with an empty ref/,
-  );
-  assert.throws(() => workspace(body, { repos: { app: 42 as never }, spec }), /"app" is not a binding/);
+  assert.throws(() => workspace(body as never, { repos: [] } as never), /`repos` must be a map of Repo Slots/);
+  assert.throws(() => workspace(body as never, { repos: "app" } as never), /`repos` must be a map of Repo Slots/);
+  assert.throws(() => workspace(body, { repos: { app: "" } }), /Repo Slot "app" is bound to an empty url/);
+  assert.throws(() => workspace(body, { repos: { app: { url: APP, ref: "" } } }), /"app" is bound with an empty ref/);
+  assert.throws(() => workspace(body, { repos: { app: 42 as never } }), /"app" is not a binding/);
   // A url that names no Repo — a relative path has no identity to key a cache by.
   assert.throws(
-    () => workspace(body, { repos: { app: "../infra" }, spec }),
+    () => workspace(body, { repos: { app: "../infra" } }),
     /"app" binds "\.\.\/infra", which names no Repo/,
   );
   // A slot key becomes `/work/<slot>`, so it is held to what a path segment can carry.
-  assert.throws(
-    () => workspace(body, { repos: { "../x": APP }, spec }),
-    /Repo Slot key "\.\.\/x" is not a directory name/,
-  );
-  assert.throws(() => workspace(body, { repos: { "a b": APP }, spec }), /"a b" is not a directory name/);
+  assert.throws(() => workspace(body, { repos: { "../x": APP } }), /Repo Slot key "\.\.\/x" is not a directory name/);
+  assert.throws(() => workspace(body, { repos: { "a b": APP } }), /"a b" is not a directory name/);
   // An integer-like key would be read FIRST by `Object.keys` wherever it was declared — and the
   // handles promise declaration order, which a Machine may read — so a key starts with a letter.
-  assert.throws(() => workspace(body, { repos: { app: APP, "1": APP }, spec }), /key "1" is not a directory name/);
-  assert.throws(() => workspace(body, { repos: { "2024": APP }, spec }), /key "2024" is not a directory name/);
-  assert.throws(() => workspace(body, { repos: { "0app": APP }, spec }), /key "0app" is not a directory name/);
+  assert.throws(() => workspace(body, { repos: { app: APP, "1": APP } }), /key "1" is not a directory name/);
+  assert.throws(() => workspace(body, { repos: { "2024": APP } }), /key "2024" is not a directory name/);
+  assert.throws(() => workspace(body, { repos: { "0app": APP } }), /key "0app" is not a directory name/);
 });
 
 test("workspace() keeps the Repo Slots in declaration order — the order the handles promise", () => {
-  const spec = () => ({ branch: "b" });
-  const w = workspace(body, { repos: { app: APP, infra: APP, "v2.x": APP }, spec });
+  const w = workspace(body, { repos: { app: APP, infra: APP, "v2.x": APP } });
   assert.deepEqual(Object.keys(sandboxPartsOf(w).repos), ["app", "infra", "v2.x"]);
 });
 
@@ -1201,7 +1253,6 @@ test("the Size is a static option: the port gets it as stated, and the User Cont
     user: { image: "ghcr.io/acme/sshd:1", resources: { limits: { memory: "256Mi" } } },
     resources: { limits: { memory: "3Gi", cpu: "2" } },
     repos: { app: APP },
-    spec: () => ({ branch: "b" }),
   });
   host.register({ name: "sized", machine: sized, provide: () => ({}) });
   const { runId } = await host.start("sized");
@@ -1219,7 +1270,7 @@ test("the Size is a static option: the port gets it as stated, and the User Cont
   const host2 = new RunHost({ store: await mkStore(), sandbox: bare });
   host2.register({
     name: "bare",
-    machine: workspace(body, { repos: { app: APP }, spec: () => ({ branch: "b" }) }),
+    machine: workspace(body, { repos: { app: APP } }),
     provide: () => ({}),
   });
   const second = await host2.start("bare");
@@ -1228,25 +1279,22 @@ test("the Size is a static option: the port gets it as stated, and the User Cont
 });
 
 test("workspace() refuses requests, and any key beside limits.memory/limits.cpu, by field (ADR-0060)", () => {
-  const spec = () => ({ branch: "b" });
   assert.throws(
     () =>
       workspace(body, {
         repos: { app: APP },
-        spec,
         resources: { limits: { memory: "3Gi" }, requests: { memory: "1Gi" } } as never,
       }),
     /workspace\(\): resources\.requests is not accepted/,
   );
   assert.throws(
-    () => workspace(body, { repos: { app: APP }, spec, resources: { limits: { gpu: "1" } } as never }),
+    () => workspace(body, { repos: { app: APP }, resources: { limits: { gpu: "1" } } as never }),
     /workspace\(\): resources\.limits\.gpu is not accepted/,
   );
   assert.throws(
     () =>
       workspace(body, {
         repos: { app: APP },
-        spec,
         user: { image: "x", resources: { requests: { cpu: "1" } } } as never,
       }),
     /workspace\(\) user\.resources\.requests is not accepted/,
@@ -1479,7 +1527,7 @@ const holdOther = jr2Setup({ events: [approveDef] }).createMachine({
 const twoFeatures = setup({
   actors: {
     feature: wrapped,
-    other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+    other: workspace(holdOther, { repos: { app: APP } }),
   },
 }).createMachine({
   id: "two",
@@ -1583,7 +1631,7 @@ const failingBody = jr2Setup({
     breaking: { invoke: { src: "boom" } },
   },
 });
-const failingWs = workspace(failingBody, { repos: { app: APP }, spec: () => ({ branch: "feat-f" }) });
+const failingWs = workspace(failingBody, { repos: { app: APP } });
 
 test("a Failure from the body: the Workspace deletes its Sandbox, then the run ends `failed` with the Failure", async () => {
   const sandbox = new FakeSandbox();
@@ -1626,13 +1674,13 @@ test("a failed run's other Sandboxes go too: the host deletes them after the sto
   const two = setup({
     actors: {
       feature: failingWs,
-      other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+      other: workspace(holdOther, { repos: { app: APP } }),
     },
   }).createMachine({
     id: "two",
     type: "parallel",
     states: {
-      a: { invoke: { id: "F-1", src: "feature" } },
+      a: { invoke: { id: "F-1", src: "feature", input: {} } },
       b: { invoke: { id: "F-2", src: "other" } },
     },
   });
@@ -1657,7 +1705,7 @@ test("a caught Failure deletes the Sandbox of a Workspace in another region of t
   const inner = jr2Setup({
     events: [approveDef],
     actors: {
-      other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+      other: workspace(holdOther, { repos: { app: APP } }),
       stop: fail(),
     },
   }).createMachine({
@@ -1723,7 +1771,7 @@ test("a parent that catches a Failure and invokes the same Machine again keeps t
   const inner = jr2Setup({
     events: [approveDef],
     actors: {
-      other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+      other: workspace(holdOther, { repos: { app: APP } }),
       stop: fail(),
     },
   }).createMachine({
@@ -1785,7 +1833,7 @@ test("a parent that catches a Failure while the old Workspace is in `placing` ke
   const inner = jr2Setup({
     events: [approveDef],
     actors: {
-      other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+      other: workspace(holdOther, { repos: { app: APP } }),
       stop: fail(),
     },
   }).createMachine({
@@ -1834,7 +1882,7 @@ test("a parent that catches a Failure while the old Workspace is in `placing` ke
 test("placing: a parent that re-enters the state keeps the Sandbox of its new Workspace (ADR-0064)", async () => {
   // A plain re-entry, with no Failure: the new Workspace has the same invoke id, so the same name.
   const outer = jr2Setup({
-    actors: { other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }) },
+    actors: { other: workspace(holdOther, { repos: { app: APP } }) },
   }).createMachine({
     id: "again",
     initial: "trying",

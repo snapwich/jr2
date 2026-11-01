@@ -53,6 +53,9 @@ export type RunStatus = {
   /** The runs this run's `dispatch` Effects started, oldest first: the slot, the run, and when its
    * ledger row was written (ADR-0071). Absent when it started none. */
   dispatched?: Array<{ slot: string; run: string; at: string }>;
+  /** The Worktrees this run's cuts made, oldest first: the Repo Slot, the path, and the branch,
+   * `null` when detached (ADR-0075). Absent when it cut none. */
+  worktrees?: Array<{ slot: string; path: string; branch: string | null }>;
 };
 
 /** Where a Workflow came from (ADR-0070): a Machine in the Assembly, a Chart file in the Assembly, or

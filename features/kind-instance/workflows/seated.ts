@@ -16,7 +16,6 @@ import { body } from "./_body.ts";
 
 export const machine = workspace(body, {
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  spec: () => ({ branch: "feat-e2e" }),
   // A `file:` URL to a docker context this module ships — `jr2 up` builds it like any other
   // (ADR-0037/0049), and the deployed Orchestrator recomputes the same content digest to find the
   // ref, which is why `images/` must travel in the instance bundle (see package.json's `files`).

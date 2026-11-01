@@ -53,16 +53,20 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   token being an Effect secret it holds. A Sandbox Effector — the binary with `JR2_EFFECTOR_WORK` set, a read-only view
   of the Agent's `/work` — runs an `http` whose body is a Worktree file, `push` and a credentialed `command` (ADR-0067);
   the Instance Effector refuses the last two, and a file body, as a defect, and a Sandbox Effector refuses a `dispatch`.
-  Its env names where its mount holds the rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only),
-  `JR2_EFFECTOR_GIT` (the push credentials: one directory per `git.credentials` entry the Sandbox's pushes spend, the
-  entry's own Secret as the operator projects it — `entry.json`, what the entry is; `identity` and `known_hosts` for an
-  ssh key; `password` for a token; `sign.identity` or `sign.private.asc` for the signing key; see the Sandbox Effector's
-  objects below), `JR2_EFFECTOR_SCRATCH` (its own writable scratch). What jr2 guarantees is stated per kind: for `push`
-  and a file body, git never takes config or hooks from the Agent's repository and no program the Agent's files name
-  runs — the clean-repository procedure of ADR-0067 and the opener below. jr2's own programs (`git`, `ssh`,
-  `ssh-keygen`, `gpg`, `gpg-agent`) run by an absolute path found in one fixed PATH, `/usr/local/bin:/usr/bin:/bin`,
-  never by the PATH the image set: an image that puts a directory of its own first does not choose which `git` runs. For
-  a credentialed `command` the Agent's files are the author's choice to run, and the claims are the next bullet's.
+  Under Repo Slots each of the three needs a cut's settled row in the run's ledger, because a path alone does not name
+  the target of a credential: the Orchestrator reads the row before it starts the Effect, and with no row it sends
+  nothing and settles the kind's own outcome
+  ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). Its env names where its mount holds the
+  rest: `JR2_EFFECTOR_REPOS` (the node's Repo caches, read-only), `JR2_EFFECTOR_GIT` (the push credentials: one
+  directory per `git.credentials` entry the Sandbox's pushes spend, the entry's own Secret as the operator projects it —
+  `entry.json`, what the entry is; `identity` and `known_hosts` for an ssh key; `password` for a token; `sign.identity`
+  or `sign.private.asc` for the signing key; see the Sandbox Effector's objects below), `JR2_EFFECTOR_SCRATCH` (its own
+  writable scratch). What jr2 guarantees is stated per kind: for `push` and a file body, git never takes config or hooks
+  from the Agent's repository and no program the Agent's files name runs — the clean-repository procedure of ADR-0067
+  and the opener below. jr2's own programs (`git`, `ssh`, `ssh-keygen`, `gpg`, `gpg-agent`) run by an absolute path
+  found in one fixed PATH, `/usr/local/bin:/usr/bin:/bin`, never by the PATH the image set: an image that puts a
+  directory of its own first does not choose which `git` runs. For a credentialed `command` the Agent's files are the
+  author's choice to run, and the claims are the next bullet's.
 - **A credentialed `command`'s child is confined with Landlock.** The child runs as the Effector's own uid in the
   Effector's container, where the placement key, every placed secret and the push and signing keys are files that uid
   can read, and its program is often the Agent's code (`npm run deploy`, `make`, `./scripts/release.sh`, a tool's
@@ -274,8 +278,8 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   - `unreachable`: nothing was sent — the name did not resolve, the connection or TLS failed.
   - `refused`: the Effector refused it and sent nothing — a path segment that is `.`, `..` or empty (an Agent's param
     can cause it, so it is output, not a fault), or a host and secrets that no Effect placed there names. The
-    Orchestrator settles an `http` start longer than 4 MiB `refused` the same way, before it sends anything; `refused`
-    is an `http` outcome only.
+    Orchestrator settles an `http` start longer than 4 MiB `refused` the same way, before it sends anything, and a file
+    body with no cut's row (ADR-0075); a `push` and a `command` have no `refused`.
   - `unknown`: the connection was made and no answer came (the timeout, a reset): the host may have acted.
 
   Each outcome other than `response` carries a `reason` in words. A pick that runs an `http` Effect is answered, by

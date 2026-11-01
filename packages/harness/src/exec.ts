@@ -25,7 +25,7 @@
 // the Orchestrator settles one it cannot find `unknown` — it never runs it again.
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import type { ExecOutcome, ExecRead, ExecRequest } from "./wire.ts";
 
 /** Characters of stream an exec keeps for a reader behind it: past this the oldest are dropped. */
@@ -72,6 +72,19 @@ export class Execs {
     if (this.execs.has(id)) return "exists";
     const exec: Exec = { stream: "", base: 0, tailMax: Math.max(0, req.tail), tail: "", waiters: new Set() };
     this.execs.set(id, exec);
+    // A folder that is not there is a word an Agent or a Chart can say: the form a command that could
+    // not start has, with the reason in the tail (ADR-0067). `root`: its `worktree` must be one.
+    const missing =
+      req.cwd === undefined || existsSync(req.cwd)
+        ? req.root && !existsSync(`${req.cwd}/.git`)
+          ? `${req.cwd} is a folder, and no Worktree root`
+          : undefined
+        : `no folder ${req.cwd}: cut the Worktree first`;
+    if (missing !== undefined) {
+      this.append(exec, `jr2: ${missing}; nothing ran\n`);
+      this.settle(exec, { outcome: "exited", code: 127, tail: exec.tail });
+      return "started";
+    }
     let child: ChildProcess;
     try {
       child = spawn(req.argv[0]!, req.argv.slice(1), {

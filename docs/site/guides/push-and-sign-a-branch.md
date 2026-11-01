@@ -1,18 +1,20 @@
 ---
 title: Push and sign a branch
-description: Push the branch of a Workspace, and sign its commits with a key that the Agent never reads.
+description: Push the branch of a Worktree, and sign its commits with a key that the Agent never reads.
 ---
 
-Push the branch of a [Workspace](../reference/glossary.md#workspace) with a `push`
+Push the branch of a [Worktree](../reference/glossary.md#worktree) with a `push`
 [Effect](../reference/glossary.md#effect), signed with a key that the [Agent](../reference/glossary.md#agent) never
 reads.
 
 [`push(options)`](../reference/authoring-surface/push.md) pushes the branch to the [Repo](../reference/glossary.md#repo)
-that the [Binding](../reference/glossary.md#binding) of its [Repo Slot](../reference/glossary.md#repo-slot) names. With
-`sign: true`, it pushes signed copies of the Agent's commits. In this [Workflow](../reference/glossary.md#workflow), a
-coder fixes the tests and commits. A person reads the branch at the [Gate](../reference/glossary.md#gate) of the state
-`review`, then sends `approve`. Then the [Machine](../reference/glossary.md#machine) pushes the branch, signed. Save the
-file as `workflows/publish.ts` in your [Instance](../reference/glossary.md#instance):
+that the [Binding](../reference/glossary.md#binding) of its [Repo Slot](../reference/glossary.md#repo-slot) names. Its
+input names the Worktree, `{ worktree }`, and has no branch. jr2 reads the branch from the cut of that path, so an Agent
+that moves `HEAD` does not change what jr2 pushes. With `sign: true`, it pushes signed copies of the Agent's commits. In
+this [Workflow](../reference/glossary.md#workflow), a coder fixes the tests and commits. A person reads the branch at
+the [Gate](../reference/glossary.md#gate) of the state `review`, then sends `approve`. Then the
+[Machine](../reference/glossary.md#machine) pushes the branch, signed. Save the file as `workflows/publish.ts` in your
+[Instance](../reference/glossary.md#instance):
 
 ::: tabs key:provider
 
@@ -124,9 +126,12 @@ Run [`jr2 up`](../reference/cli.md#up). It shows the push, and the push Secret o
 jr2 up
 ```
 
+<!-- output: not run -->
+
 ```text
 …
 effects: workflow "publish" — what it runs outside itself (ADR-0067)
+  cut: worktree — 600s, in the Harness
   publish: push (sign) — 300s, in the Sandbox Effector
 …
 Workspace of workflow "publish": Sandbox Effector (image the Sandbox Image) holds no Effect secret; pushes Repo Slot "app" with git.credentials "github.com/<you>/"
@@ -186,7 +191,8 @@ Each outcome is output for `onDone`. Route on `outcome`
 ([`PushOutput`](../reference/authoring-surface/type-pushoutput.md)):
 
 - `pushed`: the remote has the commit. `published` is the commit on the remote, and `source` is the Agent's commit.
-- `rejected`: git, the remote or the Sandbox Effector refused the push. `stage` tells where, and `reason` tells why.
+- `rejected`: git, the remote or the Sandbox Effector refused the push. `stage` tells where, and `reason` tells why. A
+  `worktree` that jr2 cannot use is `rejected` at the `stage` `start`, and jr2 pushes nothing. See [Rules](#rules).
 - `diverged`: in a signed push, the commit on the remote is not in the history of the Agent's branch, and jr2 cannot
   pair it with an Agent commit. jr2 pushed nothing. An unsigned push to a remote branch that moved is `rejected`.
 - `unknown`: jr2 cannot tell what the push did.
@@ -208,12 +214,14 @@ jr2 send <run id> --gate body.notPushed --event approve
 
 ## Other options
 
-- `pin: true`: push the commit that the input of the Effect names, `{ sha: "<full commit id>" }`. Use it for a commit
-  that a Gate approved. Without `pin`, jr2 pushes the tip of the branch when the Effect starts.
-- `squash: true`: push one commit that holds all of the changes. The input gives its message, `{ message: "<text>" }`.
-  Without `sign`, the [`committer`](../reference/config.md#git-credentials-committer) of the entry commits it.
+- `pin: true`: push the commit that the input of the Effect names, `{ worktree, sha: "<full commit id>" }`. Use it for a
+  commit that a Gate approved. Without `pin`, jr2 pushes the tip of the branch when the Effect starts.
+- `squash: true`: push one commit that holds all of the changes. The input gives its message,
+  `{ worktree, message: "<text>" }`. Without `sign`, the [`committer`](../reference/config.md#git-credentials-committer)
+  of the entry commits it.
 - `force: true`: replace what the remote branch holds.
-- `slot`: the Repo Slot to push. Write it only when the Workspace has more than one Repo Slot.
+- `slot`: the Repo Slot to push. Write it only when the Workspace has more than one Repo Slot. It is static, because
+  `jr2 up` places the credential for each slot.
 - `timeout`: how long jr2 waits for the push. The default is `"5m"`. After it, the outcome is `unknown`.
 
 ## Rules
@@ -275,6 +283,15 @@ When a `push` starts, it refuses:
   `push({ pin: true }): its input's sha is not a full commit id (got <sha>)`
 - with `squash: true`, an input with no message: `push({ squash: true }): its input carries no message`
 
+A push settles `rejected`, with `stage` `start`, for each of these. Its `reason` ends `; nothing was pushed`:
+
+- a `worktree` that is not a Worktree path, or a slot that the Workspace does not have:
+  `"<path>" is not a Worktree path: /work/<slot>/<name>, with one segment in <name>`, or
+  `"<path>" names Repo Slot "<slot>", which its Workspace does not carry (<slots>)`
+- a `worktree` that no cut made in this Sandbox: `no cut made <path> in this Sandbox: cut it with worktree()`
+- a Worktree of a different Repo Slot: `<path> is a Worktree of Repo Slot "<slot>", not of "<slot>"`
+- a detached Worktree: `<path> is detached: a push publishes the branch of a Worktree, and it holds none`
+
 `push()` refuses a timeout that is not a positive duration:
 `timeout "<timeout>" is not a positive duration (like "30s", "5m")`
 
@@ -288,6 +305,7 @@ the push Secret of the entry, `jr2-git-push-<hash>`, as `jr2 up` shows it. It is
 - [Secrets and trust](../concepts/secrets-and-trust.md): who holds the push credential and the signing key.
 - [Give the cluster git credentials](give-the-cluster-git-credentials.md): the entries of `git.credentials`.
 - [Add tools to the Sandbox](add-tools-to-the-sandbox.md): the Sandbox Image.
+- [Cut a Worktree](cut-a-worktree.md): the Worktree that a `push` publishes.
 - Reference: [`push`](../reference/authoring-surface/push.md),
   [`PushOptions`](../reference/authoring-surface/type-pushoptions.md),
   [`PushOutput`](../reference/authoring-surface/type-pushoutput.md) and

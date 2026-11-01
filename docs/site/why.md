@@ -194,8 +194,9 @@ These steps follow one run of the example Machine in the diagram. You write a Ma
 1. **You start a run.** You run `jr2 run feature`, with the ticket as the input of the run. The Machine starts in its
    first state, `code`.
 2. **The coder works in a Sandbox.** The state `code` is in a Workspace, so jr2 makes a Sandbox for it. The Sandbox
-   holds a [Worktree](reference/glossary.md#worktree) of your Repo, on the branch of the run. The coder edits the files,
-   runs the tests and commits. Then it picks `finish`, and the Machine moves to `review`.
+   holds a clone of your Repo, and the Machine cuts a [Worktree](reference/glossary.md#worktree) on the branch of the
+   run. The coder edits the files, runs the tests and commits. Then it picks `finish`, and the Machine moves to
+   `review`.
 3. **The reviewer gets a Turn.** The state `review` gives the reviewer a prompt and its Menu: `approved` and `changes`.
    The reviewer reads the change in the same Sandbox.
 4. **The reviewer picks.** If it picks `approved`, the Machine moves to `approval`. If it picks `changes`, the Machine

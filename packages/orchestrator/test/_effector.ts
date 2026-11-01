@@ -129,7 +129,7 @@ export class FakeEffector {
         state: held === undefined ? "unknown" : held.output ? "settled" : "running",
         ...(held?.pinned ? { pinned: held.pinned } : {}),
         ...(held?.run ? { run: held.run } : {}),
-        ...(held?.output ? { output: held.output as HttpOutput } : {}),
+        ...(held?.output ? { output: held.output as EffectState["output"] } : {}),
       });
       if (method === "POST") {
         if (this.startsHeld) await this.startsHeld;

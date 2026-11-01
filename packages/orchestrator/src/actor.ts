@@ -50,6 +50,7 @@ import {
   type ThinkingLevel,
   type WorkspaceAccess,
 } from "./agent.ts";
+import type { AnyFramePath } from "./worktree.ts";
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import type { HarnessRestarts, MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
@@ -143,15 +144,15 @@ export type AgentTurnInput = {
   /**
    * The other half of the FRAME (ADR-0057) — WHERE this Turn works: the absolute directory the
    * Harness roots the Working tools at. Per Turn by nature, which is why no definition names one:
-   * a Worktree path (`/work/<slot>/<branch>`) exists only once a run has a branch.
+   * a Worktree path (`/work/<slot>/<name>`) exists only once a Machine has cut it (ADR-0075).
    *
-   * Absent, the actor resolves it before admission: a `workspace: "none"` Agent frames no
-   * directory (it has no Working tools to root — ADR-0028), a Workspace with ONE Repo Slot frames
-   * that slot's Worktree, a Workspace with more REFUSES the Turn (the kit gives no slot a meaning
-   * — ADR-0051 — so the state must say which), and a run with no Workspace at all frames nothing
-   * and the Harness keeps `/work`. A relative path is refused at admission, by the Harness.
+   * Required under Repo Slots: a Turn with no `cwd` there is REFUSED before admission, and a Turn
+   * that wants `/work` states it. A `workspace: "none"` Agent frames no directory (it has no Working
+   * tools to root — ADR-0028), and a Workspace with no Repo Slot, or a run with no Workspace at all,
+   * frames nothing and the Harness keeps `/work`. A relative path is refused at admission, by the
+   * Harness.
    */
-  cwd?: string;
+  cwd?: AnyFramePath;
   /**
    * This turn's DIALS (ADR-0018) — how hard to run, layered over the definition's own
    * values. One definition value may be carried by several Machines, so the same persona
@@ -555,20 +556,15 @@ const READMIT_PROMPT =
  * an ABSENT one, and a directory a state named is never second-guessed — a Menu-only Agent handed
  * one simply has no Working tools to root there (ADR-0028/0031).
  *
- * Absent, a Menu-only Agent frames no directory; a Workspace with ONE Repo Slot frames that
- * slot's Worktree, which privileges nothing because there is nothing to choose between (ADR-0051);
- * a Workspace with more REFUSES the Turn, naming the slots in declaration order and the line that
- * ends it, because the kit gives no slot a meaning and a wrong guess is the silent failure
- * ADR-0057 was written for; and a Workspace with no Repo Slot, or a run outside any Workspace,
- * frames nothing, so the Harness keeps `/work`, the folder a slotless Workspace's steps share.
+ * Absent, a Menu-only Agent frames no directory, and a Workspace with no Repo Slot, or a run outside
+ * any Workspace, frames nothing, so the Harness keeps `/work`, the folder a slotless Workspace's
+ * steps share. Under Repo Slots the Workspace only clones, so no Worktree exists for a default to
+ * name, and the kit gives no slot a meaning: an absent `cwd` is REFUSED, because a wrong guess is
+ * the silent failure ADR-0057 was written for (ADR-0075).
  *
- * Resolution counts SLOTS, and a slot's Worktree is the writable branch checkout. The detached
- * review Worktree (`AmbientHandles.review`, ADR-0028's reviewer seat) is never resolved to: it is
- * per review round, so only the reviewing state knows which one, and it frames it (ADR-0028 hands
- * the reviewer its path as "cwd and prompt"). A `workspace: "read"` Agent that frames nothing
- * under a one-slot Workspace therefore works in the branch checkout with `write`/`edit` withheld
- * and `bash` kept — the tool layer's hint, not containment (ADR-0028): containment is the
- * detached review Worktree, and only a reviewing state that requested one can frame it.
+ * `workspace: "read"` withholds `write`/`edit` and keeps `bash`: the tool layer's hint, not
+ * containment (ADR-0028). The containment is a detached Worktree that the state cuts and names as
+ * its `cwd`.
  *
  * The refusal throws at invoke, like the Open-model fence: loudly, at the first Turn, before a
  * surface is registered or a pod is spent.
@@ -583,12 +579,11 @@ function frameCwd(
   if (workspace === "none") return undefined;
   const slots = Object.keys(ambient?.repos ?? {});
   if (slots.length === 0) return undefined;
-  if (slots.length === 1) return ambient!.repos[slots[0]!];
+  // A default here is ADR-0057's incident: an Agent's search hits `default/`, and a relative write
+  // lands outside each Worktree. An author who wants `/work` states it.
   throw new Error(
-    `turn ${instanceId}: agent "${input.agentName}" works under a Workspace carrying more than one ` +
-      `Repo Slot (${slots.join(", ")}) and its Turn framed no \`cwd\` — say which Worktree it works ` +
-      `in (\`cwd: context.workspace.repos.<slot>\`, one of those), because the kit gives no slot a ` +
-      `meaning (ADR-0051) and a Turn's Frame is where it works (ADR-0057)`,
+    `turn ${instanceId}: agent "${input.agentName}" works under a Workspace with Repo Slots (${slots.join(", ")}) ` +
+      'and its Turn framed no `cwd`: say where it works, a Worktree, or `cwd: "/work"` above them (ADR-0057)',
   );
 }
 
@@ -701,7 +696,7 @@ export function agentActorWith(
 
     // The Frame's other half (ADR-0057): WHERE this Turn works. Resolved HERE, before any surface
     // is registered and before a pod is spent, because the answer is a fact about the run — a
-    // Worktree path exists only once a run has a branch, so no definition could have named it.
+    // Worktree exists only once a run has cut it, so no definition could have named it.
     const cwd = frameCwd(instanceId, input, workspace, ambient);
     const framed: AgentRunInput = cwd === undefined ? input : { ...input, cwd };
 

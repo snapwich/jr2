@@ -110,7 +110,6 @@ const body = jr2Setup({
 const wrapped = workspace(body, {
   input: door,
   repos: { target: open, docs: "https://example.test/handbook.git" },
-  spec: () => ({ branch: "feat" }),
 });
 
 // The body's Agent, reached through the wrapper — the consumer never writes `body` and never has
@@ -242,7 +241,7 @@ const anySlots = jr2Setup({
   types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, string> },
   actors: { coder: agent({ model: haiku, instructions: "c" }) },
 }).createMachine({ on: { "workspace.lost": {} }, id: "anySlots", context: {}, initial: "idle", states: { idle: {} } });
-const mapped = workspace(anySlots, { input: door, repos: open, spec: () => ({ branch: "feat" }) });
+const mapped = workspace(anySlots, { input: door, repos: open });
 void customize(mapped, {
   repos: { target: "git@github.com:ourorg/app.git", reference: { url: "https://example.test/lib.git" } },
 });
@@ -255,7 +254,7 @@ function refusedUnderOpenMap(): void {
   // @ts-expect-error the mapper still reads the DOOR
   void customize(mapped, { repos: { target: ({ input }) => input.subject } });
   // @ts-expect-error a body that NAMES a slot cannot sit under an Open map: the composer may never write that word
-  void workspace(body, { input: door, repos: open, spec: () => ({ branch: "feat" }) });
+  void workspace(body, { input: door, repos: open });
 }
 
 // --- 8: an Effect's Open parts (ADR-0054) -----------------------------------------------------------
@@ -275,12 +274,9 @@ const effectful = jr2Setup({
 void customize(effectful, {
   effects: { call: { url: text`https://t.example.com/${secret("path")}` }, deploy: { argv: ["make", arg("env")] } },
 });
-void customize(
-  workspace(effectful, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "f" }) }),
-  {
-    effects: { call: { url: "https://t.example.com" } },
-  },
-);
+void customize(workspace(effectful, { repos: { app: "https://example.test/app.git" } }), {
+  effects: { call: { url: "https://t.example.com" } },
+});
 
 function refusedEffects(): void {
   // @ts-expect-error a command's Open part is its argv, not a url

@@ -24,9 +24,9 @@ machine is the one piece of its vocabulary that pattern missed.
   Thus a `workspace()` or `pool()` wrapper with its own door passes. A `.provide()` clone keeps the config of its
   original, so the walk gets the same result for the clone. A Machine with no `input`, or with an `input` that is not
   zod, can use `setup()`. The `ping` Workflow that `jr2 init` writes uses it. The walk checks the registered roots only,
-  because the `input` of a nested Machine is never the door (see below). `workspace()` refuses a body with a zod `input`
-  when you call it. It reads the config and the attached door, so it also refuses a body that `setup()` made. Considered
-  and rejected:
+  because a run starts at a root, and a door under a parent is parsed at invoke (see below). `workspace()` refuses a
+  body with a zod `input` when you call it. It reads the config and the attached door, so it also refuses a body that
+  `setup()` made. Considered and rejected:
   - Refuse all `setup()` Machines. This adds work to the first Workflow and gives nothing.
   - Refuse at boot. Then an Assembly that is already published stops the Orchestrator. The walk refuses only the next
     publish.
@@ -34,7 +34,7 @@ machine is the one piece of its vocabulary that pattern missed.
     two ways to declare one door. Also, the zod schema stays in `machine.config`, and a schema must not go into the
     fingerprint and serialization paths that read the config. And that Machine does not get the Vocabulary checks of
     `jr2Setup`.
-- **A wrapper declares its own door; it never borrows its child's.** `workspace(body, { input, spec })` and
+- **A wrapper declares its own door; it never borrows its child's.** `workspace(body, { input })` and
   `pool(worker, { input, … })` each take an `input` of their own, and neither propagates one upward. The reason is the
   same in both, at different strengths: a wrapper does not feed its child what a caller sent. `pool` is the sharp case —
   a worker is fed per-item, never the run body, so propagating its schema would demand fields the pool never passes and
@@ -55,10 +55,10 @@ machine is the one piece of its vocabulary that pattern missed.
   it was rejected because the author then chooses between two names for one statement, and finds the second only after
   the opaque error. A body that _still_ declares a schema is refused by `workspace()` with a message naming the fix:
   nothing would ever serve or validate it, and a contract nobody enforces is worse than none.
-- **The door types the mapping, and constrains the body.** `WorkspaceOptions.spec` reads its `input` from the declared
-  schema (`z.infer`), so a workflow states its shape once and the workspace mapping is checked against it — the drift
-  this ADR exists to close, closed in the one place that used to re-declare the shape by hand. The same schema checks
-  the _body_, in **one direction only**: the body may not demand more than the wrapper will hand it, which is
+- **The door types the mapping, and constrains the body.** A per-run Repo Slot's mapper reads its `input` from the
+  declared schema (`z.infer`), so a workflow states its shape once and the workspace mapping is checked against it — the
+  drift this ADR exists to close, closed in the one place that used to re-declare the shape by hand. The same schema
+  checks the _body_, in **one direction only**: the body may not demand more than the wrapper will hand it, which is
   `Workspaced<door, slots>`; demanding _less_ is safe, because it is fed a superset. So a body reading a field the door
   never carries is a build error at the `workspace()` call instead of an `undefined` mid-run. The guard counts the raw
   door as provided beside `Workspaced<door, slots>`: for the door `z.object({})` the two differ, and a body that writes
@@ -75,22 +75,21 @@ machine is the one piece of its vocabulary that pattern missed.
   a parent invoking a nested `workspace()` has its input mapper checked against that wrapper's door, and gets the body's
   output typed back. With no schema declared the door is permissive, so there is nothing to infer and the mapper's
   argument is `unknown` — an honest "jr2 does not know", not `any`; a wrapper fed by something other than a caller (a
-  pool worker) states what it is fed by annotating the parameter, as `PoolSpec.cap`/`itemInput` do. `spec` takes the
-  same permissive answer as the guard: its `input` is the door plus `HostInjectedInput`, so a `spec` gives each run a
-  branch from `instanceId` with no cast, and a nested wrapper whose `spec` reads it needs a parent that gives it.
-  `Partial<HostInjectedInput>` was the alternative; it was rejected because each root `spec` would then write a fallback
-  for a value that is always there. The input of the wrapper stays the door alone, so no parent must send `instanceId`.
-  For the door `z.object({})` that input is `{}`, the door without its `Record<string, never>`, so a parent can give
-  `instanceId` to a nested `spec` that reads it; with the raw `z.infer` it could not, and the nested Workspace then
-  pushed each run to `fix/undefined`. `z.infer<…> & Partial<HostInjectedInput>` was the alternative; it was rejected
-  because the index signature makes `instanceId` `never` there too. A per-run Repo Slot's mapper keeps the door alone,
-  because a url does not come from a run's id.
+  pool worker) states what it is fed by annotating the parameter, as `PoolSpec.cap`/`itemInput` do. The input of the
+  wrapper stays the door alone, so no parent must send `instanceId`, and a nested body that reads it needs a parent that
+  gives it. For the door `z.object({})` that input is `{}`, the door without its `Record<string, never>`, so a parent
+  can give `instanceId` to such a body; with the raw `z.infer` it could not. A per-run Repo Slot's mapper keeps the door
+  alone, because a url does not come from a run's id.
 - **The schema is structure, so it is open.** Workflow-detail JSON (`GET /workflows/:name`, the address ADR-0032's
   negotiation kept) serves it as JSON Schema — same band as the Machine doc, and what drives the Console's start form
   before any token is entered. The _submit_ stays `authenticated`; schema open, trigger guarded.
 - **A declared schema is enforced at the door.** `POST /workflows/:name/runs` validates the body and 400s naming the
   accepted shape — parity with what Gates already do for deliveries. No schema declared → accept anything (today's
-  behavior), and the Console falls back from a generated form to a raw-JSON textarea.
+  behavior), and the Console falls back from a generated form to a raw-JSON textarea. A wrapper's door is parsed under a
+  parent too, so a parent that passes less than a `workspace()` or a `pool()` requires fails at invoke, before any pod.
+  That is a defect of the parent's Machine, so it goes to the parent's `onError`, and a Pool's `itemInput` is held to
+  the door of a `workspace()` worker in the same way. A plain child Machine's door is a type: no wrapper reads it at run
+  time.
 - **The door takes an idempotency key, out of band.** A start may carry one in a header, never in the body (a body field
   would be one every door had to reserve); a repeat with the same key answers with the run the first one made. A
   `dispatch` Effect sends its ledger row's id ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)), so a

@@ -4,11 +4,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fromPromise, setup } from "xstate";
+import { assign, fromPromise, setup } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { fail } from "../src/fail.ts";
-import { pool, source } from "../src/pool.ts";
+import { pool, source, type PoolNextInput } from "../src/pool.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { vocabularyOf } from "../src/vocabulary.ts";
 import { RunHost } from "../src/run-host.ts";
@@ -45,7 +45,7 @@ const gatedWorker = jr2Setup({
 function memorySource(items: Item[], opts: { open?: () => number } = {}) {
   const claims: string[][] = [];
   const src = source<Item>({
-    next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+    next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
       claims.push([...input.active]);
       const item = items.find((i) => !input.active.includes(i.id)) ?? null;
       if (item) items.splice(items.indexOf(item), 1);
@@ -164,7 +164,7 @@ test("the pool machine's vocabulary is its OWN wake def; the worker keeps its ow
 test("a wake def sharing a worker event's NAME is no collision — the scopes are separate", async () => {
   // Same name, different payload, one run: legal since the sets never merge (ADR-0011/0049).
   const clash = defineEvent({ name: "finish", audience: "external", input: z.object({ why: z.string() }) });
-  const src = source<Item>({ next: fromPromise<Item | null, { active: string[] }>(async () => null), wake: clash });
+  const src = source<Item>({ next: fromPromise<Item | null, PoolNextInput>(async () => null), wake: clash });
   const machine = pool(gatedWorker, { source: src, itemId: (i) => i.id });
   assert.equal(vocabularyOf(machine)!.get("finish"), clash);
   assert.notEqual(vocabularyOf(gatedWorker)!.get("finish"), clash);
@@ -317,4 +317,79 @@ test('the walk lists the Pool\'s `failing` state by default, and no such state w
     partsOf([pool(choosyWorker, { ...spec, failures: "report" })]).failures.filter((f) => f.machine === "run"),
     [],
   );
+});
+
+// ADR-0033: a wrapper's door under a parent.
+const doorPool = (seen: unknown[]) =>
+  pool(gatedWorker, {
+    id: "doored",
+    input: z.object({ workers: z.number(), note: z.string().default("kept") }),
+    cap: ({ input }) => input.workers,
+    source: source<Item, { workers: number; note: string }>({
+      next: fromPromise(async ({ input }: { input: PoolNextInput<{ workers: number; note: string }> }) => {
+        seen.push(input.input);
+        return { item: null as Item | null, open: 0 };
+      }),
+    }),
+    itemId: (item: Item) => item.id,
+    itemInput: (item: Item) => ({ item }),
+    onDrained: "final",
+  });
+
+const poolParent = (machine: ReturnType<typeof doorPool>, passed: unknown) =>
+  setup({
+    types: {} as { context: { why?: string } },
+    actors: { work: machine },
+  }).createMachine({
+    id: "pool-parent",
+    context: {},
+    initial: "running",
+    states: {
+      running: {
+        invoke: {
+          src: "work",
+          input: () => passed as never,
+          onDone: "done",
+          onError: { target: "caught", actions: assign({ why: ({ event }) => (event.error as Error).message }) },
+        },
+      },
+      caught: { type: "final" },
+      done: { type: "final" },
+    },
+    output: ({ context }) => ({ why: context.why }),
+  });
+
+const runParent = async (machine: ReturnType<typeof poolParent>) => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "parent", machine, provide: () => ({}) });
+  const { runId } = await host.start("parent", {});
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.equal(final?.status, "done");
+  return (final?.context ?? {}) as { why?: string };
+};
+
+test("a parent that passes less than a pool()'s door requires fails the invoke, its onError takes it, and no Source is asked (ADR-0033)", async () => {
+  const seen: unknown[] = [];
+  const { why } = await runParent(poolParent(doorPool(seen), { nope: 1 }));
+  assert.match(why ?? "", /^pool input invalid, before any worker: /);
+  assert.match(why ?? "", /workers/);
+  assert.deepEqual(seen, []);
+});
+
+test("a pool()'s door under a parent gives the Source the parsed value, and the handles and instanceId ride beside it (ADR-0033)", async () => {
+  const seen: unknown[] = [];
+  const passed = { workers: 2, stray: 1, instanceId: "i", workspace: { repos: {} } };
+  const { why } = await runParent(poolParent(doorPool(seen), passed));
+  assert.equal(why, undefined);
+  assert.deepEqual(seen[0], { workers: 2, note: "kept", instanceId: "i", workspace: { repos: {} } });
+});
+
+test("a root pool()'s input is RunHost's: the pool does not parse a door twice", async () => {
+  const seen: unknown[] = [];
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "root", machine: doorPool(seen), provide: () => ({}) });
+  const { runId } = await host.start("root", { workers: 1 });
+  await waitFor(() => host.status(runId) === undefined);
+  assert.equal((seen[0] as { note: string }).note, "kept");
 });

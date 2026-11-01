@@ -98,12 +98,13 @@ jr2 sets `runAsUser` nowhere — each image's own `USER` decides its seat's uid 
 and plain POSIX modes would then make the other seat's files read-only. jr2 closes that with two mechanisms it happens
 to own, unconditionally (both are inert when the uids already match):
 
-- **The pod carries `fsGroup` — the work group, default `2000`.** The default is convention; the one override lives on
-  the `WorkspaceSpec` (`workGroup?: number`, beside `image` and `user` — pod composition is the spec's business,
-  ADR-0037), for the image whose session users already hold a gid of their own. Never a config key. Any value is safe
-  for the jr2 seats: Kubernetes grants the fsGroup as a supplemental group to every container process, so the Harness
-  writes `/work` whatever the number, and no image's `/etc/group` needs to know it. fsGroup puts a setgid group on
-  `/work`'s root, and setgid propagates down, so everything either seat creates is group-_owned_ by the work group.
+- **The pod carries `fsGroup` — the work group, default `2000`.** The default is convention; the one override is an
+  option of `workspace()` (`workspace(body, { workGroup: 2000 })`, beside `image` and `user` — pod composition is the
+  wrapper's business, ADR-0037), for the image whose session users already hold a gid of their own. Never a config key.
+  Any value is safe for the jr2 seats: Kubernetes grants the fsGroup as a supplemental group to every container process,
+  so the Harness writes `/work` whatever the number, and no image's `/etc/group` needs to know it. fsGroup puts a setgid
+  group on `/work`'s root, and setgid propagates down, so everything either seat creates is group-_owned_ by the work
+  group.
 - **The attach stamps a default ACL on every repo root it creates** — `u::rwx,g::rwx,o::r-x`, set by `work-acl`, a
   static helper on the runtime volume (part of ADR-0037's published `/opt/jr2` surface, static for the same reason `rg`
   is: it executes on a libc jr2 does not control). A default ACL is inherited by everything created beneath it, and
@@ -116,7 +117,7 @@ to own, unconditionally (both are inert when the uids already match):
 Group _membership_ is the one thing an image can still owe. `kubectl exec` sessions and a non-root sshd's logins hold
 the work group automatically — both inherit the container's supplemental groups, where Kubernetes put the fsGroup. A
 **root** sshd is the exception: the logins it setuids rebuild their groups from `/etc/group`, so that image puts its
-session user in the work group itself (`groupadd -g 2000 work && usermod -aG work <user>`) — or the spec points
+session user in the work group itself (`groupadd -g 2000 work && usermod -aG work <user>`) — or the `workspace()` points
 `workGroup` at a gid its users already hold.
 
 **The promise is scoped to repo trees.** An ad-hoc path at `/work`'s top level — either seat's `mkdir /work/scratch` —
@@ -206,8 +207,8 @@ Container offers a human session — with its edges stated plainly:
 
 - The generic `Sandbox` CRD composes all of this as plain container specs
   ([ADR-0001](0001-operator-owned-generic-sandbox.md) holds — the operator stays agent-agnostic); the Orchestrator's
-  `kubectlSandbox` supplies the images. The pod runs two containers, plus `user` when the spec names one and `effector`
-  when an Effect is placed there.
+  `kubectlSandbox` supplies the images. The pod runs two containers, plus `user` when the `workspace()` names one and
+  `effector` when an Effect is placed there.
 - Every container but the Sandbox Effector carries a limit from the Workspace's Size (ADR-0060): the Custodian a fixed
   kit slice, the User Container its split if stated, the Harness the rest. The Sandbox Effector carries no limit of its
   own: like a User Container with no split, it shares the pod's Size ceiling — the whole Size, as pod-level resources —

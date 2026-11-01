@@ -143,7 +143,8 @@ type Pair struct {
 	Squashed  string `json:"squashed,omitempty"`
 }
 
-// PushSpec is a push's part of a start: the Workspace's branch to the Repo Slot's Binding.
+// PushSpec is a push's part of a start: the branch of the cut's settled row to the Repo Slot's
+// Binding (ADR-0075).
 type PushSpec struct {
 	Repo   RepoRef `json:"repo"`
 	URL    string  `json:"url"`

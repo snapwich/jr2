@@ -8,7 +8,7 @@
 //   restart  counts its runs in a file, then waits 20s and prints the count — an Orchestrator
 //            restart in the middle gives one run, re-attached by id
 //
-// `node` is the image's own (images/default carries it); the cwd is the one Repo Slot's Worktree.
+// `node` is the image's own (images/default carries it); the cwd is the Worktree the input names.
 
 import { z } from "zod";
 import { assign } from "xstate";
@@ -22,6 +22,8 @@ import {
   type CommandOutput,
   type HostInjectedInput,
   type Workspaced,
+  isReady,
+  worktree,
 } from "@jr2/orchestrator";
 
 type Door = { mode: "exit" | "argv" | "timeout" | "restart"; code?: string; text?: string };
@@ -39,6 +41,7 @@ export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: CommandOutput | { outcome: "none" } },
   events: [unused],
   actors: {
+    cut: worktree(),
     fail: fail(),
     exit: command(["node", "-e", "process.exit(Number(process.argv[1]))", arg("code")]),
     argv: command(["node", "-e", "console.log(JSON.stringify(process.argv.slice(1)))", arg("text")]),
@@ -48,9 +51,17 @@ export const body = jr2Setup({
 }).createMachine({
   id: "commanded",
   context: ({ input }) => input,
-  initial: "choosing",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" }, noop: ".settled" },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/feat-e2e-command", branch: "feat-e2e-command" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "choosing" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     choosing: {
       always: [
         { guard: ({ context }) => context.mode === "exit", target: "exit" },
@@ -62,26 +73,28 @@ export const body = jr2Setup({
     exit: {
       invoke: {
         src: "exit",
-        input: ({ context }) => ({ code: context.code ?? "0" }),
+        input: ({ context }) => ({ worktree: "/work/app/feat-e2e-command", code: context.code ?? "0" }),
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
     argv: {
       invoke: {
         src: "argv",
-        input: ({ context }) => ({ text: context.text ?? "" }),
+        input: ({ context }) => ({ worktree: "/work/app/feat-e2e-command", text: context.text ?? "" }),
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
     timeout: {
       invoke: {
         src: "timeout",
+        input: ({ context }) => ({ worktree: "/work/app/feat-e2e-command" }),
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
     restart: {
       invoke: {
         src: "restart",
+        input: ({ context }) => ({ worktree: "/work/app/feat-e2e-command" }),
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
@@ -98,5 +111,4 @@ export const machine = workspace(body, {
     text: z.string().optional(),
   }),
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  spec: () => ({ branch: "feat-e2e-command" }),
 });

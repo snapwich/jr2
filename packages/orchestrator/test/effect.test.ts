@@ -16,6 +16,7 @@ import {
   arg,
   commandWith,
   ExecNotSent,
+  type CommandInput,
   type CommandOutput,
   type EffectLogic,
   type EffectRow,
@@ -35,12 +36,25 @@ const build = defineEvent({ name: "build", input: z.object({}) });
 
 type Ctx = { filter?: string; result?: CommandOutput; fault?: string };
 
-function machineWith(factory: ExecPortFactory, repos?: Record<string, string>, slot?: string) {
-  const tests = commandWith(factory, ["pnpm", "test", "--filter", arg("filter")], {
-    timeout: "90s",
-    tail: 100,
-    ...(slot ? { slot } : {}),
-  });
+/** The Worktree a command names. `null` names none. */
+const RUN = "/work/app/run-1";
+type Named = `/work/${string}/${string}` | null;
+const worktreeOf = (named: Named) => (named === null ? {} : { worktree: named });
+
+/** The real exec, in this package's folder. The test host has no `/work`, and that folder is no
+ * Worktree, so the start loses its `root`. */
+const hereIn =
+  (execs: Execs): ExecPortFactory =>
+  (endpoint, bearer) => {
+    const port = execsPort(execs)(endpoint, bearer);
+    return {
+      ...port,
+      start: (id, { root: _root, ...req }, signal) => port.start(id, { ...req, cwd: process.cwd() }, signal),
+    };
+  };
+
+function machineWith(factory: ExecPortFactory, repos?: Record<string, string>, named: Named = RUN) {
+  const tests = commandWith(factory, ["pnpm", "test", "--filter", arg("filter")], { timeout: "90s", tail: 100 });
   return jr2Setup({
     types: {} as { context: Ctx },
     events: [go, leave],
@@ -59,7 +73,7 @@ function machineWith(factory: ExecPortFactory, repos?: Record<string, string>, s
         invoke: [
           {
             src: "tests",
-            input: ({ context }) => ({ filter: context.filter! }),
+            input: ({ context }) => ({ filter: context.filter!, ...worktreeOf(named) }),
             onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
             onError: {
               target: "faulted",
@@ -77,9 +91,9 @@ function machineWith(factory: ExecPortFactory, repos?: Record<string, string>, s
   });
 }
 
-const defOf = (factory: ExecPortFactory, repos?: Record<string, string>, slot?: string): WorkflowDef => ({
+const defOf = (factory: ExecPortFactory, repos?: Record<string, string>, named?: Named): WorkflowDef => ({
   name: "fx",
-  machine: machineWith(factory, repos, slot),
+  machine: machineWith(factory, repos, named),
   provide: () => ({}),
 });
 
@@ -89,11 +103,11 @@ async function started(
   factory: ExecPortFactory,
   store?: SnapshotStore,
   repos?: Record<string, string>,
-  slot?: string,
+  named?: Named,
 ): Promise<Rig> {
   const s = store ?? (await mkStore());
   const host = new RunHost({ store: s });
-  host.register(defOf(factory, repos, slot));
+  host.register(defOf(factory, repos, named));
   const { runId } = await host.start("fx");
   const feed: RunFeedEvent[] = [];
   host.subscribe(runId, (ev) => feed.push(ev));
@@ -117,14 +131,15 @@ const ledger = async (store: SnapshotStore, runId: string): Promise<Record<strin
 const valueOf = (rig: Rig) => rig.host.status(rig.runId)?.value;
 const contextOf = (rig: Rig) => rig.host.status(rig.runId)?.context as Ctx;
 
-test("a command runs in its Workspace's Harness: argv filled by name, one argument each, in the one Repo Slot's Worktree", async () => {
+test("a command runs in its Workspace's Harness: argv filled by name, one argument each, in the Worktree that its input names", async () => {
   const fake = new FakeHarnessExec();
   const rig = await started(fake.factory);
   await waitFor(() => fake.starts.length === 1);
   const [exec] = fake.starts;
   assert.deepEqual(exec!.req, {
     argv: ["pnpm", "test", "--filter", "unit; rm -rf /"],
-    cwd: "/work/app/run-1",
+    cwd: RUN,
+    root: true,
     timeoutMs: 90_000,
     tail: 100,
   });
@@ -283,7 +298,7 @@ test("restore of a settled row whose transition was not saved: the output is del
   assert.equal(fake.reads.filter((r) => r.offset === undefined).length, 0, "not even a read");
 });
 
-test("refused outside a Workspace, and under several Repo Slots with none named: an error, never output", async () => {
+test("refused outside a Workspace, and under Repo Slots with no Worktree named: an error, never output", async () => {
   const fake = new FakeHarnessExec();
   const tests = commandWith(fake.factory, ["true"]);
   const bare = jr2Setup({ types: {} as { context: Ctx }, events: [begin], actors: { tests } }).createMachine({
@@ -308,27 +323,27 @@ test("refused outside a Workspace, and under several Repo Slots with none named:
   await waitFor(() => host.status(runId)?.value === "faulted");
   assert.match((host.status(runId)?.context as Ctx).fault!, /not inside a workspace\(\)/);
 
-  const two = await started(fake.factory, undefined, { app: "/work/app/b", docs: "/work/docs/b" });
-  await waitFor(() => valueOf(two) === "faulted");
-  assert.match(contextOf(two).fault!, /more than one Repo Slot \(app, docs\)/);
+  const two = { app: "/work/app", docs: "/work/docs" };
+  const none = await started(fake.factory, undefined, two, null);
+  await waitFor(() => valueOf(none) === "faulted");
+  assert.match(contextOf(none).fault!, /Repo Slots \(app, docs\) and its input names no `worktree`/);
   assert.equal(fake.starts.length, 0);
 
-  const named = await started(fake.factory, undefined, { app: "/work/app/b", docs: "/work/docs/b" }, "docs");
+  await started(fake.factory, undefined, two, "/work/docs/b");
   await waitFor(() => fake.starts.length === 1);
   assert.equal(fake.starts[0]!.req.cwd, "/work/docs/b");
-  void named;
 });
 
 test("a command in a Workspace with no Repo Slot runs in /work, named, never the image's WORKDIR (ADR-0051)", async () => {
   const fake = new FakeHarnessExec();
-  await started(fake.factory, undefined, {});
+  await started(fake.factory, undefined, {}, null);
   await waitFor(() => fake.starts.length === 1);
   assert.equal(fake.starts[0]!.req.cwd, "/work", "the folder the Workspace's steps share");
 });
 
 test("real processes through the Harness's own exec: a metacharacter stays inside its one argument", async () => {
   const execs = new Execs();
-  const echo = commandWith(execsPort(execs), [
+  const echo = commandWith(hereIn(execs), [
     process.execPath,
     "-e",
     "console.log(JSON.stringify(process.argv.slice(1)))",
@@ -337,7 +352,7 @@ test("real processes through the Harness's own exec: a metacharacter stays insid
   const machine = jr2Setup({
     types: {} as { context: Ctx },
     events: [go],
-    actors: { ws: fakeWorkspace(handles({ app: process.cwd() })), echo },
+    actors: { ws: fakeWorkspace(handles()), echo },
   }).createMachine({
     id: "real",
     context: {},
@@ -351,7 +366,7 @@ test("real processes through the Harness's own exec: a metacharacter stays insid
       running: {
         invoke: {
           src: "echo",
-          input: ({ context }) => ({ filter: context.filter! }),
+          input: ({ context }) => ({ filter: context.filter!, worktree: RUN }),
           onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
         },
       },
@@ -397,6 +412,7 @@ test("the ledger keeps every row, and drops each output tail once its transition
       running: {
         invoke: {
           src: "loop",
+          input: { worktree: RUN },
           onDone: [
             { guard: ({ context }) => context.n >= 4, target: "done" },
             { target: "running", reenter: true, actions: assign({ n: ({ context }) => context.n + 1 }) },
@@ -460,13 +476,14 @@ test("a loop below the Agent's state grows the blob by its tails only while the 
     initial: "working",
     states: {
       working: {
-        invoke: { src: "coder", input: { prompt: "Build it.", endpoint: "http://harness.invalid" } },
+        invoke: { src: "coder", input: { prompt: "Build it.", endpoint: "http://harness.invalid", cwd: RUN } },
         initial: "rest",
         states: {
           rest: {},
           build: {
             invoke: {
               src: "make",
+              input: { worktree: RUN },
               onDone: [
                 { guard: ({ context }) => context.n >= 2, target: "rest" },
                 { target: "build", reenter: true, actions: assign({ n: ({ context }) => context.n + 1 }) },
@@ -516,7 +533,7 @@ test("D1 holds a fast exit through the real exec: a kill that overtakes its star
   let kills = 0;
   // The start is on the wire, held; the state exits and the kill reaches the Harness first.
   const racing: ExecPortFactory = (endpoint, bearer) => {
-    const port = execsPort(execs)(endpoint, bearer);
+    const port = hereIn(execs)(endpoint, bearer);
     return {
       ...port,
       start: async (id, req, signal) => {
@@ -537,7 +554,7 @@ test("D1 holds a fast exit through the real exec: a kill that overtakes its star
   const machine = jr2Setup({
     types: {} as { context: Ctx },
     events: [begin, leave],
-    actors: { ws: fakeWorkspace(handles({ app: process.cwd() })), writes },
+    actors: { ws: fakeWorkspace(handles()), writes },
   }).createMachine({
     id: "fast",
     context: {},
@@ -547,7 +564,7 @@ test("D1 holds a fast exit through the real exec: a kill that overtakes its star
       waiting: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
       running: {
         invoke: [
-          { src: "writes", onDone: "done" },
+          { src: "writes", input: { worktree: RUN }, onDone: "done" },
           { src: "gate", id: "ctl" },
         ],
         on: { leave: "left" },
@@ -608,7 +625,7 @@ test("an Effect with no onDone settles in place: xstate keeps the done child, an
       waiting: { invoke: { src: "gate", id: "start" }, on: { begin: "linting" } },
       linting: {
         invoke: [
-          { src: "lint", id: "lint" },
+          { src: "lint", id: "lint", input: { worktree: RUN } },
           { src: "gate", id: "ctl" },
         ],
         on: { leave: "left" },
@@ -637,11 +654,11 @@ test("an Effect with no onDone settles in place: xstate keeps the done child, an
 });
 
 /** A one-state Machine that runs `logic` once `begin` arrives and keeps its output. */
-function onceMachine(id: string, logic: EffectLogic<void, CommandOutput>) {
+function onceMachine(id: string, logic: EffectLogic<CommandInput<[]>, CommandOutput>) {
   return jr2Setup({
     types: {} as { context: Ctx },
     events: [begin],
-    actors: { ws: fakeWorkspace(handles({ app: process.cwd() })), logic },
+    actors: { ws: fakeWorkspace(handles()), logic },
   }).createMachine({
     id,
     context: {},
@@ -650,14 +667,18 @@ function onceMachine(id: string, logic: EffectLogic<void, CommandOutput>) {
     states: {
       waiting: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
       running: {
-        invoke: { src: "logic", onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) } },
+        invoke: {
+          src: "logic",
+          input: { worktree: RUN },
+          onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
+        },
       },
       done: {},
     },
   });
 }
 
-async function runOnce(id: string, logic: EffectLogic<void, CommandOutput>): Promise<CommandOutput> {
+async function runOnce(id: string, logic: EffectLogic<CommandInput<[]>, CommandOutput>): Promise<CommandOutput> {
   const host = new RunHost({ store: await mkStore() });
   host.register({ name: id, machine: onceMachine(id, logic), provide: () => ({}) });
   const { runId } = await host.start(id);
@@ -679,7 +700,7 @@ test("no second fire: a start that reached a Harness which then restarted is nev
   let starts = 0;
   // The first start runs the command, then the Harness restarts before it answers.
   const restarting: ExecPortFactory = (endpoint, bearer) => {
-    const live = () => execsPort(execs)(endpoint, bearer);
+    const live = () => hereIn(execs)(endpoint, bearer);
     return {
       start: async (id, req, signal) => {
         starts++;
@@ -706,7 +727,7 @@ test("a start whose answer was lost while its Harness lives on: it is read by id
   const execs = new Execs();
   let starts = 0;
   const lossy: ExecPortFactory = (endpoint, bearer) => {
-    const port = execsPort(execs)(endpoint, bearer);
+    const port = hereIn(execs)(endpoint, bearer);
     return {
       ...port,
       start: async (id, req, signal) => {
@@ -727,7 +748,7 @@ test("a start that never left (the connection was refused) is sent again until i
   const execs = new Execs();
   let starts = 0;
   const refusing: ExecPortFactory = (endpoint, bearer) => {
-    const port = execsPort(execs)(endpoint, bearer);
+    const port = hereIn(execs)(endpoint, bearer);
     return {
       ...port,
       start: async (id, req, signal) => {

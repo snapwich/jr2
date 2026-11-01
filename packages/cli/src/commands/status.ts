@@ -20,6 +20,9 @@
 // started: `dispatched: <run> (<slot>)`. The result itself carries `dispatchedBy`, `dispatched`
 // and, once the run is no longer live, its `output`, as the Orchestrator sends them.
 //
+// A run that cut a Worktree (ADR-0075) says each one beside the result, one line per cut:
+// `worktree: <path> (<slot>), branch <branch>`, or `, detached`. The result carries `worktrees`.
+//
 // A failed run (ADR-0073) says its reason beside the result: `failed: <reason>`. The result's
 // `output` holds the whole Failure, `{ reason, detail? }`.
 
@@ -51,7 +54,13 @@ export async function status(args: string[], io: Io): Promise<number> {
       return 1;
     }
     result(io, s);
-    const notes = [failureActivity(s), dispatchedActivity(s), ...dispatchedLines(s), boundActivity(s)];
+    const notes = [
+      failureActivity(s),
+      dispatchedActivity(s),
+      ...dispatchedLines(s),
+      boundActivity(s),
+      ...worktreeLines(s),
+    ];
     for (const note of notes) if (note) activity(io, note);
     return 0;
   } finally {
@@ -81,6 +90,13 @@ export function dispatchedLines(s: RunStatus): string[] {
     ...(older > 0 ? [`dispatched: ${older} older run(s); the result lists them all`] : []),
     ...shown.map((d) => `dispatched: ${d.run} (${d.slot})`),
   ];
+}
+
+/** The `worktree:` lines for the Worktrees this run's cuts made (ADR-0075), oldest first. */
+export function worktreeLines(s: RunStatus): string[] {
+  return (s.worktrees ?? []).map(
+    (w) => `worktree: ${w.path} (${w.slot}), ${w.branch === null ? "detached" : `branch ${w.branch}`}`,
+  );
 }
 
 /** The `dispatched by:` line for a run a `dispatch` Effect started (ADR-0071), or undefined for a

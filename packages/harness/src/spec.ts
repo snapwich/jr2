@@ -85,7 +85,7 @@ export type HarnessSpec = {
 
 /** What this Turn is ABOUT and WHERE it works — the Frame (ADR-0057). Neither identity nor a
  * Dial: a directory says where, which is the same kind of fact as the prompt, and a worktree path
- * (`/work/<slot>/<branch>`) exists only once a run has a branch, so no definition can name one.
+ * (`/work/<slot>/<name>`) exists only once a Machine has cut it, so no definition can name one.
  * `message` is the prompt as the wire spells it; both ride the admit body, `cwd` beside the
  * prompt and the Dials. */
 export type TurnFrame = {

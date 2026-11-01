@@ -93,6 +93,8 @@ export type HarnessAppDeps = {
    * what wire tests want. The structural half of the check (`definitionFault`) needs no registry
    * and always runs. */
   checkAdmission?: (resolved: ResolvedDefinition) => string | undefined;
+  /** Does this folder exist? The pod's filesystem, in `main.ts`. Absent in a test with no `/work`. */
+  frameExists?: (path: string) => boolean;
   /** How long a live long-poll parks before 204 "nothing yet". Default 25s (the stub's
    * cadence); short in tests. */
   longPollMs?: number;
@@ -332,6 +334,17 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     if (framing) return c.json({ error: framing }, 400);
     const submission = admissionRequest(sent, sent?.definition as AgentDefinition);
     const resolved = resolveDefinition(submission.definition, submission);
+    // A Chart's word can name a folder no cut made: the Orchestrator turns this answer into
+    // `agent.fault`, which the Machine routes (ADR-0067), and no Turn starts in the wrong place. Only
+    // Working tools use a `cwd`, so a `workspace: "none"` Agent has no wrong place to start in.
+    if (resolved.workspace !== "none" && typeof sent?.cwd === "string" && deps.frameExists?.(sent.cwd) === false) {
+      return c.json(
+        {
+          error: `agent "${agentName}": the Turn's \`cwd\` ${sent.cwd} does not exist: cut the Worktree first (ADR-0057)`,
+        },
+        400,
+      );
+    }
     // The Instance Harness placement gate (ADR-0031): identity precedes dials. Checked against
     // the definition this admission carries (default "write" — ADR-0028), so the refusal holds
     // from the very first POST and no non-"none" conversation can ever exist here.

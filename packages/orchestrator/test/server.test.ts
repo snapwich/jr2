@@ -128,7 +128,7 @@ async function mkWorkspaceAssembly(): Promise<string> {
     `import { setup } from ${JSON.stringify(import.meta.resolve("xstate"))};\n` +
       `import { workspace } from ${JSON.stringify(src)};\n` +
       `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" } });\n`,
   );
   return dir;
 }
@@ -525,7 +525,7 @@ async function mkFencedAssembly(
       `import { workspace } from ${JSON.stringify(src)};\n` +
       `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       // With `bound`, the Slot is bound statically instead, so the Repo pass binds it (ADR-0051).
-      `const ws = workspace(body, { repos: { app: ${opts.bound ? "" : "() => "}"https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n` +
+      `const ws = workspace(body, { repos: { app: ${opts.bound ? "" : "() => "}"https://example.test/app.git" } });\n` +
       // With `waitMs`, the run parks before its Workspace for that long: a timer the restore arms
       // again, so a run saved in one process provisions in the next.
       (opts.waitMs === undefined

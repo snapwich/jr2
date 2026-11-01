@@ -32,7 +32,12 @@ test("the generators report no error on the real code", () => {
 
 test("each root export has its own page, and the Authoring surface contents page links to it", async () => {
   const index = await readFile(join(REPO, "packages/orchestrator/src/index.ts"), "utf8");
-  const types = [...index.matchAll(/^export type \{([^}]*)\}/gm)].flatMap((m) => m[1]!.split(",").map((s) => s.trim()));
+  const types = [...index.matchAll(/^export type \{([^}]*)\}/gm)].flatMap((m) =>
+    m[1]!
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
   const values = Object.keys(surface);
   assert.ok(values.length + types.length > 30);
   const contents = page(SURFACE);
@@ -155,6 +160,12 @@ test("a union type lists one field list per form, and a kit type a signature nam
     pageOf("PushOutput", true),
     /\*\*Forms\*\*[\s\S]*- Form 1: `outcome`, `stage`, `reason`, `detail`[\s\S]*- Form 2: `outcome`, `reason`, `published`, `source`/,
   );
+  // The stand-in of an open union is not a real outcome, so it is the last form of each page.
+  for (const name of ["PushOutput", "CommandOutput", "HttpOutput", "DispatchOutput"]) {
+    const forms = [...pageOf(name, true).matchAll(/^- Form \d+: .*\n\n\s+- `outcome`: `"(.*?)"`/gm)].map((m) => m[1]);
+    assert.equal(forms.at(-1), "(a later outcome)", name);
+    assert.equal(forms.indexOf("(a later outcome)"), forms.length - 1, name);
+  }
   const text = page("reference/machines");
   const entry = text.slice(
     text.indexOf("\n### `TaskOutput`\n"),

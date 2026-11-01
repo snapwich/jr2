@@ -17,7 +17,16 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, fail, jr2Setup, type HostInjectedInput, type Workspaced } from "@jr2/orchestrator";
+import {
+  agent,
+  defineEvent,
+  fail,
+  jr2Setup,
+  type HostInjectedInput,
+  type Workspaced,
+  isReady,
+  worktree,
+} from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
@@ -34,15 +43,23 @@ export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [finish],
   // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.
-  actors: { coder: agent(coder), fail: fail() },
+  actors: { cut: worktree(), coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
-  initial: "coding",
+  initial: "cutting",
   // The wrapper emits, the body decides (ADR-0012). Our Sandbox is gone: the pod-local clone and
   // any unpushed commits went with it, so fail the run rather than pretend we can resume.
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/feat-e2e", branch: "feat-e2e" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     coding: {
       invoke: {
         src: "coder",
@@ -52,13 +69,11 @@ export const body = jr2Setup({
         // scope, so only this pod's Custodian can deliver into this turn. No Menu either: it derives
         // from this state's own transitions (ADR-0015), which are the `finish` below.
         input: () => ({
+          cwd: "/work/app/feat-e2e",
           // A plain prompt. The pod runs the STOCK Harness (ADR-0038), so what parks the Machine
           // here is the scripted MODEL: it holds the turn's provider request until the scenario
           // releases it with a tool call — exactly what an Agent that is still thinking looks like.
           prompt: "implement the thing",
-          // No `cwd`: one Repo Slot means there is nothing to privilege, so the actor frames
-          // `app`'s Worktree itself (ADR-0057).
-          //
           // `continue` makes the conversation ADDRESSABLE from outside: a continued id is exactly
           // `<runId>/<machine actor path>/<agent>`, which is what the steps curl off the pod to ask
           // the Harness what became of this turn. A fresh Turn's id carries a random suffix only

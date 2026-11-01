@@ -149,7 +149,11 @@ export function fieldsOf(
   const type = ctx.program.checker.getDeclaredTypeOfSymbol(sym);
   if (type.isUnion()) {
     if (!type.types.every(isObject)) return undefined;
-    const forms = type.types.map((t) => propertyFields(ctx, t));
+    // The compiler's order is not the source's, and `LaterOutcome` is not an outcome to route on,
+    // so the stand-in comes after each real form.
+    const standIn = (t: ts.Type) => (t.aliasSymbol?.name === "LaterOutcome" ? 1 : 0);
+    const sorted = [...type.types].sort((a, b) => standIn(a) - standIn(b));
+    const forms = sorted.map((t) => propertyFields(ctx, t));
     return forms.every(Boolean) ? { forms: forms as Field[][] } : undefined;
   }
   if (!isObject(type)) return undefined;

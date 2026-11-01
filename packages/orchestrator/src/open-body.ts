@@ -24,6 +24,7 @@ import {
   type UnknownActorLogic,
 } from "xstate";
 import { isAgent, type AgentDefinition, type WorkspaceAccess } from "./agent.ts";
+import { ambientHandlesFor } from "./ambient.ts";
 import {
   admitChart,
   chartDigest,
@@ -31,8 +32,10 @@ import {
   ChartRefusal,
   GENERIC_ACTIONS,
   pathSegments,
+  READY_GUARD,
   resolveSource,
   resolveReferences,
+  slotFolderFault,
   type AdmittedChart,
   type ChartAction,
   type ChartGuard,
@@ -43,11 +46,12 @@ import {
   type ChartTransition,
   type ChartTransitions,
 } from "./chart.ts";
-import { inputKeysOf, isEffect, type Duration } from "./effect.ts";
+import { inputShapeOf, isEffect, type Duration, type InputShape } from "./effect.ts";
 import { fail, FAILURE_GUARD, failureGuard } from "./fail.ts";
 import { agent } from "./harness-client.ts";
 import { SENT_BY } from "./party.ts";
-import { wrapperBodyOf } from "./parts.ts";
+import { composesSandbox, sandboxPartsOf, wrapperBodyOf } from "./parts.ts";
+import { open } from "./open.ts";
 import { actorPath, boundRun } from "./registration.ts";
 import { COMPILED_CHART, jr2Setup } from "./setup.ts";
 import { attachBoundMachine, boundMachineFor } from "./vocabulary.ts";
@@ -573,9 +577,12 @@ export function admitBodyChart(
   text: unknown,
   decl: OpenBodyDeclaration,
   lent: LentParts,
-  options: { inputKeys?: readonly string[] } = {},
+  options: { inputKeys?: readonly string[]; repoSlots?: readonly string[] } = {},
 ): AdmittedChart {
-  const admitted = admitChart(text, decl, lent, options.inputKeys ? { inputKeys: options.inputKeys } : {});
+  const admitted = admitChart(text, decl, lent, {
+    ...(options.inputKeys ? { inputKeys: options.inputKeys } : {}),
+    ...(options.repoSlots ? { repoSlots: options.repoSlots } : {}),
+  });
   try {
     compileChart(admitted, lent, decl);
   } catch (err) {
@@ -627,9 +634,21 @@ export function admitOpenBodyChart(
   const logic = (inner.implementations.actors as Record<string, unknown>)[slot];
   if (!isOpenBody(logic)) throw new Error(`machine "${machine.id}" has no Open body "${slot}"`);
   const decl = openBodyDeclarationOf(logic);
+  const repoSlots = repoSlotsAround(machine);
   return admitBodyChart(text, decl, lentIn(inner.implementations as Implementations, decl), {
     ...(inputKeys ? { inputKeys } : {}),
+    ...(repoSlots ? { repoSlots } : {}),
   });
+}
+
+/** The Repo Slots of the `workspace()` around a Chart wrapper, where the door can see one: the
+ * wrapper IS the `workspace()`. Undefined: an Open map, or a Workspace that a parent state invokes,
+ * whose slots this door cannot read. Then the Open body's own door reads them off the running
+ * Workspace, and a Turn's or an Effect's start refuses what no door could see. */
+export function repoSlotsAround(machine: AnyStateMachine): readonly string[] | undefined {
+  if (!composesSandbox(machine)) return undefined;
+  const { repos } = sandboxPartsOf(machine);
+  return repos === open ? undefined : Object.keys(repos);
 }
 
 /**
@@ -648,7 +667,10 @@ export function admitWrapperChart(machine: AnyStateMachine, text: unknown): Admi
   for (const { slot, logic } of bodies) {
     const decl = openBodyDeclarationOf(logic);
     try {
-      return admitBodyChart(text, decl, lentIn(inner.implementations as Implementations, decl));
+      const repoSlots = repoSlotsAround(machine);
+      return admitBodyChart(text, decl, lentIn(inner.implementations as Implementations, decl), {
+        ...(repoSlots ? { repoSlots } : {}),
+      });
     } catch (err) {
       if (!(err instanceof ChartRefusal)) throw err;
       report.push(...err.report.map((line) => (bodies.length > 1 ? `body "${slot}": ${line}` : line)));
@@ -675,7 +697,7 @@ const scopeOf = (args: Args) => ({
   input: chartInputOf((args.context?.[CHART_INPUT_KEY] as Record<string, unknown> | undefined) ?? {}),
 });
 
-/** An invoke's error whose message jr2 wrote for a Chart to read: a lent Effect's input fault. */
+/** An invoke's error whose message jr2 wrote for a Chart to read: a fault in an input the door could not see. */
 class ChartInvokeFault extends Error {}
 
 /**
@@ -839,6 +861,10 @@ function transitionsOf(ts: ChartTransitions): unknown {
   return Array.isArray(ts) ? ts.map(transitionOf) : transitionOf(ts);
 }
 
+/** `jr2.ready`: is this cut's output `ready`? On an `onDone`. */
+const readyGuard = ({ event }: { event: unknown }): boolean =>
+  (event as { output?: { outcome?: unknown } } | undefined)?.output?.outcome === "ready";
+
 const mapValues = <T, U>(o: Record<string, T>, fn: (v: T) => U): Record<string, U> =>
   Object.fromEntries(Object.entries(o).map(([k, v]) => [k, fn(v)]));
 
@@ -847,15 +873,17 @@ const mapValues = <T, U>(o: Record<string, T>, fn: (v: T) => U): Record<string, 
  * resolved object again at invoke time"), or undefined when it is. The door checked the literal
  * parts; a reference may still resolve to a value that is no string.
  */
-function effectInputFault(keys: readonly string[], value: unknown): string | undefined {
+function effectInputFault(shape: InputShape, value: unknown): string | undefined {
   const given = typeof value === "object" && value !== null && !Array.isArray(value) ? Object.keys(value) : undefined;
+  const known = [...shape.required, ...shape.optional, ...(shape.oneOf ?? [])];
   const ok =
     given !== undefined &&
-    given.length === keys.length &&
-    keys.every((k) => typeof (value as Record<string, unknown>)[k] === "string");
+    shape.required.every((k) => given.includes(k)) &&
+    given.every((k) => known.includes(k) && typeof (value as Record<string, unknown>)[k] === "string") &&
+    (shape.oneOf === undefined || shape.oneOf.filter((k) => given.includes(k)).length === 1);
   return ok
     ? undefined
-    : `its input resolved to ${JSON.stringify(value)}; it takes exactly ${keys.join(", ") || "nothing"}, each a string (ADR-0070)`;
+    : `its input resolved to ${JSON.stringify(value)}; it takes ${known.join(", ") || "nothing"}, each a string (ADR-0070)`;
 }
 
 const checkedEffects = new WeakMap<object, UnknownActorLogic>();
@@ -867,13 +895,15 @@ const checkedEffects = new WeakMap<object, UnknownActorLogic>();
  */
 function checkedEffect(slot: string, logic: UnknownActorLogic): UnknownActorLogic {
   if (!isEffect(logic)) return logic;
-  const keys = inputKeysOf(logic.effect);
-  if (keys === undefined) return logic;
+  const shape = inputShapeOf(logic.effect);
+  if (shape === undefined) return logic;
   const hit = checkedEffects.get(logic);
   if (hit) return hit;
   const checked = Object.create(logic) as UnknownActorLogic;
   checked.getInitialSnapshot = (scope, input) => {
-    const fault = effectInputFault(keys, input);
+    // An Effect that takes nothing, invoked with no input, is a whole input: the door let it through.
+    const fault =
+      input === undefined && shape.required.length === 0 && !shape.oneOf ? undefined : effectInputFault(shape, input);
     if (fault === undefined) return logic.getInitialSnapshot(scope, input);
     return {
       status: "error",
@@ -885,9 +915,38 @@ function checkedEffect(slot: string, logic: UnknownActorLogic): UnknownActorLogi
   return checked;
 }
 
-/** The lent actors as a Chart invokes them: each Effect checked at its start (see {@link checkedEffect}). */
+const checkedAgents = new WeakMap<object, UnknownActorLogic>();
+
+/**
+ * An Agent as a Chart invokes it: the Agent itself, whose start refuses a resolved `cwd` that is a
+ * Repo Slot's folder. A reference hides that value from the door. The check is in `start`, because
+ * the Workspace's handles are registered at a start, and a Chart's first invoke resolves before
+ * that. The refusal is THAT invoke's error, as in {@link checkedEffect}.
+ */
+function checkedAgent(slot: string, logic: UnknownActorLogic): UnknownActorLogic {
+  const hit = checkedAgents.get(logic);
+  if (hit) return hit;
+  const checked = Object.create(logic) as UnknownActorLogic;
+  checked.start = (snapshot, scope) => {
+    const cwd = ((snapshot as { input?: unknown }).input as { cwd?: unknown } | undefined)?.cwd;
+    const reads = (logic as { definition?: { workspace?: unknown } }).definition?.workspace !== "none";
+    const repos = reads && typeof cwd === "string" ? ambientHandlesFor(scope.self)?.repos : undefined;
+    const fault = repos ? slotFolderFault(cwd as string, Object.keys(repos)) : undefined;
+    if (fault !== undefined) throw new ChartInvokeFault(`the Agent "${slot}": ${fault}`);
+    logic.start?.(snapshot, scope);
+  };
+  checkedAgents.set(logic, checked);
+  return checked;
+}
+
+/** The lent actors as a Chart invokes them: each Effect and Agent checked at its start. */
 function chartActors(actors: Record<string, UnknownActorLogic>): Record<string, UnknownActorLogic> {
-  return Object.fromEntries(Object.entries(actors).map(([slot, logic]) => [slot, checkedEffect(slot, logic)]));
+  return Object.fromEntries(
+    Object.entries(actors).map(([slot, logic]) => [
+      slot,
+      isAgent(logic) ? checkedAgent(slot, logic) : checkedEffect(slot, logic),
+    ]),
+  );
 }
 
 /** An Agent Turn's input with `prompt` and `cwd` as strings: a whole placeholder may resolve to
@@ -964,7 +1023,7 @@ export type CompileOptions = OpenBodyOptions & {
 /**
  * Build the Machine a Chart describes (ADR-0070), with `jr2Setup` over: the lent actors by their
  * slot names, `agent(def)` for each Agent the Chart mints, the kit's `gate`, and `fail()` where the
- * body lends it; the lent guards, `jr2.sentBy` and `jr2.failure`; the lent actions and the four
+ * body lends it; the lent guards, `jr2.sentBy`, `jr2.failure` and `jr2.ready`; the lent actions and the four
  * generic ones; the lent delays. Every reference resolves at invoke time, so the Machine holds the
  * text's shape and no run's data. The Chart's
  * input is the context key {@link CHART_INPUT_KEY}; a done Chart outputs `{ outcome: "done",
@@ -984,7 +1043,7 @@ export function compileChart(
   const mint = options.mintAgent ?? ((_slot: string, definition: AgentDefinition) => agent(definition));
   const minted = mapValues(admitted.agents, (def) => def);
   const actors: Record<string, UnknownActorLogic> = chartActors(lent.actors);
-  for (const [slot, def] of Object.entries(minted)) actors[slot] = mint(slot, def);
+  for (const [slot, def] of Object.entries(minted)) actors[slot] = checkedAgent(slot, mint(slot, def));
   // The kit's Part that fails the run, where the body lends it (ADR-0073): no slot of the wrapper's.
   if (decl.lends.fail === true) actors.fail = fail();
   // The slots an invoke runs an Agent Turn in: the lent Agents and the Chart's own.
@@ -1018,7 +1077,11 @@ export function compileChart(
     events: admitted.events,
     actors,
     // `jr2.failure` is in every Chart, as `jr2.sentBy` is: a predicate, with no capability (ADR-0073).
-    guards: { ...(lent.guards as Record<string, unknown>), [FAILURE_GUARD]: failureGuard } as never,
+    guards: {
+      ...(lent.guards as Record<string, unknown>),
+      [FAILURE_GUARD]: failureGuard,
+      [READY_GUARD]: readyGuard,
+    } as never,
     actions: { ...(lent.actions as Record<string, unknown>), ...GENERIC } as never,
     delays: lent.delays as never,
   }).createMachine(config as never) as unknown as AnyStateMachine;
@@ -1382,7 +1445,10 @@ export function openBodyLogic(decl: OpenBodyDeclaration, options: OpenBodyOption
   /** Admit and compile a Chart text, and record the Machine the actor runs. Throws ChartRefusal. */
   const bind = (self: AnyActorRef, text: unknown, inputKeys: readonly string[]) => {
     const lent = liveLentOf(self, logic);
-    const admitted = admitChart(text, decl, lent, { inputKeys });
+    // A Chart that comes after the Workspace started finds its slots here. A Chart in the step that
+    // starts the Workspace comes before them, and the wrapper's door or the Turn's start saw it.
+    const repos = ambientHandlesFor(self)?.repos;
+    const admitted = admitChart(text, decl, lent, { inputKeys, ...(repos ? { repoSlots: Object.keys(repos) } : {}) });
     const src = (self as { src?: unknown }).src;
     const machine = compiledFor(admitted, lent, decl, {
       ...options,

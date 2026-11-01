@@ -1,0 +1,285 @@
+// The run (ADR-0066): one ticket through three seats to a verified commit. The seed Repo's `main`
+// carries a small project whose one test fails — that is the ticket. A Menu-only `planner` reads
+// it and picks `plan`; a `coder` in the Sandbox edits the Worktree, runs the test, commits on the
+// run's branch and picks `submit` naming the commit — a guard refuses one that names none; a
+// `reviewer` in the same Sandbox, read-only (ADR-0028), runs the test itself and picks `approve`
+// or `reject` with reasons, and a reject returns to the coder at most twice. Approval parks at
+// the `shipping` Gate — the inspection window (ADR-0012/0054): the Sandbox is alive, and the step
+// reads the branch and runs the test IN the pod before it sends `ship`. Nothing is pushed: the
+// Agent holds no credential and the push is the caller's (ADR-0005/0053), exactly as `task` says.
+//
+// The body records every pick it admitted in `picks` — the ledger the scenario reads off the
+// output — and never the model's text: the diff, the commit message and the Turn count are the
+// model's, and the scenario asserts none of them.
+//
+// Filename `ticket.ts` → workflow "ticket".
+
+import { z } from "zod";
+import { assign } from "xstate";
+import {
+  agent,
+  branchName,
+  defineEvent,
+  fail,
+  jr2Setup,
+  workspace,
+  worktree,
+  type HostInjectedInput,
+  type Workspaced,
+} from "@jr2/orchestrator";
+import { coder } from "./_agents.ts";
+
+const planner = { model: "fake/model-x", workspace: "none", instructions: "You plan." } as const;
+const reviewer = { model: "fake/model-x", workspace: "read", instructions: "You review." } as const;
+
+/** How many rejections the coder gets before the run gives up. */
+const MAX_REJECTS = 2;
+
+const TICKET =
+  "The test in `test.js` fails: `greet(name)` in `greet.js` must return `hello, <name>` " +
+  "(lower-case, a comma and a space), and `greet()` with no name must return `hello, world`. " +
+  "Make `node --test` pass without changing the test.";
+
+const plan = defineEvent({
+  name: "plan",
+  description: "Your plan for the coder: what to change, how to verify it, and the name of its branch.",
+  audience: "agent",
+  input: z.object({ plan: z.string(), branch: branchName }),
+});
+const submit = defineEvent({
+  name: "submit",
+  description: "The work is committed on the branch. Name the commit (its sha) and summarize it.",
+  audience: "agent",
+  input: z.object({ commit: z.string(), summary: z.string() }),
+});
+const approve = defineEvent({
+  name: "approve",
+  description: "The branch does what the ticket asks and its tests pass.",
+  audience: "agent",
+  input: z.object({ notes: z.string() }),
+});
+const reject = defineEvent({
+  name: "reject",
+  description: "Send the work back. Say concretely what is wrong.",
+  audience: "agent",
+  input: z.object({ reasons: z.string() }),
+});
+const ship = defineEvent({ name: "ship", audience: "external", input: z.object({}) });
+
+const door = z.object({ thinking: z.enum(["off", "on"]).default("off") });
+
+type BodyInput = Workspaced<z.infer<typeof door> & HostInjectedInput, "app">;
+type BodyContext = BodyInput & {
+  picks: string[];
+  plan?: string;
+  /** The planner's word. A pick param, so `cut` refuses a bad one and the planner tries again. */
+  branch?: string;
+  /** Why the last cut was refused: the planner's next prompt. */
+  refused?: string;
+  commit?: string;
+  summary?: string;
+  reasons?: string;
+  rejects: number;
+  fault?: string;
+};
+
+const SHA = /^[0-9a-f]{7,40}$/;
+
+/** The output of a run that ends `done`. A run that is stuck, lost or faulted fails (ADR-0073):
+ * its output is the Failure, with this record, `outcome` and all, as its `detail`. */
+export type TicketOutput = {
+  outcome: "shipped";
+  picks: string[];
+  commit?: string;
+};
+
+const body = jr2Setup({
+  types: {} as { context: BodyContext; input: BodyInput; output: TicketOutput },
+  events: [plan, submit, approve, reject, ship],
+  actors: {
+    planner: agent(planner),
+    coder: agent(coder),
+    reviewer: agent(reviewer),
+    // A planner's name is new or it is refused: a collision must not continue on a colleague's branch.
+    cut: worktree({ expect: "new" }),
+    fail: fail(),
+  },
+}).createMachine({
+  id: "body",
+  context: ({ input }) => ({ ...input, picks: [], rejects: 0 }),
+  initial: "planning",
+  on: { "workspace.lost": { target: ".lost" } },
+  states: {
+    planning: {
+      invoke: {
+        src: "planner",
+        input: ({ context }) => ({
+          prompt:
+            `Ticket: ${TICKET}\n\nThe repository is a small Node project: \`greet.js\` exports ` +
+            `\`greet\`, \`test.js\` tests it with \`node:test\`, and \`package.json\`'s test script is ` +
+            `\`node --test\`. Call \`plan\` with a short plan for the coder and a name for its branch.` +
+            (context.refused ? `\n\nThat name did not work: ${context.refused}` : ""),
+          continue: true,
+        }),
+      },
+      on: {
+        plan: {
+          target: "cutting",
+          actions: assign({
+            plan: ({ event }) => event.plan,
+            branch: ({ event }) => event.branch,
+            picks: ({ context }) => [...context.picks, "plan"],
+          }),
+        },
+        "agent.fault": { target: "faulted", actions: assign({ fault: ({ event }) => event.reason }) },
+      },
+    },
+    // The Worktree exists only now: the name came with the plan.
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: worktreeOf(context), branch: context.branch! }),
+        onDone: [
+          { guard: ({ event }) => event.output.outcome === "ready", target: "coding" },
+          {
+            target: "planning",
+            actions: assign({
+              refused: ({ event }) => (event.output.outcome === "refused" ? event.output.reason : "no answer"),
+            }),
+          },
+        ],
+      },
+    },
+    coding: {
+      invoke: {
+        src: "coder",
+        input: ({ context }) => ({
+          prompt: coderPrompt(context),
+          cwd: worktreeOf(context),
+          continue: true,
+        }),
+      },
+      on: {
+        // Guarded on the payload (ADR-0029): offered, then judged on delivery — a `submit` that
+        // names no commit is refused, and the refusal names the Allowed picks.
+        submit: {
+          guard: ({ event }) => SHA.test(event.commit.trim()),
+          target: "reviewing",
+          actions: assign({
+            commit: ({ event }) => event.commit.trim(),
+            summary: ({ event }) => event.summary,
+            reasons: undefined,
+            picks: ({ context }) => [...context.picks, "submit"],
+          }),
+        },
+        "agent.fault": { target: "faulted", actions: assign({ fault: ({ event }) => event.reason }) },
+      },
+    },
+    reviewing: {
+      invoke: {
+        src: "reviewer",
+        // The coder's Worktree, read-only by tool list (ADR-0028's hint; its detached-worktree
+        // guarantee is a creation-time seat and this review is per round).
+        input: ({ context }) => ({
+          prompt:
+            `Review the branch \`${context.branch}\` against \`main\` in your working ` +
+            `directory. The ticket: ${TICKET}\n\nThe coder says (commit ${context.commit}): ` +
+            `${context.summary}\n\nRead the diff (\`git diff main...HEAD\`), run \`node --test\`, and ` +
+            `call \`approve\` or \`reject\`.`,
+          cwd: worktreeOf(context),
+          continue: true,
+        }),
+      },
+      on: {
+        approve: {
+          target: "shipping",
+          actions: assign({ picks: ({ context }) => [...context.picks, "approve"] }),
+        },
+        reject: [
+          {
+            guard: ({ context }) => context.rejects < MAX_REJECTS,
+            target: "coding",
+            actions: assign({
+              reasons: ({ event }) => event.reasons,
+              rejects: ({ context }) => context.rejects + 1,
+              picks: ({ context }) => [...context.picks, "reject"],
+            }),
+          },
+          { target: "stuck", actions: assign({ picks: ({ context }) => [...context.picks, "reject"] }) },
+        ],
+        "agent.fault": { target: "faulted", actions: assign({ fault: ({ event }) => event.reason }) },
+      },
+    },
+    // The inspection window (ADR-0012): the step verifies the branch in the pod, then ships.
+    shipping: {
+      invoke: {
+        src: "gate",
+        input: ({ context }) => ({
+          meta: {
+            branch: context.branch,
+            worktree: worktreeOf(context),
+            commit: context.commit,
+            picks: context.picks,
+          },
+        }),
+      },
+      on: { ship: { target: "shipped" } },
+    },
+    shipped: {
+      type: "final",
+      output: ({ context }): TicketOutput => ({ outcome: "shipped", picks: context.picks, commit: context.commit }),
+    },
+    stuck: {
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the reviewer rejected the work",
+          detail: { outcome: "stuck", picks: context.picks },
+        }),
+      },
+    },
+    lost: {
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({ reason: "the Sandbox was lost", detail: { outcome: "lost", picks: context.picks } }),
+      },
+    },
+    faulted: {
+      invoke: {
+        src: "fail",
+        input: ({ context }) => ({
+          reason: "the Agent's Turn could not go on",
+          detail: { outcome: "faulted", picks: context.picks, reason: context.fault },
+        }),
+      },
+    },
+  },
+  output: ({ event }) => (event as { output?: TicketOutput }).output as TicketOutput,
+});
+
+/** The Worktree: a word of this Machine, so no state depends on what the planner wrote. */
+function worktreeOf(context: BodyContext) {
+  return `${context.workspace.repos.app}/ticket` as const;
+}
+
+/** The coder's Frame: the ticket and the plan on the first round; the reviewer's reasons after a
+ * reject, on the same conversation (ADR-0057), so the coder remembers what it did. */
+function coderPrompt(context: BodyContext): string {
+  if (context.reasons !== undefined) {
+    return (
+      `The reviewer rejected your commit ${context.commit}: ${context.reasons}\n\nFix it in your ` +
+      `working directory, run \`node --test\`, commit on branch \`${context.branch}\`, and ` +
+      `call \`submit\` with the new commit's sha.`
+    );
+  }
+  return (
+    `Ticket: ${TICKET}\n\nPlan from the planner: ${context.plan}\n\nWork in your working directory, ` +
+    `which is a checkout of the repository on branch \`${context.branch}\`. Run \`node --test\`, ` +
+    `commit on that branch, and call \`submit\` with the commit's sha.`
+  );
+}
+
+export const machine = workspace(body, {
+  input: door,
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
+});

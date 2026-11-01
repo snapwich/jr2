@@ -34,9 +34,9 @@ function boxed(image: string) {
     on: { "workspace.lost": {}, "agent.fault": {} },
     id: "body",
     initial: "working",
-    states: { working: { invoke: { id: "coder", src: "coder", input: { prompt: "go" } } } },
+    states: { working: { invoke: { id: "coder", src: "coder", input: { prompt: "go", cwd: "/work" } } } },
   });
-  return workspace(body, { image, repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
+  return workspace(body, { image, repos: { app: "https://example.test/app.git" } });
 }
 
 test("a `file:` context not in the image map is named relative to the Assembly, with its Workflow", async () => {

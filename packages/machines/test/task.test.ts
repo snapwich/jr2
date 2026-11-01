@@ -32,7 +32,6 @@ import {
   type ProvisionedRepo,
   type SandboxPort,
   type WorkflowDef,
-  type WorkspaceSpec,
 } from "@jr2/orchestrator/internal";
 import { task } from "../src/task.ts";
 
@@ -81,13 +80,11 @@ class MockPort implements AgentRunPort {
   }
 }
 
-/** The Sandbox seam, faked: deterministic endpoint, worktree paths derived from the slots. */
+/** The Sandbox seam, faked: deterministic endpoint, each slot's folder, and its base. */
 class FakeSandbox implements SandboxPort {
   destroyed: string[] = [];
   /** The Repo Slots each provision resolved (ADR-0051) — proof the consumer's binding arrived. */
   provisioned: ProvisionedRepo[][] = [];
-  /** Every spec the wrapper attached with — the branch the Machine chose. */
-  specs: WorkspaceSpec[] = [];
   readonly leaseIntervalMs = 60_000;
   async place(req: { repos: ProvisionedRepo[] }): Promise<void> {
     this.provisioned.push(req.repos);
@@ -95,24 +92,16 @@ class FakeSandbox implements SandboxPort {
   async provision(): Promise<{ endpoint: string }> {
     return { endpoint: "http://sandbox.test" };
   }
-  async attach(req: {
-    name: string;
-    spec: WorkspaceSpec;
-    repos: Array<{ slot: string }>;
-  }): Promise<{ repos: Record<string, string> }> {
-    this.specs.push(req.spec);
-    this.branchOf.set(req.name, req.spec.branch);
-    const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
-    return { repos };
+  async attach(req: { repos: Array<{ slot: string }> }): Promise<{ repos: Record<string, string> }> {
+    return { repos: Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}`])) };
   }
   /** What the watch says about the Sandbox (ADR-0021, ADR-0063). */
   present = true;
-  /** The branches whose Sandbox the watch reports gone, whatever `present` says. */
-  lostBranches = new Set<string>();
-  private readonly branchOf = new Map<string, string>();
+  /** The Sandboxes the watch reports gone by name, whatever `present` says. */
+  lostNames: RegExp | undefined;
   async renew(): Promise<void> {}
   continuity(name: string, listener: (seen: { present: boolean }) => void): () => void {
-    const lost = this.lostBranches.has(this.branchOf.get(name) ?? "");
+    const lost = this.lostNames?.test(name) ?? false;
     queueMicrotask(() => listener({ present: this.present && !lost }));
     return () => {};
   }
@@ -127,8 +116,21 @@ class FakeSandbox implements SandboxPort {
   }
 }
 
+/** What the Machine asked a cut for. */
+type Cut = { path: string; branch: string };
+
+const ready = (input: Cut): Record<string, unknown> => ({
+  outcome: "ready",
+  slot: input.path.split("/")[2],
+  ...input,
+  head: "a".repeat(40),
+  found: "none",
+});
+
 /**
- * The unit-test seam (ADR-0049): replace the `coder` SLOT with the same Agent over a mock port.
+ * The unit-test seam (ADR-0049): replace the `coder` SLOT with the same Agent over a mock port, and
+ * the `cut` slot with a cut that records its input in `cuts` and gives `answer`'s output, `ready`
+ * by default.
  * The definition is read back off the slot the bound Machine carries, so these tests run the
  * instructions and the model the package + the `customize` line actually produced — and they break
  * if either stops being what the Machine says it is.
@@ -138,7 +140,13 @@ class FakeSandbox implements SandboxPort {
  * which `provide()` passes through unchanged (ADR-0011). So this is the SAME Machine, with one
  * slot's transport swapped.
  */
-function wire(machine: AnyStateMachine, port: MockPort, endpoints: string[]): AnyStateMachine {
+function wire(
+  machine: AnyStateMachine,
+  port: MockPort,
+  endpoints: string[],
+  cuts: Cut[] = [],
+  answer: (input: Cut) => Record<string, unknown> = ready,
+): AnyStateMachine {
   const substitute = (target: AnyStateMachine, actors: Record<string, unknown>): AnyStateMachine =>
     target.provide(actors as Parameters<AnyStateMachine["provide"]>[0]);
   const body = asMachine((machine.implementations.actors as Record<string, unknown>).body);
@@ -156,6 +164,10 @@ function wire(machine: AnyStateMachine, port: MockPort, endpoints: string[]): An
             endpoints.push(endpoint);
             return port;
           }, definition),
+          cut: fromPromise(async ({ input }: { input: Cut }) => {
+            cuts.push(input);
+            return answer(input);
+          }),
         },
       }),
     },
@@ -180,12 +192,17 @@ async function waitFor(pred: () => boolean): Promise<void> {
 async function startRun(input: Record<string, unknown>, machine: AnyStateMachine = bound) {
   const port = new MockPort();
   const endpoints: string[] = [];
+  const cuts: Cut[] = [];
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
-  host.register({ name: "task", machine: wire(machine, port, endpoints), provide: () => ({}) } satisfies WorkflowDef);
+  host.register({
+    name: "task",
+    machine: wire(machine, port, endpoints, cuts),
+    provide: () => ({}),
+  } satisfies WorkflowDef);
   const { runId, instanceId } = await host.start("task", input);
   await waitFor(() => port.admits.length === 1);
-  return { port, endpoints, sandbox, host, runId, instanceId };
+  return { port, endpoints, sandbox, cuts, host, runId, instanceId };
 }
 
 // --- The door (ADR-0033) -------------------------------------------------------------------------
@@ -238,8 +255,8 @@ test("as shipped, the walk reports both parts Open; the consumer's customize clo
 
 // --- The loop (ADR-0054) -------------------------------------------------------------------------
 
-test("working → finish parks at the review Gate, with the branch and worktree a human needs", async () => {
-  const { port, endpoints, sandbox, host, runId, instanceId } = await startRun({ prompt: PROMPT });
+test("working → finish parks at the review Gate, with the branch and Worktree a human needs", async () => {
+  const { port, endpoints, sandbox, cuts, host, runId, instanceId } = await startRun({ prompt: PROMPT });
 
   // The first Turn: framed with the task and the geography, on the Workspace's own Harness
   // (ambient resolution — the coder writes, so its Turn lands in the pod, ADR-0031).
@@ -248,17 +265,15 @@ test("working → finish parks at the review Gate, with the branch and worktree 
   assert.deepEqual(endpoints, ["http://sandbox.test"]);
   assert.deepEqual(first.tools, ["finish"], "the Menu derives from this state's agent transitions");
   assert.match(first.prompt ?? "", new RegExp(PROMPT));
-  assert.match(first.prompt ?? "", /Work in \/work\/target\/jr2\/task-/);
+  assert.match(first.prompt ?? "", /Work in \/work\/target\/task, on branch jr2\/task-/);
   // The other half of the Frame (ADR-0057): the Working tools are rooted in the worktree, so the
   // prompt's geography and the tools' relative paths cannot disagree.
-  assert.equal(first.cwd, `/work/target/jr2/task-${instanceId}`);
+  assert.equal(first.cwd, "/work/target/task");
   assert.equal(port.definitions[0]!.model, MODEL, "the admission carries the Machine's bound definition");
 
-  // The default branch is the run's own id (ADR-0054), so two concurrent runs never collide.
-  assert.deepEqual(
-    sandbox.specs.map((s) => s.branch),
-    [`jr2/task-${instanceId}`],
-  );
+  // The default branch is the run's own id (ADR-0054), so two concurrent runs never collide. The
+  // folder is a constant word: a branch does not become a folder tree (ADR-0075).
+  assert.deepEqual(cuts, [{ path: "/work/target/task", branch: `jr2/task-${instanceId}` }]);
   assert.deepEqual(sandbox.provisioned[0], [{ slot: "target", url: REPO, perRun: false }]);
 
   host.sendToAgent(first.instanceId, { type: "finish", summary: "added the flag; tests green" });
@@ -270,7 +285,7 @@ test("working → finish parks at the review Gate, with the branch and worktree 
   assert.deepEqual(gate.meta, {
     summary: "added the flag; tests green",
     branch: `jr2/task-${instanceId}`,
-    worktree: `/work/target/jr2/task-${instanceId}`,
+    worktree: "/work/target/task",
   });
   assert.equal(sandbox.destroyed.length, 0, "parking IS retention: the Sandbox is alive to exec into");
 });
@@ -292,8 +307,8 @@ test("more than one slot: the first the consumer wrote is the one the coder edit
     { slot: "reference", url: LIB, ref: "v3", perRun: false },
   ]);
   const prompt = port.admits[0]!.prompt ?? "";
-  assert.match(prompt, /Work in \/work\/target\/wip, on branch wip/);
-  assert.match(prompt, /Also checked out beside it, for you to read:\n- reference: \/work\/reference\/wip/);
+  assert.match(prompt, /Work in \/work\/target\/task, on branch wip/);
+  assert.match(prompt, /Also checked out beside it, for you to read:\n- reference: \/work\/reference\/default/);
   assert.doesNotMatch(prompt, /- target:/, "the coder's own worktree is not listed twice");
   // The convention is ORDER, not a name: swap the keys and the coder edits the other checkout.
   const swapped = customize(task, {
@@ -301,8 +316,8 @@ test("more than one slot: the first the consumer wrote is the one the coder edit
     agents: { coder: { model: MODEL } },
   });
   const flipped = (await startRun({ prompt: PROMPT, branch: "wip" }, swapped)).port.admits[0]!.prompt ?? "";
-  assert.match(flipped, /Work in \/work\/reference\/wip, on branch wip/);
-  assert.match(flipped, /for you to read:\n- target: \/work\/target\/wip/);
+  assert.match(flipped, /Work in \/work\/reference\/task, on branch wip/);
+  assert.match(flipped, /for you to read:\n- target: \/work\/target\/default/);
   // One slot: nothing beside it, so nothing is said about it.
   const one = await startRun({ prompt: PROMPT, branch: "wip" });
   assert.doesNotMatch(one.port.admits[0]!.prompt ?? "", /Also checked out/);
@@ -311,17 +326,18 @@ test("more than one slot: the first the consumer wrote is the one the coder edit
 test("with more than one slot bound, the Turn's cwd is the FIRST slot's worktree (ADR-0057)", async () => {
   // `task` always states its `cwd`, because "the first slot is the one the coder edits" is this
   // Machine's convention and a convention is stated, not defaulted (ADR-0051/0057). So the
-  // multi-slot refusal — which is what an absent `cwd` under two slots earns — never fires here,
-  // and the coder's tools are rooted where its prompt says to work.
+  // refusal that an absent `cwd` earns never fires here, and the coder's tools are rooted where
+  // its prompt says to work.
   const LIB = "https://github.com/acme/lib.git";
   const twoRepo = customize(task, {
     repos: { target: { url: REPO }, reference: { url: LIB } },
     agents: { coder: { model: MODEL } },
   });
-  const { port } = await startRun({ prompt: PROMPT, branch: "wip" }, twoRepo);
+  const { port, cuts } = await startRun({ prompt: PROMPT, branch: "wip" }, twoRepo);
   const first = port.admits[0]!;
-  assert.equal(first.cwd, "/work/target/wip", "the first slot the consumer wrote, not the second");
-  assert.match(first.prompt ?? "", /Work in \/work\/target\/wip/, "the prompt says the same directory");
+  assert.equal(first.cwd, "/work/target/task", "the first slot the consumer wrote, not the second");
+  assert.match(first.prompt ?? "", /Work in \/work\/target\/task/, "the prompt says the same directory");
+  assert.deepEqual(cuts, [{ path: "/work/target/task", branch: "wip" }], "the slot that is only read needs no cut");
 });
 
 test("request_changes continues the SAME conversation, and approve ends the run and the Sandbox", async () => {
@@ -369,7 +385,7 @@ test("a terminal agent.fault parks at the same Gate, and the NEXT Turn is a fres
   assert.deepEqual(gate.meta, {
     reason: "submission settled failed: provider unavailable",
     branch: "wip",
-    worktree: "/work/target/wip",
+    worktree: "/work/target/task",
   });
 
   host.sendToGate(runId, gate.gate, { type: "request_changes", notes: "try again, smaller steps" });
@@ -386,7 +402,7 @@ test("a terminal agent.fault parks at the same Gate, and the NEXT Turn is a fres
   // geography, and the human's notes. That re-briefing is prompt policy, which is why `turns`
   // stays and resets here.
   assert.match(second.prompt ?? "", new RegExp(PROMPT));
-  assert.match(second.prompt ?? "", /Work in \/work\/target\/wip/);
+  assert.match(second.prompt ?? "", /Work in \/work\/target\/task/);
   assert.match(second.prompt ?? "", /try again, smaller steps/);
 });
 
@@ -424,6 +440,33 @@ test("the door's Dials reach the Turn, and never touch the Agent's identity (ADR
   assert.equal(port.definitions[0]!.model, MODEL);
 });
 
+for (const [outcome, reason] of [
+  ["refused", 'branch "main" is on /work/target/default: read it there'],
+  ["unknown", "the cut did not end"],
+] as const) {
+  test(`a cut that settles ${outcome} ends the run failed, and no Turn is admitted (ADR-0075)`, async () => {
+    const port = new MockPort();
+    const cuts: Cut[] = [];
+    const sandbox = new FakeSandbox();
+    const host = new RunHost({ store: await mkStore(), sandbox });
+    host.register({
+      name: "task",
+      machine: wire(bound, port, [], cuts, () => ({ outcome, reason })),
+      provide: () => ({}),
+    } satisfies WorkflowDef);
+
+    // `main` passes the door, because `branchName` takes it. Only the cut can see what `default/` holds.
+    const { runId } = await host.start("task", { prompt: PROMPT, branch: "main" });
+    await waitFor(() => host.status(runId) === undefined);
+    const final = await host.read(runId);
+    assert.equal(final?.status, "failed");
+    assert.deepEqual(final?.output, { reason: "task: the Worktree was not cut" });
+    assert.deepEqual(cuts, [{ path: "/work/target/task", branch: "main" }]);
+    assert.equal(port.admits.length, 0, "the coder got no Turn");
+    assert.equal(sandbox.destroyed.length, 1);
+  });
+}
+
 test("a lost Workspace fails the run rather than resuming into an empty pod (ADR-0021, ADR-0073)", async () => {
   const port = new MockPort();
   const sandbox = new FakeSandbox();
@@ -449,13 +492,13 @@ test("a lost Workspace fails the run rather than resuming into an empty pod (ADR
 test("in a Pool, a lost worker fails only its item: the other worker and its Sandbox stay (ADR-0017, ADR-0073)", async () => {
   const port = new MockPort();
   const sandbox = new FakeSandbox();
-  sandbox.lostBranches.add("gone");
+  sandbox.lostNames = /gone/;
   const items = [
     { id: "KEEP", branch: "keep" },
     { id: "GONE", branch: "gone" },
   ];
   const issues = source<{ id: string; branch: string }>({
-    next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+    next: fromPromise(async ({ input }: { input: { active: string[]; settled: string[]; input: unknown } }) => {
       const item = items.find((i) => !input.active.includes(i.id)) ?? null;
       if (item) items.splice(items.indexOf(item), 1);
       return item;

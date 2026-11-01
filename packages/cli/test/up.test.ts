@@ -504,7 +504,6 @@ async function withCarriedImage(root: string, dir: string, dockerfile: string): 
       `export const machine = workspace(body, {\n` +
       `  image: import.meta.resolve("./${dir}"),\n` +
       `  repos: { app: "https://e.test/a.git" },\n` +
-      `  spec: () => ({ branch: "b" }),\n` +
       `});\n`,
   );
   return root;
@@ -519,7 +518,7 @@ async function withWorkspace(root: string, url = "https://e.test/a.git"): Promis
     `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const body = jr2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} } });\n`,
   );
   return root;
 }
@@ -545,7 +544,7 @@ async function withOpenSlot(root: string, under?: "child" | "map"): Promise<stri
   // `map`: the slot MAP is Open whole (`repos: open`) — no slot for the walk to name, because the
   // composer names them (ADR-0051).
   const repos = under === "map" ? "open" : "{ target: open }";
-  const packaged = `workspace(body, { repos: ${repos}, spec: () => ({ branch: "b" }) })`;
+  const packaged = `workspace(body, { repos: ${repos} })`;
   await writeFile(
     join(root, "workflows", "packaged.ts"),
     `import { jr2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
@@ -1297,7 +1296,6 @@ test("a context is keyed by the digest of its STAGED copy, which drops a `.env` 
       `export const machine = workspace(body, {\n` +
       `  repos: { app: { url: "https://e.test/a.git" } },\n` +
       `  image: import.meta.resolve("../images/box"),\n` +
-      `  spec: () => ({ branch: "b" }),\n` +
       `});\n`,
   );
   const w = mkWorld(root, { kitDir: kit });
@@ -1363,7 +1361,6 @@ test("a Machine that names a registry ref costs no build — deployed, never bui
       `export const machine = workspace(body, {\n` +
       `  image: "ghcr.io/acme/toolchain:2024-11",\n` +
       `  repos: { app: "https://e.test/a.git" },\n` +
-      `  spec: () => ({ branch: "b" }),\n` +
       `});\n`,
   );
   const w = mkWorld(root, { kitDir: kit });
@@ -1626,7 +1623,7 @@ test("an Effect's OPEN url or argv is refused the same way, with the `effects` l
     `import { command, http, jr2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const body = jr2Setup({ events: [], actors: { notify: http({ method: "POST", url: open }), deploy: command(open) } })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" } });\n`,
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 1);
@@ -1654,7 +1651,7 @@ test("an Effect's OPEN url or argv is refused the same way, with the `effects` l
     `import { command, customize, http, jr2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const body = jr2Setup({ events: [], actors: { notify: http({ method: "POST", url: open }), deploy: command(open) } })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `const shipped = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n` +
+      `const shipped = workspace(body, { repos: { app: "https://example.test/app.git" } });\n` +
       `export const machine = customize(shipped, { effects: { notify: { url: "https://hooks.example.com/x" }, deploy: { argv: ["make", "deploy"] } } });\n`,
   );
   const bound = mkWorld(boundRoot);
@@ -1676,7 +1673,7 @@ test("an Effect's OPEN secret is refused the same way, with the `{ secret }` lin
       `  notify: http({ method: "POST", url: "https://hooks.example.com/x", auth: bearer(secret(open)) }),\n` +
       `  page: http({ method: "POST", url: open, auth: bearer(secret(open)) }) } })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" } });\n`,
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 1);
@@ -1698,7 +1695,7 @@ test("an Effect's OPEN secret is refused the same way, with the `{ secret }` lin
     `import { bearer, http, jr2Setup, open, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const body = jr2Setup({ events: [], actors: { page: http({ method: "POST", url: open, auth: bearer(secret(open)) }) } })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" } });\n`,
   );
   const w2 = mkWorld(both);
   assert.equal(await up(["--yes"], w2.io), 1);
@@ -3153,7 +3150,7 @@ test("provider preflight: a check pod the cluster refuses is that check pod's fa
     `import { agent, jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const body = jr2Setup({ events: [], actors: { coder: agent({ model: "anthropic/claude-haiku-5-5", instructions: "i" }) } })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" } });\n`,
   );
   const w = mkWorld(root);
   w.kube.refuseApply = (m) => m.includes('"kind":"Pod"') && m.includes('"pool":"sandbox"');
@@ -3489,7 +3486,7 @@ test("--skip-provider-preflight: a model that two check pods would check is name
     `import { agent, jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const body = jr2Setup({ events: [], actors: { coder: agent({ model: "anthropic/claude-haiku-5-5", instructions: "i" }) } })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" } });\n`,
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes", "--skip-provider-preflight"], w.io), 0);
@@ -3711,7 +3708,7 @@ test("git ssh: the Secret is the matched entry's `sshKey`; an ssh url no entry k
     `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const body = jr2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { keyless: "git@github.com:x/y.git", stranger: "ssh://git@gitlab.com/z/z.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { keyless: "git@github.com:x/y.git", stranger: "ssh://git@gitlab.com/z/z.git" } });\n`,
   );
   const w = mkWorld(root, { choose: 0, env: { HOME: home } });
   w.io.prompt = async () => "";
@@ -4404,7 +4401,7 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
  * one level down, as a packaged Machine arrives. */
 async function withSized(root: string, resources: string, user?: string, under?: "child"): Promise<string> {
   const sized =
-    `workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }), ` +
+    `workspace(body, { repos: { app: "https://e.test/a.git" }, ` +
     `resources: ${resources}${user ? `, user: ${user}` : ""} })`;
   await writeFile(
     join(root, "workflows", "sized.ts"),
@@ -4906,7 +4903,7 @@ async function withHeldWorkspace(root: string, secrets: string[]): Promise<strin
       `const body = jr2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, ` +
-      `secrets: ${JSON.stringify(secrets)}, spec: () => ({ branch: "b" }) });\n`,
+      `secrets: ${JSON.stringify(secrets)} });\n`,
   );
   return root;
 }
@@ -5203,13 +5200,17 @@ test("the Orchestrator may apply a Sandbox's Custodian ConfigMap — and may not
 async function pushingInstance(url: string, credentials: string, sign: boolean | string = false): Promise<string> {
   const root = await mkInstance(`export default { name: "myinst", git: { credentials: ${credentials} } };\n`);
   const options = typeof sign === "string" ? sign : sign ? "{ sign: true }" : "";
+  // A squash also takes the message of its one commit.
+  const input = options.includes("squash")
+    ? `{ worktree: "/work/app/fix", message: "m" }`
+    : `{ worktree: "/work/app/fix" }`;
   await writeFile(
     join(root, "workflows", "publish.ts"),
     `import { jr2Setup, push, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const publish = push(${options});\n` +
       `const body = jr2Setup({ events: [], actors: { publish } })\n` +
-      `  .createMachine({ id: "body", on: { "workspace.lost": {} }, initial: "run", states: { run: { invoke: { src: "publish", onDone: "done" } }, done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} }, spec: () => ({ branch: "b" }) });\n`,
+      `  .createMachine({ id: "body", on: { "workspace.lost": {} }, initial: "run", states: { run: { invoke: { src: "publish", input: ${input}, onDone: "done" } }, done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} } });\n`,
   );
   return root;
 }
@@ -5477,8 +5478,8 @@ test("a Workspace that no longer places an Effect in its Sandbox Effector loses 
     `import { bearer, file, http, jr2Setup, secret, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const deploy = http({ method: "PUT", url: "https://files.example.com/r", auth: bearer(secret("aws")), body: file("r.txt") });\n` +
       `const body = jr2Setup({ events: [], actors: { deploy } })\n` +
-      `  .createMachine({ id: "body", on: { "workspace.lost": {} }, initial: "run", states: { run: { invoke: { src: "deploy", onDone: "done" } }, done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `  .createMachine({ id: "body", on: { "workspace.lost": {} }, initial: "run", states: { run: { invoke: { src: "deploy", input: { worktree: "/work/app/fix" }, onDone: "done" } }, done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://e.test/a.git" } });\n`,
   );
   const first = mkWorld(root);
   assert.equal(await up(["--yes"], first.io), 0);
@@ -5625,6 +5626,23 @@ async function withDispatch(root: string, slots: string): Promise<string> {
   );
   return root;
 }
+
+test("a cut is listed in the words of the other Effect lines, with no kit path (ADR-0075)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  await mkdir(join(root, "workflows"), { recursive: true });
+  await writeFile(
+    join(root, "workflows", "cuts.ts"),
+    `import { jr2Setup, worktree } from ${JSON.stringify(KIT_SRC)};\n` +
+      `export const machine = jr2Setup({ events: [], actors: { cut: worktree(), named: worktree({ expect: "new", timeout: "2m" }) } })\n` +
+      `  .createMachine({ id: "cuts", initial: "idle", states: { idle: {} } });\n`,
+  );
+  const w = mkWorld(root);
+  await up(["--yes"], w.io);
+  const out = w.err.join("\n");
+  assert.match(out, /^ {2}cut: worktree — 600s, in the Harness$/m);
+  assert.match(out, /^ {2}named: worktree \(expect new\) — 120s, in the Harness$/m);
+  assert.doesNotMatch(out, /cut\.ts/);
+});
 
 test("a dispatch is listed with its Workflow, its wait and where it runs; a same-Instance miss refuses before any cluster work", async () => {
   const root = await withDispatch(

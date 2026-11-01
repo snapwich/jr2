@@ -53,7 +53,7 @@ import type {
   PushParts,
   Unknown,
 } from "./effect.ts";
-import { lastPushOf, needsASlot, pushPairsOf } from "./effect.ts";
+import { cutRowOf, lastPushOf, needsASlot, pushPairsOf, worktreePathFault, type LaterOutcome } from "./effect.ts";
 import {
   createEffectorClient,
   EffectorForged,
@@ -89,6 +89,7 @@ import {
 import { open } from "./open.ts";
 import type { OpenOf } from "./open-effect.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
+import type { AnyWorktreePath } from "./worktree.ts";
 import { repoKey } from "./repo-identity.ts";
 import { harnessSyncPort, type SyncPortFactory } from "./sync-client.ts";
 import type { SyncAnswer } from "./wire.ts";
@@ -135,32 +136,42 @@ function slotOf(kind: string, slot: string, named: string | undefined, ambient: 
   );
 }
 
-/** Where a file body's path is read from, relative to the work root: the Repo Slot's Worktree, or
- * the work root itself (`.`) in a Workspace with no Repo Slot, whose steps share `/work` (ADR-0051).
- * The Effector opens the file beneath it either way (ADR-0067). */
-function fileRootOf(slot: string, named: string | undefined, ambient: AmbientHandles): string {
-  if (named === undefined && Object.keys(ambient.repos).length === 0) return ".";
-  return posix.relative(WORK_ROOT, ambient.repos[slotOf("http", slot, named, ambient)]!);
-}
-
-/** The branch of a Workspace with Repo Slots. A kind that reads it resolved a slot first, and a
- * Workspace with a slot always has a branch, so its absence is a jr2 defect. */
-function branchOf(ambient: AmbientHandles): string {
-  if (ambient.branch === undefined) throw new Error("a Workspace with a Repo Slot has no branch — a jr2 defect");
-  return ambient.branch;
+/**
+ * The cut behind an Effect's `worktree`, or why there is none. A push, a credentialed command and a
+ * file body act with a credential, so a path alone does not name their target: the path must be a
+ * Worktree a cut made in this Sandbox, and the branch is the cut's record. Nothing reads HEAD, and
+ * no input names a branch, so a Chart cannot fill one, and `git switch` in the Worktree moves nothing.
+ */
+function cutTargetOf(
+  worktree: unknown,
+  ctx: Pick<KindContext, "ambient" | "binding">,
+  opts: { repo?: string },
+): { target: { repo: string; path: string; branch: string | null } } | { fault: string } {
+  const bad = worktreePathFault(worktree, ctx.ambient);
+  if (bad !== undefined) return { fault: bad };
+  const row = cutRowOf(ctx.binding?.effectRows?.() ?? {}, ctx.ambient.sandbox, worktree);
+  if (row === undefined) return { fault: `no cut made ${String(worktree)} in this Sandbox: cut it with worktree()` };
+  if (opts.repo !== undefined && row.repo !== opts.repo) {
+    return { fault: `${String(worktree)} is a Worktree of Repo Slot "${row.repo}", not of "${opts.repo}"` };
+  }
+  return { target: row };
 }
 
 /** The slot's repositories, relative to the work root: the Agent's common git dir is the pod-local
  * clone's, beside the branch Worktree (ADR-0004); the cache is the Binding's key (ADR-0051). */
-export function repoRefOf(ambient: AmbientHandles, repoSlot: string): RepoRef & { url: string } {
-  const worktree = ambient.repos[repoSlot]!;
+export function repoRefOf(
+  ambient: AmbientHandles,
+  repoSlot: string,
+  worktree: string = ambient.repos[repoSlot]!,
+): RepoRef & { url: string } {
   const url = ambient.bindings?.[repoSlot];
   if (url === undefined) {
     throw new Error(`Repo Slot "${repoSlot}" has no Binding url in its Workspace's handles — a jr2 defect`);
   }
   const rel = posix.relative(WORK_ROOT, worktree);
   return {
-    gitDir: posix.join(posix.dirname(rel), "default", ".git"),
+    // The clone of the slot, read from the slot and not from the Worktree's folder.
+    gitDir: posix.join(repoSlot, "default", ".git"),
     worktree: rel,
     cache: repoKey(url),
     url,
@@ -225,6 +236,7 @@ export type PushOptions = {
    *   (ADR-0051)`. `jr2 up` refuses it first, with the same reason.
    */
   slot?: string;
+  // Static, so that `jr2 up` places the credential per slot.
   /**
    * How long jr2 waits for the push: a number and a unit, such as `"90s"` or `"5m"`. Default
    * `"5m"`. With no answer in that time, the output is `unknown`. It refuses a value that is not a
@@ -233,8 +245,18 @@ export type PushOptions = {
   timeout?: Duration;
 };
 
-/** The input of a `push` Effect: `{ sha }` with `pin`, and `{ message }` with `squash`. */
-export type PushInput<O extends PushOptions> = (O["pin"] extends true ? { sha: string } : unknown) &
+/** The input of a `push` Effect: the Worktree that a cut made, `{ sha }` with `pin`, and
+ * `{ message }` with `squash`. It names no branch: jr2 reads it from the cut's record, so no word of
+ * a Chart reaches a remote branch. The other keys are refused by name, because each is a key of a
+ * cut or a Turn, and a mapper's excess key is no compile error otherwise. */
+export type PushInput<O extends PushOptions> = {
+  /** The Worktree to push: `event.output.path` of its cut, of the push's Repo Slot. */
+  worktree: O extends { slot: infer S extends string } ? `/work/${S}/${string}` : AnyWorktreePath;
+  branch?: never;
+  to?: never;
+  cwd?: never;
+  path?: never;
+} & (O["pin"] extends true ? { sha: string } : unknown) &
   (O["squash"] extends true ? { message: string } : unknown);
 
 /**
@@ -273,11 +295,24 @@ export type SyncState = SyncAnswer["sync"];
  *
  * With `busy` or `not-synced`, `syncReason` tells why, and jr2 tries again before the next push.
  *
+ * The union is open (`LaterOutcome`): give the rest a last arm with no guard.
+ *
  * @example
  * ```ts
- * import { fail, jr2Setup, push, type PushOutput, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import {
+ *   fail,
+ *   isReady,
+ *   jr2Setup,
+ *   push,
+ *   type PushOutput,
+ *   workspace,
+ *   worktree,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
  *
- * type Input = Workspaced<{ sha: string }, "app">;
+ * type Input = Workspaced<{ branch: string; sha: string }, "app">;
+ *
+ * const releaseTree = (context: Input) => `${context.workspace.repos.app}/release` as const;
  *
  * // A push that did not happen (`rejected` or `diverged`) is a different problem from one jr2
  * // cannot see (`unknown`).
@@ -286,17 +321,24 @@ export type SyncState = SyncAnswer["sync"];
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   actors: { publish: push({ pin: true }), fail: fail() },
+ *   actors: { cut: worktree({ expect: "existing" }), publish: push({ pin: true }), fail: fail() },
  * }).createMachine({
  *   id: "release",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost" },
- *   initial: "publishing",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: releaseTree(context), branch: context.branch }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "publishing" }, { target: "notCut" }],
+ *       },
+ *     },
  *     publishing: {
  *       invoke: {
  *         src: "publish",
- *         input: ({ context }) => ({ sha: context.sha }),
+ *         input: ({ context }) => ({ worktree: releaseTree(context), sha: context.sha }),
  *         onDone: [
  *           { guard: ({ event }) => event.output.outcome === "pushed", target: "published" },
  *           { guard: ({ event }) => notPushed(event.output), target: "notPushed" },
@@ -308,13 +350,13 @@ export type SyncState = SyncAnswer["sync"];
  *     // Not final states: each one fails the run, with its own reason.
  *     notPushed: { invoke: { src: "fail", input: { reason: "the remote refused the push" } } },
  *     unknown: { invoke: { src: "fail", input: { reason: "jr2 cannot tell if the push happened" } } },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
  * export const machine = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: () => ({ branch: "release" }),
  * });
  * ```
  *
@@ -324,10 +366,11 @@ export type SyncState = SyncAnswer["sync"];
  */
 export type PushOutput =
   | Exclude<PushWireOutput, { outcome: "pushed" }>
-  | (Omit<Extract<PushWireOutput, { outcome: "pushed" }>, "bundle"> & { sync: SyncState; syncReason?: string });
+  | (Omit<Extract<PushWireOutput, { outcome: "pushed" }>, "bundle"> & { sync: SyncState; syncReason?: string })
+  | LaterOutcome;
 
 export function pushParts(options: PushOptions = {}): PushParts {
-  const inputKeys = [...(options.pin ? ["sha"] : []), ...(options.squash ? ["message"] : [])];
+  const inputKeys = ["worktree", ...(options.pin ? ["sha"] : []), ...(options.squash ? ["message"] : [])];
   return {
     kind: "push",
     pin: options.pin === true,
@@ -451,6 +494,7 @@ type KindContext = {
   slot: string;
   signal: AbortSignal;
   mark: (marker: Omit<EffectMarker, "kind" | "slot" | "effect">) => void;
+  input: unknown;
 };
 
 /** How one Sandbox kind builds its start and what a restore may send again. */
@@ -463,13 +507,25 @@ type KindSpec = {
   /** The Repo Slot the Effect runs on, written to its settled row. */
   repoOf: (ambient: AmbientHandles, slot: string) => string;
   /** The start for this run; `pinned` is the commit the intent row recorded. */
-  build: (input: unknown, ambient: AmbientHandles, slot: string, pinned?: string, extra?: StartExtra) => StartRequest;
+  build: (
+    input: unknown,
+    ambient: AmbientHandles,
+    slot: string,
+    pinned?: string,
+    extra?: StartExtra,
+    binding?: ReturnType<typeof boundRun>,
+  ) => StartRequest;
   /** Run before a start is sent (a push: the last sync again, and the ledger's pair). */
   before?: (ctx: KindContext) => Promise<StartExtra>;
   /** Run on the Effector's settled output before it is ledgered (a push: the sync). */
   finish?: (output: unknown, ctx: KindContext) => Promise<unknown>;
   /** What a settled output becomes for the Machine. */
   deliver?: (output: unknown) => unknown;
+  /** Why this start cannot be sent, as the kind's own output: a word an Agent or a Chart can say.
+   * It settles before any intent row: nothing went out. */
+  refuse?: (ctx: KindContext) => unknown;
+  /** The fields of the settled row that a later Effect reads. */
+  rowFields?: (ctx: KindContext) => { branch?: string; worktree?: string; repo?: string };
 };
 
 type StartExtra = { pairs?: readonly Pair[] };
@@ -548,6 +604,9 @@ async function drive<I, O>(
       kind: spec.kind,
       slot,
       ...(ambient ? { sandbox: ambient.sandbox, ...repoField(spec, ambient, slot) } : {}),
+      ...(ambient && spec.rowFields
+        ? spec.rowFields({ ambient, binding, id, slot, signal, mark, input: snapshot.input })
+        : {}),
       output,
       at: now(),
     });
@@ -589,7 +648,7 @@ async function drive<I, O>(
   // A credentialed command's stop goes through this port when its state exits (ADR-0067).
   const run = running.get(self);
   if (spec.kind === "command" && run) run.port = port;
-  const ctx: KindContext = { ambient, binding, id, slot, signal, mark };
+  const ctx: KindContext = { ambient, binding, id, slot, signal, mark, input: snapshot.input };
 
   const find = async (): Promise<{ found: EffectState | undefined } | undefined> => {
     try {
@@ -619,12 +678,12 @@ async function drive<I, O>(
       });
       const extra = spec.before ? await spec.before(ctx) : {};
       if (signal.aborted) return;
-      await send(spec.build(snapshot.input, ambient, slot, pinned, extra), pinned);
+      await send(spec.build(snapshot.input, ambient, slot, pinned, extra, binding), pinned);
       return;
     }
     if (spec.kind === "http" && spec.idempotent) {
       mark({ stage: "started", text: `${spec.label(ambient)} (sent again: it is idempotent)` });
-      await send(spec.build(snapshot.input, ambient, slot), undefined);
+      await send(spec.build(snapshot.input, ambient, slot, undefined, undefined, binding), undefined);
       return;
     }
     settle(unknown(`${why}; not run again`));
@@ -645,9 +704,14 @@ async function drive<I, O>(
     return;
   }
 
+  const refusal = spec.refuse?.(ctx);
+  if (refusal !== undefined) {
+    settle(refusal);
+    return;
+  }
   const extra = spec.before ? await spec.before(ctx) : {};
   if (signal.aborted) return;
-  const req = spec.build(snapshot.input, ambient, slot, undefined, extra);
+  const req = spec.build(snapshot.input, ambient, slot, undefined, extra, binding);
   const big = tooLarge(req);
   if (big) {
     settle(big);
@@ -857,40 +921,65 @@ export function pushWith<const O extends PushOptions>(
   portFactory: EffectorPortFactory,
   options?: O,
   syncPorts: SyncPortFactory = harnessSyncPort,
-): EffectLogic<PushInput<O> | void, PushOutput> {
+): EffectLogic<PushInput<O>, PushOutput> {
   const parts = pushParts(options);
   const repoOf = (ambient: AmbientHandles, slot: string) => slotOf("push", slot, parts.slot, ambient);
-  const worktreeOf = (ctx: KindContext) => ctx.ambient.repos[repoOf(ctx.ambient, ctx.slot)]!;
   const syncOf = (ctx: KindContext) =>
     syncPorts(ctx.ambient.endpoint, ctx.binding?.harnessBearer?.(ctx.ambient.sandbox));
+  const worktreeOf = (input: unknown) => (input as { worktree?: unknown } | undefined)?.worktree;
+  /** The target of this push: the cut's row. `refuse` has run, so a build finds one; a restored push
+   * finds it too, because a row outlives the restart. */
+  const targetOf = (ctx: Pick<KindContext, "ambient" | "binding" | "input" | "slot">) => {
+    const found = cutTargetOf(worktreeOf(ctx.input), ctx, { repo: repoOf(ctx.ambient, ctx.slot) });
+    if ("fault" in found) throw new Error(`push "${ctx.slot}": ${found.fault}`);
+    return found.target as { repo: string; path: string; branch: string };
+  };
   return sandboxLogic(portFactory, parts, {
     kind: "push",
     idempotent: false,
     repeatsPinned: true,
-    label: (ambient) => `push ${ambient.branch}${parts.sign ? " (signed)" : ""}`,
+    label: () => `push${parts.sign ? " (signed)" : ""}`,
     repoOf,
-    build: (input, ambient, slot, pinned, extra) => {
-      const repoSlot = slotOf("push", slot, parts.slot, ambient);
-      const ref = repoRefOf(ambient, repoSlot);
-      const req = pushStartOf(parts, ref, branchOf(ambient), input as { sha?: string; message?: string }, extra?.pairs);
+    // Anything a Chart or a pick can say, so it is output (ADR-0067): `rejected` at stage start.
+    refuse: (ctx) => {
+      const found = cutTargetOf(worktreeOf(ctx.input), ctx, { repo: repoOf(ctx.ambient, ctx.slot) });
+      const fault =
+        "fault" in found
+          ? found.fault
+          : found.target.branch === null
+            ? `${found.target.path} is detached: a push publishes the branch of a Worktree, and it holds none`
+            : undefined;
+      if (fault === undefined) return undefined;
+      return { outcome: "rejected", stage: "start", reason: `${fault}; nothing was pushed` };
+    },
+    rowFields: (ctx) => {
+      const found = cutTargetOf(worktreeOf(ctx.input), ctx, { repo: repoOf(ctx.ambient, ctx.slot) });
+      if ("fault" in found || found.target.branch === null) return {};
+      return { branch: found.target.branch };
+    },
+    build: (input, ambient, slot, pinned, extra, binding) => {
+      const target = targetOf({ ambient, binding, input, slot });
+      const ref = repoRefOf(ambient, target.repo, target.path);
+      const req = pushStartOf(parts, ref, target.branch, input as { sha?: string; message?: string }, extra?.pairs);
       if (pinned) req.push.pin = pinned;
       return req;
     },
-    // Every push of this Workspace's Repo Slot — one branch, one remote — that published gives the
-    // Effector a pair, oldest first (ADR-0067). The newest one's sync, when it did not finish, runs
-    // again first, in that slot's Worktree and from the bundle the row keeps while it is the newest
+    // Every push of this Repo Slot's branch that published gives the Effector a pair, oldest first
+    // (ADR-0067). The newest one's sync, when it did not finish, runs again first, in this push's
+    // Worktree and from the bundle the row keeps while it is the newest
     // push and its sync did not finish (`dropSavedTails`); the push does not depend on it.
     before: async (ctx) => {
       const rows = ctx.binding?.effectRows?.() ?? {};
       const repo = repoOf(ctx.ambient, ctx.slot);
-      const last = lastPushOf(rows, ctx.ambient.sandbox, repo, ctx.id);
+      const target = targetOf(ctx);
+      const last = lastPushOf(rows, ctx.ambient.sandbox, repo, target.branch, ctx.id);
       if (last === undefined) return {};
       const { row, rowId, output } = last;
       if (output.sync === "busy" || output.sync === "not-synced") {
         const answer = await syncOf(ctx).sync(
           {
-            worktree: worktreeOf(ctx),
-            branch: branchOf(ctx.ambient),
+            worktree: target.path,
+            branch: target.branch,
             published: output.published,
             source: output.source,
             ...(typeof output.bundle === "string" ? { bundle: output.bundle } : {}),
@@ -902,7 +991,7 @@ export function pushWith<const O extends PushOptions>(
         ctx.binding?.recordEffect?.(rowId, { ...row, output: { ...output, ...syncFields(answer) } });
       }
       // Each row's `squashed` rides beside its pair: a push that maps the same commit names what it is.
-      return { pairs: pushPairsOf(rows, ctx.ambient.sandbox, repo, ctx.id) };
+      return { pairs: pushPairsOf(rows, ctx.ambient.sandbox, repo, target.branch, ctx.id) };
     },
     // After every pushed outcome whose published commit is not the Agent's own — signed copies, or
     // one squashed commit, signed or not (ADR-0067): the sync, in the Workspace's Harness, from the
@@ -913,10 +1002,11 @@ export function pushWith<const O extends PushOptions>(
       const o = output as PushWireOutput;
       if (o.outcome !== "pushed") return o;
       if (o.published === o.source) return { ...o, sync: "skipped" satisfies SyncState };
+      const target = targetOf(ctx);
       const answer = await syncOf(ctx).sync(
         {
-          worktree: worktreeOf(ctx),
-          branch: branchOf(ctx.ambient),
+          worktree: target.path,
+          branch: target.branch,
           published: o.published,
           source: o.source,
           ...(o.bundle !== undefined ? { bundle: o.bundle } : {}),
@@ -931,7 +1021,7 @@ export function pushWith<const O extends PushOptions>(
       const { bundle: _bundle, ...rest } = o;
       return rest;
     },
-  }) as EffectLogic<PushInput<O> | void, PushOutput>;
+  }) as EffectLogic<PushInput<O>, PushOutput>;
 }
 
 /** The sync's answer as the output's fields: its state, and its reason when it moved nothing. */
@@ -975,16 +1065,35 @@ export function httpFileWith<S extends z.ZodType | undefined = undefined>(
     // With no Repo Slot the file is in `/work`, which is no Worktree (ADR-0051).
     label: (ambient) =>
       `http ${parts.method} ${parts.target.scheme}://${parts.target.host} ` +
-      (Object.keys(ambient.repos).length === 0 && body.slot === undefined ? "(a file of /work)" : "(a Worktree file)"),
-    repoOf: (ambient, slot) => slotOf("http", slot, body.slot, ambient),
+      (Object.keys(ambient.repos).length === 0 ? "(a file of /work)" : "(a Worktree file)"),
+    repoOf: (ambient, slot) => slotOf("http", slot, undefined, ambient),
+    // The same row check as a push: a word of a Chart must not choose what leaves the Sandbox with a
+    // credential. `refused`, the kind's own form.
+    refuse: (ctx) => {
+      const named = (ctx.input as { worktree?: unknown } | undefined)?.worktree;
+      if (Object.keys(ctx.ambient.repos).length === 0) {
+        return named === undefined
+          ? undefined
+          : { outcome: "refused", reason: `no Worktree in a Workspace with no Repo Slot; nothing was sent` };
+      }
+      if (named === undefined) {
+        throw new Error(
+          `http "${ctx.slot}" reads a Worktree file, under a Workspace with Repo Slots, and its input names no \`worktree\``,
+        );
+      }
+      const found = cutTargetOf(named, ctx, {});
+      return "fault" in found ? { outcome: "refused", reason: `${found.fault}; nothing was sent` } : undefined;
+    },
     build: (input, ambient, slot) => {
-      let value: unknown = input;
+      const { worktree: named, ...rest } = (input ?? {}) as { worktree?: string };
+      let value: unknown = rest;
       if (def.input !== undefined) {
-        const parsed = def.input.safeParse(input);
+        const parsed = def.input.safeParse(rest);
         if (!parsed.success) throw new Error(`http "${slot}": its input does not match the definition's input schema`);
         value = parsed.data;
       }
-      const worktree = fileRootOf(slot, body.slot, ambient);
+      // With no Repo Slot the file is in `/work`, which its steps share (ADR-0051).
+      const worktree = named === undefined ? "." : posix.relative(WORK_ROOT, named);
       const segments = fromInput<readonly string[]>(body.segments, value);
       return fileStartOf(parts, worktree, {
         path: fromInput<string>(body.path, value)!,
@@ -1007,10 +1116,30 @@ export function credentialedCommandWith(
     idempotent: false,
     repeatsPinned: true,
     label: () => parts.argv.map((a) => (typeof a === "string" ? a : `<${(a as Arg).arg}>`)).join(" "),
-    repoOf: (ambient, slot) => slotOf("command", slot, parts.slot, ambient),
-    build: (input, ambient, slot, pinned) => {
-      const repoSlot = slotOf("command", slot, parts.slot, ambient);
-      const ref = repoRefOf(ambient, repoSlot);
+    repoOf: (ambient, slot) => slotOf("command", slot, undefined, ambient),
+    // The same row check as a push, in the form a command that could not start has (ADR-0067). No
+    // Repo Slot at all is a defect of the Machine, as for a push: a throw, and `onError` (ADR-0051).
+    refuse: (ctx) => {
+      if (Object.keys(ctx.ambient.repos).length === 0) {
+        throw new Error(
+          `command "${ctx.slot}" runs under a Workspace with no Repo Slot: ${needsASlot("command")} (ADR-0051)`,
+        );
+      }
+      const found = cutTargetOf((ctx.input as { worktree?: unknown } | undefined)?.worktree, ctx, {});
+      const fault =
+        "fault" in found
+          ? found.fault
+          : found.target.branch === null
+            ? `${found.target.path} is detached, and a credentialed command runs on a commit of a branch`
+            : undefined;
+      return fault === undefined
+        ? undefined
+        : { outcome: "exited", code: 127, tail: `jr2: ${fault}; nothing was run\n` };
+    },
+    build: (input, ambient, slot, pinned, _extra, binding) => {
+      const found = cutTargetOf((input as { worktree?: unknown } | undefined)?.worktree, { ambient, binding }, {});
+      if ("fault" in found) throw new Error(`command "${slot}": ${found.fault}`);
+      const ref = repoRefOf(ambient, found.target.repo, found.target.path);
       const approved = pin ? (input as { sha?: unknown } | undefined)?.sha : undefined;
       if (pin && (typeof approved !== "string" || !/^[0-9a-f]{40}$/.test(approved))) {
         throw new Error(`command "${slot}" (pin): its input's sha is not a full commit id`);
@@ -1019,7 +1148,7 @@ export function credentialedCommandWith(
         parts,
         argvOf(input, slot),
         ref,
-        branchOf(ambient),
+        found.target.branch!,
         pinned ?? (approved as string | undefined),
       );
     },
@@ -1027,9 +1156,12 @@ export function credentialedCommandWith(
 }
 
 /**
- * Make a `push` Effect: it pushes the branch of the Workspace to the Binding of its Repo Slot.
+ * Make a `push` Effect: it pushes the branch of a Worktree to the Binding of its Repo Slot.
  * Put it in `actors`, and invoke it from the body of a `workspace()`: `actors: { publish: push({
  * sign: true }) }`.
+ *
+ * Its input names the Worktree: `{ worktree }`. It has no branch. jr2 reads the branch from the
+ * `worktree()` cut of that path, so an Agent that moves `HEAD` does not change what jr2 pushes.
  *
  * It runs in the Sandbox Effector of the Workspace, with the push credential of the
  * `git.credentials` entry that the Binding matches. The Agent never reads that credential. It
@@ -1038,8 +1170,10 @@ export function credentialedCommandWith(
  * again. With `sign` or `squash`, the commit on the remote is not the Agent's own. Then jr2 moves
  * the Agent's branch to it.
  *
- * Every outcome is output (`PushOutput`): `pushed`, `rejected`, `diverged` or `unknown`. Each
- * field of {@link PushOptions} tells what it refuses. When it starts, it also refuses a push
+ * Every outcome is output (`PushOutput`): `pushed`, `rejected`, `diverged` or `unknown`. A
+ * `worktree` that no cut made in this Sandbox, a Worktree of another Repo Slot, and a detached
+ * Worktree are `rejected` at `stage` `start`, and nothing is pushed. Each field of
+ * {@link PushOptions} tells what it refuses. When it starts, it also refuses a push
  * outside a Workspace: `push "<slot>" runs in the Sandbox Effector of a Workspace, and its state is
  * not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`.
  *
@@ -1053,9 +1187,11 @@ export function credentialedCommandWith(
  *   agent,
  *   defineEvent,
  *   fail,
+ *   isReady,
  *   jr2Setup,
  *   push,
  *   workspace,
+ *   worktree,
  *   type Workspaced,
  * } from "@jr2/orchestrator";
  *
@@ -1067,6 +1203,8 @@ export function credentialedCommandWith(
  *
  * type Input = Workspaced<{}, "app">;
  *
+ * const fixTree = (context: Input) => `${context.workspace.repos.app}/fix` as const;
+ *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
  *   events: [committed],
@@ -1075,6 +1213,7 @@ export function credentialedCommandWith(
  *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You are a careful engineer.",
  *     }),
+ *     cut: worktree(),
  *     publish: push({ sign: true }),
  *     fail: fail(),
  *   },
@@ -1082,10 +1221,20 @@ export function credentialedCommandWith(
  *   id: "fix-test",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".failed", "agent.fault": ".failed" },
- *   initial: "coding",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: fixTree(context), branch: "fix-test" }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+ *       },
+ *     },
  *     coding: {
- *       invoke: { src: "coder", input: { prompt: "Fix the failing test, and commit the fix." } },
+ *       invoke: {
+ *         src: "coder",
+ *         input: ({ context }) => ({ prompt: "Fix the failing test, and commit the fix.", cwd: fixTree(context) }),
+ *       },
  *       // The Agent moves the Machine on with a pick. An Agent's actor never ends, so `onDone`
  *       // never fires.
  *       on: { committed: "publishing" },
@@ -1093,6 +1242,8 @@ export function credentialedCommandWith(
  *     publishing: {
  *       invoke: {
  *         src: "publish",
+ *         // jr2 reads the branch from the cut of this Worktree.
+ *         input: ({ context }) => ({ worktree: fixTree(context) }),
  *         onDone: [
  *           { guard: ({ event }) => event.output.outcome === "pushed", target: "done" },
  *           { target: "failed" },
@@ -1100,6 +1251,7 @@ export function credentialedCommandWith(
  *       },
  *     },
  *     done: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     // Not a final state: the run ends `failed`, and the Workspace deletes the Sandbox.
  *     failed: { invoke: { src: "fail", input: { reason: "the fix was not pushed" } } },
  *   },
@@ -1107,7 +1259,6 @@ export function credentialedCommandWith(
  *
  * export const machine = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: () => ({ branch: "fix-test" }),
  * });
  * ```
  *
@@ -1117,7 +1268,7 @@ export function credentialedCommandWith(
  * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
  * @see docs/reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md
  */
-export function push<const O extends PushOptions>(options?: O): EffectLogic<PushInput<O> | void, PushOutput> {
+export function push<const O extends PushOptions>(options?: O): EffectLogic<PushInput<O>, PushOutput> {
   // After an Orchestrator restart, a push is sent again with only the commit its intent row holds
   // (ADR-0067): a run is a function of the commit, never of the Agent's tip now.
   return pushWith(sandboxEffectorPort, options);

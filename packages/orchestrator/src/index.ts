@@ -33,12 +33,25 @@ export type { Binding, RepoSlot } from "./parts.ts";
 // Effects: work a Machine does outside itself, as an actor slot (ADR-0067, ADR-0068, ADR-0071),
 // and what an author writes between a pick and that work.
 export { arg } from "./effect.ts";
-export type { CommandOutput } from "./effect.ts";
+export type { CommandOutput, LaterOutcome } from "./effect.ts";
 export { command } from "./harness-client.ts";
 export { basic, bearer, file, http, secret, text } from "./http-effect.ts";
 export type { HttpOutput } from "./effector-wire.ts";
 export { push } from "./sandbox-effect.ts";
 export type { PushOutput } from "./sandbox-effect.ts";
+export { branchName, isReady, readyOf, worktree } from "./worktree.ts";
+export type {
+  AnyFramePath,
+  AnyWorktreePath,
+  FramePath,
+  WorktreeFound,
+  WorktreeInput,
+  WorktreeOptions,
+  WorktreeOutput,
+  WorktreePath,
+  WorktreeReady,
+  WorktreeRefused,
+} from "./worktree.ts";
 export { dispatch } from "./dispatch-effect.ts";
 export type { DispatchOutput } from "./effect.ts";
 export { answer, fromPick, paramsOf } from "./pick.ts";
@@ -51,6 +64,7 @@ export type { Customize } from "./customize.ts";
 export type { EffectBinding } from "./open-effect.ts";
 export type { Size, UserContainer } from "./size.ts";
 export { pool, source } from "./pool.ts";
+export type { PoolNextInput } from "./pool.ts";
 
 // Charts: the Open body a Chart wrapper places in `actors`, and the grammar a planner's pick
 // declares, whole or narrowed to one wrapper (ADR-0070).

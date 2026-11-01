@@ -82,9 +82,10 @@ jr2 run fix-app --input '{"prompt":"Make the failing test in test/greet.test.ts 
 The key of each Repo Slot is the name of the slot, and the directory `/work/<slot>` in the
 [Sandbox](../reference/glossary.md#sandbox). The value is one of these:
 
-- a url: `"https://github.com/<you>/handbook.git"`. The [Worktree](../reference/glossary.md#worktree) starts from the
-  default branch of the Repo.
-- a [Binding](../reference/glossary.md#binding): `{ url, ref }`. The Worktree starts from `ref`, a branch or a commit.
+- a url: `"https://github.com/<you>/handbook.git"`. The clone stays on the default branch of the Repo, and a new
+  [Worktree](../reference/glossary.md#worktree) branch starts from it.
+- a [Binding](../reference/glossary.md#binding): `{ url, ref }`. The clone stays on `ref`, a branch, a tag or a commit,
+  and a new branch starts from it.
 - a function of the run input: `({ input }) => url`, or `({ input }) => ({ url, ref })`. Each run chooses its Repo. The
   url must agree with an entry of [`git.credentials`](../reference/config.md#git-credentials) in `jr2.config.ts`.
 - `open`, to leave the slot Open for the Instance that registers your Machine.
@@ -152,7 +153,7 @@ gives the values, and [Run a command or call a URL with an Effect](run-a-command
 - `customize()` refuses an Open map that you bind with no slot:
   ``customize(): machine "<id>" declares its Repo Slots open as a map — name at least one: `repos: { app: "https://…" }` (ADR-0051).``
 - `customize()` refuses a Repo Slot key that is not a directory name. The key becomes `/work/<slot>`:
-  ``customize(): Repo Slot key "<slot>" is not a directory name — a slot becomes `/work/<slot>` and its order matters, so it starts with a letter and matches /^[A-Za-z][A-Za-z0-9._-]*$/ (ADR-0051).``
+  ``customize(): Repo Slot key "<slot>" is not a directory name — a slot becomes `/work/<slot>`, `/work/.jr2/` is reserved for jr2, and its order matters, so it starts with a letter and matches /^[A-Za-z][A-Za-z0-9._-]*$/ (ADR-0051, ADR-0075).``
 - `customize()` refuses an empty url:
   ``customize(): Repo Slot "<slot>" is bound to an empty url (got <value>) — a slot is `open`, a url, `{ url, ref? }`, or a mapper `({ input }) => url | { url, ref? }` over the door (ADR-0051).``
   For an empty `ref`, the text says `bound with an empty ref`.

@@ -25,6 +25,8 @@ import {
   fail,
   jr2Setup,
   workspace,
+  isReady,
+  worktree,
   type HostInjectedInput,
   type Workspaced,
 } from "@jr2/orchestrator";
@@ -82,13 +84,21 @@ export type TicketModesOutput = {
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: TicketModesOutput },
   events: [runTests, testsPassed, testsFailed, revise, submit, ship],
-  actors: { coder: agent(coder), fail: fail() },
+  actors: { cut: worktree(), coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [], entries: 0 }),
-  initial: "working",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/model-ticket-modes", branch: "model-ticket-modes" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "working" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     working: {
       entry: assign({ entries: ({ context }) => context.entries + 1 }),
       invoke: {
@@ -96,9 +106,9 @@ const body = jr2Setup({
         input: ({ context }) => ({
           prompt:
             `Ticket: ${TICKET}\n\nWork in your working directory, which is a checkout of the repository on ` +
-            `branch \`${context.workspace.branch}\`. Make the change, run the tests, review your own diff, ` +
+            `branch \`model-ticket-modes\`. Make the change, run the tests, review your own diff, ` +
             `commit on that branch, and submit the commit's sha.`,
-          cwd: context.workspace.repos.app,
+          cwd: "/work/app/model-ticket-modes",
           continue: true,
           ...dialFor(context.thinking as ThinkingCell),
         }),
@@ -149,8 +159,8 @@ const body = jr2Setup({
         src: "gate",
         input: ({ context }) => ({
           meta: {
-            branch: context.workspace.branch,
-            worktree: context.workspace.repos.app,
+            branch: "model-ticket-modes",
+            worktree: "/work/app/model-ticket-modes",
             commit: context.commit,
             picks: context.picks,
             entries: context.entries,
@@ -194,5 +204,4 @@ export const machine = workspace(body, {
   input: door,
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
   // Nothing is pushed, so a fixed branch collides with nothing (each run's pod cuts its own).
-  spec: () => ({ branch: "model-ticket-modes" }),
 });

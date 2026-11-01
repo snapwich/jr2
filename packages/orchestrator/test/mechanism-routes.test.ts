@@ -21,7 +21,6 @@ import { mkStore, waitFor } from "./_fixtures.ts";
 const coder = agent({ model: "stub/model", instructions: "You code." });
 const finish = defineEvent({ name: "finish", input: z.object({}) });
 const repos = { app: "https://example.test/app.git" };
-const spec = () => ({ branch: "b" });
 
 // --- The walk: agent.fault --------------------------------------------------------------------------
 
@@ -172,12 +171,12 @@ test("workspace() refuses a body with a non-final state that has no workspace.lo
     },
   });
   assert.throws(
-    () => workspace(body, { repos, spec }),
+    () => workspace(body, { repos }),
     /workspace\(\): the body "body" has states "body\.working\.a", "body\.working\.b" that are not final, and no route for "workspace\.lost" is on them or on a state above — jr2 sends workspace\.lost to the body when its Sandbox is gone, and with no route the run faults: route it on the body's root, as on: \{ "workspace\.lost": "<the state that handles it>" \} \(ADR-0074\)$/,
   );
   // A body with no state of its own is its root, and the root is not final.
   assert.throws(
-    () => workspace(setup({}).createMachine({ id: "bare" }), { repos, spec }),
+    () => workspace(setup({}).createMachine({ id: "bare" }), { repos }),
     /workspace\(\): the body "bare" has a state "bare" that is not final/,
   );
 });
@@ -190,7 +189,6 @@ test("one workspace.lost route on the body's root, or above each state that is n
   };
   workspace(setup({}).createMachine({ id: "root", on: { "workspace.lost": ".lost" }, initial: "working", states }), {
     repos,
-    spec,
   });
   workspace(
     setup({}).createMachine({
@@ -198,13 +196,10 @@ test("one workspace.lost route on the body's root, or above each state that is n
       initial: "working",
       states: { ...states, working: { ...states.working, on: { "workspace.lost": "lost" } } },
     }),
-    { repos, spec },
+    { repos },
   );
   // Actions only: a route all the same.
-  workspace(setup({}).createMachine({ id: "kept", on: { "workspace.lost": { actions: () => {} } } }), {
-    repos,
-    spec,
-  });
+  workspace(setup({}).createMachine({ id: "kept", on: { "workspace.lost": { actions: () => {} } } }), { repos });
 });
 
 test("workspace() refuses a body that can stay in a compound state whose final child has no workspace.lost route", () => {
@@ -221,7 +216,7 @@ test("workspace() refuses a body that can stay in a compound state whose final c
     },
   });
   assert.throws(
-    () => workspace(stays, { repos, spec }),
+    () => workspace(stays, { repos }),
     /workspace\(\): the body "stays" has a state "stays\.checking" that is not final, and no route for "workspace\.lost"/,
   );
   // With an onDone, the body leaves `checking` at once: a final child there needs no route.
@@ -239,7 +234,7 @@ test("workspace() refuses a body that can stay in a compound state whose final c
         lost: { type: "final" },
       },
     }),
-    { repos, spec },
+    { repos },
   );
   // A final state of a parallel region is not judged: the other regions stay active.
   workspace(
@@ -251,7 +246,7 @@ test("workspace() refuses a body that can stay in a compound state whose final c
         b: { initial: "x", states: { x: { on: { "workspace.lost": {} } } } },
       },
     }),
-    { repos, spec },
+    { repos },
   );
 });
 

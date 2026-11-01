@@ -87,24 +87,37 @@ export type FailSlot = PromiseActorLogic<never, FailureInput> & { readonly [FAIL
  * @example
  * ```ts
  * import { z } from "zod";
- * import { command, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import { command, fail, isReady, jr2Setup, workspace, worktree, type Workspaced } from "@jr2/orchestrator";
  *
  * const runInput = z.object({ branch: z.string() });
+ * type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
+ *
+ * const testTree = (context: BodyInput) => `${context.workspace.repos.app}/test` as const;
  *
  * const body = jr2Setup({
- *   types: {} as { input: Workspaced<z.infer<typeof runInput>, "app"> },
+ *   types: {} as { input: BodyInput; context: BodyInput },
  *   actors: {
+ *     cut: worktree(),
  *     tests: command(["npm", "test"], { timeout: "15m" }),
  *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "check",
+ *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost" },
- *   initial: "testing",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: testTree(context), branch: context.branch }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "testing" }, { target: "notCut" }],
+ *       },
+ *     },
  *     testing: {
  *       invoke: {
  *         src: "tests",
+ *         input: ({ context }) => ({ worktree: testTree(context) }),
  *         onDone: [
  *           {
  *             guard: ({ event }) => event.output.outcome === "exited" && event.output.code === 0,
@@ -117,6 +130,7 @@ export type FailSlot = PromiseActorLogic<never, FailureInput> & { readonly [FAIL
  *     // Not a final state: the run ends `failed`, and the Workspace deletes the Sandbox.
  *     failing: { invoke: { src: "fail", input: { reason: "npm test did not pass" } } },
  *     passed: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
@@ -124,7 +138,6 @@ export type FailSlot = PromiseActorLogic<never, FailureInput> & { readonly [FAIL
  * export const machine = workspace(body, {
  *   input: runInput,
  *   repos: { app: "https://github.com/you/app.git" },
- *   spec: ({ input }) => ({ branch: input.branch }),
  * });
  * ```
  *

@@ -59,8 +59,8 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type WorkspaceAccess = "write" | "read" | "none";
 
 // The plain-data Agent definition (ADR-0018): IDENTITY plus one default. A Turn's Frame — what it
-// is about and where it works — is not here and cannot be (ADR-0057): a Worktree path exists only
-// once a run has a branch, so no definition written before the run could name one.
+// is about and where it works — is not here and cannot be (ADR-0057): a Worktree exists only
+// once a run has cut it, so no definition written before the run could name one.
 //
 // Must stay JSON-serializable: the definition rides the Turn to the Harness (ADR-0049), so
 // anything non-serializable would be silently lost — grow this contract deliberately. ADR-0028
@@ -119,14 +119,14 @@ export type AgentDefinition = {
    * level in the invoke's `input`. */
   thinkingLevel?: ThinkingLevel;
   // The persona in one word (ADR-0028), deliberately not `tools` (that names the control-plane
-  // Menu, what it may SAY). `"read"` states intent and stops the honest path: bash stays, and the
-  // detached review worktree is the containment. `"none"` frames no directory — only Working tools
+  // Menu, what it may SAY). `"read"` states intent and stops the honest path: bash stays, and a
+  // detached Worktree is the containment. `"none"` frames no directory — only Working tools
   // consume one — and places the Turn on the Instance Harness (ADR-0031).
   /** What the Agent may do to the Workspace. Default: `"write"`.
    * - `"write"`: all the Working tools (read, write, edit, bash, grep, glob).
    * - `"read"`: no write or edit tool. The Agent keeps bash, so `"read"` does not stop a command
-   *   that writes. To keep the Agent from changing the branch, frame its Turn in the review
-   *   Worktree: `reviewSha` in the spec, then `cwd: context.workspace.review?.<slot>`.
+   *   that writes. To keep the Agent from changing the branch, frame its Turn in a detached
+   *   Worktree: cut it with `{ path, detach: sha }`, then give that `path` as `cwd`.
    * - `"none"`: no Working tools. The Agent only reads its prompt and picks from its Menu. Its Turn
    *   runs on the Instance Harness, not in a Sandbox, so it needs no `workspace()` around it. */
   workspace?: WorkspaceAccess;

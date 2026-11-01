@@ -34,8 +34,7 @@ state. A prompt fix cannot be relied on and cannot even be shown to have worked.
 Workspace; the Machine's states are sequential, but the Agents are not. Throughout `reviewing`, the orphaned coder was
 still live in the worktree the reviewer was reviewing — and still live at `humanReview`, the park that deliberately
 retains the Sandbox so a human can exec in and inspect the diff. In the runs we watched, the orphan only read. Nothing
-prevented it writing. An un-ended turn is an unaccounted-for concurrent writer in a Workspace the Machine believes is
-single-threaded.
+prevented it writing. An un-ended turn is a concurrent writer in a Workspace that the Machine did not put there.
 
 ## Decision
 

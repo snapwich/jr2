@@ -173,6 +173,7 @@ func run(t *testing.T, p pod, args []string, env []string, client *http.Client) 
 		Stderr: &stderr,
 		Client: client,
 		Exec:   e.fn,
+		Hold:   noHolder,
 	})
 	return code, stderr.String(), e
 }

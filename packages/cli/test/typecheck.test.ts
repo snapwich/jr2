@@ -106,7 +106,7 @@ async function writeCustomizeBinding(root: string, slot: string): Promise<void> 
     `import { jr2Setup, open, workspace } from "@jr2/orchestrator";\n` +
       `const body = jr2Setup({ events: [] }).createMachine({\n` +
       `  id: "body",\n  initial: "done",\n  states: { done: { type: "final" } },\n});\n` +
-      `export const codeReview = workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) });\n`,
+      `export const codeReview = workspace(body, { repos: { target: open } });\n`,
   );
   await writeFile(
     join(root, "workflows", "work.ts"),

@@ -1,7 +1,7 @@
 # A Repo is a slot on the `workspace()` and a cache on the node
 
 ADR-0049 moved Agents and the Sandbox Image into the Machine and left one dependency outside it: the Repo, catalogued in
-`jr2.config.ts` and named by string from a `workspace()` spec, with the name typed back through a `Register` interface
+`jr2.config.ts` and named by string from a `workspace()`, with the name typed back through a `Register` interface
 (ADR-0050). The grill of 2026-09-13 found two faults. A packaged Machine still could not say which repository it works
 on, nor could a consumer bind one, except by the consumer's config holding the right NAME and the door threading it —
 the same encapsulation gap ADR-0049 closed for Agents. And the catalog's shape was dictated by storage: one read-only
@@ -20,28 +20,32 @@ decision: **what a Machine says about a repository, and what the cluster does wi
       target: open, // the consumer's — must be bound
       docs: { url: "https://github.com/acme/handbook.git", ref: "v3" }, // the package's own
     },
-    spec: ({ input }) => ({ branch: input.branch }),
   });
   ```
 
   A slot is in one of three states, and the walk tells them apart without evaluating anything: **bound** (a url, or
   `{ url, ref? }`), **open** (the `open` sentinel — someone downstream binds it), or **per-run** (a mapper over the
   wrapper's door: `feature: ({ input }) => ({ url: input.feature.repo, ref: input.feature.baseRef })`). `ref` is the
-  base the branch worktree is cut from; absent, the repository's own default branch. The spec no longer carries repos —
-  it is `{ branch, workGroup?, reviewSha? }`, or `{ workGroup? }` for a Workspace with no slot (below). The body's
-  handles are keyed by slot (`workspace.repos.target`), and so are the in-pod paths (`/work/<slot>/<branch>`): a slot
-  key is collision-free by construction and the same in every Instance that consumes the package, so a prompt can name a
-  path and be right everywhere.
+  Binding's base: `default/` stays on it, and a new branch starts from it. A branch is attached, and a tag or a commit
+  is detached. Absent, the base is the repository's own default branch. The body's handles are keyed by slot
+  (`workspace.repos.target` is `/work/target`), and so are the in-pod paths (`/work/<slot>/<name>`): a slot key is
+  collision-free by construction and the same in every Instance that consumes the package, so a prompt can name a path
+  and be right everywhere.
 
-- **The handles are the slot map and the branch — no slot is the `workdir`.** `workspace.repos` keeps the slots in
-  declaration order, and jr2 reads nothing into that order. Which checkout an Agent works in is a fact about that
-  Agent's Turn, not about the Workspace: a body with a `backend` and a `frontend` slot frames one Agent with the first
-  path and another with the second, and either may read the other's tree. A body that names no slot may give the order a
-  meaning of its own and document it (`task`: the first slot is the one the coder edits). The order is the kit's promise
-  — a slot key starts with a letter, because JS reads an integer-like key first wherever it was written — and the
-  meaning is the Machine's. Rejected: a `workdir` handle, the first declared slot's worktree — it made a singular
-  "primary repo" a property of every Workspace, which is wrong for a body whose Agents work in different slots or in
-  more than one, and it hid a rule in key order that the body never chose.
+- **The handles are the slot map — no slot is the `workdir`.** `workspace.repos` keeps the slots in declaration order,
+  and jr2 reads nothing into that order. A handle is the slot's folder and not a Worktree: the Workspace only clones,
+  and a Machine cuts each Worktree at `/work/<slot>/<name>`
+  ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)). Which checkout an Agent works in is a
+  fact about that Agent's Turn, not about the Workspace: a body with a `backend` and a `frontend` slot frames one Agent
+  with a Worktree of the first and another with a Worktree of the second, and either may read the other's tree. An
+  Effect names its Worktree as a Turn does, in its input: a `command` and an `http` take no `slot`, and a `push` keeps
+  its static `slot`, which says the Repo Slot whose credential it spends. A slot that is only read needs no Worktree: an
+  Agent reads `/work/<slot>/default`. A body that names no slot may give the order a meaning of its own and document it
+  (`task`: the first slot is the one the coder edits). The order is the kit's promise — a slot key starts with a letter,
+  because JS reads an integer-like key first wherever it was written — and the meaning is the Machine's. Rejected: a
+  `workdir` handle, the first declared slot's worktree — it made a singular "primary repo" a property of every
+  Workspace, which is wrong for a body whose Agents work in different slots or in more than one, and it hid a rule in
+  key order that the body never chose.
 
 - **A Machine whose body names no slot declares the whole map Open: `repos: open`.** A body that enumerates whatever is
   attached — `@jr2/machines`'s `task` — knows nothing a slot name could say, and a `target: open` on it would claim "one
@@ -61,21 +65,18 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   have a second Agent edit it, upload it. Its steps share `/work`, as the steps of one GitHub Actions job share that
   job's folder; two Workspaces are two jobs and share nothing. So `workspace(body, { input })` with no `repos` is a
   Workspace with no Repo Slot: the attach is skipped (there is nothing to clone, and the pod's `fsGroup` already makes
-  `/work` the work group's), the body's handles are `{ repos: {} }` with no branch, typed `Workspaced<…, never>`, and a
-  Turn that frames no `cwd` and a `command` both work in `/work`. The spec has nothing to cut a branch in: `spec` is
-  optional, gives only `workGroup`, and a `branch` or a `reviewSha` in it is refused — at the type, and when the run
-  enters, since a value jr2 silently ignores is the failure the refusals exist for. `repos: {}` is refused with the
-  pointer to leaving it out, so "none" has one spelling and an empty map never reads as one somebody forgot to fill. An
-  Open map still asks `customize` for at least one slot: Open says the composer names the slots, and a body that
-  enumerates its checkouts (`task`) has nothing to do with none. Two Effects need a slot and are refused there, by
-  `jr2 up` and at invoke, with one reason: a `push` publishes a slot's branch, and a `command` with an Effect secret
-  runs against one commit of it (ADR-0067). A file-body `http` reads `/work` and stays. `/work` is an `emptyDir`, so a
-  Lost Sandbox takes everything with it — with a repository, pushed commits outlive the pod; here only what an Effect
-  sent out does, and the body hears `workspace.lost` as any body does. Storage that outlives the pod, the job's
+  `/work` the work group's), the body's handles are `{ repos: {} }`, typed `Workspaced<…, never>`, and a Turn that
+  frames no `cwd` and a `command` both work in `/work`. `repos: {}` is refused with the pointer to leaving it out, so
+  "none" has one spelling and an empty map never reads as one somebody forgot to fill. An Open map still asks
+  `customize` for at least one slot: Open says the composer names the slots, and a body that enumerates its checkouts
+  (`task`) has nothing to do with none. Three Effects need a slot and are refused there, by `jr2 up` and at invoke, for
+  one reason: a `worktree()` cuts in a slot's clone, a `push` publishes a slot's branch, and a `command` with an Effect
+  secret runs against one commit of it (ADR-0067). A file-body `http` reads `/work` and stays. `/work` is an `emptyDir`,
+  so a Lost Sandbox takes everything with it — with a repository, pushed commits outlive the pod; here only what an
+  Effect sent out does, and the body hears `workspace.lost` as any body does. Storage that outlives the pod, the job's
   "artifacts", is a decision of its own. Rejected: a placeholder repository bound to satisfy the rule — a clone nobody
-  uses, a branch that means nothing, a Worktree that becomes every Agent's default `cwd`, and a cache entry to warm.
-  Rejected: a new term for the repository-less Sandbox — the Glossary's Workspace never named a repository, so none was
-  needed.
+  uses, a Worktree that means nothing, a `cwd` that each Turn must then state, and a cache entry to warm. Rejected: a
+  new term for the repository-less Sandbox — the Glossary's Workspace never named a repository, so none was needed.
 
 - **The consumer binds with `customize`**, in the same call as Agents and the image, nested through `actors` like every
   other part: `customize(codeReview, { repos: { target: "git@github.com:ourorg/app.git" } })`. Any of the three forms is
@@ -100,9 +101,8 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   on-demand fetch; every cache speaks git protocol v2, so a fetch advertises only the refs it asks for; and the refresh
   interval carries ±20% jitter, like the Lease, so R Repos on N nodes do not hit a remote on one beat (scaling review
   R13, 2026-09-30). The agent also consolidates a cache's packs without deleting an object (ADR-0004). The
-  Orchestrator's attach then runs unchanged: `git clone --shared` off the mount, worktree beside it. A Sandbox that
-  lands on a cold node pays one clone there, once — the same economics as an image pull, and the reason a Sandbox can
-  run on any node.
+  Orchestrator's attach then runs unchanged: `git clone --shared` off the mount. A Sandbox that lands on a cold node
+  pays one clone there, once — the same economics as an image pull, and the reason a Sandbox can run on any node.
 - **The Orchestrator creates `Repo` CRs; it does not sync them.** At boot it walks its registered Machines and creates
   one CR per bound identity, so a statically known repository is KNOWN before a run can ask: the cache agent on every
   node probes it (`git ls-remote`) as soon as the CR exists, so a wrong url or a credential that does not reach shows in
@@ -198,15 +198,15 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   the kit's first cluster requirement a storage class most small clusters lack.
 - **A Flux-style `GitRepository` serving an artifact over HTTP.** Rejected: an artifact download is a clone per Sandbox
   — the cost the cache exists to avoid.
-- **Urls kept in the spec, not the slot** (the shape before this decision, with a url in place of a name). Rejected: the
-  walk cannot see inside the spec, so a bound repository would be invisible to `jr2 up` and to prewarm, and `customize`
-  would have nothing to bind.
+- **Urls from a per-run function of the `workspace()`, not the slot** (the shape before this decision, with a url in
+  place of a name). Rejected: the walk cannot see inside a function, so a bound repository would be invisible to
+  `jr2 up` and to prewarm, and `customize` would have nothing to bind.
 
 ## Consequences
 
 - The operator becomes git-aware, which ADR-0001 kept it from being: the `Repo` CRD and the cache agent are its. The
-  Sandbox CRD stays free of git semantics beyond a list of identities; clone and worktree remain the Orchestrator's
-  post-`Ready` step (ADR-0004).
+  Sandbox CRD stays free of git semantics beyond a list of identities; the clone remains the Orchestrator's post-`Ready`
+  step, and a Worktree is a Machine's cut (ADR-0004).
 - `workspace()`'s `repos` names at least one slot, or is `open` whole — in which case the `customize` that names the map
   is held to the same rule — or is left out, for a Workspace with no Repo Slot; a Machine that composes no Sandbox has
   no repos to customize, and the data-plane switch ("does this Instance need Sandboxes") is "a registered Machine
@@ -214,12 +214,12 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   Sandboxes, the cache agent and the Sandbox Images; a deployed Orchestrator wires its kube client whatever its current
   Assembly composes, because a publish can bring the first `workspace()` without a roll
   ([ADR-0069](0069-the-orchestrator-is-a-kit-image-and-an-instance-publishes-its-assembly.md)).
-- Every slot gets a branch worktree cut at the run's branch, a reference checkout included. A slot has no read-only
-  mode; that is a decision of its own if it is ever wanted.
+- A slot has no read-only mode, and needs none: a slot in which a Machine cuts nothing holds only `default/`, on the
+  Binding's base.
 - The Console's start form loses the catalog dropdown: a per-run repository is a url field unless the Machine's door
   enumerates its own.
 - The volume paths change: the in-pod source mount is `/repos/<key>` where `<key>` is derived from the identity, and the
-  pod-local layout is `/work/<slot>/{default,<branch>}`. Existing checkouts on a pre-0051 PVC are not migrated.
+  pod-local layout is `/work/<slot>/{default,<name>}`. Existing checkouts on a pre-0051 PVC are not migrated.
 - ADR-0047's deploy-key prompt reads ssh urls off the walk. A per-run ssh url first seen at attach was never prompted
   for; its first attach fails with the key hint, as any unregistered key does.
 - A `customize` of a per-run slot with a static url is legal and makes it bound; a Machine that wants a slot to stay the

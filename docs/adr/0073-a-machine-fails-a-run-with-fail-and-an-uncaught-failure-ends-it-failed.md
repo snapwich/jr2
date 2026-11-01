@@ -39,7 +39,7 @@ comment "the run faults rather than lie about a decision", and that run ended `d
   the run holds then, and nor does a Workspace that was stopped in `placing`
   ([ADR-0064](0064-a-workspace-waits-for-capacity.md)): a parent that invokes the same Machine again gives the new
   Workspace the same invoke id, and so the same Sandbox name. That new Workspace takes over the Sandbox and its
-  Worktree, as a restore does, with the work of the failed attempt still in it. To keep the work for a person to read,
+  Worktrees, as a restore does, with the work of the failed attempt still in it. To keep the work for a person to read,
   the Machine waits at a Gate before it fails.
 - **`jr2 run` exits 0 only for `done`.** It exits 1 for every other end: `failed`, `error`, `cancelled`, `lost`,
   `drifted`, and a run that was parked before it settled. Exit code 2 stays the CLI's code for a usage error. The status

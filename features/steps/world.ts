@@ -152,6 +152,9 @@ export class E2EWorld {
   last?: CliResult;
   /** A runId carried between steps (the last run started or settled). */
   runId?: string;
+  /** Worktree scenarios: the scenario that ran, and the load's report. */
+  worktreeHeld?: string;
+  worktreeLoad?: unknown;
   /** @kind: the run's Sandbox CR name, captured before an orchestrator restart / reap. */
   sandboxBefore?: string;
   /** @kind: the workspace endpoint before a restart — restore must land on the same one. */

@@ -66,7 +66,7 @@ The [Instance Harness](../reference/glossary.md#instance-harness), the
 sections below tell when.
 
 A Sandbox pod can also have a [User Container](../reference/glossary.md#user-container), when its `workspace()` names
-one. It runs its own image, and it mounts the [Worktree](../reference/glossary.md#worktree) read-write.
+one. It runs its own image, and it mounts `/work`, with each [Worktree](../reference/glossary.md#worktree), read-write.
 [Workspaces](workspaces.md) tells more.
 
 ## On your computer
@@ -154,9 +154,9 @@ names a target. Thus a credential that an Effect uses stays out of the Harness c
 program, and it runs in a container in which the Agent executes nothing. [Effects](effects.md) tells which Effect runs
 where. It has two placements:
 
-- **The Sandbox Effector** is a container in a Sandbox pod, named `effector`. It mounts the Worktree read-only. It runs
-  a `push`, an `http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is
-  the Sandbox Image, unless the `workspace()` names a different image.
+- **The Sandbox Effector** is a container in a Sandbox pod, named `effector`. It mounts `/work` read-only. It runs a
+  `push`, an `http` Effect whose body is a Worktree file, and a `command` that names an Effect secret. Its image is the
+  Sandbox Image, unless the `workspace()` names a different image.
 - **The Instance Effector** is one pod for each Instance, `jr2-instance-effector`. It runs each `http` Effect that reads
   no Worktree file, and each `dispatch` that starts a run on a different Orchestrator. It holds the Instance token of
   that Orchestrator as an Effect secret. It runs in the `jr2-harness` Kit image.

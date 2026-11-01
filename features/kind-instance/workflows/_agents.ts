@@ -11,9 +11,9 @@
 // `_`-prefixed, so workflow discovery skips it: this module is imported, never registered.
 //
 // No directory here (ADR-0057): where a Turn works is its Frame, not the persona's — under a
-// Workspace with one Repo Slot the actor frames that slot's Worktree, and every Working tool takes
-// its cwd from there rather than from the Harness process's own, which is why the image is free to
-// put its WORKDIR wherever its author wants.
+// Workspace with Repo Slots each Turn names its Worktree in `cwd`, and every Working tool takes its
+// cwd from there rather than from the Harness process's own, which is why the image is free to put
+// its WORKDIR wherever its author wants.
 //
 // The instructions are honest prose rather than a script. What an Agent does on a turn is
 // decided by the scripted MODEL (`features/steps/fake-provider.ts`), which parks until a scenario

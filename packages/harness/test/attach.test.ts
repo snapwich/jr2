@@ -1,5 +1,5 @@
 // The attach (ADR-0063), run by the Harness in its own container: per Repo Slot a pod-local
-// `git clone --shared` off the node cache, the fetch/push split, and the branch worktree — the
+// `git clone --shared` off the node cache, the fetch/push split, and `default/` on the Binding's base — the
 // same effect the Orchestrator's `kubectl exec` script had (ADR-0004, ADR-0051, ADR-0053). Driven
 // through REAL git in a temp layout shaped like the pod's (`/repos/<key>` bare cache, `/work`,
 // `/opt/jr2/bin/work-acl`), because every claim here is about what git ends up holding.
@@ -54,14 +54,15 @@ async function layout() {
   return { root, src, git, workRoot, runtime, stamped, globalConfig, attach };
 }
 
-test("attach clones each slot off its cache, splits fetch from push, and cuts the branch worktree", async () => {
+test("attach clones each slot off its cache, splits fetch from push, and cuts no Worktree", async () => {
   const l = await layout();
-  const res = await l.attach({ branch: "feat/x", slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
-  const worktree = join(l.workRoot, "app", "feat-x");
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] });
   const dflt = join(l.workRoot, "app", "default");
-  assert.deepEqual(res, { repos: { app: worktree } });
-  assert.equal(l.git(worktree, "branch", "--show-current"), "feat/x", "the worktree is ON the new branch");
-  assert.equal(l.git(worktree, "rev-parse", "HEAD"), l.git(l.src, "rev-parse", "main"), "cut from origin/HEAD");
+  assert.deepEqual(res, { repos: { app: join(l.workRoot, "app") }, bases: { app: "main" } });
+  assert.equal(l.git(dflt, "branch", "--show-current"), "main", "default/ stays on the real default branch");
+  assert.equal(l.git(dflt, "worktree", "list", "--porcelain").split("worktree ").length, 2, "only the clone");
+  assert.equal(l.git(dflt, "config", "gc.auto"), "0");
+  assert.equal(l.git(dflt, "config", "maintenance.auto"), "false");
   // `--shared`: the objects stay the cache's (ADR-0051).
   const alternates = await readFile(join(dflt, ".git", "objects", "info", "alternates"), "utf8");
   assert.match(alternates, new RegExp(`${KEY}/objects`));
@@ -84,7 +85,6 @@ test("the fetch url escapes what git's ext:: transport would read as syntax", as
   // (Moved here from the Orchestrator's suite with the attach itself, ADR-0063.)
   const l = await layout();
   await l.attach({
-    branch: "b",
     slots: [
       { slot: "azure", url: URL_, identity: "dev.azure.com/org/My%20Project/_git/repo", key: KEY },
       { slot: "spaced", url: URL_, identity: "host/team space/app", key: KEY },
@@ -95,47 +95,63 @@ test("the fetch url escapes what git's ext:: transport would read as syntax", as
   assert.equal(origin("spaced"), `ext::${l.runtime}/bin/jr2-upload-pack %S host/team% space/app`);
 });
 
-test("a ref is the base the branch is cut FROM, never the branch the Agent commits on", async () => {
+test("a ref that IS the default branch keeps the branch attached", async () => {
   const l = await layout();
-  const res = await l.attach({
-    branch: "feat/x",
-    slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "develop" }],
-  });
-  const worktree = res.repos.app!;
-  assert.equal(l.git(worktree, "branch", "--show-current"), "feat/x");
-  assert.equal(l.git(worktree, "rev-parse", "HEAD"), l.git(l.src, "rev-parse", "develop"));
-  assert.equal(l.git(join(l.workRoot, "app", "default"), "branch", "--list", "develop"), "", "no base branch conjured");
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "main" }] });
+  const dflt = join(l.workRoot, "app", "default");
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(res.bases.app, "main");
+});
+
+test("a ref to another branch: default/ holds it, tracked, and the frozen default branch goes", async () => {
+  const l = await layout();
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "develop" }] });
+  const dflt = join(l.workRoot, "app", "default");
+  assert.equal(l.git(dflt, "symbolic-ref", "--short", "HEAD"), "develop");
+  assert.equal(l.git(dflt, "rev-parse", "HEAD"), l.git(l.src, "rev-parse", "develop"));
+  assert.equal(l.git(dflt, "branch", "--list", "main"), "", "a stale local main cannot answer a cut");
+  assert.equal(res.bases.app, "develop");
+});
+
+test("a ref to a tag or a commit: default/ is detached there, and it is the base", async () => {
+  const l = await layout();
+  l.git(l.src, "tag", "v3", "develop");
+  l.git(l.root, "-C", join(l.root, "repos", KEY), "fetch", "-q", l.src, "refs/tags/v3:refs/tags/v3");
+  const res = await l.attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "v3" }] });
+  const dflt = join(l.workRoot, "app", "default");
+  assert.equal(l.git(dflt, "rev-parse", "HEAD"), l.git(l.src, "rev-parse", "v3"));
+  assert.equal(l.git(dflt, "branch", "--show-current"), "");
+  assert.equal(res.bases.app, "v3");
+});
+
+test("a re-attach changes nothing: an Agent's edit, and a moved remote-tracking ref", async () => {
+  const l = await layout();
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY, ref: "develop" }] };
+  const first = await l.attach(req);
+  const dflt = join(l.workRoot, "app", "default");
+  l.git(dflt, "update-ref", "refs/remotes/origin/develop", l.git(l.src, "rev-parse", "main"));
+  await writeFile(join(dflt, "edit"), "an Agent's edit in default/");
+  const second = await l.attach(req);
+  assert.deepEqual(second, first);
+  assert.ok(existsSync(join(dflt, "edit")));
+  assert.equal(l.git(dflt, "rev-parse", "HEAD"), l.git(l.src, "rev-parse", "develop"));
 });
 
 test("attach is idempotent: a second attach finds everything present and answers the same paths", async () => {
   const l = await layout();
-  const req = { branch: "b", slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
+  const req = { slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
   const first = await l.attach(req);
-  await writeFile(join(first.repos.app!, "work-in-progress"), "kept");
+  const dflt = join(l.workRoot, "app", "default");
+  await writeFile(join(dflt, "work-in-progress"), "kept");
   const second = await l.attach(req);
   assert.deepEqual(second, first);
-  assert.ok(existsSync(join(first.repos.app!, "work-in-progress")), "the branch worktree is not reset");
-});
-
-test("a reviewSha adds the detached review worktree, forced and cleaned on every attach (ADR-0028)", async () => {
-  const l = await layout();
-  const sha = l.git(l.src, "rev-parse", "develop");
-  const req = { branch: "b", reviewSha: sha, slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] };
-  const res = await l.attach(req);
-  const review = join(l.workRoot, "app", "b-review");
-  assert.deepEqual(res.review, { app: review });
-  assert.equal(l.git(review, "rev-parse", "HEAD"), sha);
-  assert.equal(l.git(review, "branch", "--show-current"), "", "detached");
-  await writeFile(join(review, "rogue"), "x");
-  await l.attach(req);
-  assert.ok(!existsSync(join(review, "rogue")), "a previous round's leftovers do not survive");
+  assert.ok(existsSync(join(dflt, "work-in-progress")), "default/ is not reset");
 });
 
 test("a failed step names its slot and carries git's own stderr", async () => {
   const l = await layout();
   const err = await l
     .attach({
-      branch: "b",
       slots: [
         { slot: "app", url: URL_, identity: IDENTITY, key: KEY },
         { slot: "infra", url: "https://example.test/infra.git", identity: "example.test/infra", key: "missing-key" },
@@ -152,19 +168,29 @@ test("a failed step names its slot and carries git's own stderr", async () => {
   assert.match(err.message, /missing-key/, "git's own words name the absent cache");
 });
 
+test("attachFault refuses a slot that starts with a dot, and keeps a dot inside a name", () => {
+  const slot = { slot: "app", url: "u", identity: "i", key: "k" };
+  for (const name of [".jr2", ".hidden"]) {
+    assert.match(
+      attachFault({ slots: [{ ...slot, slot: name }] }) ?? "",
+      /cannot start with "\.", because \/work\/\.jr2\/ is reserved for jr2 \(ADR-0075\)/,
+    );
+  }
+  assert.equal(attachFault({ slots: [{ ...slot, slot: "v2.x" }] }), undefined);
+});
+
 test("attachFault refuses a body that is not an AttachRequest, naming what is wrong", () => {
   const slot = { slot: "app", url: URL_, identity: IDENTITY, key: KEY };
-  assert.equal(attachFault({ branch: "b", slots: [slot] }), undefined);
-  assert.equal(attachFault({ branch: "b", reviewSha: "abc", slots: [{ ...slot, ref: "main" }] }), undefined);
+  assert.equal(attachFault({ slots: [slot] }), undefined);
+  assert.equal(attachFault({ slots: [{ ...slot, ref: "main" }] }), undefined);
   assert.match(attachFault(undefined) ?? "", /AttachRequest/);
-  assert.match(attachFault({ branch: "b", slots: [] }) ?? "", /names no Repo Slot/);
-  assert.match(attachFault({ branch: "", slots: [slot] }) ?? "", /branch/);
-  assert.match(attachFault({ branch: "b", slots: [{ ...slot, key: undefined }] }) ?? "", /key/);
-  assert.match(attachFault({ branch: "b", slots: [{ ...slot, ref: 3 }] }) ?? "", /ref/);
+  assert.match(attachFault({ slots: [] }) ?? "", /names no Repo Slot/);
+  assert.match(attachFault({ slots: [{ ...slot, key: undefined }] }) ?? "", /key/);
+  assert.match(attachFault({ slots: [{ ...slot, ref: 3 }] }) ?? "", /ref/);
   // The slot and key are directory names under /work and /repos: never a path out of them.
   for (const bad of ["..", ".", "a/b", ""]) {
-    assert.match(attachFault({ branch: "b", slots: [{ ...slot, slot: bad }] }) ?? "", /slot/, `slot ${bad}`);
-    assert.match(attachFault({ branch: "b", slots: [{ ...slot, key: bad }] }) ?? "", /key/, `key ${bad}`);
+    assert.match(attachFault({ slots: [{ ...slot, slot: bad }] }) ?? "", /slot/, `slot ${bad}`);
+    assert.match(attachFault({ slots: [{ ...slot, key: bad }] }) ?? "", /key/, `key ${bad}`);
   }
-  assert.match(attachFault({ branch: "b", slots: [slot, slot] }) ?? "", /twice/);
+  assert.match(attachFault({ slots: [slot, slot] }) ?? "", /twice/);
 });

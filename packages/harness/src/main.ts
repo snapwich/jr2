@@ -10,6 +10,7 @@
 // Harness, ADR-0031), and the command the operator overrides a Sandbox Image with, where jr2's
 // runtime is mounted at `/opt/jr2` and nothing about this process came from the image (ADR-0037).
 
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { harnessServer } from "./app.ts";
 import { attacher } from "./attach.ts";
@@ -91,6 +92,7 @@ const harnessWire = harnessServer({
   // Agent's user and its Stand-ins. The Instance Harness refuses them (`menuOnly`).
   execs: new Execs(),
   checkAdmission: (resolved) => admissionFault(models, resolved),
+  frameExists: (path) => existsSync(path),
   // Set on the Instance Harness StatefulSet alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code
   // execution in this pod" a property, not a comment.

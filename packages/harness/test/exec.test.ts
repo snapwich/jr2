@@ -43,6 +43,54 @@ test("argv is never shell text: a metacharacter stays inside its one argument", 
   assert.equal(existsSync(marker), false, "nothing interpreted it");
 });
 
+test("a `cwd` that is not there settles exited 127, with the reason in the tail, and nothing runs (ADR-0075)", async () => {
+  const execs = new Execs();
+  const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
+  const cwd = join(dir, "never-cut");
+  const marker = join(dir, "ran");
+  execs.start("no-folder", {
+    argv: [node, "-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "")`],
+    cwd,
+    root: true,
+    timeoutMs: 10_000,
+    tail: 4096,
+  });
+  const { read } = await settled(execs, "no-folder");
+  assert.equal(read.output?.outcome, "exited");
+  assert.equal(read.output?.code, 127);
+  assert.match(read.output!.tail, /no folder .*never-cut: cut the Worktree first; nothing ran/);
+  assert.equal(existsSync(marker), false, "the program did not start");
+});
+
+test("`root`: a folder with no `.git` settles exited 127, and a folder that has one runs (ADR-0075)", async () => {
+  const execs = new Execs();
+  const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
+  const marker = join(dir, "ran");
+  const start = (id: string) =>
+    execs.start(id, {
+      argv: [node, "-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "")`],
+      cwd: dir,
+      root: true,
+      timeoutMs: 10_000,
+      tail: 4096,
+    });
+
+  start("no-root");
+  const { read } = await settled(execs, "no-root");
+  assert.equal(read.output?.outcome, "exited");
+  assert.equal(read.output?.code, 127);
+  assert.match(read.output!.tail, /is a folder, and no Worktree root; nothing ran/);
+  assert.equal(existsSync(marker), false, "the program did not start");
+
+  // A Worktree's `.git` is a file, so a file counts.
+  writeFileSync(join(dir, ".git"), "gitdir: /elsewhere\n");
+  start("root");
+  const ran = await settled(execs, "root");
+  assert.equal(ran.read.output?.outcome, "exited");
+  assert.equal(ran.read.output?.code, 0);
+  assert.equal(existsSync(marker), true, "with a `.git`, the program ran");
+});
+
 test("the exit code is the output; the tail is bounded and the full stream is read in order", async () => {
   const execs = new Execs();
   execs.start("e2", {

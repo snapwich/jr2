@@ -14,7 +14,7 @@ import { z } from "zod";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { jr2Setup } from "../src/setup.ts";
-import { pool, source } from "../src/pool.ts";
+import { pool, source, type PoolNextInput } from "../src/pool.ts";
 import { workspace, type SandboxPort, type Workspaced } from "../src/workspace.ts";
 import { inputSchemaOf, vocabularyOf } from "../src/vocabulary.ts";
 import { EventValidationError } from "../src/registration.ts";
@@ -55,7 +55,7 @@ const wsBody = jr2Setup({
 });
 
 /** A Sandbox backend that never answers: the wrapper stays at `placing`, which is all this
- * suite needs — the resolved spec is already in its context, and no pod is anyone's business here. */
+ * suite needs — the parsed input is already in its context, and no pod is anyone's business here. */
 const parkedSandbox = (): SandboxPort => ({
   place: () => new Promise(() => {}),
   provision: () => new Promise(() => {}),
@@ -136,7 +136,6 @@ test("workspace(): the body's schema is NOT the door — the wrapper declares it
   // door plus a field no caller can send. Propagating it would 400 every valid start.
   const bare = workspace(wsBody, {
     repos: { app: "https://example.test/app.git" },
-    spec: () => ({ branch: "feat-1" }),
   });
   assert.equal(inputSchemaOf(bare), undefined);
   // Nor does the VOCABULARY propagate (ADR-0049): the body's names stay the body's, because the
@@ -147,15 +146,14 @@ test("workspace(): the body's schema is NOT the door — the wrapper declares it
   const door = z.object({ repo: z.string(), branch: z.string().default("feat-1") });
   const declared = workspace(wsBody, {
     input: door,
-    // `input` is inferred from the schema — nothing here annotates a shape by hand, on the spec or
-    // on the per-run slot's mapper.
+    // `input` is inferred from the schema: nothing here annotates a shape by hand on the per-run
+    // slot's mapper.
     repos: { app: ({ input }) => ({ url: input.repo, ref: "main" }) },
-    spec: ({ input }) => ({ branch: input.branch }),
   });
   assert.equal(inputSchemaOf(declared), door);
 
   // Through the door for real: the wrapper's schema is what `GET /workflows/:name` serves and
-  // what `start` enforces, and the PARSED input is what reaches the spec mapper.
+  // what `start` enforces, and the PARSED input is what the wrapper holds.
   const host = new RunHost({ store: await mkStore(), sandbox: parkedSandbox() });
   host.register({ name: "wsdoor", machine: declared, provide: () => ({}) });
 
@@ -169,8 +167,9 @@ test("workspace(): the body's schema is NOT the door — the wrapper declares it
     (err: Error) => err instanceof EventValidationError && /invalid input for workflow "wsdoor"/.test(err.message),
   );
   const { runId } = await host.start("wsdoor", { repo: "https://example.test/app.git" });
-  const ctx = host.status(runId)?.context as { spec: { branch: string } };
-  assert.deepEqual(ctx.spec, { branch: "feat-1" });
+  const ctx = host.status(runId)?.context as { runInput: { repo: string; branch: string } };
+  assert.equal(ctx.runInput.repo, "https://example.test/app.git");
+  assert.equal(ctx.runInput.branch, "feat-1"); // the zod default, so the wrapper holds the parsed input
 });
 
 test("workspace(): wrapping a body that declares its own input fails loudly, naming the fix", () => {
@@ -179,9 +178,9 @@ test("workspace(): wrapping a body that declares its own input fails loudly, nam
   // is not what it describes. Silence would leave an author trusting a contract that does not
   // exist, which is the exact drift ADR-0033 closes.
   assert.throws(
-    () => workspace(titledTemplate, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }),
+    () => workspace(titledTemplate, { repos: { app: "https://example.test/app.git" } }),
     (err: Error) =>
-      /declares its own run input/.test(err.message) && /workspace\(body, \{ input, spec \}\)/.test(err.message),
+      /declares its own run input/.test(err.message) && /workspace\(body, \{ input \}\)/.test(err.message),
   );
 });
 
@@ -195,10 +194,9 @@ test("workspace(): a body that setup() made with a zod `input` is refused too, n
     states: { idle: {} },
   });
   assert.throws(
-    () => workspace(setupBody, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }),
+    () => workspace(setupBody, { repos: { app: "https://example.test/app.git" } }),
     (err: Error) =>
-      /"setupbody" declares its own run input/.test(err.message) &&
-      /workspace\(body, \{ input, spec \}\)/.test(err.message),
+      /"setupbody" declares its own run input/.test(err.message) && /workspace\(body, \{ input \}\)/.test(err.message),
   );
 });
 
@@ -211,7 +209,7 @@ test("pool(): the worker's schema is NOT the door — the pool declares its own 
   });
   // Workers are fed per-ITEM, never the run body, so the worker's contract describes nothing a
   // starter sends. Propagating it (as workspace does for its body) would 400 valid pool starts.
-  const parked = source({ next: fromPromise<null, { active: string[] }>(() => new Promise(() => {})) });
+  const parked = source({ next: fromPromise<null, PoolNextInput>(() => new Promise(() => {})) });
   const bare = pool(worker, { source: parked, itemId: () => "i" });
   assert.equal(inputSchemaOf(bare), undefined);
   // Nor the vocabulary (ADR-0049): a source-less pool declares nothing, and `approve` is the
@@ -222,9 +220,11 @@ test("pool(): the worker's schema is NOT the door — the pool declares its own 
   const poolInput = z.object({ maxWorkers: z.number().default(2) });
   const capped = pool(worker, {
     input: poolInput,
-    source: parked,
+    source: source({
+      next: fromPromise<null, PoolNextInput>(() => new Promise(() => {})),
+    }),
     itemId: () => "i",
-    // Inferred from the declared schema, like `workspace()`'s spec mapper — nothing casts here.
+    // Inferred from the declared schema, like `workspace()`'s per-run slot mapper: nothing casts here.
     cap: ({ input }) => input.maxWorkers,
   });
   assert.equal(inputSchemaOf(capped), poolInput);

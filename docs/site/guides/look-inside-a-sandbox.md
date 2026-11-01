@@ -45,10 +45,12 @@ ws-a1322024-x-2-h8pgwk   Ready   http://ws-a1322024-x-2-h8pgwk.my-instance.svc:8
   `Lost` when the pod is gone, and a `Lost` Sandbox does not get a new pod. A delete removes the Sandbox at once, so you
   seldom see the phase `Terminating`.
 - When the run has no Sandbox now, `kubectl` prints `No resources found in <namespace> namespace.`
+- [`jr2 status <run id>`](../reference/cli.md#status) prints each [Worktree](../reference/glossary.md#worktree) that the
+  run cut, with its path and its branch, in `worktrees` and in one `worktree:` line for each cut. Give this command on
+  your computer, not in the Sandbox.
 - When a [Workflow](../reference/glossary.md#workflow) puts `branch` and `worktree` in the `meta` of a
   [Gate](../reference/glossary.md#gate), as the `review` Gate of [`task`](../reference/machines.md#task) does,
-  [`jr2 status <run id>`](../reference/cli.md#status) prints them in `gates`. Give this command on your computer, not in
-  the Sandbox. Then you can copy the Worktree from the status.
+  `jr2 status <run id>` prints them in `gates` too.
 
 ## Open a shell
 
@@ -62,8 +64,8 @@ starts from `node:24-slim`, which has `bash`. If your Sandbox Image has no `bash
 ## Find the Worktree
 
 Each [Repo Slot](../reference/glossary.md#repo-slot) of the Workspace has a folder in `/work`. In it, `default` is a
-clone of the [Repo](../reference/glossary.md#repo), and the [Worktree](../reference/glossary.md#worktree) of the branch
-is beside it. To show the folders of the Repo Slots, use this command:
+clone of the [Repo](../reference/glossary.md#repo), and each [Worktree](../reference/glossary.md#worktree) that the
+Machine cut is beside it. To show the folders of the Repo Slots, use this command:
 
 ```sh
 ls /work
@@ -77,21 +79,23 @@ git -C /work/<Repo Slot>/default worktree list
 
 For the slot `target` of a run of `task`, the output is:
 
+<!-- output: not run -->
+
 ```text
-/work/target/default                                        1e40403 [main]
-/work/target/jr2-task-0cbdb607-48dc-4eab-9469-f8e41f2b0025  1e40403 [jr2/task-0cbdb607-48dc-4eab-9469-f8e41f2b0025]
+/work/target/default  1e40403 (detached HEAD)
+/work/target/task     1e40403 [jr2/task-0cbdb607-48dc-4eab-9469-f8e41f2b0025]
 ```
 
-The first line is the clone, on the default branch of the Repo. The second line is the Worktree of the branch. Your
-commits and your instance id are different.
+The first line is the clone, on the base of the Repo Slot. Here the base is a tag, so the clone is detached. On a
+branch, the line shows the branch. The second line is the Worktree that `task` cut. Your commits and your instance id
+are different.
 
-- In the commands below, `<branch>` is the name of the branch, and `<worktree>` is the folder of its Worktree. The
-  folder is the name of the branch, with each `/` changed to `-`. For example, the branch `jr2/task-<instance id>` has
-  the Worktree `/work/target/jr2-task-<instance id>`.
-- A Workspace that has a commit to review has one more Worktree, `/work/<Repo Slot>/<worktree>-review`. It holds that
-  commit, with no branch.
-- The attach makes the folders and the Worktrees after the Sandbox is `Ready`. Until then, `/work` has no folder for the
-  Repo Slot.
+- In the commands below, `<branch>` is the name of the branch, and `<worktree>` is the name of the folder of its
+  Worktree. Your Machine chooses each one. The name of the folder does not come from the branch. `task` names the folder
+  `task`.
+- A detached Worktree, such as the Worktree of a reviewer, shows `(detached HEAD)` in place of a branch.
+- The attach makes the folders and the clones after the Sandbox is `Ready`. Until then, `/work` has no folder for the
+  Repo Slot. The Machine cuts each Worktree in a state of its body. See [Cut a Worktree](cut-a-worktree.md).
 
 ## Read the branch
 
@@ -168,6 +172,7 @@ commit that you did not push goes with it.
 ## Read next
 
 - [Workspaces](../concepts/workspaces.md)
+- [Cut a Worktree](cut-a-worktree.md)
 - [ADR-0004](../reference/decisions/0004-worktree-provisioning-model.md): the clone and the Worktree.
 - [ADR-0005](../reference/decisions/0005-sandbox-pod-composition.md): the containers of a Sandbox.
 - [ADR-0012](../reference/decisions/0012-workspace-wrapper-machine.md): when a Workspace deletes its Sandbox.

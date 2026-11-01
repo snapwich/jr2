@@ -20,7 +20,7 @@
 #      baked on their own registry is runnable without jr2 ever touching it.
 #
 # So **/opt/jr2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/jr2-upload-pack · bin/effector · lib/*.so ·
+#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/cut-lock · bin/jr2-upload-pack · bin/effector · lib/*.so ·
 #   etc/gitconfig · src/ · node_modules/ · package.json
 # — is mounted verbatim, this image's own layers, into a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
@@ -120,10 +120,13 @@ RUN set -eux; \
 # one the KERNEL accepts — setxattr validates it — and that getfacl reads it back as ADR-0005's line;
 # `acl` is installed for that check alone and discarded with the stage.
 COPY deploy/harness/work-acl.c /tmp/work-acl.c
+COPY deploy/harness/cut-lock.c /tmp/cut-lock.c
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev acl \
  && rm -rf /var/lib/apt/lists/*; \
     gcc -Os -static -o /opt/jr2/bin/work-acl /tmp/work-acl.c; \
+    gcc -Os -static -o /opt/jr2/bin/cut-lock /tmp/cut-lock.c; \
+    /opt/jr2/bin/cut-lock < /tmp/cut-lock.c; \
     mkdir /tmp/acl-smoke; \
     /opt/jr2/bin/work-acl /tmp/acl-smoke; \
     getfacl -d --omit-header /tmp/acl-smoke | grep -qx 'group::rwx'

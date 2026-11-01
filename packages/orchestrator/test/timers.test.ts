@@ -35,7 +35,7 @@ import { z } from "zod";
 import { defineEvent, doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
 import { agentActorWith, type AgentTurnInput, type AgentTurnPlacement } from "../src/actor.ts";
 import { agent } from "../src/harness-client.ts";
-import { pool, source } from "../src/pool.ts";
+import { pool, source, type PoolNextInput } from "../src/pool.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { pendingTimers, startAndRearm, watchTimers, type PendingTimer } from "../src/timers.ts";
@@ -832,7 +832,7 @@ function pollingPool(items: Item[], claims: string[][]) {
   return pool(parkedWorker, {
     id: "run",
     source: source<Item>({
-      next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+      next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
         claims.push([...input.active]);
         const item = items.find((i) => !input.active.includes(i.id)) ?? null;
         if (item) items.splice(items.indexOf(item), 1);

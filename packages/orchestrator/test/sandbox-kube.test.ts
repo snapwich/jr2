@@ -114,10 +114,9 @@ function cluster(script: object[] = [READY], harness?: (req: AttachRequest, auth
     const auth = new Headers(init.headers).get("authorization");
     attaches.push({ url: String(input), body, auth });
     if (harness) return harness(body, auth);
-    const repos = Object.fromEntries(
-      body.slots.map((s) => [s.slot, `/work/${s.slot}/${body.branch.replace(/\//g, "-")}`]),
-    );
-    return Response.json({ repos });
+    const repos = Object.fromEntries(body.slots.map((s) => [s.slot, `/work/${s.slot}`]));
+    const bases = Object.fromEntries(body.slots.map((s) => [s.slot, s.ref ?? "main"]));
+    return Response.json({ repos, bases });
   }) as typeof fetch;
   return { api, calls: api.writes, attaches, exec: { client, watch, harnessFetch } };
 }
@@ -2079,11 +2078,11 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
     { slot: "infra", url: infraUrl, perRun: false },
   ];
   await port.provision({ name: "sb-stale", runId: "r", workflow: "w", route: [], repos: slots });
-  const out = await port.attach({ name: "sb-stale", spec: { branch: "b" }, repos: slots });
+  const out = await port.attach({ name: "sb-stale", repos: slots });
   assert.deepEqual(out.stale, {
     infra: `Repo "${infraKey}" on node kind-worker is stale: fatal: unable to access 'https://example.test/infra.git/': Could not resolve host`,
   });
-  assert.equal(out.repos.app, "/work/app/b", "the attach PROCEEDED — stale is a notice, not a refusal");
+  assert.equal(out.repos.app, "/work/app", "the attach PROCEEDED — stale is a notice, not a refusal");
 
   // Fresh (the common case): no `stale` key at all, and a later fresh provision of the same name
   // forgets an earlier verdict.
@@ -2095,7 +2094,7 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
   const { exec: e2 } = cluster([fresh]);
   const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...e2 });
   await port2.provision({ name: "sb-stale", runId: "r", workflow: "w", route: [], repos: slots });
-  assert.equal("stale" in (await port2.attach({ name: "sb-stale", spec: { branch: "b" }, repos: slots })), false);
+  assert.equal("stale" in (await port2.attach({ name: "sb-stale", repos: slots })), false);
 });
 
 // --- the attach (ADR-0004, ADR-0051, ADR-0063) ------------------------------------------------------
@@ -2114,7 +2113,7 @@ test("attach is the Harness's POST /attach at the Sandbox's endpoint, with the H
     { slot: "app", url: APP_URL },
     { slot: "infra", url: "git@github.com:acme/infra.git", ref: "release/2" },
   ];
-  const out = await port.attach({ name: "sb-3", spec: { branch: "feat/x", reviewSha: "abc123" }, repos });
+  const out = await port.attach({ name: "sb-3", repos });
 
   assert.equal(c.attaches.length, 1);
   const [call] = c.attaches;
@@ -2135,10 +2134,9 @@ test("attach is the Harness's POST /attach at the Sandbox's endpoint, with the H
         ref: "release/2",
       },
     ],
-    branch: "feat/x",
-    reviewSha: "abc123",
   });
-  assert.deepEqual(out.repos, { app: "/work/app/feat-x", infra: "/work/infra/feat-x" }, "the Harness's paths");
+  assert.deepEqual(out.repos, { app: "/work/app", infra: "/work/infra" }, "the Harness's paths");
+  assert.deepEqual(out.bases, { app: "main", infra: "release/2" }, "the Harness's bases");
   assert.deepEqual(c.api.writes, [], "the attach writes nothing to the cluster");
 });
 
@@ -2150,8 +2148,8 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
     return c.exec.harnessFetch(input, init);
   }) as typeof fetch;
   const port = kubeSandbox({ ...provisionable, ...c.exec, harnessFetch: flaky });
-  const out = await port.attach({ name: "sb-r", spec: { branch: "b" }, repos: [{ slot: "app", url: APP_URL }] });
-  assert.deepEqual(out.repos, { app: "/work/app/b" });
+  const out = await port.attach({ name: "sb-r", repos: [{ slot: "app", url: APP_URL }] });
+  assert.deepEqual(out.repos, { app: "/work/app" });
 
   // A window that closes names the address it never reached.
   const never = kubeSandbox({
@@ -2163,7 +2161,7 @@ test("attach re-sends a request that never reached the Harness — Ready is not 
     }) as typeof fetch,
   });
   await assert.rejects(
-    () => never.attach({ name: "sb-r", spec: { branch: "b" }, repos: [{ slot: "app", url: APP_URL }] }),
+    () => never.attach({ name: "sb-r", repos: [{ slot: "app", url: APP_URL }] }),
     /never reached its Harness at http:\/\/sb-1\.default\.svc:8080/,
   );
 });
@@ -2181,7 +2179,7 @@ test("a failed attach carries the Harness's own words — the slot, the step, gi
   c.api.seed("sandboxes", { metadata: { name: "sb-f", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
   const port = kubeSandbox({ ...provisionable, ...c.exec });
   await assert.rejects(
-    () => port.attach({ name: "sb-f", spec: { branch: "b" }, repos: [{ slot: "app", url: APP_URL }] }),
+    () => port.attach({ name: "sb-f", repos: [{ slot: "app", url: APP_URL }] }),
     /Sandbox "sb-f": the attach failed \(500\): slot "app": clone off the node cache failed: fatal: repository/,
   );
   assert.equal(c.attaches.length, 1, "an answer is an answer: only a request that never arrived is re-sent");
@@ -2191,12 +2189,12 @@ test("attach refuses a Sandbox with no endpoint, and an empty slot list", async 
   const c = cluster([]);
   const port = kubeSandbox({ ...provisionable, ...c.exec });
   await assert.rejects(
-    () => port.attach({ name: "sb-none", spec: { branch: "b" }, repos: [{ slot: "app", url: APP_URL }] }),
+    () => port.attach({ name: "sb-none", repos: [{ slot: "app", url: APP_URL }] }),
     /no endpoint to attach through/,
   );
   const ready = readySandbox("sb-e");
   await assert.rejects(
-    () => kubeSandbox({ ...provisionable, ...ready.exec }).attach({ name: "sb-e", spec: { branch: "b" }, repos: [] }),
+    () => kubeSandbox({ ...provisionable, ...ready.exec }).attach({ name: "sb-e", repos: [] }),
     /names no Repo Slot/,
   );
 });
