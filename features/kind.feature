@@ -419,6 +419,25 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the delivery is refused as unauthorized
       And the run has not settled
 
+  Rule: an Agent cannot deliver a pick as a co-resident sibling Agent (ADR-0076)
+    Two workspace-ful Agents share one Sandbox and its token. The `coder` works, then the
+    `reviewer` decides. While the reviewer's Turn is live and parked — it has not picked — the
+    coder's Harness container posts the reviewer's `approve` to the reviewer's iid through the
+    Custodian, with the control Stand-in it holds. The reviewer never approved, so a run that
+    reaches `approved` was forged. ADR-0076 runs each agent slot in its own Harness container with
+    its own per-slot credential, so the Orchestrator refuses a pick whose slot is not the
+    registration's. This scenario is RED until that build lands.
+
+    Scenario: a coder cannot approve its own review from the shared Sandbox
+      Given the kind instance is serving
+      When I start the "sibling" workflow in mode "review" detached
+      Then the run's Sandbox becomes Ready
+      # Release the coder's pick, so the run moves to `reviewing` and the reviewer's Turn parks.
+      When the Agent in the Sandbox calls "built" with summary "done"
+      And the coder's Harness container posts "approve" to the reviewer through the Custodian
+      Then the sibling delivery is refused
+      And the run has not settled
+
   Rule: a Harness holds stand-ins, and only the Custodian puts the key on the wire
     ADR-0059. The Agent executes code in the Harness container, so a key there is a key it can take
     away. The Harness's env holds a stand-in; the Custodian, a container the Agent executes nothing

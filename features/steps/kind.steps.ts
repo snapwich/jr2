@@ -391,6 +391,34 @@ When(
   },
 );
 
+/**
+ * The sibling-injection attack ADR-0076 exists to stop, run for real. While the `reviewer` slot's
+ * Turn is live and parked (the scenario never releases it), the `coder` slot's container posts the
+ * reviewer's `approve` to the reviewer's iid through the Custodian on loopback — exactly the path
+ * the Harness uses for its own picks — with the control Stand-in that container holds. Today the
+ * one Harness container holds the one Sandbox Stand-in, the Custodian swaps it for the Sandbox
+ * token, and the Orchestrator sees only a matching Sandbox — so the coder approves its own review.
+ * After ADR-0076 the coder's container holds only the coder's per-slot credential, which the
+ * Orchestrator refuses on the reviewer's iid.
+ */
+When(
+  "the coder's Harness container posts {string} to the reviewer through the Custodian",
+  async function (this: E2EWorld, pick: string): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    // The reviewer's live registration, addressed as the Harness's Menu encodes it (menu.ts).
+    const iid = continuedIid(this.runId!, "body", "reviewer");
+    // A direct loopback call to the Custodian's control listener (NO_PROXY covers 127.0.0.1), with
+    // the Stand-in from the container's env. The build updates the env name to the coder's per-slot
+    // Stand-in; the assertion (refused) is what changes the day it lands.
+    const probe =
+      `fetch(${JSON.stringify(`http://127.0.0.1:8081/agents/${encodeURIComponent(iid)}/events`)},{method:"POST",` +
+      `headers:{"content-type":"application/json",authorization:"Bearer "+process.env.JR2_SANDBOX_TOKEN},` +
+      `body:${JSON.stringify(JSON.stringify({ type: pick, summary: "self-approved" }))}})` +
+      `.then(async r=>console.log("HTTP",r.status,(await r.text()).slice(0,200))).catch(e=>console.log("ERR",e.message))`;
+    this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", CODER_CONTAINER, "--", RUNTIME_NODE, "-e", probe]);
+  },
+);
+
 // --- held secrets (ADR-0059) -------------------------------------------------------------------
 //
 // The kind instance's `harness.provider.apiKey` is a held secret: a per-scenario key the scripted
@@ -402,6 +430,10 @@ When(
 
 /** The runtime's node, which every Harness container has at the same path (ADR-0037). */
 const RUNTIME_NODE = "/opt/jr2/bin/node";
+// The container that runs the `coder` slot's Turns and Working tools. Today one Harness container
+// serves every slot, so it is `harness`; ADR-0076 gives each slot its own Harness container, and
+// the build points this at the coder's. The sibling-injection test posts from here.
+const CODER_CONTAINER = "harness";
 
 /**
  * The scan: every process's environment and every regular file under `/` but the kernel's trees,
@@ -964,6 +996,14 @@ Then("the delivery is refused as unauthorized", function (this: E2EWorld): void 
 Then("the run has not settled", async function (this: E2EWorld): Promise<void> {
   const s = await wsStatus(this);
   assert.equal(s.status, "active", "the refused delivery moved nothing");
+});
+
+Then("the sibling delivery is refused", function (this: E2EWorld): void {
+  assert.match(
+    this.podSays ?? "",
+    /HTTP 403/,
+    `ADR-0076: the coder's container must not deliver a pick as the reviewer (pod said: ${this.podSays?.trim()})`,
+  );
 });
 
 Then("the run's Sandbox is the same one, at the same endpoint", async function (this: E2EWorld): Promise<void> {
