@@ -6,7 +6,10 @@ A Sandbox pod composes up to four containers around one shared worktree volume (
   [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) with jr2's runtime mounted at
   `/opt/jr2` and the command overridden to start the Harness. The Agent's toolchain lives here because the Working tools
   (read/write/edit/bash) execute here — the tools the Agent can reach are this image's. It is also where a human
-  `kubectl exec`s to inspect a run with the agent's exact tools, worktrees, and filesystem.
+  `kubectl exec`s to inspect a run with the agent's exact tools, worktrees, and filesystem. A Sandbox runs one Harness
+  container for each of its workspace-ful agent slots; they share this image and `/work`, and each holds its own
+  per-slot control credential, so no Agent can act as another
+  ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)).
 - **Custodian container** — jr2-composed sidecar, upstream Envoy configured at provision by the Orchestrator
   ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md),
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): the pod's credential holder. It holds
@@ -124,9 +127,9 @@ session user in the work group itself (`groupadd -g 2000 work && usermod -aG wor
 carries no default ACL, so files there fall back to the writer's umask. The Harness runs at `umask 002` (itself and
 every tool child) and the attach script opens with the same line, so jr2's own writes are group-writable even there;
 what a User Container session writes outside a repo tree is its own business. A Workspace with no Repo Slot (ADR-0051)
-has no repo tree: its steps share `/work` itself, every Agent and `command` of it in the one Harness container as one
-uid, so they need no ACL; a User Container's writes there have this paragraph's limit, until a user of that seat needs
-more.
+has no repo tree: its steps share `/work` itself, every Agent and `command` of it at the one uid — each Agent in its own
+Harness container ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)) — so they need no ACL; a User
+Container's writes there have this paragraph's limit, until a user of that seat needs more.
 
 ## Constraints on the seat
 

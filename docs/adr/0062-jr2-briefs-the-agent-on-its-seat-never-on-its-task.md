@@ -42,8 +42,12 @@ whose processes are gone, with no way to know why.
   still reads first, as it would with no jr2.
 - **Always on.** No author can turn it off: every fact in it passes the rule above, so removing one can only make the
   Agent act worse. An `instructions` that repeats a fact is harmless.
-- **A notice is delivered once**, on the next admission in its scope that takes it, then cleared. That is the next Turn,
-  or, for a guard kill that the Agent of an open Turn was not told, that Turn's nudge or wake (below).
+- **A notice is delivered once in each conversation its scope reaches**, then cleared for that conversation. A Workspace
+  notice reaches every conversation in the Workspace, so each hears it once — not one Turn for the whole Workspace. A
+  conversation takes it at its next Turn, at a step boundary of an open Turn (its surface read appends it, as it appends
+  a changed Allowed-picks list —
+  [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md), ADR-0002), or, for a
+  guard kill the Agent of an open Turn was not told, at that Turn's nudge or wake (below).
   - **Conversation scope** ("this conversation is new; earlier context is gone") goes to that Agent's next Turn. So does
     a pick's answer that never reached its call
     ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): the route left the Agent's state, and
@@ -53,16 +57,19 @@ whose processes are gone, with no way to know why.
     and that stopped it" (`stopped`), with an earlier link's reply when one came. No pick-answer notice says the work
     ran to its end. A fresh picking Turn has no such conversation, and its answer is no notice.
   - **Workspace scope** ("the Sandbox's processes were killed at its memory limit during `coder`'s Turn; `/dev/shm` was
-    cleared. Anything that was running in the Sandbox at that time is gone.") goes to the next admission of any Agent in
-    that Workspace that takes it. One kill is one notice, however many Turns saw it. Only a kill read on a stream while
-    its wait is live names the Turn whose Submission ran. Both forms end with the whole Sandbox, because every process
-    in it died, a shared Workspace's too, and in the past tense, because the Agent may hear it after processes started
-    again. A kill read from the pod's list names no Turn and says nothing of when or whose: "the Sandbox's processes
-    were killed at its memory limit (peak X of Y); /dev/shm was cleared. Anything that was running in the Sandbox at
-    that time is gone." The list cannot say whose Turn a kill ended: the kill may land after a state exits, or end an
-    attach, a sync or a command. A kernel kill read from the Sandbox's last end (below) says the same, with the limit
-    and no peak: "the Sandbox's processes were killed at its memory limit of Y; …". A Menu-only Agent outside a
-    Workspace receives conversation notices only.
+    cleared. Anything that was running in the Sandbox at that time is gone.") goes to every conversation in that
+    Workspace: each takes it once, at its next admission or at a step boundary of an open Turn, so a Pool of coders in
+    one Workspace all hear it, not only the first ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)
+    makes several Agents in one Workspace normal). One kill is one notice in each conversation, however many Turns saw
+    it, and jr2 keeps no "handled" state: a conversation that already acted judges from the Sandbox's own effects
+    whether it must act again. Only a kill read on a stream while its wait is live names the Turn whose Submission ran.
+    Both forms end with the whole Sandbox, because every process in it died, a shared Workspace's too, and in the past
+    tense, because the Agent may hear it after processes started again. A kill read from the pod's list names no Turn
+    and says nothing of when or whose: "the Sandbox's processes were killed at its memory limit (peak X of Y); /dev/shm
+    was cleared. Anything that was running in the Sandbox at that time is gone." The list cannot say whose Turn a kill
+    ended: the kill may land after a state exits, or end an attach, a sync or a command. A kernel kill read from the
+    Sandbox's last end (below) says the same, with the limit and no peak: "the Sandbox's processes were killed at its
+    memory limit of Y; …". A Menu-only Agent outside a Workspace receives conversation notices only.
   - A notice never replaces a fault. The Machine still receives `agent.fault` and decides (ADR-0016); the notice makes
     sure the next Agent is not working blind.
 - **The Orchestrator is the only keeper of notices**: pending notices are plain data in the run's persisted state
@@ -209,4 +216,9 @@ whose processes are gone, with no way to know why.
 - The Briefing is how a Turn learns its Allowed picks: the tools block is the whole Menu, fixed for a conversation so it
   does not break the cache
   ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)).
+- A Workspace notice now reaches every conversation in the Workspace, and an open Turn hears it at its next step
+  boundary, not only at its next admission (ADR-0002,
+  [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). This is what makes a
+  memory kill reach a Pool of coders that share one Workspace
+  ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)).
 - GLOSSARY.md gains **Briefing**.

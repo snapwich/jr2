@@ -28,7 +28,11 @@ decision generalizes that container. It holds every credential the Harness in it
 - **The Custodian replaces the Adapter.** The `@jr2/adapter` package and the `jr2-adapter` image are deleted. The
   Sandbox token is a held secret of the kit's own: the Harness container holds
   `JR2_SANDBOX_TOKEN=jr2-held-JR2_SANDBOX_TOKEN`, and the Custodian holds the token as a file from the `<sandbox>-token`
-  Secret (the Instance Harness: the `JR2_INSTANCE_HARNESS_TOKEN` key of `jr2-instance`). No other container mounts it.
+  Secret (the Instance Harness: the `JR2_INSTANCE_HARNESS_TOKEN` key of `jr2-instance`). No other container mounts it. A
+  Sandbox that runs more than one Agent runs each in its own Harness container
+  ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)); each holds its own per-slot control Stand-in,
+  and the Custodian holds a per-slot token for each and maps a slot's Stand-in to its token. The real tokens never leave
+  the Custodian.
 - **The Harness reads its Menu itself.** There is no MCP. For each Submission, `menu.ts` reads
   `GET /agents/<iid>/surface` and delivers a pick with `POST /agents/<iid>/events`, both to the Custodian on
   `127.0.0.1:8081`, with the Stand-in as the bearer. `menu-tools.ts` gives pi each accepted event as a tool. The tool
@@ -62,7 +66,9 @@ decision generalizes that container. It holds every credential the Harness in it
   other credential header. A request without the Stand-in gets 403. The ask's path comes from the Custodian
   (`JR2_SANDBOX` in its env, set per pod); on the Instance Harness there is none, and the ask gets 404. The route
   allowlist is the second layer. The control stays in the Orchestrator: the token's scope, the live registration, and
-  the event's name and payload are judged there, as before (ADR-0013).
+  the event's name and payload are judged there, as before (ADR-0013). When a Sandbox runs more than one Agent, the
+  Stand-in on a control route is the caller slot's, and the Custodian swaps the slot's token; the Orchestrator then
+  checks that the slot matches the registration ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)).
 
 - **Model keys go the same way, over HTTPS.** When its pod holds a held secret, the Harness container also gets:
 

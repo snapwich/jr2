@@ -28,8 +28,10 @@ is needed either (ADR-0006).
   container in every Harness pod ([ADR-0005](0005-sandbox-pod-composition.md)). The Sandbox token is mounted into it as
   a file, and into no other container. The Harness container holds the token's Stand-in,
   `JR2_SANDBOX_TOKEN=jr2-held-JR2_SANDBOX_TOKEN`, and reaches the Orchestrator only through the Custodian's control
-  listener on `127.0.0.1:8081`. The Custodian forwards four routes, with the token put in place of the Stand-in, and
-  answers every other route itself:
+  listener on `127.0.0.1:8081`. A Sandbox that runs more than one Agent runs each in its own Harness container, each
+  holding its own per-slot Stand-in, so no Agent can act as another
+  ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)). The Custodian forwards four routes, with the
+  token put in place of the Stand-in, and answers every other route itself:
 
   ```
   GET  /agents/<iid>/surface          the Menu                            → the Orchestrator
@@ -104,7 +106,11 @@ is needed either (ADR-0006).
     the same deterministic name the token was minted for (ADR-0016), so forgetting to pass it is unrepresentable (the
     pre-ambient version shipped exactly that footgun: `sandbox` omitted, every tool call 403'd — fail-closed but
     silent). A run-scoped token instead of a Sandbox-scoped one would be genuinely exploitable: derivable iids plus
-    readable ticket ids would let one feature's coder inject a `review_verdict` into another feature's reviewer.
+    readable ticket ids would let one feature's coder inject a `review_verdict` into another feature's reviewer. That
+    holds across Sandboxes, where another feature's Agents are in another pod. Within one Sandbox several Agents can
+    share it ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)); there the Sandbox scope is
+    not enough, and [ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md) gives each agent slot its own
+    Harness container and its own control credential, so a coder cannot act as a co-resident reviewer.
 - **Reachability, narrowed to one caller.** The Orchestrator is always in-cluster (ADR-0019), so the route home is
   simply **Service DNS**, which the pod's maker writes into the Custodian's configuration — the Orchestrator at a
   Sandbox's provision, `jr2 up` for the Instance Harness. The Harness is told the Custodian's loopback address
@@ -146,6 +152,11 @@ is needed either (ADR-0006).
   Custodian, so a broken leg is a red test, and a Harness container that posts a pick straight to the Orchestrator with
   the Stand-in it holds is refused. The mechanics tier plays `/agents/:iid/*` from the host, which is honestly
   simulating the Harness's Menu, not an Agent.
+- **Per-agent identity within one Sandbox is [ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md).**
+  The Sandbox token alone would let one Agent in a shared Sandbox deliver a pick as another, and ADR-0075 makes a shared
+  Sandbox normal. Each agent slot runs in its own Harness container with its own control credential; the Orchestrator
+  checks the slot on the whole `/agents/:iid/*` set, and the `@kind` tier gains the sibling case — a coder's `bash`
+  posts a pick as the reviewer through the Custodian, and the Orchestrator refuses it.
 - **NetworkPolicy is a second layer, not the control.** It bounds where a pod may talk; only the token bounds what it
   may _do_. `jr2 up` converges ingress policies that admit only the Orchestrator to a Harness pod
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)); the Orchestrator itself is left reachable, because a
