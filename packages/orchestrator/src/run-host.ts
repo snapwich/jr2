@@ -677,6 +677,9 @@ export type AgentSurfaceView = {
   instanceId: string;
   runId: string;
   sandbox?: string;
+  /** The agent slot this surface belongs to (ADR-0076) — what the slot check reads beside
+   * `sandbox`. Absent on a workspace-less Turn. */
+  slot?: string;
   menu: SurfaceEvent[];
   allowed: string[];
 };
@@ -1749,6 +1752,7 @@ export class RunHost {
       instanceId,
       runId: reg.runId,
       sandbox: reg.sandbox,
+      slot: reg.slot,
       menu: [...menuOf(reg).values()].map((def) => ({
         name: def.name,
         description: def.description,
@@ -1899,6 +1903,7 @@ export class RunHost {
         agent: invoking.sender?.id ?? "",
         since,
         ...(invoking.sandbox !== undefined ? { sandbox: invoking.sandbox } : {}),
+        ...(invoking.slot !== undefined ? { slot: invoking.slot } : {}),
         ...(invoking.invokeId !== undefined ? { invokeId: invoking.invokeId } : {}),
         ...(conversation !== undefined ? { conversation } : {}),
         ...(sending && sending.chain.length > 0 ? { chain: [...sending.chain] } : {}),
@@ -2186,10 +2191,16 @@ export class RunHost {
     return this.parked.has(`${instanceId} ${deliveryId}`);
   }
 
-  /** The Sandbox that may read a delivery's answer (ADR-0013), or undefined for an unknown one. */
-  deliveryScope(instanceId: string, deliveryId: string): { sandbox?: string } | undefined {
+  /** The Sandbox and slot that may read a delivery's answer (ADR-0013, ADR-0076), or undefined for
+   * an unknown one. */
+  deliveryScope(instanceId: string, deliveryId: string): { sandbox?: string; slot?: string } | undefined {
     const found = this.holdAt(instanceId, deliveryId);
-    return found && { ...(found.hold.sandbox !== undefined ? { sandbox: found.hold.sandbox } : {}) };
+    return (
+      found && {
+        ...(found.hold.sandbox !== undefined ? { sandbox: found.hold.sandbox } : {}),
+        ...(found.hold.slot !== undefined ? { slot: found.hold.slot } : {}),
+      }
+    );
   }
 
   /**

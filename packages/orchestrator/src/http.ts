@@ -1442,9 +1442,10 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     // iid) → there is no surface to serve. 404 BEFORE the scope check — a caller with a valid
     // token learns nothing from it that it did not already know.
     if (!surface) return { error: c.json({ error: `no live agent surface for instance "${instanceId}"` }, 404) };
-    if (!mayDeliverToAgent(principalOf(c), surface.sandbox)) {
-      // A Sandbox token for a DIFFERENT Sandbox (or for a workspace-less run, which no Sandbox
-      // owns). This is the check that keeps one feature's coder out of another's reviewer.
+    if (!mayDeliverToAgent(principalOf(c), surface.sandbox, surface.slot)) {
+      // A token for a DIFFERENT Sandbox or slot (or for a workspace-less run, which no Sandbox
+      // owns). This is the check that keeps one feature's coder out of another's reviewer, and a
+      // co-resident slot out of its sibling's surface (ADR-0076).
       return { error: c.json({ error: `this token cannot speak for instance "${instanceId}"` }, 403) };
     }
     return { surface };
@@ -1514,7 +1515,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       return c.json({ error: restorePendingMessage(`delivery "${deliveryId}"`) }, 503);
     }
     if (!scope) return c.json({ error: `no delivery "${deliveryId}" for instance "${instanceId}"` }, 404);
-    if (!mayDeliverToAgent(principalOf(c), scope.sandbox)) {
+    if (!mayDeliverToAgent(principalOf(c), scope.sandbox, scope.slot)) {
       return c.json({ error: `this token cannot speak for instance "${instanceId}"` }, 403);
     }
     const receipt = await host.awaitDelivery(instanceId, deliveryId, opts.deliveryWaitMs, c.req.raw.signal);

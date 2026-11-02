@@ -324,6 +324,142 @@ test("a Sandbox's Harness persists its conversations to an emptyDir no other con
   }
 });
 
+test("a multi-slot pod runs one Harness container per slot with its own credential; a single-slot pod is byte-for-byte unchanged (ADR-0076)", async () => {
+  // One slot (what every other test here provisions, since `slots` is absent): the pod of today —
+  // one primary Harness container, one `<name>-token` Secret, no `spec.slots`, no `harness-*`
+  // sidecar, and the one shared Sandbox-token Stand-in on the primary by value.
+  const one = cluster();
+  const port1 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...one.exec });
+  await port1.provision({ name: "sb-one", runId: "r", workflow: "w", slots: ["coder"], ...withApp });
+  const cr1 = crOf(one.calls);
+  assert.ok(!("slots" in cr1.spec), "no spec.slots on a single-agent pod");
+  assert.deepEqual(
+    cr1.spec.sidecars.map((s: { name: string }) => s.name),
+    ["custodian"],
+    "no harness-* sidecar",
+  );
+  assert.ok(
+    cr1.spec.env.some(
+      (e: { name: string; value?: string }) =>
+        e.name === "JR2_SANDBOX_TOKEN" && e.value === "jr2-held-JR2_SANDBOX_TOKEN",
+    ),
+    "the primary keeps the one shared Stand-in by value",
+  );
+  assert.deepEqual(
+    applies(one.calls, "secrets").map((s) => s.metadata.name),
+    ["sb-one-token"],
+    "the one Sandbox token Secret, and no per-slot Secret",
+  );
+
+  // Two slots: a primary Harness container (coder, first-declared) PLUS one `harness-reviewer`
+  // sidecar on its own port; a per-slot credential Secret for each; `spec.slots` naming the extra.
+  const two = cluster();
+  const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...two.exec });
+  await port2.provision({ name: "sb-two", runId: "r", workflow: "w", slots: ["coder", "reviewer"], ...withApp });
+  const cr2 = crOf(two.calls);
+  // The additional slot (reviewer) at 8090 — the primary (coder) keeps the serving port (8080).
+  assert.deepEqual(cr2.spec.slots, [{ name: "reviewer", port: 8090 }]);
+  // The primary's own JR2_SANDBOX_TOKEN is coder's secret Stand-in, by secretKeyRef — never a value,
+  // so the real credential is not in the Agent's env.
+  const primaryToken = cr2.spec.env.find((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN");
+  assert.deepEqual(primaryToken.valueFrom, { secretKeyRef: { name: "sb-two-slot-coder", key: "standin" } });
+  assert.ok(!("value" in primaryToken), "the real credential never rides the Agent's env");
+  // Two Harness containers in all: the primary, and the reviewer sidecar beside the Custodian.
+  assert.deepEqual(
+    cr2.spec.sidecars.map((s: { name: string }) => s.name),
+    ["custodian", "harness-reviewer"],
+  );
+  const reviewer = cr2.spec.sidecars.find((s: { name: string }) => s.name === "harness-reviewer");
+  assert.equal(reviewer.image, cr2.spec.image, "same Sandbox Image");
+  assert.deepEqual(reviewer.command, cr2.spec.command, "same Harness command");
+  assert.deepEqual(reviewer.securityContext, cr2.spec.securityContext, "same hardened seat — nothing relaxed");
+  assert.deepEqual(reviewer.ports, [{ name: "reviewer", containerPort: 8090 }]);
+  assert.deepEqual(reviewer.readinessProbe, { httpGet: { path: "/healthz", port: 8090 }, periodSeconds: 1 });
+  assert.deepEqual(reviewer.env.at(-1), { name: "PORT", value: "8090" }, "told its port, last so nothing overrides it");
+  assert.deepEqual(
+    reviewer.env.find((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN").valueFrom,
+    { secretKeyRef: { name: "sb-two-slot-reviewer", key: "standin" } },
+    "its own secret Stand-in, by secretKeyRef into this container alone",
+  );
+  // Its OWN conversations emptyDir at /conversations, and the one shared /work emptyDir read-write.
+  assert.ok(
+    cr2.spec.volumes.some(
+      (v: { name: string; emptyDir?: object }) => v.name === "conversations-reviewer" && !!v.emptyDir,
+    ),
+  );
+  assert.ok(
+    reviewer.volumeMounts.some(
+      (m: { name: string; mountPath: string }) =>
+        m.name === "conversations-reviewer" && m.mountPath === "/conversations",
+    ),
+  );
+  assert.ok(
+    reviewer.volumeMounts.some(
+      (m: { name: string; mountPath: string; readOnly?: boolean }) =>
+        m.name === "work" && m.mountPath === "/work" && !m.readOnly,
+    ),
+    "the one /work emptyDir, read-write, shared with the primary",
+  );
+  // A per-slot Secret for EACH slot (standin + token), CR-owned.
+  const slotSecrets = applies(two.calls, "secrets").filter((s) => s.metadata.name.startsWith("sb-two-slot-"));
+  assert.deepEqual(slotSecrets.map((s) => s.metadata.name).sort(), ["sb-two-slot-coder", "sb-two-slot-reviewer"]);
+  for (const s of slotSecrets) assert.deepEqual(Object.keys(s.data).sort(), ["standin", "token"]);
+  // The Sandbox token Secret is STILL minted on a multi-slot pod (ADR-0076): the Custodian swaps the
+  // public Sandbox-scope Stand-in for it on the fetch route (`jr2-upload-pack`'s `POST /fetch`).
+  assert.ok(
+    applies(two.calls, "secrets").some((s) => s.metadata.name === "sb-two-token"),
+    "the Sandbox token Secret is minted for the fetch route (ADR-0076)",
+  );
+  // It is projected into the CUSTODIAN alone — the `custodian-values` volume references it, beside
+  // the per-slot tokens — and NO slot container (primary or sidecar) takes it: a slot's credential is
+  // only its own secret Stand-in, so the Sandbox token never reaches model-controlled code.
+  const values = cr2.spec.volumes.find((v: { name: string }) => v.name === "custodian-values") as {
+    projected: { sources: Array<{ secret?: { name: string } }> };
+  };
+  assert.ok(
+    values.projected.sources.some((s) => s.secret?.name === "sb-two-token"),
+    "custodian-values projects the Sandbox token into the Custodian",
+  );
+  const refsSandboxToken = (env: Array<{ valueFrom?: { secretKeyRef?: { name: string } } }>) =>
+    env.some((e) => e.valueFrom?.secretKeyRef?.name === "sb-two-token");
+  assert.ok(!refsSandboxToken(cr2.spec.env), "the primary slot container never references the Sandbox token Secret");
+  assert.ok(!refsSandboxToken(reviewer.env), "the reviewer slot container never references the Sandbox token Secret");
+});
+
+test("provision surfaces the operator's per-slot status.endpoints, keyed by slot (ADR-0076)", async () => {
+  // The operator publishes the primary on `status.endpoint` and each additional slot on
+  // `status.endpoints` — one DNS per slot container. provision must read both back, or every slot
+  // resolves to the primary and the additional slot containers are never reached.
+  const READY_MULTI = {
+    phase: "Ready",
+    endpoint: "http://sb-m.default.svc:8080",
+    endpoints: [{ slot: "reviewer", endpoint: "http://sb-m.default.svc:8090" }],
+    podUID: "pod-uid-m",
+  };
+  const { exec } = cluster([READY_MULTI]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  const out = await port.provision({
+    name: "sb-m",
+    runId: "r",
+    workflow: "w",
+    slots: ["coder", "reviewer"],
+    ...withApp,
+  });
+  // The primary stays on `endpoint`; the additional slot's own container endpoint is in `endpoints`,
+  // by slot name — so the ambient handles reach the reviewer's container, not the coder's.
+  assert.equal(out.endpoint, "http://sb-m.default.svc:8080");
+  assert.deepEqual(out.endpoints, { reviewer: "http://sb-m.default.svc:8090" });
+});
+
+test("provision on a single-slot Sandbox reports no per-slot endpoints (byte-for-byte today, ADR-0076)", async () => {
+  // The operator writes no `status.endpoints` for a single-slot Sandbox: provision reports no
+  // per-slot map (byte-for-byte today's return), and the one slot resolves off `endpoint` downstream.
+  const { exec } = cluster([READY]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  const out = await port.provision({ name: "sb-1", runId: "r", workflow: "w", slots: ["coder"], ...withApp });
+  assert.deepEqual(out, { endpoint: "http://sb-1.default.svc:8080" });
+});
+
 test("two slots spelling one repository are ONE CR entry; two repositories are two", async () => {
   const { exec, calls } = cluster();
   const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });

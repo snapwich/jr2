@@ -26,6 +26,7 @@ import {
   custodianBootstrap,
   custodianRef,
   custodianScript,
+  slotHeldName,
   CUSTODIAN_ARGS,
   CUSTODIAN_BOOTSTRAP_KEY,
   CUSTODIAN_PROGRAM,
@@ -119,6 +120,12 @@ export async function startCustodian(opts: {
   upstreamCas: string[];
   orchestrator: { host: string; port: number };
   sandbox?: string;
+  /** A multi-slot pod (ADR-0076): one control credential per agent slot, each with its own SECRET
+   * Stand-in and per-slot token VALUE, plus the path-restricted public Sandbox-scope Stand-in that
+   * `custodianScript` adds for the fetch route. Absent → the single-slot pod of today (the one
+   * Sandbox token). The `token` here is the slot token's VALUE, written to the values mount as the
+   * real per-slot token Secret would project it. */
+  slots?: Array<{ slot: string; standIn: string; token: string }>;
   /** Names the container's resolver answers from `/etc/hosts`: the pod's DNS, faked. */
   names?: Record<string, string>;
   expectFailure?: boolean;
@@ -135,6 +142,10 @@ export async function startCustodian(opts: {
   }
   await writeFile(join(dir, "values", "JR2_SANDBOX_TOKEN"), SANDBOX_TOKEN);
   for (const [name, value] of Object.entries(opts.values)) await writeFile(join(dir, "values", name), value);
+  // A multi-slot pod projects each slot's per-slot token under its `slot:<slot>` file, beside the
+  // Sandbox token (which the fetch-route control entry swaps), exactly as the Custodian's
+  // `custodian-values` volume does in a cluster (ADR-0076).
+  for (const s of opts.slots ?? []) await writeFile(join(dir, "values", slotHeldName(s.slot)), s.token);
   const bundles = trustBundles(ca.cert, opts.upstreamCas.join(""));
   await writeFile(join(dir, "ca", "upstream.crt"), bundles.upstream);
   const ports = { control: await freePort(), egress: await freePort(), health: await freePort() };
@@ -146,7 +157,13 @@ export async function startCustodian(opts: {
     if (port !== undefined && listener.address) listener.address.socket_address.port_value = port;
   }
   await writeFile(join(dir, "config", CUSTODIAN_BOOTSTRAP_KEY), JSON.stringify(bootstrap));
-  await writeFile(join(dir, "config", CUSTODIAN_SCRIPT_KEY), custodianScript(opts.manifest));
+  await writeFile(
+    join(dir, "config", CUSTODIAN_SCRIPT_KEY),
+    custodianScript(
+      opts.manifest,
+      (opts.slots ?? []).map((s) => ({ slot: s.slot, standIn: s.standIn, token: { secret: "", key: "" } })),
+    ),
+  );
   // The fixed program, as a pod's config mount projects it from `jr2-held` beside its own two files.
   await writeFile(join(dir, "config", CUSTODIAN_PROGRAM_KEY), CUSTODIAN_PROGRAM);
 

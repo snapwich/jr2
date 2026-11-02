@@ -690,7 +690,12 @@ export function agentActorWith(
             `(workspace-less stub path)`,
         );
       }
-      endpoint = ambient.endpoint;
+      // The slot's own Harness container (ADR-0076): the agent name is the slot key, so a slot
+      // resolves only its OWN container's endpoint and can neither read nor reach a co-resident
+      // sibling's. A Turn whose agent is not a declared slot — an Open body's lent Agent (ADR-0070)
+      // — falls back to the pod's canonical endpoint, the single-endpoint behavior every pod had
+      // before this ADR; so does a single-slot pod, whose one slot IS the canonical endpoint.
+      endpoint = ambient.endpoints?.[input.agentName] ?? ambient.endpoint;
       sandbox = input.sandbox ?? ambient.sandbox;
     }
 
@@ -739,6 +744,9 @@ export function agentActorWith(
           defs,
           menu,
           sandbox,
+          // The slot this surface belongs to (ADR-0076): the agent name is the slot key. A
+          // per-slot token may deliver here only when its slot is this one.
+          slot: input.agentName,
           deliver: (event) => {
             signaled = true;
             // The settlement-pick marker (ADR-0023), BEFORE the delivery moves the Machine: the pick

@@ -53,8 +53,16 @@ export type Principal =
   /** `jr2 up`, publishing an Assembly (ADR-0069). Only `PUT /assembly` accepts it: it is not an
    * Instance principal, so it reads no run and starts none. */
   | { kind: "publisher" }
-  /** One Sandbox's Custodian, speaking for the Agent in that pod — and for no one else. */
-  | { kind: "sandbox"; sandbox: string };
+  /** One Sandbox's Custodian, for `POST /fetch` — the pod's shared caches (ADR-0053) — and, on a
+   * single-agent pod, the one agent surface in that Sandbox (the byte-for-byte path of today). */
+  | { kind: "sandbox"; sandbox: string }
+  /**
+   * One agent SLOT's Custodian credential (ADR-0076), speaking for that slot's Turns in that
+   * Sandbox and for no other slot. A multi-slot pod runs each workspace-ful slot in its own Harness
+   * container with its own per-slot credential, so a co-resident slot's `bash` cannot read it — and
+   * the Orchestrator refuses a pick whose slot is not the registration's.
+   */
+  | { kind: "agent"; sandbox: string; slot: string };
 
 /** Resolve a bearer token to a principal; undefined = not a token we minted (→ 401). */
 export type Authenticator = (bearer: string | undefined) => Principal | undefined;
@@ -63,6 +71,24 @@ export type Authenticator = (bearer: string | undefined) => Principal | undefine
 export function sandboxToken(key: Buffer, sandbox: string): string {
   return `${sandbox}.${sign(key, sandbox)}`;
 }
+
+/**
+ * The per-slot token for one agent slot in one Sandbox (ADR-0076): what the Custodian forwards and
+ * the Orchestrator verifies, scoped to the slot and not only the Sandbox. A signed name like the
+ * Sandbox token — same key, same deterministic re-mint — so the slots need no new signing key and a
+ * token minted before a restart still verifies after one.
+ *
+ * Domain-separated from the Sandbox token by the `agent:` prefix, which no DNS-label name can
+ * produce (a label holds no `:` or `/`), so a Sandbox token never doubles as a slot token or the
+ * reverse. `sandbox` and `slot` carry no `.`, so the last `.` is the signature's.
+ */
+export function agentSlotToken(key: Buffer, sandbox: string, slot: string): string {
+  const name = `${AGENT_PREFIX}${sandbox}/${slot}`;
+  return `${name}.${sign(key, name)}`;
+}
+
+/** The domain-separating prefix of a per-slot token's signed name (ADR-0076). */
+const AGENT_PREFIX = "agent:";
 
 /**
  * The Harness bearer for one placement (ADR-0058): what the Orchestrator presents on every Harness
@@ -142,6 +168,21 @@ export function createAuthenticator(opts: {
     if (!bearer) return undefined;
     if (constantTimeEqual(bearer, opts.instanceToken)) return { kind: "instance" };
     if (opts.publishToken !== undefined && constantTimeEqual(bearer, opts.publishToken)) return { kind: "publisher" };
+    // A per-slot token (ADR-0076), checked BEFORE the bare-Sandbox path: its `agent:` prefix is a
+    // name no DNS label can be, so it can never be read as a Sandbox token. The signed name is
+    // `agent:<sandbox>/<slot>`; the first `/` after the prefix divides the two.
+    if (bearer.startsWith(AGENT_PREFIX)) {
+      const cut = bearer.lastIndexOf(".");
+      if (cut <= 0) return undefined;
+      const name = bearer.slice(0, cut);
+      if (!constantTimeEqual(bearer.slice(cut + 1), sign(opts.signingKey, name))) return undefined;
+      const slash = name.indexOf("/", AGENT_PREFIX.length);
+      if (slash < 0) return undefined;
+      const sandbox = name.slice(AGENT_PREFIX.length, slash);
+      const slot = name.slice(slash + 1);
+      if (!sandbox || !slot) return undefined;
+      return { kind: "agent", sandbox, slot };
+    }
     const cut = bearer.lastIndexOf(".");
     if (cut <= 0) return undefined;
     const sandbox = bearer.slice(0, cut);
@@ -152,28 +193,47 @@ export function createAuthenticator(opts: {
 
 /**
  * May this principal deliver to this agent registration? The Instance token may (it is the
- * operator). A Sandbox token may only when the registration records ITS name — which is why
- * an Agent registration carries `sandbox` at all (ADR-0013). The recorded name is the pod hosting the Turn:
- * a Workspace's Sandbox, or `jr2-instance-harness` for a Menu-only registration (ADR-0031). An
- * agent registration with NO name at all is an explicit-`endpoint` run (the stub Harness on the
- * host, in no pod): no Sandbox token can claim it.
+ * operator). A credential bound to a pod may only when the registration records the pod's name —
+ * which is why an Agent registration carries `sandbox` at all (ADR-0013). The recorded name is the
+ * pod hosting the Turn: a Workspace's Sandbox, or `jr2-instance-harness` for a Menu-only
+ * registration (ADR-0031). An agent registration with NO name at all is an explicit-`endpoint` run
+ * (the stub Harness on the host, in no pod): no pod's credential can claim it.
+ *
+ * A **per-slot token** (ADR-0076) must match the registration's SLOT as well as its Sandbox: a
+ * multi-slot pod gives each slot its own container and credential, so a co-resident slot's pick
+ * lands on no other slot's surface. A bare **Sandbox token** matches on the Sandbox alone — the
+ * byte-for-byte path of a single-agent pod, whose one Custodian holds the one Sandbox token
+ * (ADR-0013); on a multi-slot pod no slot container holds it, so it never reaches an agent surface.
  */
-export function mayDeliverToAgent(principal: Principal, registrationSandbox: string | undefined): boolean {
+export function mayDeliverToAgent(
+  principal: Principal,
+  registrationSandbox: string | undefined,
+  registrationSlot?: string,
+): boolean {
   if (principal.kind === "instance") return true;
-  if (principal.kind !== "sandbox") return false;
-  return registrationSandbox !== undefined && registrationSandbox === principal.sandbox;
+  if (registrationSandbox === undefined) return false;
+  if (principal.kind === "sandbox") return registrationSandbox === principal.sandbox;
+  if (principal.kind === "agent") {
+    return (
+      registrationSandbox === principal.sandbox && registrationSlot !== undefined && registrationSlot === principal.slot
+    );
+  }
+  return false;
 }
 
 /**
- * May this principal ask for a fetch on this Sandbox (ADR-0053)? A Sandbox token may ask for its
- * OWN pod and no other — the scope is the caches that pod mounts, and the route refuses a Repo it
- * does not. The Instance token may, on the same grounds it may deliver to any agent surface: it is
- * the operator. The publish token may not: it opens the publish door and no other (ADR-0069).
+ * May this principal ask for a fetch on this Sandbox (ADR-0053)? A credential bound to a pod may ask
+ * for its OWN pod and no other — the scope is the caches that pod mounts, and the route refuses a
+ * Repo it does not. `/fetch` stays Sandbox-scoped (ADR-0076): a per-slot token (ADR-0076) asks on
+ * its Sandbox alone, as the bare Sandbox token does, because a multi-slot pod's slot container
+ * carries the slot's Stand-in as `JR2_SANDBOX_TOKEN` and a `git fetch` from it arrives with the
+ * slot's token. The Instance token may, on the same grounds it may deliver to any agent surface: it
+ * is the operator. The publish token may not: it opens the publish door and no other (ADR-0069).
  */
 export function mayAskForSandbox(principal: Principal, sandbox: string): boolean {
   if (principal.kind === "instance") return true;
-  if (principal.kind !== "sandbox") return false;
-  return principal.sandbox === sandbox;
+  if (principal.kind === "sandbox" || principal.kind === "agent") return principal.sandbox === sandbox;
+  return false;
 }
 
 function sign(key: Buffer, value: string): string {

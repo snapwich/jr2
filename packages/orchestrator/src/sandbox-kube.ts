@@ -86,8 +86,15 @@ import {
   CUSTODIAN_BOOTSTRAP_KEY,
   CUSTODIAN_SCRIPT_KEY,
   type CustodianComposition,
+  type CustodianSlot,
 } from "./custodian.ts";
-import { readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
+import {
+  readHeldManifest,
+  SANDBOX_TOKEN_NAME,
+  slotStandIn,
+  workspaceHeldPod,
+  type HeldManifest,
+} from "./held-secrets.ts";
 import {
   effectorManifestKey,
   readSandboxEffectorManifest,
@@ -133,7 +140,7 @@ import {
   type SandboxObject,
   type SandboxWatch,
 } from "./sandbox-watch.ts";
-import { effectorKey, harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
+import { agentSlotToken, effectorKey, harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
 import type { AttachError, AttachRequest, AttachResponse } from "./wire.ts";
 import type { Continuity, MemoryKill, PlacingWait, ProvisionedRepo, SandboxLoss, SandboxPort } from "./workspace.ts";
 
@@ -188,6 +195,15 @@ const HARDENED = {
 
 /** The Sandbox Effector's port in its pod (ADR-0068's default). */
 export const SANDBOX_EFFECTOR_PORT = 8082;
+
+/**
+ * Where a multi-slot pod's ADDITIONAL Harness containers listen (ADR-0076). The primary slot keeps
+ * the serving port (8080, the operator's `defaultPort`); each additional slot, in sorted slot-name
+ * order, takes 8090, 8091, …. The CR states each one (`spec.slots`) so neither side recomputes it.
+ * 8090+ steers clear of every reserved port (ADR-0005): 8081 (the Custodian's control listener),
+ * 8082 (the Effector), 15001 (egress) and 15021 (health).
+ */
+export const SLOT_PORT_BASE = 8090;
 
 export { sandboxEffectorSecret } from "./sandbox-effector.ts";
 
@@ -528,6 +544,23 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   /** The Sandbox's token Secret — mounted into the Custodian container, and nothing else in the pod. */
   const secretName = (name: string) => `${name}-token`;
 
+  /** One agent slot's Secret (ADR-0076): two keys, `standin` (mounted into that slot's Harness
+   * container alone, as its `JR2_SANDBOX_TOKEN`) and `token` (its per-slot token, projected into the
+   * Custodian's `custodian-values`). CR-owned and idempotent by signing, like the Sandbox token. */
+  const slotSecretName = (sandbox: string, slot: string) => `${sandbox}-slot-${slot}`;
+
+  /** The emptyDir one slot's Harness container persists its conversations to (ADR-0031, ADR-0076):
+   * its own, so one slot's history is never another's. The primary slot keeps `conversations`. */
+  const slotConversationsVolume = (slot: string) => `${CONVERSATIONS_VOLUME}-${slot}`;
+
+  /** One slot container's `JR2_SANDBOX_TOKEN` (ADR-0076): its secret Stand-in, by `secretKeyRef`
+   * into that container alone, so a co-resident slot's `bash` cannot read it. The Harness env name is
+   * unchanged — only the value's source is per slot. */
+  const slotTokenEnv = (sandbox: string, slot: string): HarnessEnvVar => ({
+    name: SANDBOX_TOKEN_NAME,
+    valueFrom: { secretKeyRef: { name: slotSecretName(sandbox, slot), key: "standin" } },
+  });
+
   /**
    * The User Container (ADR-0005): the opt-in third seat, composed only when the wrapper's static
    * `user` option names an image (ADR-0049). The ZERO-CONTRACT seat — jr2 injects nothing, probes
@@ -587,10 +620,15 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     keys: string[],
     split: SizeSplit,
     held: HeldImageScope | undefined,
+    // The additional agent slots' Harness containers (ADR-0076), beside the primary one the CR's
+    // `image`/`command` already are — empty on a single-agent pod. They ride `sidecars` as opaque
+    // fragments the operator schedules and hardens like any other (ADR-0001).
+    slotContainers: Record<string, unknown>[],
     user?: string,
     effector?: Record<string, unknown>,
   ) => [
     custodian.custodianContainer,
+    ...slotContainers,
     ...(user !== undefined ? [await userSidecar(refs, user, keys, split, held)] : []),
     ...(effector !== undefined ? [effector] : []),
   ];
@@ -646,11 +684,20 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   // The gate rides LAST (ADR-0058): the digest of the bearer the Orchestrator derives for THIS
   // Sandbox. A digest because the Agent reads this env; last because a `harness.env` entry of the
   // same name must not be able to choose the Harness's credential.
-  const harnessEnv = (name: string, custodian: CustodianComposition, hints: HarnessEnvVar[]): HarnessEnvVar[] => {
+  const harnessEnv = (
+    name: string,
+    custodian: CustodianComposition,
+    hints: HarnessEnvVar[],
+    // On a multi-slot pod (ADR-0076) each container's own `JR2_SANDBOX_TOKEN` (its slot's secret
+    // Stand-in, by `secretKeyRef`) — `custodian.harnessEnv` omits the shared one then. Absent on a
+    // single-agent pod, where `custodian.harnessEnv` carries the one Sandbox-token Stand-in.
+    sandboxToken?: HarnessEnvVar,
+  ): HarnessEnvVar[] => {
     if (!opts.signingKey) throw new Error("kubeSandbox: a Harness needs a signingKey to check its bearer");
     return [
       ...(cfg().env ?? []),
       ...custodian.harnessEnv,
+      ...(sandboxToken ? [sandboxToken] : []),
       // The CPU hints (ADR-0060) are mechanism: they say what the Size gives, so they win over a
       // `harness.env` entry of the same name.
       ...hints,
@@ -764,6 +811,13 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     repos: FencedRepo[],
     custodian: CustodianComposition,
     split: SizeSplit,
+    // The agent slots beyond the primary (ADR-0076): each gets its own Harness container, port and
+    // endpoint. Empty on a single-agent pod, which is byte-for-byte the pod of today. `primarySlot`
+    // is the first-declared slot (the one the CR's own `image`/`command` container is) — its
+    // `JR2_SANDBOX_TOKEN` is its slot's secret Stand-in, not the shared one, when there is more than
+    // one slot.
+    additionalSlots: Array<{ slot: string; port: number }>,
+    primarySlot: string | undefined,
     effectorManifest?: SandboxEffectorManifest,
     gitCredentials: readonly string[] = [],
   ) => {
@@ -778,7 +832,48 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     const seat = await seatFor(refs, req.image, held);
     const keys = repos.map((r) => r.key);
     const effector = effectorManifest ? await effectorFor(req, refs, keys, seat, effectorManifest, held) : undefined;
-    const sidecars = await sidecarsFor(custodian, refs, keys, split, held, req.user, effector?.container);
+    // One Harness container per ADDITIONAL slot (ADR-0076): the same image, command and hardened
+    // seat as the primary, with its own listen port (`PORT`), its own readiness probe on that port,
+    // its own conversations emptyDir, and its own `JR2_SANDBOX_TOKEN` (its slot's secret Stand-in,
+    // by `secretKeyRef`). It shares the one `/work` emptyDir read-write and the runtime volume, so a
+    // slot's Turns and a sibling's see identical files but neither can read the other's credential.
+    const slotContainer = ({ slot, port }: { slot: string; port: number }): Record<string, unknown> => ({
+      name: `harness-${slot}`,
+      image: seat.image,
+      command: HARNESS_COMMAND,
+      env: [
+        ...seat.env,
+        ...harnessEnv(req.name, custodian, cpuHintEnv(), slotTokenEnv(req.name, slot)),
+        // Its listen port, LAST so nothing a `harness.env` carries can take it (the operator's
+        // Service routes this slot's endpoint here). The primary keeps the Harness default (8080).
+        { name: "PORT", value: String(port) },
+      ],
+      ports: [{ name: slot, containerPort: port }],
+      readinessProbe: { httpGet: { path: "/healthz", port }, periodSeconds: 1 },
+      volumeMounts: [
+        { name: "work", mountPath: WORK_ROOT },
+        RUNTIME_VOLUME_MOUNT,
+        { name: slotConversationsVolume(slot), mountPath: CONVERSATIONS_DIR },
+        ...seat.homeMount,
+        ...custodian.harnessMounts,
+      ],
+      securityContext: seat.securityContext,
+    });
+    const slotContainers = additionalSlots.map(slotContainer);
+    const sidecars = await sidecarsFor(
+      custodian,
+      refs,
+      keys,
+      split,
+      held,
+      slotContainers,
+      req.user,
+      effector?.container,
+    );
+    // The primary container's own `JR2_SANDBOX_TOKEN` is its slot's secret Stand-in when the pod runs
+    // more than one slot; on a single-agent pod it is the one shared Stand-in `custodian.harnessEnv`
+    // carries (ADR-0076), so no per-slot env is added.
+    const primaryToken = primarySlot !== undefined ? slotTokenEnv(req.name, primarySlot) : undefined;
     return {
       apiVersion: "core.jr2.dev/v1alpha1",
       kind: "Sandbox",
@@ -834,11 +929,16 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // Never empty: the Custodian's address is unconditional. The seat's own vars (the fallback
         // `HOME`) come FIRST, so the instance's `harness.env` can still override them the way it
         // overrides anything the image set.
-        env: [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv())],
+        env: [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv(), primaryToken)],
         ...(cfg().envFrom?.length ? { envFrom: cfg().envFrom } : {}),
         // What the AGENT gets: an address on its own loopback and a Stand-in for every credential,
         // and no credential anywhere. The Custodian beside it holds them (ADR-0013, ADR-0059).
         sidecars,
+        // The additional agent slots (ADR-0076): the operator wires a ServicePort and a status
+        // endpoint for each, beside the primary's. Absent on a single-agent pod — the one ServicePort
+        // and `status.endpoint` of today. Primary = 8080; each entry's explicit port is 8090+, so
+        // neither side recomputes it.
+        ...(additionalSlots.length ? { slots: additionalSlots.map(({ slot, port }) => ({ name: slot, port })) } : {}),
         // The Repos this Sandbox attaches, by cache key (ADR-0051). The operator does the rest: a
         // `repo-<key>` volume per entry — the node's cache, hostPath, read-only in the primary
         // container at `/repos/<key>` — a soft affinity toward nodes already holding them, and
@@ -865,6 +965,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           // that Workspace is `Lost` (ADR-0021) — and mounted below into the Harness container
           // ALONE: the User Container must not read an Agent's history.
           { name: CONVERSATIONS_VOLUME, emptyDir: {} },
+          // One conversations emptyDir per ADDITIONAL slot (ADR-0076): each slot's Harness keeps its
+          // own history, so a restart inside the pod rebuilds the right slot's conversations.
+          ...additionalSlots.map(({ slot }) => ({ name: slotConversationsVolume(slot), emptyDir: {} })),
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,
           // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
@@ -926,6 +1029,44 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       },
       type: "Opaque",
       data: { JR2_SANDBOX_TOKEN: Buffer.from(sandboxToken(opts.signingKey, name)).toString("base64") },
+    });
+  };
+
+  /**
+   * One agent slot's Secret (ADR-0076), on a multi-slot pod, owned by the CR from birth like the
+   * Sandbox token's. Two keys: `standin`, the slot's secret Stand-in, mounted into that slot's
+   * Harness container alone (`slotTokenEnv`), and `token`, its per-slot token, projected into the
+   * Custodian's `custodian-values`. Both are signed names (`slotStandIn`/`agentSlotToken`), so a
+   * re-provision re-applies the SAME values and the Custodian that has held them stays valid. The
+   * real token never leaves the Custodian — only the Stand-in reaches the slot container.
+   */
+  const applySlotSecret = async (name: string, slot: string, owner: KubeObject): Promise<void> => {
+    if (!opts.signingKey) throw new Error("kubeSandbox: an agent slot needs a signingKey to mint its credential");
+    const uid = owner.metadata?.uid;
+    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own slot "${slot}"'s Secret`);
+    await kube().apply(SECRETS, ns, {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {
+        name: slotSecretName(name, slot),
+        namespace: ns,
+        labels: { "jr2.dev/sandbox": name, "jr2.dev/slot": slot },
+        ownerReferences: [
+          {
+            apiVersion: "core.jr2.dev/v1alpha1",
+            kind: "Sandbox",
+            name,
+            uid,
+            controller: true,
+            blockOwnerDeletion: false,
+          },
+        ],
+      },
+      type: "Opaque",
+      data: {
+        standin: Buffer.from(slotStandIn(opts.signingKey, name, slot)).toString("base64"),
+        token: Buffer.from(agentSlotToken(opts.signingKey, name, slot)).toString("base64"),
+      },
     });
   };
 
@@ -1006,7 +1147,12 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    * Names, hosts, headers — never a value — so a ConfigMap is the right kind. Same owner, same
    * idempotence and same race as the token: the kubelet retries the mount until this lands.
    */
-  const applyCustodianConfig = async (name: string, owner: KubeObject, manifest: HeldManifest): Promise<void> => {
+  const applyCustodianConfig = async (
+    name: string,
+    owner: KubeObject,
+    manifest: HeldManifest,
+    slots: readonly CustodianSlot[] = [],
+  ): Promise<void> => {
     const uid = owner.metadata?.uid;
     if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its Custodian ConfigMap`);
     const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${ns}.svc`, port: ORCHESTRATOR_PORT };
@@ -1030,7 +1176,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       },
       data: {
         [CUSTODIAN_BOOTSTRAP_KEY]: JSON.stringify(custodianBootstrap(manifest, orchestrator)),
-        [CUSTODIAN_SCRIPT_KEY]: custodianScript(manifest),
+        [CUSTODIAN_SCRIPT_KEY]: custodianScript(manifest, slots),
       },
     });
   };
@@ -1253,6 +1399,27 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // in-cluster. A Workspace `jr2 up` never walked has none, and is refused by name.
       const pod = workspaceHeldPod({ workflow: req.workflow, route: req.route });
       const manifest = await readHeldManifest(join(heldDir, heldManifestKey(pod)));
+      // The pod's agent slots (ADR-0076). One slot (or none) is the single-container pod of today,
+      // byte-for-byte: no per-slot credential, no `spec.slots`, the one Sandbox token. More than one
+      // fans out — a Harness container, port, endpoint and credential per slot — so a co-resident
+      // slot's `bash` cannot read another's credential (Kubernetes isolates one container from
+      // another). The slots arrive from the run host's walk; a test that drives the port directly
+      // reads an absent list as the single-container path.
+      const slotNames = req.slots ?? [];
+      const multiSlot = slotNames.length > 1 && opts.signingKey !== undefined;
+      const custodianSlots: CustodianSlot[] = multiSlot
+        ? slotNames.map((slot) => ({
+            slot,
+            standIn: slotStandIn(opts.signingKey!, req.name, slot),
+            token: { secret: slotSecretName(req.name, slot), key: "token" },
+          }))
+        : [];
+      // The non-primary slots get their own ports, 8090+, in sorted slot-name order (the primary,
+      // `slotNames[0]`, keeps the serving port). The CR states each so neither side recomputes it.
+      const additionalSlots = multiSlot
+        ? [...slotNames.slice(1)].sort().map((slot, i) => ({ slot, port: SLOT_PORT_BASE + i }))
+        : [];
+      const primarySlot = multiSlot ? slotNames[0] : undefined;
       const custodian = custodianComposition(manifest, {
         image: refs.custodian,
         pod,
@@ -1261,6 +1428,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         sandbox: req.name,
         caBundle: cfg().caBundle === true,
         resources: split.custodian,
+        ...(custodianSlots.length ? { slots: custodianSlots } : {}),
       });
       // The Sandbox Effector (ADR-0068): present when `jr2 up` placed an Effect of this Workspace
       // there, and declared it in the pod's manifest beside the Held one; absent otherwise.
@@ -1269,7 +1437,17 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // matched against the fence, and the entry's push Secret is named on the CR — or the push is
       // refused here, before anything is written, as a per-run url outside the fence is.
       const gitCredentials = await gitCredentialsFor(req.name, req.repos, effectorManifest?.pushes ?? []);
-      const cr = await crFor(req, refs, repos, custodian, split, effectorManifest, gitCredentials);
+      const cr = await crFor(
+        req,
+        refs,
+        repos,
+        custodian,
+        split,
+        additionalSlots,
+        primarySlot,
+        effectorManifest,
+        gitCredentials,
+      );
 
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
       // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
@@ -1286,9 +1464,16 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // be reached fails the apply below at once, rather than hanging on a list.
       sandboxes();
       const applied = await kube().apply(SANDBOXES, ns, cr).catch(noOperator(req.name, "Sandbox"));
-      // After the CR: its uid owns both, so they go when it goes.
+      // After the CR: its uid owns them, so they go when it goes. A single-agent pod mints the one
+      // Sandbox token (byte-for-byte); a multi-slot pod mints one credential Secret per slot (standin
+      // + token) AND still the one Sandbox token (ADR-0076): the Custodian swaps the public
+      // Sandbox-scope Stand-in for it on the fetch route (`jr2-upload-pack`'s `POST /fetch`), and it
+      // is projected into the Custodian container alone — never mounted into a slot container.
+      if (custodianSlots.length > 0) {
+        for (const s of custodianSlots) await applySlotSecret(req.name, s.slot, applied);
+      }
       await applyTokenSecret(req.name, applied);
-      await applyCustodianConfig(req.name, applied, manifest);
+      await applyCustodianConfig(req.name, applied, manifest, custodianSlots);
       if (effectorManifest) {
         await applyEffectorKey(req.name, applied);
         await applyEffectorService(req.name, applied);
@@ -1369,7 +1554,15 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           const fresh = conditionOf(sandbox, "ReposFresh");
           if (fresh?.status === "False" && fresh.message) staleByName.set(name, fresh.message);
           else staleByName.delete(name);
-          return { endpoint: status.endpoint };
+          // Each additional slot's own Harness endpoint (ADR-0076), by slot name — so the ambient
+          // handles reach that slot's container and not the primary's. A single-slot Sandbox reports
+          // none, so the return is byte-for-byte today's and the one slot resolves off `endpoint`.
+          const slotEndpoints = status.endpoints ?? [];
+          if (slotEndpoints.length === 0) return { endpoint: status.endpoint };
+          return {
+            endpoint: status.endpoint,
+            endpoints: Object.fromEntries(slotEndpoints.map((e) => [e.slot, e.endpoint])),
+          };
         },
         () => ({
           deadline: at + (held ? repoTimeoutMs : readyTimeoutMs),

@@ -60,7 +60,11 @@ const body = jr2Setup({
     // The reviewer decides. The scenario never releases this Turn, so a run that reaches `approved`
     // was moved by something other than the reviewer.
     reviewing: {
-      invoke: { src: "reviewer", input: { prompt: "review the change: approve or reject" } },
+      // A CONTINUED Turn, so the reviewer registers at the BARE base iid `<runId>/body/reviewer`
+      // (no per-Turn nonce) — the derivable, co-resident target the attack step posts to (ADR-0013,
+      // ADR-0076). A fresh Turn would register under a nonce'd iid the attacker cannot name, so the
+      // attack POST would 404 before the slot check it is meant to exercise ever runs.
+      invoke: { src: "reviewer", input: { prompt: "review the change: approve or reject", continue: true } },
       on: {
         approve: { target: "approved", actions: assign({ verdict: () => "approved" }) },
         reject: { target: "rejected", actions: assign({ verdict: () => "rejected" }) },

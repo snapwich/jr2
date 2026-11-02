@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { JR2Config } from "../src/config.ts";
-import { heldSecretsOf, leafStem, parseTarget, standIn, type HeldLookups } from "../src/held-secrets.ts";
+import { heldSecretsOf, leafStem, parseTarget, slotStandIn, standIn, type HeldLookups } from "../src/held-secrets.ts";
 
 const SECRET = "sk-very-secret-value";
 
@@ -41,6 +41,21 @@ test("the Stand-in: deterministic, public, per name, and never an Anthropic OAut
   assert.notEqual(standIn("A"), standIn("B"));
   assert.match(standIn("JR2_PROVIDER_API_KEY"), /^[A-Za-z0-9_-]+$/);
   assert.ok(!standIn("ANTHROPIC_OAUTH_TOKEN").includes("sk-ant-oat"));
+});
+
+test("the per-slot secret Stand-in (ADR-0076): deterministic, unguessable, and per sandbox+slot", () => {
+  const key = Buffer.alloc(32, 9);
+  // Deterministic for the same key + sandbox + slot — it re-derives after a restart.
+  assert.equal(slotStandIn(key, "ws-1", "coder"), slotStandIn(key, "ws-1", "coder"));
+  // A 43-character base64url HMAC — unguessable, unlike the public `jr2-held-<NAME>` Stand-in, so a
+  // co-resident slot cannot read it off its name.
+  assert.match(slotStandIn(key, "ws-1", "coder"), /^[A-Za-z0-9_-]{43}$/);
+  assert.ok(!slotStandIn(key, "ws-1", "coder").startsWith("jr2-held-"));
+  // Per slot and per sandbox: no two pairs share a Stand-in.
+  assert.notEqual(slotStandIn(key, "ws-1", "coder"), slotStandIn(key, "ws-1", "reviewer"));
+  assert.notEqual(slotStandIn(key, "ws-1", "coder"), slotStandIn(key, "ws-2", "coder"));
+  // A different key signs a different value.
+  assert.notEqual(slotStandIn(key, "ws-1", "coder"), slotStandIn(Buffer.alloc(32, 1), "ws-1", "coder"));
 });
 
 test("jr2-upload-pack presents the same Stand-in: the Go literal is standIn(JR2_SANDBOX_TOKEN)", async () => {

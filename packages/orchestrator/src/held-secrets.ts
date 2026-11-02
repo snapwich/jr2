@@ -19,7 +19,7 @@
 // reads `""`. The in-cluster Orchestrator never re-derives any of this. It reads the manifest
 // `jr2 up` wrote, per provision, from a mount (the `jr2-images` pattern, ADR-0038).
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import type { JR2Config, HarnessEnvVar } from "./config.ts";
@@ -80,6 +80,22 @@ export function providerClaims(config: JR2Config, models: readonly string[]): st
  */
 export function standIn(name: string): string {
   return `jr2-held-${name}`;
+}
+
+/**
+ * The SECRET Stand-in of one agent slot (ADR-0076): what that slot's Harness container holds as its
+ * `JR2_SANDBOX_TOKEN` and sends as its Menu bearer, and what the Custodian maps to the slot's real
+ * token (`agentSlotToken`). Unlike the public {@link standIn} (`jr2-held-<NAME>`, which an Agent
+ * reads off its env and which means something only toward a bound host), this one is UNGUESSABLE —
+ * a 43-character base64url HMAC — because a co-resident slot that could guess it could pick as this
+ * slot. It is mounted into the slot's container alone, by a per-slot Secret (`secretKeyRef`), never
+ * a ConfigMap or plain env, so another slot's `bash` cannot read it.
+ *
+ * Signed with the instance key, so it re-derives after a restart, like every signed name here; the
+ * `standin:` domain keeps it apart from a Sandbox token or a per-slot token of the same pair.
+ */
+export function slotStandIn(key: Buffer, sandbox: string, slot: string): string {
+  return createHmac("sha256", key).update(`standin:${sandbox}/${slot}`).digest("base64url");
 }
 
 /** The request headers a Stand-in is swapped in when a held secret names none — the four places a

@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import {
+  agentSlotToken,
   createAuthenticator,
   mayAskForSandbox,
   mayDeliverToAgent,
@@ -306,6 +307,62 @@ test("the publish token resolves to the publisher, which delivers to nothing (AD
   assert.equal((await app.request(surface, get(publishToken))).status, 403);
   assert.equal((await app.request(`/runs/${run.runId}`, get(publishToken))).status, 403);
   assert.equal((await app.request("/workflows/coding/runs", post({}, publishToken))).status, 403);
+});
+
+test("a per-slot token round-trips, and its agent: prefix is no Sandbox token (ADR-0076)", () => {
+  const auth = createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY });
+  // It resolves to an agent principal carrying its Sandbox AND its slot.
+  assert.deepEqual(auth(agentSlotToken(KEY, "ws-1", "coder")), { kind: "agent", sandbox: "ws-1", slot: "coder" });
+  // A forged one — the right shape, a signature no key made — resolves to nothing, like a forged
+  // Sandbox token: knowing the slot and the Sandbox is not holding the token.
+  assert.equal(auth(`agent:ws-1/coder.${"A".repeat(43)}`), undefined);
+  // The `agent:` prefix is a name no DNS label can be, so a per-slot token is never read as a
+  // Sandbox token — a Sandbox token's name is its Sandbox, with no prefix.
+  const asSandbox = auth(sandboxToken(KEY, "ws-1"));
+  assert.deepEqual(asSandbox, { kind: "sandbox", sandbox: "ws-1" });
+});
+
+test("mayDeliverToAgent checks the slot for a per-slot token, and the Sandbox alone for a Sandbox token (ADR-0076)", () => {
+  const slotPrincipal = { kind: "agent", sandbox: "ws-1", slot: "coder" } as const;
+  // The per-slot token: its slot AND its Sandbox must be the registration's.
+  assert.equal(mayDeliverToAgent(slotPrincipal, "ws-1", "coder"), true);
+  assert.equal(mayDeliverToAgent(slotPrincipal, "ws-1", "reviewer"), false, "a co-resident slot is refused");
+  assert.equal(mayDeliverToAgent(slotPrincipal, "ws-2", "coder"), false, "another Sandbox is refused");
+  assert.equal(mayDeliverToAgent(slotPrincipal, "ws-1", undefined), false, "a registration with no slot is refused");
+  assert.equal(mayDeliverToAgent(slotPrincipal, undefined, undefined), false, "a workspace-less surface is refused");
+  // The bare Sandbox token (a single-agent pod, byte-for-byte today) matches on the Sandbox alone.
+  const sandboxPrincipal = { kind: "sandbox", sandbox: "ws-1" } as const;
+  assert.equal(mayDeliverToAgent(sandboxPrincipal, "ws-1", "coder"), true);
+  assert.equal(mayDeliverToAgent(sandboxPrincipal, "ws-2", "coder"), false);
+  // The Instance token always may; a per-slot token may ask for a fetch on its own Sandbox alone.
+  assert.equal(mayDeliverToAgent({ kind: "instance" }, "ws-1", "coder"), true);
+  assert.equal(mayAskForSandbox(slotPrincipal, "ws-1"), true);
+  assert.equal(mayAskForSandbox(slotPrincipal, "ws-2"), false);
+});
+
+test("a per-slot token drives its OWN slot's surface, and no co-resident slot's (ADR-0076)", async () => {
+  const { host, app, agentPath } = await mkApp();
+  const run = await host.start("coding", { sandbox: "ws-1" });
+  // The `coding` template's one slot is `coder` (ADR-0049): its per-slot token delivers.
+  const coder = agentSlotToken(KEY, "ws-1", "coder");
+  assert.equal((await app.request(await agentPath(run, "surface"), get(coder))).status, 200);
+  const pick = await app.request(
+    await agentPath(run, "events"),
+    post({ type: "request_review", summary: "PR" }, coder),
+  );
+  assert.equal(pick.status, 200);
+
+  // A sibling slot's token — same Sandbox, another slot — is the co-resident attack of ADR-0076:
+  // refused on the slot check, and the Turn does not move.
+  const sibling = agentSlotToken(KEY, "ws-1", "reviewer");
+  assert.equal((await app.request(await agentPath(run, "surface"), get(sibling))).status, 403);
+  const forge = await app.request(await agentPath(run, "events"), post({ type: "done" }, sibling));
+  assert.equal(forge.status, 403);
+  assert.equal(host.status(run.runId)?.status, "active", "the sibling pick moved nothing");
+
+  // And a per-slot token for another Sandbox cannot speak for this one either.
+  const elsewhere = agentSlotToken(KEY, "ws-2", "coder");
+  assert.equal((await app.request(await agentPath(run, "surface"), get(elsewhere))).status, 403);
 });
 
 test("a start with jr2-dispatched-by is Instance-band like any start: the key opens nothing (ADR-0071)", async () => {

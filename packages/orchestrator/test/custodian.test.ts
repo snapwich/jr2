@@ -204,6 +204,79 @@ test("the script: a generated table of names, headers, paths and targets, then d
   assert.ok(!/jr2-held-/.test(script) && !/sk-/.test(script), "never a value, never a Stand-in");
 });
 
+test("a multi-slot pod (ADR-0076): HELD.control is one entry per slot with its own secret Stand-in, and the values project the per-slot tokens", () => {
+  const slots = [
+    {
+      slot: "coder",
+      standIn: "STANDIN_coder_0000000000000000000000000000",
+      token: { secret: "ws-1-slot-coder", key: "token" },
+    },
+    {
+      slot: "reviewer",
+      standIn: "STANDIN_reviewer_11111111111111111111111111",
+      token: { secret: "ws-1-slot-reviewer", key: "token" },
+    },
+  ];
+  const script = custodianScript(TWO, slots);
+  // One control entry per slot, each carrying its OWN secret Stand-in (ADR-0076) — the unguessable
+  // value, which rides the config so the swap can match it, NOT the public `jr2-held-<NAME>` form.
+  assert.match(
+    script,
+    /HELD\.secrets\[1\] = \{ name = "slot:coder", headers = \{ "authorization" \}, standIn = "STANDIN_coder_0+" \}/,
+  );
+  assert.match(
+    script,
+    /HELD\.secrets\[2\] = \{ name = "slot:reviewer", headers = \{ "authorization" \}, standIn = "STANDIN_reviewer_1+" \}/,
+  );
+  // Beside the per-slot entries, the public Sandbox-scope Stand-in rides too (ADR-0076) — but
+  // PATH-RESTRICTED to the fetch route, so the `hold` path guard lets it swap on `/sandboxes/…`
+  // alone and refuses it on any agent-delivery path. The per-slot entries carry NO `paths`.
+  assert.match(
+    script,
+    /HELD\.secrets\[3\] = \{ name = "JR2_SANDBOX_TOKEN", headers = \{ "authorization" \}, paths = \{ "\/sandboxes\/" \} \}/,
+  );
+  assert.ok(
+    !/name = "slot:coder", headers = \{ "authorization" \}, standIn = "STANDIN_coder_0+", paths/.test(script),
+    "a per-slot entry carries no path restriction",
+  );
+  assert.match(script, /HELD\.control = \{ HELD\.secrets\[1\], HELD\.secrets\[2\], HELD\.secrets\[3\] \}/);
+  // The held secrets follow the control credentials, so their indices and the targets' refs shift by
+  // the control count (two slots + the Sandbox token = three).
+  assert.match(
+    script,
+    /HELD\.secrets\[4\] = \{ name = "ANTHROPIC_API_KEY", headers = \{ "x-api-key" \}, paths = \{ "\/v1\/messages" \} \}/,
+  );
+  assert.match(script, /HELD\.secrets\[5\] = \{ name = "JR2_PROVIDER_API_KEY", headers = \{ "authorization" \} \}/);
+  assert.match(script, /HELD\.targets\["litellm\.corp\.example:443"\] = \{ HELD\.secrets\[4\] \}/);
+  assert.match(script, /HELD\.targets\["10\.0\.0\.5:8000"\] = \{ HELD\.secrets\[5\] \}/);
+  // The Sandbox token's VALUE never rides the script — only its name and the fetch-route path
+  // restriction do; the public Stand-in form is derived in the program, never stated here.
+  assert.ok(!/jr2-held-/.test(script), "never a Stand-in value in the script");
+
+  const c = custodianComposition(TWO, {
+    image: "envoy:c1",
+    pod: "ws-0123456789abcdef",
+    config: "ws-1-custodian",
+    token: { secret: "ws-1-token", key: "JR2_SANDBOX_TOKEN" },
+    sandbox: "ws-1",
+    caBundle: false,
+    slots,
+  });
+  // The shared Harness env omits the Sandbox-token Stand-in: each slot container carries its own, by
+  // secretKeyRef, which the pod's maker adds (sandbox-kube.ts).
+  assert.deepEqual(c.harnessEnv[0], { name: "JR2_CUSTODIAN_URL", value: "http://127.0.0.1:8081" });
+  assert.ok(!c.harnessEnv.some((e) => e.name === "JR2_SANDBOX_TOKEN"), "no shared Sandbox-token Stand-in");
+  // custodian-values projects each slot's per-slot token under its `slot:<slot>` file, BESIDE the one
+  // Sandbox token (which the fetch-route control entry swaps). All three are mounted into the
+  // Custodian container alone — no slot container mounts the Sandbox token (ADR-0076).
+  const values = c.volumes.find((v) => v.name === "custodian-values") as { projected: { sources: any[] } };
+  assert.deepEqual(values.projected.sources.slice(0, 3), [
+    { secret: { name: "ws-1-slot-coder", items: [{ key: "token", path: "slot:coder" }] } },
+    { secret: { name: "ws-1-slot-reviewer", items: [{ key: "token", path: "slot:reviewer" }] } },
+    { secret: { name: "ws-1-token", items: [{ key: "JR2_SANDBOX_TOKEN", path: "JR2_SANDBOX_TOKEN" }] } },
+  ]);
+});
+
 test("composition, nothing held: the Harness gets the Custodian's address and the token's Stand-in, and no proxy", () => {
   const c = custodianComposition(EMPTY_HELD, {
     image: "envoy:c1",

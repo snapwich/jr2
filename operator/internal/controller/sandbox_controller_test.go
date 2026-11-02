@@ -119,6 +119,8 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
 			Expect(sandbox.Status.Endpoint).To(Equal("http://test-sandbox.default.svc:8080"))
+			// Single-agent no-op (ADR-0076): no slots declared, so no per-slot endpoints.
+			Expect(sandbox.Status.Endpoints).To(BeEmpty())
 			Expect(sandbox.Status.PodRef.Name).To(Equal(resourceName))
 			Expect(sandbox.Status.PodUID).To(Equal(pod.UID))
 			Expect(sandbox.Status.ServiceRef.Name).To(Equal(resourceName))
@@ -640,6 +642,114 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Pod{}))).To(BeTrue(), "no second Pod")
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxLost))
+		})
+	})
+
+	Context("When reconciling a multi-slot Sandbox (ADR-0076)", func() {
+		const resourceNamespace = "default"
+		slotKey := types.NamespacedName{Name: "test-slots", Namespace: resourceNamespace}
+
+		ctx := context.Background()
+		reconciler := &SandboxReconciler{}
+
+		BeforeEach(func() {
+			reconciler.Client = k8sClient
+			reconciler.Scheme = k8sClient.Scheme()
+
+			// The primary slot is the Harness; `coder` and `reviewer` are the
+			// additional slots (ADR-0076). Their Harness containers ride `sidecars`
+			// named `harness-<slot>`, each listening on its declared port and
+			// carrying its own hardened securityContext.
+			resource := &corev1alpha1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{Name: slotKey.Name, Namespace: resourceNamespace},
+				Spec: corev1alpha1.SandboxSpec{
+					Image: "ghcr.io/example/harness:latest",
+					Port:  8080,
+					Slots: []corev1alpha1.SandboxSlot{
+						{Name: "coder", Port: 8090},
+						{Name: "reviewer", Port: 8091},
+					},
+					Sidecars: []corev1.Container{
+						{Name: "custodian", Image: "ghcr.io/example/custodian:latest"},
+						{
+							Name:  "harness-coder",
+							Image: "ghcr.io/example/harness:latest",
+							Ports: []corev1.ContainerPort{{Name: "coder", ContainerPort: 8090}},
+						},
+						{
+							Name:  "harness-reviewer",
+							Image: "ghcr.io/example/harness:latest",
+							Ports: []corev1.ContainerPort{{Name: "reviewer", ContainerPort: 8091}},
+							ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstrFromInt32(8091)},
+							}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			resource := &corev1alpha1.Sandbox{}
+			if err := k8sClient.Get(ctx, slotKey, resource); err == nil {
+				Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			} else {
+				Expect(errors.IsNotFound(err)).To(BeTrue())
+			}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: slotKey.Name, Namespace: resourceNamespace}}
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)))).To(Succeed())
+			Eventually(func() bool {
+				return errors.IsNotFound(k8sClient.Get(ctx, slotKey, &corev1.Pod{}))
+			}).Should(BeTrue())
+		})
+
+		It("wires a ServicePort and a status endpoint per slot, and hardens the slot containers", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: slotKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("emitting one ServicePort per slot plus the primary's http port")
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, slotKey, svc)).To(Succeed())
+			Expect(svc.Spec.Ports).To(HaveLen(3))
+			Expect(svc.Spec.Ports[0].Name).To(Equal("http"))
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
+			Expect(svc.Spec.Ports[1].Name).To(Equal("coder"))
+			Expect(svc.Spec.Ports[1].Port).To(Equal(int32(8090)))
+			Expect(svc.Spec.Ports[1].TargetPort.IntValue()).To(Equal(8090))
+			Expect(svc.Spec.Ports[2].Name).To(Equal("reviewer"))
+			Expect(svc.Spec.Ports[2].Port).To(Equal(int32(8091)))
+
+			By("reporting the primary endpoint in status.endpoint and one per slot in status.endpoints")
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, slotKey, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Endpoint).To(Equal("http://test-slots.default.svc:8080"))
+			Expect(sandbox.Status.Endpoints).To(Equal([]corev1alpha1.SandboxSlotEndpoint{
+				{Slot: "coder", Endpoint: "http://test-slots.default.svc:8090"},
+				{Slot: "reviewer", Endpoint: "http://test-slots.default.svc:8091"},
+			}))
+
+			By("hardening every slot Harness container without relaxing the baseline (ADR-0076)")
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, slotKey, pod)).To(Succeed())
+			byName := map[string]corev1.Container{}
+			for _, c := range pod.Spec.Containers {
+				byName[c.Name] = c
+			}
+			for _, name := range []string{"harness-coder", "harness-reviewer"} {
+				c, ok := byName[name]
+				Expect(ok).To(BeTrue(), name)
+				Expect(c.SecurityContext).NotTo(BeNil(), name)
+				Expect(c.SecurityContext.RunAsNonRoot).To(HaveValue(BeTrue()), name)
+				Expect(c.SecurityContext.AllowPrivilegeEscalation).To(HaveValue(BeFalse()), name)
+				Expect(c.SecurityContext.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")), name)
+			}
+
+			By("keeping the slot containers' own fragment-carried readiness probes")
+			probe := byName["harness-reviewer"].ReadinessProbe
+			Expect(probe).NotTo(BeNil())
+			Expect(probe.HTTPGet).NotTo(BeNil())
+			Expect(probe.HTTPGet.Port.IntValue()).To(Equal(8091))
 		})
 	})
 })

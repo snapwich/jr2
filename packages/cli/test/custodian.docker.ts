@@ -472,6 +472,79 @@ describe("toward the Orchestrator (the control listener)", () => {
   });
 });
 
+describe("a multi-slot pod (ADR-0076): the public Sandbox Stand-in swaps on the fetch route alone", () => {
+  // The security invariant: on a pod with more than one agent slot the Custodian still holds the
+  // public Sandbox-scope Stand-in — jr2-upload-pack's `POST /fetch` bearer — but PATH-RESTRICTED to
+  // the fetch route. So it swaps for the real Sandbox token on `/fetch` and is refused on every
+  // agent-delivery path BEFORE any swap, which is what stops a co-resident slot from spending this
+  // derivable string to deliver a pick to another slot. Each slot's OWN secret Stand-in still
+  // delivers to its own surface.
+  const CODER_STANDIN = "standin-coder-unguessable-00000000000000000";
+  const REVIEWER_STANDIN = "standin-reviewer-unguessable-1111111111111111";
+  const CODER_TOKEN = "agent:ws-1/coder.coder-token-value";
+  const REVIEWER_TOKEN = "agent:ws-1/reviewer.reviewer-token-value";
+  let orch: Awaited<ReturnType<typeof startFakeOrchestrator>>;
+  let multi: Custodian;
+
+  before(async () => {
+    orch = await startFakeOrchestrator();
+    multi = await startCustodian({
+      manifest: { version: 1, secrets: [] },
+      values: {},
+      upstreamCas: [],
+      orchestrator: { host: lanAddress(), port: orch.port },
+      sandbox: "ws-1",
+      slots: [
+        { slot: "coder", standIn: CODER_STANDIN, token: CODER_TOKEN },
+        { slot: "reviewer", standIn: REVIEWER_STANDIN, token: REVIEWER_TOKEN },
+      ],
+    });
+  });
+  after(async () => {
+    await multi?.stop();
+    await orch?.close();
+  });
+
+  test("the public Sandbox Stand-in is swapped on POST /fetch — the one route jr2-upload-pack carries it on", async () => {
+    const r = await controlRequest(multi.ports.control, "/fetch", {
+      method: "POST",
+      headers: { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` },
+      body: '{"identity":"github.com/a/b"}',
+    });
+    assert.equal(r.status, 200, r.body);
+    const seen = orch.seen.at(-1)!;
+    assert.equal(seen.url, "/sandboxes/ws-1/fetch");
+    assert.equal(seen.headers.authorization, `Bearer ${SANDBOX_TOKEN}`, "swapped for the real Sandbox token");
+  });
+
+  test("the public Sandbox Stand-in is REFUSED on an agent-delivery path, before any swap (the ADR-0076 crux)", async () => {
+    const before = orch.seen.length;
+    for (const [path, method, body] of [
+      ["/agents/ws-1%2Fbody%2Freviewer/events", "POST", '{"type":"approve"}'],
+      ["/agents/ws-1%2Fbody%2Fcoder/surface", "GET", undefined],
+      ["/agents/ws-1%2Fbody%2Freviewer/deliveries/d-1", "GET", undefined],
+    ] as const) {
+      const r = await controlRequest(multi.ports.control, path, {
+        method,
+        headers: { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}`, "content-type": "application/json" },
+        ...(body !== undefined ? { body } : {}),
+      });
+      assert.equal(r.status, 403, `${method} ${path} refused by the path guard`);
+    }
+    assert.equal(orch.seen.length, before, "nothing reached the Orchestrator");
+  });
+
+  test("a slot's own secret Stand-in delivers to its surface, swapped for that slot's per-slot token", async () => {
+    const r = await controlRequest(multi.ports.control, "/agents/ws-1%2Fbody%2Fcoder/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${CODER_STANDIN}`, "content-type": "application/json" },
+      body: '{"type":"built"}',
+    });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(orch.seen.at(-1)?.headers.authorization, `Bearer ${CODER_TOKEN}`, "swapped for the coder's token");
+  });
+});
+
 describe("the health listener (0.0.0.0, the one a peer can reach)", () => {
   test("14. idle connections past Envoy's global limit fill the health listener alone: the Menu still answers", async () => {
     // More than `max_active_downstream_connections` (4096), none of them sending a byte.

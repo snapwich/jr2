@@ -39,7 +39,10 @@ end
 local STAND_IN = {}
 local VALUE = {}
 for _, s in ipairs(HELD.secrets) do
-  STAND_IN[s.name] = "jr2-held-" .. s.name
+  -- A held secret and the single-agent Sandbox token carry the public `jr2-held-<NAME>` Stand-in,
+  -- derived from the name. An agent slot's entry (ADR-0076) carries its own SECRET Stand-in, which
+  -- is unguessable and so cannot be derived — the generated table states it in `standIn`.
+  STAND_IN[s.name] = s.standIn or ("jr2-held-" .. s.name)
   VALUE[s.name] = load(s.name)
 end
 

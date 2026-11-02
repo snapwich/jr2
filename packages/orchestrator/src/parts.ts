@@ -1044,6 +1044,12 @@ export type WorkspacePod = {
   /** The slot of each `worktree()` below the `workspace()`, down to the next `workspace()`. A cut runs
    * in the Harness container, so `effects` does not hold it. Absent when there is none. */
   cuts?: string[];
+  /** Each declared, workspace-ful agent slot below the `workspace()`, down to the next `workspace()`
+   * (ADR-0076): the agent's slot key (its name). Set-deduped — a Pool fan-out of one slot is one
+   * slot — in first-declared order, so `slots[0]` is the pod's canonical (primary) slot. A Menu-only
+   * agent (`workspace: "none"`) is not here — it runs on the Instance Harness (ADR-0031). The pod
+   * runs one Harness container per slot; `slots.length <= 1` is the single-container no-op. */
+  slots: string[];
   /** The `workspace()`'s `effector: { image }`, as written. Absent → the Sandbox Image. */
   effector?: { image: string };
   /** The `workspace()`'s own `image`, as written — its Sandbox Image. Absent → `images/default`,
@@ -1063,51 +1069,81 @@ export type WorkspacePod = {
  * is a route, not a Machine. A cycle (a recursive pool worker) stops at the Machine on its own
  * route.
  */
+/** What a `workspace()` composes below itself, short of the next `workspace()` — gathered by one
+ * walk ({@link collectBelow}) so {@link workspacePodsOf} and {@link sandboxSlotsOf} read one
+ * answer: the bound models, the Sandbox-placed Effects, the `worktree()` cuts, and the declared,
+ * workspace-ful agent slots (ADR-0076). */
+type PodParts = {
+  models: Set<string>;
+  effects: Map<string, CarriedEffect>;
+  cuts: Set<string>;
+  /** First-declared order (a Set preserves insertion order), so `[...slots][0]` is the canonical
+   * (primary) slot — the container a pod-level cut runs in (ADR-0076). */
+  slots: Set<string>;
+};
+
+/** Collect {@link PodParts} from the Agents, Effects and Machines `machine` composes, short of a
+ * `workspace()` (which is a pod of its own). Shared by the pod walk and the runtime slot read, so
+ * the slots `jr2 up` composes and the slots a provision passes are one list. */
+function collectBelow(
+  machine: AnyStateMachine,
+  parts: PodParts,
+  on: Set<AnyStateMachine>,
+  path: OpenSlot["path"],
+  route: PlacementRoute,
+): void {
+  if (on.has(machine)) return;
+  on.add(machine);
+  const body = wrapperBodyOf(machine);
+  const visit = (child: AnyStateMachine, at: OpenSlot["path"], to: PlacementRoute) => {
+    if (!composesSandbox(child)) collectBelow(child, parts, on, at, to);
+  };
+  for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
+    if (isAgent(logic)) {
+      const { model, workspace } = logic.definition;
+      if (workspace !== "none" && typeof model === "string") parts.models.add(model);
+      // The slot key is the agent's name (ADR-0076): one Harness container per distinct one, so a
+      // Pool fan-out of one slot collapses here by Set-dedupe. Menu-only agents run on the Instance
+      // Harness (ADR-0031), so they are not slots.
+      if (workspace !== "none") parts.slots.add(name);
+      continue;
+    }
+    // A Turn under an Open body may run in this pod with any model the body allows (ADR-0070):
+    // a Chart's own Agent, when the body allows a Workspace access other than "none", and a lent
+    // Agent that is not "none", whose `model` dial a Chart may set to an allowed model.
+    if (isOpenBody(logic)) {
+      const decl = openBodyDeclarationOf(logic);
+      if (bodyTurnsRunIn(machine, decl, "pod")) for (const m of decl.allows.models) parts.models.add(m);
+      continue;
+    }
+    if (isEffect(logic)) {
+      const effect = carriedEffectOf(name, path, route, logic.effect);
+      if (effect.placement === "sandbox") parts.effects.set(JSON.stringify([route, name]), effect);
+      if (logic.effect.kind === "command" && logic.effect.cut) parts.cuts.add(name);
+      continue;
+    }
+    const child = asMachine(logic);
+    if (child) visit(child, slotPath(path, name, body), name === body ? route : [...route, name]);
+  }
+  walkStates(machine.root, (inline, hop) => visit(inline, undefined, [...route, hop]));
+  on.delete(machine);
+}
+
+/**
+ * The declared, workspace-ful agent slots of the `workspace()` wrapper `machine` composes
+ * (ADR-0076), as a provision reads them off the live wrapper — the same walk {@link workspacePodsOf}
+ * runs, so `jr2 up` and the provision name one slot set. Set-deduped, in first-declared order, so
+ * the first entry is the pod's canonical (primary) slot. Empty for a `workspace()` that runs no
+ * workspace-ful Agent (only Effects, or only an Open body's lent Agents).
+ */
+export function sandboxSlotsOf(machine: AnyStateMachine): string[] {
+  const parts: PodParts = { models: new Set(), effects: new Map(), cuts: new Set(), slots: new Set() };
+  collectBelow(machine, parts, new Set(), undefined, []);
+  return [...parts.slots];
+}
+
 export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
   const pods: WorkspacePod[] = [];
-  /** The bound models of the Agents in `machine` and the Machines it composes, short of a
-   * `workspace()`. */
-  const modelsIn = (
-    machine: AnyStateMachine,
-    models: Set<string>,
-    on: Set<AnyStateMachine>,
-    effects: Map<string, CarriedEffect>,
-    cuts: Set<string>,
-    path: OpenSlot["path"],
-    route: PlacementRoute,
-  ): void => {
-    if (on.has(machine)) return;
-    on.add(machine);
-    const body = wrapperBodyOf(machine);
-    const visit = (child: AnyStateMachine, at: OpenSlot["path"], to: PlacementRoute) => {
-      if (!composesSandbox(child)) modelsIn(child, models, on, effects, cuts, at, to);
-    };
-    for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
-      if (isAgent(logic)) {
-        const { model, workspace } = logic.definition;
-        if (workspace !== "none" && typeof model === "string") models.add(model);
-        continue;
-      }
-      // A Turn under an Open body may run in this pod with any model the body allows (ADR-0070):
-      // a Chart's own Agent, when the body allows a Workspace access other than "none", and a lent
-      // Agent that is not "none", whose `model` dial a Chart may set to an allowed model.
-      if (isOpenBody(logic)) {
-        const decl = openBodyDeclarationOf(logic);
-        if (bodyTurnsRunIn(machine, decl, "pod")) for (const m of decl.allows.models) models.add(m);
-        continue;
-      }
-      if (isEffect(logic)) {
-        const effect = carriedEffectOf(name, path, route, logic.effect);
-        if (effect.placement === "sandbox") effects.set(JSON.stringify([route, name]), effect);
-        if (logic.effect.kind === "command" && logic.effect.cut) cuts.add(name);
-        continue;
-      }
-      const child = asMachine(logic);
-      if (child) visit(child, slotPath(path, name, body), name === body ? route : [...route, name]);
-    }
-    walkStates(machine.root, (inline, hop) => visit(inline, undefined, [...route, hop]));
-    on.delete(machine);
-  };
   const walk = (
     machine: AnyStateMachine,
     path: OpenSlot["path"],
@@ -1117,10 +1153,8 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
     if (on.has(machine)) return;
     on.add(machine);
     if (composesSandbox(machine)) {
-      const models = new Set<string>();
-      const effects = new Map<string, CarriedEffect>();
-      const cuts = new Set<string>();
-      modelsIn(machine, models, new Set(), effects, cuts, path, route);
+      const below: PodParts = { models: new Set(), effects: new Map(), cuts: new Set(), slots: new Set() };
+      collectBelow(machine, below, new Set(), path, route);
       const parts = sandboxPartsOf(machine);
       const bindings: Record<string, string | undefined> = {};
       if (parts.repos !== open) {
@@ -1133,9 +1167,10 @@ export function workspacePodsOf(root: AnyStateMachine): WorkspacePod[] {
         path,
         route,
         secrets: [...(parts.secrets ?? [])],
-        models: [...models].sort(),
-        effects: [...effects.values()],
-        ...(cuts.size ? { cuts: [...cuts] } : {}),
+        models: [...below.models].sort(),
+        effects: [...below.effects.values()],
+        slots: [...below.slots],
+        ...(below.cuts.size ? { cuts: [...below.cuts] } : {}),
         ...(parts.effector ? { effector: { ...parts.effector } } : {}),
         ...(parts.image !== undefined ? { image: parts.image } : {}),
         bindings,

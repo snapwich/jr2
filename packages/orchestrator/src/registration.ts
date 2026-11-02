@@ -82,6 +82,14 @@ export type Registration = {
    * Harness runs on the host, in no Sandbox at all): those are the Instance token's business.
    */
   sandbox?: string;
+  /**
+   * The agent SLOT this surface belongs to (ADR-0076) — the agent name, which is this Turn's slot
+   * key. A multi-slot pod gives each slot its own Harness container and per-slot token, so a
+   * per-slot credential may deliver here only when its slot is this one; a bare Sandbox token (a
+   * single-agent pod) matches on the Sandbox alone. Absent on gates and on a workspace-less Agent
+   * turn, where no pod's credential delivers at all.
+   */
+  slot?: string;
   /** Close over the invoking state's `sendBack`; delivery lands where the actor was invoked. */
   deliver: (event: DeliveredEvent) => void;
   /** An Agent's: the Harness read this surface (`GET /agents/:iid/surface`), so it has the Turn in
