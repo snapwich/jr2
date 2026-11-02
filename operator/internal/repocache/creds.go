@@ -9,6 +9,7 @@ package repocache
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -59,15 +60,34 @@ func (a *Agent) credentials(ctx context.Context, repo *corev1alpha1.Repo) ([]str
 		return a.sshEnv(env, repo.Name, identity, secret.Data[secretKeyKnownHosts])
 	}
 	if password, ok := secret.Data[secretKeyPassword]; ok {
+		origin, err := httpsOrigin(repo.Spec.URL)
+		if err != nil {
+			return nil, fmt.Errorf("secret %q is an https credential: %w", name, err)
+		}
+		// The helper answers for the Repo's own origin alone, and git follows no redirect: a
+		// redirect to another host would take the clone, the probe or the fetch there, and git
+		// would ask the helper again for that host (ADR-0051). The Effector's push does the same.
 		return append(env,
 			envUsername+"="+string(secret.Data[secretKeyUsername]),
 			envPassword+"="+string(password),
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=credential.helper",
+			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_KEY_0=credential."+origin+".helper",
 			"GIT_CONFIG_VALUE_0="+credentialHelper,
+			"GIT_CONFIG_KEY_1=http.followRedirects",
+			"GIT_CONFIG_VALUE_1=false",
 		), nil
 	}
 	return nil, fmt.Errorf("secret %q carries neither %q (ssh) nor %q (https)", name, secretKeyIdentity, secretKeyPassword)
+}
+
+// httpsOrigin is the scheme and host (with its port) of an http(s) url: the scope of a credential
+// helper, which git matches against each url it asks a credential for.
+func httpsOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return "", fmt.Errorf("the Repo's url %q is not an http(s) url", raw)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 // sshEnv writes the deploy key under $HOME/.ssh (an emptyDir, mode 0600) and

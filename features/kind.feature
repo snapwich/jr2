@@ -135,7 +135,7 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: a command Effect runs in the Harness container of its Workspace, at most once
     ADR-0067. `command(argv)` is an actor slot: the Harness spawns argv[0] with no shell, as the
-    Agent's user, in the one Repo Slot's Worktree, and every outcome is output the Machine routes
+    Agent's user, in the Worktree its input names, and every outcome is output the Machine routes
     on. The `commanded` workflow has no Agent; its body's final output IS the command's output.
 
     Scenario: the exit code is output, and the Machine routes on it
@@ -390,9 +390,9 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: the Agent's only control-plane peer is the Custodian on localhost
     ADR-0013, ADR-0059. The Agent reaches its Machine through a container it can talk to but whose
-    credential it cannot read: the Harness holds the Sandbox token's Stand-in, and the Custodian
-    puts the token on three routes and no other. Nothing else in the pod can deliver — which is what
-    makes "the Agent never steers the workflow" enforced rather than advertised.
+    credential it cannot read: the Harness holds the control token's Stand-in, and the Custodian
+    puts the token on its own routes and no other. Nothing else in the pod can deliver — which is
+    what makes "the Agent never steers the workflow" enforced rather than advertised.
 
     Scenario: the tool call originates inside the pod and drives the Machine
       Given the kind instance is serving
@@ -412,25 +412,101 @@ Feature: a workspace() run drives a real Sandbox on kind
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      # Working tools give the Agent code execution in the Harness container, which shares the
-      # pod's network namespace — so it CAN reach the Orchestrator, address and all, and it sends
-      # the one bearer it holds: the Stand-in. The Sandbox token is the Custodian's alone.
+      # The Harness container shares the pod's network namespace — so it CAN reach the
+      # Orchestrator, address and all. Even the control Stand-in, which no confined child reads,
+      # is worth nothing there: the control token is the Custodian's alone.
       When the Harness container posts "finish" straight to the Orchestrator
       Then the delivery is refused as unauthorized
       And the run has not settled
 
+  Rule: no Workspace code can act as an Agent
+    ADR-0076. Every Agent of a Sandbox runs in its one Harness, and they share a writable /work. So
+    the boundary is not a container: it is that the credential lives only where no Workspace code
+    runs. The Harness process holds the control Stand-in; each program it starts on /work — bash,
+    a test, git — runs confined by Landlock, with an env that holds only the Stand-ins its
+    `workspace()` grants. Each probe here runs as the model's own bash call, so it sees what
+    planted code sees.
+
+    Scenario: an Agent's bash finds no Stand-in of the pod in its env, a file, or the Harness's /proc
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      When the Agent's bash looks everywhere it can for the pod's Stand-ins
+      Then the Agent's bash could not read a Stand-in file, nor the Harness's environ or memory
+      And the Agent's bash found no Stand-in of the pod
+      And no request to the model holds a Stand-in of the pod
+      # A module planted where node would look last runs only in a node whose HOME is the domain's.
+      When the Agent's bash plants a module in its HOME's .node_modules and .node_libraries
+      Then the Harness process's HOME, read from outside the pod, is not the HOME where the Agent planted
+
+    Scenario: code the coder plants in /work, run by the reviewer's own tests, cannot approve the review
+      Given the kind instance is serving
+      When I start the "sibling" workflow in mode "review" detached
+      Then the run's Sandbox becomes Ready
+      When the coder's bash plants a test in /work that approves the review as the reviewer
+      And the Agent in the Sandbox calls "built" with summary "done"
+      And the reviewer's bash runs the tests in /work
+      Then each approval the planted test sent was refused
+      And the reviewer's Turn still waits for its model
+      And the run has not settled
+
+    Scenario: an Agent's program spends the held secret its workspace() grants, and holds no model key
+      Given the kind instance is serving
+      When I start the "sibling" workflow in mode "review" detached
+      Then the run's Sandbox becomes Ready
+      When the Agent's bash sends the "PROBE_KEY" Stand-in from its env to the model's host
+      Then the Agent's bash held the "PROBE_KEY" Stand-in and no "JR2_PROVIDER_API_KEY"
+      And the model's host received the value of "PROBE_KEY", and no Stand-in
+
+  Rule: the domain does not stop the work an Agent normally does
+    ADR-0076, ADR-0077. The domain keeps one thing from the Agent: /run/jr2, and the Harness process.
+    All else that the container's uid can do, the Agent's programs can do. All of them are in one
+    domain, so a later bash call finds and ends a server that an earlier call started. A move into
+    another folder works, because the minimum Landlock ABI (3) has REFER. Each claim here is the model's own
+    tool call, and the step reads the tool result that the model reads.
+
+    Scenario: a server that one bash call starts, a later bash call finds and ends
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      When the Agent's bash starts a server in the background
+      Then the Agent's bash started the server, and it answers
+      When a later bash call of the Agent finds the server and ends it
+      Then the later call read the server's env and its working folder, and the server is gone
+
+    Scenario: an Agent writes in a folder of the image that its uid owns, moves files across folders, and has the image's env
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      When the Agent's bash writes in "/app", moves files across folders, and prints "E2E_IMAGE_ENV"
+      Then the Agent's bash wrote in "/app"
+      And each move of the Agent's bash succeeded
+      And the Agent's bash listed "/", "/run" and "/run/jr2"
+      And the Agent's bash saw "E2E_IMAGE_ENV" as "from-images-default"
+      And the Agent's bash saw the image's LD_LIBRARY_PATH, and the Harness process has none
+
+    Scenario: read reads the full output of a bash call that was truncated
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      When the Agent's bash prints more lines than the model is shown
+      Then the model was shown the tail and the name of the full output's file
+      When the Agent reads the full output's file
+      Then the model was shown the first line of the full output
+
   Rule: a Harness holds stand-ins, and only the Custodian puts the key on the wire
-    ADR-0059. The Agent executes code in the Harness container, so a key there is a key it can take
-    away. The Harness's env holds a stand-in; the Custodian, a container the Agent executes nothing
-    in, swaps it for the key toward the provider's host alone. What the Agent can take out of the
-    pod is worth nothing outside it.
+    ADR-0059, ADR-0076. Workspace code runs in the Harness container, so a key there is a key it can
+    take away. The Harness holds a secret Stand-in, as a file under /run/jr2 that no confined child
+    reads and in no env; the Custodian, a container the Agent executes nothing in, swaps it for the
+    key toward the provider's host alone. What the Agent can take out of the pod is worth nothing
+    outside it.
 
     Scenario: the provider receives the key, and the Harness container holds only the stand-in
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       And the model provider received the provider key on every turn request
-      And the Harness container's environment holds the stand-in for "JR2_PROVIDER_API_KEY"
+      And the Harness container holds the stand-in for "JR2_PROVIDER_API_KEY" as a file, in no env
       And the provider key is nowhere in the Harness container's environment or files
       And the provider key is nowhere in the Instance Harness's Harness container
       And the Custodian's log names "JR2_PROVIDER_API_KEY" and never the key
@@ -449,6 +525,20 @@ Feature: a workspace() run drives a real Sandbox on kind
       When the Harness container calls the model provider with no stand-in
       Then the Custodian refuses it as missing the stand-in
       And the model provider received no request without the key
+
+  Rule: no Harness pod reaches a cloud metadata address
+    ADR-0076. Where a node's metadata service answers pods, it gives the node's cloud credential,
+    which no workspace() grants. So `jr2 up` converges an egress NetworkPolicy for each Harness pod:
+    every address, except the metadata addresses. kindnet enforces it. kind has no metadata service,
+    so the step gives the address to the node, and a pod that the policy does not select is the
+    control.
+
+    Scenario: an Agent's bash cannot connect to the metadata address, and still reaches the model's host and the Orchestrator
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      When the Agent's bash connects to the cloud metadata address, the model's host and the Orchestrator
+      Then the metadata address did not answer the Agent's bash, and the model's host and the Orchestrator did
 
   Rule: a Harness answers the Orchestrator alone
     ADR-0058. The Harness wire drives conversations — admit a Turn, read its history, abort it — and
@@ -521,7 +611,7 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: a write from the review worktree cannot reach the branch or the coder's worktree
     ADR-0028. The tool layer (`workspace: "read"`) states intent and stops the honest path; the
-    detached review worktree is the containment. It sits beside the branch worktree at the sha
+    detached review Worktree is the containment. It sits beside the branch Worktree at the sha
     under review with a DETACHED HEAD, so a rogue write cannot move the branch and a rogue commit
     lands on a detached HEAD — it evaporates with the checkout.
 
@@ -530,9 +620,8 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
-      # The same idempotent git steps the Harness's attach runs (ADR-0028, ADR-0063), played in the
-      # pod. The Workspace-port verb that requests this per review round is a later, workflow-driven
-      # change; what this scenario pins is the containment property those lines buy.
+      # The git steps of a detached cut (ADR-0028, ADR-0075), played in the pod. What this scenario
+      # pins is the containment property those lines buy.
       When a detached review worktree is attached for repo "app" at the head of branch "feat-e2e"
       And the review worktree gets a write probe and a commit
       Then the branch ref of repo "app" branch "feat-e2e" is unmoved

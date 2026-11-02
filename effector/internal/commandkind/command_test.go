@@ -317,16 +317,6 @@ func TestTheChildReadsItsNamedSecretAndWritesItsScratch(t *testing.T) {
 	}
 }
 
-// A node whose kernel cannot confine the child runs no credentialed command: the start is refused.
-func TestAnUnconfinableNodeRefusesTheCommand(t *testing.T) {
-	p, r := setup(t)
-	p.Commit("one", nil)
-	r.Unconfinable = "landlock: unavailable on node n1 (the kernel has no Landlock (ENOSYS))"
-	if got := r.Missing(request(t, p, "true", "")); !strings.Contains(got, "landlock: unavailable on node n1") {
-		t.Fatalf("got %q", got)
-	}
-}
-
 // A command stopped before its program starts (its state exited while the clean repository was made
 // or the pin checked out, ADR-0067) settles `unknown`: it did not run, and the reason is the stop,
 // never the error of the step the stop cut short.
@@ -342,5 +332,31 @@ func TestACommandStoppedBeforeItsProgramStartsDidNotRun(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the program ran")
+	}
+}
+
+// A Secret volume's file is a link through `..data` (the kubelet's atomic swap). The confiner
+// refuses a rule through a link (ADR-0076), so the runner names the file's real path in the rule,
+// and the child still reads the secret by the path it was given.
+func TestACommandReadsASecretThatASecretVolumeLinks(t *testing.T) {
+	p, r := setup(t)
+	p.Commit("one", map[string]string{"a.txt": "committed\n"})
+	stamp := filepath.Join(r.SecretsDir, "..2026_11_02_00_00_00.1")
+	if err := os.MkdirAll(stamp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(r.SecretsDir, "aws"), filepath.Join(stamp, "aws")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(stamp), filepath.Join(r.SecretsDir, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..data/aws", filepath.Join(r.SecretsDir, "aws")); err != nil {
+		t.Fatal(err)
+	}
+	out := r.Run(context.Background(), request(t, p, `echo "file=$(cat "$AWS_FILE")"`, ""))
+	if out.Outcome != wire.OutcomeExited || out.Command == nil || *out.Command.Code != 0 ||
+		!strings.Contains(out.Command.Tail, "file=[secret:aws]") {
+		t.Fatalf("got %+v %+v", out, out.Command)
 	}
 }

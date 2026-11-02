@@ -8,7 +8,7 @@
 // stub tier sits in because it has no `workspace()` to resolve from — and sits in for real: the
 // stub-tier invokes in `_fixtures.ts` annotate their inputs with it, so an author key that crept
 // back in would fail there too. The Frame's `cwd` also left the definition, since a Worktree path
-// exists only once a run has a branch.
+// exists only once a Machine has cut it.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

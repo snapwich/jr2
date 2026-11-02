@@ -21,19 +21,31 @@
 // `effector git-credential get` is git's credential helper for a token push (package pushkind).
 // `effector keep -- <path> <argv...>` is one credentialed command's own subreaper, between the
 // Effector and the confiner (package reaper, ADR-0068 rule 1).
-// `effector confine <rules> -- <path> <argv...>` is a credentialed command's confiner: it
-// restricts itself with Landlock and execs argv (package confine; ADR-0068).
+// `effector confine <rules> -- <path> <argv...>` is a confiner: it restricts itself with Landlock
+// and execs argv (package confine) — a credentialed command's child (ADR-0068), and each process
+// the Harness of a Sandbox starts in /work (ADR-0076).
+// `effector probe` is the Landlock probe of a process that confines (ADR-0077): it says the ABI and
+// exits 0, or says why the kernel offers none and exits 1. The Harness of a Sandbox runs it at start.
+// `effector nocore -- <path> <argv...>` starts the Harness with no core file (ADR-0076): a signal
+// from a confined child must not dump the Harness's Stand-ins where the child can read them.
+// `effector harness-rules --deny <path> [--deny <path>]...` writes the rules of the Harness's domain
+// (confine.ForHarness, ADR-0076): every right on every path but the denied ones, each argument ended
+// by NUL, in confine's format.
+// `effector spawner` is the one process of that domain that the Harness talks to (package spawner,
+// ADR-0076): it starts each process that a model drives and does each file tool's I/O, over frames
+// on its stdin and stdout, which must be sockets. The Harness starts it confined:
+// `effector confine <harness-rules> -- effector spawner`.
 //
 // The Effector is the child subreaper of its container (PR_SET_CHILD_SUBREAPER): every process an
 // Effect starts is ended before the Effect settles, a `setsid` escapee included (package reaper,
 // ADR-0068 rule 1). A Sandbox Effector holds one lock over its two classes, so a GPG-signing push and a
 // credentialed command are never live together.
 //
-// A Sandbox Effector probes Landlock when it starts. When its Workspace holds a credentialed
-// command (`commands` in effector.json) and the kernel cannot confine a child, it does not become
-// ready: it ends, and says `landlock: unavailable on node <node> (...)` in its termination
-// message, which the operator publishes on the Sandbox's status — so the provision fails before
-// any Turn.
+// A Sandbox Effector probes Landlock when it starts. When the kernel cannot confine a child, it does
+// not become ready, whatever its Workspace holds: it ends, and says `landlock: unavailable on node
+// <node> (...)` in its termination message, which the operator publishes on the Sandbox's status —
+// so the provision fails before any Turn. Landlock is a requirement of jr2 (ADR-0077): no Effector
+// serves on a node that cannot confine. The Instance Effector runs no command, and does not probe.
 package main
 
 import (
@@ -64,6 +76,7 @@ import (
 	"github.com/snapwich/jr2/effector/internal/secrets"
 	"github.com/snapwich/jr2/effector/internal/server"
 	"github.com/snapwich/jr2/effector/internal/sign"
+	"github.com/snapwich/jr2/effector/internal/spawner"
 	"github.com/snapwich/jr2/effector/internal/wire"
 )
 
@@ -85,6 +98,18 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "confine" {
 		os.Exit(confine.Main(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "probe" {
+		os.Exit(confine.ProbeMain(os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "nocore" {
+		os.Exit(noCore(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "harness-rules" {
+		os.Exit(confine.HarnessRulesMain(os.Args[2:], os.Stdout, os.Stderr))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "spawner" {
+		os.Exit(spawner.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 	if err := run(logger); err != nil {
@@ -235,9 +260,8 @@ type mount struct{ key, config, secrets, git string }
 // kindsFor is this placement's kinds: `http` and `dispatch` (ADR-0071) in the Instance Effector,
 // which holds a foreign Orchestrator's token as an Effect secret; in a Sandbox Effector
 // (JR2_EFFECTOR_WORK set) `http` with a file body too, push and the credentialed command, whose
-// child is confined with Landlock, and no dispatch. When the kernel cannot confine one, a Workspace that holds a
-// credentialed command stops the start (the Effector never becomes ready); one that holds none
-// runs its other kinds, and a command start is refused.
+// child is confined with Landlock, and no dispatch. A Sandbox Effector on a kernel that cannot
+// confine a child stops its start (it never becomes ready), whatever its Workspace holds (ADR-0077).
 func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Scrubber, roots *x509.CertPool,
 	m mount) (*kinds.Runner, error) {
 	gitDir := m.git
@@ -262,21 +286,18 @@ func kindsFor(config *secrets.Config, held map[string]string, scrubber *scrub.Sc
 	r.Push = &pushkind.Runner{Config: config, WorkRoot: work, ReposRoot: repos, GitRoot: gitDir,
 		Scratch: filepath.Join(scratch, "push"), Helper: self, CAFile: os.Getenv("JR2_CA_FILE"), Scrubber: scrubber,
 		AllowLocal: allowLocalRemotes}
-	unconfinable := ""
 	if _, err := confine.Probe(); err != nil {
-		unconfinable = fmt.Sprintf("landlock: unavailable on node %s (%v)", env("NODE_NAME", "unknown"), err)
-		if config.Commands {
-			return nil, errors.New(unconfinable)
-		}
+		return nil, fmt.Errorf("landlock: unavailable on node %s (%v): jr2 requires Landlock on every Sandbox node "+
+			"(ADR-0077) — keep this node out with sandbox.nodeSelector or a taint, or enable Landlock in its kernel",
+			env("NODE_NAME", "unknown"), err)
 	}
 	r.Command = &commandkind.Runner{Secrets: held, SecretsDir: m.secrets, WorkRoot: work, ReposRoot: repos,
 		Scratch: filepath.Join(scratch, "command"), Scrubber: scrubber, Confiner: self,
 		// The child's PATH, and where argv[0] is looked up, is the Effector container's own — as
 		// its image set it, since the tools are the author's (ADR-0067). A tool an author image
 		// keeps on its own PATH (outside the FHS defaults) is found.
-		Path:         os.Getenv("PATH"),
-		Deny:         []string{filepath.Dir(m.key), filepath.Dir(m.config), m.secrets, gitDir, work, repos, scratch},
-		Unconfinable: unconfinable}
+		Path: os.Getenv("PATH"),
+		Deny: []string{filepath.Dir(m.key), filepath.Dir(m.config), m.secrets, gitDir, work, repos, scratch}}
 	return r, nil
 }
 

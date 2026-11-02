@@ -20,7 +20,7 @@
 #      baked on their own registry is runnable without jr2 ever touching it.
 #
 # So **/opt/jr2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/jr2-upload-pack · bin/effector · lib/*.so ·
+#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/cut-lock · bin/jr2-upload-pack · bin/effector · lib/*.so ·
 #   etc/gitconfig · src/ · node_modules/ · package.json
 # — is mounted verbatim, this image's own layers, into a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
@@ -44,8 +44,9 @@
 #     does not fail loudly without that append: grep silently falls through to plain `grep`
 #     (working-tools.ts).
 #
-# Secrets: NONE are baked, and none arrive either: this container's env holds Stand-ins, and the
-# Custodian beside it holds the Sandbox token and every model key (ADR-0013, ADR-0059).
+# Secrets: NONE are baked, and none arrive either: this container holds Stand-ins, each a file
+# under /run/jr2 that only the Harness process reads, and the Custodian beside it holds the control
+# token and every model key (ADR-0013, ADR-0059, ADR-0076).
 
 # ---------------------------------------------------------------------------------------------
 # Vendor stage — discarded. Assembles /opt/jr2/{bin,lib}: the parts of the runtime that must work
@@ -120,10 +121,13 @@ RUN set -eux; \
 # one the KERNEL accepts — setxattr validates it — and that getfacl reads it back as ADR-0005's line;
 # `acl` is installed for that check alone and discarded with the stage.
 COPY deploy/harness/work-acl.c /tmp/work-acl.c
+COPY deploy/harness/cut-lock.c /tmp/cut-lock.c
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev acl \
  && rm -rf /var/lib/apt/lists/*; \
     gcc -Os -static -o /opt/jr2/bin/work-acl /tmp/work-acl.c; \
+    gcc -Os -static -o /opt/jr2/bin/cut-lock /tmp/cut-lock.c; \
+    /opt/jr2/bin/cut-lock < /tmp/cut-lock.c; \
     mkdir /tmp/acl-smoke; \
     /opt/jr2/bin/work-acl /tmp/acl-smoke; \
     getfacl -d --omit-header /tmp/acl-smoke | grep -qx 'group::rwx'
@@ -273,5 +277,12 @@ WORKDIR /work
 
 # Absolute, so it never depends on WORKDIR — and byte-identical to the command the operator
 # overrides a Sandbox Image's primary container with, because both start the same process from the
-# same /opt/jr2. tini is PID 1 and the Harness its one child (ADR-0061).
-CMD ["/opt/jr2/bin/tini", "--", "/opt/jr2/bin/node", "/opt/jr2/src/main.ts"]
+# same /opt/jr2. tini is PID 1 and the Harness its one child (ADR-0061). The Harness holds the
+# Stand-ins in its memory, and below Landlock ABI 6 a process of its Landlock domain can still
+# signal it (ADR-0076): `effector nocore` starts it with no core file, and --disable-sigusr1 keeps
+# SIGUSR1 from opening Node's inspector. `--harness-env` gives node only the env names that jr2
+# composed (JR2_HARNESS_ENV_NAMES and each JR2_ENVFROM_ key), less each name that loads code from a
+# path, and the whole start env as data for the domain: an image's NODE_OPTIONS or LD_PRELOAD never
+# reaches the Harness process. The same binary is the confiner and the spawner, which the Harness
+# starts once (`effector confine <rules> -- effector spawner`).
+CMD ["/opt/jr2/bin/tini", "--", "/opt/jr2/bin/effector", "nocore", "--harness-env", "--", "/opt/jr2/bin/node", "--disable-sigusr1", "/opt/jr2/src/main.ts"]

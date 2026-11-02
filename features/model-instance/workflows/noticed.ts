@@ -20,6 +20,8 @@ import {
   fail,
   jr2Setup,
   workspace,
+  isReady,
+  worktree,
   type HostInjectedInput,
   type Workspaced,
 } from "@jr2/orchestrator";
@@ -52,17 +54,26 @@ type BodyContext = BodyInput & { running?: boolean; how?: string; fault?: string
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [started, report, killed, done],
-  actors: { coder: agent(coder), fail: fail() },
+  actors: { cut: worktree(), coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
-  initial: "starting",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/model-e2e", branch: "model-e2e" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "starting" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     starting: {
       invoke: {
         src: "coder",
         input: ({ context }) => ({
+          cwd: "/work/app/model-e2e",
           // The command is GIVEN: the claim is about the next Turn, and the image is node:24-slim
           // — a model left to choose reached for `nc`, which the image has not got, in a loop that
           // held the bash tool's pipe open until the Turn timed out (the first run of this tier).
@@ -93,6 +104,7 @@ const body = jr2Setup({
       invoke: {
         src: "coder",
         input: ({ context }) => ({
+          cwd: "/work/app/model-e2e",
           // Deliberately does not say "check": whether the model checks is the measurement.
           prompt: `Is the server you started on port ${SERVER_PORT} still answering? Call \`report\`.`,
           continue: true,
@@ -144,5 +156,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  spec: () => ({ branch: "model-e2e" }),
 });

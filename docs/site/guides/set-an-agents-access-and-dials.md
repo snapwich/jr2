@@ -43,13 +43,13 @@ prompt and picks from its [Menu](../reference/glossary.md#menu). You can invoke 
 the example does, or in a [Machine](../reference/glossary.md#machine) with no Workspace.
 
 A `"read"` Agent keeps bash, so a command can still change a file or the branch. To keep a reviewer away from the
-branch, give its Turn the review [Worktree](../reference/glossary.md#worktree):
+branch, give its Turn a detached [Worktree](../reference/glossary.md#worktree):
 
-1. In the `spec` of the `workspace()`, set `reviewSha` to the commit to review.
-2. In the Turn, set `cwd` to `context.workspace.review?.<slot>`.
+1. Cut the Worktree with [`worktree()`](../reference/authoring-surface/worktree.md), with `{ path, detach }`.
+2. In the Turn, set `cwd` to that path.
 
-The review Worktree is `/work/<slot>/<branch>-review`, with each `/` in the branch changed to `-`. It holds the commit
-of `reviewSha`, detached from the branch. In the example, `<slot>` is `app`, and the commit comes from the run input.
+The Worktree holds the commit, with no branch. In the example, the path is `/work/app/review`, and the commit comes from
+the run input. [Cut a Worktree](cut-a-worktree.md) tells more.
 
 The access is a part of the identity of the Agent. Only the definition sets it. A Turn cannot change it.
 
@@ -74,7 +74,7 @@ Run [`jr2 up`](../reference/cli.md#up) to converge the new Workflow:
 jr2 up
 ```
 
-`jr2 up` prints no line that is special to this Workflow. The `seats:` lines show the picks of the three Agents.
+The `effects:` lines show the cut. The `seats:` lines show the picks of the three Agents.
 
 To give a model to the coder's Turns, add `model` to the run input:
 
@@ -121,9 +121,11 @@ task, also on a Turn that continues. In the example, each `fixing` prompt gives 
 - jr2 refuses a Turn whose `input` has a key that a Turn does not have, such as `instructions` or `workspace`. Only the
   definition sets those two. `<keys>` is each key that is not correct, in backticks, with a comma between them:
   ``agent "<slot>": the Turn's input carries <keys>, which a Turn has no use for — its input is its Frame (`prompt`, `cwd`), its Dials (`model`, `thinkingLevel`), and `continue` (ADR-0057)``
-- Under a Workspace with more than one [Repo Slot](../reference/glossary.md#repo-slot), jr2 refuses a Turn of an Agent
-  with Working tools that sets no `cwd`:
-  ``turn <id>: agent "<slot>" works under a Workspace carrying more than one Repo Slot (<slots>) and its Turn framed no `cwd` — say which Worktree it works in (`cwd: context.workspace.repos.<slot>`, one of those), because the kit gives no slot a meaning (ADR-0051) and a Turn's Frame is where it works (ADR-0057)``
+- Under a Workspace with [Repo Slots](../reference/glossary.md#repo-slot), jr2 refuses a Turn of an Agent with Working
+  tools that sets no `cwd`:
+  ``turn <id>: agent "<slot>" works under a Workspace with Repo Slots (<slots>) and its Turn framed no `cwd`: say where it works, a Worktree, or `cwd: "/work"` above them (ADR-0057)``
+- `workspace()` refuses a body with an invoke that does not say where it works, when it can read the input:
+  ``workspace(): state "<state>": "<slot>" names no `<key>`, and a Workspace with Repo Slots says where each Turn and Effect works: a Worktree, or `cwd: "/work"` for a Turn (ADR-0057)``
 - The Harness refuses a `cwd` that is not an absolute path. The run gets `agent.fault`, with this reason:
   ``harness admission failed (400): agent "<slot>": the Turn's Frame carries a `cwd` that is not an absolute path — the Frame says WHERE this Turn works (ADR-0057), and a Turn rooted anywhere else would work in the wrong directory silently``
 - The Harness refuses a model that is not in its catalog and not a model of the custom provider. The run gets
@@ -143,7 +145,8 @@ task, also on a Turn that continues. In the example, each `fixing` prompt gives 
 ## Read next
 
 - [Agents and Turns](../concepts/agents-and-turns.md): the definition, the Frame, the Dials and `continue`.
-- [Workspaces](../concepts/workspaces.md): the Worktrees and the review Worktree.
+- [Workspaces](../concepts/workspaces.md): the Worktrees.
+- [Cut a Worktree](cut-a-worktree.md): a detached Worktree for a reviewer.
 - [The Menu](../concepts/the-menu.md): the picks of an Agent.
 - [Bind a shipped Machine's Open parts](bind-open-parts.md): bind an Open model.
 - Reference: [`agent`](../reference/authoring-surface/agent.md),

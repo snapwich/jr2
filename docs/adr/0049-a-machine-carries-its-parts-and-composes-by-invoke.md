@@ -31,11 +31,11 @@ because they are one problem: **what a Machine depends on that is not inside it.
     names of the secrets it names — or the `open` sentinel where a package left the url, the argv or a secret's name for
     its composer ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). `jr2 up` reads them
     without running anything, and a secret named there is what places it.
-  - **The Sandbox Image is a `workspace()` option**, static: `workspace(body, { input, image, repos, spec })` (`repos`
-    is ADR-0051's, and follows the same rule). `image` is a string in one of two shapes — a `file:` URL
+  - **The Sandbox Image is a `workspace()` option**, static: `workspace(body, { input, image, repos, workGroup })`
+    (`repos` is ADR-0051's, and follows the same rule). `image` is a string in one of two shapes — a `file:` URL
     (`import.meta.resolve("./image")`, a docker context the module ships) or a registry ref — or absent, which keeps
-    ADR-0037's fallback. It moved out of the per-run spec because `jr2 up` must find it statically. It is never
-    persisted: the provisioning state re-reads it off the Machine on restore.
+    ADR-0037's fallback. It is static because `jr2 up` must find it with no run. It is never persisted: the provisioning
+    state re-reads it off the Machine on restore.
 - **The definition rides the Turn.** The admission body carries the slot's definition; the Harness runs what it was
   handed and re-reads it per Submission as before. The Instance roster (`agents/`, then `config.agents`), its ConfigMap,
   and `JR2_AGENTS_JSON` retire — a flat roster cannot hold two `researcher`s, and a Machine edit already needs `jr2 up`

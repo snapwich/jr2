@@ -113,8 +113,8 @@ The Harness can miss a fast increase. Then the kernel stops the whole container,
 memory limit (OOMKilled, limit <memory>): the Workspace's processes passed the Harness container's memory limit and the kernel killed the container, the conversation with it. Use fewer workers, or give the Workspace a larger Size (ADR-0060, ADR-0061).
 ```
 
-The next Agent in the Workspace gets a notice of the kill. When you see either text again and again, state a larger
-Size.
+Each conversation that was in the Workspace at the kill gets a notice of it one time, and so does the next Turn of the
+Agent whose Turn the kill cut. When you see either text again and again, state a larger Size.
 
 ## Rules
 

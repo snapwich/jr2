@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncFault, syncer } from "../src/sync.ts";
+import { deniedDir, testChildren } from "./support/children.ts";
 
 const AGENT = {
   GIT_AUTHOR_NAME: "Agent",
@@ -93,6 +94,8 @@ async function pod() {
   };
   const hooks: { beforeMove?: () => Promise<void> } = {};
   const sync = syncer({
+    // Confined as in a pod (ADR-0076): the fixture is the children's TMPDIR.
+    children: testChildren({ tmp: root }),
     env: { GIT_CONFIG_GLOBAL: globalConfig },
     beforeMove: () => hooks.beforeMove?.() ?? Promise.resolve(),
   });
@@ -233,4 +236,47 @@ test("a sync request names a Worktree under /work, a branch, and two full commit
   assert.match(syncFault({ ...ok, worktree: "/work/../etc" })!, /under \/work/);
   assert.match(syncFault({ ...ok, branch: "a..b" })!, /branch/);
   assert.match(syncFault({ ...ok, published: "abc" })!, /published/);
+});
+
+// ADR-0076 (G2): jr2's own git runs confined — a filter, a textconv or an object store that the
+// repository names is read by git's own process. Here the clone's objects are in a store the policy
+// denies, named by the clone's `objects/info/alternates`: a git that ran unconfined would read them
+// and sync; the confined one cannot, and the sync says the repository does not hold the commit.
+test("the sync's git runs confined: a store the repository names outside its reach is not read (ADR-0076)", async () => {
+  const p = await pod();
+  const tip = await p.commit("one", "a.txt", "a\n");
+  const signed = p.sign(tip);
+  const denied = deniedDir("jr2-sync-denied-");
+  const objects = join(p.clone, ".git", "objects");
+  execFileSync("cp", ["-a", objects, join(denied, "objects")]);
+  execFileSync("sh", ["-c", `cd "${objects}" && rm -rf -- [0-9a-f][0-9a-f] pack/*`]);
+  await writeFile(join(objects, "info", "alternates"), `${join(denied, "objects")}\n`);
+  assert.equal(p.git(p.tree, "rev-parse", "HEAD"), tip, "unconfined, git reads the store");
+  const confined = syncer({ children: testChildren({ tmp: p.root, deny: [denied] }), env: {} });
+  const answer = await confined({ worktree: p.tree, branch: "jr2/work", ...signed });
+  assert.notEqual(answer.sync, "synced", JSON.stringify(answer));
+  assert.equal(p.git(p.tree, "rev-parse", "refs/heads/jr2/work"), tip, "the branch did not move");
+});
+
+// ADR-0076: the Harness process touches no path of the Agent's. The linked worktrees' names under
+// the repository's git dir, which git output names, are listed by the spawner, and the bundle in
+// the domain's TMPDIR is removed by the spawner, so the kernel applies the domain's rules to each.
+test("the sync lists the linked worktrees and removes its bundle through the spawner, in the domain (ADR-0076)", async () => {
+  const p = await pod();
+  const tip = await p.commit("one", "a.txt", "a\n");
+  const signed = p.sign(tip);
+  const children = testChildren({ tmp: p.root });
+  const asked: string[] = [];
+  const { readdir, unlink } = children.spawner;
+  children.spawner.readdir = (path: string) => (asked.push(`readdir ${path}`), readdir.call(children.spawner, path));
+  children.spawner.unlink = (path: string) => (asked.push(`unlink ${path}`), unlink.call(children.spawner, path));
+  const sync = syncer({ children, env: { GIT_CONFIG_GLOBAL: join(p.root, "gitconfig") } });
+  const answer = await sync({ worktree: p.tree, branch: "jr2/work", ...signed });
+  assert.equal(answer.sync, "synced", JSON.stringify(answer));
+  assert.ok(asked.includes(`readdir ${join(p.clone, ".git", "worktrees")}`), asked.join("\n"));
+  const removed = asked.filter((a) => a.startsWith("unlink "));
+  assert.equal(removed.length, 1, asked.join("\n"));
+  assert.match(removed[0]!, new RegExp(`^unlink ${p.root}/jr2-sync-[0-9a-f-]+\\.bundle$`));
+  assert.equal(existsSync(removed[0]!.slice("unlink ".length)), false, "the bundle is gone");
+  children.spawner.close();
 });

@@ -15,13 +15,13 @@ import { bearer, httpWith, secret } from "../src/http-effect.ts";
 import { dispatch } from "../src/dispatch-effect.ts";
 import { open } from "../src/open.ts";
 
-test("an Effect's invoke carries its parts — argv, timeout, Repo Slot — read without running it (ADR-0067)", () => {
+test("an Effect's invoke carries its parts — argv, timeout — read without running it (ADR-0067)", () => {
   const lint = commandWith(
     () => {
       throw new Error("never run");
     },
     ["pnpm", "lint", arg("path")],
-    { timeout: "90s", slot: "app" },
+    { timeout: "90s" },
   );
   const machine = setup({ actors: { lint } }).createMachine({
     id: "m",
@@ -33,7 +33,7 @@ test("an Effect's invoke carries its parts — argv, timeout, Repo Slot — read
     {
       id: "lint",
       src: "lint",
-      effect: { kind: "command", argv: ["pnpm", "lint", "<path>"], timeoutMs: 90_000, slot: "app" },
+      effect: { kind: "command", argv: ["pnpm", "lint", "<path>"], timeoutMs: 90_000 },
     },
   ]);
 });
@@ -547,7 +547,7 @@ test("a workspace() body joins on the stable slot name `body`, not a generated k
     initial: "coding",
     states: { coding: {}, shipped: { type: "final" } },
   });
-  const wrapped = workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
+  const wrapped = workspace(inner, { repos: { app: "https://example.test/app.git" } });
 
   const doc = serializeMachine("wrapped", wrapped);
   const running = findState(doc.root, "workspace.running")!;

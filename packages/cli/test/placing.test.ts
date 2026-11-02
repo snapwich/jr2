@@ -68,7 +68,7 @@ class HeldSandbox implements SandboxPort {
 /** `coord` invokes one Workspace as `F-1`; its body ends at once, so a scheduled run completes. */
 function coordMachine() {
   const body = createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });
-  const ws = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
+  const ws = workspace(body, { repos: { app: "https://example.test/app.git" } });
   return setup({ actors: { ws } }).createMachine({
     id: "coord",
     initial: "going",

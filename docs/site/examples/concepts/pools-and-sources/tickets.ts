@@ -1,6 +1,6 @@
 import { assign, fromPromise } from "xstate";
 import { z } from "zod";
-import { defineEvent, jr2Setup, pool, source } from "@jr2/orchestrator";
+import { defineEvent, jr2Setup, pool, source, type PoolNextInput } from "@jr2/orchestrator";
 
 type Ticket = { id: string; title: string; needs: string[] };
 
@@ -19,7 +19,7 @@ const claimed = new Set<string>();
 
 // The Source: give the next ready ticket, or say how many tickets are not ready.
 const tickets = source<Ticket>({
-  next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+  next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
     const done = (id: string) => claimed.has(id) && !input.active.includes(id);
     const waiting = backlog.filter((t) => !claimed.has(t.id));
     const ready = waiting.find((t) => t.needs.every(done));

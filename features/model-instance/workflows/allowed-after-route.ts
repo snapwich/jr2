@@ -23,6 +23,8 @@ import {
   fail,
   jr2Setup,
   workspace,
+  isReady,
+  worktree,
   type CommandOutput,
   type HostInjectedInput,
   type Workspaced,
@@ -54,6 +56,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [runTests, ship, openIssue],
   actors: {
+    cut: worktree(),
     fail: fail(),
     coder: agent(coder),
     tests: command(suite),
@@ -61,13 +64,22 @@ const body = jr2Setup({
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [] }),
-  initial: "work",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/model-allowed-after-route", branch: "model-allowed-after-route" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "work" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     work: {
       invoke: {
         src: "coder",
         input: ({ context }) => ({
+          cwd: "/work/app/model-allowed-after-route",
           prompt: `[${context.marker}] The billing change is in. Run the tests, then ship it.`,
           continue: true,
           ...dialFor(context.thinking as ThinkingCell),
@@ -88,6 +100,7 @@ const body = jr2Setup({
         testing: {
           invoke: {
             src: "tests",
+            input: { worktree: "/work/app/model-allowed-after-route" },
             onDone: [{ guard: ({ event }) => passed(event.output), target: "ready" }, { target: "red" }],
           },
         },
@@ -130,5 +143,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: billing },
-  spec: () => ({ branch: "model-allowed-after-route" }),
 });

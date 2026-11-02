@@ -108,11 +108,15 @@ it. Then the Chart ends, and the run ends with the status `done`.
 - The door refuses a Chart, and gives one line for each problem. Each line starts with the path in the Chart. For
   example:
   - `<path>: "<name>" is not a lent actor or an Agent of this Chart; lent: <names>; kit: <gate, fail or none>; minted: <names>`
-  - `<path>: "<name>" is not a lent guard; lent guards: <names> (and jr2.sentBy with params { id }, and jr2.failure)`
+  - `<path>: "<name>" is not a lent guard; lent guards: <names> (and jr2.sentBy with params { id }, jr2.failure and jr2.ready)`
   - `<path>.type: "<name>" is not a generic or a lent action; generic: set, append, increment, clear; lent: <names>`
   - ``<path>: <reference> is supplied by nothing: it is not in the initial `context`, and no `set`, `append` or `increment` writes it``,
     then what a write supplies
   - `<path>: "<reference>" is not a reference: it starts at context, event or input (a reference is a path, never an expression)`
+  - ``<path>: the lent cut "<slot>" does not state `expect`, so a Chart cannot use it; <fix>``
+  - ``<path>: the lent cut "<slot>" states `expect: "existing"` beside the lent force push "<slot>", and together they can force-push any existing branch; <fix>``
+  - ``<path>.cwd: "<cwd>" is a Repo Slot's folder, not a Worktree; `cwd` is a Worktree that a cut made, "/work/<slot>/<name>", or "/work/<slot>/default" to read, or "/work"``
+  - ``<path>: <agent> works under a Workspace with Repo Slots, and a Turn there says where: `cwd` is a Worktree, or "/work"``
 - The door then compiles the Chart as the Open body does. A line of this last check starts with `(chart):`, and names a
   state by its [xstate](https://xstate.js.org) id (for example `body.writing`), not by its path in the Chart.
 - A refusal is output, not an error: the Open body ends with `{ outcome: "refused", report }`. A Chart wrapper that

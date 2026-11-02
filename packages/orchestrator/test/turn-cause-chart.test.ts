@@ -15,7 +15,7 @@ import { agent } from "../src/harness-client.ts";
 import { openBodyWith, type Ceilings } from "../src/open-body.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
-import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
+import { fakeWorkspace, FakeHarnessExec, handles } from "./_effects.ts";
 import { mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const ENDPOINT = "http://harness.invalid";
@@ -82,7 +82,7 @@ function chartedMachine(
     events: [],
     actors: {
       coder: agent(coderDefinition),
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       tests: commandWith(ports.exec.factory, ["pnpm", "test", arg("filter")]),
       body: openBodyWith(
         {

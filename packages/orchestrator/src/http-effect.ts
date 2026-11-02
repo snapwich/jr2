@@ -77,6 +77,7 @@ import {
   type WireBody,
 } from "./effector-wire.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
+import type { AnyWorktreePath } from "./worktree.ts";
 import { open } from "./open.ts";
 import { effectBindingShape, openEffectLogic, openPartsOf, type OpenOf } from "./open-effect.ts";
 import { httpFileWith, sandboxEffectorPort } from "./sandbox-effect.ts";
@@ -169,13 +170,25 @@ const openSecretOf = new WeakMap<object, object>();
  *
  * @example
  * ```ts
- * import { command, fail, jr2Setup, secret, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import {
+ *   command,
+ *   fail,
+ *   isReady,
+ *   jr2Setup,
+ *   secret,
+ *   workspace,
+ *   worktree,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
  *
  * type Input = Workspaced<{}, "app">;
+ *
+ * const deployTree = (context: Input) => `${context.workspace.repos.app}/deploy` as const;
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
  *   actors: {
+ *     cut: worktree(),
  *     // The command reads the file at $KUBECONFIG. The Agent never reads the secret.
  *     deploy: command(["kubectl", "apply", "-f", "k8s/"], {
  *       env: { KUBECONFIG: secret("kube").path },
@@ -186,17 +199,26 @@ const openSecretOf = new WeakMap<object, object>();
  *   id: "deploy",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost" },
- *   initial: "deploying",
+ *   initial: "cutting",
  *   states: {
- *     deploying: { invoke: { src: "deploy", onDone: "done" } },
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: deployTree(context), branch: "deploy" }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "deploying" }, { target: "notCut" }],
+ *       },
+ *     },
+ *     deploying: {
+ *       invoke: { src: "deploy", input: ({ context }) => ({ worktree: deployTree(context) }), onDone: "done" },
+ *     },
  *     done: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
  * export const machine = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: () => ({ branch: "deploy" }),
  * });
  * ```
  *
@@ -501,15 +523,12 @@ function asText(v: string | Secret | Text): Text {
 /** A value of a file body's part: as written, or from the Effect's input. */
 export type FromInput<S, T> = T | ((input: S extends z.ZodType ? z.infer<S> : void) => T);
 
-/** `file(path, { slot?, segments?, contentType? })`: a Worktree file as an `http` body. */
+/** `file(path, { segments?, contentType? })`: a Worktree file as an `http` body. */
 export type FileBody<S extends z.ZodType | undefined = undefined> = {
   readonly file: {
-    /** The file, relative to the Repo Slot's Worktree, or to `/work` in a Workspace with no Repo
-     * Slot. */
+    /** The file, relative to the Worktree that `worktree` of the Effect's input names, or to `/work`
+     * in a Workspace with no Repo Slot. */
     readonly path: FromInput<S, string>;
-    /** The Repo Slot whose Worktree holds it. Write it only when the Workspace has more than one.
-     */
-    readonly slot?: string;
     /** Path segments that jr2 adds to the end of the url, as `path` of `request` does for a json
      * or text body. */
     readonly segments?: FromInput<S, readonly string[]>;
@@ -521,14 +540,18 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
 
 /**
  * Make a Worktree file the body of an `http` Effect: `body: file("dist/report.pdf")`. The Effect
- * then runs in the Sandbox Effector of the Workspace whose body invokes it. That Effector opens the
- * file in the Worktree and sends it. In a Workspace with no Repo Slot, the path is relative to
+ * then runs in the Sandbox Effector of the Workspace whose body invokes it. Under a Workspace with
+ * Repo Slots, the invoke's input names the Worktree: `input: { worktree: "/work/app/fix" }`. It is a
+ * Worktree that a cut of this run made. That Effector opens the file in that Worktree and sends it.
+ * In a Workspace with no Repo Slot, the input names no `worktree`, and the path is relative to
  * `/work`, the folder that its steps share. Use it with `PUT`, `POST` or `PATCH`. `path` and
  * `segments` can be functions of the input of the Effect.
  *
- * Some paths and files give the output `refused`, and then nothing is sent. The path has a symlink
- * in it, has `..`, or is absolute. Or the file is a FIFO, a directory, or a file with more than one
- * link.
+ * Some inputs, paths and files give the output `refused`, and then nothing is sent. The `worktree`
+ * has no cut in this Sandbox: `no cut made <path> in this Sandbox: cut it with worktree(); nothing
+ * was sent`. Or the input names a `worktree` in a Workspace with no Repo Slot. Or the path has a
+ * symlink in it, has `..`, or is absolute. Or the file is a FIFO, a directory, or a file with more
+ * than one link.
  *
  * It refuses, when you call it:
  * - a path that is not a string or a function: `file(path): the path is a string, or a function of
@@ -548,8 +571,13 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
  * there is no Worktree to read; invoke it from a workspace()'s body, or send a json or text body
  * (ADR-0068)`.
  *
- * @param path - The file, relative to the Worktree of the Repo Slot, or to `/work` in a Workspace
- *   with no Repo Slot: a string, or a function of the input of the Effect that gives one.
+ * And when it starts, under a Workspace with Repo Slots, an input with no `worktree`: ``http
+ * "<slot>" reads a Worktree file, under a Workspace with Repo Slots, and its input names no
+ * `worktree` ``.
+ *
+ * @param path - The file, relative to the Worktree that `worktree` of the input names, or to
+ *   `/work` in a Workspace with no Repo Slot: a string, or a function of the input of the Effect
+ *   that gives one.
  * @param options - Optional. Each field says what it does.
  * @returns The `body` of an `http` Effect.
  *
@@ -561,17 +589,22 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
  *   fail,
  *   file,
  *   http,
+ *   isReady,
  *   jr2Setup,
  *   secret,
  *   workspace,
+ *   worktree,
  *   type Workspaced,
  * } from "@jr2/orchestrator";
  *
  * type Input = Workspaced<{}, "app">;
  *
+ * const reportTree = (context: Input) => `${context.workspace.repos.app}/report` as const;
+ *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
  *   actors: {
+ *     cut: worktree(),
  *     build: command(["npm", "run", "report"]),
  *     upload: http({
  *       method: "PUT",
@@ -588,18 +621,29 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
  *   id: "report",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost" },
- *   initial: "building",
+ *   initial: "cutting",
  *   states: {
- *     building: { invoke: { src: "build", onDone: "uploading" } },
- *     uploading: { invoke: { src: "upload", onDone: "done" } },
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: reportTree(context), branch: "report" }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "building" }, { target: "notCut" }],
+ *       },
+ *     },
+ *     building: {
+ *       invoke: { src: "build", input: ({ context }) => ({ worktree: reportTree(context) }), onDone: "uploading" },
+ *     },
+ *     uploading: {
+ *       invoke: { src: "upload", input: ({ context }) => ({ worktree: reportTree(context) }), onDone: "done" },
+ *     },
  *     done: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
  * export const machine = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: () => ({ branch: "report" }),
  * });
  * ```
  *
@@ -610,9 +654,6 @@ export type FileBody<S extends z.ZodType | undefined = undefined> = {
 export function file<S extends z.ZodType | undefined = undefined>(
   path: FromInput<S, string>,
   options: {
-    /** The Repo Slot whose Worktree holds the file. Write it only when the Workspace has more than
-     * one. */
-    slot?: string;
     /**
      * Path segments that jr2 adds to the end of the url, as `path` does in `request` for a json or
      * text body. A list of strings, or a function of the input of the Effect that gives one.
@@ -633,7 +674,6 @@ export function file<S extends z.ZodType | undefined = undefined>(
   return {
     file: {
       path,
-      ...(options.slot !== undefined ? { slot: options.slot } : {}),
       ...(options.segments !== undefined ? { segments: options.segments } : {}),
       ...(options.contentType !== undefined ? { contentType: options.contentType } : {}),
     },
@@ -723,10 +763,13 @@ export type HttpDefinition<S extends z.ZodType | undefined = undefined> = {
   request?: (input: S extends z.ZodType ? z.infer<S> : void) => HttpRequestParts;
   // A file body is an ADR-0067 Effect: the Sandbox Effector of the Workspace sends it.
   /**
-   * A Worktree file as the body: `file(path, { slot?, segments?, contentType? })`. The Effect then
-   * runs in the Sandbox Effector of its Workspace. Do not write `request` beside it: the `segments`
+   * A Worktree file as the body: `file(path, { segments?, contentType? })`. The Effect then
+   * runs in the Sandbox Effector of its Workspace. Under a Workspace with Repo Slots, the invoke's
+   * input names a Worktree that a cut of this run made, in `worktree`; with none, it refuses when
+   * it starts: ``http "<slot>" reads a Worktree file, under a Workspace with Repo Slots, and its
+   * input names no `worktree` ``. Do not write `request` beside it: the `segments`
    * of `file` are the path. It refuses another body: ``http({ body }): a body is file(path, {
-   * slot?, segments?, contentType? }) — json and text come from `request` ``.
+   * segments?, contentType? }) — json and text come from `request` ``.
    */
   body?: FileBody<S>;
   /**
@@ -754,6 +797,11 @@ export type HttpDefinition<S extends z.ZodType | undefined = undefined> = {
 
 /** @internal */
 export type HttpInput<S> = S extends z.ZodType ? z.infer<S> : void;
+
+/** The input of an `http` Effect with a Worktree file as its body. Under a Workspace with Repo
+ * Slots, `worktree` names the Worktree. In a Workspace with no Repo Slot, the input has no
+ * `worktree`, and the path is relative to `/work`. */
+export type HttpFileInput<S> = (S extends z.ZodType ? z.infer<S> : unknown) & { worktree?: AnyWorktreePath };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BODY = 65_536;
@@ -830,7 +878,7 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
   const body = def.body?.file;
   if (def.body !== undefined && (typeof body !== "object" || body === null)) {
     throw new Error(
-      "http({ body }): a body is file(path, { slot?, segments?, contentType? }) — json and text come from `request`",
+      "http({ body }): a body is file(path, { segments?, contentType? }) — json and text come from `request`",
     );
   }
   if (body && !FILE_METHODS.includes(def.method)) {
@@ -866,7 +914,6 @@ export function httpParts<S extends z.ZodType | undefined>(def: HttpDefinition<S
     ...(body
       ? {
           file: {
-            ...(body.slot !== undefined ? { slot: body.slot } : {}),
             ...(body.contentType !== undefined ? { contentType: body.contentType } : {}),
           },
         }
@@ -1347,8 +1394,9 @@ function parseDuration(d: Duration): number {
  * src: "comment" }`.
  *
  * It runs in the Instance Effector, which `jr2 up` deploys when a Machine has an `http` Effect.
- * With `body: file(...)`, it runs in the Sandbox Effector of the Workspace whose body invokes it.
- * The Effector makes the call. The Orchestrator holds no secret.
+ * With `body: file(...)`, it runs in the Sandbox Effector of the Workspace whose body invokes it,
+ * and under Repo Slots its input names the Worktree in `worktree`. The Effector makes the call. The
+ * Orchestrator holds no secret.
  *
  * Every outcome is output (`HttpOutput`): `response`, `unreachable`, `refused` or `unknown`. A 4xx
  * or 5xx status is output too. jr2 sends the call at most one time, unless you mark it
@@ -1402,6 +1450,14 @@ function parseDuration(d: Duration): number {
  * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
  * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
  */
+export function http<
+  S extends z.ZodType | undefined = undefined,
+  const U extends HttpDefinition<S>["url"] = string,
+  const A extends HttpDefinition<S>["auth"] = undefined,
+  const H extends HttpDefinition<S>["headers"] = undefined,
+>(
+  def: HttpDefinition<S> & { url: U; auth?: A; headers?: H; body: FileBody<S> },
+): EffectLogic<HttpFileInput<S>, HttpOutput> & OpenOf<HttpOpenParts<U, A, H>>;
 export function http<
   S extends z.ZodType | undefined = undefined,
   const U extends HttpDefinition<S>["url"] = string,

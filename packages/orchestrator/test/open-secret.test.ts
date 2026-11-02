@@ -44,7 +44,6 @@ const machineOf = (actors: Record<string, unknown>) =>
   jr2Setup({ events: [], actors: actors as never }).createMachine({ id: "pkg", initial: "idle", states: { idle: {} } });
 
 const repos = { app: "https://example.test/app.git" };
-const spec = () => ({ branch: "feat-1" });
 
 // --- the places that take it -------------------------------------------------------------------
 
@@ -298,7 +297,7 @@ test("the walk reports an Open secret nothing bound, with the { secret } line, t
       page: httpWith(ports, { method: "POST", url: open, headers: { "x-api-key": text`${secret(open)}` } }),
     },
   }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
-  const wrapped = workspace(body, { repos, spec });
+  const wrapped = workspace(body, { repos });
   const wake = defineEvent({ name: "work_ready", input: z.object({}) });
   const pooled = pool(wrapped, {
     source: source<{ id: string }>({
@@ -335,7 +334,7 @@ test("the bound secret is placed as a named secret is: in that Effect's Effector
       release: commandWith(execs.factory, ["./release.sh"], { env: { TOKEN: secret(open) } }),
     },
   }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
-  const bound = customize(workspace(body, { repos, spec }), {
+  const bound = customize(workspace(body, { repos }), {
     effects: { notify: { secret: "hook-key" }, release: { secret: "release-key" } },
   });
   const config = {

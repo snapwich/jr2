@@ -43,7 +43,7 @@
 // containers:
 //
 //   volume        runtime     the kit's Harness image, as an `image` volume → /opt/jr2
-//   volume        conversations  an emptyDir → /conversations, the Harness container's alone
+//   volume        conversations  an emptyDir → /run/jr2/conversations, the Harness container's alone
 //                             (ADR-0031: a Harness restart inside the pod keeps its conversations)
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
@@ -83,11 +83,14 @@ import {
   custodianBootstrap,
   custodianComposition,
   custodianScript,
+  CREDENTIAL_KEYS,
+  heldStandInKey,
   CUSTODIAN_BOOTSTRAP_KEY,
   CUSTODIAN_SCRIPT_KEY,
   type CustodianComposition,
 } from "./custodian.ts";
-import { readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
+import { heldStandIn, readHeldManifest, workspaceHeldPod, type HeldManifest } from "./held-secrets.ts";
+import { markHarnessEnv } from "./harness-env.ts";
 import {
   effectorManifestKey,
   readSandboxEffectorManifest,
@@ -133,9 +136,13 @@ import {
   type SandboxObject,
   type SandboxWatch,
 } from "./sandbox-watch.ts";
-import { effectorKey, harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
+import { controlStandIn, controlToken, effectorKey, harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
 import type { AttachError, AttachRequest, AttachResponse } from "./wire.ts";
 import type { Continuity, MemoryKill, PlacingWait, ProvisionedRepo, SandboxLoss, SandboxPort } from "./workspace.ts";
+
+/** A Secret's `data`: each value base64'd. */
+const base64Values = (values: Record<string, string>): Record<string, string> =>
+  Object.fromEntries(Object.entries(values).map(([k, v]) => [k, Buffer.from(v).toString("base64")]));
 
 /** Where jr2's runtime lands in every container that gets it (ADR-0037). `/opt/jr2` and not `/app`
  * because a stranger's base may already use `/app`, and one layout must serve both the stock
@@ -156,11 +163,21 @@ const RUNTIME_VOLUME_MOUNT = { name: RUNTIME_VOLUME, mountPath: RUNTIME_MOUNT, s
 /** The primary container's command (ADR-0037). Absolute, so it never depends on the image's
  * `WORKDIR`, and identical to the stock Harness image's own `CMD` — one runtime, two placements.
  * `tini` is PID 1 (ADR-0061): the Agent's processes are the Harness's children, and a tree the
- * memory guard kills must leave no zombies behind. */
+ * memory guard kills must leave no zombies behind. The Harness holds the Stand-ins in its memory,
+ * and below Landlock ABI 6 a confined child can still signal it (ADR-0076): `effector nocore`
+ * starts it with no core file, so a dumping signal writes nothing a child reads, and
+ * `--disable-sigusr1` keeps SIGUSR1 from opening Node's inspector, which would run a child's code
+ * in the Harness. `--harness-env` gives the Harness process only the names jr2 composed, less each
+ * name that loads code from a path, and the domain the whole start env (`harness-env.ts`). */
 const HARNESS_COMMAND = [
   `${RUNTIME_MOUNT}/bin/tini`,
   "--",
+  `${RUNTIME_MOUNT}/bin/effector`,
+  "nocore",
+  "--harness-env",
+  "--",
   `${RUNTIME_MOUNT}/bin/node`,
+  "--disable-sigusr1",
   `${RUNTIME_MOUNT}/src/main.ts`,
 ];
 
@@ -834,8 +851,14 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         // Never empty: the Custodian's address is unconditional. The seat's own vars (the fallback
         // `HOME`) come FIRST, so the instance's `harness.env` can still override them the way it
         // overrides anything the image set.
-        env: [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv())],
-        ...(cfg().envFrom?.length ? { envFrom: cfg().envFrom } : {}),
+        // Marked (`harness-env.ts`, ADR-0076): the Harness's start tells jr2's names from the image's.
+        ...(() => {
+          const marked = markHarnessEnv(
+            [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv())],
+            cfg().envFrom ?? [],
+          );
+          return { env: marked.env, ...(marked.envFrom.length ? { envFrom: marked.envFrom } : {}) };
+        })(),
         // What the AGENT gets: an address on its own loopback and a Stand-in for every credential,
         // and no credential anywhere. The Custodian beside it holds them (ADR-0013, ADR-0059).
         sidecars,
@@ -902,7 +925,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    * `data`, not `stringData`: a server-side apply owns the fields it names, and `stringData` is
    * write-only — it never reads back as the field applied.
    */
-  const applyTokenSecret = async (name: string, owner: KubeObject): Promise<void> => {
+  const applyTokenSecret = async (name: string, owner: KubeObject, manifest: HeldManifest): Promise<void> => {
     if (!opts.signingKey) throw new Error("kubeSandbox: a Custodian needs a signingKey to mint its Sandbox token");
     const uid = owner.metadata?.uid;
     if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its token Secret`);
@@ -925,7 +948,19 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         ],
       },
       type: "Opaque",
-      data: { JR2_SANDBOX_TOKEN: Buffer.from(sandboxToken(opts.signingKey, name)).toString("base64") },
+      // The pod's credentials (ADR-0076, C1, C1b): its fetch token and its control token, which the
+      // Custodian alone mounts; its secret control Stand-in; and one secret Stand-in per held secret
+      // the pod's manifest names, which the Custodian (for its swap) and the Harness container (as
+      // files under `/run/jr2/`) mount. Every one a signed name, so a re-provision re-applies the
+      // same values. Never a ConfigMap, the CR, an env, an event or a log line.
+      data: base64Values({
+        [CREDENTIAL_KEYS.fetchToken]: sandboxToken(opts.signingKey, name),
+        [CREDENTIAL_KEYS.controlToken]: controlToken(opts.signingKey, name),
+        [CREDENTIAL_KEYS.controlStandIn]: controlStandIn(opts.signingKey, name),
+        ...Object.fromEntries(
+          manifest.secrets.map((s) => [heldStandInKey(s.name), heldStandIn(opts.signingKey!, name, s.name)]),
+        ),
+      }),
     });
   };
 
@@ -1030,7 +1065,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       },
       data: {
         [CUSTODIAN_BOOTSTRAP_KEY]: JSON.stringify(custodianBootstrap(manifest, orchestrator)),
-        [CUSTODIAN_SCRIPT_KEY]: custodianScript(manifest),
+        [CUSTODIAN_SCRIPT_KEY]: custodianScript(manifest, { fetch: true }),
       },
     });
   };
@@ -1257,8 +1292,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         image: refs.custodian,
         pod,
         config: sandboxCustodianConfigMap(req.name),
-        token: { secret: secretName(req.name), key: "JR2_SANDBOX_TOKEN" },
+        credentials: { secret: secretName(req.name) },
         sandbox: req.name,
+        ...(req.secrets?.length ? { granted: req.secrets } : {}),
         caBundle: cfg().caBundle === true,
         resources: split.custodian,
       });
@@ -1287,7 +1323,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       sandboxes();
       const applied = await kube().apply(SANDBOXES, ns, cr).catch(noOperator(req.name, "Sandbox"));
       // After the CR: its uid owns both, so they go when it goes.
-      await applyTokenSecret(req.name, applied);
+      await applyTokenSecret(req.name, applied, manifest);
       await applyCustodianConfig(req.name, applied, manifest);
       if (effectorManifest) {
         await applyEffectorKey(req.name, applied);
@@ -1403,12 +1439,10 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           const { identity, key } = repoIdentity(r.url);
           return { slot: r.slot, url: r.url, identity, key, ...(r.ref !== undefined ? { ref: r.ref } : {}) };
         }),
-        branch: req.spec.branch,
-        ...(req.spec.reviewSha ? { reviewSha: req.spec.reviewSha } : {}),
       };
-      const { repos, review } = await postAttach(req.name, endpoint, body);
+      const { repos, bases } = await postAttach(req.name, endpoint, body);
       const stale = staleSlots(req.repos, staleByName.get(req.name));
-      return { repos, ...(review ? { review } : {}), ...(stale ? { stale } : {}) };
+      return { repos, bases, ...(stale ? { stale } : {}) };
     },
 
     leaseIntervalMs,
@@ -1458,7 +1492,20 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     async destroy(name) {
       staleByName.delete(name);
       // The token Secret is the CR's child from birth, so deleting the CR reaps it (ADR-0001).
-      await kube().delete(SANDBOXES, ns, name);
+      await kube().delete(SANDBOXES, ns, name, { foreground: true });
+      // A retry of the same invoke id takes the same name, and the pod takes it too: a new Sandbox
+      // must not find the old pod on its way out, and read `Lost` (ADR-0075). So the wait is
+      // for the pod as well: foreground keeps the CR until the pod is gone. Bounded: a stuck finalizer
+      // is the operator's to report, and the run does not wait on it for ever.
+      for (let i = 0; i < 120; i++) {
+        if (
+          (await kube()
+            .get<SandboxObject>(SANDBOXES, ns, name)
+            .catch(() => undefined)) === undefined
+        )
+          return;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
     },
   };
 }

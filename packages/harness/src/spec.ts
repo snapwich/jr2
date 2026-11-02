@@ -54,7 +54,7 @@ export type AgentDefinition = {
 export type ProviderModelLimits = { contextWindow?: number; maxTokens?: number };
 
 /** A custom model provider (ADR-0018), as `jr2 up` publishes it — `apiKey` is deliberately absent:
- * it is a held secret, so this container's env carries `JR2_PROVIDER_API_KEY` as a Stand-in and
+ * it is a held secret, so this process holds `JR2_PROVIDER_API_KEY`'s Stand-in, read from its file, and
  * the Custodian puts the key on the wire (ADR-0059). */
 export type ProviderSpec = {
   /** The provider id model specifiers use (`<id>/<model>`), e.g. `vllm`. */
@@ -85,7 +85,7 @@ export type HarnessSpec = {
 
 /** What this Turn is ABOUT and WHERE it works — the Frame (ADR-0057). Neither identity nor a
  * Dial: a directory says where, which is the same kind of fact as the prompt, and a worktree path
- * (`/work/<slot>/<branch>`) exists only once a run has a branch, so no definition can name one.
+ * (`/work/<slot>/<name>`) exists only once a Machine has cut it, so no definition can name one.
  * `message` is the prompt as the wire spells it; both ride the admit body, `cwd` beside the
  * prompt and the Dials. */
 export type TurnFrame = {
@@ -94,6 +94,11 @@ export type TurnFrame = {
   /** Where the Working tools are rooted. Absent → `/work` (ADR-0005), which is what a
    * stub-Harness run with no Workspace wants. */
   cwd?: string;
+  /** Whose conversation this is (ADR-0076): the Agent's slot, the actor path of its Machine and
+   * its agent name, as the Orchestrator registered it. The Harness states it on each control
+   * request of this Turn. It is never read off an Instance ID: an actor id (a Pool item's) may
+   * hold a `/`. */
+  slot?: string;
 };
 
 /** What a Machine state may set for one Turn on top of the definition (ADR-0018) — the DIALS:

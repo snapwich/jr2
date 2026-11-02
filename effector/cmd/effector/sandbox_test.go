@@ -249,29 +249,44 @@ func TestACredentialedCommandsChildIsKeptFromEveryTreeTheEffectorDenies(t *testi
 	}
 }
 
-// The Landlock probe (ADR-0068): on a node whose kernel cannot confine a child, a Sandbox
-// Effector whose Workspace holds a credentialed command never becomes ready, and says why with the
-// node's name — its termination message, which the Sandbox's status carries. One whose Workspace
-// holds none serves its other kinds and refuses a command start.
-func TestTheLandlockProbeStopsTheStartWhenTheWorkspaceHoldsACredentialedCommand(t *testing.T) {
+// The Landlock probe (ADR-0077): on a node whose kernel cannot confine a child, a Sandbox Effector
+// never becomes ready, whatever its Workspace holds — a credentialed command or none — and says why
+// with the node's name in its termination message, which the Sandbox's status carries. No Effector
+// keeps a path for a node that cannot confine.
+func TestTheLandlockProbeStopsEverySandboxEffectorStart(t *testing.T) {
 	p := gittest.NewPod(t, "work")
-	e, out := startSandboxEffectorWith(t, p, true, "JR2_EFFECTOR_TEST_NO_LANDLOCK=1")
-	if e != nil {
-		t.Fatal("the effector served on a node that cannot confine its command's child")
+	for _, commands := range []bool{true, false} {
+		e, out := startSandboxEffectorWith(t, p, commands, "JR2_EFFECTOR_TEST_NO_LANDLOCK=1")
+		if e != nil {
+			t.Fatalf("commands=%v: the effector served on a node that cannot confine a child", commands)
+		}
+		if !strings.Contains(out, "landlock: unavailable on node node-1") || !strings.Contains(out, "EOPNOTSUPP") ||
+			!strings.Contains(out, "ADR-0077") {
+			t.Fatalf("commands=%v: got %s", commands, out)
+		}
 	}
-	if !strings.Contains(out, "landlock: unavailable on node node-1") || !strings.Contains(out, "EOPNOTSUPP") {
+}
+
+// ABI 3 is the minimum (ADR-0077): on a kernel that offers ABI 2, a Sandbox Effector does not become
+// ready, and its termination message names the ABI it found.
+func TestASandboxEffectorRefusesLandlockABI2(t *testing.T) {
+	p := gittest.NewPod(t, "work")
+	e, out := startSandboxEffectorWith(t, p, true, "JR2_EFFECTOR_TEST_LANDLOCK_ABI=2")
+	if e != nil {
+		t.Fatal("the effector served on a kernel with Landlock ABI 2")
+	}
+	if !strings.Contains(out, "landlock: unavailable on node node-1") || !strings.Contains(out, "Landlock ABI 2") ||
+		!strings.Contains(out, "needs ABI 3") {
 		t.Fatalf("got %s", out)
 	}
-	e, out = startSandboxEffectorWith(t, p, false, "JR2_EFFECTOR_TEST_NO_LANDLOCK=1")
+}
+
+// The Instance Effector confines nothing (it runs no command), so it does not probe: it serves on a
+// kernel without Landlock (ADR-0077).
+func TestTheInstanceEffectorDoesNotProbe(t *testing.T) {
+	e := startEffector(t, "https://jira.example:443", "JR2_EFFECTOR_TEST_NO_LANDLOCK=1")
 	if e == nil {
-		t.Fatalf("a Workspace with no credentialed command stopped: %s", out)
-	}
-	body := `{"kind":"command","command":{"repo":{"gitDir":"app/default/.git","worktree":"app/work",` +
-		`"cache":"app-key"},"branch":"work","argv":["true"],"env":{"AWS":{"secret":"aws"}},"tail":4000},` +
-		`"timeoutMs":30000}`
-	if status, raw := e.call(t, "POST", "/effects/c-1", body); status != 400 ||
-		!strings.Contains(raw, "landlock: unavailable on node node-1") {
-		t.Fatalf("got %d %s", status, raw)
+		t.Fatal("the Instance Effector did not serve")
 	}
 }
 

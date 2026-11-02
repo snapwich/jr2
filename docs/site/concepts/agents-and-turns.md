@@ -47,8 +47,10 @@ for one Turn, because then the name of the Agent would not tell what it is.
 ## The Working tools
 
 The [Working tools](../reference/glossary.md#working-tools) are the file and shell tools of an Agent: read, write, edit,
-bash, grep and glob. The [Harness](../reference/glossary.md#harness) runs them in its own container. The `workspace`
-field selects them:
+bash, grep and glob. The [Harness](../reference/glossary.md#harness) runs them in its own container. Each program that
+they start, and the file I/O of read, write and edit, runs confined with Landlock. It can do all that the user of the
+container can do, but it cannot read what the Harness holds. [Secrets and trust](secrets-and-trust.md) tells why. The
+`workspace` field selects the Working tools:
 
 - `"write"` gives all the Working tools.
 - `"read"` gives no write tool and no edit tool. The Agent keeps bash, so a command can still write a file. A review
@@ -67,9 +69,10 @@ The field also tells where the Turn runs. An Agent with `"write"` or `"read"` wo
 The `input` of the invoke is the Turn. It has five keys, and no other:
 
 - **The [Frame](../reference/glossary.md#frame): `prompt` and `cwd`.** The prompt tells what this Turn is about. `cwd`
-  is the directory where the Working tools work. A definition cannot hold a `cwd`, because the Worktree of a run exists
-  only when the run starts. Under a Workspace with one [Repo Slot](../reference/glossary.md#repo-slot), the default
-  `cwd` is the Worktree of that slot.
+  is the directory where the Working tools work. A definition cannot hold a `cwd`, because a Worktree exists only after
+  a run cuts it. Under a Workspace with [Repo Slots](../reference/glossary.md#repo-slot), a Turn of an Agent with
+  Working tools states its `cwd`. A Turn that wants `/work` states it too. There is no default, because a search in
+  `/work` hits `default/`, and a relative write lands outside each Worktree.
 - **The [Dials](../reference/glossary.md#dials): `model` and `thinkingLevel`.** They tell how hard the Agent works on
   this Turn, and they replace the values of the definition for this Turn only. The Agent stays the same Agent.
 - **`continue`.** It tells if the Turn continues the conversation of the Agent. See
@@ -179,9 +182,18 @@ itself. It tells nothing about the task: the prompt tells the task. It has two p
   carries a [Chart](../reference/glossary.md#chart), the Turn part also tells how a Chart runs (see
   [Charts](charts.md)).
 
-A notice tells the next Turn what happened before it. For example: the conversation is new and the earlier context is
-gone, or the processes of the Sandbox stopped at its memory limit. jr2 gives each notice one time, to the next Turn that
-it is for.
+A notice tells a Turn what happened before it. For example: the conversation is new and the earlier context is gone, or
+the processes of the Sandbox stopped at its memory limit. A notice about a conversation goes to the next Turn of that
+conversation. A notice about the Workspace goes to each conversation that was in the Workspace when the processes
+stopped:
+
+- A Turn that is open hears it before its next model request.
+- A continued conversation hears it at its next Turn.
+- The next Turn of the Agent whose Turn the stop cut hears it, also when that Turn is fresh.
+
+A conversation hears each notice one time. A conversation whose own bash call already told it about the stop does not
+hear the notice. A conversation that starts after the stop does not hear it, except the next Turn of the Agent whose
+Turn the stop cut.
 
 You cannot turn the Briefing off. It contains only facts that make the Agent work better. An `instructions` that tells
 the same fact again does no harm.
@@ -233,8 +245,8 @@ the model in `models`. A model with no context window gets no Compaction.
   different key.
 - A Turn cannot set `instructions` or `workspace`.
 - `cwd` is an absolute path. The Harness refuses a Turn with a relative `cwd`.
-- Under a Workspace with more than one Repo Slot, each Turn of an Agent with Working tools sets `cwd`. jr2 refuses the
-  Turn without it.
+- Under a Workspace with Repo Slots, each Turn of an Agent with Working tools sets `cwd`. jr2 refuses the Turn without
+  it.
 - An Agent with `"write"` or `"read"` runs in the body of a `workspace()`. jr2 refuses its Turn outside one.
 - `jr2 up` sees only the models of the definitions. It cannot see a model that a Turn sets as a Dial. The Harness
   refuses a model that it cannot find when the Turn starts.

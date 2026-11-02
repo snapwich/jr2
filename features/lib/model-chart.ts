@@ -14,6 +14,10 @@
 // And a pick whose answer was lost says the Harness does not know whether it reached the workflow
 // (`NOT_KNOWN`, no error): the calls can then no longer be paired with the door's verdicts, so a
 // trial with one at or after the door's refusal is void.
+//
+// The pairing needs the planner's calls from the trial's own prompt on. When the kept log lost that
+// prompt (`answersIn` is `undefined`), the trial is void too: no call can be placed, so the reading
+// is neither a miss nor a pass.
 
 import type { Answered } from "./model-said.ts";
 
@@ -31,7 +35,7 @@ export const NOT_KNOWN = "It is not known whether this pick reached the workflow
 
 /**
  * Read a trial from the Machine's door verdicts, in order, and the planner's `run_chart` calls with
- * the answers it read (`answersIn`), when the conversation printed.
+ * the answers it read (`answersIn`): `undefined` when the trial's own prompt is not in the kept log.
  */
 export function readChartRefusal(
   outcomes: readonly string[],
@@ -44,8 +48,10 @@ export function readChartRefusal(
     const why = outcomes.length ? "the first Chart the door saw admitted" : "no Chart reached the door";
     return { measured: false, void: `void: ${why}`, note };
   }
+  if (answered === undefined) {
+    return { measured: false, void: "void: the trial's own prompt is not in the kept conversation", note };
+  }
   const admitted = ADMITTED.has(outcomes[1] ?? "");
-  if (answered === undefined) return { measured: admitted, note: `${note} (no conversation printed)` };
   // The calls that reached the door are those the Menu did not refuse: the first is the refused one.
   const door = calls.findIndex((c) => !c.error);
   if (door !== -1 && calls.slice(door).some((c) => c.answer?.startsWith(NOT_KNOWN))) {

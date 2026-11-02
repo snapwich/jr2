@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { JR2Config } from "../src/config.ts";
-import { heldSecretsOf, leafStem, parseTarget, standIn, type HeldLookups } from "../src/held-secrets.ts";
+import { heldSecretsOf, heldStandIn, leafStem, parseTarget, standIn, type HeldLookups } from "../src/held-secrets.ts";
 
 const SECRET = "sk-very-secret-value";
 
@@ -164,11 +164,69 @@ test("R1: an envFrom Secret or ConfigMap whose key NAMES include a model key is 
   );
 });
 
+// ADR-0076: the Harness's start takes jr2's own names from jr2 alone, and refuses an envFrom key
+// that starts with JR2_. `jr2 up` refuses both before anything starts.
+test("a JR2_ name in harness.env, or a JR2_ key that harness.envFrom loads, is refused (ADR-0076)", () => {
+  for (const name of ["JR2_MENU_ONLY", "JR2_START_ENV", "JR2_CONFINER"]) {
+    assert.match(
+      refusal({ harness: { env: [{ name, value: "1" }] } }),
+      new RegExp(`^harness\\.env\\[0\\] sets ${name}: JR2_ names are jr2's own`),
+    );
+  }
+  assert.match(
+    refusal(
+      { harness: { envFrom: [{ secretRef: { name: "shared" } }] } },
+      { envFromKeys: new Map([["secret/shared", ["LOG_LEVEL", "JR2_MENU_ONLY"]]]) },
+    ),
+    /^harness\.envFrom\[0\] loads Secret "shared", which carries JR2_MENU_ONLY/,
+  );
+  assert.match(
+    refusal(
+      { harness: { envFrom: [{ prefix: "JR2_", configMapRef: { name: "c" } }] } },
+      { envFromKeys: new Map([["configmap/c", ["X"]]]) },
+    ),
+    /carries JR2_X/,
+  );
+});
+
 test("warn, never refuse: a signing credential in harness.env names the gateway as the fix", () => {
   const { warnings } = rules({ harness: { env: [{ name: "AWS_SECRET_ACCESS_KEY", value: SECRET }] } });
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /AWS_SECRET_ACCESS_KEY.*cannot be held.*gateway/);
   assert.ok(!warnings[0]!.includes(SECRET));
+});
+
+// ADR-0076: the Harness process reads a credential file that harness.env names. A path in a folder
+// that the domain writes is refused; any other path is a warning, since the image decides whether the
+// Sandbox's user can write it.
+test("a credential file in harness.env: refused in a folder the Agent's code writes, else a warning (ADR-0076)", () => {
+  for (const value of [
+    "/work/app/.aws/config",
+    "/tmp/creds.json",
+    "/home/jr2/.aws/config",
+    "relative/aws",
+    "/etc/../tmp/x",
+  ]) {
+    assert.match(
+      refusal({ harness: { env: [{ name: "AWS_CONFIG_FILE", value }] } }),
+      /harness\.env\[0\] sets AWS_CONFIG_FILE .*the Harness process reads that file/,
+      value,
+    );
+  }
+  const { warnings } = rules({
+    harness: { env: [{ name: "GOOGLE_APPLICATION_CREDENTIALS", value: "/etc/gcp/key.json" }] },
+  });
+  assert.ok(
+    warnings.some((w) => /GOOGLE_APPLICATION_CREDENTIALS: the Harness process reads "\/etc\/gcp\/key\.json"/.test(w)),
+  );
+  const fromEnvFrom = rules(
+    { harness: { envFrom: [{ configMapRef: { name: "aws" } }] } },
+    { envFromKeys: new Map([["configmap/aws", ["AWS_CONFIG_FILE"]]]) },
+  ).warnings;
+  assert.ok(
+    fromEnvFrom.some((w) => /harness\.envFrom\[0\] sets AWS_CONFIG_FILE/.test(w)),
+    fromEnvFrom.join("\n"),
+  );
 });
 
 test("R2: the kit's names are not a held secret's to take", () => {
@@ -370,6 +428,9 @@ test("R13: the kit's Secrets never reach the Harness, by env or envFrom, whateve
     "jr2-git-0a1b2c3d",
     "jr2-git-push-0a1b2c3d",
     "ws-run-1-effector",
+    // Each pod's own credentials (ADR-0076): the real control token beside the Stand-ins.
+    "jr2-instance-harness-token",
+    "ws-run-1-token",
   ]) {
     assert.match(
       refusal({ harness: { env: [{ name: "X", valueFrom: { secretKeyRef: { name: secret, key: "k" } } }] } }),
@@ -404,4 +465,17 @@ test("R12: a path prefix nothing can step around", () => {
   ]) {
     assert.match(refusal(held({ paths: [path] })), /paths\[0\]/, path);
   }
+});
+
+test("a held secret's Stand-in is secret, its own pod's, a valid header value, and never holds sk-ant-oat (ADR-0059, ADR-0076)", () => {
+  const key = Buffer.alloc(32, 3);
+  const a = heldStandIn(key, "ws-a", "ANTHROPIC_API_KEY");
+  assert.match(a, /^jr2-held-ANTHROPIC_API_KEY\.[A-Za-z0-9_-]{43}$/, "the readable prefix, then an HMAC");
+  assert.equal(heldStandIn(key, "ws-a", "ANTHROPIC_API_KEY"), a, "deterministic: a re-provision mints the same");
+  assert.notEqual(heldStandIn(key, "ws-b", "ANTHROPIC_API_KEY"), a, "one pod's opens no other pod's swap");
+  assert.notEqual(heldStandIn(key, "ws-a", "OPENAI_API_KEY"), a, "unique per name");
+  assert.notEqual(heldStandIn(Buffer.alloc(32, 4), "ws-a", "ANTHROPIC_API_KEY"), a, "unguessable without the key");
+  assert.notEqual(a, standIn("ANTHROPIC_API_KEY"), "not the public form");
+  // Over many pods, none carries the OAuth mark pi reads (a signature that would is signed again).
+  for (let i = 0; i < 2000; i++) assert.ok(!heldStandIn(key, `ws-${i}`, "ANTHROPIC_API_KEY").includes("sk-ant-oat"));
 });

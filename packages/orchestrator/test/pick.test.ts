@@ -14,7 +14,7 @@ import { answer, fromPick, isAnswer, isPickMapper, paramsOf, seatsOfAnswer } fro
 import { RunHost } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { loadWarningsOf } from "../src/vocabulary.ts";
-import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
+import { fakeWorkspace, FakeHarnessExec, handles } from "./_effects.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const lint = defineEvent({ name: "lint", input: z.object({ path: z.string() }) });
@@ -54,7 +54,7 @@ function chainMachine(fake: FakeHarnessExec, coder: ReturnType<typeof agentActor
     types: {} as { context: Ctx },
     events: [deploy, finish, skip, lint],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coder,
       build: commandWith(fake.factory, ["pnpm", "build"]),
       deployer: commandWith(fake.factory, ["deploy-preview"]),
@@ -218,7 +218,7 @@ test("the fromPick sum is checked against the Effect's input type: a missing or 
     jr2Setup({
       types: {} as { context: { dir: string } },
       events: [lint, misnamed, mistyped, bare],
-      actors: { ws: fakeWorkspace(), linter: commandWith(fake.factory, ["pnpm", "lint", arg("path")]) },
+      actors: { ws: fakeWorkspace(handles({})), linter: commandWith(fake.factory, ["pnpm", "lint", arg("path")]) },
     }).createMachine({
       id: "sum",
       context: { dir: "src" },
@@ -259,7 +259,7 @@ test("an `answer` below one Agent's state never shapes another Agent's outstandi
     machine: jr2Setup({
       events: [build],
       actors: {
-        ws: fakeWorkspace(),
+        ws: fakeWorkspace(handles({})),
         coderA: agentActorWith(() => a, coderDefinition),
         coderB: agentActorWith(() => b, coderDefinition),
         builder: commandWith(fake.factory, ["pnpm", "build"]),
@@ -307,7 +307,7 @@ test("an `answer` written below no Agent's state shapes the outstanding pick", a
   const machine = jr2Setup({
     events: [build],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coder: agentActorWith(() => a, coderDefinition),
       builder: commandWith(fake.factory, ["pnpm", "build"]),
     },
@@ -346,7 +346,7 @@ test("an `answer` written below no Agent's state shapes the outstanding pick", a
 // An `answer` the walk did not find written in the Machine is read as written below no Agent's
 // state: its seat is `null`.
 test("an `answer` the walk did not find is seated at no Agent's state", () => {
-  const machine = jr2Setup({ events: [], actors: { ws: fakeWorkspace() } }).createMachine({
+  const machine = jr2Setup({ events: [], actors: { ws: fakeWorkspace(handles({})) } }).createMachine({
     id: "bare",
     invoke: { src: "ws" },
   });
@@ -384,7 +384,7 @@ function twoAgents(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlueClient, 
   return jr2Setup({
     events: [buildA, buildB],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderA: commandWith(fake.factory, ["make", "a"]),
@@ -445,7 +445,7 @@ test("a transition below no Agent's state on a pick shapes the sender's pick, wh
   const machine = jr2Setup({
     events: [buildB, ship, defineEvent({ name: "start_a", input: z.object({}) })],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderA: commandWith(fake.factory, ["make", "a"]),
@@ -548,7 +548,7 @@ test("one `answer` written below two Agents' states shapes the pick of the Agent
   const machine = jr2Setup({
     events: [buildA, buildB],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderA: commandWith(fake.factory, ["make", "a"]),
@@ -679,7 +679,7 @@ for (const form of ["inline", "inside a nested enqueue", "by name"] as const) {
     const machine = jr2Setup({
       events: [buildA, buildB],
       actors: {
-        ws: fakeWorkspace(),
+        ws: fakeWorkspace(handles({})),
         coderA: agentActorWith(() => a, coderDefinition),
         coderB: agentActorWith(() => b, coderDefinition),
         builderA: commandWith(fake.factory, ["make", "a"]),
@@ -714,7 +714,7 @@ test("a child that a pick's later work started is that pick's: its done event be
   const machine = jr2Setup({
     events: [buildA, buildB],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderA: commandWith(fake.factory, ["make", "a"]),
@@ -775,7 +775,7 @@ function twoWithATimer(
   return jr2Setup({
     events: [buildB],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderB: commandWith(fake.factory, ["make", "b"]),
@@ -879,7 +879,7 @@ function aStartsRegionWork(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlue
   return jr2Setup({
     events: [buildB, ship, defineEvent({ name: "start_c", input: z.object({}) })],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderA: commandWith(fake.factory, ["make", "a"]),
@@ -999,7 +999,7 @@ test("a child a timer below no Agent's state started is no Agent's: its done eve
   const machine = jr2Setup({
     events: [buildA, buildB, defineEvent({ name: "start_c", input: z.object({}) })],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderB: commandWith(fake.factory, ["make", "b"]),
@@ -1058,7 +1058,7 @@ function aWorksAfterATimer(fake: FakeHarnessExec, a: MockFlueClient, b: MockFlue
   return jr2Setup({
     events: [buildA, buildB],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderA: commandWith(fake.factory, ["make", "a"]),
@@ -1153,7 +1153,7 @@ test("an `onError` answer below no Agent's state, on the error of a child A's an
   const machine = jr2Setup({
     events: [kick, buildB, defineEvent({ name: "go_side", input: z.object({}) })],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderB: commandWith(fake.factory, ["make", "b"]),
@@ -1226,7 +1226,7 @@ for (const timer of [false, true]) {
     const machine = jr2Setup({
       events: [goInner, goB],
       actors: {
-        ws: fakeWorkspace(),
+        ws: fakeWorkspace(handles({})),
         coderA: agentActorWith(() => a, coderDefinition),
         coderB: agentActorWith(() => b, coderDefinition),
         cmd: commandWith(fake.factory, ["make", "t"]),
@@ -1287,7 +1287,7 @@ test("a raised event in A's pick's own send, answered on the root while two Agen
   const machine = jr2Setup({
     events: [buildA, buildB, defineEvent({ name: "tick", input: z.object({}) })],
     actors: {
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       coderA: agentActorWith(() => a, coderDefinition),
       coderB: agentActorWith(() => b, coderDefinition),
       builderA: commandWith(fake.factory, ["make", "a"]),

@@ -83,6 +83,9 @@ the cluster, see [Architecture](architecture.md).
 12. It applies the operator. For a Repo with an ssh url, it asks where the deploy key comes from.
 13. It applies the Secrets and the Orchestrator, and waits for the rollout. When the Machines need them, it also waits
     for the Repo cache, the Instance Harness and the [Instance Effector](../reference/glossary.md#instance-effector).
+    The Repo cache agent on each Sandbox node checks that the kernel of its node has Landlock, which jr2 needs. While a
+    Sandbox node has no Landlock, the converge fails. The error names each such node, the reason, and the fix: keep the
+    node out with `sandbox.nodeSelector` or a taint, or enable Landlock in its kernel. Then run `jr2 up` again.
 14. It publishes the Assembly to the Orchestrator. When the Orchestrator already has this Assembly, it publishes
     nothing.
 15. It removes the images that nothing uses now.

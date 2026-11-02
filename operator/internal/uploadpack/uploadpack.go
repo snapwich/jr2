@@ -20,6 +20,9 @@ SPDX-License-Identifier: MIT
 // the way: refs update once, at the end, and what the caller sees is a fetch on
 // a slow handshake.
 //
+// A fetch takes a per-clone lock after the ask and keeps it until the fetch
+// ends (fetchlock.go), so a dead remote does not make coders wait in line.
+//
 // The ask never fails a fetch. A remote fetch that fails or outruns its budget
 // falls through to the objects the cache already holds — ADR-0051's stance for
 // attach — and writes one line to stderr, which git passes through verbatim.
@@ -149,11 +152,22 @@ type Options struct {
 	Client *http.Client
 	// Exec is the last thing the program does. Defaults to syscall.Exec.
 	Exec ExecFunc
+	// Hold leaves the fetch lock with a process that outlives this one. Defaults
+	// to startHolder.
+	Hold func(lock *os.File, fetch process) error
+	// Fetch names the fetch that the lock lasts for, and answers false when
+	// there is none. Defaults to fetchProcess.
+	Fetch func() (process, bool)
+	// LockWait bounds the wait for the fetch lock. Defaults to lockWait.
+	LockWait time.Duration
 }
 
 // Run is the program. It returns an exit code — and on the ordinary path it
 // does not return at all, because Exec replaced the process.
 func Run(o Options) int {
+	if len(o.Args) > 0 && o.Args[0] == HoldCommand {
+		return hold(o.Args[1:])
+	}
 	fill(&o)
 
 	if len(o.Args) < 2 {
@@ -172,7 +186,12 @@ func Run(o Options) int {
 	// is `--shared` off `/repos/<key>`, so its alternates file names the one
 	// object store this worktree already borrows from. A url can be edited by
 	// hand; the alternates cannot, without breaking the checkout itself.
-	cache, err := CacheDir(o.Dir)
+	common, err := gitCommonDir(o.Dir)
+	if err != nil {
+		say(o, "jr2: %v\n", err)
+		return 1
+	}
+	cache, err := cacheOf(common)
 	if err != nil {
 		say(o, "jr2: %v\n", err)
 		return 1
@@ -187,6 +206,10 @@ func Run(o Options) int {
 	if err != nil {
 		say(o, "jr2: git is not on PATH, so the cache at %s cannot be served: %v\n", cache, err)
 		return 1
+	}
+	// An archive writes no refs, so it has no need of the fetch lock.
+	if service == ServiceUploadPack {
+		lockFetches(o, common)
 	}
 	if err := o.Exec(git, []string{gitBinary, subcommand, cache}, servingEnv(o.Env)); err != nil {
 		say(o, "jr2: could not exec %s %s %s: %v\n", git, subcommand, cache, err)
@@ -290,6 +313,10 @@ func CacheDir(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return cacheOf(common)
+}
+
+func cacheOf(common string) (string, error) {
 	alternates := filepath.Join(common, "objects", "info", "alternates")
 	contents, err := os.ReadFile(alternates)
 	if err != nil {
@@ -381,6 +408,15 @@ func fill(o *Options) {
 	}
 	if o.Exec == nil {
 		o.Exec = execProcess
+	}
+	if o.Hold == nil {
+		o.Hold = startHolder
+	}
+	if o.Fetch == nil {
+		o.Fetch = fetchProcess
+	}
+	if o.LockWait == 0 {
+		o.LockWait = lockWait
 	}
 }
 

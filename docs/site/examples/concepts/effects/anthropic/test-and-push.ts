@@ -5,9 +5,11 @@ import {
   command,
   defineEvent,
   fail,
+  isReady,
   jr2Setup,
   push,
   workspace,
+  worktree,
   type CommandOutput,
   type Workspaced,
 } from "@jr2/orchestrator";
@@ -27,6 +29,9 @@ const finished = defineEvent({
 const runInput = z.object({ prompt: z.string(), branch: z.string() });
 type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
 
+// The Worktree that the coder, the tests and the push all name.
+const appTree = (context: BodyInput) => `${context.workspace.repos.app}/fix` as const;
+
 const passed = (output: CommandOutput): boolean => output.outcome === "exited" && output.code === 0;
 
 const body = jr2Setup({
@@ -37,7 +42,8 @@ const body = jr2Setup({
       model: "anthropic/claude-haiku-5-5",
       instructions: "You are a careful engineer. You commit your work on the branch.",
     }),
-    // Two Effects. Each is an actor slot, beside the Agent.
+    // Three Effects. Each is an actor slot, beside the Agent.
+    cut: worktree(),
     tests: command(["node", "--test"], { timeout: "5m" }),
     publish: push(),
     fail: fail(),
@@ -46,12 +52,20 @@ const body = jr2Setup({
   id: "test-and-push",
   context: ({ input }) => input,
   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
-  initial: "coding",
+  initial: "cutting",
   states: {
+    // The Workspace only clones. The Machine cuts the Worktree that the Agent works in.
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: appTree(context), branch: context.branch }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+      },
+    },
     coding: {
       invoke: {
         src: "coder",
-        input: ({ context }) => ({ prompt: context.prompt, cwd: context.workspace.repos.app }),
+        input: ({ context }) => ({ prompt: context.prompt, cwd: appTree(context) }),
       },
       on: { finished: "publishing" },
       initial: "ready",
@@ -60,6 +74,7 @@ const body = jr2Setup({
         testing: {
           invoke: {
             src: "tests",
+            input: ({ context }) => ({ worktree: appTree(context) }),
             onDone: {
               target: "ready",
               // The Agent reads this text as the answer to its run_tests pick.
@@ -76,10 +91,12 @@ const body = jr2Setup({
     publishing: {
       invoke: {
         src: "publish",
+        input: ({ context }) => ({ worktree: appTree(context) }),
         onDone: [{ guard: ({ event }) => event.output.outcome === "pushed", target: "done" }, { target: "notPushed" }],
       },
     },
     done: { type: "final" },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     // A Failure ends the body, and jr2 deletes the Sandbox with its commits. To keep them, wait at
     // a Gate before this state.
     notPushed: { invoke: { src: "fail", input: { reason: "the push did not publish the fix" } } },
@@ -91,5 +108,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: runInput,
   repos: { app: "https://github.com/you/app.git" },
-  spec: ({ input }) => ({ branch: input.branch }),
 });

@@ -449,8 +449,8 @@ test("GET /workflows/:wrapper/chart-schema is the grammar narrowed to the Open b
   assert.deepEqual(agent.model?.enum, ["stub/model"]);
   assert.deepEqual(agent.workspace?.enum, ["none", "write"]);
   assert.ok(schema.$defs["jr2.ChartInvoke"].properties.src.anyOf[0]!.enum!.includes("coder"), "a lent src");
-  // The lent guard, and `jr2.failure`, which every Chart has (ADR-0073).
-  assert.deepEqual(schema.$defs["jr2.ChartGuard"].anyOf[0]!.enum, ["underLimit", "jr2.failure"]);
+  // The lent guard, and `jr2.failure` and `jr2.ready`, which every Chart has (ADR-0073, ADR-0075).
+  assert.deepEqual(schema.$defs["jr2.ChartGuard"].anyOf[0]!.enum, ["underLimit", "jr2.failure", "jr2.ready"]);
   assert.deepEqual(schema.$defs["jr2.ChartGuard"].anyOf.find((g) => g.properties?.type?.enum)?.properties?.type?.enum, [
     "underLimit",
   ]);

@@ -19,26 +19,35 @@
 // invoke — so the steps read the pod's Harness at `/agents/coder/<runId>/body/coder`.
 
 import { z } from "zod";
-import { agent, defineEvent, fail, jr2Setup, workspace } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, workspace, isReady, worktree } from "@jr2/orchestrator";
+import type { HostInjectedInput, Workspaced } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 const ship = defineEvent({ name: "ship", input: z.object({ summary: z.string() }) });
 
 type Ws = { repos: Record<"app", string>; branch: string };
-type BodyInput = { workspace: Ws };
+type BodyInput = Workspaced<HostInjectedInput, "app">;
 
 const body = jr2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [finish, ship],
   // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.
-  actors: { coder: agent(coder), fail: fail() },
+  actors: { cut: worktree(), coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
   on: { "workspace.lost": { target: ".lost" }, "agent.fault": { target: ".faulted" } },
-  initial: "coding",
+  initial: "cutting",
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/feat-e2e", branch: "feat-e2e" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     coding: {
       invoke: {
         src: "coder",
@@ -46,12 +55,8 @@ const body = jr2Setup({
         // scenario releases it (ADR-0038), so the Machine waits exactly as it would on an Agent
         // that is still thinking. A Turn's input is its Frame, its Dials and whether it
         // continues (ADR-0057) — and nothing else here. No Menu:
-        // it derives from this state's `finish` (ADR-0015). No `cwd`: one Repo Slot means there is
-        // nothing to privilege, so the actor frames `app`'s Worktree itself.
-        input: () => ({
-          prompt: "implement the thing",
-          continue: true,
-        }),
+        // it derives from this state's `finish` (ADR-0015).
+        input: () => ({ cwd: "/work/app/feat-e2e", prompt: "implement the thing", continue: true }),
       },
       on: { finish: { target: "shipping" } },
     },
@@ -59,6 +64,7 @@ const body = jr2Setup({
       invoke: {
         src: "coder",
         input: () => ({
+          cwd: "/work/app/feat-e2e",
           prompt: "now ship it",
           // The SAME conversation as `coding`'s — two states of one Machine, one Agent, one
           // conversation (ADR-0057). Their Menus differ; the transcript does not.
@@ -79,5 +85,4 @@ const body = jr2Setup({
 // the url is the identity, so this literal is what the walk warms and what the cache clones.
 export const machine = workspace(body, {
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  spec: () => ({ branch: "feat-e2e" }),
 });

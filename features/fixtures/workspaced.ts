@@ -14,5 +14,4 @@ const body = setup({}).createMachine({
 
 export const machine = workspace(body, {
   repos: { app: "https://example.test/app.git" },
-  spec: () => ({ branch: "feat-e2e" }),
 });

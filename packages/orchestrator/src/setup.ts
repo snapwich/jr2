@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto";
 import {
   setup,
   type ActionFunction,
+  type ActorLogic,
   type AnyActorRef,
   type AnyStateMachine,
   type DelayConfig,
@@ -39,6 +40,7 @@ import {
   type NonReducibleUnknown,
   type ParameterizedObject,
   type SetupReturn,
+  type Snapshot,
   type UnknownActorLogic,
 } from "xstate";
 import type { z } from "zod";
@@ -46,11 +48,12 @@ import { eventMap, type EventDef, type EventFrom, type Sender } from "@jr2/agent
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { isEffect } from "./effect.ts";
-import { effectChecks } from "./effect-checks.ts";
+import type { AnyFramePath, FramePath, WorktreePath, WorktreeReady } from "./worktree.ts";
+import { effectChecks, refuseUnroutedOutcome } from "./effect-checks.ts";
 import { gate } from "./gate.ts";
 import { attachLent, isOpenBody, openBodyDeclarationOf, type LentParts } from "./open-body.ts";
 import { refuseInlineParts } from "./parts.ts";
-import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
+import { partyWarnings, refuseSlotActiveTwice, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { refuseLostOutput } from "./run-output.ts";
 import { refuseUnroutedAgentFault } from "./mechanism-routes.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
@@ -129,6 +132,74 @@ type ToParameterizedObject<T extends Record<string, ParameterizedObject["params"
 type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
   [K in keyof TActors & string]: { src: K; logic: TActors[K]; id: string | undefined };
 }[keyof TActors & string];
+
+// The types below carry the body's Repo Slots to every Worktree input.
+/** @internal */
+type NoHandles = { readonly noHandles: true };
+/** `S`, the slots of the body, or {@link NoHandles} when its input and context hold no handles.
+ * @internal */
+type RepoSlotsOf<TInput, TContext> = TInput extends { workspace: { repos: infer R } }
+  ? keyof R & string
+  : TContext extends { workspace: { repos: infer R } }
+    ? keyof R & string
+    : NoHandles;
+/** The Worktrees of the slots `S` that this key takes: a `push({ slot })` keeps to its own slot.
+ * @internal */
+type PathIn<W, S> = S extends string ? (`/work/${S}/x` extends NonNullable<W> ? WorktreePath<S> : never) : never;
+/** One arm of an input. A key that names a Worktree or a Frame is REQUIRED under a body with Repo
+ * Slots, so that no mix of `cwd`, `worktree` and `path` lands in `/work`. Under a body with none,
+ * `worktree` goes: there is no Worktree. A Turn's arm that carries no kit path (the run's own form)
+ * and every other key stay.
+ * @internal */
+type BindArm<I, S> = I extends object
+  ? "worktree" extends keyof I
+    ? [S] extends [never]
+      ? Omit<I, "worktree"> & { worktree?: never }
+      : Omit<I, "worktree"> & { worktree: PathIn<I["worktree"], S> }
+    : "cwd" extends keyof I
+      ? [NonNullable<I["cwd"]>] extends [AnyFramePath]
+        ? [S] extends [never]
+          ? I
+          : Omit<I, "cwd"> & { cwd: FramePath<S & string> }
+        : I
+      : "path" extends keyof I
+        ? [S] extends [never]
+          ? I
+          : Omit<I, "path"> & { path: PathIn<I["path"], S> }
+        : I
+  : I;
+/** Does this input name a Worktree? @internal */
+type NamesWorktree<I> = I extends object ? ("worktree" extends keyof I ? true : never) : never;
+/** @internal */
+type BindInput<I, S> = [NamesWorktree<I>] extends [never]
+  ? BindArm<I, S>
+  : [S] extends [never]
+    ? BindArm<I, S>
+    : Exclude<BindArm<I, S>, void | undefined>;
+/** A cut's `ready` output with the body's slots. @internal */
+type BindOutput<O, S> = O extends WorktreeReady ? WorktreeReady<S & string> : O;
+/** @internal */
+type BindSnapshot<Snap, S> = Snap extends { output: infer O }
+  ? [O] extends [BindOutput<O, S>]
+    ? Snap
+    : Omit<Snap, "output"> & { output: BindOutput<O, S> }
+  : Snap;
+/** @internal */
+type BindLogic<L extends UnknownActorLogic, S> = L extends AnyStateMachine
+  ? L
+  : ([S] extends [never] ? false : [S] extends [NoHandles] ? true : false) extends true
+    ? L
+    : L extends { readonly definition: { readonly workspace: "none" } }
+      ? L
+      : L extends ActorLogic<infer Snap, infer Ev, infer I, infer Sys, infer Em>
+        ? BindSnapshot<Snap, S> extends infer B extends Snapshot<unknown>
+          ? Omit<L, keyof ActorLogic<Snap, Ev, I, Sys, Em>> & ActorLogic<B, Ev, BindInput<I, S>, any, Em>
+          : never
+        : L;
+/** @internal */
+type BindActors<A extends Record<string, UnknownActorLogic>, TInput, TContext> = {
+  [K in keyof A]: BindLogic<A[K], RepoSlotsOf<TInput, TContext>>;
+};
 
 /**
  * Set up a Machine that takes workflow events: the jr2 form of xstate's `setup()`. Write a Machine
@@ -321,7 +392,7 @@ export function jr2Setup<
 ): SetupReturn<
   TContext,
   WorkflowEvent<TDefs>,
-  MergedActors<TActors>,
+  MergedActors<BindActors<TActors, TInput, TContext>>,
   {},
   TActions,
   TGuards & SentByGuards,
@@ -411,13 +482,20 @@ export function jr2Setup<
     // (ADR-0074): the run would wait for ever. Not in a compiled Chart: there the route is optional,
     // and the Open body sends the event that no transition takes to the Machine that invoked it (ADR-0070).
     if (compiledChart !== true) refuseUnroutedAgentFault(machine);
+    // An Effect's `onDone` with no last arm that always matches (ADR-0075): the run would stay in the
+    // state and show no fault. A compiled Chart comes here too, so the door refuses it.
+    refuseUnroutedOutcome(machine);
     refuseParallelBelowAgents(machine, def.actors ?? {});
+    // One slot, two Turns at once (ADR-0015): one sender and one conversation cannot hold both.
+    refuseSlotActiveTwice(machine);
     refuseUnknownSentBy(machine);
     // Before the Effect checks: they ask who may send a writing (`mayTake`), which reads its audience.
     attachVocabulary(machine, defs);
     // The Effect checks (ADR-0067): a pick param nothing reads, a `fill` that overwrites one, a
     // `fromPick` of another pick — refused; a mapper the probe cannot run — warned.
-    const effects = effectChecks(machine, def.actors ?? {}, defs);
+    // A Chart's door reads each reference itself (rule 7), and it refuses every load warning: the
+    // walk's "I could not run this" says nothing of a Chart's `{{...}}` mapper or its `set`.
+    const effects = effectChecks(machine, def.actors ?? {}, defs, compiledChart === true);
     if (effects.errors.length) throw new Error(`machine "${machine.id}": ${effects.errors.join("; ")}`);
 
     const idOf = (path: readonly string[]): string => stateAt(machine, path).id;
@@ -441,7 +519,7 @@ export function jr2Setup<
   return { ...inner, createMachine } as unknown as SetupReturn<
     TContext,
     WorkflowEvent<TDefs>,
-    MergedActors<TActors>,
+    MergedActors<BindActors<TActors, TInput, TContext>>,
     {},
     TActions,
     TGuards & SentByGuards,
@@ -1066,7 +1144,7 @@ function refuseUnknownKeys(consumer: object, agentName: string): void {
 /** Wrap an Agent slot's invoke input: name the Agent (the slot key), append the state's derived set
  * and the Agent's Menu, and finalize the mechanism fields. */
 function wrapAgentInput(orig: unknown, derived: string[], agentName: string, menuOf: (agentName: string) => string[]) {
-  return (args: InputArgs): AgentRunInput => {
+  const wrapped = (args: InputArgs): AgentRunInput => {
     const consumer = resolveInput(orig, args) as Partial<AgentTurnInput & AgentRunInput>;
     refuseUnknownKeys(consumer, agentName);
     return {
@@ -1097,6 +1175,8 @@ function wrapAgentInput(orig: unknown, derived: string[], agentName: string, men
       menu: menuOf(agentName),
     };
   };
+  // The walk reads what the author wrote: `workspace()`, for a literal `cwd`.
+  return Object.assign(wrapped, { consumerInput: orig });
 }
 
 /** Wrap a gate invoke input: append the derived accepted set. */

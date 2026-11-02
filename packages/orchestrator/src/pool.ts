@@ -38,6 +38,7 @@ import type { EventDef } from "@jr2/agent-protocol";
 import { fail, failurePayload, isFailure, type FailureInput } from "./fail.ts";
 import { gate } from "./gate.ts";
 import { attachWrapperBody, type JR2Wrapper, type WrapperActors } from "./parts.ts";
+import { parsedNestedDoor } from "./vocabulary.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
 // The rich shape's `open` is the one bit that separates DRAINED from DEADLOCKED when the pool goes
@@ -50,22 +51,27 @@ import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
  */
 export type SourceNextResult<T> = T | null | { item: T | null; open: number };
 
+/** The input of a Source's `next`: the ids of the items that workers have now, the ids of the items
+ * that settled, and the Pool's input. So a Source over a list that a Machine holds needs no state
+ * of its own. */
+export type PoolNextInput<TInput = unknown> = { active: string[]; settled: string[]; input: TInput };
+
 // The Source port (ADR-0017).
 /** Where a Pool gets its work items: the Source. Make one with {@link source}. */
-export type SourceSpec<T> = {
+export type SourceSpec<T, TInput = unknown> = {
   // A union of the accepted output shapes because xstate's actor-logic type is invariant in its
   // output — a `fromPromise` inferred as `T | null` must still assign.
   /** Claim the next ready item. Write it as an xstate promise actor,
-   * `fromPromise(async ({ input }) => …)`. Its input is `{ active }`: the ids of the items that
-   * workers have now, which it must not give again. It must also not give again an item that a
-   * worker finished. It resolves to a {@link SourceNextResult}. The Pool calls it when the run
-   * starts, after each claim, and when a worker settles. While workers run and no item is ready, it
+   * `fromPromise(async ({ input }) => …)`. Its input is {@link PoolNextInput}: `active`, the ids of
+   * the items that workers have now, `settled`, the ids of the items that finished or failed, and
+   * `input`, the Pool's input. It must not give again an item in `active` or `settled`. It resolves
+   * to a {@link SourceNextResult}. The Pool calls it when the run starts, after each claim, and when a worker settles. While workers run and no item is ready, it
    * also calls it on `wake` and every `pollEvery`. */
   next:
-    | PromiseActorLogic<SourceNextResult<T>, { active: string[] }>
-    | PromiseActorLogic<{ item: T | null; open: number }, { active: string[] }>
-    | PromiseActorLogic<T | null, { active: string[] }>
-    | PromiseActorLogic<null, { active: string[] }>;
+    | PromiseActorLogic<SourceNextResult<T>, PoolNextInput<TInput>>
+    | PromiseActorLogic<{ item: T | null; open: number }, PoolNextInput<TInput>>
+    | PromiseActorLogic<T | null, PoolNextInput<TInput>>
+    | PromiseActorLogic<null, PoolNextInput<TInput>>;
   // The webhook / `jr2 send` push seam. The def IS the pool machine's vocabulary (ADR-0011).
   /** An external event, made with `defineEvent`, that tells the Pool that new work is ready, for
    * example from a webhook or `jr2 send`. While workers run and no item is ready, it makes the Pool
@@ -91,7 +97,7 @@ export type SourceSpec<T> = {
  * @example
  * ```ts
  * import { fromPromise } from "xstate";
- * import { source } from "@jr2/orchestrator";
+ * import { source, type PoolNextInput } from "@jr2/orchestrator";
  *
  * type Issue = { id: string; title: string };
  *
@@ -101,7 +107,7 @@ export type SourceSpec<T> = {
  * ];
  *
  * export const issues = source<Issue>({
- *   next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+ *   next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
  *     const issue = backlog.find((i) => !input.active.includes(i.id)) ?? null;
  *     if (issue) backlog.splice(backlog.indexOf(issue), 1);
  *     return issue;
@@ -114,7 +120,7 @@ export type SourceSpec<T> = {
  * @see docs/concepts/pools-and-sources.md
  * @see docs/reference/decisions/0017-pool-over-a-source-port.md
  */
-export function source<T>(spec: SourceSpec<T>): SourceSpec<T> {
+export function source<T, TInput = unknown>(spec: SourceSpec<T, TInput>): SourceSpec<T, TInput> {
   return spec;
 }
 
@@ -143,8 +149,10 @@ export type PoolSpec<T, TInput = unknown> = {
    * `itemInput` read it, typed by it. A worker never gets it: each worker gets its item. Default:
    * none, and then their `input` is `unknown`. */
   input?: z.ZodObject;
+  // `SourceSpec<T>` too: xstate's actor logic is invariant in its input, so a `next` that does not
+  // read the Pool's input must still assign under a typed door.
   /** Where the items come from. Make it with {@link source}. */
-  source: SourceSpec<T>;
+  source: SourceSpec<T, TInput> | SourceSpec<T>;
   // Stable child identity: the spawn id, the active-set entry, the outcome key.
   /** The id of an item. The Pool uses it as the id of the item's worker and in the `active` list
    * that `next` gets. It is also the key of that worker's output in `items`. Give each item an id
@@ -250,7 +258,7 @@ function normalizeClaim(output: unknown): Claim {
  * @example
  * ```ts
  * import { fromPromise } from "xstate";
- * import { customize, pool, source } from "@jr2/orchestrator";
+ * import { customize, pool, source, type PoolNextInput } from "@jr2/orchestrator";
  * import { task } from "@jr2/machines";
  *
  * type Issue = { id: string; title: string };
@@ -261,7 +269,7 @@ function normalizeClaim(output: unknown): Claim {
  * ];
  *
  * const issues = source<Issue>({
- *   next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+ *   next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
  *     const issue = backlog.find((i) => !input.active.includes(i.id)) ?? null;
  *     if (issue) backlog.splice(backlog.indexOf(issue), 1);
  *     return issue;
@@ -325,13 +333,22 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
     actors: { worker, next: spec.source.next, gate, fail: fail() },
   }).createMachine({
     id: spec.id ?? "pool",
-    context: ({ input }): PoolCtx => ({
-      runInput: (input ?? {}) as Record<string, unknown>,
-      cap: typeof spec.cap === "function" ? spec.cap({ input }) : (spec.cap ?? 1),
-      active: [],
-      items: {},
-      failures: {},
-    }),
+    context: ({ input, self }): PoolCtx => {
+      // RunHost parsed a root run's door. A parent's input is parsed here, and a value that is
+      // wrong starts no worker (ADR-0033). The handles and `instanceId` are no caller's to send.
+      const sent = (input ?? {}) as Record<string, unknown>;
+      const runInput =
+        spec.input && self._parent
+          ? parsedNestedDoor(spec.input, sent, ["workspace", "instanceId"], "pool input invalid, before any worker")
+          : sent;
+      return {
+        runInput,
+        cap: typeof spec.cap === "function" ? spec.cap({ input: runInput as never }) : (spec.cap ?? 1),
+        active: [],
+        items: {},
+        failures: {},
+      };
+    },
     // The wake seam: a standing gate for the whole run's life (root invokes stop only at final).
     // The invoke id IS the gate's name (the id derives from the actor path — ADR-0011):
     // `source` when the pool is the root, `<path>.source` nested — so two nested
@@ -386,7 +403,11 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
         invoke: {
           id: "discover",
           src: "next",
-          input: ({ context }) => ({ active: (context as PoolCtx).active }),
+          input: ({ context }) => ({
+            active: (context as PoolCtx).active,
+            settled: [...Object.keys((context as PoolCtx).items), ...Object.keys((context as PoolCtx).failures)],
+            input: (context as PoolCtx).runInput,
+          }),
           onDone: [
             {
               // Claimed: record it, spawn its worker (TOP-LEVEL spawnChild — the visualize

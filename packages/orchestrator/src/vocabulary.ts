@@ -101,6 +101,27 @@ export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined
   return inputSchemas.get(machine.config);
 }
 
+/**
+ * The door of a wrapper under a parent (ADR-0033). No other door reads a parent's input, so the
+ * wrapper parses it, and the parsed shape is what it uses: defaults are applied and unknown keys
+ * go. A key in `beside` is no one's to send, so it stays out of the parse and rides beside the
+ * result. A value that is wrong is a defect of the parent's Machine: a throw, and its `onError`.
+ *
+ * @param refusal - the start of the error, which says what the refusal saved
+ * @internal
+ */
+export function parsedNestedDoor(
+  door: z.ZodObject,
+  value: Record<string, unknown>,
+  beside: readonly string[],
+  refusal: string,
+): Record<string, unknown> {
+  const kept = Object.entries(value).filter(([key, v]) => beside.includes(key) && v !== undefined);
+  const parsed = door.safeParse(Object.fromEntries(Object.entries(value).filter(([key]) => !beside.includes(key))));
+  if (!parsed.success) throw new Error(`${refusal}: ${parsed.error.message}`);
+  return { ...(parsed.data as Record<string, unknown>), ...Object.fromEntries(kept) };
+}
+
 /** A zod schema, by its shape: the Instance can resolve a zod of its own, so `instanceof` does not
  * tell. */
 export function isZodSchema(value: unknown): boolean {
@@ -187,10 +208,8 @@ export function loadWarningsOf(machine: AnyStateMachine): string[] {
  *
  * Only the root Machine of a run gets it. A Machine that another Machine invokes gets the input
  * that its parent gives it. A `workspace()` passes its input to its body, so the body of a root
- * `workspace()` gets it too: `Workspaced<HostInjectedInput & RunInput, "app">`.
- *
- * The `spec` of a root `workspace()` also gets it, and the type of its input shows it:
- * ``spec: ({ input }) => ({ branch: `fix/${input.instanceId}` })``.
+ * `workspace()` gets it too: `Workspaced<HostInjectedInput & RunInput, "app">`. For example, a cut
+ * can name a branch for each run: `` branch: `fix/${context.instanceId}` ``.
  *
  * It is not the run id. Use it, for example, to give each run a branch of its own.
  *

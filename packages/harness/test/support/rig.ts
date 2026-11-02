@@ -13,13 +13,17 @@
 // Both are SHARED across a file's tests (`reset` rearms them per scenario), so per-scenario
 // servers do not each wait out a keep-alive to close.
 
+import { mkdtempSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Surface } from "../../src/menu.ts";
 
-/** What the Harness container's env holds for the Sandbox token: its Stand-in (ADR-0059). */
-export const SANDBOX_STAND_IN = "jr2-held-JR2_SANDBOX_TOKEN";
+/** The control Stand-in the Harness process holds and sends as its Menu bearer (ADR-0076): secret,
+ * read from its file, never the public fetch Stand-in. */
+export const CONTROL_STAND_IN = "c3RhbmQtaW4tZm9yLXRoZS1jb250cm9sLXRva2VuLTA";
 
 // ─── the scripted provider ───────────────────────────────────────────────────
 
@@ -205,6 +209,8 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
 
 export type FakeSandbox = {
   url: string;
+  /** The same Custodian on a Unix socket, as the control socket under `/run/jr2` is (ADR-0076). */
+  socket: string;
   /** What the next surface read serves — a Machine state change, or a guard that changed its
    * answer, between two Submissions (ADR-0029: the Allowed picks move, the Menu does not). */
   setSurface: (surface: Surface) => void;
@@ -247,6 +253,10 @@ export type FakeSandbox = {
   polls: string[];
   /** The polls whose caller closed the connection before they were answered, since the last `reset`. */
   pollsGone: () => number;
+  /** Each `POST /agents/:iid/notices` (ADR-0062): the ids it says were heard. */
+  acks: string[][];
+  /** The slot each request stated (`X-Jr2-Slot`, ADR-0076), in order. */
+  slots: string[];
   /** Rearm for the next scenario: this surface, live, responding, nothing delivered. */
   reset: (surface: Surface) => void;
   close: () => Promise<void>;
@@ -266,11 +276,14 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
   let pollsGone = 0;
   const delivered: Array<Record<string, unknown>> = [];
   const bearers: string[] = [];
+  const acks: string[][] = [];
+  const slots: string[] = [];
   const server: Server = createServer((req, res) => {
     let raw = "";
     req.on("data", (c: Buffer) => (raw += c));
     req.on("end", () => {
       bearers.push(req.headers.authorization ?? "");
+      slots.push(String(req.headers["x-jr2-slot"] ?? ""));
       if (req.url?.endsWith("/surface")) surfaceReads += 1;
       const json = (status: number, body: unknown) => {
         res.writeHead(status, { "content-type": "application/json" });
@@ -290,6 +303,11 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
           return;
         }
         return json(200, surface);
+      }
+      if (req.method === "POST" && req.url?.endsWith("/notices")) {
+        acks.push((JSON.parse(raw) as { heard: string[] }).heard);
+        res.writeHead(204);
+        return res.end();
       }
       const poll = /\/deliveries\/([^/?]+)/.exec(req.url ?? "");
       if (poll) {
@@ -312,8 +330,13 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     });
   });
   const port = await listen(server);
+  // The control socket (ADR-0076): one more listener, the same answers.
+  const socket = join(mkdtempSync(join(tmpdir(), "jr2-custodian-")), "control.sock");
+  const onSocket: Server = createServer((req, res) => server.emit("request", req, res));
+  await new Promise<void>((resolve) => onSocket.listen(socket, resolve));
   return {
     url: `http://127.0.0.1:${port}`,
+    socket,
     setSurface: (next) => (surface = next),
     killSurface: () => (live = false),
     reviveSurface: () => (live = true),
@@ -322,6 +345,8 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     delivered,
     reads: () => surfaceReads,
     bearers,
+    acks,
+    slots,
     holdDeliveries: () => (holding = true),
     answerWith: (receipt) => (answer = receipt),
     surfaceByRead: (serve) => (byRead = serve),
@@ -342,8 +367,12 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
       surfaceReads = 0;
       delivered.length = 0;
       bearers.length = 0;
+      acks.length = 0;
+      slots.length = 0;
     },
     close: () => {
+      onSocket.closeAllConnections();
+      onSocket.close();
       server.closeAllConnections();
       return close(server);
     },

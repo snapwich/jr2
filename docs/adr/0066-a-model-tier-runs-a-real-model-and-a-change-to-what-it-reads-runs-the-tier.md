@@ -147,6 +147,8 @@ recover, finish — are exercised only one scripted tool call at a time.
   the container before the guard takes the hog, and that trial is void. A claim whose setup the step must race (a Gate
   answered while the model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are
   bounded, and a void past the bound counts against the floor and prints as a void in the failure list, never as a miss.
+  A trial whose own prompt, the one that carries its marker, is not in its kept conversation is void too: the follow
+  lost it, and the calls after another prompt are not the trial's, so they are never read as its miss or its pass.
 - **Scenarios run `workers` at once, set per profile.** Each scenario has its own namespace, so scenarios are
   independent, as `@kind`'s are. The profile's `workers` is how many run at once: `just e2e-model` passes it to cucumber
   as `--parallel` when it is above 1. It is in the profile and not in `cucumber.json`, because its limits are the

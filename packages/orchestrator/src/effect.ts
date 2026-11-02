@@ -44,6 +44,7 @@ import type { ExecOutcome, ExecRead, ExecRequest, SyncAnswer } from "./wire.ts";
 import { bindOpenSecretIn, type EffectorPortFactory, type OpenSecretIn } from "./http-effect.ts";
 import { commandEnvParts, credentialedCommandWith, sandboxEffectorPort, type CommandEnv } from "./sandbox-effect.ts";
 import { open } from "./open.ts";
+import type { AnyWorktreePath, WorktreeOutput } from "./worktree.ts";
 import {
   effectBindingShape,
   openEffectLogic,
@@ -76,30 +77,52 @@ export type Arg<N extends string = string> = { readonly arg: N };
  *
  * @example
  * ```ts
- * import { arg, command, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import {
+ *   arg,
+ *   command,
+ *   fail,
+ *   isReady,
+ *   jr2Setup,
+ *   workspace,
+ *   worktree,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
  *
  * type Input = Workspaced<{ file: string }, "app">;
  *
+ * const lintTree = (context: Input) => `${context.workspace.repos.app}/lint` as const;
+ *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   actors: { lint: command(["npx", "eslint", arg("file")]), fail: fail() },
+ *   actors: { cut: worktree(), lint: command(["npx", "eslint", arg("file")]), fail: fail() },
  * }).createMachine({
  *   id: "lint",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost" },
- *   initial: "lint",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: lintTree(context), branch: "lint" }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "lint" }, { target: "notCut" }],
+ *       },
+ *     },
  *     lint: {
- *       invoke: { src: "lint", input: ({ context }) => ({ file: context.file }), onDone: "done" },
+ *       invoke: {
+ *         src: "lint",
+ *         input: ({ context }) => ({ file: context.file, worktree: lintTree(context) }),
+ *         onDone: "done",
+ *       },
  *     },
  *     done: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
  * export const machine = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: () => ({ branch: "lint" }),
  * });
  * ```
  *
@@ -108,6 +131,13 @@ export type Arg<N extends string = string> = { readonly arg: N };
  * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
  */
 export const arg = <const N extends string>(name: N): Arg<N> => ({ arg: name });
+
+/** What an Effect's input takes: `required` keys, `optional` keys, and exactly one of `oneOf`. */
+export type InputShape = {
+  readonly required: readonly string[];
+  readonly optional: readonly string[];
+  readonly oneOf?: readonly string[];
+};
 
 /** A `command` Effect's plain data. */
 export type CommandParts = {
@@ -124,8 +154,12 @@ export type CommandParts = {
   /** A credentialed command's `pin`: its input names the commit (`{ sha }`, an approved one) in
    * place of the Agent's branch tip (ADR-0067). */
   readonly pin?: true;
-  /** The Repo Slot whose Worktree is the cwd. Needed only where the Workspace carries several. */
-  readonly slot?: string;
+  /** The kit's cut (`worktree()`): its `expect`, static, so that a Chart cannot change it. A command
+   * with this is the kit's program, and its output is a `WorktreeOutput`. */
+  readonly cut?: { readonly expect?: "new" | "existing" };
+  /** Marked by the kit, on a cut alone: a restore or a Harness restart sends it again, under its
+   * id. An author has no such option: a command is at most once (ADR-0067). */
+  readonly idempotent?: true;
   readonly timeoutMs: number;
   /** Characters of the stream's end kept in the output. The full stream goes to the feed. */
   readonly tail: number;
@@ -156,16 +190,15 @@ export type HttpParts = {
   /** Marked by the author: a restore that cannot find the Effect sends it again. */
   readonly idempotent: boolean;
   /** The body is a Worktree file (`body: file(...)`, ADR-0067): the Effect runs in the Sandbox
-   * Effector of the Workspace whose body invokes it. `slot` is the Repo Slot whose Worktree holds
-   * the file — needed only where the Workspace carries several. Absent: a json, text or no body, in
+   * Effector of the Workspace whose body invokes it. The input's `worktree` holds the file. Absent: a json, text or no body, in
    * the Instance Effector. */
-  readonly file?: { readonly slot?: string; readonly contentType?: string };
+  readonly file?: { readonly contentType?: string };
 };
 
 /**
- * A `push` Effect's plain data (ADR-0067, ADR-0051): the Workspace's branch to its Repo Slot's
+ * A `push` Effect's plain data (ADR-0067, ADR-0075): a cut Worktree's branch to its Repo Slot's
  * Binding. `sign`, `squash`, `force` are the author's; `pin` says the Effect's input names the
- * commit (an approved one) instead of the Agent's branch tip.
+ * commit (an approved one) instead of the branch's tip.
  */
 export type PushParts = {
   readonly kind: "push";
@@ -291,10 +324,30 @@ export function targetText(parts: { readonly target: HttpParts["target"] | typeo
  * `customize()` binds it (ADR-0054); and for a dispatch with no input schema: the callee's door is
  * the only check, so nothing here says what it reads (ADR-0071). */
 export function inputKeysOf(parts: EffectParts): string[] | undefined {
-  if (parts.kind === "dispatch") return parts.inputKeys === undefined ? undefined : [...parts.inputKeys];
-  if (parts.kind !== "command") return [...parts.inputKeys];
+  const shape = inputShapeOf(parts);
+  return shape && [...shape.required, ...shape.optional, ...(shape.oneOf ?? [])];
+}
+
+/** The shape of a cut's input. */
+const CUT_SHAPE: InputShape = { required: ["path"], optional: ["from"], oneOf: ["branch", "detach"] };
+
+/** An Effect's input as a Chart's door and its start hold a Chart to it. Undefined where
+ * {@link inputKeysOf} is. `worktree` is optional for a key the Workspace decides: the door makes it
+ * required when it knows that the Workspace has Repo Slots, and a start refuses it then. */
+export function inputShapeOf(parts: EffectParts): InputShape | undefined {
+  if (parts.kind === "dispatch") {
+    return parts.inputKeys === undefined ? undefined : { required: [...parts.inputKeys], optional: [] };
+  }
+  if (parts.kind === "push") return { required: [...parts.inputKeys], optional: [] };
+  if (parts.kind === "http") {
+    return { required: [...parts.inputKeys], optional: parts.file ? ["worktree"] : [] };
+  }
+  if (parts.cut) return CUT_SHAPE;
   if (parts.argv === open) return undefined;
-  return [...parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg])), ...(parts.pin ? ["sha"] : [])];
+  const keys = [...parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg])), ...(parts.pin ? ["sha"] : [])];
+  // A command with an Effect secret runs on a commit of a Worktree, so it names one in each Workspace.
+  const credentialed = (parts.secrets?.length ?? 0) > 0 || parts.openSecret === true;
+  return credentialed ? { required: [...keys, "worktree"], optional: [] } : { required: keys, optional: ["worktree"] };
 }
 
 // --- Output -------------------------------------------------------------------------------------
@@ -303,6 +356,11 @@ export function inputKeysOf(parts: EffectParts): string[] | undefined {
  * For example, the Harness lost the exec, or its state exited while it ran. Route on it. jr2 does
  * not run the Effect again. */
 export type Unknown = { outcome: "unknown"; reason: string };
+
+/** A value of `outcome` that this kit does not give. It stands in the union so that no author can
+ * write an exhaustive check, so that a later outcome is no break: route on what you know, and give
+ * the rest a last arm. */
+export type LaterOutcome = { outcome: "(a later outcome)"; reason?: string };
 
 // `dirty` is a credentialed command's alone (ADR-0067): it runs in the Sandbox Effector against
 // the pinned commit, never the live Worktree.
@@ -321,34 +379,48 @@ export type Unknown = { outcome: "unknown"; reason: string };
  * characters. `dirty` is `true` when a command that names an Effect secret ran against a commit,
  * and the Worktree held changes that it did not see.
  *
+ * The union is open ({@link LaterOutcome}): give the rest a last arm with no guard.
+ *
  * @example
  * ```ts
  * import {
  *   command,
  *   type CommandOutput,
  *   fail,
+ *   isReady,
  *   jr2Setup,
  *   workspace,
+ *   worktree,
  *   type Workspaced,
  * } from "@jr2/orchestrator";
  *
  * type Input = Workspaced<{}, "app">;
+ *
+ * const testTree = (context: Input) => `${context.workspace.repos.app}/test` as const;
  *
  * const passed = (output: CommandOutput): boolean =>
  *   output.outcome === "exited" && output.code === 0;
  *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
- *   actors: { tests: command(["npm", "test"], { timeout: "15m" }), fail: fail() },
+ *   actors: { cut: worktree(), tests: command(["npm", "test"], { timeout: "15m" }), fail: fail() },
  * }).createMachine({
  *   id: "tests",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost" },
- *   initial: "testing",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: testTree(context), branch: "tests" }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "testing" }, { target: "notCut" }],
+ *       },
+ *     },
  *     testing: {
  *       invoke: {
  *         src: "tests",
+ *         input: ({ context }) => ({ worktree: testTree(context) }),
  *         onDone: [
  *           { guard: ({ event }) => passed(event.output), target: "green" },
  *           { target: "red" },
@@ -358,13 +430,13 @@ export type Unknown = { outcome: "unknown"; reason: string };
  *     green: { type: "final" },
  *     // Not a final state: a final state means `done`, and the run ends `failed` here.
  *     red: { invoke: { src: "fail", input: { reason: "npm test did not pass" } } },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
  *
  * export const machine = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: () => ({ branch: "tests" }),
  * });
  * ```
  *
@@ -372,7 +444,7 @@ export type Unknown = { outcome: "unknown"; reason: string };
  * @see docs/guides/run-a-command-or-call-a-url.md
  * @see docs/reference/decisions/0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md
  */
-export type CommandOutput = (ExecOutcome & { dirty?: boolean }) | Unknown;
+export type CommandOutput = (ExecOutcome & { dirty?: boolean }) | Unknown | LaterOutcome;
 
 // Reach is output, as an http Effect's is (ADR-0067): a body a model wrote can be fixed through
 // the Chain, so a refusal is output too.
@@ -390,6 +462,8 @@ export type CommandOutput = (ExecOutcome & { dirty?: boolean }) | Unknown;
  * - `unreachable`: the Orchestrator of the target did not answer. No run started.
  * - `unknown`: jr2 cannot tell if a run started.
  *
+ * The union is open ({@link LaterOutcome}): give the rest a last arm with no guard.
+ *
  * @see docs/concepts/effects.md
  */
 export type DispatchOutput =
@@ -402,7 +476,8 @@ export type DispatchOutput =
     }
   | { outcome: "refused"; status: number; report: string[] }
   | { outcome: "unreachable"; reason: string }
-  | Unknown;
+  | Unknown
+  | LaterOutcome;
 
 // --- The ledger row (persisted in the run's blob, ADR-0007) --------------------------------------
 
@@ -445,15 +520,19 @@ export type EffectRow =
       run?: string;
       at: string;
     }
-  /** `sandbox` and `repo`: the Workspace and the Repo Slot an Effect of the Sandbox Effector ran on
-   * — every later push of its own Workspace and Repo Slot (one branch, one remote) sends its pair,
-   * and the newest push's unfinished sync runs again in that slot's Worktree. */
+  /** `sandbox`, `repo` and `branch`: the Workspace, the Repo Slot and the branch an Effect of the
+   * Sandbox Effector ran on — every later push of its own (slot, branch) sends its pair, and the
+   * newest push's unfinished sync runs again in `worktree`. `cut`: a `worktree()` that settled
+   * `ready`: its path and branch as fields, because a settled row drops its tail. A push, a
+   * credentialed command and a file body read their branch here. */
   | {
       state: "settled";
       kind: EffectParts["kind"];
       slot: string;
       sandbox?: string;
       repo?: string;
+      branch?: string;
+      cut?: { path: string; branch: string | null };
       output: unknown;
       at: string;
     }
@@ -530,19 +609,19 @@ export type PushedRow = { published: string; source: string; sync?: SyncAnswer["
   unknown
 >;
 
-/** The ledger's last push of a Workspace's Repo Slot that published: its row, by `at`, never this
- * Effect's (`self`). A Workspace with two Repo Slots has two branches on two remotes, so two pairs.
- */
+/** The ledger's last push of a (slot, branch) of a Workspace that published: its row, by `at`, never
+ * this Effect's (`self`). Each (slot, branch) has its own pairs: one branch on one remote. */
 export function lastPushOf(
   rows: Readonly<Record<string, EffectRow>>,
   sandbox: string,
   repo: string,
+  branch: string,
   self?: string,
 ): { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined {
   let best: { rowId: string; row: Extract<EffectRow, { state: "settled" }>; output: PushedRow } | undefined;
   for (const [rowId, row] of Object.entries(rows)) {
     if (rowId === self || row.state !== "settled" || row.kind !== "push") continue;
-    if (row.sandbox !== sandbox || row.repo !== repo) continue;
+    if (row.sandbox !== sandbox || row.repo !== repo || row.branch !== branch) continue;
     const output = row.output as Partial<PushedRow> & { outcome?: unknown };
     if (output?.outcome !== "pushed" || typeof output.published !== "string" || typeof output.source !== "string") {
       continue;
@@ -552,20 +631,21 @@ export function lastPushOf(
   return best;
 }
 
-/** Every pair the ledger holds for a Workspace's Repo Slot (ADR-0067): each settled push row that
- * published, oldest first by `at`, never this Effect's (`self`) — its published commit, its source,
- * and its own `squashed`. What a push start carries, so the Effector sees every push's pair. */
+/** Every pair the ledger holds for a (slot, branch) of a Workspace (ADR-0067): each settled push row
+ * that published, oldest first by `at`, never this Effect's (`self`) — its published commit, its
+ * source, and its own `squashed`. What a push start carries, so the Effector sees every push's pair. */
 export function pushPairsOf(
   rows: Readonly<Record<string, EffectRow>>,
   sandbox: string,
   repo: string,
+  branch: string,
   self?: string,
 ): Array<{ published: string; source: string; squashed?: "signed" | "unsigned" }> {
   const found: Array<{ at: string; pair: { published: string; source: string; squashed?: "signed" | "unsigned" } }> =
     [];
   for (const [rowId, row] of Object.entries(rows)) {
     if (rowId === self || row.state !== "settled" || row.kind !== "push") continue;
-    if (row.sandbox !== sandbox || row.repo !== repo) continue;
+    if (row.sandbox !== sandbox || row.repo !== repo || row.branch !== branch) continue;
     const output = row.output as Partial<PushedRow> & { outcome?: unknown; squashed?: unknown };
     if (output?.outcome !== "pushed" || typeof output.published !== "string" || typeof output.source !== "string") {
       continue;
@@ -579,19 +659,39 @@ export function pushPairsOf(
   return found.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).map((f) => f.pair);
 }
 
-/** The row id of each Repo Slot's newest push that published (`lastPushOf`), over the ledger. */
+/** The row id of each (slot, branch)'s newest push that published (`lastPushOf`), over the ledger. */
 function newestPushesOf(effects: Readonly<Record<string, EffectRow>>): Set<string> {
   const ids = new Set<string>();
   const seen = new Set<string>();
   for (const row of Object.values(effects)) {
     if (row.state !== "settled" || row.kind !== "push" || row.sandbox === undefined || row.repo === undefined) continue;
-    const key = JSON.stringify([row.sandbox, row.repo]);
+    if (row.branch === undefined) continue;
+    const key = JSON.stringify([row.sandbox, row.repo, row.branch]);
     if (seen.has(key)) continue;
     seen.add(key);
-    const last = lastPushOf(effects, row.sandbox, row.repo);
+    const last = lastPushOf(effects, row.sandbox, row.repo, row.branch);
     if (last !== undefined) ids.add(last.rowId);
   }
   return ids;
+}
+
+/** The cut that made `path` in this Sandbox: the newest settled `ready` row, whatever its Repo Slot.
+ * What a push, a credentialed command and a file body read. A row of another Sandbox says nothing
+ * of this one: a re-provision has an empty `/work`. */
+export function cutRowOf(
+  rows: Readonly<Record<string, EffectRow>>,
+  sandbox: string,
+  path: unknown,
+): { repo: string; path: string; branch: string | null } | undefined {
+  let best: { at: string; repo: string; path: string; branch: string | null } | undefined;
+  for (const row of Object.values(rows)) {
+    if (row.state !== "settled" || row.cut === undefined || row.sandbox !== sandbox) continue;
+    if (row.cut.path !== path || row.repo === undefined) continue;
+    if (best === undefined || row.at > best.at) {
+      best = { at: row.at, repo: row.repo, path: row.cut.path, branch: row.cut.branch };
+    }
+  }
+  return best;
 }
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
@@ -602,7 +702,7 @@ export type EffectMarker = {
   effect: string;
   stage: "started" | "output" | "settled" | "aborted";
   text?: string;
-  output?: CommandOutput | HttpOutput | DispatchOutput;
+  output?: CommandOutput | WorktreeOutput | HttpOutput | DispatchOutput;
 };
 
 // --- The port -----------------------------------------------------------------------------------
@@ -643,19 +743,33 @@ export type EffectLogic<I, O> = ActorLogic<EffectSnapshot<O, I>, EventObject, I>
 type ArgNames<A extends readonly unknown[]> = A[number] extends infer E ? (E extends Arg<infer N> ? N : never) : never;
 /** A command's input: one string per argv slot, and with `pin` the approved commit (`{ sha }`);
  * none when there is neither. */
-export type CommandInput<A extends readonly unknown[], P = false> = [
+export type CommandInput<A extends readonly unknown[], P = false, Opt = unknown> = [
   ArgNames<A> | ([P] extends [true] ? "sha" : never),
 ] extends [never]
-  ? void
-  : { [K in ArgNames<A> | ([P] extends [true] ? "sha" : never)]: string };
+  ? (WorktreeKey<Opt> & NotWorktreeKeys) | ([Opt] extends [{ readonly env: object }] ? never : void)
+  : { [K in ArgNames<A> | ([P] extends [true] ? "sha" : never)]: string } & WorktreeKey<Opt> &
+      Omit<NotWorktreeKeys, ArgNames<A>>;
+
+// A command takes its Worktree in the invoke's input. `jr2Setup` makes the key required under a body with Repo Slots, and drops it under a body with
+// none. A credentialed command runs against one commit of a Worktree, so there it is always required.
+/** @internal */
+export type WorktreeKey<Opt> = [Opt] extends [{ readonly env: object }]
+  ? { worktree: AnyWorktreePath }
+  : { worktree?: AnyWorktreePath };
+
+/** The keys of a Turn and a cut, refused by name on an Effect's input: a mapper's excess key is no
+ * compile error, and the Worktree would be lost.
+ * @internal */
+export type NotWorktreeKeys = { cwd?: never; path?: never; branch?: never };
 
 // An Open argv's slots are the composer's (ADR-0054), so any key is one string — what the
 // package's invoke hands it, read by the argv the composer binds (`argvOf`).
 /** The input of a `command(open)`: a string for each `arg()` of the argv that the Instance binds,
  * and with `pin`, the commit (`{ sha }`). The compiler cannot check the names. When the input has
  * no string for an `arg()`, the Effect fails when it starts. */
-export type OpenCommandInput<P = false> = Readonly<Record<string, string>> &
-  ([P] extends [true] ? { sha: string } : unknown);
+export type OpenCommandInput<P = false, Opt = unknown> = Readonly<Record<string, string>> &
+  ([P] extends [true] ? { sha: string } : unknown) &
+  WorktreeKey<Opt>;
 
 /** A length of time: a positive number and a unit, `s`, `m` or `h`. For example `"90s"`, `"10m"`
  * or `"1h"`. */
@@ -664,28 +778,6 @@ export type Duration = `${number}s` | `${number}m` | `${number}h`;
 /** The options of `command()`: the Repo Slot it runs in, how long it can run, how much of its
  * output it keeps, its Effect secrets, and the commit it runs against. */
 export type CommandOptions = {
-  /**
-   * The Repo Slot whose Worktree is the working directory of the command. Write it only when the
-   * Workspace has more than one Repo Slot. In a Workspace with no Repo Slot, the command starts in
-   * `/work`, the folder that the steps of the Workspace share.
-   *
-   * The command starts in the root of that Worktree. To run it in a subfolder, give the path as an
-   * argument, or write `["sh", "-c", "cd <dir> && <program>"]`.
-   *
-   * When it starts, it refuses:
-   * - no `slot` under a Workspace with more than one Repo Slot: `command "<slot>" runs under a
-   *   Workspace carrying more than one Repo Slot (<slots>) and names none — say which Worktree it
-   *   runs in: command(argv, { slot: "<slot>" }) (ADR-0051)`. When `env` names an Effect secret,
-   *   the text is `command "<slot>" runs under a Workspace carrying more than one Repo Slot
-   *   (<slots>) — say which: { slot: "<slot>" } (ADR-0051)`.
-   * - with an Effect secret in `env`, a Workspace with no Repo Slot: `command "<slot>" runs under
-   *   a Workspace with no Repo Slot: a command with an Effect secret runs against one commit of a
-   *   Repo Slot's branch, and there is none — declare a Repo Slot, or name no secret in its env, and
-   *   it runs in /work beside the Agent (ADR-0051)`.
-   * - a `slot` that the Workspace does not have: `command "<slot>" names Repo Slot "<name>", which
-   *   its Workspace does not carry (<slots>)`.
-   */
-  slot?: string;
   /**
    * How long the command can run: a number and a unit, such as `"90s"`, `"10m"` or `"1h"`.
    * Default `"10m"`. When the time ends, jr2 kills the process group, and the output is
@@ -735,10 +827,14 @@ export type EnvOpenParts<Opt> = Opt extends { readonly env: infer E }
 
 /**
  * Why an Effect kind cannot run in a Workspace with no Repo Slot (ADR-0051, ADR-0067), or undefined
- * when it can: a `push` and a credentialed `command` run on a commit of a slot's branch, and that
- * Workspace has none. The invoke and the `jr2 up` walk refuse with the same words.
+ * when it can: a `push` and a credentialed `command` run on a commit of a slot's branch, and a
+ * `worktree` makes a Worktree of a slot's clone, and that Workspace has none. The invoke and the
+ * `jr2 up` walk refuse with the same words.
  */
 export function needsASlot(kind: string): string | undefined {
+  if (kind === "worktree") {
+    return 'a cut makes a Worktree of a Repo Slot, and there is none — declare one: repos: { app: "<url>" }';
+  }
   if (kind === "push")
     return 'a push publishes a Repo Slot\'s branch, and there is none — declare one: repos: { app: "<url>" }';
   if (kind === "command") {
@@ -773,7 +869,7 @@ export function commandWith<const Opt extends CommandOptions = CommandOptions>(
   argv: typeof open,
   options?: Opt,
   effectorPorts?: EffectorPortFactory,
-): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv" | EnvOpenParts<Opt>>;
+): EffectLogic<OpenCommandInput<Opt["pin"], Opt>, CommandOutput> & OpenEffect<"argv" | EnvOpenParts<Opt>>;
 export function commandWith<
   const A extends readonly (string | Arg)[],
   const Opt extends CommandOptions = CommandOptions,
@@ -782,12 +878,15 @@ export function commandWith<
   argv: A,
   options?: Opt,
   effectorPorts?: EffectorPortFactory,
-): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
+  cut?: CommandParts["cut"],
+): EffectLogic<CommandInput<A, Opt["pin"], Opt>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
 export function commandWith(
   portFactory: ExecPortFactory,
   argv: readonly (string | Arg)[] | typeof open,
   options: CommandOptions = {},
   effectorPorts: EffectorPortFactory = sandboxEffectorPort,
+  // `worktree()` alone passes this: an author's command is at most once.
+  cut?: CommandParts["cut"],
   // The implementation of the overloads above: each one states the input type.
 ): EffectLogic<any, CommandOutput> {
   if (argv === open) {
@@ -814,9 +913,9 @@ export function commandWith(
     argv: [...argv],
     timeoutMs: options.timeout === undefined ? DEFAULT_TIMEOUT_MS : parseDuration(options.timeout),
     tail: options.tail ?? DEFAULT_TAIL,
-    ...(options.slot !== undefined ? { slot: options.slot } : {}),
     ...(options.env !== undefined && Object.keys(options.env).length > 0 ? commandEnvParts(options.env) : {}),
     ...(options.pin === true ? { pin: true as const } : {}),
+    ...(cut !== undefined ? { cut, idempotent: true as const } : {}),
   };
   if (parts.pin && (parts.secrets?.length ?? 0) === 0 && !parts.openSecret) {
     // A command that names no secret runs in the Harness container, in the live Worktree: there
@@ -844,7 +943,7 @@ export function commandWith(
     ) as unknown as EffectLogic<unknown, CommandOutput>;
   }
   type I = unknown;
-  type O = CommandOutput;
+  type O = CommandOutput | WorktreeOutput;
   const logic: ActorLogic<EffectSnapshot<O, I>, EventObject, I> = {
     getInitialSnapshot: (_scope, input) => ({
       status: "active",
@@ -878,11 +977,62 @@ export function commandWith(
     },
     getPersistedSnapshot: (snapshot) => snapshot,
   };
-  return Object.assign(logic, { effect: parts });
+  return Object.assign(logic, { effect: parts }) as unknown as EffectLogic<any, CommandOutput>;
 }
 
 /** The slot's name as its parent invoked it — what the ledger and the feed call the Effect. */
 const slotOf = (self: AnyActorRef): string => (typeof self.src === "string" ? self.src : self.id);
+
+/** How many times a marked Effect goes out again after a Harness that lost it. Bounded, so that a
+ * Harness in a crash loop ends the wait: the Effect settles `unknown`, and the Machine routes. */
+const RESENDS = 3;
+
+/** What a cut's program answers: its last line. Anything else is a cut that did not end. */
+function cutOutputOf(raw: CommandOutput): WorktreeOutput {
+  if (raw.outcome === "unknown") return raw as Unknown;
+  const tail = "tail" in raw && typeof raw.tail === "string" ? raw.tail : "";
+  if (raw.outcome === "exited" && raw.code === 0) {
+    try {
+      const answer = JSON.parse(tail.trim().split("\n").pop() ?? "") as { outcome?: unknown };
+      if (answer.outcome === "ready" || answer.outcome === "refused") return answer as WorktreeOutput;
+    } catch {
+      // Falls through: the program said no answer.
+    }
+  }
+  return { outcome: "unknown", reason: `the cut ended ${raw.outcome} with no answer: ${tail.slice(-400)}` };
+}
+
+/** Why a cut's input cannot go to the Harness, or undefined. The door checked a Chart's literals; a
+ * reference, a pick param or a mapper can still say this. No exec, no fetch. */
+function cutFaultOf(input: unknown, ambient: AmbientHandles): string | undefined {
+  const given = (input ?? {}) as { path?: unknown; branch?: unknown; detach?: unknown; from?: unknown };
+  const fault = worktreePathFault(given.path, ambient, { cut: true });
+  if (fault !== undefined) return fault;
+  if ((given.branch === undefined) === (given.detach === undefined))
+    return "a cut names a branch, or a commit in `detach`";
+  if (given.detach !== undefined && given.from !== undefined) return "a detached cut takes no `from`";
+  for (const key of ["branch", "detach", "from"] as const) {
+    if (given[key] !== undefined && typeof given[key] !== "string") return `a cut's \`${key}\` is a string`;
+  }
+  return undefined;
+}
+
+/** The cut's one argument: its input, its id (a re-send answers the first `found`), its static
+ * `expect`, and the base, sent each time, so that no checkout of an Agent's can move it. */
+function cutRequestOf(id: string, input: unknown, parts: CommandParts, ambient: AmbientHandles): string {
+  const given = (input ?? {}) as { path: string; branch?: string; detach?: string; from?: string };
+  const slot = given.path.split("/")[2]!;
+  const base = ambient.bases?.[slot];
+  return JSON.stringify({
+    id,
+    path: given.path,
+    ...(given.branch !== undefined ? { branch: given.branch } : {}),
+    ...(given.detach !== undefined ? { detach: given.detach } : {}),
+    ...(given.from !== undefined ? { from: given.from } : {}),
+    ...(given.branch !== undefined && parts.cut?.expect ? { expect: parts.cut.expect } : {}),
+    ...(base !== undefined ? { base } : {}),
+  });
+}
 
 /** Run, re-attach to, or deliver one Effect, by its ledger row (see the module header). */
 async function drive<I, O>(
@@ -900,14 +1050,30 @@ async function drive<I, O>(
   const now = (): string => new Date().toISOString();
   const mark = (marker: Omit<EffectMarker, "kind" | "slot" | "effect">): void =>
     binding?.marker?.({ kind: "effect", slot, effect: id, ...marker });
-  const settle = (output: CommandOutput): void => {
-    if (signal.aborted || self.getSnapshot().status !== "active") return;
-    // The settled row first, saved at the write: a restart before the transition is saved delivers
-    // this output, and runs nothing.
-    binding?.recordEffect?.(id, { state: "settled", kind: parts.kind, slot, output, at: now() });
-    mark({ stage: "settled", output });
-    self.send({ type: "jr2.effect.settle", output } satisfies Settle);
-  };
+  /** A settled row of an exec. `sandbox` is the row's own on a restore: the Workspace it ran in. */
+  const settleIn =
+    (sandbox: string | undefined) =>
+    (raw: CommandOutput | WorktreeOutput): void => {
+      if (signal.aborted || self.getSnapshot().status !== "active") return;
+      const output = parts.cut && raw.outcome !== "refused" ? cutOutputOf(raw as CommandOutput) : raw;
+      // The settled row first, saved at the write: a restart before the transition is saved delivers
+      // this output, and runs nothing. A `ready` cut's row keeps its fields: a push reads them.
+      const cutRow =
+        parts.cut && output.outcome === "ready"
+          ? { sandbox, repo: output.slot, cut: { path: output.path, branch: output.branch } }
+          : {};
+      binding?.recordEffect?.(id, {
+        state: "settled",
+        kind: parts.kind,
+        slot,
+        ...(cutRow as object),
+        output,
+        at: now(),
+      });
+      mark({ stage: "settled", output });
+      self.send({ type: "jr2.effect.settle", output } satisfies Settle);
+    };
+  const settle = settleIn(undefined);
 
   const row = binding?.effectRow?.(id);
   if (row?.state === "settled") {
@@ -923,13 +1089,14 @@ async function drive<I, O>(
     return;
   }
   if (row?.state === "intent" && row.kind === "command" && "endpoint" in row) {
-    // In flight at an Orchestrator restart: re-attach by id, or settle `unknown`. Never run again.
+    // In flight at an Orchestrator restart: re-attach by id, or settle `unknown`. Never run again,
+    // unless the kit marked it: a cut goes on below, under the same id.
     const port = portFactory(row.endpoint, binding?.harnessBearer?.(row.placement));
     run.port = port;
     run.started = true;
     const first = await retrying(() => port.read(id, undefined, signal), signal);
     if (signal.aborted) return;
-    if (first === undefined) {
+    if (first === undefined && !parts.idempotent) {
       const output: Unknown = {
         outcome: "unknown",
         reason: "it was running when the Orchestrator restarted, and the Harness no longer knows it; not run again",
@@ -937,8 +1104,11 @@ async function drive<I, O>(
       settle(output);
       return;
     }
-    await follow(port, id, first, signal, mark, settle);
-    return;
+    if (first !== undefined) {
+      const lost = await follow(port, id, first, signal, mark, settleIn(row.placement), parts.idempotent === true);
+      if (!lost) return;
+    }
+    mark({ stage: "started", text: "sent again: the Harness lost it, and a cut is idempotent" });
   }
 
   // Fresh: nothing was sent. Where it runs is the enclosing Workspace's Harness — refused outside one.
@@ -949,9 +1119,43 @@ async function drive<I, O>(
         `workspace() — invoke it from a Workspace's body (ADR-0067)`,
     );
   }
+  const settled = settleIn(ambient.sandbox);
+  // A bad Worktree is a word an Agent or a Chart can say, so it is output (ADR-0067), in the form a
+  // command that could not start has: exited 127, with the reason in the tail. A key that no one
+  // wrote is a defect of the Machine: a throw, and `onError`.
+  const worktree = (snapshot.input as { worktree?: unknown } | undefined | void)?.worktree;
+  if (parts.cut) {
+    if (Object.keys(ambient.repos).length === 0) {
+      throw new Error(
+        `worktree "${slot}" runs under a Workspace with no Repo Slot: ${needsASlot("worktree")} (ADR-0075)`,
+      );
+    }
+    const fault = cutFaultOf(snapshot.input, ambient);
+    if (fault !== undefined) {
+      settled({ outcome: "refused", reason: fault });
+      return;
+    }
+  } else if (worktree === undefined) {
+    if (Object.keys(ambient.repos).length > 0) {
+      throw new Error(
+        `command "${slot}" runs under a Workspace with Repo Slots (${Object.keys(ambient.repos).join(", ")}) and its ` +
+          "input names no `worktree`: say which, a Worktree that a cut gave or `<slot>/default`",
+      );
+    }
+  } else {
+    const fault = worktreePathFault(worktree, ambient);
+    if (fault !== undefined) {
+      settled({ outcome: "exited", code: 127, tail: `jr2: ${fault}; nothing ran\n` });
+      return;
+    }
+  }
   const req: ExecRequest = {
-    argv: argvOf(slot, parts, snapshot.input),
-    ...cwdOf(slot, parts, ambient),
+    argv: parts.cut
+      ? [...(parts.argv as string[]), cutRequestOf(id, snapshot.input, parts, ambient)]
+      : argvOf(slot, parts, snapshot.input),
+    // Named, never left to the Harness: a spawn with no cwd runs in the image's own WORKDIR.
+    cwd: parts.cut ? WORK_ROOT : ((worktree as string | undefined) ?? WORK_ROOT),
+    ...(!parts.cut && worktree !== undefined ? { root: true as const } : {}),
     timeoutMs: parts.timeoutMs,
     tail: parts.tail,
   };
@@ -969,26 +1173,38 @@ async function drive<I, O>(
   });
   run.started = true;
   mark({ stage: "started", text: req.argv.join(" ") });
-  const sent = await startOnce(port, id, req, signal);
-  if (signal.aborted) return;
-  const first = await retrying(() => port.read(id, 0, signal), signal);
-  if (signal.aborted) return;
-  if (first === undefined) {
-    if (sent === "uncertain") {
-      // The start may still be on its way to the Harness that answers now: a kill keeps it from
-      // running there (exec.ts keeps an unknown id killed). Best effort — `unknown` either way.
-      void killUntilKept(port, id, parts.timeoutMs).catch(() => {});
+  // One pass for every Effect but the kit's cut: a Harness that restarted knows no id, and a start
+  // that may have reached it is never sent again. A cut goes out again: it is idempotent.
+  const passes = parts.idempotent ? RESENDS + 1 : 1;
+  for (let pass = 1; pass <= passes; pass++) {
+    const sent = await startOnce(port, id, req, signal);
+    if (signal.aborted) return;
+    const first = await retrying(() => port.read(id, 0, signal), signal);
+    if (signal.aborted) return;
+    const last = pass === passes;
+    if (first === undefined) {
+      if (!last) {
+        mark({ stage: "started", text: "sent again: the Harness restarted, and a cut is idempotent" });
+        continue;
+      }
+      if (sent === "uncertain" && !parts.idempotent) {
+        // The start may still be on its way to the Harness that answers now: a kill keeps it from
+        // running there (exec.ts keeps an unknown id killed). Best effort — `unknown` either way.
+        void killUntilKept(port, id, parts.timeoutMs).catch(() => {});
+      }
+      settled({
+        outcome: "unknown",
+        reason:
+          sent === "uncertain"
+            ? "its start may have reached the Harness, which no longer knows it (it restarted); not run again"
+            : "the Harness lost it after it started (it restarted); not run again",
+      });
+      return;
     }
-    settle({
-      outcome: "unknown",
-      reason:
-        sent === "uncertain"
-          ? "its start may have reached the Harness, which no longer knows it (it restarted); not run again"
-          : "the Harness lost it after it started (it restarted); not run again",
-    });
-    return;
+    const lost = await follow(port, id, first, signal, mark, settled, !last);
+    if (!lost) return;
+    mark({ stage: "started", text: "sent again: the Harness lost it, and a cut is idempotent" });
   }
-  await follow(port, id, first, signal, mark, settle);
 }
 
 /**
@@ -1018,7 +1234,8 @@ async function startOnce(
   }
 }
 
-/** Read the exec to its end: each chunk of stream to the feed, the output to the Machine. */
+/** Read the exec to its end: each chunk of stream to the feed, the output to the Machine. With
+ * `again`, a Harness that lost it settles nothing: the answer is true, and the caller sends it. */
 async function follow(
   port: ExecPort,
   id: string,
@@ -1026,22 +1243,24 @@ async function follow(
   signal: AbortSignal,
   mark: (marker: Omit<EffectMarker, "kind" | "slot" | "effect">) => void,
   settle: (output: CommandOutput) => void,
-): Promise<void> {
+  again = false,
+): Promise<boolean> {
   let read: ExecRead | undefined = first;
   for (;;) {
     if (read === undefined) {
+      if (again) return true;
       settle({ outcome: "unknown", reason: "the Harness lost it while it ran (it restarted); not run again" });
-      return;
+      return false;
     }
     if (read.stream) mark({ stage: "output", text: read.stream });
     if (read.state === "settled" && read.output) {
       settle(read.output);
       void port.forget(id).catch(() => {});
-      return;
+      return false;
     }
     const offset: number = read.next;
     read = await retrying(() => port.read(id, offset, signal), signal);
-    if (signal.aborted) return;
+    if (signal.aborted) return false;
   }
 }
 
@@ -1146,30 +1365,27 @@ function argvOf(slot: string, parts: CommandParts, input: unknown): string[] {
 }
 
 /**
- * The cwd: a Repo Slot's Worktree (ADR-0051). Named by `slot`, or the one slot where the Workspace
- * carries one; a Workspace with none runs it in `/work`, which its steps share. Named, never left to
- * the Harness: a spawn with no cwd runs in the Sandbox Image's own `WORKDIR`, which is the image's.
- * Several and none named is refused, as a Turn's Frame is (ADR-0057): the kit gives no slot a
- * meaning.
+ * Why `path` is not a Worktree of this Workspace, or undefined when it is. Exactly
+ * `/work/<slot>/<name>`, of one of its Repo Slots, one segment that starts with neither `.` nor `-`.
+ * `default` is a Worktree (the clone), and with `cut` it is not one a cut makes.
  */
-function cwdOf(slot: string, parts: CommandParts, ambient: AmbientHandles): { cwd?: string } {
-  const slots = Object.keys(ambient.repos);
-  if (parts.slot !== undefined) {
-    const cwd = ambient.repos[parts.slot];
-    if (cwd === undefined) {
-      throw new Error(
-        `command "${slot}" names Repo Slot "${parts.slot}", which its Workspace does not carry ` +
-          `(${slots.join(", ") || "none"})`,
-      );
-    }
-    return { cwd };
+export function worktreePathFault(
+  path: unknown,
+  ambient: AmbientHandles,
+  opts: { cut?: boolean } = {},
+): string | undefined {
+  const match = typeof path === "string" ? path.match(/^\/work\/([^/]+)\/([^/]+)$/) : null;
+  if (match === null) {
+    return `${JSON.stringify(path)} is not a Worktree path: /work/<slot>/<name>, with one segment in <name>`;
   }
-  if (slots.length === 0) return { cwd: WORK_ROOT };
-  if (slots.length === 1) return { cwd: ambient.repos[slots[0]!]! };
-  throw new Error(
-    `command "${slot}" runs under a Workspace carrying more than one Repo Slot (${slots.join(", ")}) and names ` +
-      `none — say which Worktree it runs in: command(argv, { slot: "<slot>" }) (ADR-0051)`,
-  );
+  const [, slot, name] = match as unknown as [string, string, string];
+  if (name.startsWith(".") || name.startsWith("-")) return `"${path}": a Worktree's name starts with neither . nor -`;
+  if (opts.cut && name === "default") return `"${path}" is the clone: it stays as the attach left it; cut a sibling`;
+  const slots = Object.keys(ambient.repos);
+  if (!slots.includes(slot)) {
+    return `"${path}" names Repo Slot "${slot}", which its Workspace does not carry (${slots.join(", ") || "none"})`;
+  }
+  return undefined;
 }
 
 /** Ask again on a transport failure, with backoff, until it answers or the Effect stops. For a

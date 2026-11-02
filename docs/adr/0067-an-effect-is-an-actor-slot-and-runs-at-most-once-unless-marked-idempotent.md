@@ -3,9 +3,11 @@
 An Effect is work a Machine does outside itself. A Machine already runs Agents and Gates as actors (ADR-0049); work such
 as running the tests had no place of its own, so an author either asked an Agent to do it (and trusted its word) or
 wrote a raw xstate promise that a restart ran again. jr2 builds four kinds: `command`, run a program in the Workspace;
-`http`, call a URL — with a JSON or text body, or a Worktree file as its body; `push`, push the Workspace's branch to
-its Repo Slot's Binding; and `dispatch`, start a run of a registered Workflow, on this Orchestrator or another's
-([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). An Effect that holds a secret runs in an Effector
+`http`, call a URL — with a JSON or text body, or a Worktree file as its body; `push`, push a Worktree's branch to its
+Repo Slot's Binding; and `dispatch`, start a run of a registered Workflow, on this Orchestrator or another's
+([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). A fifth, `worktree()`, is a kit Effect on the
+`command` machinery that cuts a Worktree ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)).
+An Effect that holds a secret runs in an Effector
 ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). A `command` whose env names a secret —
 the credentialed `command` — runs there too, its child confined (below). A `dispatch` with no target runs in the
 Orchestrator's own process, the one Effect that does: it starts the run through the run host and holds no secret.
@@ -15,20 +17,20 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
 - **An Effect is an actor slot beside `agent()`.** `actors: { tests: command(["pnpm", "test"]) }`, invoked as
   `src: "tests"`, with an `onDone` that routes on its output. xstate gives the rest: the Effect stops when its state
   exits, its input persists with the snapshot, a `src` typo is a compile error, and `.provide()` is the unit-test seam.
-  The slot carries its parts as plain data — kind, placement, timeout; a `command`'s argv, Repo Slot and the secrets its
-  env names; an `http` Effect's method, fixed host, the names of the secrets it names and whether its body is a Worktree
-  file; a `push`'s `pin`, `sign`, `squash` and `force` — which `jr2 up` prints and the Machine doc carries, read without
-  running anything. A packaged Machine may leave an `http` url (whatever its body) or a `command`'s argv Open (`open` in
-  its place), and the name of one secret its auth, a header or a command's env names (`secret(open)`; never in a url),
-  for the composer to bind once with `customize(machine, { effects: { <slot>: { url } | { argv } | { secret } } })` —
-  one object with both keys for an Effect with two Open parts
-  ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); the slot then carries the
-  Effect built again with the bound parts, and an Effect still Open runs nothing: its state's `onError`. An Effect
-  written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the slot form in the message:
-  xstate gives it a generated key that moves when a state is renamed, so the ledger, the report and the Machine doc
-  would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not reach it. The same rule holds
-  for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`, and every Effect kind is one (the brand
-  `isEffect` reads).
+  The slot carries its parts as plain data — kind, placement, timeout; a `command`'s argv and the secrets its env names;
+  an `http` Effect's method, fixed host, the names of the secrets it names and whether its body is a Worktree file; a
+  `push`'s `pin`, `sign`, `squash`, `force` and `slot`; a cut's `expect` — which `jr2 up` prints and the Machine doc
+  carries, read without running anything. A packaged Machine may leave an `http` url (whatever its body) or a
+  `command`'s argv Open (`open` in its place), and the name of one secret its auth, a header or a command's env names
+  (`secret(open)`; never in a url), for the composer to bind once with
+  `customize(machine, { effects: { <slot>: { url } | { argv } | { secret } } })` — one object with both keys for an
+  Effect with two Open parts ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md));
+  the slot then carries the Effect built again with the bound parts, and an Effect still Open runs nothing: its state's
+  `onError`. An Effect written inline (`invoke: { src: http({...}) }`) is refused at build and at load, with the slot
+  form in the message: xstate gives it a generated key that moves when a state is renamed, so the ledger, the report and
+  the Machine doc would name it by a number, and `customize()` — `provide`, keyed on `actors` — could not reach it. The
+  same rule holds for `agent()` and `workspace()` (ADR-0049): a Part is a key of `actors`, and every Effect kind is one
+  (the brand `isEffect` reads).
 - **Between a pick and its work: `fromPick`, `paramsOf`, `answer`.** All optional; a plain mapper is legal.
   `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
   `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security
@@ -51,7 +53,7 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   is written below (on a state's entry or exit, or on a transition of a state, at or below that Agent's state). On a
   transition below no Agent's state it shapes the pick of the Agent whose event took the transition — the sender of a
   pick, or the Agent whose pick started the child whose done or error event it is — and the other Agent's pick keeps its
-  default answer; when one Agent slot is invoked in two regions, it shapes the pick at the same invoke as the pick that
+  default answer; when one Agent slot is invoked by two states, it shapes the pick at the same invoke as the pick that
   sent the event or started the child, and none when that pick is not being answered; an event that names no Agent
   shapes the pick in its own send, and outside one shapes no pick while two Agents' states are active; on an entry or an
   exit below no Agent's state it sets nothing. One action object written in several places runs from each by that
@@ -80,24 +82,35 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). There is no `placement:` key and no kind per
   placement: naming a secret places a command, the body places an `http`, and the target places a `dispatch` — one name
   per thing, so there is no `upload` kind beside it (ADR-0068).
-- **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a child of the
-  Harness process: the Agent's user, the Sandbox Image's tools, the same Stand-ins as the Agent's `bash` (ADR-0059), and
-  no credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route
-  (ADR-0058); the Instance Harness holds no Workspace and refuses it (ADR-0031). Outside a `workspace()` a command is
-  refused at invoke. Its cwd is a Repo Slot's Worktree: the one slot, or the slot it names (`slot`); several and none
-  named is refused (ADR-0051). In a Workspace with no Repo Slot its cwd is `/work`, which the Workspace's steps share —
-  named in the start, never left to the Harness, whose own cwd is the Sandbox Image's `WORKDIR`.
+- **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a confined child of
+  the Harness process ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)): the
+  Agent's user, the Sandbox Image's tools, the same confined env and Stand-ins as the Agent's `bash` (ADR-0059), and no
+  credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route (ADR-0058);
+  the Instance Harness holds no Workspace and refuses it (ADR-0031). Outside a `workspace()` a command is refused at
+  invoke. Its cwd is the Worktree its input names (`worktree`), which is required under Repo Slots, because a Workspace
+  that only clones has no Worktree for a default to name (ADR-0075). In a Workspace with no Repo Slot its cwd is
+  `/work`, which the Workspace's steps share — named in the start, never left to the Harness, whose own cwd is the
+  Sandbox Image's `WORKDIR`.
+- **`worktree()` runs on the `command` machinery.** `actors: { cut: worktree({ expect? }) }`, with the input
+  `{ path, branch, from? }` or `{ path, detach }`: a kit program in the Harness container, its git confined (ADR-0076),
+  no new wire kind, marked idempotent. Its outcomes are `ready | refused | unknown`, and its output is the contract in
+  ADR-0075. Each thing that an Agent's word can cause settles `refused`, with nothing changed, and never goes to
+  `onError`. A settled `ready` row in the ledger holds the cut's Repo Slot, path and branch, and it is the one thing a
+  `push`, a credentialed `command` and an `http` file body read for their target.
 - **Every outcome is output**: `exited | timeout | killed | unknown` for a `command` (`killed` with the signal that
   ended it; a stopped credentialed command's is `exited` with the stop's signal, D1);
   `response | unreachable | refused | unknown` for an `http` Effect; `pushed | rejected | diverged | unknown` for a
-  `push`. A command not found is `exited` 127. A start over the bytes an Effector reads (ADR-0068) is sent nowhere and
-  settles as its kind's own outcome — an `http` `refused`, a `push` `rejected` at stage `start` (nothing pushed), a
-  credentialed `command` `exited` 127 with the reason in its tail, the Effector's own form for a command that could not
-  start — since an Agent's param (a squash message, an argv part) can reach the bound; a path segment that is `.`, `..`
-  or empty, and a file body's path that is a symlink, leaves the Worktree, is absolute, is a FIFO or has more than one
-  link, are `refused` with nothing sent — an Agent's param can cause each. `onError` is only a jr2 or config defect: no
-  Workspace, an argv slot with no value, an input that misses the definition's schema, no Effector to send to, an Open
-  part nobody bound.
+  `push`. A command not found is `exited` 127, and a bad Worktree adds no outcome: a `command` settles `exited` 127 with
+  the reason in its tail, and an `http` file body settles `refused`. Every union here is open: `worktree()`, `push`,
+  `command` and `http` each hold a stand-in member, so that no author can write an exhaustive check and a later outcome
+  is no break. A start over the bytes an Effector reads (ADR-0068) is sent nowhere and settles as its kind's own outcome
+  — an `http` `refused`, a `push` `rejected` at stage `start` (nothing pushed), a credentialed `command` `exited` 127
+  with the reason in its tail, the Effector's own form for a command that could not start — since an Agent's param (a
+  squash message, an argv part) can reach the bound; a path segment that is `.`, `..` or empty, and a file body's path
+  that is a symlink, leaves the Worktree, is absolute, is a FIFO or has more than one link, are `refused` with nothing
+  sent — an Agent's param can cause each. `onError` is only a jr2 or config defect: no Workspace, a `command` with no
+  `worktree` under Repo Slots, an argv slot with no value, an input that misses the definition's schema, no Effector to
+  send to, an Open part nobody bound.
 - **An `http` Effect is a definition plus one function.**
   `http({ method, url, headers?, auth?, input?, request?, body?, timeout?, maxBody?, idempotent? })`. The url's scheme
   and host are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template,
@@ -108,13 +121,13 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   the url is refused. `request(input)` returns the run's part alone: `path` segments and a JSON or text body. So an
   Agent's param reaches a path segment or a body, never the host, a header or a secret. It runs in the Instance
   Effector, which builds the request and holds the secrets (ADR-0068); the Orchestrator signs the call and holds none.
-  Its body may instead be a Worktree file, `body: file(path, { slot?, segments?, contentType? })`: the file's path
-  relative to the Repo Slot's Worktree (the one slot, or the one `slot` names) — or to `/work` itself in a Workspace
-  with no Repo Slot (ADR-0051), the folder its steps share — and the url's path segments — each a value or a function of
-  the input; no `request` is written beside it, since `file()` carries the run's part. Such an `http` is placed in the
-  Sandbox Effector of the Workspace whose body invokes it, and `jr2 up` refuses one that no `workspace()` invokes, where
-  no Worktree exists to read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox Effector opens the file with
-  `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`,
+  Its body may instead be a Worktree file, `body: file(path, { segments?, contentType? })`: the file's path relative to
+  the Worktree its input names (`worktree`), which needs a cut's settled row, as a `push` does — or to `/work` itself in
+  a Workspace with no Repo Slot (ADR-0051), the folder its steps share — and the url's path segments — each a value or a
+  function of the input; no `request` is written beside it, since `file()` carries the run's part. Such an `http` is
+  placed in the Sandbox Effector of the Workspace whose body invokes it, and `jr2 up` refuses one that no `workspace()`
+  invokes, where no Worktree exists to read. It is sent with `PUT`, `POST` or `PATCH`. The Sandbox Effector opens the
+  file with `openat2` beneath the work root — `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS`,
   `RESOLVE_NO_XDEV`, non-blocking — then `fstat`: a symlink at any component (one that stays inside included), `..`, an
   absolute path, a FIFO, a directory and a file with more than one link are refused, in words, as output. The content
   type is `file()`'s `contentType` or a `content-type` header of the definition's, not both: a definition with both is
@@ -129,7 +142,9 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   run the image's system paths, read and write its own scratch (its `HOME` and its `TMPDIR`; never `/tmp`, which every
   child would share), and read the secret files it names — nothing else. A node whose kernel cannot confine it runs
   none: the Effector of a Workspace that holds one does not become ready there, and the provision fails naming the node
-  (ADR-0068). It runs against one commit: the Agent's branch tip when it starts, or — with `pin` — the commit the
+  (ADR-0068). Its input names its Worktree (`worktree`), and that path needs a cut's settled row with a branch, as a
+  `push` does: a path alone does not name the target of a credential. With none it settles `exited` 127, and nothing
+  runs. It runs against one commit: the tip of that row's branch when it starts, or — with `pin` — the commit the
   Effect's input names (`{ sha }`, one a Gate approved). That commit is checked out into a fresh scratch of the Effect's
   own by the push's import procedure (below), so the Agent's uncommitted edits are never seen; the answer carries
   `dirty: true` beside the output when the Worktree held some (a status in jr2's clean repository over a copy of the
@@ -148,35 +163,41 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   Workspace with no Repo Slot has no commit to run it against, so there it is refused — by `jr2 up` and at invoke, with
   the fix: declare a slot, or name no secret, and it runs in `/work` beside the Agent (ADR-0051). A run of the live
   files under a credential is the claim this kind exists not to make.
-- **A `push` pushes the Workspace's branch to its Repo Slot's Binding**, from the Sandbox Effector, with no input:
-  `push({ pin?, sign?, squash?, force?, slot?, timeout? })`. Its credential is the push credential of the
-  `git.credentials` entry the Repo Slot's url falls under (ADR-0051): the provision matches the url the run binds —
-  static, per-run or `customize()`-bound, one path — and names that entry's push Secret on the Sandbox, and the
-  Effector, which holds only the entries named there, matches the push's url as the fence does. git never runs with the
-  Agent's repository as its repository: each call makes a new bare repository in the Effector's scratch, configured by
-  jr2 under a cleared environment; it reads the Agent's branch as data (a loose ref or `packed-refs`, opened beneath
-  with no symlink, bounded); it imports the Agent's objects as data — one `pack-objects` over the Agent's object store
-  with a deadline (a FIFO in place of an object blocks an open forever), `index-pack --strict`, and a connectivity check
-  — borrowing only from the node's Repo cache; and it pushes `<commit>:refs/heads/<branch>` to the Binding url, never to
-  a remote of the Agent's config, and never to a local path (git's local transport runs that repository's config and
-  hooks, and a path in the pod can be the Agent's own repository; only the binary's tests can allow one). So no config,
-  hook, attribute or program of the Agent's runs; a test plants each in the Agent's repository and proves none ran. A
-  token goes Basic over https through a credential helper only — an `http://` url with a token is `rejected` with
-  nothing sent — and the helper is the Effector binary (`effector git-credential`), which reads the token's file when
-  git asks for the Binding's own host over https and answers nothing for any other; the clean repository follows no
-  redirect, so neither the push nor the token reaches an origin outside the entry; an ssh key is copied into the call's
-  directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The commit is pinned when
-  the push starts: the Agent's branch tip, or with `pin` the commit the input names (`{ sha }`); the Effector's first
-  answer names it, and it is written to the intent row. A pinned commit the Agent pruned fails the import and is never
-  substituted. `squash` makes one commit with the input's `{ message }`, on the published base: the Agent's tree, its
-  author line and date, the Machine's message. It is a new commit, so it needs a committer. With `sign`, the signer is
-  the committer, as for every signed copy. Without it (signing is optional, and `squash` is an option of its own), the
-  matching `git.credentials` entry's `committer: { name, email }` commits it, at the Effector's clock — or, when the
-  entry names no committer, its `sign` field's name and email. `jr2 up` refuses `squash` without `sign` only when the
-  matched entry has neither `sign` nor `committer`, naming both fixes (a `committer`, or a signed push and its `sign`
-  field), and the provision refuses it the same way for a slot the run or a `customize()` binds. `force` replaces what
-  the remote holds. A Workspace with no Repo Slot has no branch to push, so a `push` there is refused, by `jr2 up` and
-  at invoke (ADR-0051).
+- **A `push` pushes a Worktree's branch to its Repo Slot's Binding**, from the Sandbox Effector:
+  `push({ pin?, sign?, squash?, force?, slot?, timeout? })`, with `worktree` in its input and no `to` and no `branch`.
+  `slot` stays static: a Machine with one slot leaves it out, and a Machine with two names it. The Orchestrator finds
+  the cut's settled row in the run's ledger, by the path and this Sandbox, and tells the Effector which branch to
+  publish. An Agent can change all of git in the pod, and it cannot change that row. With a read of HEAD,
+  `git switch main` would publish `main`. With an input key, a Chart could aim at any remote branch. A push with no row,
+  a row of another slot, or a detached Worktree is `rejected` at stage `start`. The ledger key is (slot, branch). The
+  local name equals the remote name, so an Agent, a Gate and a person in the pod all see the real branch. Its credential
+  is the push credential of the `git.credentials` entry the Repo Slot's url falls under (ADR-0051): the provision
+  matches the url the run binds — static, per-run or `customize()`-bound, one path — and names that entry's push Secret
+  on the Sandbox, and the Effector, which holds only the entries named there, matches the push's url as the fence does.
+  git never runs with the Agent's repository as its repository: each call makes a new bare repository in the Effector's
+  scratch, configured by jr2 under a cleared environment; it reads that branch as data (a loose ref or `packed-refs`,
+  opened beneath with no symlink, bounded); it imports the Agent's objects as data — one `pack-objects` over the Agent's
+  object store with a deadline (a FIFO in place of an object blocks an open forever), `index-pack --strict`, and a
+  connectivity check — borrowing only from the node's Repo cache; and it pushes `<commit>:refs/heads/<branch>` to the
+  Binding url, never to a remote of the Agent's config, and never to a local path (git's local transport runs that
+  repository's config and hooks, and a path in the pod can be the Agent's own repository; only the binary's tests can
+  allow one). So no config, hook, attribute or program of the Agent's runs; a test plants each in the Agent's repository
+  and proves none ran. A token goes Basic over https through a credential helper only — an `http://` url with a token is
+  `rejected` with nothing sent — and the helper is the Effector binary (`effector git-credential`), which reads the
+  token's file when git asks for the Binding's own host over https and answers nothing for any other; the clean
+  repository follows no redirect, so neither the push nor the token reaches an origin outside the entry; an ssh key is
+  copied into the call's directory (a Secret mount's mode is one ssh refuses), with `known_hosts` checked strictly. The
+  commit is pinned when the push starts: the tip of that branch, never HEAD, or with `pin` the commit the input names
+  (`{ sha }`); the Effector's first answer names it, and it is written to the intent row. A pinned commit the Agent
+  pruned fails the import and is never substituted. `squash` makes one commit with the input's `{ message }`, on the
+  published base: the Agent's tree, its author line and date, the Machine's message. It is a new commit, so it needs a
+  committer. With `sign`, the signer is the committer, as for every signed copy. Without it (signing is optional, and
+  `squash` is an option of its own), the matching `git.credentials` entry's `committer: { name, email }` commits it, at
+  the Effector's clock — or, when the entry names no committer, its `sign` field's name and email. `jr2 up` refuses
+  `squash` without `sign` only when the matched entry has neither `sign` nor `committer`, naming both fixes (a
+  `committer`, or a signed push and its `sign` field), and the provision refuses it the same way for a slot the run or a
+  `customize()` binds. `force` replaces what the remote holds. A Workspace with no Repo Slot has no branch to push, so a
+  `push` there is refused, by `jr2 up` and at invoke (ADR-0051).
 - **`sign`: nothing unsigned leaves.** The Effector re-creates the Agent's commits, each signed with the entry's `sign`
   key — ssh (`ssh-keygen -Y sign`) by default, GPG allowed; a GPG key with a passphrase is refused, by name. The author
   line, its date included, stays the Agent's; the committer is the entry's name and email at the Effector's clock. The
@@ -199,7 +220,7 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   push and before anything is signed, the same map runs over the new commits, oldest first, and a commit that has a
   published twin is replaced by that twin in the rewritten history; only the unmapped commits are signed. The twin is a
   ledger pair, taken as it is — each names the one exact commit a push published for its source, a signed copy or a
-  squashed commit; the pairs of every push of the Repo Slot are read, each only while the remote still holds its
+  squashed commit; the pairs of every push of the (slot, branch) are read, each only while the remote still holds its
   published commit, the newest push's when two name one source — or else a published commit after the commit's merge
   base with the remote's tip, each taken once, that has the commit's cherry key, read with the commit's parents as
   mapped so far (a merge of the Agent's own side branch keys on the published copies of its non-first parents), and is a
@@ -217,68 +238,69 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   hold). A push that publishes nothing new carries one too: when `pair` or `cherry` maps the published tip itself (a
   restore that sends a pinned push again, a push after a sync that did not finish), or the published tip is this
   squash's own (a restore that sends a squash push again), the Agent's branch still holds its own commits. The bundle
-  never reaches the Machine. A push sends every pair the ledger holds for its Workspace and Repo Slot — one branch on
-  one remote — oldest push first (`pairs`, omitted when there is none): each push that published, with its published
-  commit, its source and its `squashed`; the Effector stays stateless. The pair stands for the published tip only while
-  the remote still holds that push: a remote that moved past it (another writer) is paired by `cherry` or is `diverged`,
-  never grafted onto. The Agent is never told to rebase: a rebase repair loses a reworded message and duplicates empty
-  commits and merges. A published commit is never signed twice, for every signer and key type: a side branch the Agent
-  made before the push and merges later carries the unsigned original of a commit the remote holds signed, which
-  ancestry calls new, and the map replaces it by its twin — a merge the Agent made before the first push included, and,
-  through the ledger's pairs, a side branch made before a squash and merged by any later push, whose commits the
-  squashed commit stands for: the squash's pair maps its source to the squashed commit however many pushes came after
-  it, so a side branch merged by one push and a branch made on it merged by the next publish only what is new. The pair
-  maps a squash's SOURCE only, and that is a named limit: a side branch made at an earlier commit of the squashed range
-  publishes the commits it descends from as signed copies beside the squashed commit. Those commits were never
-  published, none is signed twice, and the trees are the Agent's; such a commit has no faithful twin, and mapped to the
-  squashed commit the push would publish a false diff. The committer date stays the Effector's clock; a deterministic
-  re-sign (the Agent's committer date) was rejected, since it rests on one key type's property, not GPG's or ECDSA's. A
-  key alone does not pair: a commit the Agent reverts and applies again with cherry-pick has the key of the first one,
-  and the first one's published copy has older parents, so paired with it the push would offer that older copy as the
-  new tip — `rejected` as non-fast-forward without `force`, a rewind of the remote with it. The faithful image is the
-  rule; the cherry fallback keeps its own, that the last paired commit holds the published tip's tree. The map's cost is
-  bounded by the push's size.
+  never reaches the Machine. A push sends every pair the ledger holds for its Workspace and its (slot, branch) — one
+  branch on one remote — oldest push first (`pairs`, omitted when there is none): each push that published, with its
+  published commit, its source and its `squashed`; the Effector stays stateless. The pair stands for the published tip
+  only while the remote still holds that push: a remote that moved past it (another writer) is paired by `cherry` or is
+  `diverged`, never grafted onto. The Agent is never told to rebase: a rebase repair loses a reworded message and
+  duplicates empty commits and merges. A published commit is never signed twice, for every signer and key type: a side
+  branch the Agent made before the push and merges later carries the unsigned original of a commit the remote holds
+  signed, which ancestry calls new, and the map replaces it by its twin — a merge the Agent made before the first push
+  included, and, through the ledger's pairs, a side branch made before a squash and merged by any later push, whose
+  commits the squashed commit stands for: the squash's pair maps its source to the squashed commit however many pushes
+  came after it, so a side branch merged by one push and a branch made on it merged by the next publish only what is
+  new. The pair maps a squash's SOURCE only, and that is a named limit: a side branch made at an earlier commit of the
+  squashed range publishes the commits it descends from as signed copies beside the squashed commit. Those commits were
+  never published, none is signed twice, and the trees are the Agent's; such a commit has no faithful twin, and mapped
+  to the squashed commit the push would publish a false diff. The committer date stays the Effector's clock; a
+  deterministic re-sign (the Agent's committer date) was rejected, since it rests on one key type's property, not GPG's
+  or ECDSA's. A key alone does not pair: a commit the Agent reverts and applies again with cherry-pick has the key of
+  the first one, and the first one's published copy has older parents, so paired with it the push would offer that older
+  copy as the new tip — `rejected` as non-fast-forward without `force`, a rewind of the remote with it. The faithful
+  image is the rule; the cherry fallback keeps its own, that the last paired commit holds the published tip's tree. The
+  map's cost is bounded by the push's size.
 - **The sync: after every push whose published commit is not the Agent's own, the Agent's branch moves to it** — signed
   copies, or one squashed commit, signed or not; the decision keys on `published` ≠ `source`, never on `sign` — in the
   Harness container (`POST /sync`, behind the Harness bearer, ADR-0058), from the bundle the Effector wrote, which the
   Orchestrator relays — never a shared volume: the Worktree stays read-only on the credentialed side. Under a cleared
-  environment and a config that names no hook, no fsmonitor, no alternate-refs command and no maintenance, the Harness
-  verifies and unbundles the bundle (objects only), checks that the published tip is a commit with the source's tree (it
-  reads no signature), answers `busy` when a rebase of the branch, or a merge, cherry-pick, revert or sequence in a
-  worktree whose HEAD is the branch, is in progress, and otherwise copies each commit the Agent made after the source as
-  its raw object with only its parents changed, then moves the branch with one `git update-ref <new> <old>` — a
-  compare-and-swap, tried again from the new tip at most 3 times — so files, index, HEAD and stash do not change. Its
-  answer is a field of the push's output beside the outcome: `sync: synced | already | skipped | busy | not-synced`,
-  with `syncReason` when it moved nothing (a push that published the Agent's own commit is `skipped`, with no call and
-  no bundle; every other push is synced, one that published nothing new included, so a plain push of the slot after a
-  squash is a fast-forward of the squashed commit). A Harness that cannot be reached answers `not-synced`; the push
-  stays `pushed`. When the last push of a Repo Slot answered `busy` or `not-synced`, jr2 runs its sync again before that
-  slot's next push, in that slot's Worktree and with that push's bundle, which its row keeps until a sync finished or a
-  newer push of the slot published. The push never trusts the sync's answer: the Agent owns its repository and can move
-  the branch at any time, so the next push derives everything again from the remote and the Agent's objects. After such
-  a push the Agent reads, beside the output, what moved — signed copies of its commits with new ids, or its commits
-  squashed into one commit, named "signed" only when it is — and that jr2 moved its branch to it, or did not and why;
-  that its files, index and stash did not change; and that amending, rebasing or resetting the pushed commits makes the
-  next push `diverged`. The Harness keys that paragraph on a synced push whose published commit is not the Agent's, and
-  its words on `squashed`. A push in which jr2 counted no new commit (`newCommits: 0`) is still `pushed`, because the
-  push ran and the remote's branch may have moved (a new branch at a commit the remote held on another branch). But
-  `pushed` alone does not tell the Agent that its work did not go out: in a real Haiku 5.5 run, the model sent a
-  `git commit` that failed and the push in one answer, the push published the branch at a commit the remote already
-  held, and the model read `pushed` as its work published. So beside the output the Agent reads that jr2 counted no new
-  commit in this push, that it found the published commit already on the remote or in jr2's copy of the remote, and that
-  a change it did not commit before the push is not in this push. The words name where jr2 looked because the count
-  reads the Repo cache, which fetches without pruning: a commit the remote dropped can stay there, and then a count of 0
-  is not a fact about the remote, which is why the first clause names what jr2 counted. No @model claim reaches
-  `newCommits: 0`, so no measurement has read these words. When the signed-copies or squash paragraph above also
-  applies, it names "an earlier push" as the one that signed or squashed, so the two do not contradict. The Harness keys
-  the sentence on `newCommits: 0` alone, and says nothing with no count. The count is optional on the wire: a live
-  Sandbox keeps the runtime it started with (ADR-0037), so after `jr2 up` its older Effector answers `pushed` with no
-  `newCommits`, and a required field would fault a push that reached the remote. The count's input to
-  `git rev-list --stdin` is revisions only (`^<sha>` for each tip the remote held), never `--not`: git takes an option
-  there only from 2.42, and the Sandbox Effector runs its image's git — the Sandbox Image's, unless the `workspace()`
-  names one — which can be older (Debian bookworm's is 2.39). A distinct outcome (`unchanged`, `up-to-date`) was
-  rejected: every consumer of a push keys on `pushed` (the ledger's pairs, the sync, the Machines' guards), and a push
-  that made a new branch did change the remote.
+  environment and a config that names no hook, no fsmonitor, no alternate-refs command and no maintenance — and with its
+  git confined, as every process it starts in `/work` (ADR-0076), because a filter or a textconv in the shared
+  `.git/config` runs in git's process — the Harness verifies and unbundles the bundle (objects only), checks that the
+  published tip is a commit with the source's tree (it reads no signature), answers `busy` when a rebase of the branch,
+  or a merge, cherry-pick, revert or sequence in a worktree whose HEAD is the branch, is in progress, and otherwise
+  copies each commit the Agent made after the source as its raw object with only its parents changed, then moves the
+  branch with one `git update-ref <new> <old>` — a compare-and-swap, tried again from the new tip at most 3 times — so
+  files, index, HEAD and stash do not change. Its answer is a field of the push's output beside the outcome:
+  `sync: synced | already | skipped | busy | not-synced`, with `syncReason` when it moved nothing (a push that published
+  the Agent's own commit is `skipped`, with no call and no bundle; every other push is synced, one that published
+  nothing new included, so a plain push of the slot after a squash is a fast-forward of the squashed commit). A Harness
+  that cannot be reached answers `not-synced`; the push stays `pushed`. When the last push of a (slot, branch) answered
+  `busy` or `not-synced`, jr2 runs its sync again before the next push of that key, in the Worktree of that push and
+  with its bundle, which its row keeps until a sync finished or a newer push of that key published. The push never
+  trusts the sync's answer: the Agent owns its repository and can move the branch at any time, so the next push derives
+  everything again from the remote and the Agent's objects. After such a push the Agent reads, beside the output, what
+  moved — signed copies of its commits with new ids, or its commits squashed into one commit, named "signed" only when
+  it is — and that jr2 moved its branch to it, or did not and why; that its files, index and stash did not change; and
+  that amending, rebasing or resetting the pushed commits makes the next push `diverged`. The Harness keys that
+  paragraph on a synced push whose published commit is not the Agent's, and its words on `squashed`. A push in which jr2
+  counted no new commit (`newCommits: 0`) is still `pushed`, because the push ran and the remote's branch may have moved
+  (a new branch at a commit the remote held on another branch). But `pushed` alone does not tell the Agent that its work
+  did not go out: in a real Haiku 5.5 run, the model sent a `git commit` that failed and the push in one answer, the
+  push published the branch at a commit the remote already held, and the model read `pushed` as its work published. So
+  beside the output the Agent reads that jr2 counted no new commit in this push, that it found the published commit
+  already on the remote or in jr2's copy of the remote, and that a change it did not commit before the push is not in
+  this push. The words name where jr2 looked because the count reads the Repo cache, which fetches without pruning: a
+  commit the remote dropped can stay there, and then a count of 0 is not a fact about the remote, which is why the first
+  clause names what jr2 counted. No @model claim reaches `newCommits: 0`, so no measurement has read these words. When
+  the signed-copies or squash paragraph above also applies, it names "an earlier push" as the one that signed or
+  squashed, so the two do not contradict. The Harness keys the sentence on `newCommits: 0` alone, and says nothing with
+  no count. The count is optional on the wire: a live Sandbox keeps the runtime it started with (ADR-0037), so after
+  `jr2 up` its older Effector answers `pushed` with no `newCommits`, and a required field would fault a push that
+  reached the remote. The count's input to `git rev-list --stdin` is revisions only (`^<sha>` for each tip the remote
+  held), never `--not`: git takes an option there only from 2.42, and the Sandbox Effector runs its image's git — the
+  Sandbox Image's, unless the `workspace()` names one — which can be older (Debian bookworm's is 2.39). A distinct
+  outcome (`unchanged`, `up-to-date`) was rejected: every consumer of a push keys on `pushed` (the ledger's pairs, the
+  sync, the Machines' guards), and a push that made a new branch did change the remote.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing that stays in the group outlives it. In the Harness container a descendant
   that leaves the group (`setsid`) is not killed; it holds no credential. A credentialed command's descendant cannot
@@ -292,30 +314,33 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   carries that transition, so a restart that loses the transition's save still delivers the output and runs nothing. On
   restore: settled → the output is delivered; no row → nothing was sent, so it starts; intent → per kind. A `command`
   that names no secret re-attaches to the exec by id, or settles `unknown` when the Harness no longer knows it (it
-  restarted); it is never run again by jr2: it runs the Agent's code, which may spend a Stand-in. A `push` intent row
-  names its Sandbox and, once the Effector's first answer names it, the pinned commit: a restore asks the Effector for
-  the id and follows it, and when the Effector no longer holds it the push is sent again with only that commit — never
-  the Agent's tip now — because its run is a function of the commit and its credential, what the intent row records;
-  with no commit recorded it settles `unknown`. A credentialed command follows the push's rule: its intent row names its
-  Sandbox and, once the first answer names it, the pinned commit, and one the Effector lost is sent again with only that
-  commit, since its run is a function of (commit, argv, secrets). An `http` intent row names its placement — the
-  Instance Effector, or the Sandbox of a file-body `http` — and no replica: the Effect asks every replica of that
-  Effector for its id and follows the one that holds it; when none does, it is sent again only when the author marked it
-  `idempotent`, and any other settles `unknown`. Retry is the author's choice — a route back into the state, or
-  `idempotent` for a call that carries its own idempotency key or only reads. No row is dropped: each settled or aborted
-  row keeps the Effect's id, kind and outcome for the run's life, the record of what the run's Effects did. A settled
-  row's output tail is dropped once the save that carries its transition is on disk; the full stream is on the feed. An
-  `http` response's body and headers are its tail: the row keeps the outcome, the status, the content type and the size,
-  and the settled line on the feed carries the whole response. A `push` row keeps its Repo Slot, its published commit,
-  its source, its `squashed` and its sync's answer whole — every later push of its Workspace and Repo Slot sends them as
-  one of its pairs, and the newest push's sync, when it did not finish, runs again — and drops git's words; it drops its
-  bundle once its sync answered `synced`, `already` or `skipped`, and keeps it while the sync is `busy` or `not-synced`
-  only as long as it is the newest push of its Repo Slot that published, because the sync that runs again moves the
-  branch from it and only the newest push's sync runs again. Once a newer push of the slot published, the older row's
-  bundle goes at the next save: one bundle per Repo Slot at most. So an Effect in a loop grows the ledger by one short
-  row per pass, never by its tails. One exception, bounded by one pick: while a pick is outstanding, its hold keeps the
-  `chain` whole, tails included, because an `answer` action may read it after a restore; a loop below the Agent's state
-  then grows the hold by one tail per pass. The hold drops its chain when the pick is answered.
+  restarted); it is never run again by jr2: it runs the Agent's code, which may spend a Stand-in. A cut is the
+  exception: it runs the kit's program and is marked idempotent, so a restore or a Harness restart sends it again with
+  the same id. A `push` intent row names its Sandbox and, once the Effector's first answer names it, the pinned commit:
+  a restore asks the Effector for the id and follows it, and when the Effector no longer holds it the push is sent again
+  with only that commit — never the Agent's tip now — because its run is a function of the commit and its credential,
+  what the intent row records; with no commit recorded it settles `unknown`. A credentialed command follows the push's
+  rule: its intent row names its Sandbox and, once the first answer names it, the pinned commit, and one the Effector
+  lost is sent again with only that commit, since its run is a function of (commit, argv, secrets). An `http` intent row
+  names its placement — the Instance Effector, or the Sandbox of a file-body `http` — and no replica: the Effect asks
+  every replica of that Effector for its id and follows the one that holds it; when none does, it is sent again only
+  when the author marked it `idempotent`, and any other settles `unknown`. Retry is the author's choice — a route back
+  into the state, or `idempotent` for a call that carries its own idempotency key or only reads. No row is dropped: each
+  settled or aborted row keeps the Effect's id, kind and outcome for the run's life, the record of what the run's
+  Effects did. A settled row's output tail is dropped once the save that carries its transition is on disk; the full
+  stream is on the feed. An `http` response's body and headers are its tail: the row keeps the outcome, the status, the
+  content type and the size, and the settled line on the feed carries the whole response. A `push` row keeps its Repo
+  Slot, its branch, its published commit, its source, its `squashed` and its sync's answer whole — every later push of
+  its Workspace and (slot, branch) sends them as one of its pairs, and the newest push's sync, when it did not finish,
+  runs again — and drops git's words; it drops its bundle once its sync answered `synced`, `already` or `skipped`, and
+  keeps it while the sync is `busy` or `not-synced` only as long as it is the newest push of its (slot, branch) that
+  published, because the sync that runs again moves the branch from it and only the newest push's sync runs again. Once
+  a newer push of that key published, the older row's bundle goes at the next save: one bundle per (slot, branch) at
+  most. A cut's `ready` row keeps its Repo Slot, its path and its branch whole, because a later Effect reads them. So an
+  Effect in a loop grows the ledger by one short row per pass, never by its tails. One exception, bounded by one pick:
+  while a pick is outstanding, its hold keeps the `chain` whole, tails included, because an `answer` action may read it
+  after a restore; a loop below the Agent's state then grows the hold by one tail per pass. The hold drops its chain
+  when the pick is answered.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start
@@ -373,6 +398,9 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   Machine is built, so every param counts as read by it then; `customize()` runs the pick-param check again when it
   binds the argv, refuses there a param the bound argv does not read, and gives the bound Machine the warnings the walk
   gives for that argv (ADR-0054).
+
+- **The load walk refuses an Effect's `onDone` with no unguarded last arm.** A type cannot see a missing arm, and with
+  no match a run stays in that state and shows no fault.
 
 ## Considered options
 

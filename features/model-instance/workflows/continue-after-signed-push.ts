@@ -27,6 +27,8 @@ import {
   jr2Setup,
   push,
   workspace,
+  isReady,
+  worktree,
   type HostInjectedInput,
   type Workspaced,
 } from "@jr2/orchestrator";
@@ -66,17 +68,26 @@ const record = (output: unknown): PushRecord => {
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [publish, finish],
-  actors: { coder: agent(coder), signed: push({ sign: true }), fail: fail() },
+  actors: { cut: worktree(), coder: agent(coder), signed: push({ sign: true }), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [], pushes: [] }),
-  initial: "work",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: "/work/app/run", branch: `model-continue-${context.marker}` }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "work" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     work: {
       invoke: {
         src: "coder",
         input: ({ context }) => ({
+          cwd: "/work/app/run",
           prompt:
             `[${context.marker}] In this repository, \`greet()\` in greet.js returns the wrong text and its ` +
             `tests fail. Fix \`greet()\` so the tests pass, commit the fix, and publish it. Then add a one-line ` +
@@ -104,6 +115,7 @@ const body = jr2Setup({
         publishing: {
           invoke: {
             src: "signed",
+            input: { worktree: "/work/app/run" },
             onDone: {
               target: "ready",
               actions: assign({ pushes: ({ context, event }) => [...context.pushes, record(event.output)] }),
@@ -141,6 +153,5 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: { url: "ssh://git@seed.jr2-e2e-seed.svc/srv/push.git", ref: "main" } },
-  spec: ({ input }) => ({ branch: `model-continue-${input.marker}` }),
   effector: { image: import.meta.resolve("../images/effector") },
 });

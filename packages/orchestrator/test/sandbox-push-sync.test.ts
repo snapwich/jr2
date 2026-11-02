@@ -1,14 +1,14 @@
 // A push's pair and its sync across pushes (ADR-0067): the pair is the ledger's last push
-// of the SAME Workspace and Repo Slot, a sync that did not finish runs again before the next push
-// of that slot — from the bundle its row keeps until a sync finishes — and a signed push that
-// published nothing new still syncs. D1 for the Sandbox kinds. In-process, socket-free (ADR-0010).
+// of the SAME Workspace, Repo Slot and branch, a sync that did not finish runs again before the next
+// push of that (slot, branch) — from the bundle its row keeps until a sync finishes — and a signed
+// push that published nothing new still syncs. D1 for the Sandbox kinds. In-process, socket-free (ADR-0010).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { assign, type AnyStateMachine } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
-import { dropSavedTails, pushPairsOf, type EffectLogic, type EffectRow } from "../src/effect.ts";
+import { dropSavedTails, pushPairsOf, type EffectLogic, type EffectRow, type ExecPortFactory } from "../src/effect.ts";
 import { createEffectorClient, type PushStartRequest } from "../src/effector-wire.ts";
 import { RunHost, type RunFeedEvent } from "../src/run-host.ts";
 import { lastPushOf, pushWith } from "../src/sandbox-effect.ts";
@@ -16,8 +16,9 @@ import type { SyncPortFactory } from "../src/sync-client.ts";
 import type { SyncAnswer, SyncRequest } from "../src/wire.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
+import { worktreeWith } from "../src/worktree.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
-import { fakeWorkspace, handles } from "./_effects.ts";
+import { fakeWorkspace, handles, readyCuts } from "./_effects.ts";
 import { mkStore, waitFor } from "./_fixtures.ts";
 
 const go = defineEvent({ name: "go", input: z.object({}) });
@@ -46,25 +47,52 @@ class FakeSync {
   });
 }
 
-const ledger = async (store: SnapshotStore, runId: string): Promise<Record<string, EffectRow>> =>
-  ((await store.load(runId))?.snapshot as { effects?: Record<string, EffectRow> }).effects ?? {};
+/** The push rows of the ledger: a cut has a settled row too. */
+const pushRows = async (store: SnapshotStore, runId: string): Promise<EffectRow[]> =>
+  Object.values(((await store.load(runId))?.snapshot as { effects?: Record<string, EffectRow> }).effects ?? {}).filter(
+    (r) => r.kind === "push",
+  );
+
+/** The Worktrees of these tests, and the branch each cut names: `/work/app/jr2-run-1` cuts `jr2/run-1`. */
+const RUN_1 = "/work/app/jr2-run-1";
+const RUN_2 = "/work/app/jr2-run-2";
+const branchOf = (path: string) => path.split("/")[3]!.replace("-", "/");
 
 /**
- * A Machine that runs the slots named in `order`, one state each, with a Gate between them, so the
- * save that carries each push's transition is on disk before the next push starts.
+ * A Machine that cuts each Worktree `steps` names, then runs the steps, one state each, with a Gate
+ * between them, so the save that carries each push's transition is on disk before the next push
+ * starts.
  */
-function pushes(repos: Record<string, string>, effects: Record<string, AnyEffect>, order: string[]): AnyStateMachine {
+function pushes(
+  repos: Record<string, string>,
+  effects: Record<string, AnyEffect>,
+  steps: Array<{ src: string; worktree: string }>,
+): AnyStateMachine {
+  const worktrees = [...new Set(steps.map((s) => s.worktree))];
   const states: Record<string, unknown> = {
-    waiting: { invoke: { src: "gate", id: "start" }, on: { go: "s0" } },
+    waiting: { invoke: { src: "gate", id: "start" }, on: { go: "c0" } },
     done: {},
   };
-  order.forEach((slot, i) => {
+  worktrees.forEach((path, i) => {
+    states[`c${i}`] = {
+      invoke: {
+        src: "cut",
+        input: { path, branch: branchOf(path) },
+        onDone: i + 1 < worktrees.length ? `c${i + 1}` : "s0",
+      },
+    };
+  });
+  steps.forEach(({ src, worktree }, i) => {
     states[`s${i}`] = {
-      invoke: { src: slot, onDone: { target: `g${i}`, actions: assign({ [`out${i}`]: ({ event }) => event.output }) } },
+      invoke: {
+        src,
+        input: { worktree },
+        onDone: { target: `g${i}`, actions: assign({ [`out${i}`]: ({ event }) => event.output }) },
+      },
     };
     states[`g${i}`] = {
       invoke: { src: "gate", id: `g${i}` },
-      on: { next: i + 1 < order.length ? `s${i + 1}` : "done" },
+      on: { next: i + 1 < steps.length ? `s${i + 1}` : "done" },
     };
   });
   return jr2Setup({
@@ -75,6 +103,7 @@ function pushes(repos: Record<string, string>, effects: Record<string, AnyEffect
         ...handles(repos),
         bindings: Object.fromEntries(Object.keys(repos).map((r) => [r, `https://github.com/ourorg/${r}.git`])),
       }),
+      cut: worktreeWith(readyCuts),
       ...effects,
     },
   }).createMachine({
@@ -109,10 +138,12 @@ const ctxOf = (host: RunHost, runId: string) => host.status(runId)?.context as C
 test("two Repo Slots: each push's pair and its sync re-run are its own slot's, never the other slot's", async () => {
   const fake = new FakeEffector(["sandbox"]);
   const syncs = new FakeSync();
-  const repos = { app: "/work/app/jr2-run-1", lib: "/work/lib/jr2-run-1" };
+  const repos = { app: "/work/app", lib: "/work/lib" };
+  const inApp = { src: "app", worktree: RUN_1 };
+  const inLib = { src: "lib", worktree: "/work/lib/jr2-run-1" };
   const app = pushWith(port(fake), { sign: true, slot: "app" }, syncs.factory) as AnyEffect;
   const lib = pushWith(port(fake), { sign: true, slot: "lib" }, syncs.factory) as AnyEffect;
-  const rig = await run(pushes(repos, { app, lib }, ["app", "lib", "app"]));
+  const rig = await run(pushes(repos, { app, lib }, [inApp, inLib, inApp]));
 
   // app's push; its sync answers busy.
   await waitFor(() => fake.starts.length === 1);
@@ -128,7 +159,7 @@ test("two Repo Slots: each push's pair and its sync re-run are its own slot's, n
   assert.equal(second.push.pairs, undefined, "lib's push names no pair of app's push");
   assert.deepEqual(
     syncs.calls.map((c) => c.worktree),
-    ["/work/app/jr2-run-1"],
+    [RUN_1],
     "nothing ran in lib's Worktree before lib's push",
   );
   fake.settle({ outcome: "pushed", published: C, source: C, newCommits: 1 });
@@ -141,15 +172,59 @@ test("two Repo Slots: each push's pair and its sync re-run are its own slot's, n
   assert.deepEqual(third.push.pairs, [{ published: B, source: A }], "app's pairs alone, never lib's");
   assert.equal(syncs.calls.length, 2);
   assert.deepEqual(syncs.calls[1], {
-    worktree: "/work/app/jr2-run-1",
+    worktree: RUN_1,
     branch: "jr2/run-1",
     published: B,
     source: A,
     bundle: "QVBQ",
   });
-  const rows = Object.values(await ledger(rig.store, rig.runId)).filter((r) => r.state === "settled");
+  const rows = (await pushRows(rig.store, rig.runId)).filter((r) => r.state === "settled");
   assert.deepEqual(rows.map((r) => (r as { repo?: string }).repo).sort(), ["app", "lib"]);
   // The third push is still followed: stop the run, so nothing polls once the test is done.
+  await rig.host.stop(rig.runId);
+});
+
+test("two branches of one Repo Slot: each push's pair and its sync re-run are its own branch's, never the other's", async () => {
+  const fake = new FakeEffector(["sandbox"]);
+  const syncs = new FakeSync();
+  const push = pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect;
+  const one = { src: "push", worktree: RUN_1 };
+  const two = { src: "push", worktree: RUN_2 };
+  const rig = await run(pushes({ app: "/work/app" }, { push }, [one, two, one]));
+
+  // jr2/run-1's push; its sync answers busy.
+  await waitFor(() => fake.starts.length === 1);
+  assert.equal((fake.starts[0]!.req as PushStartRequest).push.branch, "jr2/run-1");
+  syncs.answers.push({ sync: "busy", reason: "a rebase of your branch is in progress" });
+  fake.settle({ outcome: "pushed", published: B, source: A, newCommits: 1, via: "ancestry", bundle: "QVBQ" });
+  await waitFor(() => ctxOf(rig.host, rig.runId)?.out0 !== undefined);
+  rig.host.sendToGate(rig.runId, "g0", { type: "next" });
+
+  // jr2/run-2's push: no pair of the other branch, and its unfinished sync does not run here.
+  await waitFor(() => fake.starts.length === 2);
+  const second = fake.starts[1]!.req as PushStartRequest;
+  assert.equal(second.push.branch, "jr2/run-2");
+  assert.equal(second.push.pairs, undefined, "no pair of the other branch's push");
+  assert.deepEqual(
+    syncs.calls.map((c) => c.branch),
+    ["jr2/run-1"],
+    "the other branch's sync did not run before this push",
+  );
+  fake.settle({ outcome: "pushed", published: C, source: C, newCommits: 1 });
+  await waitFor(() => ctxOf(rig.host, rig.runId)?.out1 !== undefined);
+  rig.host.sendToGate(rig.runId, "g1", { type: "next" });
+
+  // jr2/run-1's next push: its own pair, and its own sync run again, in its own Worktree.
+  await waitFor(() => fake.starts.length === 3);
+  const third = fake.starts[2]!.req as PushStartRequest;
+  assert.deepEqual(third.push.pairs, [{ published: B, source: A }], "this branch's pairs alone");
+  assert.deepEqual(syncs.calls[1], {
+    worktree: RUN_1,
+    branch: "jr2/run-1",
+    published: B,
+    source: A,
+    bundle: "QVBQ",
+  });
   await rig.host.stop(rig.runId);
 });
 
@@ -157,17 +232,22 @@ test("a sync that never unbundled runs again before the next push with the bundl
   const fake = new FakeEffector(["sandbox"]);
   const syncs = new FakeSync();
   const push = pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect;
-  const rig = await run(pushes({ app: "/work/app/jr2-run-1" }, { push }, ["push", "push"]));
+  const rig = await run(
+    pushes({ app: "/work/app" }, { push }, [
+      { src: "push", worktree: RUN_1 },
+      { src: "push", worktree: RUN_1 },
+    ]),
+  );
   await waitFor(() => fake.starts.length === 1);
   syncs.answers.push({ sync: "not-synced", reason: "the Harness could not be reached: ECONNREFUSED" });
   fake.settle({ outcome: "pushed", published: B, source: A, newCommits: 1, via: "ancestry", bundle: "QlVORExF" });
   await waitFor(() => ctxOf(rig.host, rig.runId)?.out0 !== undefined);
   // The save that carries the push's transition is on disk; the row still holds the bundle.
   await until(async () => {
-    const row = Object.values(await ledger(rig.store, rig.runId)).find((r) => r.state === "settled");
+    const row = (await pushRows(rig.store, rig.runId)).find((r) => r.state === "settled");
     return (row as { output?: { sync?: string } } | undefined)?.output?.sync === "not-synced";
   });
-  const saved = Object.values(await ledger(rig.store, rig.runId)).find((r) => r.state === "settled") as {
+  const saved = (await pushRows(rig.store, rig.runId)).find((r) => r.state === "settled") as {
     output: Record<string, unknown>;
   };
   assert.equal(saved.output.bundle, "QlVORExF", "an unfinished sync's bundle is not a tail");
@@ -181,9 +261,7 @@ test("a sync that never unbundled runs again before the next push with the bundl
   await waitFor(() => rig.host.status(rig.runId)?.value === "done");
   // The re-run answered `already`: the next save drops the bundle.
   await until(async () =>
-    Object.values(await ledger(rig.store, rig.runId)).every(
-      (r) => r.state !== "settled" || !("bundle" in (r.output as object)),
-    ),
+    (await pushRows(rig.store, rig.runId)).every((r) => r.state !== "settled" || !("bundle" in (r.output as object))),
   );
 });
 
@@ -195,6 +273,7 @@ test("the tail rule for a push: the bundle stays while the sync is busy or not-s
     slot: "publish",
     sandbox: "ws-1",
     repo: `app-${sync}`,
+    branch: "main",
     output: {
       outcome: "pushed",
       published: B,
@@ -226,14 +305,16 @@ test("the tail rule for a push: the bundle stays while the sync is busy or not-s
     assert.equal(out(id).sync !== undefined, true, "the sync's answer stays");
   }
   // Every later push of the Repo Slot sends the saved row as one of its pairs.
-  assert.deepEqual(pushPairsOf(effects, "ws-1", "app-synced"), [{ published: B, source: A, squashed: "signed" }]);
+  assert.deepEqual(pushPairsOf(effects, "ws-1", "app-synced", "main"), [
+    { published: B, source: A, squashed: "signed" },
+  ]);
 });
 
 test("only the newest push of a Repo Slot keeps its bundle: three pushes whose syncs never finish leave one bundle in the saved ledger", async () => {
   const fake = new FakeEffector(["sandbox"]);
   const syncs = new FakeSync();
   const push = pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect;
-  const rig = await run(pushes({ app: "/work/app/jr2-run-1" }, { push }, ["push", "push", "push"]));
+  const rig = await run(pushes({ app: "/work/app" }, { push }, Array(3).fill({ src: "push", worktree: RUN_1 })));
   const tips = [B, C, "d".repeat(40)];
   for (let i = 0; i < 3; i++) {
     await waitFor(() => fake.starts.length === i + 1);
@@ -257,7 +338,7 @@ test("only the newest push of a Repo Slot keeps its bundle: three pushes whose s
   // The saves after the run's last transition are on disk: one bundle, the newest push's.
   let bundles: unknown[] = [];
   await until(async () => {
-    const rows = Object.values(await ledger(rig.store, rig.runId));
+    const rows = await pushRows(rig.store, rig.runId);
     bundles = rows
       .map((r) => (r.state === "settled" ? (r.output as { bundle?: unknown }).bundle : undefined))
       .filter((b) => b !== undefined);
@@ -266,13 +347,14 @@ test("only the newest push of a Repo Slot keeps its bundle: three pushes whose s
   assert.deepEqual(bundles, ["QlVORExF2"], "the newest push's bundle, and no older one");
 });
 
-test("the tail rule: a push row's bundle goes once a newer push of its Repo Slot published, kept for another slot", () => {
-  const row = (repo: string, at: string, bundle: string): EffectRow => ({
+test("the tail rule: a push row's bundle goes once a newer push of its (slot, branch) published, kept for another slot or branch", () => {
+  const row = (repo: string, at: string, bundle: string, branch = "main"): EffectRow => ({
     state: "settled",
     kind: "push",
     slot: "publish",
     sandbox: "ws-1",
     repo,
+    branch,
     output: { outcome: "pushed", published: B, source: A, bundle, sync: "not-synced" },
     at,
   });
@@ -285,12 +367,14 @@ test("the tail rule: a push row's bundle goes once a newer push of its Repo Slot
       output: { outcome: "rejected", reason: "no" },
     } as EffectRow,
     lib: row("lib", "2026-10-10T00:00:00Z", "b3"),
+    side: row("app", "2026-10-10T00:00:00Z", "b4", "side"),
   };
   dropSavedTails(effects, {});
   const bundle = (id: string) => (effects[id] as { output: Record<string, unknown> }).output.bundle;
   assert.equal(bundle("old"), undefined);
   assert.equal(bundle("mid"), "b2");
   assert.equal(bundle("lib"), "b3");
+  assert.equal(bundle("side"), "b4");
 });
 
 test("a signed push that published nothing new (the pair mapped the published tip) still syncs, and is never `skipped`", async () => {
@@ -299,7 +383,7 @@ test("a signed push that published nothing new (the pair mapped the published ti
     const syncs = new FakeSync();
     syncs.answers.push({ sync: "synced", from: A, to: B, replayed: 0, tries: 1 });
     const push = pushWith(port(fake), { sign: true }, syncs.factory) as AnyEffect;
-    const rig = await run(pushes({ app: "/work/app/jr2-run-1" }, { push }, ["push"]));
+    const rig = await run(pushes({ app: "/work/app" }, { push }, [{ src: "push", worktree: RUN_1 }]));
     await waitFor(() => fake.starts.length === 1);
     fake.settle({
       outcome: "pushed",
@@ -320,13 +404,20 @@ test("a signed push that published nothing new (the pair mapped the published ti
   }
 });
 
-test("the pair is the last push of the same Workspace AND Repo Slot that published", () => {
-  const row = (sandbox: string, repo: string, at: string, output: Record<string, unknown>): EffectRow => ({
+test("the pair is the last push of the same Workspace, Repo Slot AND branch that published", () => {
+  const row = (
+    sandbox: string,
+    repo: string,
+    at: string,
+    output: Record<string, unknown>,
+    branch = "main",
+  ): EffectRow => ({
     state: "settled",
     kind: "push",
     slot: "publish",
     sandbox,
     repo,
+    branch,
     output,
     at,
   });
@@ -335,10 +426,14 @@ test("the pair is the last push of the same Workspace AND Repo Slot that publish
     a: row("ws-1", "app", "2026-01-01T00:00:01Z", ok("1")),
     b: row("ws-1", "lib", "2026-01-01T00:00:02Z", ok("2")),
     c: row("ws-2", "app", "2026-01-01T00:00:03Z", ok("3")),
+    d: row("ws-1", "app", "2026-01-01T00:00:04Z", ok("4"), "side"),
   };
-  assert.equal(lastPushOf(rows, "ws-1", "app", "self")?.output.published, "1".repeat(40));
-  assert.equal(lastPushOf(rows, "ws-1", "lib", "self")?.output.published, "2".repeat(40));
-  assert.equal(lastPushOf(rows, "ws-2", "lib", "self"), undefined);
+  assert.equal(lastPushOf(rows, "ws-1", "app", "main", "self")?.output.published, "1".repeat(40));
+  assert.equal(lastPushOf(rows, "ws-1", "lib", "main", "self")?.output.published, "2".repeat(40));
+  assert.equal(lastPushOf(rows, "ws-2", "lib", "main", "self"), undefined);
+  assert.equal(lastPushOf(rows, "ws-1", "app", "side", "self")?.output.published, "4".repeat(40));
+  assert.equal(lastPushOf(rows, "ws-1", "app", "other", "self"), undefined);
+  assert.equal(lastPushOf(rows, "ws-1", "app", "main", "a"), undefined, "never this Effect's own row");
 });
 
 test("only `pushed` rows give pairs, oldest first: a diverged row's published commit is the remote's, never a copy of its source", () => {
@@ -348,6 +443,7 @@ test("only `pushed` rows give pairs, oldest first: a diverged row's published co
     slot: "publish",
     sandbox,
     repo: "app",
+    branch: "main",
     output,
     at,
   });
@@ -371,8 +467,12 @@ test("only `pushed` rows give pairs, oldest first: a diverged row's published co
     unknown: row("2026-01-01T00:00:04Z", { outcome: "unknown", published: sha("4"), source: sha("d") }),
     other: row("2026-01-01T00:00:06Z", { outcome: "pushed", published: sha("6"), source: sha("f") }, "ws-2"),
     self: row("2026-01-01T00:00:07Z", { outcome: "pushed", published: sha("7"), source: sha("7") }),
+    side: {
+      ...row("2026-01-01T00:00:08Z", { outcome: "pushed", published: sha("8"), source: sha("9") }),
+      branch: "side",
+    } as EffectRow,
   };
-  assert.deepEqual(pushPairsOf(rows, "ws-1", "app", "self"), [
+  assert.deepEqual(pushPairsOf(rows, "ws-1", "app", "main", "self"), [
     { published: sha("1"), source: sha("a") },
     { published: sha("5"), source: sha("e"), squashed: "signed" },
   ]);
@@ -385,7 +485,8 @@ test("D1 for the Sandbox kinds: its state exits while it runs — polling stops,
     types: {} as { context: Ctx },
     events: [go, leave],
     actors: {
-      ws: fakeWorkspace({ ...handles({ app: "/work/app/jr2-run-1" }), bindings: { app: "https://x.example/app.git" } }),
+      ws: fakeWorkspace({ ...handles(), bindings: { app: "https://x.example/app.git" } }),
+      cut: worktreeWith(readyCuts),
       push,
     },
   }).createMachine({
@@ -394,10 +495,11 @@ test("D1 for the Sandbox kinds: its state exits while it runs — polling stops,
     invoke: { src: "ws" },
     initial: "waiting",
     states: {
-      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "pushing" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "cutting" } },
+      cutting: { invoke: { src: "cut", input: { path: RUN_1, branch: branchOf(RUN_1) }, onDone: "pushing" } },
       pushing: {
         invoke: [
-          { src: "push", onDone: "done" },
+          { src: "push", input: { worktree: RUN_1 }, onDone: "done" },
           { src: "gate", id: "ctl" },
         ],
         on: { leave: "left" },
@@ -410,12 +512,12 @@ test("D1 for the Sandbox kinds: its state exits while it runs — polling stops,
   const feed: RunFeedEvent[] = [];
   rig.host.subscribe(rig.runId, (ev) => feed.push(ev));
   await waitFor(() => fake.starts.length === 1);
-  await until(async () => Object.values(await ledger(rig.store, rig.runId)).some((r) => "pinned" in r));
+  await until(async () => (await pushRows(rig.store, rig.runId)).some((r) => "pinned" in r));
   rig.host.sendToGate(rig.runId, "ctl", { type: "leave" });
   await waitFor(() => rig.host.status(rig.runId)?.value === "left");
   await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(
-    Object.values(await ledger(rig.store, rig.runId)).map((r) => r.state),
+    (await pushRows(rig.store, rig.runId)).map((r) => r.state),
     ["aborted"],
     "the abort is saved with the transition that exited the state",
   );

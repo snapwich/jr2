@@ -65,9 +65,8 @@ import {
   type LiveSetResponse,
   type MemoryKillsResponse,
   type NotKeptResponse,
-  type Notice,
-  type PickAnswer,
 } from "./wire.ts";
+import { noticesOf } from "./notices.ts";
 
 /** One conversation's identity and stream seam, as the app hands it to the turn factory. */
 export type ConversationSeat = {
@@ -93,6 +92,8 @@ export type HarnessAppDeps = {
    * what wire tests want. The structural half of the check (`definitionFault`) needs no registry
    * and always runs. */
   checkAdmission?: (resolved: ResolvedDefinition) => string | undefined;
+  /** Does this folder exist? The pod's filesystem, in `main.ts`. Absent in a test with no `/work`. */
+  frameExists?: (path: string) => boolean;
   /** How long a live long-poll parks before 204 "nothing yet". Default 25s (the stub's
    * cadence); short in tests. */
   longPollMs?: number;
@@ -330,8 +331,20 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     // `cwd` was dropped runs in the wrong directory and says nothing (ADR-0057).
     const framing = frameFault(agentName, sent);
     if (framing) return c.json({ error: framing }, 400);
+
     const submission = admissionRequest(sent, sent?.definition as AgentDefinition);
     const resolved = resolveDefinition(submission.definition, submission);
+    // A Chart's word can name a folder no cut made: the Orchestrator turns this answer into
+    // `agent.fault`, which the Machine routes (ADR-0067), and no Turn starts in the wrong place. Only
+    // Working tools use a `cwd`, so a `workspace: "none"` Agent has no wrong place to start in.
+    if (resolved.workspace !== "none" && typeof sent?.cwd === "string" && deps.frameExists?.(sent.cwd) === false) {
+      return c.json(
+        {
+          error: `agent "${agentName}": the Turn's \`cwd\` ${sent.cwd} does not exist: cut the Worktree first (ADR-0057)`,
+        },
+        400,
+      );
+    }
     // The Instance Harness placement gate (ADR-0031): identity precedes dials. Checked against
     // the definition this admission carries (default "write" — ADR-0028), so the refusal holds
     // from the very first POST and no non-"none" conversation can ever exist here.
@@ -600,61 +613,13 @@ function admissionRequest(body: unknown, definition: AgentDefinition): Admission
     definition,
     message: typeof sent.message === "string" ? sent.message : "",
     ...(typeof sent.cwd === "string" ? { cwd: sent.cwd } : {}),
+    ...(typeof sent.slot === "string" && sent.slot !== "" ? { slot: sent.slot } : {}),
     ...(typeof sent.model === "string" ? { model: sent.model } : {}),
     ...(typeof sent.thinkingLevel === "string"
       ? { thinkingLevel: sent.thinkingLevel as TurnDials["thinkingLevel"] }
       : {}),
     ...noticesOf(sent.notices),
   };
-}
-
-/** The admission's notices (ADR-0062), kept where this Harness can word them. A kind it does not
- * know is a newer Orchestrator's — skew (ADR-0027) — and a notice missing its facts cannot be said
- * truly; both are dropped rather than rendered as half a sentence. Garbage in the slot is none. */
-function noticesOf(value: unknown): { notices?: Notice[] } {
-  if (!Array.isArray(value)) return {};
-  const str = (v: unknown) => typeof v === "string";
-  const notices = value.filter((n: unknown): n is Notice => {
-    if (typeof n !== "object" || n === null) return false;
-    const { kind, scope, agent, peak, limit, reason } = n as Record<string, unknown>;
-    if (kind === "memory-limit") {
-      // No `agent`: every kill read from the pod's list names no Turn.
-      return (
-        scope === "workspace" &&
-        (agent === undefined || str(agent)) &&
-        (limit === undefined ? peak === undefined : str(limit)) &&
-        (peak === undefined || str(peak))
-      );
-    }
-    if (kind === "pick-answer") {
-      const { pick, cut, answer, stopped } = n as Record<string, unknown>;
-      return (
-        scope === "conversation" &&
-        str(pick) &&
-        typeof cut === "boolean" &&
-        isPickAnswer(answer) &&
-        (stopped === undefined || stopped === true)
-      );
-    }
-    return kind === "conversation-new" && scope === "conversation" && str(reason);
-  });
-  return notices.length > 0 ? { notices } : {};
-}
-
-/** A pick answer's facts this Harness can word (ADR-0024, ADR-0067): absent (no reply came), a
- * party's event with its payload, a child's output, or what the Machine's `answer` action set. */
-function isPickAnswer(value: unknown): value is PickAnswer | undefined {
-  if (value === undefined) return true;
-  if (typeof value !== "object" || value === null) return false;
-  const { kind, event, payload, sender, actor } = value as Record<string, unknown>;
-  if (kind === "output") return typeof actor === "string" && "output" in value;
-  if (kind === "answer") return "value" in value;
-  if (kind !== "event" || typeof event !== "string") return false;
-  if (typeof payload !== "object" || payload === null) return false;
-  if (sender === undefined) return true;
-  if (typeof sender !== "object" || sender === null) return false;
-  const { party, id } = sender as Record<string, unknown>;
-  return (party === "agent" || party === "gate") && typeof id === "string";
 }
 
 /** Why a body is not an `ExecRequest`, or undefined. argv is a non-empty list of strings — never a

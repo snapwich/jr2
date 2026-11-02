@@ -68,7 +68,6 @@ function notifier() {
 const slotAt = (machine: unknown, slot: string): unknown =>
   (machine as { implementations: { actors: Record<string, unknown> } }).implementations.actors[slot];
 
-const spec = () => ({ branch: "feat-1" });
 const repos = { app: "https://example.test/app.git" };
 
 test("an Open url or argv is carried with the sentinel, and the walk reports it — no target, no argv guessed", () => {
@@ -220,7 +219,7 @@ test("a bound argv's slot the invoke does not supply is no refusal at customize(
       calling: {
         invoke: {
           src: "deploy",
-          input: { env: "prod" },
+          input: { env: "prod", worktree: "/work/app/run-1" },
           onDone: "done",
           onError: { target: "faulted", actions: assign({ fault: ({ event }) => (event.error as Error).message }) },
         },
@@ -272,7 +271,7 @@ test("workspace() and pool() are transparent: an Effect in the body is bound wit
     events: [],
     actors: { deploy: commandWith(execs.factory, open, {}), comment: comment() },
   }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
-  const wrapped = workspace(body, { repos, spec });
+  const wrapped = workspace(body, { repos });
   const wake = defineEvent({ name: "work_ready", input: z.object({}) });
   const pooled = pool(wrapped, {
     source: source<{ id: string }>({
@@ -336,7 +335,7 @@ test("jr2 up places what a bound part names: the Instance Effector's fence is th
       release: commandWith(execs.factory, open, { env: { TOKEN: secret("release-token") } }),
     },
   }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
-  const bound = customize(workspace(body, { repos, spec }), {
+  const bound = customize(workspace(body, { repos }), {
     effects: {
       comment: { url: "https://tracker.example.com:8443/api" },
       release: { argv: ["./release.sh", "--prod"] },
@@ -344,7 +343,7 @@ test("jr2 up places what a bound part names: the Instance Effector's fence is th
   });
   // The credentialed command was placed in the Sandbox Effector before it was bound: naming a
   // secret is the placement, and the argv names none.
-  const before = workspacePodsOf(workspace(body, { repos, spec }));
+  const before = workspacePodsOf(workspace(body, { repos }));
   assert.deepEqual(
     before[0]!.effects.map((e) => [e.name, e.placement]),
     [["release", "sandbox"]],
@@ -416,7 +415,7 @@ test("a bound argv carries the warnings the same Machine written with that argv 
       initial: "w",
       states: {
         w: {
-          invoke: { src: "coder", input: { prompt: "p", endpoint: "http://harness.invalid" } },
+          invoke: { src: "coder", input: { prompt: "p", endpoint: "http://harness.invalid", cwd: "/work/app/run-1" } },
           initial: "rest",
           states: { rest: {}, shipping: { invoke: { src: "deploy", input: fromPick(ship), onDone: "rest" } } },
           on: { ship: { target: ".shipping", actions: "noop" }, finish: "done" },
@@ -441,7 +440,7 @@ test("a bound argv carries the warnings the same Machine written with that argv 
     loadWarningsOf(shipper(commandWith(execs.factory, ["make", arg("env")]))),
   );
   // Through workspace(), the body's doc carries the bound warnings; a later customize() keeps them.
-  const wrapped = customize(workspace(openMachine, { repos, spec }), {
+  const wrapped = customize(workspace(openMachine, { repos }), {
     effects: { deploy: { argv: ["make", "deploy"] } },
   } as never);
   const docs = machineBodies(serializeMachine("shipper", wrapped));
@@ -593,7 +592,7 @@ test("an http whose body is a Worktree file may leave its url Open too, and bind
     initial: "idle",
     states: { idle: {} },
   });
-  const wrapped = workspace(m, { repos, spec });
+  const wrapped = workspace(m, { repos });
   assert.deepEqual(partsOf([wrapped]).openEffects, [{ slot: "report", path: [], parts: ["url"] }]);
   const bound = customize(wrapped, { effects: { report: { url: "https://files.example.com/upload" } } });
   const [effect] = partsOf([bound]).effects;
@@ -726,7 +725,7 @@ test("a dispatch inside a Workspace's body never joins its pod: no Sandbox Effec
       away: dispatch("review", { target: { url: "https://ops.example.com", token: secret("ops") } }),
     },
   }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
-  const m = workspace(body, { repos, spec });
+  const m = workspace(body, { repos });
   const pods = workspacePodsOf(m);
   assert.equal(pods.length, 1);
   assert.deepEqual(pods[0]!.effects, [], "a dispatch is placed by its target, never by the Workspace it sits in");

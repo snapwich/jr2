@@ -100,19 +100,35 @@ test("an empty url and an unsupported scheme are refused by name", () => {
   assert.throws(() => repoIdentity("https://github.com/"), /has no path/);
 });
 
-test("the key is <slug>-<8 hex of sha256(identity)>: a DNS-1123 label of at most 49 chars, slug from the last segment", () => {
+test("the key is <slug>-<32 hex of sha256(identity)>: a DNS-1123 label of at most 49 chars, slug from the last segment", () => {
   const { identity, key } = repoIdentity("git@github.com:Acme/App.git");
-  assert.match(key, /^app-[0-9a-f]{8}$/);
+  assert.match(key, /^app-[0-9a-f]{32}$/);
   assert.equal(key, repoKey("https://github.com/Acme/App"));
   assert.equal(identity, "github.com/Acme/App");
 
   const long = repoIdentity(`https://host/org/${"Very_Long.Name-".repeat(6)}Tail`);
   assert.match(long.key, /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, "DNS-1123 label");
-  assert.ok(long.key.length <= 49, `${long.key.length} chars`);
-  assert.equal(long.key.slice(0, "very-long-name-".length), "very-long-name-");
+  assert.equal(long.key.length, 16 + 1 + 32, "a 16-character slug, a dash, 32 hex: 49 characters");
+  assert.match(long.key, /^very-long-name-v-[0-9a-f]{32}$/);
+  // The limits the key must keep: the CRD's MaxLength (49), the volume name `repo-<key>` and the
+  // annotation key's name part `asked-<key>` (each at most 63, a DNS-1123 label).
+  assert.ok(`repo-${long.key}`.length <= 63 && `asked-${long.key}`.length <= 63);
 
-  assert.match(repoIdentity("https://host/_-_").key, /^repo-[0-9a-f]{8}$/, "an empty slug reads `repo`");
-  assert.match(repoKey("/srv/x.git"), /^x-[0-9a-f]{8}$/);
+  assert.match(repoIdentity("https://host/_-_").key, /^repo-[0-9a-f]{32}$/, "an empty slug reads `repo`");
+  assert.match(repoKey("/srv/x.git"), /^x-[0-9a-f]{32}$/);
+});
+
+// ADR-0051, the gaps review's C1: with 8 hex digits (32 bits) a search found a url of another
+// repository with the same key in 12 s, and a per-run url then mounted the victim's cache.
+test("the demonstrated 32-bit collision is two keys now", () => {
+  const victim = repoIdentity("https://github.com/victim-org/app");
+  const attacker = repoIdentity("https://github.com/ourorg/t6437y/app");
+  assert.equal(
+    victim.key.slice(0, "app-".length + 8),
+    attacker.key.slice(0, "app-".length + 8),
+    "the old keys collide",
+  );
+  assert.notEqual(victim.key, attacker.key);
 });
 
 test("two repositories sharing a last segment get distinct keys — the hash carries the rest", () => {

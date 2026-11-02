@@ -165,8 +165,10 @@ jr2 status <run id>
 The status is one line of JSON. While the coder works, `gates` is `[]`. When the run waits at `review`, `gates` holds
 the Gate. Its `gate` is `body.review`, and the line ends with its `meta`:
 
+<!-- output: not run -->
+
 ```text
-…"gate":"body.review",…,"meta":{"summary":"Fixed the \"trims the name\" test failure in docs/site/tutorial/greet. The bug was that the name wasn't being trimmed before constructing the greeting output. Added `.trim()` to the name extraction in src/greet.js, changing `args.find(...) ?? \"world\"` to `(args.find(...) ?? \"world\").trim()`. All 6 tests now pass.","branch":"jr2/task-d8f59a0c-9ea1-43fc-8d0c-b153caf70f16","worktree":"/work/target/jr2-task-d8f59a0c-9ea1-43fc-8d0c-b153caf70f16"}}]}
+…"gate":"body.review",…,"meta":{"summary":"Fixed the \"trims the name\" test failure in docs/site/tutorial/greet. The bug was that the name wasn't being trimmed before constructing the greeting output. Added `.trim()` to the name extraction in src/greet.js, changing `args.find(...) ?? \"world\"` to `(args.find(...) ?? \"world\").trim()`. All 6 tests now pass.","branch":"jr2/task-d8f59a0c-9ea1-43fc-8d0c-b153caf70f16","worktree":"/work/target/task"}}]}
 ```
 
 Run the command again until `gates` holds the Gate.
@@ -346,7 +348,7 @@ No resources found in my-instance namespace.
 ## What happened
 
 - `task` is a Machine in a Workspace. The run made a Sandbox for the Workspace and cloned your fork into it. It cut the
-  branch from the release tag, in a Worktree in `/work/target/`. See [Workspaces](../concepts/workspaces.md).
+  branch from the release tag, in the Worktree `/work/target/task`. See [Workspaces](../concepts/workspaces.md).
 - `task` left its Repo Slots and the model of its coder Open. `customize()` bound them where you registered the
   Workflow, and `jr2 up` refuses a Workflow with an Open part. See [Composition](../concepts/composition.md) and
   [ADR-0054](../reference/decisions/0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md).

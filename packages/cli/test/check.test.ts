@@ -47,7 +47,7 @@ const LOST_OUTPUT =
 const OPEN_SLOT =
   `const body = jr2Setup()\n` +
   `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-  `export const machine = workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) });\n`;
+  `export const machine = workspace(body, { repos: { target: open } });\n`;
 
 async function mkInstance(workflows: Record<string, string>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "jr2-check-"));
@@ -191,7 +191,7 @@ test("a state that invokes an Agent with no agent.fault route, and a body state 
   const body = await mkInstance({
     bare:
       `const body = jr2Setup().createMachine({ id: "body", initial: "run", states: { run: {}, done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" } });\n`,
   });
   const lost = mkIo(body);
   assert.equal(await main(["check"], lost.io), 1);

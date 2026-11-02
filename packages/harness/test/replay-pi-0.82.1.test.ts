@@ -16,6 +16,7 @@ import { bashTool } from "../src/bash-tool.ts";
 import { compact, prepareCompaction } from "../src/compaction-summary.ts";
 import type { EngineTool } from "../src/engine.ts";
 import { fileTools } from "../src/file-tools.ts";
+import { testChildren } from "./support/children.ts";
 import { EnginePart, type TranscriptEntry } from "../src/transcript.ts";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "pi-0.82.1");
@@ -130,17 +131,20 @@ function snapshot(dir: string): Record<string, string> {
   return files;
 }
 
+// One domain for every file case: the tools' I/O runs in it, as in a pod (ADR-0076).
+const fileChildren = testChildren();
+
 for (const c of load<FileCase[]>("file-tools.json")) {
   test(`${c.tool}, as pi 0.82.1 answered: ${c.name}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "jr2-replay-"));
-    const savedHome = process.env.HOME;
-    if (c.home) process.env.HOME = dir;
     try {
       for (const [name, content] of Object.entries(c.files)) {
         mkdirSync(join(dir, name, ".."), { recursive: true });
         writeFileSync(join(dir, name), typeof content === "string" ? content : Buffer.from(content.base64, "base64"));
       }
-      const tool = fileTools(dir).find((t) => t.name === c.tool) as EngineTool;
+      // A case `under ~` has the case folder as its HOME: the domain's HOME, which `~` names (ADR-0076).
+      const home = c.home ? dir : fileChildren.env.HOME!;
+      const tool = fileTools(dir, { files: fileChildren.spawner, home }).find((t) => t.name === c.tool) as EngineTool;
       const raw = JSON.parse(JSON.stringify(c.args).replaceAll("<dir>", dir)) as Record<string, unknown>;
       const args = tool.prepareArguments ? tool.prepareArguments(raw) : raw;
       let output: { content?: unknown; error?: string; files?: Record<string, string> };
@@ -153,7 +157,6 @@ for (const c of load<FileCase[]>("file-tools.json")) {
       if (c.tool !== "read") output.files = snapshot(dir);
       assert.deepEqual(output, c.output);
     } finally {
-      if (c.home) process.env.HOME = savedHome;
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -173,7 +176,9 @@ for (const c of load<BashCase[]>("bash.json")) {
     try {
       const output: BashCase["output"] = {};
       try {
-        const first = (await bashTool({ cwd: dir }).execute("call-1", { command: c.command })).content[0];
+        const first = (
+          await bashTool({ cwd: dir, children: testChildren({ work: dir }) }).execute("call-1", { command: c.command })
+        ).content[0];
         output.text = first && first.type === "text" ? first.text : "";
       } catch (err) {
         output.error = (err as Error).message;

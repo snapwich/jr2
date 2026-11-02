@@ -10,33 +10,74 @@
 // Harness, ADR-0031), and the command the operator overrides a Sandbox Image with, where jr2's
 // runtime is mounted at `/opt/jr2` and nothing about this process came from the image (ADR-0037).
 
+// First, before any other module of the Harness runs: node must look for modules in jr2's folders
+// alone (ADR-0076, `module-paths.ts`).
+import "./module-paths-guard.ts";
+import { existsSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { harnessServer } from "./app.ts";
 import { attacher } from "./attach.ts";
+import {
+  childPolicy,
+  CONFINER,
+  runIn,
+  CONTROL_SOCKET,
+  CONTROL_STANDIN_FILE,
+  CONVERSATIONS_DIR,
+  probeLandlock,
+  readControlStandIn,
+  readStandIns,
+  RESERVED_ENV,
+  RUNTIME_SECRETS,
+  STANDINS_DIR,
+  assertHarnessHome,
+  takeStartEnv,
+  type ChildPolicy,
+} from "./children.ts";
 import { syncer } from "./sync.ts";
 import { Execs } from "./exec.ts";
 import { seatFacts, standingBriefing } from "./briefing.ts";
-import { clearShm, podMemoryGuard } from "./memory-guard.ts";
+import { clearShm, clearShmInDomain, podMemoryGuard } from "./memory-guard.ts";
 import { admissionFault, modelsFor } from "./provider.ts";
 import { loadHarnessSpec } from "./spec.ts";
-import { prepareProcess } from "./startup.ts";
+import {
+  conditionPathAndHome,
+  defaultGitIdentity,
+  imageSystemGitConfigBy,
+  NO_SYSTEM_FILE,
+  prepareProcess,
+  RUNTIME_GITCONFIG,
+} from "./startup.ts";
 import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
+import { unixFetch } from "./unix-fetch.ts";
 
-// FIRST, before anything reads the environment or writes a file: umask 002, PATH appended with
+// The env the container STARTED with, before this process changes its own (ADR-0076): the domain's
+// env is made from it, so nothing that this process adds later — a held secret's Stand-in, a model
+// key's — reaches a process of the domain. In a pod it is `JR2_START_ENV`: this process's own env is
+// only the names that jr2 composed, less each that loads code from a path (`effector nocore
+// --harness-env`), and the image's `ENV` reaches the domain alone. The imports above change no env
+// (see below).
+const startEnv: Readonly<Record<string, string>> = takeStartEnv(process.env);
+
+// The process's name (ADR-0076): an Agent's `pkill node` does not end the Harness by accident, and a
+// test finds it by this name.
+process.title = "jr2-harness";
+
+// Then, before anything else reads the environment or writes a file: umask 002, PATH appended with
 // /opt/jr2/bin, HOME defaulted, git's default identity at its lowest rung. In a Sandbox the image
-// is the user's and carries none of these, and every Working tool child inherits them from here
-// (startup.ts, ADR-0037/ADR-0005).
+// is the user's and carries none of these, and every process of the domain gets them from here —
+// the umask by inheritance, PATH, HOME and git's identity in the domain's env (startup.ts,
+// children.ts, ADR-0037/ADR-0005, ADR-0076).
 // "First" is first STATEMENT, not first code: the imports above are ESM, so their module bodies run
 // ahead of this line. That holds only because none of them touches PATH, HOME, the umask, or spawns
 // a child at module scope — they declare constants and schemas (verified). A module that ever needs
 // the conditioned environment at import time must read it inside a function, not at its top level.
-prepareProcess();
-
-// `/dev/shm` empty before any Working tool runs (ADR-0060): shm files outlive a container restart
-// and stay charged to the pod, so a Harness restarted after a memory kill would start against the
-// memory that killed it — the lab's crash loop.
-clearShm();
+// The Harness of a Sandbox does not run the image's git to find git's system file: that git can be a
+// program that Workspace code put on PATH. It asks the domain below (ADR-0076). The Instance
+// Harness runs no Workspace code, and keeps the check here.
+const menuOnly = process.env.JR2_MENU_ONLY !== undefined && process.env.JR2_MENU_ONLY !== "";
+prepareProcess(process.env, undefined, undefined, menuOnly ? undefined : NO_SYSTEM_FILE);
 
 function required(name: string, why: string): string {
   const value = process.env[name];
@@ -44,18 +85,129 @@ function required(name: string, why: string): string {
   return value;
 }
 
+/** A start that cannot serve: said in the log and in the container's termination message, which
+ * the operator publishes on the Sandbox's status (ADR-0063), then exit 1. */
+function refuse(line: string): never {
+  console.error(`jr2 harness: ${line}`);
+  try {
+    writeFileSync("/dev/termination-log", line);
+  } catch {
+    // Not in a pod.
+  }
+  process.exit(1);
+}
+
+const confiner = process.env.JR2_CONFINER || CONFINER;
+
+// Landlock is a requirement of jr2 (ADR-0077): the Harness of a Sandbox runs each process it
+// starts in a Landlock domain, so without it this Harness refuses to serve — the backstop for a node that the
+// converge did not see. The Instance Harness confines nothing, and does not probe.
+if (!menuOnly) {
+  const refusal = probeLandlock(confiner, process.env.NODE_NAME || "unknown");
+  if (refusal !== undefined) refuse(refusal);
+}
+
 const harness = loadHarnessSpec(process.env);
-// The Menu's route (ADR-0013, ADR-0059): the Custodian on this pod's loopback, and the Sandbox
-// token's STAND-IN — the Agent reads this env, so the token itself is the Custodian's alone.
+// The control Stand-in (ADR-0076): read ONCE, from its file, and held in this process alone — the
+// bearer of every control request. It is in no env, and no process this Harness confines can read
+// its file. The Custodian puts the control token in its place on the agent routes (ADR-0059).
+const controlFile = process.env.JR2_CONTROL_STANDIN_FILE || CONTROL_STANDIN_FILE;
+let control: string;
+try {
+  control = readControlStandIn(controlFile);
+} catch (err) {
+  refuse(err instanceof Error ? err.message : String(err));
+}
+// Every control request goes to the Custodian's control socket under /run/jr2 (ADR-0076), which no
+// process of the domain can bind. The URL's host is a name only.
 const menu = {
-  url: required("JR2_CUSTODIAN_URL", "the Agent has no Custodian to reach, so it cannot drive its Machine (ADR-0013)"),
-  token: required("JR2_SANDBOX_TOKEN", "the Menu is read with the Sandbox token's Stand-in (ADR-0059)"),
+  url: "http://jr2-custodian",
+  token: control,
+  fetch: unixFetch(process.env.JR2_CUSTODIAN_SOCKET || CONTROL_SOCKET),
 };
+// Every held secret's Stand-in (ADR-0059): secret, a file each, read once. The engine gets a model
+// key's in this process (pi reads the key variable here); the domain gets only the ones its
+// `workspace()` grants (`JR2_GRANTED_SECRETS`), never this process's env.
+const standInsDir = process.env.JR2_STANDINS_DIR || STANDINS_DIR;
+const standIns = readStandIns(standInsDir);
+for (const [name, value] of standIns) {
+  // A Stand-in never takes a variable that the domain's env is made of (`children.ts`).
+  if (RESERVED_ENV.includes(name)) {
+    refuse(
+      `the held secret ${name} names a variable of the Harness's own env (PATH, HOME, the proxy) — rename it (ADR-0059)`,
+    );
+  }
+  process.env[name] = value;
+}
 const models = modelsFor(harness, process.env);
 
+// Where the conversations are kept (ADR-0031): under /run/jr2, which the domain cannot read
+// (ADR-0076). An empty value keeps them in memory alone (a test's Harness).
+const conversationsDir = process.env.JR2_CONVERSATIONS_DIR ?? CONVERSATIONS_DIR;
+
+// The domain (ADR-0076): the one spawner, confined, and the env of each process in it. The Instance
+// Harness has none — a Menu-only Agent has no Working tools (ADR-0031).
+let children: ChildPolicy | undefined;
+if (!menuOnly) {
+  // A conversation outside /run/jr2 is one that a process of the domain reads.
+  if (conversationsDir !== "" && !`${conversationsDir}/`.startsWith(`${RUNTIME_SECRETS}/`)) {
+    refuse(
+      `the conversations folder ${conversationsDir} is not under ${RUNTIME_SECRETS}: every process the Harness ` +
+        "starts would read the conversations (ADR-0076)",
+    );
+  }
+  try {
+    // The start env, with PATH and HOME as startup.ts makes them: the toolchain's. git's identity
+    // comes below.
+    const domainStart: Record<string, string | undefined> = { ...startEnv };
+    conditionPathAndHome(domainStart);
+    children = childPolicy({
+      env: domainStart,
+      confiner,
+      standIns,
+      control,
+    });
+  } catch (err) {
+    refuse(`the Harness cannot start its domain: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // The Harness process has had a HOME of its own since before node started (`effector nocore
+  // --harness-env`), under /run/jr2, which the domain cannot write (ADR-0076). The domain keeps the
+  // Workspace HOME, and the file tools' `~` is that HOME.
+  if (children) {
+    try {
+      assertHarnessHome(process.env, children);
+    } catch (err) {
+      refuse(err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
+// `/dev/shm` empty before any Working tool runs (ADR-0060): shm files outlive a container restart
+// and stay charged to the pod, so a Harness restarted after a memory kill would start against the
+// memory that killed it — the lab's crash loop. In a Sandbox a process of the domain empties it,
+// because the domain writes there (`clearShmInDomain`, ADR-0076).
+if (children) await clearShmInDomain(children);
+else clearShm();
+
+// git's default identity for the domain (startup.ts): the image's git, run in the domain, says
+// which system file it reads. Its answer sets only the domain's env.
+if (children) {
+  const domain = children;
+  const systemFile = await imageSystemGitConfigBy(async (args) => {
+    const r = await runIn(domain, ["git", ...args], { cwd: "/", timeoutMs: 10_000 });
+    return { code: r.code, stdout: r.stdout };
+  });
+  const env: Record<string, string | undefined> = { ...domain.env };
+  defaultGitIdentity(env, RUNTIME_GITCONFIG, () => systemFile);
+  const gitConfigSystem = env.GIT_CONFIG_SYSTEM;
+  if (gitConfigSystem !== undefined && domain.env.GIT_CONFIG_SYSTEM === undefined) {
+    children = { ...domain, env: { ...domain.env, GIT_CONFIG_SYSTEM: gitConfigSystem } };
+  }
+}
+
 // The wire's gate (ADR-0058): the Orchestrator bears a token derived for THIS placement, and the
-// env carries only its sha-256 — the Agent has code execution in this container, and a digest
-// verifies without minting, for this pod or any other. Required at boot: a Harness that could not
+// env carries only its sha-256 — Workspace code runs in this container, and a digest verifies
+// without minting, for this pod or any other. Required at boot: a Harness that could not
 // check a bearer would admit anyone who can reach it, which is the hole this closes. Digests
 // compare with `===` on purpose: what a timing leak could reveal is a hash prefix, which inverts to
 // nothing.
@@ -69,7 +221,7 @@ const sha256 = (value: string): string => createHash("sha256").update(value).dig
 // `bash` calls share it. It polls from here on, not only while a `bash` call runs — a dev server
 // left from an earlier call or a human's exec session is one of the Agent's processes too. Off
 // where `memory.max` is `max` or unreadable (a host run).
-const guard = podMemoryGuard();
+const guard = podMemoryGuard(children);
 guard.start();
 
 // The Briefing's standing part (ADR-0062), composed once for the pod: its CPUs from the Downward API
@@ -78,27 +230,35 @@ guard.start();
 const standing = standingBriefing(seatFacts(process.env));
 
 const harnessWire = harnessServer({
-  runSubmissionFor: (seat) => runSubmissionFor({ models, menu, guard, standing, ...seat }),
+  runSubmissionFor: (seat) =>
+    runSubmissionFor({ models, menu, guard, standing, ...(children ? { children } : {}), ...seat }),
   // A guard kill lands on the running conversations' streams and on `GET /memory-kills`, under one
   // id, for the Orchestrator's notice (ADR-0062).
   memoryKills: (listener) => guard.onKill(listener),
   memoryTold: (teller) => guard.onTold(teller),
-  // The attach (ADR-0063): the Workspace's Repos into `/work`, on the Orchestrator's call.
-  attach: attacher(),
-  // The sync (ADR-0067): the Agent's branch to the published commits, when they are not its own.
-  sync: syncer(),
-  // The exec (ADR-0067): a Machine's `command` Effects, run as children of this process — the
-  // Agent's user and its Stand-ins. The Instance Harness refuses them (`menuOnly`).
-  execs: new Execs(),
+  // The attach (ADR-0063), the sync (ADR-0067) and the exec of a Machine's `command` Effects
+  // (ADR-0067), each in the domain (ADR-0076). The Instance Harness has none: it refuses them all
+  // (`menuOnly`).
+  ...(children
+    ? {
+        // The Workspace's Repos into `/work`, on the Orchestrator's call.
+        attach: attacher({ children }),
+        // The Agent's branch to the published commits, when they are not its own.
+        sync: syncer({ children }),
+        // In the domain: the Agent's user, and the Stand-ins its `workspace()` grants.
+        execs: new Execs({ children }),
+      }
+    : {}),
   checkAdmission: (resolved) => admissionFault(models, resolved),
+  frameExists: (path) => existsSync(path),
   // Set on the Instance Harness StatefulSet alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code
   // execution in this pod" a property, not a comment.
-  ...(process.env.JR2_MENU_ONLY ? { menuOnly: true } : {}),
+  ...(menuOnly ? { menuOnly: true } : {}),
   checkBearer: (bearer) => bearer !== undefined && sha256(bearer) === bearerSha256,
   // Where each conversation is persisted and rebuilt from (ADR-0031): the Instance Harness's
   // PersistentVolumeClaim, a Sandbox Harness's emptyDir. Unset, conversations live in memory.
-  ...(process.env.JR2_CONVERSATIONS_DIR ? { conversationsDir: process.env.JR2_CONVERSATIONS_DIR } : {}),
+  ...(conversationsDir !== "" ? { conversationsDir } : {}),
 });
 
 // A port another container in the pod took is said in one line, exit 1 (R16 — serve.ts).

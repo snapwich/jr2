@@ -31,7 +31,8 @@ end. And a restarted Harness answered a `continue` with no memory of the convers
   Sandbox goes to the terminal phase **`Lost`**, with the pod's own reason and message (for a deleted pod, the last it
   saw). It never returns to `Pending` and is never given a second pod: `work` is an `emptyDir`, so a new pod could
   continue nothing, and it would hold a whole Size for nobody while hiding the loss. The CR stays, so `jr2 status` can
-  say why, until teardown or the idle GC.
+  say why, until teardown or the idle GC. A Sandbox delete waits for its pod, because a retry can take the name of a pod
+  that is still going away.
 - **The operator judges identity, because it knows which pod it created.** It still publishes `status.podUID`; the
   Orchestrator reads `Lost`, not a UID comparison.
 - **The watch answers; the lease asserts.** The Orchestrator watches its Sandboxes

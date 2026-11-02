@@ -38,6 +38,7 @@ import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./comp
 import { compactionSummaryText } from "./compaction-summary.ts";
 import { RunawayError, TURN_OVER, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
 import {
+  ackNotices,
   briefingsOf,
   cutPickResult,
   readMenu,
@@ -47,7 +48,9 @@ import {
   unsentPickResult,
   type MenuItem,
   type MenuOptions,
+  type MenuReach,
 } from "./menu.ts";
+import type { ChildPolicy } from "./children.ts";
 import { MENU_TOOL_PREFIX, menuToolName, menuTools } from "./menu-tools.ts";
 import {
   attachPrinter,
@@ -57,7 +60,13 @@ import {
   renderThinkingLevel,
   type PrinterOut,
 } from "./printer.ts";
-import type { Engine, EngineAdapter, EngineMessage, EngineTool } from "./engine.ts";
+import {
+  refuseEngineInDomain,
+  type Engine,
+  type EngineAdapter,
+  type EngineMessage,
+  type EngineTool,
+} from "./engine.ts";
 import { ENGINE_ADAPTER } from "./engine-choice.ts";
 import type { EnginePart } from "./transcript.ts";
 import { lacksLevel, mapThinkingLevel, PROVIDER_RETRIES, providerLimit, ranAt, resolveModel } from "./provider.ts";
@@ -72,9 +81,13 @@ import { workingToolsFor } from "./working-tools.ts";
 export type TurnDeps = {
   /** The model registry (`provider.ts` — pi's catalog + the instance's custom provider). */
   models: Models;
-  /** Where the Menu is read and picks go: the Custodian on `localhost` (`$JR2_CUSTODIAN_URL`), with
-   * the Sandbox token's Stand-in (`$JR2_SANDBOX_TOKEN`) — ADR-0013, ADR-0059. */
-  menu: MenuOptions;
+  /** Where the Menu is read and picks go: the Custodian's control socket (`unix-fetch.ts`), with
+   * the control Stand-in that the Harness process alone holds — ADR-0013, ADR-0059, ADR-0076. Each
+   * request states this conversation's slot, which its admission names (`TurnFrame.slot`). */
+  menu: MenuReach & Partial<Omit<MenuOptions, keyof MenuReach | "slot">>;
+  /** The domain: where the Working tools start a process and do their file I/O (ADR-0076).
+   * Omitted (the Instance Harness), no Agent gets Working tools. */
+  children?: ChildPolicy;
   agentName: string;
   instanceId: string;
   appendMessage: (message: HistoryMessage) => void;
@@ -183,9 +196,11 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   /** The last Allowed-picks list the model read (`between-steps.ts`): the Turn part sets it per
    * Submission, every receipt and refusal through `onAllowed`. */
   const told = new ToldPicks();
-  // The presenter's naming reaches every text `menu.ts` writes (ADR-0029).
+  // The presenter's naming reaches every text `menu.ts` writes (ADR-0029). The slot is the
+  // conversation's own (ADR-0076): the admission states it, and each Submission sets it below.
   const menuOptions: MenuOptions = {
     ...deps.menu,
+    slot: "",
     toolName: menuToolName,
     onAllowed: (allowed) => told.heard(allowed),
     onTurnOver: () => {
@@ -235,9 +250,18 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
   /** The Menu calls whose jr2 answer (`cutPickAnswers`) this process printed: each prints once. */
   const printedCuts = new Set<string>();
+  /** Per Submission: the notices a surface read reserved (ADR-0062), by the text that carries them —
+   * the prompt, or a step boundary's steer. Each is acknowledged when its text is in the Turn: the
+   * engine tells the user message's end. Reset when each Submission starts; a steer that never
+   * drained is never acknowledged, and its reservation is released at the Turn's end. */
+  const unacked = new Map<string, string[]>();
 
   return async (submission, signal, seat) => {
     const { message } = submission;
+    // Whose conversation this is, as the Orchestrator registered it (ADR-0076): stated on each
+    // control request of this Turn. An admission that states none (a wire test's) states an empty
+    // slot, which the Orchestrator refuses on the first control request.
+    menuOptions.slot = submission.slot ?? "";
     work.running.clear();
     work.polls = 0;
     work.seat = seat;
@@ -250,6 +274,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     turn.last = undefined;
     turn.levelSaid = false;
     turn.answerPick = undefined;
+    unacked.clear();
     // This Submission's Frame and dials layer over the definition it carries (ADR-0018/0049/0057).
     // Read HERE, per Submission, so one `continue` conversation can queue turns at different
     // settings and in different worktrees: the model, the level and the tools (rooted at the
@@ -279,7 +304,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       };
       // Opened, not created, when the conversation was rebuilt: the engine part a previous process
       // wrote (ADR-0031).
-      const adapter = deps.engineAdapter ?? ENGINE_ADAPTER;
+      const adapter = refuseEngineInDomain(deps.engineAdapter ?? ENGINE_ADAPTER);
       const part = adapter.open(deps.engineSeat, { cwd: definition.cwd, model });
       const engine = adapter.make({
         id: part.id,
@@ -353,6 +378,17 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         const role = event.message.role;
         if (role === "user" || role === "assistant" || role === "toolResult") part.appendMessage(event.message);
       });
+      // A notice is heard once its text is in the Turn (ADR-0062): the acknowledgment follows the
+      // user message that carries it, and never holds the run.
+      engine.subscribe((event) => {
+        if (event.type !== "message_end" || event.message.role !== "user" || unacked.size === 0) return;
+        const said = userText(event.message);
+        for (const [text, heard] of unacked) {
+          if (!said.includes(text)) continue;
+          unacked.delete(text);
+          void ackNotices(menuOptions, deps.instanceId, heard);
+        }
+      });
       // The thinking level line (ADR-0023, ADR-0018): when this Submission's model has no level of
       // the name the Turn asked for, the first assistant message a provider answered says which
       // level ran. It prints before that message's own lines, once a Submission.
@@ -390,12 +426,13 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         if (!live()) return;
         // A model answer with no tool result is the model stopping: the ask-again rule (ADR-0016).
         const stopped = event.toolResults.length === 0;
-        const text = await between(menuOptions, deps.instanceId, told, runSignal, {
+        const step = await between(menuOptions, deps.instanceId, told, runSignal, {
           stopped,
           briefings: current.briefings,
         }).catch(() => undefined);
-        if (text === undefined || !live()) return;
-        engine.steer(text);
+        if (step === undefined || !live()) return;
+        if (step.heard.length > 0) unacked.set(step.text, step.heard);
+        engine.steer(step.text);
       });
       // The runaway watch (ADR-0035): a step is every tool call that starts while the Turn is live —
       // a call of an unknown tool or with invalid arguments too, which the engine answers with its
@@ -458,6 +495,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       ...workingToolsFor(definition, definition.cwd, {
         guard: deps.guard,
         owner: { agent: deps.agentName, instanceId: deps.instanceId },
+        children: deps.children,
       }),
       ...(menuTools(menu) as EngineTool[]),
     ];
@@ -481,23 +519,31 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // first, and the Allowed picks last, where a model obeys them (ADR-0029, measured).
       // The system prompt is the instructions, then the Briefing's standing part (byte-stable for
       // the seat, ADR-0062). The engine leads every request with it and the tools' declarations.
+      // The admission's notices, then those the surface read reserved (ADR-0062): one Turn part.
+      const notices = [...(submission.notices ?? []), ...read.notices.map((n) => n.notice)];
+      const prompt = briefedPrompt(
+        message,
+        turnPart({
+          workspace: definition.workspace,
+          cwd: definition.cwd,
+          allowed: read.allowed,
+          toolName: menuToolName,
+          briefings: current.briefings,
+          ...(notices.length > 0 ? { notices } : {}),
+        }),
+      );
+      if (read.notices.length > 0)
+        unacked.set(
+          prompt,
+          read.notices.map((n) => n.id),
+        );
       await engine.run({
         model,
         thinkingLevel,
         systemPrompt: standing(definition.instructions, definition.workspace),
         tools,
         context,
-        prompt: briefedPrompt(
-          message,
-          turnPart({
-            workspace: definition.workspace,
-            cwd: definition.cwd,
-            allowed: read.allowed,
-            toolName: menuToolName,
-            briefings: current.briefings,
-            ...(submission.notices ? { notices: submission.notices } : {}),
-          }),
-        ),
+        prompt,
       });
       // The calls the run never started (ADR-0027): an abort or a trip ended it between two calls of
       // its last model answer, and the engine runs no later call and gives it no result. Each gets
@@ -712,6 +758,13 @@ function unrunAnswers(context: EngineMessage[]): ToolResultMessage[] {
   return last.content
     .filter((block): block is ToolCall => block.type === "toolCall" && !answered.has(block.id))
     .map((call) => answerOf(call, unrunResult(), true));
+}
+
+/** The text of a user message: its text parts, joined. */
+function userText(message: EngineMessage): string {
+  const content = (message as UserMessage).content;
+  if (typeof content === "string") return content;
+  return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
 /** One completed message → its history entry, or none. Best-effort by contract (the history view's

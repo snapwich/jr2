@@ -5,9 +5,11 @@ import {
   command,
   defineEvent,
   fail,
+  isReady,
   jr2Setup,
   push,
   workspace,
+  worktree,
   type CommandOutput,
   type HostInjectedInput,
   type PushOutput,
@@ -57,6 +59,15 @@ type Context = BodyInput & {
 // The output of a run that ends `done`. A lost Sandbox fails the run, with no output of this type.
 type Output = { outcome: "pushed"; branch: string; commit: string };
 
+// The Worktree of the coder. The Machine names the folder, and each Effect that works there names it.
+function fixTree(context: BodyInput) {
+  return `${context.workspace.repos.target}/fix` as const;
+}
+// One branch for each run, from its seed Instance ID.
+function branchOf(context: BodyInput): string {
+  return `jr2/fix-${context.instanceId}`;
+}
+
 // Two guards. A guard with a name shows that name on its arrow in the Console's graph.
 function testsPassed({ event }: { event: { output: CommandOutput } }): boolean {
   return event.output.outcome === "exited" && event.output.code === 0;
@@ -81,7 +92,9 @@ const body = jr2Setup({
 - End your turn with exactly one call to \`finish\`.`,
     }),
     // #region effects
-    // A program in the Harness container of the Sandbox, in the Worktree of `target`. Node expands the glob itself.
+    // Cut a Worktree of `target`: the Workspace only clones.
+    cut: worktree(),
+    // A program in the Harness container of the Sandbox, in the Worktree that its input names. Node expands the glob itself.
     tests: command(["node", "--test", "docs/site/tutorial/greet/test/*.test.js"], { timeout: "5m" }),
     // Push the tip of the coder's branch to the Repo of `target`, with the token of `git.credentials`.
     publish: push(),
@@ -92,17 +105,27 @@ const body = jr2Setup({
 }).createMachine({
   id: "fix",
   context: ({ input }) => ({ ...input, fresh: true }),
-  initial: "working",
+  initial: "cutting",
   // The Sandbox is gone, and every commit that was not pushed went with it.
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    // #region cutting
+    // The Workspace only clones. The Machine cuts the Worktree that the Agent works in.
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: fixTree(context), branch: branchOf(context) }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "working" }, { target: "notCut" }],
+      },
+    },
+    // #endregion cutting
     // #region working
     working: {
       invoke: {
         src: "coder",
         input: ({ context }) => ({
           prompt: promptOf(context),
-          cwd: context.workspace.repos.target,
+          cwd: fixTree(context),
           // Each Turn continues the coder's one conversation, so the coder remembers its work.
           continue: true,
         }),
@@ -129,6 +152,7 @@ const body = jr2Setup({
     testing: {
       invoke: {
         src: "tests",
+        input: ({ context }) => ({ worktree: fixTree(context) }),
         onDone: [
           { guard: testsPassed, target: "review" },
           {
@@ -148,8 +172,8 @@ const body = jr2Setup({
           meta: {
             ...(context.summary !== undefined ? { summary: context.summary } : {}),
             ...(context.reason !== undefined ? { reason: context.reason } : {}),
-            branch: context.workspace.branch,
-            worktree: context.workspace.repos.target,
+            branch: branchOf(context),
+            worktree: fixTree(context),
           },
         }),
       },
@@ -169,6 +193,7 @@ const body = jr2Setup({
     pushing: {
       invoke: {
         src: "publish",
+        input: ({ context }) => ({ worktree: fixTree(context) }),
         onDone: [
           {
             guard: pushed,
@@ -185,11 +210,12 @@ const body = jr2Setup({
       type: "final",
       output: ({ context }): Output => ({
         outcome: "pushed",
-        branch: context.workspace.branch,
+        branch: branchOf(context),
         commit: context.commit ?? "",
       }),
     },
-    // Not a final state: the run ends `failed`, and jr2 deletes the Sandbox.
+    // Not final states: the run ends `failed`, and jr2 deletes the Sandbox.
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost, with every commit that was not pushed" } } },
   },
   // The output of the run. xstate reads only this root `output` as the output of the Machine. It
@@ -204,14 +230,14 @@ function promptOf(context: Context): string {
   const reason = context.reason ? `\n\nThe last attempt ended: ${context.reason}` : "";
   return (
     `${context.prompt}${reason}${feedback ? `\n\n${feedback}` : ""}\n\n` +
-    `Work in ${context.workspace.repos.target}, on the branch ${context.workspace.branch}. ` +
+    `Work in ${fixTree(context)}, on the branch ${branchOf(context)}. ` +
     "Commit your fix there, then call finish."
   );
 }
 
 // What the coder reads when the tests fail: the end of the output of `node --test`.
 function testFeedback(output: CommandOutput): string {
-  const text = output.outcome === "unknown" ? output.reason : output.tail;
+  const text = "tail" in output ? output.tail : output.reason;
   return (
     `The tests do not pass (${output.outcome}). The end of their output:\n${text}\n\n` +
     "Fix the code, commit, then call finish."
@@ -232,7 +258,5 @@ function pushFailure(output: PushOutput): string {
 export const machine = workspace(body, {
   input: door,
   repos: { target: { url: "https://github.com/<you>/jr2.git", ref: "v<version>" } },
-  // One branch for each run, from its seed Instance ID: `input.instanceId`.
-  spec: ({ input }) => ({ branch: `jr2/fix-${input.instanceId}` }),
 });
 // #endregion workspace

@@ -9,7 +9,8 @@
 //
 // This module is the pure half, shared by every seat that needs it:
 //
-//   standIn(name)        the value the Harness sees — deterministic and public
+//   heldStandIn(...)     a held secret's Stand-in, minted per pod by the pod's maker — secret
+//   standIn(name)        the fetch Stand-in's form — deterministic and public, for that one alone
 //   heldSecretsOf(...)   `jr2 up`'s normalization of the claimed entries: every refusal (R1–R13),
 //                        every warning, and the engine-neutral bindings each pod's manifest
 //                        (`held-<pod>.json`) takes its own from
@@ -23,23 +24,46 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import type { JR2Config, HarnessEnvVar } from "./config.ts";
-import { MODEL_KEYS, MODEL_KEY_PROVIDERS, SIGNING_CREDENTIALS } from "./model-keys.ts";
-import { HELD_CA_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, INSTANCE_EFFECTOR, INSTANCE_SECRET } from "./names.ts";
+import {
+  CREDENTIAL_FILES,
+  DOMAIN_WRITABLE_ROOTS,
+  MODEL_KEYS,
+  MODEL_KEY_PROVIDERS,
+  SIGNING_CREDENTIALS,
+} from "./model-keys.ts";
+import {
+  HELD_CA_SECRET,
+  HELD_SECRETS_SECRET,
+  HELD_TLS_SECRET,
+  INSTANCE_EFFECTOR,
+  INSTANCE_HARNESS_SERVICE,
+  INSTANCE_SECRET,
+} from "./names.ts";
 import type { PlacementRoute } from "./parts.ts";
+import { sign } from "./tokens.ts";
 
 /** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, each
  * pod's literal held values, the leaves, the CA, and every Effector's (ADR-0068) — the Instance
  * Effector's Effect secrets and key, each Workspace's Sandbox Effector Secret (`jr2-effector-<pod>`),
  * each Sandbox's Effector key (`<sandbox>-effector`), and each `git.credentials` entry's clone and
- * push Secrets (`jr2-git-<hash>`, `jr2-git-push-<hash>`, ADR-0051). */
-const KIT_SECRETS: readonly string[] = [INSTANCE_SECRET, HELD_TLS_SECRET, HELD_CA_SECRET, INSTANCE_EFFECTOR];
+ * push Secrets (`jr2-git-<hash>`, `jr2-git-push-<hash>`, ADR-0051) — and each pod's own credentials
+ * (ADR-0076): the Instance Harness's (`jr2-instance-harness-token`) and each Sandbox's
+ * (`<sandbox>-token`), which hold the real control token beside the Stand-ins. */
+const KIT_SECRETS: readonly string[] = [
+  INSTANCE_SECRET,
+  HELD_TLS_SECRET,
+  HELD_CA_SECRET,
+  INSTANCE_EFFECTOR,
+  `${INSTANCE_HARNESS_SERVICE}-token`,
+];
 const KIT_SECRET_PREFIXES: readonly string[] = [`${HELD_SECRETS_SECRET}-`, "jr2-effector-", "jr2-git-"];
 const isKitSecret = (name: string): boolean =>
   KIT_SECRETS.includes(name) ||
   name === HELD_SECRETS_SECRET ||
   KIT_SECRET_PREFIXES.some((p) => name.startsWith(p)) ||
-  // A Sandbox's own Effector key: every Sandbox's name starts `ws-` (`workspaceName`).
-  (name.startsWith("ws-") && name.endsWith("-effector"));
+  // A Sandbox's own Effector key and its credentials: every Sandbox's name starts `ws-`
+  // (`workspaceName`).
+  (name.startsWith("ws-") && (name.endsWith("-effector") || name.endsWith("-token")));
 
 /**
  * The pod key of one Workspace (ADR-0059): its registered workflow and the placement route to its
@@ -70,16 +94,34 @@ export function providerClaims(config: JR2Config, models: readonly string[]): st
 }
 
 /**
- * The Stand-in for one held secret: what its env var holds in the Harness container.
- *
- * Deterministic and public — it is not a secret, the Agent reads it from its env, and it means
- * something only to the Custodian and only toward a bound host. Unique per name, so one request can
- * carry two secrets' Stand-ins and the Custodian can tell them apart. ASCII letters, digits, `-`
- * and `_` only, so it is a valid header and env value; and it never contains `sk-ant-oat`, which pi
- * reads as an Anthropic OAuth token and answers with different auth headers.
+ * The PUBLIC Stand-in form, `jr2-held-<NAME>`. Since ADR-0076 one Stand-in alone takes it: the fetch
+ * Stand-in, `standIn("JR2_SANDBOX_TOKEN")`, which `jr2-upload-pack` holds as a constant and the
+ * Custodian swaps on the fetch route alone. Every other Stand-in is secret ({@link heldStandIn}).
  */
 export function standIn(name: string): string {
   return `jr2-held-${name}`;
+}
+
+/** What a Stand-in must never contain (ADR-0059): pi reads a key with it as an Anthropic OAuth
+ * token, and answers with different auth headers. */
+const OAUTH_MARK = "sk-ant-oat";
+
+/**
+ * The SECRET Stand-in of one held secret in one pod (ADR-0059, ADR-0076): what the Harness process
+ * holds for it, as the file `/run/jr2/standins/<NAME>`, and what the Custodian of that pod swaps for
+ * the value. `jr2-held-<NAME>.<hmac>` — the readable prefix keeps a log scrub's pattern, and the
+ * HMAC under the signing key makes it unguessable, so Workspace code can spend only the secrets its
+ * `workspace()` grants. `pod` is the Sandbox's name, or `instance` for the Instance Harness. The
+ * pod's maker mints it: the Orchestrator for a Sandbox, `jr2 up` for the Instance Harness and a
+ * check pod. ASCII letters, digits, `-`, `_` and `.` only, so it is a valid header and env value,
+ * and it never contains `sk-ant-oat`: a signature that would is signed again under a counter.
+ */
+export function heldStandIn(key: Buffer, pod: string, name: string): string {
+  for (let n = 0; ; n++) {
+    const domain = `held-standin:${pod}/${name}${n === 0 ? "" : `#${n}`}`;
+    const value = `${standIn(name)}.${sign(key, domain)}`;
+    if (!value.includes(OAUTH_MARK)) return value;
+  }
 }
 
 /** The request headers a Stand-in is swapped in when a held secret names none — the four places a
@@ -99,9 +141,14 @@ export const CREDENTIAL_HEADERS: readonly string[] = [...DEFAULT_CREDENTIAL_HEAD
 /** The env var the custom provider's key rides as (ADR-0018) — held since ADR-0059, and the kit's. */
 export const PROVIDER_KEY_NAME = "JR2_PROVIDER_API_KEY";
 
-/** The Sandbox token's env var (ADR-0013) — a held secret of the kit's own, bound to the
- * Orchestrator (ADR-0059). The Harness container holds its Stand-in; the Custodian holds the token. */
+/** The fetch token's held name (ADR-0013, ADR-0076) — a held secret of the kit's own, bound to the
+ * Orchestrator's fetch route (ADR-0059). Its Stand-in is the public `jr2-held-JR2_SANDBOX_TOKEN`,
+ * which `jr2-upload-pack` holds; the Custodian holds the token. */
 export const SANDBOX_TOKEN_NAME = "JR2_SANDBOX_TOKEN";
+
+/** The control token's held name (ADR-0076) — the kit's own, bound to the agent routes. Its Stand-in
+ * is secret: the Harness process alone holds it, as `/run/jr2/control/standin`. */
+export const CONTROL_TOKEN_NAME = "JR2_CONTROL_TOKEN";
 
 /** The env names the mechanism owns on a Harness container (ADR-0059): the proxy, the trust
  * bundles, and every `JR2_` name. A held secret may not choose them, and while a held secret exists,
@@ -233,6 +280,35 @@ export function heldSecretsOf(
     catalogHosts.set(id, target.port === 443 ? target.host : `${target.host}:${target.port}`);
   }
 
+  // jr2's own names (ADR-0076): the Harness's start takes a `JR2_` name from jr2's composition alone,
+  // and refuses to start on an envFrom key that starts with `JR2_` (`effector nocore --harness-env`).
+  // A user's `JR2_MENU_ONLY` or `JR2_START_ENV` would turn the domain off or replace its env.
+  for (const [i, v] of env.entries()) {
+    if (v.name.startsWith("JR2_")) {
+      throw new Error(
+        `harness.env[${i}] sets ${v.name}: JR2_ names are jr2's own, and the Harness takes them from jr2 alone ` +
+          "(ADR-0076). Name the env var your program reads.",
+      );
+    }
+  }
+  for (const [i, ref] of (harness.envFrom ?? []).entries()) {
+    const lookup = ref.secretRef
+      ? `secret/${ref.secretRef.name}`
+      : ref.configMapRef
+        ? `configmap/${ref.configMapRef.name}`
+        : "";
+    const own = (lookups.envFromKeys?.get(lookup) ?? [])
+      .map((key) => (ref.prefix ?? "") + key)
+      .find((key) => key.startsWith("JR2_"));
+    if (own !== undefined) {
+      const where = ref.secretRef ? `Secret "${ref.secretRef.name}"` : `ConfigMap "${ref.configMapRef?.name}"`;
+      throw new Error(
+        `harness.envFrom[${i}] loads ${where}, which carries ${own}: JR2_ names are jr2's own, and the Harness ` +
+          "does not start with one from envFrom (ADR-0076). Drop the key, or give the source a prefix.",
+      );
+    }
+  }
+
   // R1: a known model key the Agent could read.
   for (const [i, v] of env.entries()) {
     if (!(v.name in MODEL_KEYS)) continue;
@@ -264,6 +340,39 @@ export function heldSecretsOf(
         `harness.env sets ${v.name}: a signing credential cannot be held (a Stand-in cannot be swapped into a ` +
           "signature), so the Agent can read it — route the provider through a gateway that holds it, and hold " +
           "the gateway's key instead (ADR-0059)",
+      );
+    }
+  }
+
+  // A credential file that the Harness process reads (ADR-0076): never one that the domain writes.
+  for (const [i, v] of env.entries()) {
+    if (!CREDENTIAL_FILES.includes(v.name)) continue;
+    const path = v.value;
+    if (path !== undefined) {
+      const writable = DOMAIN_WRITABLE_ROOTS.find((root) => path === root || path.startsWith(`${root}/`));
+      if (!path.startsWith("/") || writable !== undefined || path.split("/").includes("..")) {
+        throw new Error(
+          `harness.env[${i}] sets ${v.name} to "${path}", ${writable !== undefined ? `which is in ${writable}, a folder the Agent's code writes` : "which is not an absolute path"}: the Harness process reads that file, and code that writes it acts outside the Agent's confinement (ADR-0076). Point it at a file of the image that the Sandbox's user cannot write.`,
+        );
+      }
+    }
+    warnings.push(
+      `harness.env sets ${v.name}: the Harness process reads ${path !== undefined ? `"${path}"` : "the file it names"}, ` +
+        "so the Sandbox's user must not be able to write it — a folder of the image that the user owns is one the " +
+        "Agent's code writes (ADR-0076)",
+    );
+  }
+  for (const [i, ref] of (harness.envFrom ?? []).entries()) {
+    const lookup = ref.secretRef
+      ? `secret/${ref.secretRef.name}`
+      : ref.configMapRef
+        ? `configmap/${ref.configMapRef.name}`
+        : "";
+    for (const key of (lookups.envFromKeys?.get(lookup) ?? []).map((k) => (ref.prefix ?? "") + k)) {
+      if (!CREDENTIAL_FILES.includes(key)) continue;
+      warnings.push(
+        `harness.envFrom[${i}] sets ${key}: the Harness process reads the file it names, so the Sandbox's user must ` +
+          "not be able to write it — a folder of the image that the user owns is one the Agent's code writes (ADR-0076)",
       );
     }
   }

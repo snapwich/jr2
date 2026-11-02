@@ -22,10 +22,12 @@ outgrowing the pool means hand-rolling without penalty, not fighting a framework
 
 ## The source port is generalized; Work Source is one adapter
 
-The pool draws from a **Source** port — `next(active) → item | null`, plus an optional `wake` event def (webhook /
-`jr2 send` push seam) and `pollEvery` (the set mutates underneath us) — a queue, a generator, or a re-queried set. tk's
-claim actor is one adapter; GLOSSARY.md's **Work Source** reframes as _the Source adapter for tickets_, and the
-Ready-set doctrine (re-query, never materialize) survives as that adapter's semantics, not the primitive's.
+The pool draws from a **Source** port — `next({ active, settled, input }) → item | null`, plus an optional `wake` event
+def (webhook / `jr2 send` push seam) and `pollEvery` (the set mutates underneath us) — a queue, a generator, or a
+re-queried set. `input` is the Pool's input and `settled` holds the ids of the finished and failed items, so a Source
+can fan out over a plan with no state of its own. tk's claim actor is one adapter; GLOSSARY.md's **Work Source**
+reframes as _the Source adapter for tickets_, and the Ready-set doctrine (re-query, never materialize) survives as that
+adapter's semantics, not the primitive's.
 
 A Work Source — `tk`, GitHub issues, Jira, a task queue — is a behavior port, not a canonical data schema: verbs like
 `claimNext`, `updateStatus` and `comment`, each gated by a capability the adapter advertises. It owns the dependency

@@ -598,13 +598,9 @@ test("two PARALLEL states continuing one Agent are refused — one live surface 
   // ADR-0057 leans on the registration table: `continue: true` derives the SAME id for every
   // state of a Machine instance, so two states that run at once would otherwise both claim one
   // conversation. Sequential states never race (ADR-0024 ends a Turn with the state that asked
-  // for it); parallel ones are a Machine that cannot be run, and it says so at the first Turn.
-  const mock = new MockFlueClient();
-  const machine = jr2Setup({
-    types: {} as { context: Record<string, never> },
-    events: [],
-    actors: { coder: slot(mock) },
-  }).createMachine({
+  // for it). The load walk refuses the parallel shape (ADR-0015), and the registration table keeps
+  // a second guard: one live surface per address.
+  const config = {
     on: { "agent.fault": {} },
     id: "wf",
     context: {},
@@ -613,10 +609,23 @@ test("two PARALLEL states continuing one Agent are refused — one live surface 
       left: { invoke: { src: "coder", input: { prompt: "one", continue: true, endpoint: "http://x" } } },
       right: { invoke: { src: "coder", input: { prompt: "two", continue: true, endpoint: "http://x" } } },
     },
-  });
-
-  const { errors } = hostless(machine);
-  assert.match(errors[0]?.message ?? "", /"agent\/run-1\/root\/coder" is already live/);
+  } as const;
+  assert.throws(
+    () =>
+      jr2Setup({
+        types: {} as { context: Record<string, never> },
+        events: [],
+        actors: { coder: slot(new MockFlueClient()) },
+      }).createMachine(config as never),
+    /Agent "coder" would run two Turns at once: "wf\.left" and "wf\.right" invoke it/,
+  );
+  const table = new RegistrationTable();
+  const reg = { address: "agent/run-1/root/coder", runId: "run-1", kind: "agent", id: "run-1/root/coder" } as const;
+  table.register({ ...reg, defs: new Map() } as never);
+  assert.throws(
+    () => table.register({ ...reg, defs: new Map() } as never),
+    /"agent\/run-1\/root\/coder" is already live/,
+  );
 });
 
 test("a key a Turn has no use for REFUSES the Turn, naming the surface (ADR-0057)", async () => {

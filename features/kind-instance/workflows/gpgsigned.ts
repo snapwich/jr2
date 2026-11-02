@@ -21,6 +21,8 @@ import {
   workspace,
   type HostInjectedInput,
   type Workspaced,
+  isReady,
+  worktree,
 } from "@jr2/orchestrator";
 
 /** The seed's GPG push remote (`steps/seed.ts`). */
@@ -38,6 +40,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
   events: [unused],
   actors: {
+    cut: worktree(),
     fail: fail(),
     // In the Harness container: the Agent's own work, committed.
     commit: command([
@@ -54,10 +57,27 @@ const body = jr2Setup({
 }).createMachine({
   id: "gpgsigned",
   context: ({ input }) => input,
-  initial: "committing",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" }, noop: ".settled" },
   states: {
-    committing: { invoke: { src: "commit", onDone: "both" } },
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({
+          path: `/work/app/gpgsigned-${context.marker}`,
+          branch: `gpgsigned-${context.marker}`,
+        }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "committing" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
+    committing: {
+      invoke: {
+        src: "commit",
+        input: ({ context }) => ({ worktree: `/work/app/gpgsigned-${context.marker}` }),
+        onDone: "both",
+      },
+    },
     both: {
       type: "parallel",
       onDone: "settled",
@@ -68,6 +88,7 @@ const body = jr2Setup({
             running: {
               invoke: {
                 src: "deploy",
+                input: ({ context }) => ({ worktree: `/work/app/gpgsigned-${context.marker}` }),
                 onDone: { target: "done", actions: assign({ command: ({ event }) => event.output }) },
               },
             },
@@ -80,6 +101,7 @@ const body = jr2Setup({
             running: {
               invoke: {
                 src: "publish",
+                input: ({ context }) => ({ worktree: `/work/app/gpgsigned-${context.marker}` }),
                 onDone: { target: "done", actions: assign({ push: ({ event }) => event.output }) },
               },
             },
@@ -100,6 +122,5 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: REMOTE },
-  spec: ({ input }) => ({ branch: `gpgsigned-${input.marker}` }),
   effector: { image: import.meta.resolve("../images/effector") },
 });

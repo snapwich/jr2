@@ -12,28 +12,40 @@
 // `/agents/coder/<runId>/body/coder`, as `handoff`'s do.
 
 import { z } from "zod";
-import { agent, defineEvent, fail, jr2Setup, sentBy, workspace } from "@jr2/orchestrator";
+import { agent, defineEvent, fail, jr2Setup, sentBy, workspace, isReady, worktree } from "@jr2/orchestrator";
+import type { HostInjectedInput, Workspaced } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 const halt = defineEvent({ name: "halt", input: z.object({}) });
 
 type Ws = { repos: Record<"app", string>; branch: string };
-type BodyInput = { workspace: Ws };
+type BodyInput = Workspaced<HostInjectedInput, "app">;
 
 const body = jr2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [finish, halt],
-  actors: { coder: agent(coder), fail: fail() },
+  actors: { cut: worktree(), coder: agent(coder), fail: fail() },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
   on: { "workspace.lost": { target: ".lost" }, "agent.fault": { target: ".faulted" } },
-  initial: "coding",
+  initial: "cutting",
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/feat-e2e-interrupted", branch: "feat-e2e-interrupted" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     coding: {
       invoke: [
-        { src: "coder", input: () => ({ prompt: "implement the thing", continue: true }) },
+        {
+          src: "coder",
+          input: () => ({ cwd: "/work/app/feat-e2e-interrupted", prompt: "implement the thing", continue: true }),
+        },
         { src: "gate", id: "interrupt" },
       ],
       on: {
@@ -51,5 +63,4 @@ const body = jr2Setup({
 
 export const machine = workspace(body, {
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  spec: () => ({ branch: "feat-e2e-interrupted" }),
 });

@@ -51,7 +51,8 @@ function fakeFetch(answer: (call: Call, n: number) => Response | Promise<Respons
 
 const opts = (fetch: typeof globalThis.fetch, extra: object = {}) => ({
   url: "http://127.0.0.1:8081",
-  token: "jr2-held-JR2_SANDBOX_TOKEN",
+  token: "the-control-stand-in",
+  slot: "root/coder",
   fetch,
   log: () => {},
   retryInitialMs: 1,

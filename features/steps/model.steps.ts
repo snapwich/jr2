@@ -370,14 +370,20 @@ async function saidAfter(agent: string, marker: string, source: LogSource): Prom
 }
 
 /** The first tool the model called in the Turn whose prompt carries `marker`, before any other
- * prompt — `undefined` when the prompt is not there yet, or no call followed it. */
-async function firstCallAfter(runId: string, agent: string, marker: string): Promise<string | undefined> {
-  for (const s of (await saidAfter(agent, marker, { run: runId })) ?? []) {
-    if ("prompt" in s) return undefined; // the Turn's next prompt: this one made no call first
+ * prompt — `null` when no call followed it, `undefined` when the prompt is not in the kept log. */
+async function firstCallAfter(runId: string, agent: string, marker: string): Promise<string | null | undefined> {
+  const said = await saidAfter(agent, marker, { run: runId });
+  if (said === undefined) return undefined;
+  for (const s of said) {
+    if ("prompt" in s) return null; // the Turn's next prompt: this one made no call first
     return s.call;
   }
-  return undefined;
+  return null;
 }
+
+/** Why a Menu-only trial whose own prompt is not in its kept conversation is void: the follow lost
+ * it, and the lines after another prompt are not this trial's. It is no reading, so never a miss. */
+const PROMPT_LOST = "void: the trial's own prompt is not in the kept conversation";
 
 // --- trials ---------------------------------------------------------------------------------------------
 
@@ -419,6 +425,14 @@ const obedience: Driver = async (world, input) => {
   const runId = await startRun(world, "obedience", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
   const first = await firstCallAfter(runId, "advisor", input.marker);
+  if (first === undefined)
+    return {
+      runId,
+      measured: false,
+      finished: FINISHED.obedience!(last),
+      void: true,
+      note: `${PROMPT_LOST}; ended ${ended(last)}`,
+    };
   return {
     runId,
     measured: first === "hold",
@@ -432,6 +446,14 @@ const advised: Driver = async (world, input) => {
   const runId = await startRun(world, "advised", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
   const first = await firstCallAfter(runId, "advisor", input.marker);
+  if (first === undefined)
+    return {
+      runId,
+      measured: false,
+      finished: FINISHED.advised!(last),
+      void: true,
+      note: `${PROMPT_LOST}; ended ${ended(last)}`,
+    };
   const sandboxes = (await sandboxesFor(world, runId)).length;
   return {
     runId,
@@ -770,7 +792,15 @@ const wake: Driver = async (world, input) => {
   }
   await sendToGate(world, runId, board.gate, "cleared");
   const { last } = await waitFor(world, runId, settled, 300_000);
-  const said = (await saidAfter("advisor", input.marker, { run: runId })) ?? [];
+  const said = await saidAfter("advisor", input.marker, { run: runId });
+  if (said === undefined)
+    return {
+      runId,
+      measured: false,
+      finished: FINISHED.wake!(last),
+      void: true,
+      note: `${PROMPT_LOST}; ended ${ended(last)}`,
+    };
   const asked = said.findIndex(isNudge);
   const first = asked === -1 ? undefined : menuCalls(said, WAKE_MENU, asked)[0]?.call;
   const seen = asked === -1 ? "never woken" : `first after the wake ${first ?? "none"}`;

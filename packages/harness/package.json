@@ -7,7 +7,9 @@
   "exports": {
     "./wire": "./src/wire.ts",
     "./exec": "./src/exec.ts",
-    "./app": "./src/app.ts"
+    "./app": "./src/app.ts",
+    "./children": "./src/children.ts",
+    "./test-children": "./test/support/children.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

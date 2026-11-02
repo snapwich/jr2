@@ -122,10 +122,10 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
 
 - **Per-`agentRun` containers, or a pod per Agent.** Rejected on lifetime before merit: the container list is fixed when
   the CR is created, before the body has run, while `agentRun` is a per-turn invocation. Pre-declaring per _Agent_ is
-  possible but pays N resident copies of a Harness image that deliberately carries the agent toolchain (ADR-0005) to run
-  one at a time. It buys no isolation — containers in a pod share the network namespace, so it does not even fix the
-  port contention that motivates it (ADR-0005:31) — and the git contention it would address is prohibited anyway
-  (ADR-0004:95). What it actually buys is `kubectl logs -c <agent>`: a container, to avoid a prefix.
+  possible but pays N resident copies of a Harness image that deliberately carries the agent toolchain (ADR-0005). It
+  buys no isolation — containers in a pod share the network namespace, so it does not even fix the port contention that
+  motivates it (ADR-0005:31) — and it does not remove the git contention, because the containers share one `/work` and
+  one clone (ADR-0004). What it actually buys is `kubectl logs -c <agent>`: a container, to avoid a prefix.
 - **A trace from the Custodian.** Tempting, and wrong on the facts. The Custodian carries the Menu's reads and the
   Agent's picks — a handful of deliveries per turn — and the model calls, and it logs names only, never a body
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Agent's working tools execute in
@@ -159,11 +159,10 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   what it happened to read; what jr2 told it includes an Effect's output, so a `command` Effect's output and a Held
   value echoed into it reach the log as they reach the model, and so does an Effect secret in a form an Effector's scrub
   does not catch (a transformed secret, a partial echo; ADR-0068). Fine on kind; a real decision on a shared cluster.
-- **It depends on an invariant that is documented but not enforced.** One Agent at a time per Workspace (ADR-0004:95,
-  "structural since ADR-0012") is what makes two conversations never interleave on one container's stdout. Nothing
-  refuses a body that invokes concurrent `agentRun`s; such a body corrupts a shared `default/.git` before it garbles a
-  log, so enforcement is owed on its own merits — the ambient registrar (ADR-0012:32, ADR-0016) is the one thing that
-  sees every Agent in a Workspace, and the place to refuse a second concurrent admission.
+- **The conversations of concurrent Agents interleave in one log.** The author chooses how many Agents work in a
+  Workspace ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)), so two conversations can
+  print at one time on one container's stdout. The prefix keeps them apart: every line carries its label and its iid, so
+  a reader keeps one conversation's lines by its iid.
 - **Truncation is load-bearing, not cosmetic.** Kubelet rotates container logs at 10Mi by default and drops the
   remainder. jr's filter capped `Bash` at 100 chars and unknown tools at 150 and reduced `Write`/`Edit` to a path; that
   was readability, and it is now also what keeps a long turn inside the window.

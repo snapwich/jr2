@@ -1,6 +1,6 @@
 // Package gittest builds, for tests, the repositories a Sandbox pod holds (ADR-0004, ADR-0051):
 // a remote, the node's cache of it, and the Agent's pod-local clone with its branch Worktree —
-// `/work/<slot>/default` and `/work/<slot>/<branch>` — and plants in the Agent's repository every
+// `/work/<slot>/default` and `/work/<slot>/<name>` — and plants in the Agent's repository every
 // program git could be made to run. A test then proves that none ran.
 package gittest
 
@@ -62,7 +62,7 @@ type Pod struct {
 	Slot   string
 	Branch string
 	GitDir string // /work/<slot>/default/.git — the Agent's common git dir
-	Tree   string // /work/<slot>/<branch> — the Agent's Worktree
+	Tree   string // /work/<slot>/<name> — the Agent's Worktree
 	Marks  string // where a planted program writes that it ran
 }
 

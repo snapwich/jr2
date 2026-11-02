@@ -2,7 +2,7 @@
 // (`turn.ts`) runs it unless a rig passes another (`TurnDeps.engineAdapter`). A second engine is a
 // second adapter, named here.
 
-import type { EngineAdapter } from "./engine.ts";
+import { refuseEngineInDomain, type EngineAdapter } from "./engine.ts";
 import { piAdapter } from "./pi-engine.ts";
 
-export const ENGINE_ADAPTER: EngineAdapter = piAdapter;
+export const ENGINE_ADAPTER: EngineAdapter = refuseEngineInDomain(piAdapter);

@@ -14,7 +14,7 @@ import { doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import type { AgentRunInput } from "../src/actor.ts";
-import { workspace, type MemoryKill, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
+import { workspace, type MemoryKill, type SandboxPort } from "../src/workspace.ts";
 import { echoOutbox, RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts";
 import { mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
@@ -29,8 +29,8 @@ class EchoSandbox implements SandboxPort {
   async provision(name: string) {
     return { endpoint: `http://${name}.test` };
   }
-  async attach(req: { name: string; spec: WorkspaceSpec; repos: Array<{ slot: string }> }) {
-    const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
+  async attach(req: { name: string; repos: Array<{ slot: string }> }) {
+    const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}`]));
     return { repos };
   }
   async renew() {}
@@ -64,7 +64,7 @@ function echoDef(client: MockFlueClient): WorkflowDef {
   const body = jr2Setup({
     types: {} as {
       context: { tag: string };
-      input: { tag?: string; workspace: { branch: string } };
+      input: { tag?: string };
       emitted: { type: "note"; message: string };
     },
     events: [doneEvent, requestReviewEvent],
@@ -81,7 +81,7 @@ function echoDef(client: MockFlueClient): WorkflowDef {
     initial: "local",
     states: {
       local: {
-        invoke: { src: "coder", input: { prompt: "code it" } },
+        invoke: { src: "coder", input: { prompt: "code it", cwd: "/work/app/fix" } },
         on: {
           request_review: {
             target: "remote",
@@ -92,7 +92,7 @@ function echoDef(client: MockFlueClient): WorkflowDef {
       remote: {
         invoke: {
           src: "decider",
-          input: { endpoint: "http://decider.test", prompt: "approve or not" },
+          input: { endpoint: "http://decider.test", prompt: "approve or not", cwd: "/work/app/fix" },
         },
         on: { done: "finished" },
       },
@@ -101,7 +101,6 @@ function echoDef(client: MockFlueClient): WorkflowDef {
   });
   const wrapped = workspace(body, {
     repos: { app: "https://example.test/app.git" },
-    spec: () => ({ branch: "feat-1" }),
   });
   return { name: "echoed", machine: wrapped, provide: () => ({}) };
 }

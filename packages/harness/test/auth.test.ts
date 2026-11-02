@@ -101,12 +101,12 @@ test("the attach takes the same bearer, and a refused attach runs nothing (ADR-0
   const app = harnessApp({
     checkBearer: (bearer) => bearer === BEARER,
     runSubmissionFor: () => () => new Promise<void>(() => {}),
-    attach: async (req) => (attached.push(req), { repos: { app: "/work/app/b" } }),
+    attach: async (req) => (attached.push(req), { repos: { app: "/work/app" }, bases: { app: "main" } }),
   });
   const attach = (bearer?: string) =>
     app.request("/attach", {
       method: "POST",
-      body: JSON.stringify({ branch: "b", slots: [{ slot: "app", url: "u", identity: "i", key: "k" }] }),
+      body: JSON.stringify({ slots: [{ slot: "app", url: "u", identity: "i", key: "k" }] }),
       headers: { "content-type": "application/json", ...auth(bearer) },
     });
   assert.equal((await attach()).status, 401);

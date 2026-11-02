@@ -11,7 +11,7 @@ import { agentActorWith } from "../src/actor.ts";
 import { createApp } from "../src/http.ts";
 import { RunHost } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
-import { createAuthenticator, mintInstanceToken, sandboxToken } from "../src/tokens.ts";
+import { controlToken, createAuthenticator, mintInstanceToken } from "../src/tokens.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const KEY = Buffer.alloc(32, 9);
@@ -57,7 +57,9 @@ async function rig() {
   return { host, app, iid, settle: (v: unknown) => settle?.(v) };
 }
 
-const auth = (token: string) => ({ authorization: `Bearer ${token}` });
+/** A control request as the Harness sends it (ADR-0076): the control token, and the slot it states
+ * — the coder of the root Machine. */
+const auth = (token: string, slot = "root/coder") => ({ authorization: `Bearer ${token}`, "x-jr2-slot": slot });
 const pick = (body: unknown, token: string): RequestInit => ({
   method: "POST",
   headers: { "content-type": "application/json", ...auth(token) },
@@ -66,7 +68,7 @@ const pick = (body: unknown, token: string): RequestInit => ({
 
 test("an outstanding pick: answered at once with its delivery id, refused 409 beside it, and its answer long-polled", async () => {
   const { app, iid, settle } = await rig();
-  const token = sandboxToken(KEY, "ws-1");
+  const token = controlToken(KEY, "ws-1");
 
   const first = await app.request(`/agents/${iid}/events`, pick({ type: "run_tests" }, token));
   assert.equal(first.status, 200);
@@ -87,8 +89,9 @@ test("an outstanding pick: answered at once with its delivery id, refused 409 be
   assert.equal(waiting.status, 200);
   assert.equal(((await waiting.json()) as { outstanding?: boolean }).outstanding, true, "ask again");
 
-  // Another Sandbox's token reads nothing of it.
-  assert.equal((await app.request(poll, { headers: auth(sandboxToken(KEY, "ws-2")) })).status, 403);
+  // Another Sandbox's token reads nothing of it, and nor does a slot that is not the pick's (ADR-0076).
+  assert.equal((await app.request(poll, { headers: auth(controlToken(KEY, "ws-2")) })).status, 403);
+  assert.equal((await app.request(poll, { headers: auth(token, "root/reviewer") })).status, 403);
   assert.equal((await app.request(`/agents/${iid}/deliveries/nope`, { headers: auth(token) })).status, 404);
 
   settle({ passed: 1 });
@@ -110,7 +113,7 @@ test("an outstanding pick: answered at once with its delivery id, refused 409 be
 
 test("a poll ends with its connection: the answer that lands after is not read by it (ADR-0031)", async () => {
   const { host, app, iid, settle } = await rig();
-  const token = sandboxToken(KEY, "ws-1");
+  const token = controlToken(KEY, "ws-1");
   const receipt = (await (await app.request(`/agents/${iid}/events`, pick({ type: "run_tests" }, token))).json()) as {
     deliveryId: string;
   };
@@ -128,7 +131,7 @@ test("a poll ends with its connection: the answer that lands after is not read b
 
 test("a stopping Orchestrator answers the poll 503: the Harness asks again, and the Turn is not over", async () => {
   const { host, app, iid } = await rig();
-  const token = sandboxToken(KEY, "ws-1");
+  const token = controlToken(KEY, "ws-1");
   const receipt = (await (await app.request(`/agents/${iid}/events`, pick({ type: "run_tests" }, token))).json()) as {
     deliveryId: string;
   };

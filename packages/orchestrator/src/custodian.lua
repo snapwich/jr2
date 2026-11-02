@@ -10,15 +10,18 @@
 --
 -- Four roles, one per route family, read from the route's metadata:
 --
---   control    the Harness's Menu and the ask, plain HTTP on loopback, toward the Orchestrator
+--   control    toward the Orchestrator, plain HTTP: the agent routes on the control socket, and
+--              the ask on the loopback fetch listener (ADR-0076). Each listener has only its own
+--              routes, so a route of the other one gets the deny route's 404
 --   egress     the CONNECT listener: dial guard, then tunnel or hand to an intercept listener
 --   intercept  one bound host, TLS already ended: swap the Stand-in, strip the rest
 --   health     the kubelet's probe
 
 local VALUES = "/etc/jr2/custodian/values/"
 
--- The value of one held secret, read once. One trailing line end is taken off, because
--- `kubectl create secret --from-file` writes one; anything else a header cannot carry stops us.
+-- The value of one held secret, or its Stand-in, read once. One trailing line end is taken off,
+-- because `kubectl create secret --from-file` writes one; anything else a header cannot carry stops
+-- us. The line names the file, never what it holds.
 local function load(name)
   local f = io.open(VALUES .. name, "rb")
   if f == nil then
@@ -36,12 +39,19 @@ local function load(name)
   return v
 end
 
+-- Every Stand-in is secret but the fetch Stand-in (ADR-0059, ADR-0076): the pod's maker minted it,
+-- and it is a value too, read from `<NAME>.standin` beside the secret's own. The one public Stand-in
+-- rides the table (`standIn`), because `jr2-upload-pack` holds it as a constant.
 local STAND_IN = {}
 local VALUE = {}
 for _, s in ipairs(HELD.secrets) do
-  STAND_IN[s.name] = "jr2-held-" .. s.name
+  STAND_IN[s.name] = s.standIn or load(s.name .. ".standin")
   VALUE[s.name] = load(s.name)
 end
+
+-- The slot the Harness states on a control request (ADR-0076). It goes to the Orchestrator on a
+-- control route, unchanged, and to no other host.
+local SLOT_HEADER = "x-jr2-slot"
 
 -- The headers every bound target treats as a credential (`CREDENTIAL_HEADERS`, held-secrets.ts).
 local CREDENTIAL = {}
@@ -258,7 +268,7 @@ local function intercept(handle, headers, target)
   if path:lower():find("%%2[ef]") then
     return refuse(handle, 400, "path", "an encoded / or . in the path")
   end
-  for _, h in ipairs({ "te", "trailer", "keep-alive", "proxy-connection" }) do headers:remove(h) end
+  for _, h in ipairs({ "te", "trailer", "keep-alive", "proxy-connection", SLOT_HEADER }) do headers:remove(h) end
   return hold(handle, headers, HELD.targets[target], target, path)
 end
 
@@ -273,6 +283,8 @@ local function control(handle, headers, route)
         '{"error":"this pod serves no Sandbox, so it mounts no Repo to fetch (ADR-0053)"}')
     end
     headers:replace(":path", "/sandboxes/" .. sandbox .. "/fetch")
+    -- The fetch acts for the Sandbox, not for an Agent: no slot rides it.
+    headers:remove(SLOT_HEADER)
   end
   return hold(handle, headers, HELD.control, "orchestrator", headers:get(":path"))
 end

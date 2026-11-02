@@ -19,10 +19,11 @@
 // (open-body.ts), so that `jr2Setup`'s own refusals and load warnings are lines of the same report.
 
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 import { z } from "zod";
 import { defineEvent, type EventAudience, type EventDef } from "@jr2/agent-protocol";
 import type { AgentDefinition, ThinkingLevel, WorkspaceAccess } from "./agent.ts";
-import { inputKeysOf, isEffect } from "./effect.ts";
+import { inputKeysOf, inputShapeOf, isEffect, type InputShape } from "./effect.ts";
 import { FAILURE_GUARD } from "./fail.ts";
 import { compileChart, durationMs, type LentParts, type OpenBodyDeclaration } from "./open-body.ts";
 import { SENT_BY } from "./party.ts";
@@ -140,6 +141,10 @@ const MECHANISM_EVENTS: Record<string, { fields: Record<string, boolean> }> = {
  * placement; see {@link checkAgentInput}). */
 const AGENT_INPUT_KEYS = ["prompt", "cwd", "continue", "model", "thinkingLevel"] as const;
 
+/** The kit's test for a cut that settled `ready`, in every Chart beside `jr2.failure`: a cut's own
+ * outcomes are output, so a Chart routes on them, and a Chart has no other way to read one. */
+export const READY_GUARD = "jr2.ready";
+
 /**
  * The Chart briefing (ADR-0070): jr2's text on how a Chart runs, for whoever writes one. It is the
  * grammar's root description, so it rides `GET /workflows/<wrapper>/chart-schema` and a pick's tool
@@ -164,6 +169,16 @@ export function chartBriefing(narrow?: Narrow): string {
     ? ' `src: "fail"` with `input: { reason }` ends the run as a Failure: work that did not succeed, with ' +
       `the reason for a person; an \`onError\` with the guard \`${FAILURE_GUARD}\` catches it. A final state means done.`
     : "";
+  // A declaration is names alone, so this says "a lent Effect that cuts".
+  const cut =
+    narrow === undefined || narrow.lendsEffects
+      ? ' In a Workspace with Repo Slots, work happens in a Worktree. A lent Effect that cuts one takes `input: { path: "/work/<slot>/<name>", ' +
+        'branch: "<branch>" }`: `<name>` is one folder name that you choose, and it is not the branch. The Open body sets the cut\'s `expect`, ' +
+        "so its input has no `expect`. Give its `onDone` two edges: the guard " +
+        `\`${READY_GUARD}\` on the one that goes on, and one with no guard for a refused cut. Then write that same literal path as \`cwd\` in an ` +
+        "Agent's `input` and as `worktree` in an Effect's `input`: each Turn and each Effect there must say where it works. " +
+        "The slot's folder `/work/<slot>` is not a Worktree."
+      : "";
   const agents = mints
     ? `A state runs an Agent with \`invoke: { src, input: { prompt } }\`: \`src\` is a lent Agent's name${lent}. ` +
       "This Chart mints no Agent of its own: there is no `agents`."
@@ -171,7 +186,7 @@ export function chartBriefing(narrow?: Narrow): string {
       "a key of `agents`; a lent Agent needs no entry in `agents`, which mints new ones.";
   return (
     `A Chart is a workflow written as data: states, the events its Agents pick${mints ? "" : ", and the Agents it mints"}. ` +
-    `${agents}${gate}${fail} An Agent's Turn ends only when it ` +
+    `${agents}${gate}${fail}${cut} An Agent's Turn ends only when it ` +
     "picks one of the Chart's `events`: declare each pick in `events` with an `input` schema " +
     '(`{ "type": "object", "properties": { "<field>": { "type": "string" } }, "required": ["<field>"] }`; a field not in ' +
     "`required` may be absent), and " +
@@ -238,6 +253,7 @@ export function pathSegments(path: string): Array<string | number> {
 type Narrow = {
   srcs: string[];
   lentAgents: string[];
+  lendsEffects: boolean;
   gate: boolean;
   fail: boolean;
   guards: string[];
@@ -363,16 +379,16 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
   // `jr2.sentBy` is the kit's routing guard (ADR-0015), and `jr2.failure` its test for a Failure on
   // an `onError` (ADR-0073): every Chart has both, and neither is lent.
   const sentByArm = z.strictObject({ type: z.literal(SENT_BY), params: z.strictObject({ id: z.string() }) });
-  const failureArm = z.strictObject({ type: z.literal(FAILURE_GUARD) });
+  const failureArm = z.strictObject({ type: z.union([z.literal(FAILURE_GUARD), z.literal(READY_GUARD)]) });
   const lentGuardName = narrow
-    ? enumOf([...narrow.guards, FAILURE_GUARD])
+    ? enumOf([...narrow.guards, FAILURE_GUARD, READY_GUARD])
     : z.string().refine((t) => t !== SENT_BY, { message: `"${SENT_BY}" takes params { id }` });
   const paramGuardName = narrow
     ? enumOf(narrow.guards)
     : z
         .string()
         .refine((t) => t !== SENT_BY, { message: `"${SENT_BY}" takes params { id }` })
-        .refine((t) => t !== FAILURE_GUARD, { message: `"${FAILURE_GUARD}" takes no params` });
+        .refine((t) => t !== FAILURE_GUARD && t !== READY_GUARD, { message: "that guard takes no params" });
   const guard: z.ZodType<ChartGuard> = z
     .union([
       lentGuardName,
@@ -397,7 +413,7 @@ function grammar(narrow?: Narrow): z.ZodType<ChartText> {
     ])
     .meta({
       id: `${ID_PREFIX}ChartGuard`,
-      description: `A lent guard by name, \`jr2.sentBy\`, \`${FAILURE_GUARD}\`, or not/and/or of guards.`,
+      description: `A lent guard by name, \`jr2.sentBy\`, \`${FAILURE_GUARD}\`, \`${READY_GUARD}\`, or not/and/or of guards.`,
     }) as never;
 
   const lentActionName = narrow
@@ -681,6 +697,7 @@ function narrowOf(decl: OpenBodyDeclaration): Narrow {
   return {
     srcs: [...l.agents, ...l.effects, ...l.machines, ...(l.gate ? ["gate"] : []), ...(l.fail ? ["fail"] : [])],
     lentAgents: l.agents,
+    lendsEffects: l.effects.length > 0,
     gate: l.gate,
     fail: l.fail,
     guards: l.guards,
@@ -838,6 +855,17 @@ export type AdmittedChart = {
   size: number;
 };
 
+/**
+ * Why a Chart's `cwd` is not a place to work, or undefined when it can be: a Repo Slot's folder is no
+ * Worktree. There, an Agent's search hits `default/`, and a relative write lands outside each
+ * Worktree (ADR-0057, ADR-0075).
+ */
+export function slotFolderFault(cwd: string, slots: readonly string[]): string | undefined {
+  const slot = posix.normalize(cwd).match(/^\/work\/([^/]+)\/?$/)?.[1];
+  if (slot === undefined || !slots.includes(slot)) return undefined;
+  return `"${cwd}" is a Repo Slot's folder, not a Worktree; \`cwd\` is a Worktree that a cut made, "/work/${slot}/<name>", or "/work/${slot}/default" to read, or "/work"`;
+}
+
 /** What the door knows beyond the declaration and the lent set. */
 export type AdmitOptions = {
   /**
@@ -846,6 +874,11 @@ export type AdmitOptions = {
    * `input.<key>` reference is checked against it; absent, `input` references are not checked.
    */
   inputKeys?: readonly string[];
+  /** The Repo Slots of the Workspace around the Open body, where the door can read them. Given and
+   * not empty, a Turn's `cwd` and an Effect's `worktree` are required, a literal path's slot is
+   * checked, and a literal `cwd` cannot be a slot's folder. Absent: the start of a Turn or an Effect
+   * says the same of a missing `cwd`, of a Worktree path, and of a `cwd` that is a slot's folder. */
+  repoSlots?: readonly string[];
 };
 
 const MAX_STATES = 200;
@@ -989,6 +1022,13 @@ export function admitChart(
   }
   const chart = parsed.data;
   return new Door(chart, decl, lent, options).admit(size);
+}
+
+/** What an Effect's input takes, for a line of the door. */
+function shapeText(shape: InputShape): string {
+  const need = [...shape.required, ...(shape.oneOf ? [`exactly one of ${shape.oneOf.join(", ")}`] : [])].join(", ");
+  const may = shape.optional.length ? `${need ? ", and " : ""}optionally ${shape.optional.join(", ")}` : "";
+  return need || may ? `${need}${may}` : "nothing";
 }
 
 /** The checks from rule 3 on, over a Chart the grammar admitted. */
@@ -1171,8 +1211,8 @@ class Door {
       this.sentBys.push({ id: (guard.params as { id: string }).id, path: `${path}.params.id` });
       return;
     }
-    if (guard.type === FAILURE_GUARD) {
-      if (guard.params !== undefined) this.fail(3, `${path}.params: "${FAILURE_GUARD}" takes no params`);
+    if (guard.type === FAILURE_GUARD || guard.type === READY_GUARD) {
+      if (guard.params !== undefined) this.fail(3, `${path}.params: "${guard.type}" takes no params`);
       return;
     }
     this.checkGuardName(guard.type, `${path}.type`);
@@ -1180,7 +1220,7 @@ class Door {
   }
 
   private checkGuardName(name: string, path: string): void {
-    if (name === FAILURE_GUARD) return;
+    if (name === FAILURE_GUARD || name === READY_GUARD) return;
     const lent = this.lends.guards.filter((g) => g in this.lent.guards);
     if (this.lends.guards.includes(name) && !(name in this.lent.guards)) {
       this.fail(
@@ -1190,7 +1230,7 @@ class Door {
     } else if (!this.lends.guards.includes(name)) {
       this.fail(
         3,
-        `${path}: "${name}" is not a lent guard; lent guards: ${names(lent)} (and ${SENT_BY} with params { id }, and ${FAILURE_GUARD})`,
+        `${path}: "${name}" is not a lent guard; lent guards: ${names(lent)} (and ${SENT_BY} with params { id }, ${FAILURE_GUARD} and ${READY_GUARD})`,
       );
     }
   }
@@ -1680,6 +1720,7 @@ class Door {
   private checkParties(): void {
     const agents = new Set<string>();
     const gates = new Set<string>();
+    const slotStates = new Map<string, Node[]>();
     for (const node of this.nodes) {
       const invokes = listAt(node.state.invoke, `${node.doc}.invoke`);
       // A Gate's invoke id, as jr2Setup names an unnamed one: the state's key path.
@@ -1694,6 +1735,7 @@ class Door {
         if (kind === "gate") gates.add(inv.id ?? (unnamed > 1 ? `${key}.${ordinal++}` : key));
         if (kind !== "agent" && kind !== "minted") continue;
         agents.add(inv.src);
+        slotStates.set(inv.src, [...(slotStates.get(inv.src) ?? []), node]);
         if (inv.onDone !== undefined) {
           this.fail(
             6,
@@ -1714,6 +1756,25 @@ class Door {
           );
         }
       }
+    }
+    // One Agent, two Turns at once: one sender and one conversation cannot hold both.
+    // One line for each Agent: every state of it that can be active with another of them.
+    for (const [slot, states] of slotStates) {
+      const clash = new Set<Node>();
+      for (let i = 0; i < states.length; i++) {
+        for (let j = i + 1; j < states.length; j++) {
+          const [a, b] = [states[i]!, states[j]!];
+          const together =
+            a === b || isAncestorOrSelf(a, b) || isAncestorOrSelf(b, a) || nearestCommon(a, b)?.kind === "parallel";
+          if (together) clash.add(a).add(b);
+        }
+      }
+      if (clash.size === 0) continue;
+      const docs = [...clash].map((n) => n.doc).join(", ");
+      this.fail(
+        6,
+        `${docs}: Agent "${slot}" would run two Turns at once: these states invoke it and can be active together (in parallel regions, one inside the other, or one state twice); an Agent runs one Turn at a time: invoke another Agent in one of them`,
+      );
     }
     for (const { id, path } of this.sentBys) {
       if (id.includes("{{")) {
@@ -1933,8 +1994,9 @@ class Door {
     }
     if (kind === "effect") {
       const logic = this.lent.actors[inv.src];
-      const keys = isEffect(logic) ? inputKeysOf(logic.effect) : undefined;
-      if (keys === undefined && isEffect(logic) && logic.effect.kind === "dispatch") {
+      const parts = isEffect(logic) ? logic.effect : undefined;
+      const keys = parts ? inputKeysOf(parts) : undefined;
+      if (keys === undefined && parts?.kind === "dispatch") {
         // A dispatch with no input schema has no keys to hold the Chart to: its input is the run's
         // body, and the callee's door is the check (ADR-0071). Its values are what any Effect's
         // input slot takes.
@@ -1957,29 +2019,112 @@ class Door {
           `${ipath}: the lent Effect "${inv.src}" has no input keys the door can read (an Open argv nobody bound)`,
         );
       }
-      if (input === undefined && keys.length === 0) return;
-      if (!isObject) {
-        return this.fail(8, `${ipath}: the lent Effect "${inv.src}" takes an object of exactly ${names(keys)}`);
-      }
-      const given = Object.keys(input);
-      const missing = keys.filter((k) => !given.includes(k));
-      const extra = given.filter((k) => !keys.includes(k));
-      if (missing.length || extra.length) {
+      const shape = this.shapeHere(parts!);
+      // A cut's `expect` is static, and a Chart cannot state it: an unstated one would let a planner's
+      // name land on someone else's branch.
+      if (parts?.kind === "command" && parts.cut && parts.cut.expect === undefined) {
+        const fresh = this.lentNewCuts();
         this.fail(
           8,
-          `${ipath}: the lent Effect "${inv.src}" takes exactly ${names(keys)}` +
-            (missing.length ? `; missing: ${missing.join(", ")}` : "") +
-            (extra.length ? `; not its input: ${extra.join(", ")}` : ""),
+          `${ipath}: the lent cut "${inv.src}" does not state \`expect\`, so a Chart cannot use it; ` +
+            (fresh.length
+              ? `use a lent cut with \`expect: "new"\`: ${names(fresh)}`
+              : `the Open body must state it (\`worktree({ expect: "new" })\` would); ${this.lentText()}`),
         );
+      }
+      // A push publishes the branch of a cut's row, which stays in the run's ledger, so a Chart that
+      // cuts and a later Chart that pushes are the same pair: the test is what is lent, not what this
+      // Chart invokes.
+      const force = this.lentForcePush();
+      if (parts?.kind === "command" && parts.cut?.expect === "existing" && force !== undefined) {
+        const fresh = this.lentNewCuts();
+        this.fail(
+          8,
+          `${ipath}: the lent cut "${inv.src}" states \`expect: "existing"\` beside the lent force push "${force}", and together they can force-push any existing branch; ` +
+            (fresh.length
+              ? `use a lent cut with \`expect: "new"\`: ${names(fresh)}`
+              : `this Open body lends no cut with \`expect: "new"\`, so a Chart cannot cut here (\`worktree({ expect: "new" })\` would); ${this.lentText()}`),
+        );
+      }
+      if (input === undefined && shape.required.length === 0 && !shape.oneOf) return;
+      const takes = shapeText(shape);
+      if (!isObject) return this.fail(8, `${ipath}: the lent Effect "${inv.src}" takes an object: ${takes}`);
+      const given = Object.keys(input);
+      const missing = shape.required.filter((k) => !given.includes(k));
+      const extra = given.filter((k) => !keys.includes(k));
+      const ofOne = shape.oneOf?.filter((k) => given.includes(k)).length ?? 1;
+      if (missing.length || extra.length || ofOne !== 1) {
+        this.fail(
+          8,
+          `${ipath}: the lent Effect "${inv.src}" takes ${takes}` +
+            (missing.length ? `; missing: ${missing.join(", ")}` : "") +
+            (extra.length ? `; not its input: ${extra.join(", ")}` : "") +
+            (ofOne !== 1 ? `; give one of ${shape.oneOf!.join(", ")}` : ""),
+        );
+      }
+      if (parts?.kind === "command" && parts.cut && given.includes("detach") && given.includes("from")) {
+        this.fail(8, `${ipath}: a detached cut takes no \`from\``);
       }
       for (const k of given.filter((g) => keys.includes(g))) {
         const v = (input as Record<string, unknown>)[k];
         if (typeof v !== "string" && !isRef(v))
           this.fail(8, `${ipath}.${k}: an Effect's input slot takes a string or a reference`);
+        else if ((k === "worktree" || k === "path") && typeof v === "string") this.checkLiteralPath(v, `${ipath}.${k}`);
       }
       return;
     }
     this.checkAgentInput(inv.src, kind, input, isObject, ipath);
+  }
+
+  /** An Effect's shape here: where the door knows the Workspace has Repo Slots, `worktree` is
+   * required on what can name one. Elsewhere the start says so (`drive`). */
+  private shapeHere(parts: Parameters<typeof inputShapeOf>[0]): InputShape {
+    const shape = inputShapeOf(parts)!;
+    if (!this.options.repoSlots?.length || !shape.optional.includes("worktree")) return shape;
+    return {
+      ...shape,
+      required: [...shape.required, "worktree"],
+      optional: shape.optional.filter((k) => k !== "worktree"),
+    };
+  }
+
+  /** The lent Effects, each with its parts. */
+  private lentEffects(): Array<{ name: string; parts: Parameters<typeof inputShapeOf>[0] }> {
+    return this.lends.effects.flatMap((name) => {
+      const logic = this.lent.actors[name];
+      return isEffect(logic) ? [{ name, parts: logic.effect }] : [];
+    });
+  }
+
+  /** The name of a lent push that forces, if one is lent. */
+  private lentForcePush(): string | undefined {
+    return this.lentEffects().find(({ parts }) => parts.kind === "push" && parts.force)?.name;
+  }
+
+  /** The names of the lent cuts that make only a new branch. */
+  private lentNewCuts(): string[] {
+    return this.lentEffects()
+      .filter(({ parts }) => parts.kind === "command" && parts.cut?.expect === "new")
+      .map(({ name }) => name);
+  }
+
+  /** A literal Worktree path: a wrong slot costs no pod. A path with a reference waits for its start. */
+  private checkLiteralPath(value: string, path: string): void {
+    if (referencesOf(value).length) return;
+    const match = value.match(/^\/work\/([^/]+)\/([^/.-][^/]*)$/);
+    const slots = this.options.repoSlots;
+    if (match === null) this.fail(8, `${path}: "${value}" is not a Worktree path: /work/<slot>/<name>`);
+    else if (slots !== undefined && !slots.includes(match[1]!)) {
+      this.fail(8, `${path}: "${value}" names no Repo Slot of this Workspace; its Repo Slots: ${names([...slots])}`);
+    }
+  }
+
+  /** A literal `cwd`, see {@link slotFolderFault}. A `cwd` with a reference waits for its value: the
+   * Open body asks the same question when the Turn starts. */
+  private checkCwd(value: string, path: string): void {
+    if (referencesOf(value).length) return;
+    const fault = slotFolderFault(value, this.options.repoSlots ?? []);
+    if (fault !== undefined) this.fail(8, `${path}: ${fault}`);
   }
 
   /** The input of `fail` (ADR-0073): `{ reason, detail? }`, `reason` a text for a person (a string
@@ -1998,6 +2143,15 @@ class Door {
     else if ((typeof reason !== "string" || reason === "") && !isRef(reason)) {
       this.fail(8, `${ipath}.reason: a reason is a string that is not empty, or a reference`);
     }
+  }
+
+  /** Does this Agent read `/work`? A `workspace: "none"` one frames nothing. */
+  private worksInWorkspace(src: string, kind: "agent" | "minted"): boolean {
+    if (kind === "agent") {
+      const logic = this.lent.actors[src] as { definition?: { workspace?: unknown } } | undefined;
+      return logic?.definition?.workspace !== "none";
+    }
+    return (this.chart.agents?.[src] as { workspace?: unknown } | undefined)?.workspace !== "none";
   }
 
   /**
@@ -2033,6 +2187,13 @@ class Door {
     else if (typeof obj.prompt !== "string")
       this.fail(8, `${ipath}.prompt: a prompt is a string (placeholders inside it are fine)`);
     if (obj.cwd !== undefined && typeof obj.cwd !== "string") this.fail(8, `${ipath}.cwd: a cwd is a string`);
+    if (obj.cwd === undefined && this.options.repoSlots?.length && this.worksInWorkspace(src, kind)) {
+      this.fail(
+        8,
+        `${ipath}: ${who} works under a Workspace with Repo Slots, and a Turn there says where: \`cwd\` is a Worktree, or "/work"`,
+      );
+    }
+    if (typeof obj.cwd === "string" && this.worksInWorkspace(src, kind)) this.checkCwd(obj.cwd, `${ipath}.cwd`);
     if (obj.continue !== undefined && obj.continue !== true)
       this.fail(8, `${ipath}.continue: \`continue\` is true or absent`);
     if (obj.model !== undefined) {
@@ -2162,6 +2323,12 @@ type RefCheck = { fault: string; optional?: true } | undefined;
 function wholeRefOf(v: unknown): string | undefined {
   if (typeof v === "string") return WHOLE_PLACEHOLDER.exec(v)?.[1]!.trim();
   return isRef(v) ? (v as { $ref: string }).$ref : undefined;
+}
+
+/** The nearest state at or above both `a` and `b`. */
+function nearestCommon(a: Node, b: Node): Node | undefined {
+  for (let n: Node | undefined = a; n; n = n.parent) if (isAncestorOrSelf(n, b)) return n;
+  return undefined;
 }
 
 /** Is `a` the state `b` or a state above it? */

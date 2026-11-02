@@ -8,7 +8,11 @@ package repocache
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -65,9 +69,11 @@ func TestHttpsTokenRidesTheEnvironmentThroughACredentialHelper(t *testing.T) {
 		"GIT_TERMINAL_PROMPT": "0",
 		"JR2_GIT_USERNAME":    "x-access-token",
 		"JR2_GIT_PASSWORD":    "ghp_secret",
-		"GIT_CONFIG_COUNT":    "1",
-		"GIT_CONFIG_KEY_0":    "credential.helper",
+		"GIT_CONFIG_COUNT":    "2",
+		"GIT_CONFIG_KEY_0":    "credential." + origin(t, repoURL) + ".helper",
 		"GIT_CONFIG_VALUE_0":  `!f() { echo "username=$JR2_GIT_USERNAME"; echo "password=$JR2_GIT_PASSWORD"; }; f`,
+		"GIT_CONFIG_KEY_1":    "http.followRedirects",
+		"GIT_CONFIG_VALUE_1":  "false",
 	} {
 		if got, ok := envValue(env, name); !ok || got != want {
 			t.Errorf("%s: want %q, got %q (present %v)", name, want, got, ok)
@@ -160,5 +166,71 @@ func TestASecretWithNeitherShapeIsRefused(t *testing.T) {
 	_, err := a.credentials(context.Background(), withSecret("odd"))
 	if err == nil || !strings.Contains(err.Error(), `carries neither "identity" (ssh) nor "password" (https)`) {
 		t.Fatalf("expected a refusal naming the two shapes, got %v", err)
+	}
+}
+
+func origin(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// ADR-0051: the cluster's https clone token never leaves the Repo's own origin. The Repo's host
+// answers the clone (here `git ls-remote`, as the probe runs it) with a redirect to another host;
+// git follows no redirect, and the helper answers for the Repo's origin alone, so the other host
+// never gets the token.
+func TestAnHttpsCredentialFollowsNoRedirectToAnotherHost(t *testing.T) {
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("this test runs git: %v", err)
+	}
+	got := make(chan string, 8)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			got <- auth
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Basic realm="x"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer other.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.RequestURI(), http.StatusFound)
+	}))
+	defer origin.Close()
+
+	a := newAgent(t, &fakeGit{}, secret("jr2-git-abcd1234", map[string]string{"username": "x-access-token",
+		"password": "CLUSTER-TOKEN-123"}))
+	r := withSecret("jr2-git-abcd1234")
+	r.Spec.URL = origin.URL + "/org/repo.git"
+	env, err := a.credentials(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(gitBin, "ls-remote", "--", r.Spec.URL)
+	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null"}, env...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the clone through a redirect succeeded: %s", out)
+	}
+	select {
+	case auth := <-got:
+		t.Fatalf("the other host got a credential: %s (git: %s)", auth, out)
+	default:
+	}
+}
+
+// An https credential on a url that is not http(s) has no origin to scope its helper to: refused.
+func TestAnHttpsCredentialOnAnUrlThatIsNotHttpsIsRefused(t *testing.T) {
+	a := newAgent(t, &fakeGit{}, secret("tok", map[string]string{"username": "u", "password": "p"}))
+	r := withSecret("tok")
+	r.Spec.URL = "git@github.com:org/repo.git"
+	if _, err := a.credentials(context.Background(), r); err == nil || !strings.Contains(err.Error(), "not an http(s) url") {
+		t.Fatalf("got %v", err)
 	}
 }

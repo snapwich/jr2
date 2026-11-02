@@ -93,9 +93,11 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   `harness.env` or in an `envFrom` Secret.
 - **Open gaps, recorded here and not fixed:**
   - **Sandbox egress.** An Agent with bash can reach the internet and send out anything it can read — which no longer
-    includes a held key: a client that goes around the Custodian carries only Stand-ins. A default-deny egress policy
-    needs an allowlist: DNS, the Orchestrator, the model provider, and whatever the work needs (package registries, for
-    example). That needs a config surface and cluster CIDRs, so it is a separate decision.
+    includes a held key: a client that goes around the Custodian carries only Stand-ins. One exception: no Harness pod
+    reaches a cloud metadata address
+    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). A default-deny egress
+    policy needs an allowlist: DNS, the Orchestrator, the model provider, and whatever the work needs (package
+    registries, for example). That needs a config surface and cluster CIDRs, so it is a separate decision.
   - **A held key can be spent.** The Agent can use a key through the Custodian while its pod lives, and a SigV4 or ADC
     credential cannot be held at all ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
   - **The Orchestrator's Secret writes are namespace-wide.** Its Role may create and patch every Secret, and may not get

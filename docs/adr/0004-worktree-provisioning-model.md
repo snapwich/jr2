@@ -91,34 +91,40 @@ fast setup.
 
 ## Where setup runs
 
-Worktree provisioning is a post-`Ready` step owned by the Orchestrator: the Sandbox CRD names repositories by identity
-so the operator can place and mount them, but it knows nothing about clones or worktrees (ADR-0001, ADR-0051).
-`workspace()`'s attach is one idempotent in-pod script the Harness runs on `POST /attach` (ADR-0012,
-[ADR-0063](0063-the-orchestrator-watches-the-cluster.md)), once `Ready` says every cache is present and fetched.
+The clone is a post-`Ready` step owned by the Orchestrator: the Sandbox CRD names repositories by identity so the
+operator can place and mount them, but it knows nothing about clones or worktrees (ADR-0001, ADR-0051). `workspace()`'s
+attach is one idempotent in-pod script the Harness runs on `POST /attach` (ADR-0012,
+[ADR-0063](0063-the-orchestrator-watches-the-cluster.md)), once `Ready` says every cache is present and fetched. The
+attach only clones. A Machine cuts each Worktree with the kit Effect `worktree()`
+([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)).
 
 ## In-Sandbox layout: worktrees off the per-Sandbox clone (gwtmux convention)
 
 "Not a shared worktree" above means _not a worktree off a fleet-shared `.git`_. **Inside** a Sandbox, worktrees are the
-intended ergonomic — taken off the Sandbox's **own** clone. The per-Sandbox clone _is_ the `default/`, and branch
-working trees are its siblings, matching the layout [gwtmux](https://github.com/snapwich/gwtmux) already expects, under
-the slot the Machine gave the repository (ADR-0051):
+intended ergonomic — taken off the Sandbox's **own** clone. The per-Sandbox clone _is_ the `default/`, and the Worktrees
+are its siblings, matching the layout [gwtmux](https://github.com/snapwich/gwtmux) already expects, under the slot the
+Machine gave the repository (ADR-0051):
 
 ```
-/work/<slot>/default/        the per-Sandbox `git clone --shared` (holds the pod-local .git; the default branch checked out)
-/work/<slot>/<branch>/        `git worktree add` siblings, one per branch worked
+/work/<slot>/default/        the per-Sandbox `git clone --shared` (holds the pod-local .git; stays on the Binding's base)
+/work/<slot>/<name>/         `git worktree add` siblings: folders a Machine cuts, each with one branch or one commit
 ```
 
 Because the layout is identical to the one used outside the cluster, existing worktree tooling works **unchanged** when
-you exec into a Sandbox. Object resolution falls through: a branch worktree shares the per-Sandbox `default/.git`, whose
+you exec into a Sandbox. Object resolution falls through: a Worktree shares the per-Sandbox `default/.git`, whose
 alternates point at the read-only cache — existing objects are read from the cache, new commits land in the pod-local
-`.git`. `default/` is a checkout of the Repo's default branch, as gwtmux's `default/` is outside the cluster: work
-happens in the branch worktrees, and `default/` is the reference tree a human or a tool finds where it expects one. Not
-`--no-checkout`: an empty working tree reads as every tracked file deleted to `git status`, which misleads an Agent that
-looks. The branch name `default` is refused by the spec guard: the branch Worktree is a sibling of that directory, never
-it. `origin`'s push url is the binding's own spelling, so a Machine that bound over ssh pushes over ssh even when the
-cache was cloned over https.
+`.git`. `default/` stays on the Binding's base: a branch is attached, a tag or a commit is detached, and with no base it
+is the Repo's default branch, as gwtmux's `default/` is outside the cluster. No work happens in it: work happens in the
+Worktrees, and `default/` is the reference tree that a human, a tool or an Agent that only reads finds where it expects
+one. Not `--no-checkout`: an empty working tree reads as every tracked file deleted to `git status`, which misleads an
+Agent that looks. A Worktree's folder cannot be named `default`, and a cut of the branch that `default/` holds is
+`refused`, with a reason that names `/work/<slot>/default`. `origin`'s push url is the binding's own spelling, so a
+Machine that bound over ssh pushes over ssh even when the cache was cloned over https.
 
-This does **not** reintroduce jr's contention: the shared `.git` here is _per-Sandbox_, and it is accessed serially
-under the standing invariant that **one Agent runs at a time per Workspace** — structural since ADR-0012 (one sequential
-body per workspace). A Machine that runs concurrent Agents in one Sandbox, or an Agent that spawns parallel git-touching
-subagents, reintroduces contention (pod-scoped, not fleet-wide) and must opt into separate Sandboxes instead.
+This does **not** reintroduce jr's contention: the shared `.git` here is _per-Sandbox_, so what contends stays in one
+pod and never crosses the fleet. Inside the pod it is the author's choice. A Machine that runs concurrent Agents in
+Worktrees of one clone, or an Agent that spawns parallel git-touching subagents, takes that contention, and a Machine
+that does not want it uses separate Sandboxes. Two things keep one clone safe to share. The attach sets `gc.auto=0` and
+`maintenance.auto=false` in the clone, because a `gc` beside a cut or a commit can prune what another Worktree needs.
+And all Worktrees of a clone share `refs/remotes/origin/*`, so `jr2-upload-pack` holds a per-clone lock for each fetch
+(ADR-0053, ADR-0075).

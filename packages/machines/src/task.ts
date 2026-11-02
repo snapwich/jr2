@@ -40,15 +40,18 @@ import {
   jr2Setup,
   open,
   workspace,
+  worktree,
+  branchName,
   type HostInjectedInput,
   type ThinkingLevel,
   type Workspaced,
+  type WorktreePath,
 } from "@jr2/orchestrator";
 
 // ---------------------------------------------------------------------------------------------
 // The door (ADR-0033): what a caller sends to start a run, declared on the `workspace()` that is
 // this Machine's root. One source of truth — the types below derive from it, the Console generates
-// its start form from it, and it types the spec mapper.
+// its start form from it, and it types the body's input.
 //
 // No `repo` field, deliberately (ADR-0054): a packaged door cannot enumerate the Instance's
 // repositories, and "a Workflow is a name" reads best when the name means "a prompt against THIS
@@ -73,8 +76,7 @@ const door = z.object({
    * the seed Instance ID of the run (`instanceId` in `jr2 status`). It is not the run id. Two runs
    * never use the same branch. Required when `task` runs inside another Machine, such as a
    * `pool()`: there is no Instance ID to name the branch after. */
-  branch: z
-    .string()
+  branch: branchName
     .optional()
     .describe(
       "The branch to cut and commit on. Default: jr2/task-<instance id>, where <instance id> is the seed " +
@@ -172,6 +174,9 @@ const requestChanges = defineEvent({
 type BodyInput = Workspaced<TaskInput & HostInjectedInput, string>;
 
 type BodyContext = BodyInput & {
+  /** The branch of this run: the door's, or `jr2/task-<instance id>`. Undefined only under a parent
+   * Machine with no `branch` in its input. */
+  branch: string | undefined;
   /** Turns COMPLETED on the conversation the next Turn will land on. Zero means that Turn is its
    * first, so the prompt has to carry the whole task and the worktree framing again — which is
    * exactly what a post-fault Turn needs and a continued one does not. It counts for the PROMPT
@@ -203,7 +208,6 @@ type BodyContext = BodyInput & {
  *
  * const fixed = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: ({ input }: { input: TaskInput }) => ({ branch: input.branch ?? "jr2/fix" }),
  * });
  *
  * export const machine = customize(fixed, {
@@ -238,27 +242,43 @@ export const body = jr2Setup({
 - You MUST end your turn by calling \`finish\` exactly once, with a summary of what you did. An
   uncalled tool parks the whole workflow waiting for you.`,
     }),
+    cut: worktree(),
     // The Failure (ADR-0073): the `lost` state invokes it, and the run ends `failed`.
     fail: fail(),
   },
 }).createMachine({
   id: "task",
-  context: ({ input }) => ({ ...input, turns: 0 }),
-  initial: "working",
+  context: ({ input }) => ({ ...input, branch: branchOf(input), turns: 0 }),
+  initial: "starting",
 
   // Our Sandbox is gone — reaped, or replaced after an eviction (ADR-0021). The pod-local clone and
   // every unpushed commit went with it, so fail the run rather than pretend we can resume.
   on: { "workspace.lost": { target: ".lost" } },
 
   states: {
+    // A bad name is the door's (`branchName`): it costs no pod, under a parent also, because
+    // `place` holds an invocation's input to the wrapper's door. A name that NO ONE gave cannot be a
+    // door rule: the host adds `instanceId` after the door. So this one line stays, and it costs a
+    // pod: a Failure, and not a defect: under a pool(), one item fails, and the run goes on.
+    starting: {
+      always: [{ guard: ({ context }) => context.branch === undefined, target: "noBranch" }, { target: "cutting" }],
+    },
+    // The first slot is the coder's. A slot after it needs no cut: `<slot>/default` is on its base.
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: worktreeOf(context).path, branch: context.branch! }),
+        onDone: [{ guard: ({ event }) => event.output.outcome === "ready", target: "working" }, { target: "notCut" }],
+      },
+    },
     working: {
       invoke: {
         src: "coder",
         input: ({ context }) => ({
           // This Turn's FRAME (ADR-0057): what it is about, and where it works. The `cwd` is
-          // stated rather than left to the single-slot default, because "the first slot is the one
-          // the coder edits" is this Machine's convention (`worktreeOf`) and a convention is
-          // stated — a consumer who binds a second slot must not change where the coder works.
+          // required under Repo Slots (ADR-0075): "the first slot is the one the coder edits" is this
+          // Machine's convention (`worktreeOf`), and a consumer who binds a second slot must not
+          // change where the coder works.
           prompt: coderPrompt(context),
           cwd: worktreeOf(context).path,
           // One human steering one Agent wants the Agent to remember what it did (ADR-0054), so
@@ -310,9 +330,9 @@ export const body = jr2Setup({
           meta: {
             ...(context.summary !== undefined ? { summary: context.summary } : {}),
             ...(context.reason !== undefined ? { reason: context.reason } : {}),
-            // The branch the attach actually made and the worktree the coder committed in — what
+            // The branch the cut made and the Worktree the coder committed in — what
             // an `exec` needs, and what a push would name.
-            branch: context.workspace.branch,
+            branch: context.branch!,
             worktree: worktreeOf(context).path,
           },
         }),
@@ -332,11 +352,18 @@ export const body = jr2Setup({
     // the pod, and anything still unpushed in it goes too.
     done: {
       type: "final",
-      output: ({ context }): TaskOutput => ({ branch: context.workspace.branch }),
+      output: ({ context }): TaskOutput => ({ branch: context.branch! }),
     },
     // Not a final state: a final state means `done`, and this work did not succeed. The Failure
     // goes up through the wrapper, and the run ends `failed` (ADR-0073). A parent catches it with
     // an `onError` that `isFailure` guards.
+    noBranch: {
+      invoke: {
+        src: "fail",
+        input: { reason: "task: no `branch` on the door and no Instance ID to derive one from" },
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "task: the Worktree was not cut" } } },
     lost: {
       invoke: {
         src: "fail",
@@ -409,7 +436,6 @@ export const task = workspace(body, {
   // the coder is told about and may read. A named
   // `target: open` would have said "one repository", which is not what the body knows.
   repos: open,
-  spec: ({ input }) => ({ branch: branchOf(input) }),
 });
 
 /**
@@ -421,21 +447,12 @@ export const task = workspace(body, {
  * carry it and reading it takes a cast that says why.
  *
  * A `task` composed UNDER another Machine is fed by its parent rather than by the host, so the
- * field is absent there and there is no per-run id to name a branch after. Refuse, loudly and
- * before any pod exists: the alternative is a constant branch name, which two concurrent workers
- * would both cut and neither would own.
+ * field is absent there and there is no per-run id to name a branch after: undefined.
  */
-function branchOf(input: TaskInput): string {
+function branchOf(input: TaskInput): string | undefined {
   if (input.branch) return input.branch;
   const { instanceId } = input as TaskInput & Partial<HostInjectedInput>;
-  if (!instanceId) {
-    throw new Error(
-      "task: no `branch` on the door and no Instance ID to derive one from — `jr2/task-<instance id>` needs " +
-        "the id the host injects beside the door of the ROOT machine (ADR-0033), and this run of `task` " +
-        "was started by a parent Machine instead. Pass `branch` in the run input.",
-    );
-  }
-  return `jr2/task-${instanceId}`;
+  return instanceId ? `jr2/task-${instanceId}` : undefined;
 }
 
 /**
@@ -455,11 +472,12 @@ function coderPrompt(context: BodyContext): string {
   if (context.turns > 0) return notes.trimStart() || "Continue.";
   const fault = memoryKill(context.reason);
   const ended = fault ? `\n\nThe last attempt ended: ${fault}` : "";
-  const { branch, repos } = context.workspace;
+  const { repos } = context.workspace;
+  const { branch } = context;
   const worktree = worktreeOf(context);
   const beside = Object.entries(repos)
     .filter(([slot]) => slot !== worktree.slot)
-    .map(([slot, path]) => `\n- ${slot}: ${path}`)
+    .map(([slot, path]) => `\n- ${slot}: ${path}/default`)
     .join("");
   return (
     `${context.prompt}${ended}${notes}\n\n` +
@@ -487,7 +505,7 @@ function memoryKill(reason: string | undefined): string | undefined {
  * (ADR-0051) — so it is decided here, in one place, and stated on the line that registers the
  * Machine. The wrapper refuses a map with no slot, so the first always exists.
  */
-function worktreeOf(context: Pick<BodyContext, "workspace">): { slot: string; path: string } {
-  const [slot, path] = Object.entries(context.workspace.repos)[0]!;
-  return { slot, path };
+function worktreeOf(context: Pick<BodyContext, "workspace">): { slot: string; path: WorktreePath<string> } {
+  const [slot, folder] = Object.entries(context.workspace.repos)[0]!;
+  return { slot, path: `${folder}/task` };
 }

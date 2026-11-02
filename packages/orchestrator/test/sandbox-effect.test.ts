@@ -15,6 +15,7 @@ import {
   placementOf,
   type EffectLogic,
   type EffectRow,
+  type ExecPortFactory,
   type HttpParts,
 } from "../src/effect.ts";
 import {
@@ -37,8 +38,9 @@ import { effectorTarget } from "../src/instance.ts";
 import { effectorKey } from "../src/tokens.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
+import { worktreeWith } from "../src/worktree.ts";
 import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
-import { fakeWorkspace, handles, FakeHarnessExec } from "./_effects.ts";
+import { fakeWorkspace, handles, FakeHarnessExec, readyCuts } from "./_effects.ts";
 import { mkStore, waitFor } from "./_fixtures.ts";
 
 const go = defineEvent({ name: "go", input: z.object({}) });
@@ -56,32 +58,38 @@ async function until(check: () => Promise<boolean>, ms = 5_000): Promise<void> {
 type Ctx = { result?: unknown; fault?: string };
 
 const ws = () => ({
-  ...handles({ app: "/work/app/jr2-run-1" }),
+  ...handles(),
   bindings: { app: "https://github.com/ourorg/app.git" },
 });
 
-/** A Workspace with no Repo Slot (ADR-0051): no path, no Binding, no branch. */
-const slotless = () => {
-  const { branch: _branch, ...rest } = handles({});
-  return rest;
-};
+/** A Workspace with no Repo Slot (ADR-0051): no path, no Binding, no Worktree to cut. */
+const slotless = () => handles({});
 
+/** The one Worktree of these tests, and the branch of its cut. */
+const WT = "/work/app/jr2-run-1";
+const BRANCH = "jr2/run-1";
+
+const cut = () => worktreeWith(readyCuts);
+
+/** Cut the Worktree when the Workspace has a Repo Slot, then run `effect` in it. */
 function machineOf(effect: AnyEffect, input: object = { path: "dist/report.pdf" }, h = ws()) {
+  const slots = Object.keys(h.repos).length > 0;
   return jr2Setup({
     types: {} as { context: Ctx },
     events: [go],
-    actors: { ws: fakeWorkspace(h), effect },
+    actors: { ws: fakeWorkspace(h), effect, cut: cut() },
   }).createMachine({
     id: "wf",
     context: {},
     invoke: { src: "ws" },
     initial: "waiting",
     states: {
-      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "running" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { go: slots ? "cutting" : "running" } },
+      cutting: { invoke: { src: "cut", input: { path: WT, branch: BRANCH }, onDone: "running" } },
       running: {
         invoke: {
           src: "effect",
-          input: () => input as never,
+          input: () => ({ ...(slots ? { worktree: WT } : {}), ...input }) as never,
           onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
           onError: { target: "faulted", actions: assign({ fault: ({ event }) => (event.error as Error).message }) },
         },
@@ -147,13 +155,16 @@ test("a push: the start names the Workspace's repositories and Binding; the pinn
     worktree: "app/jr2-run-1",
     cache: req.push.repo.cache,
   });
-  assert.match(req.push.repo.cache, /^app-[0-9a-f]{8}$/);
+  assert.match(req.push.repo.cache, /^app-[0-9a-f]{32}$/);
   assert.equal(req.push.url, "https://github.com/ourorg/app.git");
   assert.equal(req.push.branch, "jr2/run-1");
   assert.equal(req.push.sign, true);
   assert.equal(req.push.pin, undefined, "the Effector reads the tip");
   await until(async () => Object.values(await ledger(rig.store, rig.runId)).some((r) => "pinned" in r));
-  const row = Object.values(await ledger(rig.store, rig.runId))[0] as Extract<EffectRow, { placement: "sandbox" }>;
+  const row = Object.values(await ledger(rig.store, rig.runId)).find((r) => r.kind === "push") as Extract<
+    EffectRow,
+    { placement: "sandbox" }
+  >;
   assert.equal(row.pinned, fake.tip);
   assert.equal(row.sandbox, "ws-1");
   fake.settle(pushed("b".repeat(40)));
@@ -220,23 +231,29 @@ function twoPushes(effect: AnyEffect, third = false) {
   return jr2Setup({
     types: {} as { context: Ctx & { first?: unknown } },
     events: [go],
-    actors: { ws: fakeWorkspace(ws()), effect },
+    actors: { ws: fakeWorkspace(ws()), effect, cut: cut() },
   }).createMachine({
     id: "wf",
     context: {},
     invoke: { src: "ws" },
     initial: "waiting",
     states: {
-      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "first" } },
+      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "cutting" } },
+      cutting: { invoke: { src: "cut", input: { path: WT, branch: BRANCH }, onDone: "first" } },
       first: {
         invoke: {
           src: "effect",
+          input: { worktree: WT },
           onDone: { target: third ? "between" : "second", actions: assign({ first: ({ event }) => event.output }) },
         },
       },
-      between: { invoke: { src: "effect", onDone: "second" } },
+      between: { invoke: { src: "effect", input: { worktree: WT }, onDone: "second" } },
       second: {
-        invoke: { src: "effect", onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) } },
+        invoke: {
+          src: "effect",
+          input: { worktree: WT },
+          onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
+        },
       },
       done: {},
     },
@@ -388,7 +405,9 @@ test("a push or credentialed-command start over the bytes an Effector reads sett
   assert.match(String(pushOut.reason), /over the 4194304 bytes an Effector reads; nothing was pushed/);
   assert.ok(PushOutputShape.safeParse(pushOut).success, "a push's own outcome");
   assert.deepEqual(
-    Object.values(await ledger(push.store, push.runId)).map((r) => r.state),
+    Object.values(await ledger(push.store, push.runId))
+      .filter((r) => r.kind === "push")
+      .map((r) => r.state),
     ["settled"],
     "no intent row: nothing was sent",
   );
@@ -420,32 +439,8 @@ test("a credentialed command with `pin` takes the approved commit from its input
   );
   assert.deepEqual(effect.effect.kind === "command" && effect.effect.pin, true);
   // The load walk's pick-param check reads this: a fromPick that hands it `sha` is read.
-  assert.deepEqual(inputKeysOf(effect.effect), ["sha"]);
-  const machine = jr2Setup({
-    types: {} as { context: Ctx },
-    events: [go],
-    actors: { ws: fakeWorkspace(ws()), effect },
-  }).createMachine({
-    id: "wf",
-    context: {},
-    invoke: { src: "ws" },
-    initial: "waiting",
-    states: {
-      waiting: { invoke: { src: "gate", id: "start" }, on: { go: "running" } },
-      running: {
-        invoke: {
-          src: "effect",
-          input: { sha: "e".repeat(40) },
-          onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) },
-        },
-      },
-      done: {},
-    },
-  });
-  const host = new RunHost({ store: await mkStore(), ...target });
-  host.register({ name: "fx", machine, provide: () => ({}) });
-  const { runId } = await host.start("fx");
-  host.sendToGate(runId, "start", { type: "go" });
+  assert.deepEqual(inputKeysOf(effect.effect), ["sha", "worktree"]);
+  const { host, runId } = await started(effect as AnyEffect, undefined, { sha: "e".repeat(40) });
   await waitFor(() => fake.starts.length === 1);
   assert.equal((fake.starts[0]!.req as CommandStartRequest).command.pin, "e".repeat(40));
   fake.settle({ outcome: "exited", code: 0, tail: "" });
@@ -582,13 +577,11 @@ test("http({ body: file(...) }) is refused, with the fix, with a method that sen
     /with a file body the run's part is file\(\)'s .* write no `request`/,
   );
   // Placement follows the body: a file body is the Sandbox Effector's, any other the Instance's.
-  assert.equal(placementOf(http({ method: "PUT", url, body: file("a", { slot: "app" }) }).effect), "sandbox");
+  assert.equal(placementOf(http({ method: "PUT", url, body: file("a") }).effect), "sandbox");
   assert.equal(placementOf(http({ method: "PUT", url, request: () => ({ text: "a" }) }).effect), "instance");
   assert.deepEqual(
-    (http({ method: "POST", url, body: file("a", { slot: "app", contentType: "text/plain" }) }).effect as HttpParts)
-      .file,
+    (http({ method: "POST", url, body: file("a", { contentType: "text/plain" }) }).effect as HttpParts).file,
     {
-      slot: "app",
       contentType: "text/plain",
     },
   );
@@ -616,7 +609,7 @@ test("the kinds' plain data: placement, the brand, what jr2 up reads", () => {
   ]);
   const carried = partsOf([machine]).effects.find((e) => e.name === "credentialed") as { secrets?: string[] };
   assert.deepEqual(carried.secrets, ["deploy-token"]);
-  assert.deepEqual(pusher.effect.kind === "push" && pusher.effect.inputKeys, ["sha"]);
+  assert.deepEqual(pusher.effect.kind === "push" && pusher.effect.inputKeys, ["worktree", "sha"]);
 });
 
 test("the Sandbox Effector container: jr2's binary, the Worktree, caches and runtime read-only, its own Secret, key and scratch", () => {
@@ -702,7 +695,7 @@ test("every Sandbox Effector mount that holds a secret or the Agent's files is w
 test("an unsigned squash is built (ADR-0067); an env that sets PATH, HOME or TMPDIR is refused with the fix", () => {
   assert.deepEqual(
     (({ squash, sign, inputKeys }) => ({ squash, sign, inputKeys }))(pushParts({ squash: true })),
-    { squash: true, sign: false, inputKeys: ["message"] },
+    { squash: true, sign: false, inputKeys: ["worktree", "message"] },
     "jr2 up decides whether the entry can commit it",
   );
   const exec = new FakeHarnessExec();

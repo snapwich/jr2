@@ -77,19 +77,24 @@ jr2 status a2d8
 
 The status is a [`RunStatus`](../reference/http-api.md#type-runstatus), with the open Gates of the run:
 
-| Field      | What it holds                                                                                                                     |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `status`   | `active` while the run continues. `done`, `failed`, `error` or `cancelled` when it ended. `drifted` when jr2 did not continue it. |
-| `value`    | The state of the root Machine.                                                                                                    |
-| `context`  | The context of the root Machine.                                                                                                  |
-| `children` | The Machines that the run invokes now, such as its Workspaces, each with its state.                                               |
-| `waiting`  | Each Workspace that waits for capacity: what it waits for, since when, and the words of the scheduler or the quota.               |
-| `held`     | Each [outstanding](../reference/glossary.md#outstanding) pick of an Agent: the Agent, the pick, and since when.                   |
-| `fault`    | The error, when the status is `error`.                                                                                            |
-| `output`   | The output of the Machine, when the run ended. For `failed`, the Failure: `{ reason, detail? }`.                                  |
-| `reason`   | Why jr2 set the status, when the Machine did not set it, such as `drifted`.                                                       |
-| `assembly` | The hash of the [Assembly](../reference/glossary.md#assembly) that the run started under, and holds.                              |
-| `gates`    | Each open Gate. [Answer a Gate](answer-a-gate.md) explains its fields.                                                            |
+| Field       | What it holds                                                                                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`    | `active` while the run continues. `done`, `failed`, `error` or `cancelled` when it ended. `drifted` when jr2 did not continue it.                             |
+| `value`     | The state of the root Machine.                                                                                                                                |
+| `context`   | The context of the root Machine.                                                                                                                              |
+| `children`  | The Machines that the run invokes now, such as its Workspaces, each with its state.                                                                           |
+| `waiting`   | Each Workspace that waits for capacity: what it waits for, since when, and the words of the scheduler or the quota.                                           |
+| `held`      | Each [outstanding](../reference/glossary.md#outstanding) pick of an Agent: the Agent, the pick, and since when.                                               |
+| `fault`     | The error, when the status is `error`.                                                                                                                        |
+| `output`    | The output of the Machine, when the run ended. For `failed`, the Failure: `{ reason, detail? }`.                                                              |
+| `reason`    | Why jr2 set the status, when the Machine did not set it, such as `drifted`.                                                                                   |
+| `assembly`  | The hash of the [Assembly](../reference/glossary.md#assembly) that the run started under, and holds.                                                          |
+| `gates`     | Each open Gate. [Answer a Gate](answer-a-gate.md) explains its fields.                                                                                        |
+| `worktrees` | Each [Worktree](../reference/glossary.md#worktree) that the run cut: its `slot`, its `path`, and its `branch`, which is `null` when the Worktree is detached. |
+
+For a run that cut a Worktree, `jr2 status` also prints one line on stderr for each cut:
+`worktree: <path> (<slot>), branch <branch>`, or `worktree: <path> (<slot>), detached`. jr2 reads each line from the
+record of the cut, so these lines do not change when an Agent changes the branch in the Worktree.
 
 [Durable runs](../concepts/durable-runs.md) tells how long jr2 keeps a run that ended.
 
@@ -237,13 +242,15 @@ For example, this is the log of a run of the `task` Workflow of
 [An Agent in a Sandbox](../get-started/an-agent-in-a-sandbox.md), with the prompt
 ``In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.``:
 
+<!-- output: not run -->
+
 ```text
 jr2 harness serving on :8080
-[run] [status] running · body: working
+[run] [status] running · body: cutting
 [run] [status] running · body: working
 [coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
 [coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder]
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] Work in /work/target/jr2-task-19b49b58-2ea4-4d79-b100-49aad6e12013, on branch jr2/task-19b49b58-2ea4-4d79-b100-49aad6e12013 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
+[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] Work in /work/target/task, on branch jr2/task-19b49b58-2ea4-4d79-b100-49aad6e12013 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
 …
 [coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [thinking] The user wants me to run `node bin/greet.js` inside `docs/intro/repo` directory. Let me navigate there and run it.
 …

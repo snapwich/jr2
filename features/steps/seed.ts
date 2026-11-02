@@ -402,7 +402,7 @@ export async function seedKeys(): Promise<{
 
 /** What the push remote holds on a branch, or "" when it has none. */
 export async function pushRemoteTip(branch: string): Promise<string> {
-  assert.match(branch, /^[a-z0-9][a-z0-9-]{0,60}$/, "a branch is a plain lower-case label");
+  assert.match(branch, /^[a-z0-9][a-z0-9/-]{0,60}$/, "a branch is a plain lower-case label");
   const out = await inSeed(
     `git -c safe.directory='*' -C /srv/push.git rev-parse -q --verify refs/heads/${branch} || true`,
   );
@@ -452,4 +452,76 @@ export async function verifyOnPushRemote(commit: string): Promise<{ verified: bo
     who: (out.split("\n").find((l) => l.startsWith("WHO ")) ?? "").slice(4),
     out,
   };
+}
+
+/** A commit on a new branch of the push remote: a colleague's open pull request. */
+export async function pushRemoteBranch(branch: string): Promise<string> {
+  assert.match(branch, /^[a-z0-9][a-z0-9/-]{0,60}$/, "a branch is a plain lower-case label");
+  const out = await inSeed(
+    [
+      `cd /srv/push.git`,
+      `git -c safe.directory='*' -c user.email=e2e@jr2 -c user.name=e2e commit-tree -m 'a colleague' -p refs/heads/main 'refs/heads/main^{tree}' > /tmp/c.$$`,
+      `git -c safe.directory='*' update-ref refs/heads/${branch} $(cat /tmp/c.$$)`,
+      `chown -R "$(stat -c %u:%g /srv/push.git)" /srv/push.git/refs /srv/push.git/logs 2>/dev/null || true`,
+      `cat /tmp/c.$$; rm /tmp/c.$$`,
+    ].join("\n"),
+  );
+  return out.trim();
+}
+
+/** `large.git` beside `app.git`, once per seed: thousands of files, commits and refs. A cluster's
+ * furniture, as `app.git` is, and made here, because only the load needs it. Parallel workers can
+ * each start a build, so each one builds under a temporary name and renames at the end: while a
+ * build runs, `large.git` does not exist, and a worker that loses the rename removes its copy. */
+export async function ensureLargeSeed(): Promise<void> {
+  await inSeed(
+    [
+      `[ -e /srv/large.git/HEAD ] && exit 0`,
+      `t=/srv/.large-$$.git`,
+      `git init -q -b main --bare "$t"`,
+      `cd "$t"`,
+      `git config http.receivepack false`,
+      `awk 'BEGIN { for (c = 1; c <= 1500; c++) { print "commit refs/heads/main"; print "committer e <e@e> " 1700000000 + c " +0000"; print "data 1"; print "x"; for (f = 0; f < (c == 1 ? 20000 : 5); f++) { n = (c == 1 ? f : (c * 7 + f * 13) % 20000); print "M 100644 inline d" n % 200 "/f" n ".txt"; d = "line " c " " f; for (i = 0; i < 40; i++) d = d " pad"; print "data " length(d) + 1; print d; print "" } if (c % 2 == 0) { print "reset refs/heads/ref/" c; print "from refs/heads/main"; print "" } } }' | git -c safe.directory='*' fast-import --quiet`,
+      `git -c safe.directory='*' repack -adq`,
+      `git -c safe.directory='*' update-server-info`,
+      `cd /`,
+      `mv -T "$t" /srv/large.git || rm -rf "$t"`,
+    ].join("\n"),
+  );
+}
+
+/** One commit on `main` of `large.git`: the remote that moves under the load. */
+export async function moveLargeSeed(n: number): Promise<void> {
+  await inSeed(
+    [
+      `cd /srv/large.git`,
+      `t=$(git -c safe.directory='*' rev-parse 'refs/heads/main^{tree}')`,
+      `c=$(git -c safe.directory='*' -c user.email=e@e -c user.name=e commit-tree -m m${n} -p refs/heads/main $t)`,
+      `git -c safe.directory='*' update-ref refs/heads/main $c`,
+      `git -c safe.directory='*' update-server-info`,
+    ].join("\n"),
+  );
+}
+
+/** A repository of one scenario, beside `app.git`: `files` small files on `main`, and `branches`. It
+ * is the scenario's own, so that the scenario can remove it, and the files make a Worktree slow
+ * enough to kill in the middle. */
+export async function ownSeedRepo(name: string, files: number, branches: readonly string[] = []): Promise<string> {
+  await inSeed(
+    [
+      `git init -q -b main --bare /srv/${name}.git`,
+      `cd /srv/${name}.git`,
+      `git config http.receivepack false`,
+      `awk 'BEGIN { print "commit refs/heads/main"; print "committer e <e@e> 1700000000 +0000"; print "data 1"; print "x"; for (f = 0; f < ${files}; f++) { print "M 100644 inline d" f % 200 "/f" f ".txt"; print "data 2"; print "x"; print "" } print "" }' | git -c safe.directory='*' fast-import --quiet`,
+      ...branches.map((b) => `git -c safe.directory='*' branch ${b} main`),
+      `git -c safe.directory='*' repack -adq`,
+      `git -c safe.directory='*' update-server-info`,
+    ].join("\n"),
+  );
+  return `http://seed.jr2-e2e-seed.svc/${name}.git`;
+}
+
+/** Remove a repository of {@link ownSeedRepo}: from now on, its remote fails each fetch. */
+export async function dropSeedRepo(name: string): Promise<void> {
+  await inSeed(`rm -rf /srv/${name}.git`);
 }

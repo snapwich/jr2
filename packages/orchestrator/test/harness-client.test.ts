@@ -144,12 +144,13 @@ test("the port puts the Frame's cwd on the admit body — the production hop act
   const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
   const port = harnessAgentRunPort(client(fetch));
 
-  await port.admit({ ...baseInput, cwd: "/work/target/feature" }, { definition: coder });
+  await port.admit({ ...baseInput, cwd: "/work/target/feature" }, { definition: coder, slot: "root/coder" });
 
   assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
     message: "do the thing",
     cwd: "/work/target/feature",
     definition: coder,
+    slot: "root/coder",
   });
 });
 
@@ -318,14 +319,23 @@ test("the port admits via send and forwards the signal; admit without a prompt i
   const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
   const port = harnessAgentRunPort(client(fetch));
 
-  const adm = await port.admit(baseInput, { definition: coder, signal: new AbortController().signal });
+  const adm = await port.admit(baseInput, {
+    definition: coder,
+    slot: "root/coder",
+    signal: new AbortController().signal,
+  });
   assert.deepEqual(adm, admission);
   assert.ok(calls[0]!.init?.signal, "admit forwards its signal into the POST");
   // The definition comes from the ADMIT OPTIONS — the actor's closure — never from the persisted
   // input, so a restore admits the definition the Machine carries now (ADR-0049).
   assert.deepEqual((JSON.parse(calls[0]!.init?.body as string) as { definition: unknown }).definition, coder);
+  // The Agent's slot rides the admission (ADR-0076): the Harness states it, never derives it.
+  assert.equal((JSON.parse(calls[0]!.init?.body as string) as { slot?: unknown }).slot, "root/coder");
 
-  await assert.rejects(() => port.admit({ ...baseInput, prompt: undefined }, { definition: coder }), /needs a prompt/);
+  await assert.rejects(
+    () => port.admit({ ...baseInput, prompt: undefined }, { definition: coder, slot: "root/coder" }),
+    /needs a prompt/,
+  );
 });
 
 test("wait long-polls from the admission offset and resolves on this submission's completed settlement", async () => {
@@ -601,15 +611,20 @@ test("the admission's notices ride the admit body; with none, the body is as it 
     { kind: "conversation-new" as const, scope: "conversation" as const, reason: "the last Turn faulted" },
   ];
 
-  await port.admit(baseInput, { definition: coder, notices });
-  await port.admit(baseInput, { definition: coder, notices: [] });
+  await port.admit(baseInput, { definition: coder, slot: "root/coder", notices });
+  await port.admit(baseInput, { definition: coder, slot: "root/coder", notices: [] });
 
   assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
     message: "do the thing",
     definition: coder,
+    slot: "root/coder",
     notices,
   });
-  assert.deepEqual(JSON.parse(calls[1]!.init?.body as string), { message: "do the thing", definition: coder });
+  assert.deepEqual(JSON.parse(calls[1]!.init?.body as string), {
+    message: "do the thing",
+    definition: coder,
+    slot: "root/coder",
+  });
 });
 
 test("an admission for a kept conversation says so on the body; a 404 with the not-kept marker is ConversationNotKept, and any other 404 is a failed admission (ADR-0062)", async () => {
@@ -624,19 +639,20 @@ test("an admission for a kept conversation says so on the body; a 404 with the n
   ]);
   const port = harnessAgentRunPort(client(fetch));
 
-  await port.admit(baseInput, { definition: coder, kept: true });
+  await port.admit(baseInput, { definition: coder, slot: "root/coder", kept: true });
   assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
     message: "do the thing",
     definition: coder,
+    slot: "root/coder",
     kept: true,
   });
-  await assert.rejects(port.admit(baseInput, { definition: coder, kept: true }), (err: unknown) => {
+  await assert.rejects(port.admit(baseInput, { definition: coder, slot: "root/coder", kept: true }), (err: unknown) => {
     assert.ok(err instanceof ConversationNotKept);
     assert.equal(err.notKept, true);
     assert.match(err.message, /404.*no conversation "inst-1".*ADR-0062/s);
     return true;
   });
-  await assert.rejects(port.admit(baseInput, { definition: coder }), (err: unknown) => {
+  await assert.rejects(port.admit(baseInput, { definition: coder, slot: "root/coder" }), (err: unknown) => {
     assert.ok(!(err instanceof ConversationNotKept));
     assert.match((err as Error).message, /^harness admission failed \(404\)/);
     return true;
@@ -644,7 +660,7 @@ test("an admission for a kept conversation says so on the body; a 404 with the n
   assert.equal("kept" in JSON.parse(calls[2]!.init?.body as string), false);
   // A 404 to a kept admission without the Harness's marker — a proxy, a route that moved — is a
   // failed admission, as before.
-  await assert.rejects(port.admit(baseInput, { definition: coder, kept: true }), (err: unknown) => {
+  await assert.rejects(port.admit(baseInput, { definition: coder, slot: "root/coder", kept: true }), (err: unknown) => {
     assert.ok(!(err instanceof ConversationNotKept));
     assert.match((err as Error).message, /^harness admission failed \(404\): no route$/);
     return true;

@@ -40,6 +40,8 @@ import {
   workspace,
   type HostInjectedInput,
   type Workspaced,
+  isReady,
+  worktree,
 } from "@jr2/orchestrator";
 /** The seed Repo (`steps/seed.ts`), bound as every kind workflow binds it. */
 const SEED = { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" };
@@ -52,7 +54,7 @@ const door = z.object({
 });
 type Door = z.infer<typeof door>;
 type BodyInput = Workspaced<HostInjectedInput & Door, "app">;
-type BodyContext = BodyInput & { output?: unknown };
+type BodyContext = BodyInput & { cutOutput?: string; output?: unknown };
 
 const unused = defineEvent({ name: "noop", input: z.object({}) });
 const go = defineEvent({ name: "go", input: z.object({}) });
@@ -64,6 +66,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
   events: [unused, go],
   actors: {
+    cut: worktree(),
     fail: fail(),
     // In the Harness container: the Agent's own work, committed.
     commit: command([
@@ -94,12 +97,29 @@ const body = jr2Setup({
 }).createMachine({
   id: "effected",
   context: ({ input }) => input,
-  initial: "committing",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" }, noop: ".settled" },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({
+          path: `/work/app/effected-${context.marker}`,
+          branch: `effected-${context.marker}`,
+        }),
+        onDone: [
+          { guard: ({ event }) => isReady(event.output), target: "committing" },
+          { target: "notCut", actions: assign({ cutOutput: ({ event }) => JSON.stringify(event.output) }) },
+        ],
+      },
+    },
+    notCut: {
+      invoke: { src: "fail", input: ({ context }) => ({ reason: `the Worktree was not cut: ${context.cutOutput}` }) },
+    },
     committing: {
       invoke: {
         src: "commit",
+        input: ({ context }) => ({ worktree: `/work/app/effected-${context.marker}` }),
         onDone: [
           { guard: ({ context }) => context.mode === "env", target: "revealing" },
           { guard: ({ context }) => context.mode === "dirty", target: "editing" },
@@ -109,23 +129,35 @@ const body = jr2Setup({
         ],
       },
     },
-    editing: { invoke: { src: "edit", onDone: "revealing" } },
+    editing: {
+      invoke: {
+        src: "edit",
+        input: ({ context }) => ({ worktree: `/work/app/effected-${context.marker}` }),
+        onDone: "revealing",
+      },
+    },
     revealing: {
       invoke: {
         src: "reveal",
+        input: ({ context }) => ({ worktree: `/work/app/effected-${context.marker}` }),
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
     leaking: {
       invoke: {
         src: "leak",
+        input: ({ context }) => ({ worktree: `/work/app/effected-${context.marker}` }),
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
     // The Gate's answer exits the state while the command runs: its stop (ADR-0067).
     lingering: {
       invoke: [
-        { src: "linger", onDone: "after" },
+        {
+          src: "linger",
+          input: ({ context }) => ({ worktree: `/work/app/effected-${context.marker}` }),
+          onDone: "after",
+        },
         { src: "gate", id: "cut" },
       ],
       on: { go: "after" },
@@ -135,7 +167,7 @@ const body = jr2Setup({
     sending: {
       invoke: {
         src: "send",
-        input: ({ context }) => ({ marker: context.marker }),
+        input: ({ context }) => ({ worktree: `/work/app/effected-${context.marker}`, marker: context.marker }),
         onDone: { target: "settled", actions: assign({ output: ({ event }) => event.output }) },
       },
     },
@@ -148,5 +180,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: SEED },
-  spec: ({ input }) => ({ branch: `effected-${input.marker}` }),
 });

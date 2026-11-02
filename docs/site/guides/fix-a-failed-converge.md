@@ -306,7 +306,7 @@ refusals of a push and of the [Effector](../reference/glossary.md#effector) imag
 
   The check has a limit. The check pod has labels of its own, so a NetworkPolicy that selects the Harness pods by label
   does not select the check pod. When such a policy closes the egress of the Harness pods, the check can pass while a
-  Turn fails.
+  Turn fails. The egress policy of jr2, which closes the cloud metadata addresses, selects the check pod too.
 
   A check can fail when the model works, for example a model that loads for longer than the check waits. When you know
   that the models work, run `jr2 up --skip-provider-preflight`. No check pod runs, and the converge goes on. `jr2 up`

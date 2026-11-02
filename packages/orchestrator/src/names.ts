@@ -25,8 +25,10 @@ export const EFFECTOR_PORT = 8082;
 
 /** Where a Harness persists its conversations, and the env var that tells it so (ADR-0031): one
  * fixed path in both placements — the Instance Harness's PersistentVolumeClaim (deploy.ts) and a
- * Sandbox's emptyDir (sandbox-kube.ts), each mounted into the Harness container alone. */
-export const CONVERSATIONS_DIR = "/conversations";
+ * Sandbox's emptyDir (sandbox-kube.ts), each mounted into the Harness container alone. It is under
+ * `/run/jr2`, as each path that the Harness holds alone is, so no process that the Harness confines
+ * can read an Agent's history or write into it (ADR-0076). */
+export const CONVERSATIONS_DIR = "/run/jr2/conversations";
 export const CONVERSATIONS_DIR_ENV = "JR2_CONVERSATIONS_DIR";
 export const CONVERSATIONS_VOLUME = "conversations";
 
@@ -98,12 +100,23 @@ export const sandboxCustodianConfigMap = (sandbox: string): string => `${sandbox
  * (`workspaceHeldPod`), so the two cannot collide. */
 export const INSTANCE_HARNESS_HELD_POD = "instance";
 
-/** The Custodian's listeners (ADR-0059), all taken on every Harness pod (ADR-0005): the Harness's
- * HTTPS proxy on loopback, the kubelet's probe, and the control listener the Menu and the ask ride
- * to the Orchestrator, at the address `jr2-upload-pack` defaults to (ADR-0053). */
+/** The Custodian's ports (ADR-0059), all taken on every Harness pod (ADR-0005): the Harness's
+ * HTTPS proxy on loopback, the kubelet's probe, and the fetch listener that the ask rides to the
+ * Orchestrator, at the address `jr2-upload-pack` defaults to (ADR-0053). The agent routes are not
+ * on a port: they are on the control socket ({@link CUSTODIAN_CONTROL_SOCKET}, ADR-0076). */
 export const CUSTODIAN_PORT = 15001;
 export const CUSTODIAN_HEALTH_PORT = 15021;
-export const CUSTODIAN_CONTROL_PORT = 8081;
+export const CUSTODIAN_FETCH_PORT = 8081;
+
+/** The folder of the Custodian's control socket (ADR-0076): an emptyDir that the Harness container
+ * and the Custodian container alone mount, at this path in both. It is under `/run/jr2`, so no
+ * process that the Harness confines can make a socket here, and none can take the control
+ * listener's place while the Custodian restarts. The Custodian writes it; the Harness mounts it
+ * read-only, which still lets it connect to the socket. */
+export const CUSTODIAN_SOCKET_DIR = "/run/jr2/custodian";
+/** The control socket: the Custodian's listener for the four agent routes, which carry the control
+ * Stand-in (ADR-0059, ADR-0076). */
+export const CUSTODIAN_CONTROL_SOCKET = `${CUSTODIAN_SOCKET_DIR}/control.sock`;
 
 /** The scaffold's default deploy-key Secret name (ADR-0047/0051): what `jr2 init`'s wildcard
  * `git.credentials` entry names as its `sshKey`, and what `jr2 up`'s ssh offer generates into when

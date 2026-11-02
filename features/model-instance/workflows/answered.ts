@@ -21,6 +21,8 @@ import {
   fail,
   jr2Setup,
   workspace,
+  isReady,
+  worktree,
   type HostInjectedInput,
   type Workspaced,
 } from "@jr2/orchestrator";
@@ -49,6 +51,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [runTests, ship, reportFailure],
   actors: {
+    cut: worktree(),
     fail: fail(),
     coder: agent(coder),
     tests: command(suite),
@@ -56,13 +59,22 @@ const body = jr2Setup({
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [] }),
-  initial: "work",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/model-answered", branch: "model-answered" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "work" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     work: {
       invoke: {
         src: "coder",
         input: ({ context }) => ({
+          cwd: "/work/app/model-answered",
           prompt:
             `[${context.marker}] The billing change is in. Run the tests. If they pass, ship the change; if they ` +
             `fail, report the failure.`,
@@ -86,7 +98,7 @@ const body = jr2Setup({
             },
           },
         },
-        testing: { invoke: { src: "tests", onDone: "ready" } },
+        testing: { invoke: { src: "tests", input: { worktree: "/work/app/model-answered" }, onDone: "ready" } },
       },
     },
     shipped: { type: "final", output: ({ context }) => ({ outcome: "shipped", picks: context.picks }) },
@@ -113,5 +125,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: billing },
-  spec: () => ({ branch: "model-answered" }),
 });

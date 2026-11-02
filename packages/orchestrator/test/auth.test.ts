@@ -8,8 +8,10 @@
 // (ADR-0059) — and why these tests exist:
 //
 //   - a caller with no token drives nothing;
-//   - a Sandbox token may deliver to ITS OWN agent surface, and to no other;
-//   - a Sandbox token may NOT deliver to a gate — an Agent cannot approve its own review;
+//   - a control token, with the slot the Harness states, may deliver to ITS OWN pod's agent
+//     surface for that slot, and to no other (ADR-0076);
+//   - a fetch token opens the fetch route alone, and a control token never opens it;
+//   - neither may deliver to a gate — an Agent cannot approve its own review;
 //   - the Instance token (the human's, on the host) may do both.
 //
 // The last two are the ADR's whole point: with the credential in the Harness container, an Agent
@@ -21,7 +23,10 @@ import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import {
+  controlStandIn,
+  controlToken,
   createAuthenticator,
+  harnessToken,
   mayAskForSandbox,
   mayDeliverToAgent,
   mintInstanceToken,
@@ -44,18 +49,22 @@ async function mkApp() {
    * test reads it off the admission and encodes it — a minted id carries path separators. */
   const agentPath = async (run: { instanceId: string }, suffix: string) =>
     `/agents/${encodeURIComponent(await admittedIid(clients.get(run.instanceId)!))}/${suffix}`;
-  return { host, app, agentPath };
+  /** The slot the Harness states for the run's Turn (ADR-0076): its registration's. */
+  const slotOf = async (run: { instanceId: string }) =>
+    host.agentSurface(await admittedIid(clients.get(run.instanceId)!))!.slot!;
+  return { host, app, agentPath, slotOf };
 }
 
-const post = (body: unknown, token?: string): RequestInit => ({
+const headers = (token?: string, slot?: string): Record<string, string> => ({
+  ...(token ? { authorization: `Bearer ${token}` } : {}),
+  ...(slot ? { "x-jr2-slot": slot } : {}),
+});
+const post = (body: unknown, token?: string, slot?: string): RequestInit => ({
   method: "POST",
-  headers: {
-    "content-type": "application/json",
-    ...(token ? { authorization: `Bearer ${token}` } : {}),
-  },
+  headers: { "content-type": "application/json", ...headers(token, slot) },
   body: JSON.stringify(body),
 });
-const get = (token?: string): RequestInit => (token ? { headers: { authorization: `Bearer ${token}` } } : {});
+const get = (token?: string, slot?: string): RequestInit => (token ? { headers: headers(token, slot) } : {});
 
 test("no token, or a forged one, drives nothing", async () => {
   const { host, app, agentPath } = await mkApp();
@@ -73,23 +82,78 @@ test("no token, or a forged one, drives nothing", async () => {
   assert.equal((await app.request(surface, get("ws-1"))).status, 401);
 });
 
-test("a Sandbox token drives its own agent surface", async () => {
-  const { host, app, agentPath } = await mkApp();
+test("a control token, with the slot the Harness states, drives its own agent surface", async () => {
+  const { host, app, agentPath, slotOf } = await mkApp();
   const run = await host.start("coding", { sandbox: "ws-1" });
   const { runId } = run;
-  const token = sandboxToken(KEY, "ws-1");
+  const token = controlToken(KEY, "ws-1");
+  const slot = await slotOf(run);
+  assert.equal(slot, "root/coder", "the slot is the Machine's actor path and the agent's name");
 
-  assert.equal((await app.request(await agentPath(run, "surface"), get(token))).status, 200);
+  assert.equal((await app.request(await agentPath(run, "surface"), get(token, slot))).status, 200);
   const call = await app.request(
     await agentPath(run, "events"),
-    post({ type: "request_review", summary: "PR" }, token),
+    post({ type: "request_review", summary: "PR" }, token, slot),
   );
   assert.equal(call.status, 200);
 
   // ...and nothing else on the run. Run state and control need the Instance token (ADR-0014).
-  assert.equal((await app.request(`/runs/${runId}`, get(token))).status, 403);
-  assert.equal((await app.request(`/runs/${runId}/events`, post({ type: "CANCEL" }, token))).status, 403);
+  assert.equal((await app.request(`/runs/${runId}`, get(token, slot))).status, 403);
+  assert.equal((await app.request(`/runs/${runId}/events`, post({ type: "CANCEL" }, token, slot))).status, 403);
   assert.equal(host.status(runId)?.status, "active", "and the run did not stop");
+});
+
+test("each token opens its own routes alone (ADR-0076)", async () => {
+  const { host, app, agentPath, slotOf } = await mkApp();
+  const run = await host.start("coding", { sandbox: "ws-1" });
+  const slot = await slotOf(run);
+  const control = controlToken(KEY, "ws-1");
+  const fetch = sandboxToken(KEY, "ws-1");
+
+  // The fetch token on an agent route: a known token, refused there.
+  assert.equal((await app.request(await agentPath(run, "surface"), get(fetch, slot))).status, 403);
+  assert.equal((await app.request(await agentPath(run, "events"), post({ type: "done" }, fetch, slot))).status, 403);
+  assert.equal((await app.request(await agentPath(run, "notices"), post({ heard: [] }, fetch, slot))).status, 403);
+  // The control token on the fetch route: refused there.
+  assert.equal(
+    (await app.request("/sandboxes/ws-1/fetch", post({ identity: "example.test/app" }, control, slot))).status,
+    403,
+  );
+  // A control token that states no slot is no principal at all.
+  assert.equal((await app.request(await agentPath(run, "surface"), get(control))).status, 401);
+  assert.equal(host.status(run.runId)?.status, "active", "nothing moved");
+});
+
+test("a stated slot that is not the registration's is refused on every agent route (ADR-0076)", async () => {
+  const { host, app, agentPath } = await mkApp();
+  const run = await host.start("coding", { sandbox: "ws-1" });
+  const token = controlToken(KEY, "ws-1");
+  // Another Agent of the same pod; and the same agent name in another Machine — two slots.
+  for (const slot of ["root/reviewer", "feature-1/coder"]) {
+    assert.equal((await app.request(await agentPath(run, "surface"), get(token, slot))).status, 403, slot);
+    const pick = await app.request(await agentPath(run, "events"), post({ type: "done" }, token, slot));
+    assert.equal(pick.status, 403, slot);
+    const ack = await app.request(await agentPath(run, "notices"), post({ heard: ["n-1"] }, token, slot));
+    assert.equal(ack.status, 403, slot);
+  }
+  assert.equal(host.status(run.runId)?.status, "active", "nothing moved");
+});
+
+test("each verifier accepts its own domain alone: a key's other signed names are no token (ADR-0076)", () => {
+  const auth = createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY });
+  assert.deepEqual(auth(controlToken(KEY, "ws-1"), "root/coder"), {
+    kind: "agent",
+    sandbox: "ws-1",
+    slot: "root/coder",
+  });
+  assert.deepEqual(auth(sandboxToken(KEY, "ws-1")), { kind: "sandbox", sandbox: "ws-1" });
+  // A control token never reads as a fetch token, with or without a slot.
+  assert.equal(auth(controlToken(KEY, "ws-1")), undefined);
+  // The bare form signed over another domain's name: the HMACs exist, and still open nothing.
+  assert.equal(auth(`harness:ws-1.${harnessToken(KEY, "ws-1")}`), undefined);
+  assert.equal(auth(`control-standin:ws-1.${controlStandIn(KEY, "ws-1")}`), undefined);
+  // The secret control Stand-in, sent straight here, is no token either.
+  assert.equal(auth(controlStandIn(KEY, "ws-1"), "root/coder"), undefined);
 });
 
 test("a Sandbox token cannot read run state, or cancel a run", async () => {
@@ -155,14 +219,19 @@ test("observation is open, and carries no context — the Console's whole diet",
   assert.ok(full && "context" in full, "the Instance token's view is unchanged");
 });
 
-test("a Sandbox token cannot deliver to a gate — an Agent does not approve its own review", async () => {
+test("no Agent token delivers to a gate — an Agent does not approve its own review", async () => {
   const { host, app } = await mkApp();
   const { runId } = await host.start("gated");
-  const token = sandboxToken(KEY, "ws-1");
 
-  const attack = await app.request(`/runs/${runId}/gates/F-1/events`, post({ type: "approve" }, token));
-  assert.equal(attack.status, 403, "THE claim of ADR-0013: gates are not on the Agent's surface");
-  assert.match(((await attack.json()) as { error: string }).error, /cannot deliver to a gate/);
+  // The fetch token, and the control token with any slot it states (ADR-0076).
+  for (const [token, slot] of [
+    [sandboxToken(KEY, "ws-1"), undefined],
+    [controlToken(KEY, "ws-1"), "root/reviewer"],
+  ] as const) {
+    const attack = await app.request(`/runs/${runId}/gates/F-1/events`, post({ type: "approve" }, token, slot));
+    assert.equal(attack.status, 403, "THE claim of ADR-0013: gates are not on the Agent's surface");
+    assert.match(((await attack.json()) as { error: string }).error, /cannot deliver to a gate/);
+  }
   assert.equal(host.status(runId)?.value, "review", "and the gate did not move");
 
   // The human's token, on the same gate, does.
@@ -170,32 +239,33 @@ test("a Sandbox token cannot deliver to a gate — an Agent does not approve its
   assert.equal(human.status, 200);
 });
 
-test("a Sandbox token cannot speak for another Sandbox's Agent", async () => {
-  const { host, app, agentPath } = await mkApp();
+test("a control token cannot speak for another Sandbox's Agent", async () => {
+  const { host, app, agentPath, slotOf } = await mkApp();
   const mine = await host.start("coding", { sandbox: "ws-mine" });
   const theirs = await host.start("coding", { sandbox: "ws-theirs" });
-  const token = sandboxToken(KEY, "ws-mine");
+  const token = controlToken(KEY, "ws-mine");
+  const slot = await slotOf(theirs);
 
   // Why this matters, concretely (ADR-0013): a continued iid is DERIVABLE — `<runId>/<machine
   // actor path>/<agent>` (ADR-0057), and a Pool's actor path is its item's id, readable from the
   // Work Source. A merely run-scoped token would let one item's coder inject a verdict into
   // another item's reviewer.
-  assert.equal((await app.request(await agentPath(theirs, "surface"), get(token))).status, 403);
-  const inject = await app.request(await agentPath(theirs, "events"), post({ type: "done" }, token));
+  assert.equal((await app.request(await agentPath(theirs, "surface"), get(token, slot))).status, 403);
+  const inject = await app.request(await agentPath(theirs, "events"), post({ type: "done" }, token, slot));
   assert.equal(inject.status, 403);
   assert.equal(host.status(theirs.runId)?.status, "active", "the other run did not move");
 
-  assert.equal((await app.request(await agentPath(mine, "surface"), get(token))).status, 200);
+  assert.equal((await app.request(await agentPath(mine, "surface"), get(token, await slotOf(mine)))).status, 200);
 });
 
-test("a Sandbox token cannot claim a workspace-less agent (no pod owns it)", async () => {
-  const { host, app, agentPath } = await mkApp();
+test("a control token cannot claim a workspace-less agent (no pod owns it)", async () => {
+  const { host, app, agentPath, slotOf } = await mkApp();
   // The mechanics-tier shape: an Agent turn against the stub Harness on the host, in no Sandbox.
   const run = await host.start("coding");
-  const token = sandboxToken(KEY, "ws-1");
+  const token = controlToken(KEY, "ws-1");
   const surface = await agentPath(run, "surface");
 
-  assert.equal((await app.request(surface, get(token))).status, 403);
+  assert.equal((await app.request(surface, get(token, await slotOf(run)))).status, 403);
   assert.equal((await app.request(surface, get(INSTANCE_TOKEN))).status, 200);
 });
 
@@ -208,18 +278,19 @@ test("the Instance Harness's token speaks for the Turns placed there, and for no
   // Menu-only Turn must not reach a Workspace run's live surface.
   const menuOnly = await host.start("coding", { sandbox: "jr2-instance-harness" });
   const workspace = await host.start("coding", { sandbox: "ws-1" });
-  const token = sandboxToken(KEY, "jr2-instance-harness");
+  const token = controlToken(KEY, "jr2-instance-harness");
+  const slot = "root/coder";
 
-  assert.equal((await app.request(await agentPath(menuOnly, "surface"), get(token))).status, 200);
-  assert.equal((await app.request(await agentPath(workspace, "surface"), get(token))).status, 403);
-  const inject = await app.request(await agentPath(workspace, "events"), post({ type: "done" }, token));
+  assert.equal((await app.request(await agentPath(menuOnly, "surface"), get(token, slot))).status, 200);
+  assert.equal((await app.request(await agentPath(workspace, "surface"), get(token, slot))).status, 403);
+  const inject = await app.request(await agentPath(workspace, "events"), post({ type: "done" }, token, slot));
   assert.equal(inject.status, 403);
   assert.equal(host.status(workspace.runId)?.status, "active", "the Workspace run did not move");
 });
 
 test("an unknown iid is 404 for a valid token — the scope check leaks nothing about it", async () => {
   const { app } = await mkApp();
-  const res = await app.request(`/agents/no-such-iid/surface`, get(sandboxToken(KEY, "ws-1")));
+  const res = await app.request(`/agents/no-such-iid/surface`, get(controlToken(KEY, "ws-1"), "root/coder"));
   assert.equal(res.status, 404);
 });
 
@@ -262,8 +333,8 @@ test("starting a run is Instance-band: a Sandbox token starts nothing", async ()
 
 test("the Stand-in the Harness holds opens nothing: every route refuses it, and nothing moves (ADR-0059)", async () => {
   // What the Agent gains by skipping the Custodian and calling the Orchestrator itself, with the
-  // one bearer its env holds: nothing. The Custodian swaps the Stand-in on four routes toward
-  // this Service; sent straight here, it is a string no key signed.
+  // public fetch Stand-in: nothing. The Custodian swaps it on the fetch route toward this Service;
+  // sent straight here, it is a string no key signed.
   const { host, app, agentPath } = await mkApp();
   const run = await host.start("coding", { sandbox: "ws-1" });
   const gated = await host.start("gated");
@@ -292,7 +363,7 @@ test("the publish token resolves to the publisher, which delivers to nothing (AD
   assert.deepEqual(auth(INSTANCE_TOKEN), { kind: "instance" });
   // Without one configured, no bearer is the publisher.
   assert.equal(createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY })(publishToken), undefined);
-  assert.equal(mayDeliverToAgent({ kind: "publisher" }, "ws-1"), false);
+  assert.equal(mayDeliverToAgent({ kind: "publisher" }, { sandbox: "ws-1", slot: "root/coder" }), false);
   assert.equal(mayAskForSandbox({ kind: "publisher" }, "ws-1"), false);
 
   // On the routes: the agent surface and a Gate refuse it as they refuse an Instance-only route.

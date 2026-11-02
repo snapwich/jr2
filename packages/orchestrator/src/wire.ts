@@ -267,18 +267,18 @@ export type EchoRequest = { events: EchoEvent[] };
 /** One Repo Slot to attach. The Orchestrator resolves the Repo's `identity` and cache `key`
  * (repo-identity.ts) — the Harness never re-derives them, so the cache it clones from and the node
  * cache the operator mounted agree by construction (ADR-0051). `url` is the Binding's own spelling,
- * the push url (ADR-0005); `ref` is the base the branch starts from, omitted for the Repo's default
- * branch. */
+ * the push url (ADR-0005); `ref` is the base that `default/` stays on and a new branch starts from,
+ * omitted for the Repo's default branch. */
 export type AttachSlot = { slot: string; url: string; identity: string; key: string; ref?: string };
 
-/** What `POST /attach` accepts: the slots in declaration order, the Workspace's branch, and — for a
- * reviewer's seat — the sha the detached review worktree is forced to (ADR-0028). */
-export type AttachRequest = { slots: AttachSlot[]; branch: string; reviewSha?: string };
+/** What `POST /attach` accepts: the slots in declaration order. The Workspace only clones, so the
+ * request names no branch and no commit (ADR-0075). */
+export type AttachRequest = { slots: AttachSlot[] };
 
-/** What `POST /attach` answers (200): the branch worktree per slot, and the review worktree per
- * slot when the request named a `reviewSha`. Freshness is the operator's verdict on the Sandbox,
- * which the Orchestrator reads itself — never the Harness's to report. */
-export type AttachResponse = { repos: Record<string, string>; review?: Record<string, string> };
+/** What `POST /attach` answers (200): the folder of each slot, and the base that each slot's
+ * `default/` holds. Freshness is the operator's verdict on the Sandbox, which the Orchestrator
+ * reads itself — never the Harness's to report. */
+export type AttachResponse = { repos: Record<string, string>; bases: Record<string, string> };
 
 /** What a failed attach answers: 400 for a body that is not an `AttachRequest`, 500 when a step
  * failed — `slot` names the Repo Slot, and `error` carries the step and git's own stderr. */
@@ -312,7 +312,7 @@ export type SyncAnswer =
 
 /** What `POST /exec/:id` accepts: argv (never shell text), an absolute `cwd` or none, the timeout,
  * and how many characters of the stream's end the output keeps. */
-export type ExecRequest = { argv: string[]; cwd?: string; timeoutMs: number; tail: number };
+export type ExecRequest = { argv: string[]; cwd?: string; root?: true; timeoutMs: number; tail: number };
 
 /** How an exec ended. Every one is output; none is a fault. */
 export type ExecOutcome =

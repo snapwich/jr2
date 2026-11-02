@@ -18,10 +18,12 @@ import { z } from "zod";
 import { assign } from "xstate";
 import {
   agent,
+  branchName,
   defineEvent,
   fail,
   jr2Setup,
   workspace,
+  worktree,
   type HostInjectedInput,
   type Workspaced,
 } from "@jr2/orchestrator";
@@ -38,9 +40,9 @@ const TICKET =
 
 const plan = defineEvent({
   name: "plan",
-  description: "Your plan for the coder: what to change, and how to verify it.",
+  description: "Your plan for the coder: what to change, how to verify it, and the name of its branch.",
   audience: "agent",
-  input: z.object({ plan: z.string() }),
+  input: z.object({ plan: z.string(), branch: branchName }),
 });
 const submit = defineEvent({
   name: "submit",
@@ -68,6 +70,10 @@ type BodyInput = Workspaced<z.infer<typeof door> & HostInjectedInput, "app">;
 type BodyContext = BodyInput & {
   picks: string[];
   plan?: string;
+  /** The planner's word. A pick param, so `cut` refuses a bad one and the planner tries again. */
+  branch?: string;
+  /** Why the last cut was refused: the planner's next prompt. */
+  refused?: string;
   commit?: string;
   summary?: string;
   reasons?: string;
@@ -88,7 +94,14 @@ export type TicketOutput = {
 const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: TicketOutput },
   events: [plan, submit, approve, reject, ship],
-  actors: { planner: agent(planner), coder: agent(coder), reviewer: agent(reviewer), fail: fail() },
+  actors: {
+    planner: agent(planner),
+    coder: agent(coder),
+    reviewer: agent(reviewer),
+    // A planner's name is new or it is refused: a collision must not continue on a colleague's branch.
+    cut: worktree({ expect: "new" }),
+    fail: fail(),
+  },
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [], rejects: 0 }),
@@ -102,20 +115,38 @@ const body = jr2Setup({
           prompt:
             `Ticket: ${TICKET}\n\nThe repository is a small Node project: \`greet.js\` exports ` +
             `\`greet\`, \`test.js\` tests it with \`node:test\`, and \`package.json\`'s test script is ` +
-            `\`node --test\`. Call \`plan\` with a short plan for the coder.`,
+            `\`node --test\`. Call \`plan\` with a short plan for the coder and a name for its branch.` +
+            (context.refused ? `\n\nThat name did not work: ${context.refused}` : ""),
           continue: true,
           ...dialFor(context.thinking as ThinkingCell),
         }),
       },
       on: {
         plan: {
-          target: "coding",
+          target: "cutting",
           actions: assign({
             plan: ({ event }) => event.plan,
+            branch: ({ event }) => event.branch,
             picks: ({ context }) => [...context.picks, "plan"],
           }),
         },
         "agent.fault": { target: "faulted", actions: assign({ fault: ({ event }) => event.reason }) },
+      },
+    },
+    // The Worktree exists only now: the name came with the plan.
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: worktreeOf(context), branch: context.branch! }),
+        onDone: [
+          { guard: ({ event }) => event.output.outcome === "ready", target: "coding" },
+          {
+            target: "planning",
+            actions: assign({
+              refused: ({ event }) => (event.output.outcome === "refused" ? event.output.reason : "no answer"),
+            }),
+          },
+        ],
       },
     },
     coding: {
@@ -123,7 +154,7 @@ const body = jr2Setup({
         src: "coder",
         input: ({ context }) => ({
           prompt: coderPrompt(context),
-          cwd: context.workspace.repos.app,
+          cwd: worktreeOf(context),
           continue: true,
           ...dialFor(context.thinking as ThinkingCell),
         }),
@@ -151,11 +182,11 @@ const body = jr2Setup({
         // guarantee is a creation-time seat and this review is per round).
         input: ({ context }) => ({
           prompt:
-            `Review the branch \`${context.workspace.branch}\` against \`main\` in your working ` +
+            `Review the branch \`${context.branch}\` against \`main\` in your working ` +
             `directory. The ticket: ${TICKET}\n\nThe coder says (commit ${context.commit}): ` +
             `${context.summary}\n\nRead the diff (\`git diff main...HEAD\`), run \`node --test\`, and ` +
             `call \`approve\` or \`reject\`.`,
-          cwd: context.workspace.repos.app,
+          cwd: worktreeOf(context),
           continue: true,
           ...dialFor(context.thinking as ThinkingCell),
         }),
@@ -186,8 +217,8 @@ const body = jr2Setup({
         src: "gate",
         input: ({ context }) => ({
           meta: {
-            branch: context.workspace.branch,
-            worktree: context.workspace.repos.app,
+            branch: context.branch,
+            worktree: worktreeOf(context),
             commit: context.commit,
             picks: context.picks,
           },
@@ -227,19 +258,24 @@ const body = jr2Setup({
   output: ({ event }) => (event as { output?: TicketOutput }).output as TicketOutput,
 });
 
+/** The Worktree: a word of this Machine, so no state depends on what the planner wrote. */
+function worktreeOf(context: BodyContext) {
+  return `${context.workspace.repos.app}/ticket` as const;
+}
+
 /** The coder's Frame: the ticket and the plan on the first round; the reviewer's reasons after a
  * reject, on the same conversation (ADR-0057), so the coder remembers what it did. */
 function coderPrompt(context: BodyContext): string {
   if (context.reasons !== undefined) {
     return (
       `The reviewer rejected your commit ${context.commit}: ${context.reasons}\n\nFix it in your ` +
-      `working directory, run \`node --test\`, commit on branch \`${context.workspace.branch}\`, and ` +
+      `working directory, run \`node --test\`, commit on branch \`${context.branch}\`, and ` +
       `call \`submit\` with the new commit's sha.`
     );
   }
   return (
     `Ticket: ${TICKET}\n\nPlan from the planner: ${context.plan}\n\nWork in your working directory, ` +
-    `which is a checkout of the repository on branch \`${context.workspace.branch}\`. Run \`node --test\`, ` +
+    `which is a checkout of the repository on branch \`${context.branch}\`. Run \`node --test\`, ` +
     `commit on that branch, and call \`submit\` with the commit's sha.`
   );
 }
@@ -247,6 +283,4 @@ function coderPrompt(context: BodyContext): string {
 export const machine = workspace(body, {
   input: door,
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  // Nothing is pushed, so a fixed branch collides with nothing (each run's pod cuts its own).
-  spec: () => ({ branch: "model-ticket" }),
 });

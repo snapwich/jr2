@@ -20,6 +20,8 @@ import {
   fail,
   jr2Setup,
   workspace,
+  isReady,
+  worktree,
   type HostInjectedInput,
   type Workspaced,
 } from "@jr2/orchestrator";
@@ -51,6 +53,7 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [deploy, announce, checkDeploy],
   actors: {
+    cut: worktree(),
     fail: fail(),
     coder: agent(coder),
     // Long enough for the step to restart the Harness under it.
@@ -59,13 +62,22 @@ const body = jr2Setup({
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ ...input, picks: [] }),
-  initial: "work",
+  initial: "cutting",
   on: { "workspace.lost": { target: ".lost" } },
   states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: { path: "/work/app/model-unknown-outcome", branch: "model-unknown-outcome" },
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "work" }, { target: "notCut" }],
+      },
+    },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     work: {
       invoke: {
         src: "coder",
         input: ({ context }) => ({
+          cwd: "/work/app/model-unknown-outcome",
           prompt:
             `[${context.marker}] Deploy v2. Once it has gone out, announce it to the team. If you cannot ` +
             `tell whether it went out, check before you announce anything.`,
@@ -89,7 +101,9 @@ const body = jr2Setup({
             },
           },
         },
-        deploying: { invoke: { src: "deployer", onDone: "ready" } },
+        deploying: {
+          invoke: { src: "deployer", input: { worktree: "/work/app/model-unknown-outcome" }, onDone: "ready" },
+        },
       },
     },
     announced: { type: "final", output: ({ context }) => ({ outcome: "announced", picks: context.picks }) },
@@ -116,5 +130,4 @@ const body = jr2Setup({
 export const machine = workspace(body, {
   input: door,
   repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
-  spec: () => ({ branch: "model-unknown-outcome" }),
 });

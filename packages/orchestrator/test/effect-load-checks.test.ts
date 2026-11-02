@@ -133,7 +133,7 @@ test("a fromPick param that is no key of the Effect's input is refused: it reach
     () => buildCc(fromPick(sendCc)),
     (err: Error) => {
       assert.match(err.message, /pick "send_email" enters state "wf\.w\.sending" \(Effect "mail"\) with fromPick/);
-      assert.match(err.message, /"cc" is no key of the Effect's input \(subject, to\)/);
+      assert.match(err.message, /"cc" is no key of the Effect's input \(subject, to, worktree\)/);
       assert.doesNotMatch(err.message, /"to"|"subject" is no key/);
       return true;
     },

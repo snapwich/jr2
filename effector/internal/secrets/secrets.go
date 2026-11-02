@@ -82,8 +82,10 @@ type Config struct {
 	// Git is the `git.credentials` entries the pushes placed here spend (a Sandbox Effector's):
 	// read off the git mount (ReadGitEntries), never off this file.
 	Git []GitEntry `json:"-"`
-	// Commands says the Workspace holds a credentialed command: a node whose kernel cannot
-	// confine its child (Landlock) stops this Effector's start (ADR-0068).
+	// Commands says the Workspace holds a credentialed command (ADR-0068). The Effector reads it and
+	// decides nothing by it: every Sandbox Effector needs Landlock, whatever its Workspace holds
+	// (ADR-0077). It stays in the format because `jr2 up` writes it and Decode refuses an unknown
+	// field.
 	Commands bool `json:"commands,omitempty"`
 }
 

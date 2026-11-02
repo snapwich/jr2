@@ -1,7 +1,9 @@
 // The exec (ADR-0067): where a Machine's `command` Effect runs — the Harness container of its
-// Workspace's Sandbox, as a child of this process. That placement is the whole security story: the
-// child is the Agent's user, sees the Sandbox Image's tools, and inherits this process's
-// environment — the same Stand-ins the Agent's `bash` holds (ADR-0059), and no credential of its own.
+// Workspace's Sandbox, started by the spawner in the domain, as the Agent's `bash` runs, with the
+// same env — the Stand-ins the `workspace()` grants, and no credential of its own (`children.ts`,
+// ADR-0076). It is the Agent's user and sees the Sandbox Image's tools. Its program and input come
+// from `/work`, so it is Workspace code: it never reaches the control Stand-in. The cut (`cut.ts`)
+// is such a command, and its git runs in the domain with it.
 //
 // Five claims, each a test in exec.test.ts:
 //
@@ -11,7 +13,7 @@
 //      second start of a known id runs nothing. This is the Harness's half of "no second fire" — the
 //      ledger is the Orchestrator's, and so is the other half: a restarted Harness knows no id, so
 //      the Orchestrator never sends a start again that may have reached one (it reads by id instead).
-//   3. The process group ends with the exec. Each exec leads its own group (`detached`); its timeout,
+//   3. The process group ends with the exec. Each exec leads its own group (the spawner's); its timeout,
 //      a kill, and its top process's exit each SIGKILL the whole group, so nothing it started
 //      outlives the Effect — there is no fire-and-forget form (ADR-0067).
 //   4. A bounded tail is the output; the full stream is read by offset. stdout and stderr in arrival
@@ -24,8 +26,10 @@
 // What it does NOT keep: anything across a Harness restart. A restarted Harness knows no exec, and
 // the Orchestrator settles one it cannot find `unknown` — it never runs it again.
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
+import type { ChildPolicy } from "./children.ts";
+import type { Spawned } from "./spawner.ts";
 import type { ExecOutcome, ExecRead, ExecRequest } from "./wire.ts";
 
 /** Characters of stream an exec keeps for a reader behind it: past this the oldest are dropped. */
@@ -34,7 +38,7 @@ const DEFAULT_MAX_STREAM = 1 << 20;
 const DEFAULT_KEEP_SETTLED = 64;
 
 type Exec = {
-  child?: ChildProcess;
+  child?: Spawned;
   /** The stream kept, starting at character `base` of the whole. */
   stream: string;
   base: number;
@@ -48,8 +52,8 @@ type Exec = {
 };
 
 export type ExecsOptions = {
-  /** The environment every exec inherits. Default: this process's, the Agent's Stand-ins included. */
-  env?: NodeJS.ProcessEnv;
+  /** How each exec starts: in the domain, with its env (ADR-0076). */
+  children: ChildPolicy;
   maxStream?: number;
   keepSettled?: number;
 };
@@ -57,12 +61,12 @@ export type ExecsOptions = {
 /** Every exec this Harness process runs or has settled, by the Effect id the Orchestrator named. */
 export class Execs {
   private readonly execs = new Map<string, Exec>();
-  private readonly env: NodeJS.ProcessEnv | undefined;
+  private readonly children: ChildPolicy;
   private readonly maxStream: number;
   private readonly keepSettled: number;
 
-  constructor(opts: ExecsOptions = {}) {
-    this.env = opts.env;
+  constructor(opts: ExecsOptions) {
+    this.children = opts.children;
     this.maxStream = opts.maxStream ?? DEFAULT_MAX_STREAM;
     this.keepSettled = opts.keepSettled ?? DEFAULT_KEEP_SETTLED;
   }
@@ -72,55 +76,69 @@ export class Execs {
     if (this.execs.has(id)) return "exists";
     const exec: Exec = { stream: "", base: 0, tailMax: Math.max(0, req.tail), tail: "", waiters: new Set() };
     this.execs.set(id, exec);
-    let child: ChildProcess;
-    try {
-      child = spawn(req.argv[0]!, req.argv.slice(1), {
-        ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
-        env: this.env ?? process.env,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (err) {
-      this.append(exec, `jr2: could not start ${req.argv[0]}: ${err instanceof Error ? err.message : String(err)}\n`);
+    // A folder that is not there is a word an Agent or a Chart can say: the form a command that could
+    // not start has, with the reason in the tail (ADR-0067). `root`: its `worktree` must be one.
+    const missing =
+      req.cwd === undefined || existsSync(req.cwd)
+        ? req.root && !existsSync(`${req.cwd}/.git`)
+          ? `${req.cwd} is a folder, and no Worktree root`
+          : undefined
+        : `no folder ${req.cwd}: cut the Worktree first`;
+    if (missing !== undefined) {
+      this.append(exec, `jr2: ${missing}; nothing ran\n`);
       this.settle(exec, { outcome: "exited", code: 127, tail: exec.tail });
       return "started";
     }
+    const out = new StringDecoder("utf8");
+    const err = new StringDecoder("utf8");
+    // No `cwd`: the spawner's own folder, which is the Harness's, as a child of the Harness had.
+    const child = this.children.spawner.spawn(
+      { argv: req.argv, env: { ...this.children.env }, cwd: req.cwd ?? "" },
+      {
+        onStdout: (bytes) => this.append(exec, out.write(bytes)),
+        onStderr: (bytes) => this.append(exec, err.write(bytes)),
+      },
+    );
     exec.child = child;
     // The Agent's processes are the kernel's first choice at the memory limit, never the Harness
     // (ADR-0061) — the same mark the `bash` wrapper gives each command. Best effort: a child that
     // forks before this write leaves its early children at the default.
-    if (child.pid !== undefined) {
-      try {
-        writeFileSync(`/proc/${child.pid}/oom_score_adj`, "1000");
-      } catch {
-        // Not Linux, or no /proc: nothing to mark.
-      }
-    }
-    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => this.append(exec, chunk));
-    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => this.append(exec, chunk));
+    void child.started.then(
+      (pid) => {
+        try {
+          writeFileSync(`/proc/${pid}/oom_score_adj`, "1000");
+        } catch {
+          // Not Linux, or no /proc, or it has ended: nothing to mark.
+        }
+      },
+      () => {},
+    );
     exec.timer = setTimeout(() => {
       exec.ended ??= "timeout";
-      killGroup(child);
+      child.signal("SIGKILL");
     }, req.timeoutMs);
     exec.timer.unref?.();
-    // Its top process ended: end the group with it, so a straggler holding the pipes cannot keep the
-    // exec open, and nothing it started outlives it.
-    child.on("exit", () => killGroup(child));
-    child.on("error", (err) => {
-      // Spawn failed (ENOENT, EACCES): the shell's exit 127, with the reason in the stream.
-      if (exec.output !== undefined) return;
-      this.append(exec, `jr2: could not start ${req.argv[0]}: ${err.message}\n`);
-      clearTimeout(exec.timer);
-      this.settle(exec, { outcome: "exited", code: 127, tail: exec.tail });
-    });
-    child.on("close", (code, signal) => {
-      if (exec.output !== undefined) return;
-      clearTimeout(exec.timer);
-      const tail = exec.tail;
-      if (exec.ended === "timeout") this.settle(exec, { outcome: "timeout", tail });
-      else if (signal !== null) this.settle(exec, { outcome: "killed", signal, tail });
-      else this.settle(exec, { outcome: "exited", code: code ?? 0, tail });
-    });
+    child.exited.then(
+      ({ code, signal }) => {
+        // Its top process ended: end the group with it, so nothing it started outlives it.
+        child.signal("SIGKILL");
+        if (exec.output !== undefined) return;
+        clearTimeout(exec.timer);
+        const tail = exec.tail;
+        if (exec.ended === "timeout") this.settle(exec, { outcome: "timeout", tail });
+        else if (signal !== null) this.settle(exec, { outcome: "killed", signal, tail });
+        else this.settle(exec, { outcome: "exited", code: code ?? 0, tail });
+      },
+      (e: Error & { code?: unknown }) => {
+        // It did not start (ENOENT, EACCES), or the spawner ended under it: the shell's exit 127,
+        // with the reason in the stream.
+        if (exec.output !== undefined) return;
+        this.append(exec, `jr2: could not start ${req.argv[0]}: ${e.message}\n`);
+        clearTimeout(exec.timer);
+        if (exec.ended === "killed") this.settle(exec, { outcome: "killed", signal: "SIGKILL", tail: exec.tail });
+        else this.settle(exec, { outcome: "exited", code: 127, tail: exec.tail });
+      },
+    );
     return "started";
   }
 
@@ -172,7 +190,7 @@ export class Execs {
     }
     if (exec.output !== undefined || exec.child === undefined) return false;
     exec.ended ??= "killed";
-    killGroup(exec.child);
+    exec.child.signal("SIGKILL");
     return true;
   }
 
@@ -206,15 +224,5 @@ export class Execs {
 
   private wake(exec: Exec): void {
     for (const wake of [...exec.waiters]) wake();
-  }
-}
-
-/** SIGKILL the group `child` leads. A group already gone is nothing to do. */
-function killGroup(child: ChildProcess): void {
-  if (child.pid === undefined) return;
-  try {
-    process.kill(-child.pid, "SIGKILL");
-  } catch {
-    // ESRCH: the group is gone.
   }
 }

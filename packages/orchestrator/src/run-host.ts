@@ -34,7 +34,7 @@ import { SENDER_KEY, type EventDef, type EventSemantics, type Sender } from "@jr
 import { partiesAt, seatOf, senderText } from "./party.ts";
 import { placeAnswers, type AnswerSeat } from "./pick.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
-import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
+import type { EchoEvent, EchoStatusChild, LiveConversation, Notice, PickAnswer } from "./wire.ts";
 import { answerOf, childErrorOf, replyOf, type Hold } from "./holds.ts";
 import { PickCauses } from "./cause.ts";
 import { restOf, runningBelow } from "./rest.ts";
@@ -404,7 +404,7 @@ type Sending = {
 
 /**
  * Whose pick started a child (ADR-0067): the Agent's slot, and the invoke id of the Agent's state the
- * pick was made at, which tells one slot's two regions apart. `invoke` is absent when the event that
+ * pick was made at, which tells apart two states that invoke one slot, one after the other. `invoke` is absent when the event that
  * started the child named the Agent and not where (a pick taken outside its own send).
  */
 type StartedBy = { agent: string; invoke?: string };
@@ -536,7 +536,16 @@ export type RunStatus = RunRecord & {
    * direction, read off the caller's own ledger rows. A foreign dispatch's run is a run of the
    * Orchestrator its target names. Absent when it started none. */
   dispatched?: Dispatched[];
+  /** The Worktrees this run's cuts made, oldest first (ADR-0075), read off its ledger's settled
+   * `ready` rows, so an Agent's `git switch` does not change them. A re-cut of one path and branch
+   * is one entry. Behind the token, like `context`: a branch name is the workflow's data. Absent
+   * when the run cut none. */
+  worktrees?: RunWorktree[];
 };
+
+/** One Worktree a `worktree()` Effect of this run cut (ADR-0075): its Repo Slot, its path, and the
+ * branch of the cut. `branch` is `null` for a detached Worktree. */
+export type RunWorktree = { slot: string; path: string; branch: string | null };
 
 /** One run a `dispatch` Effect of this run started (ADR-0071): its slot, the run, and when the
  * ledger row was written. */
@@ -668,6 +677,9 @@ export type AgentSurfaceView = {
   instanceId: string;
   runId: string;
   sandbox?: string;
+  /** The slot this surface belongs to (ADR-0076): its Agent's actor path and agent name — the slot
+   * the Harness must state to speak here. Absent on a registration no pod hosts. */
+  slot?: string;
   menu: SurfaceEvent[];
   allowed: string[];
 };
@@ -961,8 +973,10 @@ type RunBlob = {
    * The pending NOTICES (ADR-0062): what the next Turn in a scope must be told — a memory kill in
    * its Workspace, a conversation that is new. The Orchestrator is their only keeper, so they ride
    * this blob beside the two ledgers, for the same reasons: the run's exact lifetime, and the
-   * snapshot's atomicity. A notice leaves it in the save that ledgers the admission that carried
-   * it, so a restart before that save delivers it again and a restart after does not.
+   * snapshot's atomicity. A notice is cleared for a conversation in the save that ledgers the
+   * admission that carried it there, so a restart before that save delivers it again and a restart
+   * after does not. A conversation notice then leaves it; a Workspace notice stays, with the
+   * conversations that heard it, for the Workspace's other conversations.
    */
   notices?: NoticeLedgerState;
   /**
@@ -1740,6 +1754,7 @@ export class RunHost {
       instanceId,
       runId: reg.runId,
       sandbox: reg.sandbox,
+      ...(reg.slot !== undefined ? { slot: reg.slot } : {}),
       menu: [...menuOf(reg).values()].map((def) => ({
         name: def.name,
         description: def.description,
@@ -1755,6 +1770,19 @@ export class RunHost {
    * carried reach a model now, so an end to the Turn no longer raises them again (ADR-0062). */
   agentSurfaceServed(instanceId: string): void {
     this.table.lookup(agentAddress(instanceId))?.served?.();
+  }
+
+  /** The notices this Turn's conversation hears at a step boundary (ADR-0062): its pending notices
+   * in their audience, reserved for this read until the Harness acknowledges them
+   * ({@link noticesHeard}) or the Turn ends. Empty for a registration that hears none. */
+  async boundaryNotices(instanceId: string): Promise<Array<{ id: string; notice: Notice }>> {
+    return (await this.table.lookup(agentAddress(instanceId))?.boundaryNotices?.()) ?? [];
+  }
+
+  /** The Harness appended these step-boundary notices to the Turn (ADR-0062): they are heard in its
+   * conversation, ledgered in one save. Answers how many were this conversation's reservations. */
+  noticesHeard(instanceId: string, ids: readonly string[]): number {
+    return this.table.lookup(agentAddress(instanceId))?.noticesHeard?.(ids) ?? 0;
   }
 
   /**
@@ -1890,6 +1918,7 @@ export class RunHost {
         agent: invoking.sender?.id ?? "",
         since,
         ...(invoking.sandbox !== undefined ? { sandbox: invoking.sandbox } : {}),
+        ...(invoking.slot !== undefined ? { slot: invoking.slot } : {}),
         ...(invoking.invokeId !== undefined ? { invokeId: invoking.invokeId } : {}),
         ...(conversation !== undefined ? { conversation } : {}),
         ...(sending && sending.chain.length > 0 ? { chain: [...sending.chain] } : {}),
@@ -2073,8 +2102,8 @@ export class RunHost {
    * its own send, else the one outstanding. On a transition below no Agent's state (`null`): the
    * event that took the transition names the Agent — the sender of a pick, or the Agent whose pick
    * started the child whose done or error event it is — and that Agent's pick is the one shaped, and
-   * no other; none when that Agent has no pick being answered. When one slot is invoked in two
-   * regions, the event names an invoke too, and only the pick at that invoke is shaped: the sending
+   * no other; none when that Agent has no pick being answered. When one slot is invoked by two
+   * states, the event names an invoke too, and only the pick at that invoke is shaped: the sending
    * pick, or the pick at the invoke whose pick started the child; none when that pick is not being
    * answered (its Turn ended, and its child runs on). An event that names no Agent (a timer,
    * a Gate's answer, an outside send) shapes the pick in its own send. Outside one, it shapes the one
@@ -2106,7 +2135,7 @@ export class RunHost {
         const { agent } = named;
         const own = sending && sending.reg.sender?.id === agent ? sending : undefined;
         // That Agent's picks being answered: the one in its own send, and the ones outstanding at
-        // its other invokes (one slot invoked in two regions). The event names the invoke of the
+        // its other invokes (one slot invoked by two states). The event names the invoke of the
         // pick that sent it or started its child, and only the pick at that invoke is shaped; none
         // when that pick is not being answered, and each other pick keeps its default answer.
         const held = open.filter((hold) => hold.agent === agent && hold.instanceId !== own?.reg.id);
@@ -2177,10 +2206,16 @@ export class RunHost {
     return this.parked.has(`${instanceId} ${deliveryId}`);
   }
 
-  /** The Sandbox that may read a delivery's answer (ADR-0013), or undefined for an unknown one. */
-  deliveryScope(instanceId: string, deliveryId: string): { sandbox?: string } | undefined {
+  /** The pod and slot that may read a delivery's answer (ADR-0013, ADR-0076), or undefined for an
+   * unknown one. */
+  deliveryScope(instanceId: string, deliveryId: string): { sandbox?: string; slot?: string } | undefined {
     const found = this.holdAt(instanceId, deliveryId);
-    return found && { ...(found.hold.sandbox !== undefined ? { sandbox: found.hold.sandbox } : {}) };
+    return (
+      found && {
+        ...(found.hold.sandbox !== undefined ? { sandbox: found.hold.sandbox } : {}),
+        ...(found.hold.slot !== undefined ? { slot: found.hold.slot } : {}),
+      }
+    );
   }
 
   /**
@@ -2507,6 +2542,7 @@ export class RunHost {
         ? { output: snap.output }
         : {}),
       ...dispatchedField(blob.effects ?? {}),
+      ...worktreesField(blob.effects ?? {}),
     };
   }
 
@@ -2762,6 +2798,7 @@ export class RunHost {
         ? { output: snap.output }
         : {}),
       ...dispatchedField(run.effects),
+      ...worktreesField(run.effects),
     };
   }
 
@@ -2830,10 +2867,20 @@ export class RunHost {
       // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
       // exactly like the persist scheduler's tracked-run guard.
-      recordAdmission: (instanceId, admission, delivered = []) => {
+      recordAdmission: (instanceId, admission, delivered = [], taker, member) => {
         agents[instanceId] = admission;
-        // The notices this admission carried are delivered by THIS save (ADR-0062).
-        notices.delivered(delivered);
+        // The notices this admission carried are delivered by THIS save, in the conversation it
+        // rode (ADR-0062): a Workspace notice stays pending for the rest of its audience. And the
+        // conversation is a member of its Workspace's audiences from now on, in the same save.
+        notices.delivered(delivered, taker);
+        if (member !== undefined && taker !== undefined) {
+          notices.admitted(member.workspace, {
+            taker,
+            slot: member.slot,
+            continued: member.continued,
+            since: new Date().toISOString(),
+          });
+        }
         const run = this.runs.get(record.runId);
         if (run && run.agents === agents) this.persist(run);
       },
@@ -2845,6 +2892,9 @@ export class RunHost {
       // invoke would otherwise restore into the burned conversation.
       epochOf: (conversation) => epochs[conversation] ?? 0,
       bumpEpoch: (conversation, reason) => {
+        // The burned conversation can take no Turn again: it leaves every audience (ADR-0062).
+        const burned = epochs[conversation] ? `${conversation}/${epochs[conversation]}` : conversation;
+        notices.forget(burned);
         epochs[conversation] = (epochs[conversation] ?? 0) + 1;
         // The next `continue` lands on a virgin conversation and is told so, with the fault's own
         // words (ADR-0062) — raised in the SAME save as the bump, so no restart can split them.
@@ -2854,18 +2904,36 @@ export class RunHost {
       },
       // The notices' other halves (ADR-0062). A raise is saved at the write, like the ledgers; a
       // take is a reservation in memory, delivered by `recordAdmission` or released on failure.
-      raiseNotice: (notice, to, source, older) => {
-        if (!notices.raise(notice, to, source, older)) return;
+      raiseNotice: (notice, to, source, older, raiseOpts) => {
+        if (!notices.raise(notice, to, source, older, raiseOpts)) return;
         const run = this.runs.get(record.runId);
         if (run && run.notices === notices) this.persist(run);
       },
-      restoreNotice: (notice, to, source) => {
-        if (!notices.restore(notice, to, source)) return;
+      restoreNotice: (notice, to, source, taker) => {
+        if (!notices.restore(notice, to, source, taker)) return;
         const run = this.runs.get(record.runId);
         if (run && run.notices === notices) this.persist(run);
       },
       takeNotices: (scope) => notices.take(scope),
-      releaseNotices: (ids) => notices.release(ids),
+      releaseNotices: (ids, taker) => notices.release(ids, taker),
+      peekNotices: (scope) => notices.peek(scope),
+      acknowledgeNotices: (ids, taker) => {
+        const heard = notices.acknowledge(ids, taker);
+        const run = this.runs.get(record.runId);
+        if (heard > 0 && run && run.notices === notices) this.persist(run);
+        return heard;
+      },
+      noticesTold: (told) => {
+        let changed = false;
+        for (const { source, takers } of told) changed = notices.told(source, takers) || changed;
+        const run = this.runs.get(record.runId);
+        if (changed && run && run.notices === notices) this.persist(run);
+      },
+      noticeTurnEnded: (workspace, takers) => {
+        if (!notices.ended(workspace, takers)) return;
+        const run = this.runs.get(record.runId);
+        if (run && run.notices === notices) this.persist(run);
+      },
       // Absorbed-retry attempts go straight to the run's observers (SSE/CLI watch) — they are
       // feed events, not machine events (ADR-0016: the workflow sees only the terminal fault).
       telemetry: (event) => {
@@ -3331,8 +3399,6 @@ function atOrBelow(actor: AnyActorRef, ref: AnyActorRef): boolean {
   return false;
 }
 
-/** A status's bound fields (ADR-0070): `bound`, and the hashes of the Charts bound, distinct and
- * sorted. Both absent when the snapshot binds no Chart. */
 /** The runs a run's `dispatch` Effects started (ADR-0071), from its ledger: an intent row the
  * start's answer re-wrote with its run, a settled row whose output names one (`started`,
  * `settled`), and an aborted row that kept it. A row that never learned its run names none. */
@@ -3350,6 +3416,26 @@ function dispatchedField(effects: Record<string, EffectRow>): { dispatched?: Dis
   return out.length ? { dispatched: out } : {};
 }
 
+/** The Worktrees a run's cuts made (ADR-0075), from the settled `ready` rows of its ledger, in the
+ * order of each Worktree's first cut. A cut also reads a Worktree, so one path and branch has many
+ * rows and one entry. */
+function worktreesField(effects: Record<string, EffectRow>): { worktrees?: RunWorktree[] } {
+  const rows = Object.values(effects).flatMap((row) =>
+    row.state === "settled" && row.cut !== undefined && row.repo !== undefined
+      ? [{ at: row.at, slot: row.repo, ...row.cut }]
+      : [],
+  );
+  rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  const out = new Map<string, RunWorktree>();
+  for (const { slot, path, branch } of rows) {
+    const key = JSON.stringify([path, branch]);
+    if (!out.has(key)) out.set(key, { slot, path, branch });
+  }
+  return out.size ? { worktrees: [...out.values()] } : {};
+}
+
+/** A status's bound fields (ADR-0070): `bound`, and the hashes of the Charts bound, distinct and
+ * sorted. Both absent when the snapshot binds no Chart. */
 function boundFields(snap: unknown): { bound?: true; chartHashes?: string[] } {
   const hashes = [...new Set(boundChartRoutesOf(snap).map((route) => route.chartHash))].sort();
   return hashes.length ? { bound: true, chartHashes: hashes } : {};

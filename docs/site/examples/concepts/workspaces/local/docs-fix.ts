@@ -1,5 +1,15 @@
 import { z } from "zod";
-import { agent, defineEvent, fail, jr2Setup, push, workspace, type Workspaced } from "@jr2/orchestrator";
+import {
+  agent,
+  defineEvent,
+  fail,
+  isReady,
+  jr2Setup,
+  push,
+  workspace,
+  worktree,
+  type Workspaced,
+} from "@jr2/orchestrator";
 
 const finished = defineEvent({
   name: "finished",
@@ -16,6 +26,10 @@ const approve = defineEvent({
 const runInput = z.object({ ticket: z.string(), prompt: z.string() });
 type BodyInput = Workspaced<z.infer<typeof runInput>, "app" | "handbook">;
 
+// The folder of the Worktree, and its branch. The Machine knows both before the cut.
+const fixTree = (context: BodyInput) => `${context.workspace.repos.app}/fix` as const;
+const branchOf = (context: BodyInput) => `docs/${context.ticket}`;
+
 const body = jr2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [finished, approve],
@@ -24,6 +38,7 @@ const body = jr2Setup({
       model: "local/qwen3.6-35b-a3b",
       instructions: "You are a careful engineer. You commit your work on the branch.",
     }),
+    cut: worktree(),
     // Two Repo Slots, so the push names the slot that it pushes.
     publish: push({ slot: "app" }),
     fail: fail(),
@@ -31,17 +46,25 @@ const body = jr2Setup({
 }).createMachine({
   id: "docs-fix",
   context: ({ input }) => input,
-  initial: "working",
+  initial: "cutting",
   // The Sandbox is gone, and its unpushed commits with it. This body fails the run.
   on: { "agent.fault": ".failed", "workspace.lost": ".lost" },
   states: {
+    // The Workspace only clones. The Machine cuts the Worktree that the Agent works in.
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: fixTree(context), branch: branchOf(context) }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "working" }, { target: "notCut" }],
+      },
+    },
     working: {
       invoke: {
         src: "coder",
         input: ({ context }) => ({
-          prompt: `${context.prompt}\nRead the style rules in ${context.workspace.repos.handbook}.`,
-          // The Agent works in the Worktree of the app slot.
-          cwd: context.workspace.repos.app,
+          // A slot that is only read needs no cut: its `default` folder is on the Binding's base.
+          prompt: `${context.prompt}\nRead the style rules in ${context.workspace.repos.handbook}/default.`,
+          cwd: fixTree(context),
         }),
       },
       on: { finished: "review" },
@@ -51,7 +74,7 @@ const body = jr2Setup({
       invoke: {
         src: "gate",
         input: ({ context }) => ({
-          meta: { branch: context.workspace.branch, worktree: context.workspace.repos.app },
+          meta: { branch: branchOf(context), worktree: fixTree(context) },
         }),
       },
       on: { approve: "publishing" },
@@ -61,11 +84,14 @@ const body = jr2Setup({
     publishing: {
       invoke: {
         src: "publish",
+        // The Worktree names what to push: jr2 reads its branch from the cut.
+        input: ({ context }) => ({ worktree: fixTree(context) }),
         onDone: [{ guard: ({ event }) => event.output.outcome === "pushed", target: "done" }, { target: "review" }],
       },
     },
     done: { type: "final" },
     // Not final states: a final state means `done`. Each one fails the run, and the run ends `failed`.
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
     lost: { invoke: { src: "fail", input: { reason: "the Sandbox was lost" } } },
     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
   },
@@ -80,5 +106,4 @@ export const machine = workspace(body, {
     app: { url: "https://github.com/you/app.git", ref: "main" },
     handbook: "https://github.com/you/handbook.git",
   },
-  spec: ({ input }) => ({ branch: `docs/${input.ticket}` }),
 });

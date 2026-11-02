@@ -128,7 +128,7 @@ async function mkWorkspaceAssembly(): Promise<string> {
     `import { setup } from ${JSON.stringify(import.meta.resolve("xstate"))};\n` +
       `import { workspace } from ${JSON.stringify(src)};\n` +
       `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" } });\n`,
   );
   return dir;
 }
@@ -246,8 +246,12 @@ test("a boot finding its bound Repo already there RESTATES the Machine's spec â€
   const src = await mkWorkspaceAssembly();
   const lines: string[] = [];
   const { api, kube } = fakeCluster();
-  const { key } = repoIdentity("https://example.test/app.git");
-  api.seed("repos", { metadata: { name: key }, spec: { url: "https://old.example/app.git" } } as never);
+  // The same identity under another spelling: a key names one identity (ADR-0051).
+  const { key, identity } = repoIdentity("https://example.test/app.git");
+  api.seed("repos", {
+    metadata: { name: key, annotations: { "jr2.dev/identity": identity } },
+    spec: { url: "git@example.test:app.git" },
+  } as never);
   const { inst, dir } = await bootPublished(src, kube, (line) => lines.push(line));
   try {
     assert.deepEqual(await announcedRepos(lines, 1), [{ repo: key, url: "https://example.test/app.git", bound: true }]);
@@ -525,7 +529,7 @@ async function mkFencedAssembly(
       `import { workspace } from ${JSON.stringify(src)};\n` +
       `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       // With `bound`, the Slot is bound statically instead, so the Repo pass binds it (ADR-0051).
-      `const ws = workspace(body, { repos: { app: ${opts.bound ? "" : "() => "}"https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n` +
+      `const ws = workspace(body, { repos: { app: ${opts.bound ? "" : "() => "}"https://example.test/app.git" } });\n` +
       // With `waitMs`, the run parks before its Workspace for that long: a timer the restore arms
       // again, so a run saved in one process provisions in the next.
       (opts.waitMs === undefined

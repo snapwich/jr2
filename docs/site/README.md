@@ -205,21 +205,21 @@ shows its idea better than the text. See [When to draw a diagram](#when-to-draw-
 Each term has one Concept page that explains it. The table gives the terms that each page owns (from grill Q7). Another
 page that uses a term links to the page that owns it, and does not explain the term again.
 
-| Concept                           | The terms that it owns                                                                                         |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `concepts/machines-and-workflows` | Machine, Workflow, the door (the run input), Vocabulary, Emit                                                  |
-| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, `continue`, Briefing, Working tools, Runaway, Compaction                            |
-| `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                 |
-| `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a webhook                                        |
-| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, dispatched by, at-most-once, `fromPick`                         |
-| `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, Size, Placing, Lease, Continuity, Sandbox Image, User Container |
-| `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                       |
-| `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                |
-| `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set                                                                           |
-| `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                     |
-| `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                         |
-| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Handoff, Kit image, Pinned image, Sandbox Image as an image to build, `gc`    |
-| `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, the week of history              |
+| Concept                           | The terms that it owns                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `concepts/machines-and-workflows` | Machine, Workflow, the door (the run input), Vocabulary, Emit                                                       |
+| `concepts/agents-and-turns`       | Agent, Dials, Frame, Turn, `continue`, Briefing, Working tools, Runaway, Compaction                                 |
+| `concepts/the-menu`               | Menu, Allowed picks, mode, Rest, outstanding, Sender, `answer`                                                      |
+| `concepts/gates`                  | Gate: an external input from a human, the CLI, the Console or a webhook                                             |
+| `concepts/effects`                | Effect: `command`, `http`, `push`, `dispatch`, dispatched by, at-most-once, `fromPick`                              |
+| `concepts/workspaces`             | Workspace, Sandbox, Repo, Repo Slot, Worktree, cut, Size, Placing, Lease, Continuity, Sandbox Image, User Container |
+| `concepts/composition`            | nesting by invoke, `customize`, Open parts, `@jr2/machines`, a Machine as an npm package                            |
+| `concepts/charts`                 | Chart, Chart wrapper, Open body, Reference, the Chart door, ceilings, Chart file, runtime Chart                     |
+| `concepts/pools-and-sources`      | Pool, Source, Work Source, Ready-set                                                                                |
+| `concepts/architecture`           | Orchestrator, Harness, Instance Harness, Custodian, Effector, the operator, the Repo cache                          |
+| `concepts/secrets-and-trust`      | Held secret, Stand-in, Effect secret, the tokens, open observation and guarded control                              |
+| `concepts/converge`               | `jr2 up`, Assembly, Kit version, Handoff, Kit image, Pinned image, Sandbox Image as an image to build, `gc`         |
+| `concepts/durable-runs`           | snapshots, restart and re-attach, Machine shape and drift, `CANCEL` and stop, the week of history                   |
 
 Workspaces owns the Sandbox Image as a part of the Sandbox. Converge owns only how `jr2 up` builds and loads it.
 
@@ -246,6 +246,7 @@ The first link in `## Read next` is the Concept in this table. A Guide can link 
 | `answer-a-gate`                                                                          | `concepts/gates`                  |
 | `run-a-command-or-call-a-url`, `push-and-sign-a-branch`, `start-a-run-from-a-run`        | `concepts/effects`                |
 | `look-inside-a-sandbox`, `add-tools-to-the-sandbox`, `size-a-workspace`                  | `concepts/workspaces`             |
+| `cut-a-worktree`                                                                         | `concepts/workspaces`             |
 | `bind-open-parts`, `publish-a-machine-as-an-npm-package`                                 | `concepts/composition`            |
 | `let-an-agent-write-a-chart`, `run-a-chart-by-name`                                      | `concepts/charts`                 |
 | `run-one-worker-per-item`                                                                | `concepts/pools-and-sources`      |
@@ -758,6 +759,7 @@ The user must decide these items. Until then, obey the rule for each item.
 | Fact                | Value                                                                                    |
 | ------------------- | ---------------------------------------------------------------------------------------- |
 | The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                           |
+| The kernel (page 1) | Linux 6.2 or later with Landlock: the kernel of the computer, or of Docker's VM.         |
 | The jr2 CLI         | `npm i -g @jr2/cli`                                                                      |
 | The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                     |
 | The package manager | npm.                                                                                     |
@@ -907,8 +909,8 @@ jr2 run triage --input '{"request":"The greeting looks wrong sometimes."}'
   git push origin <branch>
   ```
 
-  The Worktree is `/work/<Repo Slot>/<branch>`, with each `/` in the branch changed to `-`. `origin` fetches through the
-  Repo cache of the node, and pushes to the fork. The guide "Look inside a Sandbox" gives the same commands.
+  `task` cuts the Worktree `/work/<Repo Slot>/task`. `origin` fetches through the Repo cache of the node, and pushes to
+  the fork. The guide "Look inside a Sandbox" gives the same commands.
 
 - `approve` ends the run and removes the Sandbox. A commit that the reader did not push is lost.
 

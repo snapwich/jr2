@@ -3,7 +3,10 @@
 // The `bash` Working tool (ADR-0027, ADR-0061). The output the model reads is pi 0.82.1's, byte for
 // byte: stdout and stderr together in arrival order, the control characters removed, the tail of
 // 2000 lines or 50 KB, the full output in a temporary file past that bound, and pi's status lines.
-// jr2 makes three claims in the tool itself:
+// The shell runs in the domain, with the domain's env (`children.ts`, ADR-0076): it holds the
+// Stand-ins that the `workspace()` grants and no other, and it cannot read the control Stand-in, a
+// held secret's Stand-in, or the Harness's conversations. The full output's file is in the domain's
+// TMPDIR, so the model can read it with `read` or `bash`. jr2 makes three claims in the tool itself:
 //
 //   1. A process killed by a signal is an error that names the signal, never exit 0. The command
 //      runs in a subshell, so the shell sees the death as 128+n (`bash -c 'one command'` would exec
@@ -16,9 +19,9 @@
 //      answers its `killed: memory limit …` text, whatever else the shell reported.
 
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
-import { constants, tmpdir } from "node:os";
-import { join } from "node:path";
+import type { FileHandle } from "node:fs/promises";
+import { constants } from "node:os";
+import { createInTmp, type ChildPolicy } from "./children.ts";
 import { Type } from "@earendil-works/pi-ai";
 import type { EngineTool } from "./engine.ts";
 import type { GuardOwner, MemoryGuard } from "./memory-guard.ts";
@@ -54,11 +57,13 @@ function validateTimeout(timeout: number | undefined): void {
   if (timeout > MAX_TIMEOUT_SECONDS) throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_SECONDS} seconds`);
 }
 
-/** The `bash` Working tool, rooted at `cwd`. `guard` is the process's memory guard (`main.ts`);
- * omitted, no guard watches — a host run, or a test. `owner` is the conversation the tool serves,
- * so a kill knows whose call answered its verdict (ADR-0062). */
+/** The `bash` Working tool, rooted at `cwd`. `children` is how its shell starts: in the domain
+ * (ADR-0076). `guard` is the process's memory guard (`main.ts`); omitted, no guard watches — a host
+ * run, or a test. `owner` is the conversation the tool serves, so a kill knows whose call answered
+ * its verdict (ADR-0062). */
 export function bashTool(opts: {
   cwd: string;
+  children: ChildPolicy;
   guard?: Pick<MemoryGuard, "watch"> | undefined;
   owner?: GuardOwner | undefined;
 }): EngineTool<typeof bashSchema> {
@@ -73,6 +78,7 @@ export function bashTool(opts: {
       try {
         capture = await executeShellWithCapture(WRAPPER, {
           cwd: opts.cwd,
+          children: opts.children,
           env: { JR2_BASH_COMMAND: command },
           ...(timeout === undefined ? {} : { timeout }),
           ...(signal ? { signal } : {}),
@@ -185,6 +191,7 @@ async function executeShellWithCapture(
   command: string,
   options: {
     cwd: string;
+    children: ChildPolicy;
     env: Record<string, string>;
     timeout?: number;
     signal?: AbortSignal;
@@ -201,22 +208,24 @@ async function executeShellWithCapture(
   let acceptingOutput = true;
   let writeChain: Promise<void> = Promise.resolve();
   let captureError: Error | undefined;
+  // The full output's file is in the domain's TMPDIR, which the domain writes: opened once, and
+  // written through its handle alone, never again by path (`createInTmp`, ADR-0076).
+  let fullOutputFile: FileHandle | undefined;
   const appendFullOutput = (text: string) => {
     if (!fullOutputRequested || captureError) return;
     writeChain = writeChain.then(async () => {
-      if (!fullOutputPath) throw new Error("Full output path was not created");
-      await appendFile(fullOutputPath, text);
+      if (!fullOutputFile) throw new Error("Full output path was not created");
+      await fullOutputFile.appendFile(text);
     });
   };
   const ensureFullOutputFile = (initialContent: string) => {
     if (fullOutputRequested || captureError) return;
     fullOutputRequested = true;
     writeChain = writeChain.then(async () => {
-      const dir = await mkdtemp(join(tmpdir(), "tmp-"));
-      const path = join(dir, `bash-${randomUUID()}.log`);
-      await writeFile(path, "");
+      const { path, file } = await createInTmp(options.children, `bash-${randomUUID()}.log`);
+      fullOutputFile = file;
       fullOutputPath = path;
-      await appendFile(path, initialContent);
+      await file.appendFile(initialContent);
     });
   };
   const tailNow = (): Tail => {
@@ -269,6 +278,7 @@ async function executeShellWithCapture(
   };
   const result = await exec(command, {
     cwd: options.cwd,
+    children: options.children,
     env: options.env,
     ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
     ...(options.signal ? { signal: options.signal } : {}),
@@ -278,7 +288,11 @@ async function executeShellWithCapture(
   acceptingOutput = false;
   if (tailNow().truncation.truncated && !fullOutputRequested) ensureFullOutputFile(tailOutput);
   // A failed write of the full output, or a failed capture, fails the call with its own words.
-  await writeChain;
+  try {
+    await writeChain;
+  } finally {
+    await fullOutputFile?.close().catch(() => {});
+  }
   if (captureError) throw captureError;
   const tail = tailNow();
   if (isExecError(result)) {

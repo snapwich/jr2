@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { NOT_KNOWN, readChartRefusal, STALE } from "./model-chart.ts";
-import type { Answered } from "./model-said.ts";
+import { answersIn, ofRun, type Answered } from "./model-said.ts";
 
 const door = (answer: string): Answered => ({ call: "run_chart", input: "{}", answer });
 const grammar: Answered = { call: "run_chart", input: "{}", answer: "invalid input", error: true };
@@ -68,6 +68,39 @@ test("a run_chart answer that was lost (not known) at or after the door's refusa
     assert.equal(r.measured, false);
     assert.match(r.void ?? "", /^void: /);
   }
+});
+
+test("a kept log that lost the trial's own prompt voids the trial: never a miss, never a pass", () => {
+  // The follow of the Instance Harness's log lost the planner's Frame, which carries the marker. What
+  // the log kept of the run starts at a later prompt of the run's Chart Agent, so no planner call can
+  // be placed after the trial's prompt.
+  const run = "r1";
+  const kept = [
+    `2026-11-02T09:00:05Z [summarizer] [${run}/root/open/summarizer/0a1b2c3d] [prompt] Sum it up.`,
+    `2026-11-02T09:00:06Z [summarizer] [${run}/root/open/summarizer/0a1b2c3d] [submit] {}`,
+    `2026-11-02T09:00:07Z [planner] [${run}/root/planner] [prompt] <jr2-turn>`,
+    `2026-11-02T09:00:08Z [planner] [${run}/root/planner] [done] {}`,
+  ].join("\n");
+  const answered = answersIn(ofRun(kept, run), "t9-63fa93");
+  assert.equal(answered, undefined, "no call is read after another prompt");
+  for (const outcomes of [
+    ["refused", "admitted"],
+    ["refused", "refused", "admitted"],
+  ]) {
+    const r = readChartRefusal(outcomes, answered);
+    assert.equal(r.measured, false);
+    assert.match(r.void ?? "", /^void: the trial's own prompt/, JSON.stringify(outcomes));
+  }
+  // Not vacuous: the same log with the trial's prompt is measured.
+  const whole = [
+    `2026-11-02T09:00:00Z [planner] [${run}/root/planner] [prompt] [t9-63fa93] Write a Chart.`,
+    `2026-11-02T09:00:01Z [planner] [${run}/root/planner] [run_chart] {}`,
+    `2026-11-02T09:00:02Z [planner] [${run}/root/planner] [run_chart answer] ${refusedAnswer}`,
+    `2026-11-02T09:00:03Z [planner] [${run}/root/planner] [run_chart] {}`,
+    kept,
+  ].join("\n");
+  const r = readChartRefusal(["refused", "admitted"], answersIn(ofRun(whole, run), "t9-63fa93"));
+  assert.deepEqual([r.measured, r.void], [true, undefined]);
 });
 
 test("the two answers it reads by their start are the Harness's words (menu.ts)", () => {

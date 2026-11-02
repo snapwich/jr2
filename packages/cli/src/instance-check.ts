@@ -131,7 +131,7 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
     return undefined;
   }
   // What each registered Machine runs outside itself (ADR-0067, ADR-0068): every Effect slot, with
-  // the plain data it carries — a command's argv, its timeout, the Repo Slot it runs in; an http
+  // the plain data it carries — a command's argv and its timeout; an http
   // Effect's method, its fixed target and the secrets it names — read, never run.
   for (const w of workflows) {
     const effects = partsOf([w.machine]).effects;
@@ -139,13 +139,10 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
     activity(io, `effects: workflow "${w.name}" — what it runs outside itself (ADR-0067)`);
     for (const e of effects) {
       const where = e.path?.length ? ` (on ${e.path.map((k) => `"${k}"`).join(" → ")})` : "";
-      const slot = "slot" in e && e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
       if (e.kind === "http") {
         const names = e.secrets.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
         // Its body decides where it runs (ADR-0067): a Worktree file needs its Workspace's Sandbox Effector.
-        const where2 = e.file
-          ? `in the Sandbox Effector, a Worktree file as its body${slot}`
-          : "in the Instance Effector";
+        const where2 = e.file ? "in the Sandbox Effector, a Worktree file as its body" : "in the Instance Effector";
         activity(
           io,
           `  ${e.name}${where}: http ${e.method} ${e.target ? targetText({ target: e.target }) : "<open>"} — ${e.timeoutMs / 1000}s, ` +
@@ -167,6 +164,7 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
       }
       if (e.kind === "push") {
         const opts = (["pin", "sign", "squash", "force"] as const).filter((k) => e[k]);
+        const slot = e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
         activity(
           io,
           `  ${e.name}${where}: push${opts.length ? ` (${opts.join(", ")})` : ""} — ${e.timeoutMs / 1000}s, ` +
@@ -175,11 +173,17 @@ export async function checkInstance(io: Io, root: string, config: JR2Config): Pr
         continue;
       }
       if (!("argv" in e)) continue;
+      if (e.cut) {
+        // A cut is a kit program: its argv is the kit's business, and its one choice is `expect`.
+        const expect = e.cut.expect ? ` (expect ${e.cut.expect})` : "";
+        activity(io, `  ${e.name}${where}: worktree${expect} — ${e.timeoutMs / 1000}s, in the Harness`);
+        continue;
+      }
       const names = e.secrets?.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
       const seat = e.secrets?.length ? `the Sandbox Effector${e.pin ? ", pinned" : ""}` : "the Harness";
       activity(
         io,
-        `  ${e.name}${where}: ${e.kind} ${JSON.stringify(e.argv)} — ${e.timeoutMs / 1000}s, in ${seat}${slot}${names}`,
+        `  ${e.name}${where}: ${e.kind} ${JSON.stringify(e.argv)} — ${e.timeoutMs / 1000}s, in ${seat}${names}`,
       );
     }
   }

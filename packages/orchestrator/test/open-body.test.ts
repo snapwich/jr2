@@ -39,7 +39,7 @@ import { observe, RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { invokingMachine, vocabularyOf } from "../src/vocabulary.ts";
-import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
+import { fakeWorkspace, FakeHarnessExec, handles } from "./_effects.ts";
 import { mkStore, MockFlueClient, tick, waitFor } from "./_fixtures.ts";
 
 const ENDPOINT = "http://harness.invalid";
@@ -119,7 +119,7 @@ function chartedMachine(
     events: [],
     actors: {
       coder: agent(coderDefinition),
-      ws: fakeWorkspace(),
+      ws: fakeWorkspace(handles({})),
       tests: commandWith(ports.exec.factory, ["pnpm", "test", arg("filter")]),
       body: openBodyWith(
         {
@@ -929,10 +929,13 @@ test("ceiling: fan-out — a parallel state of five invokes is more than four ch
   const { ports, def } = rig({ ceilings: { fanOut: 4 } });
   const host = newHost({ store: await mkStore() });
   host.register(def());
+  // One Agent for each region: one Agent in two regions is refused at the door (rule 6).
   const region = (n: number) => ({
-    invoke: { id: `c${n}`, src: "coder", input: { prompt: `part ${n}` } },
+    invoke: { id: `c${n}`, src: n === 1 ? "coder" : `helper${n}`, input: { prompt: `part ${n}` } },
   });
+  const helper = { model: "stub/model", instructions: "You help.", workspace: "none" } as const;
   const wide: ChartText = {
+    agents: { helper2: helper, helper3: helper, helper4: helper, helper5: helper },
     initial: "fan",
     states: {
       fan: { type: "parallel", states: { r1: region(1), r2: region(2), r3: region(3), r4: region(4), r5: region(5) } },
@@ -943,7 +946,11 @@ test("ceiling: fan-out — a parallel state of five invokes is more than four ch
   assert.equal(result.outcome, "ceiling");
   assert.equal(result.ceiling, "fanOut");
   await tick();
-  assert.equal(ports.coder.admits.length, 0, "the children were stopped before any Turn was admitted");
+  assert.equal(
+    ports.coder.admits.length + ports.minted.admits.length,
+    0,
+    "the children were stopped before any Turn was admitted",
+  );
 });
 
 test("ceiling: wall clock — xstate's own delayed event ends a parked Chart (a fake clock)", async () => {
@@ -1182,7 +1189,9 @@ test("customize: a wrapper's retuned lent Agent is the one its Open body lends, 
   const compiled = compileChart(admitted, lent, decl, {
     mintAgent: (_s, d) => agentActorWith(() => new MockFlueClient(), d),
   });
-  assert.equal((compiled.implementations.actors as Record<string, unknown>).coder, lent.actors.coder);
+  // A Chart invokes an Agent through its start check, and the check inherits every other method.
+  const borrowed = (compiled.implementations.actors as Record<string, unknown>).coder;
+  assert.equal(Object.getPrototypeOf(borrowed), lent.actors.coder);
 });
 
 test("the lent Effect: a Chart's invoke fills its input slots, and its output routes the Chart", async () => {

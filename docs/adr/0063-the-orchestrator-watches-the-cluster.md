@@ -52,10 +52,9 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
   merge patch per Workspace every 5 minutes, ±20% jitter so Leases never renew in lockstep after a restart. It no longer
   carries detection.
 - **The attach is a Harness call, not an exec.** The Harness runs the attach — ACL stamp, `git clone --shared` from the
-  node cache, remotes, `git worktree add` — on `POST /attach { slots, branch }`, authenticated like every Harness call
-  (ADR-0058). No stream per Workspace crosses the API server, and **`pods/exec` leaves the Orchestrator's RBAC**. It
-  also binds work late: a pod already running receives its Repos and branch, the shape standby Sandboxes and Agent
-  Substrate need.
+  node cache, remotes — on `POST /attach { slots }`, authenticated like every Harness call (ADR-0058). No stream per
+  Workspace crosses the API server, and **`pods/exec` leaves the Orchestrator's RBAC**. It also binds work late: a pod
+  already running receives its Repos, the shape standby Sandboxes and Agent Substrate need.
 
 ## Considered options
 
@@ -70,8 +69,8 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
 - **A jr2 WebSocket API.** Nothing to add: a Kubernetes watch is already a pushed stream of events.
 - **Keep the attach as exec through the new client.** The exec protocol is the hardest part of any Kubernetes client, it
   keeps one stream per Workspace through the API server, and it keeps `pods/exec`.
-- **Attach from an init container.** Declarative, but it fixes the Repos and branch at pod creation, which rules out
-  late binding, and it must wait on a cache that exists only after scheduling.
+- **Attach from an init container.** Declarative, but it fixes the Repos at pod creation, which rules out late binding,
+  and it must wait on a cache that exists only after scheduling.
 
 ## Consequences
 

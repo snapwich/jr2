@@ -253,6 +253,12 @@ test("the note says what the model called, in the Menu-only notes' form, or why 
     saidNote(unavailable("no Sandbox for the run was seen"), "t0-a", "ignored"),
     "said <unread: no Sandbox for the run was seen>",
   );
+  // A prompt that carries no marker (a Sandbox claim's), or a log that lost the one that did: read
+  // from the first prompt, and the note says so.
+  assert.equal(
+    saidNote("[coder] [prompt] Fix it.\n[coder] [bash] ls", "t0-a", "x"),
+    "said <no prompt carries t0-a; from the first> bash",
+  );
 });
 
 test("the conversations of a kept log are the ones whose prompt printed, by the Instance ID they print, in order, once each", () => {

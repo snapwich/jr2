@@ -42,7 +42,10 @@ built.
   carries the Instance Harness's model calls the same way. It holds only the model keys of the `"none"` Agents it hosts
   — the keys their providers read — and none of the held secrets a `workspace()` lists: a `"none"` Agent cannot execute
   code, so it had no way to use the rest. Its held objects are its own (`held-instance.json`,
-  `jr2-held-secrets-instance`). Defense-in-depth is the bonus, not the reason.
+  `jr2-held-secrets-instance`). Its held secrets get secret Stand-ins, as in every Harness pod: `jr2 up` mints them with
+  the signing key when it writes that pod's Secrets, as it does for the Instance Effector's key
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). It starts no confined child, so this
+  is for consistency, not a boundary. Defense-in-depth is the bonus, not the reason.
 - **The Instance Effector is the second Instance-level pod, beside it**
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), on the same convention: `jr2 up`
   converges it when a registered Machine places an Effect there — an `http` Effect — and deletes it otherwise. It runs

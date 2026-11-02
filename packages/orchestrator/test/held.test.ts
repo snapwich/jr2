@@ -18,7 +18,7 @@ import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { HarnessRestarts, SandboxPort } from "../src/workspace.ts";
-import { pool, source } from "../src/pool.ts";
+import { pool, source, type PoolNextInput } from "../src/pool.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const ev = (name: string, input: z.ZodObject = z.object({})) => defineEvent({ name, input });
@@ -1373,147 +1373,84 @@ test("the run records the Agent each pick's child is of; after a restore, a done
   await second.close();
 });
 
-/** One Agent slot, `coder`, invoked in two regions of the root (`ra`, `rb`): `pick_a` takes `ra` to
- * its own work (`waitA`). `rb` and the root's own `on` are the test's. `again()` stops the host and
- * restores the run into a second one, after the saves of the picks before it land. */
-async function oneAgentTwice(rb: Record<string, unknown>, rootOn: Record<string, unknown>) {
-  const go = ev("go");
-  const waiter = (gate: string) =>
-    jr2Setup({ events: [go] }).createMachine({
-      initial: "w",
-      states: { w: { invoke: { src: "gate", id: gate, input: {} }, on: { go: "f" } }, f: { type: "final" } },
-      output: () => ({ waited: gate }),
-    });
-  const clients: MockFlueClient[] = [];
-  const coder = agentActorWith(() => {
-    const c = new MockFlueClient();
-    clients.push(c);
-    return c;
-  }, coderDefinition);
-  const def = (): WorkflowDef => ({
-    name: "twice",
-    machine: jr2Setup({
-      events: [ev("pick_a"), ev("pick_b")],
-      actors: { coder, waiterA: waiter("doneA"), waiterB: waiter("doneB") },
-    }).createMachine({
-      id: "twice",
-      type: "parallel",
-      on: { "agent.fault": {}, ...rootOn },
-      states: {
-        ra: {
-          invoke: { src: "coder", input: { prompt: "A", endpoint: "http://harness.invalid" } },
-          initial: "rest",
-          states: { rest: {}, waiting: { invoke: { src: "waiterA", id: "waitA" } } },
-          on: { pick_a: ".waiting" },
-        },
-        rb,
-      },
-    } as never) as unknown as AnyStateMachine,
-    provide: () => ({ actors: { coder } }),
-  });
-  const store = await mkStore();
-  const first = new RunHost({ store });
-  first.register(def());
-  const { runId } = await first.start("twice");
-  await waitFor(() => clients.length === 2 && clients.every((c) => c.admits.length > 0));
-  const byPrompt = (prompt: string) =>
-    clients.find((c) => JSON.stringify(c.admits[0]).includes(`"${prompt}"`))!.admits[0]!.instanceId;
-  const rig = { host: first, runId, ia: byPrompt("A"), ib: byPrompt("B") };
-  const again = async (): Promise<void> => {
-    // `stop` is the simulated restart: a transition whose save has not landed is lost with it.
-    await new Promise((r) => setTimeout(r, 50));
-    await rig.host.stop(runId);
-    const second = new RunHost({ store });
-    second.register(def());
-    assert.deepEqual((await second.restore()).reattached, [runId]);
-    rig.host = second;
-  };
-  return { ...rig, rig, again };
-}
-
 /** Each sub-case runs twice: in one host, and with the run restored into a second host. */
 const through = ["live", "restored"] as const;
 
-// One Agent slot invoked in two regions, each with a pick outstanding. The done event of a child one of
-// them started shapes the pick at the invoke whose pick started that child, and the other region's pick
-// keeps its default answer (ADR-0024, ADR-0067).
+// One Agent slot invoked by two states, one after the other: Turn 1's pick leaves its state for one
+// whose child (`waitB`) runs on while Turn 2 of the same slot, at a state below it, has a pick
+// outstanding. The done event names Turn 1's invoke, whose pick is not being answered, so the
+// `answer` shapes no pick, and Turn 2's pick keeps its default answer (ADR-0024, ADR-0067).
 for (const mode of through) {
-  test(`one Agent in two regions, each with a pick outstanding: a done event below no Agent's state shapes the pick whose invoke started the child (${mode})`, async () => {
-    const t = await oneAgentTwice(
-      {
-        invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } },
-        initial: "rest",
-        states: { rest: {}, waiting: { invoke: { src: "waiterB", id: "waitB" } } },
-        on: { pick_b: ".waiting" },
-      },
-      { "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
-    );
-    const pa = t.rig.host.sendToAgent(t.ia, { type: "pick_a" });
-    const pb = t.rig.host.sendToAgent(t.ib, { type: "pick_b" });
-    assert.equal(pa.outstanding, true);
-    assert.equal(pb.outstanding, true);
-    if (mode === "restored") await t.again();
-    const host = t.rig.host;
-    const polledB = host.awaitDelivery(t.ib, pb.deliveryId);
-    host.sendToGate(t.runId, "waitB.doneB", { type: "go" });
-    assert.deepEqual((await polledB)?.answer, { kind: "answer", value: "the root saw xstate.done.actor.waitB" });
-    const polledA = host.awaitDelivery(t.ia, pa.deliveryId);
-    host.sendToGate(t.runId, "waitA.doneA", { type: "go" });
-    assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
-    await host.close();
-  });
-}
-
-// A pick sent while the same slot's pick in the other region is outstanding: an `answer` on a
-// transition below no Agent's state shapes the sending pick, the one at the invoke that sent the event,
-// and the outstanding pick keeps its default answer (ADR-0024, ADR-0067).
-for (const mode of through) {
-  test(`one Agent in two regions: a pick sent while the other region's pick is outstanding is shaped by a root answer on it (${mode})`, async () => {
-    const t = await oneAgentTwice(
-      { invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } } },
-      { pick_b: { actions: answer(({ event }) => `the root saw ${event.type}`) } },
-    );
-    const pa = t.rig.host.sendToAgent(t.ia, { type: "pick_a" });
-    assert.equal(pa.outstanding, true);
-    if (mode === "restored") await t.again();
-    const host = t.rig.host;
-    const pb = host.sendToAgent(t.ib, { type: "pick_b" });
-    assert.equal(pb.outstanding, undefined, `the root's transition leaves B's state at Rest: ${JSON.stringify(pb)}`);
-    assert.deepEqual(pb.answer, { kind: "answer", value: "the root saw pick_b" }, JSON.stringify(pb));
-    const polledA = host.awaitDelivery(t.ia, pa.deliveryId);
-    host.sendToGate(t.runId, "waitA.doneA", { type: "go" });
-    assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
-    await host.close();
-  });
-}
-
-// The same slot's pick in the other region started the child, and has ended its Turn: the done event
-// names that region's invoke, whose pick is not being answered, so the `answer` shapes no pick, and the
-// outstanding pick keeps its default answer (ADR-0024, ADR-0067).
-for (const mode of through) {
-  test(`one Agent in two regions: the done event of a child the other region's ended pick started shapes no pick (${mode})`, async () => {
-    const t = await oneAgentTwice(
-      {
+  test(`one Agent slot at two invokes: the done event of a child the ended Turn's pick started shapes no pick of the later Turn (${mode})`, async () => {
+    const go = ev("go");
+    const waiter = (gate: string) =>
+      jr2Setup({ events: [go] }).createMachine({
+        initial: "w",
+        states: { w: { invoke: { src: "gate", id: gate, input: {} }, on: { go: "f" } }, f: { type: "final" } },
+        output: () => ({ waited: gate }),
+      });
+    const clients: MockFlueClient[] = [];
+    const coder = agentActorWith(() => {
+      const c = new MockFlueClient();
+      clients.push(c);
+      return c;
+    }, coderDefinition);
+    const endpoint = "http://harness.invalid";
+    const def = (): WorkflowDef => ({
+      name: "twice",
+      machine: jr2Setup({
+        events: [ev("pick_a"), ev("pick_b")],
+        actors: { coder, waiterA: waiter("doneA"), waiterB: waiter("doneB") },
+      }).createMachine({
+        id: "twice",
         initial: "b",
-        states: {
-          b: {
-            invoke: { src: "coder", input: { prompt: "B", endpoint: "http://harness.invalid" } },
-            on: { pick_b: "away" },
-          },
-          away: { invoke: { src: "waiterB", id: "waitB" } },
+        on: {
+          "agent.fault": {},
+          "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) },
         },
-      },
-      { "xstate.done.actor.waitB": { actions: answer(({ event }) => `the root saw ${event.type}`) } },
-    );
-    const pa = t.rig.host.sendToAgent(t.ia, { type: "pick_a" });
-    assert.equal(pa.outstanding, true);
-    const pb = t.rig.host.sendToAgent(t.ib, { type: "pick_b" });
+        states: {
+          b: { invoke: { src: "coder", input: { prompt: "B", endpoint } }, on: { pick_b: "away" } },
+          away: {
+            invoke: { src: "waiterB", id: "waitB" },
+            initial: "a",
+            states: {
+              a: {
+                invoke: { src: "coder", input: { prompt: "A", endpoint } },
+                initial: "rest",
+                states: { rest: {}, waiting: { invoke: { src: "waiterA", id: "waitA" } } },
+                on: { pick_a: ".waiting" },
+              },
+            },
+          },
+        },
+      } as never) as unknown as AnyStateMachine,
+      provide: () => ({ actors: { coder } }),
+    });
+    const byPrompt = (prompt: string) =>
+      clients.find((c) => c.admits[0] !== undefined && JSON.stringify(c.admits[0]).includes(`"${prompt}"`))?.admits[0]
+        ?.instanceId;
+    const store = await mkStore();
+    let host = new RunHost({ store });
+    host.register(def());
+    const { runId } = await host.start("twice");
+    await waitFor(() => byPrompt("B") !== undefined);
+    const pb = host.sendToAgent(byPrompt("B")!, { type: "pick_b" });
     assert.equal(pb.turnComplete, true, "B's pick left B's state: its Turn ended, and its child runs on");
-    if (mode === "restored") await t.again();
-    const host = t.rig.host;
-    host.sendToGate(t.runId, "waitB.doneB", { type: "go" });
-    const polledA = host.awaitDelivery(t.ia, pa.deliveryId);
-    host.sendToGate(t.runId, "waitA.doneA", { type: "go" });
+    await waitFor(() => byPrompt("A") !== undefined);
+    const ia = byPrompt("A")!;
+    const pa = host.sendToAgent(ia, { type: "pick_a" });
+    assert.equal(pa.outstanding, true);
+    if (mode === "restored") {
+      // `stop` is the simulated restart: a transition whose save has not landed is lost with it.
+      await new Promise((r) => setTimeout(r, 50));
+      await host.stop(runId);
+      host = new RunHost({ store });
+      host.register(def());
+      assert.deepEqual((await host.restore()).reattached, [runId]);
+    }
+    host.sendToGate(runId, "waitB.doneB", { type: "go" });
+    const polledA = host.awaitDelivery(ia, pa.deliveryId);
+    host.sendToGate(runId, "waitA.doneA", { type: "go" });
     assert.deepEqual((await polledA)?.answer, { kind: "output", actor: "waiterA", output: { waited: "doneA" } });
     await host.close();
   });
@@ -1858,7 +1795,7 @@ test("a pool of two workers: a child `job` one worker's timer started leaves the
   const machine = pool(worker, {
     id: "run",
     source: source<Item>({
-      next: fromPromise(async ({ input }: { input: { active: string[] } }) => {
+      next: fromPromise(async ({ input }: { input: PoolNextInput }) => {
         const item = items.find((i) => !input.active.includes(i.id)) ?? null;
         if (item) items.splice(items.indexOf(item), 1);
         return { item, open: 0 };
@@ -2000,10 +1937,12 @@ test("a re-admission onto a conversation the rebuilt Harness lost is a Turn: eve
   await waitFor(() => rig.coder.admits.length === 3);
   const readmit = rig.coder.admits[2]!;
   assert.match(readmit.prompt ?? "", /^Your previous turn was cut[\s\S]*\n\nFix the ticket\.$/, "the task follows");
+  // k-1's verdict came back on the coder's own `bash` answer, so the conversation is not in k-1's
+  // audience (ADR-0062, D4 rule 3) — and the Turn it cut is this one, so it is not its own retry.
   assert.deepEqual(
     rig.coder.notices[2]!.map((n) => (n.kind === "memory-limit" ? `memory ${n.peak}` : n.kind)).sort(),
-    ["conversation-new", "memory 1.7Gi", "memory 1.9Gi", "pick-answer"],
-    "the conversation that heard them is gone: k-1 and k-2 are told again, with the task",
+    ["conversation-new", "memory 1.7Gi", "pick-answer"],
+    "the conversation that heard k-2 is gone: k-2 is told again, with the task",
   );
 });
 
@@ -2035,13 +1974,10 @@ const kill0 = () => ({
   told: [] as Array<{ agent: string; instanceId: string }>,
 });
 
-test("a kill the cut first admission carried, unheard, reaches the re-admission on a kept conversation, with the task (ADR-0026, ADR-0031, ADR-0062)", async () => {
+test("a cut first admission whose surface was never read: the re-admission on a kept conversation carries the task (ADR-0026, ADR-0031, ADR-0062)", async () => {
   const { host, runId, coder, iid } = await startedWithKills([kill0()]);
-  assert.deepEqual(
-    coder.notices[0]!.map((n) => n.kind),
-    ["memory-limit"],
-    "the first admission carries k-0",
-  );
+  // k-0 came before this fresh Turn: the Turn was not there for it (ADR-0062, D4).
+  assert.deepEqual(coder.notices[0], [], "the first admission carries no kill from before the Turn");
   // The Harness never read the first admission's surface: neither k-0 nor the task reached a model.
   assert.equal(host.sendToAgent(iid, { type: "ask" }).outstanding, true);
   coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
@@ -2050,7 +1986,7 @@ test("a kill the cut first admission carried, unheard, reaches the re-admission 
   await waitFor(() => coder.admits.length === 2);
   assert.deepEqual(
     coder.notices[1]!.map((n) => n.kind),
-    ["memory-limit", "pick-answer"],
+    ["pick-answer"],
   );
   assert.match(coder.admits[1]!.prompt ?? "", /^Your previous turn was cut[\s\S]*\n\nFix the ticket\.$/);
   await host.close();
@@ -2058,7 +1994,7 @@ test("a kill the cut first admission carried, unheard, reaches the re-admission 
 
 test("a re-admission onto a lost conversation tells every notice the Turn's admissions carried (ADR-0031, ADR-0062)", async () => {
   const { host, runId, coder, iid } = await startedWithKills([kill0()]);
-  // The first admission carried k-0 and was read; a nudge carried k-1 and was read too.
+  // k-0 came before the Turn, which was not there for it; a nudge carried k-1 and was read.
   host.agentSurfaceServed(iid);
   coder.podKills = [kill0(), { id: "k-1", at: new Date().toISOString(), peak: "1.7Gi", limit: "2Gi", told: [] }];
   coder.complete();
@@ -2073,7 +2009,6 @@ test("a re-admission onto a lost conversation tells every notice the Turn's admi
   assert.deepEqual(coder.notices[2]!.map((n) => (n.kind === "memory-limit" ? `memory ${n.peak}` : n.kind)).sort(), [
     "conversation-new",
     "memory 1.7Gi",
-    "memory 1.9Gi",
     "pick-answer",
   ]);
   await host.close();

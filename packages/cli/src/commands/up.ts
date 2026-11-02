@@ -100,7 +100,6 @@ import {
   harnessTokenDigest,
   formatCpu,
   formatMemory,
-  sandboxToken,
   type CarriedEffect,
   type CarriedImage,
   type CarriedRepo,
@@ -142,6 +141,8 @@ import {
   INSTANCE_HARNESS_PVC,
   INSTANCE_HARNESS_SERVICE,
   instanceHarnessObjects,
+  INSTANCE_HARNESS_CREDENTIALS,
+  podCredentials,
   instanceEffectorObjects,
   effectorDigest,
   storedValueDigest,
@@ -189,6 +190,7 @@ import {
   type PodEnd,
   type RolloutTarget,
 } from "../kube.ts";
+import { awaitCacheAgent } from "../landlock.ts";
 import { anyNodeHolds, buildNodes, sandboxNodes, type NodeObject } from "../nodes.ts";
 import { activity, chooseOrBail, confirmOrBail, promptLine, readSecretInput, type Io } from "../output.ts";
 import { kindCluster, sweepImages } from "../sweep.ts";
@@ -714,12 +716,10 @@ export async function up(args: string[], io: Io): Promise<number> {
     JR2_INSTANCE_TOKEN: instanceToken,
     JR2_PUBLISH_TOKEN: publishToken,
     JR2_SIGNING_KEY: signingKey,
-    // The Instance Harness Custodian's credential (ADR-0013/0031): a sandbox-style token signed
-    // for the placement's name — it may deliver only to Turns hosted THERE (tokens.ts), so the
-    // Instance token never enters that pod. Derived from the kept key, so re-runs converge to
-    // the same value; live Custodians keep verifying.
-    JR2_INSTANCE_HARNESS_TOKEN: sandboxToken(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
   };
+  // The Instance Harness Custodian's credentials are not here (ADR-0076): its control token and
+  // its secret Stand-ins ride its own Secret (`INSTANCE_HARNESS_CREDENTIALS`), whose Stand-ins its
+  // Harness container mounts — so it must never be this one.
   // Git tokens (ADR-0051, ADR-0068): each entry's token, from `.env`, goes into that entry's own clone
   // Secret (`jr2-git-<hash>`, Flux's key names), which the cache agent reads — never into this
   // Secret, the Orchestrator's env. The Orchestrator names the Secret on a Repo and holds no git token.
@@ -843,6 +843,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     trust: trustData(caPem, held.bundles),
     harnessEnvData,
     priorityClassName: priorityClassNames(config.priorityClasses).sandbox,
+    signingKey: Buffer.from(signingKey, "base64"),
   });
 
   // --- operator (per-cluster, shared): after the provider preflight ------------------------------
@@ -1015,14 +1016,17 @@ export async function up(args: string[], io: Io): Promise<number> {
   // over from a Machine that dropped its `workspace()` is deleted with its RBAC: the layer
   // converges toward the Machines like the Instance Harness does.
   if (carried.composesSandbox) {
+    // The agent is also the Landlock detector (ADR-0077): on a Sandbox node without Landlock it
+    // exits at start with the reason, and the converge refuses, naming each such node.
     activity(io, "repo cache: waiting for the cache agent on every Sandbox node");
-    await awaitRollout(kube, {
+    const cacheTarget: RolloutTarget = {
       kind: "daemonset",
       name: REPO_CACHE,
       namespace,
       selector: `app=${REPO_CACHE}`,
       ...ctx,
-    });
+    };
+    await awaitCacheAgent(kube, cacheTarget, () => awaitRollout(kube, cacheTarget));
     await verifyRunningImage(io, kube, {
       layer: "repo cache",
       namespace,
@@ -1078,6 +1082,13 @@ export async function up(args: string[], io: Io): Promise<number> {
         held: instance.manifest,
         custodian: instance.custodian,
         heldDigest: heldDigest(Buffer.from(signingKey, "base64"), held.objects, instance, valueDigest),
+        // Its control token and secret Stand-ins (ADR-0076, ADR-0059): minted here, as the pod's
+        // maker, from the kept key — so a re-run converges to the same values.
+        credentials: podCredentials(Buffer.from(signingKey, "base64"), {
+          placement: INSTANCE_HARNESS_SERVICE,
+          heldPod: INSTANCE_HARNESS_HELD_POD,
+          manifest: instance.manifest,
+        }),
         harness: config.harness,
         caBundle: caPem !== undefined,
         // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
@@ -1112,8 +1123,10 @@ export async function up(args: string[], io: Io): Promise<number> {
     await kube.deleteObject({ kind: "persistentvolumeclaim", name: INSTANCE_HARNESS_PVC, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_PODS_SERVICE, namespace, ...ctx });
-    // Its Custodian's files go with the pod they were rendered for (ADR-0059).
+    // Its Custodian's files and its credentials go with the pod they were made for (ADR-0059,
+    // ADR-0076).
     await kube.deleteObject({ kind: "configmap", name: INSTANCE_CUSTODIAN_CONFIGMAP, namespace, ...ctx });
+    await kube.deleteObject({ kind: "secret", name: INSTANCE_HARNESS_CREDENTIALS, namespace, ...ctx });
   }
 
   // --- Instance Effector (ADR-0068): converged when an Effect is placed there, absent otherwise ---
@@ -1480,6 +1493,8 @@ async function resolveHeld(
     models: opts.models,
   });
   for (const warning of warnings) activity(io, `warning: ${warning}`);
+  const r14 = envFromHeldRefusal(config, manifest, opts.envFromKeys);
+  if (r14) throw new Error(r14);
   // Each pod's own: the bindings of the names it holds and their literal values. Its Custodian's
   // files are rendered by whoever makes the pod — here for the Instance Harness alone; the
   // Orchestrator at provision for a Sandbox, from the same manifest (ADR-0059).
@@ -1496,7 +1511,7 @@ async function resolveHeld(
   const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
   const instance: CustodianFiles | undefined = instancePod && {
     bootstrap: JSON.stringify(custodianBootstrap(instancePod.manifest, orchestrator)),
-    script: custodianScript(instancePod.manifest),
+    script: custodianScript(instancePod.manifest, { fetch: false }),
   };
   if (manifest.secrets.length === 0) return { objects: { pods, ...(instance && { instance }), leaves: {} } };
   for (const s of manifest.secrets) {
@@ -1529,6 +1544,36 @@ async function resolveHeld(
     objects: { pods, ...(instance && { instance }), ca, leaves },
     bundles: trustBundles(ca.cert, opts.caBundle),
   };
+}
+
+/**
+ * R14 (ADR-0059): a held secret's name that is also a key of a Secret `harness.envFrom` loads. The
+ * Stand-ins are files, not env (ADR-0076), so no Stand-in hides that key: the Secret's real value
+ * would reach the Harness container's env under the held secret's own name, and the Harness uses a
+ * held secret but never holds it. The key is compared as the kubelet writes it, `prefix` first.
+ * The message names the Secret, the key and the held secret, and never a value. Exported for its
+ * test.
+ */
+export function envFromHeldRefusal(
+  config: JR2Config,
+  manifest: HeldManifest,
+  envFromKeys: ReadonlyMap<string, readonly string[]>,
+): string | undefined {
+  const held = new Set(manifest.secrets.map((s) => s.name));
+  for (const [i, ref] of (config.harness?.envFrom ?? []).entries()) {
+    const secret = ref.secretRef?.name;
+    if (secret === undefined) continue;
+    for (const key of envFromKeys.get(`secret/${secret}`) ?? []) {
+      const name = (ref.prefix ?? "") + key;
+      if (!held.has(name)) continue;
+      return (
+        `harness.envFrom[${i}] loads Secret "${secret}", whose key "${key}" is the env var ${name} — and ${name} is ` +
+        `a held secret. Its Stand-in is a file, so nothing hides that key, and its value would reach the ` +
+        `Harness's env. Drop the key from Secret "${secret}", or rename the held secret (ADR-0059, R14)`
+      );
+    }
+  }
+  return undefined;
 }
 
 /** The Instance Harness's held objects and its Custodian's files — the walk always places it when
@@ -2460,6 +2505,8 @@ async function preflightProviders(
     trust: Record<string, string>;
     harnessEnvData: Record<string, string>;
     priorityClassName: string;
+    /** The signing key, for each check pod's own Stand-ins (ADR-0019, ADR-0059). */
+    signingKey: Buffer;
   },
 ): Promise<void> {
   const { namespace, ctx } = opts;
@@ -2521,9 +2568,16 @@ async function preflightProviders(
       trust: opts.trust,
       custodian: {
         bootstrap: JSON.stringify(custodianBootstrap(checkPod.manifest, orchestrator)),
-        script: custodianScript(checkPod.manifest),
+        script: custodianScript(checkPod.manifest, { fetch: false }),
       },
-      token: randomBytes(24).toString("hex"),
+      // Its own credentials (ADR-0019, ADR-0076): a control token the Orchestrator never signed,
+      // and secret Stand-ins minted for this pod alone.
+      credentials: podCredentials(opts.signingKey, {
+        placement: object,
+        heldPod: object,
+        manifest: checkPod.manifest,
+        controlToken: "unsigned",
+      }),
       harnessEnvData: opts.harnessEnvData,
       models,
       ...(checkPod.placement ? { placement: checkPod.placement } : {}),
@@ -2666,7 +2720,7 @@ async function removeCheckLeftovers(
       if (!(since(finished ?? p.metadata.creationTimestamp) > CHECK_ENDED_MARGIN_SECONDS)) continue;
       await removeCheckPod(io, kube, p.metadata.name, namespace, ctx);
     }
-    for (const kind of ["configmap", "secret"]) {
+    for (const kind of ["configmap", "secret", "networkpolicy"]) {
       for (const o of await kube.listJson<CheckObject>({ kind, selector, namespace, ...ctx })) {
         const owner = o.metadata.name.replace(/-(ca|tls|env)$/, "");
         if (named.has(owner) || !(since(o.metadata.creationTimestamp) > CHECK_LEFTOVER_SECONDS)) continue;

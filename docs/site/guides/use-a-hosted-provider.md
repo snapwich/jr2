@@ -161,6 +161,12 @@ custom provider, with `harness.provider` and `apiKey`. The guide
 - A credential that signs each request, such as `AWS_ACCESS_KEY_ID`, cannot be a Held secret. `jr2 up` warns when
   `harness.env` sets one. Send the calls through a gateway that holds the credential, and hold the key of the gateway:
   `warning: harness.env sets <NAME>: a signing credential cannot be held (a Stand-in cannot be swapped into a signature), so the Agent can read it — route the provider through a gateway that holds it, and hold the gateway's key instead (ADR-0059)`.
+- The Harness process reads the file that a credential-file name in `harness.env` names, such as `AWS_CONFIG_FILE` or
+  `GOOGLE_APPLICATION_CREDENTIALS`. `jr2 up` refuses a path in a folder that the Agent's code writes, or a path that is
+  not absolute:
+  `harness.env[<i>] sets <NAME> to "<path>", which is in <folder>, a folder the Agent's code writes: the Harness process reads that file, and code that writes it acts outside the Agent's confinement (ADR-0076). Point it at a file of the image that the Sandbox's user cannot write.`
+  For another path, it warns:
+  `warning: harness.env sets <NAME>: the Harness process reads "<path>", so the Sandbox's user must not be able to write it — a folder of the image that the user owns is one the Agent's code writes (ADR-0076)`.
 - The Harness refuses a model that is not in the catalog when it admits the Turn:
   `harness admission failed (400): agent "<agent>": model "<provider>/<modelId>" resolves to nothing — not in pi's catalog, and no custom provider "<provider>" is configured (ADR-0018)`.
 

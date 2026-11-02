@@ -21,14 +21,12 @@ import type { AnyActorRef } from "xstate";
 export type AmbientHandles = {
   endpoint: string;
   sandbox: string;
-  /** Every Repo Slot's branch-worktree path, by slot (ADR-0051). */
+  /** Every Repo Slot's folder, `/work/<slot>`, by slot (ADR-0051). */
   repos: Record<string, string>;
   /** Every Repo Slot's Binding url, by slot (ADR-0051): where a push goes. */
   bindings?: Record<string, string>;
-  /** The branch the Worktrees are on. Absent for a Workspace with no Repo Slot (ADR-0051). */
-  branch?: string;
-  /** Detached review-worktree paths, when the spec carried `reviewSha` (ADR-0028). */
-  review?: Record<string, string>;
+  /** Each Repo Slot's Binding base, where the Binding names one: a cut with no `from` starts here. */
+  bases?: Record<string, string>;
 };
 
 const byRef = new WeakMap<AnyActorRef, AmbientHandles>();

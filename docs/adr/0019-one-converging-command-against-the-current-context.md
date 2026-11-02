@@ -45,11 +45,13 @@ loudly narrated, safe to re-run:
   ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). Referenced-but-unmanaged Secrets
   (`envFrom` refs, git credentials) are **preflighted**: `up` fails naming the missing Secret with the exact creation
   hint — converting the `CreateContainerConfigError` hang into an immediate error. Sealed Secrets/External Secrets ride
-  this seam untouched: jr2's contract is "a Secret named X exists", however it got there. A credential the Harness uses
-  is a held secret ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): `up` writes a
-  literal value into `jr2-held-secrets-<pod>` for each pod that names it, which only that pod's Custodian mounts, and
-  checks that a referenced Secret and key exist. Like the signing key, the held-secret CA (`jr2-held-ca`) is kept across
-  converges — minted on first need, never rotated by `up` — because a live pod trusts it.
+  this seam untouched: jr2's contract is "a Secret named X exists", however it got there. `up` also refuses a held
+  secret's name that is a key of an `envFrom` Secret, and names the Secret, the key and the held secret (ADR-0059, R14).
+  A credential the Harness uses is a held secret
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): `up` writes a literal value into
+  `jr2-held-secrets-<pod>` for each pod that names it, which only that pod's Custodian mounts, and checks that a
+  referenced Secret and key exist. Like the signing key, the held-secret CA (`jr2-held-ca`) is kept across converges —
+  minted on first need, never rotated by `up` — because a live pod trusts it.
 - **Repos**: `up`'s walk of the registered Machines collects every bound Repo Slot (ADR-0049, ADR-0051) — to refuse an
   open slot nobody bound, and to see which urls need a key. The Orchestrator creates one `Repo` resource per url at
   boot, and the operator's cache agent clones each onto the nodes that need it (ADR-0004). There is no `repos` config
@@ -59,6 +61,11 @@ loudly narrated, safe to re-run:
   in-cluster deploy keypair (the recommended default, public key printed to register), a local key, or one pasted on
   stdin ([ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)) — declining bails. A personal key never enters
   a cluster silently: only by that explicit, warned choice.
+- **Landlock**: `up` refuses to converge while a Sandbox node lacks Landlock. It reads the pods of the Repo cache
+  agent's DaemonSet, which probe Landlock on each Sandbox node, within the rollout wait it already makes for the cache.
+  It is an ordinary converge failure: it names each node whose agent reports none, the probe's reason, and the fix (keep
+  the node out with `sandbox.nodeSelector` or a taint, ADR-0052, or enable Landlock); a run after the fix converges
+  ([ADR-0077](0077-jr2-requires-landlock-on-every-sandbox-node.md)).
 - **Provider preflight**: `up` checks each provider that a carried model names. It checks from inside the cluster, with
   one trivial tool-call completion. An endpoint that the pods cannot reach, a wrong or missing key, or a vLLM without
   `--enable-auto-tool-choice` then fails at converge time, not as `agent.fault` in a run. Reachability is the user's
@@ -75,14 +82,17 @@ loudly narrated, safe to re-run:
     the config, each model's result says why, in words.
   - **The check pod.** It is a Harness pod with no Harness in it. It has a Custodian and the stock Harness image's
     `provider-preflight.ts`. The function that composes the Custodian of every Harness pod composes this Custodian too.
-    Its token is a value that the Orchestrator never signed. `provider-preflight.ts` gets the env of the Harness
-    container: the harness config, `harness.env`, `harness.envFrom`, the Stand-ins, the proxy and the trust. pi resolves
+    Its token is a value that the Orchestrator never signed. Its Stand-ins are secret and its own: `jr2 up` mints them
+    with the signing key, as it does for the Instance Harness
+    ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The check pod runs no Workspace
+    code, so it may hold them in env. `provider-preflight.ts` gets the env of the Harness container, with the Stand-ins
+    in it: the harness config, `harness.env`, `harness.envFrom`, the Stand-ins, the proxy and the trust. pi resolves
     each model and uses its api, as in a Turn. The `harness.catalog` gateway applies. The key never enters the check
     container, its argv or its log.
   - **Its own objects.** The check pod reads no object of the Instance. `up` writes copies from the values on the host:
     - a ConfigMap with the Custodian's files, the program and the harness config;
     - a ConfigMap with the trust bundles;
-    - a Secret with the token and the literal values of the held secrets;
+    - a Secret with the token, the check pod's Stand-ins and the literal values of the held secrets;
     - a Secret with the leaves;
     - a Secret with the literal `harness.env` values.
 
@@ -194,7 +204,9 @@ loudly narrated, safe to re-run:
   - **A limit.** The check pod has labels of its own. It does not get the labels of a Harness pod: the Instance Harness
     Service selects its pods by label, and would send Turns to the check pod. So a NetworkPolicy that selects Harness
     pods by label does not select the check pod. When such a policy closes the egress of the Harness pods, the check can
-    pass while a Turn fails.
+    pass while a Turn fails. jr2's own egress policy, which closes the cloud metadata addresses
+    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), gives the check pod one
+    of its own, so it does not have this limit.
 
 **`jr2 down`** removes the instance from the cluster. It asks for confirmation unless `--yes` is given (for CI). `--all`
 takes the operator too.

@@ -1,0 +1,295 @@
+# A Machine cuts a Worktree, and the Workspace only clones
+
+`workspace()` made one branch Worktree for each Repo Slot from `spec.branch`, and one detached Worktree from
+`spec.reviewSha`. So `spec` collected kinds of Worktree, a slot that is only read got a Worktree that no Agent used, and
+a Machine could not run two coders in one clone, retry a review in a clean folder, or name a branch after its plan. Now
+the Workspace only clones. A Worktree is a folder that a Machine names and makes with a kit Effect, `worktree()`.
+
+The layout and the branch order follow the conventions that [gwtmux](https://github.com/snapwich/gwtmux) defined: jr2
+does not call gwtmux and does not depend on it. Three designs were built on real files, attacked, and judged: a design
+with the path as the reference (this one), a design with the branch as the reference, and a design with no step that
+makes a Worktree. A prototype of the chosen design passed 62 of 62 `@kind` scenarios in real pods.
+
+## Decision
+
+### The Workspace
+
+- **The Workspace clones.** `spec`, `workspace.branch` and `workspace.review` go. `workGroup` is an option of
+  `workspace()`: `workspace(body, { workGroup: 2000 })`.
+- **A handle is the slot's folder, and not a Worktree.** `context.workspace.repos.app` is `/work/app`.
+- **`default/` stays on the Binding's base.** A branch is attached, and a tag or a commit is detached. With no base, it
+  is the Repo's default branch. A slot that is only read needs nothing more: an Agent reads `/work/<slot>/default`. No
+  work happens in `default/`, and a cut of the branch that it holds is `refused`, and the reason names
+  `/work/<slot>/default`.
+- **The author chooses how many Agents work in a Workspace.** The rule "one Agent at a time" goes. Agents in one
+  Worktree share git as people in one checkout do. Each coder that needs its own branch gets its own Worktree of the one
+  clone.
+- **`/work/.jr2/` is reserved for jr2.** A Repo Slot name cannot start with `.`. An Agent can write under `/work`, so
+  nothing there is a record that jr2 trusts.
+
+### `worktree()`
+
+```ts
+worktree();                       // a local branch, then origin (tracked), then new
+worktree({ expect: "new" });      // refuse a branch that exists
+worktree({ expect: "existing" }); // refuse a branch that does not exist, and make nothing
+
+{ path: "/work/app/fix", branch: "docs/123", from?: "v3" }  // a branch Worktree
+{ path: "/work/app/review", detach: sha }                   // forced and cleaned on each cut
+
+{ outcome: "ready", slot, path, branch: string | null, head, found, stale? }
+{ outcome: "refused", reason }  // nothing changed
+{ outcome: "unknown", reason }
+```
+
+- **The path is the reference, and the Machine knows it before the cut.** It is exactly `/work/<slot>/<name>`, with one
+  segment that is not `default` and starts with neither `.` nor `-`. So a door word or a planner's word does not become
+  a folder tree, and a `run` branch and a `run/a` branch never need nested folders.
+- **`branch` is required unless `detach` is given.** The branch is read from the cut's record, never from the folder or
+  from HEAD. A Machine can use one word for both. The rule can relax after v1, and the reverse is a break.
+- **A cut resolves a branch in one order, after a fetch:** a local branch, then `origin/<branch>` with tracking, then a
+  new branch from `from` or the Binding's base with no upstream. `found` says which: `local`, `remote` or `none`. A path
+  that a cut already made needs no fetch, and `found` is `held`. A detached cut says `commit`.
+- **A failed fetch degrades.** `stale` carries ADR-0053's warning, and the cut uses what the clone holds. A name that
+  the clone does not hold is `refused`, because the remote cannot confirm that it is new.
+- **`expect` is static**, so a Chart cannot change it. The string can grow. A boolean cannot, and its absent value and
+  its `false` would mean different things.
+- **A cut runs on the `command` machinery**: a kit program in the Harness container, no new wire kind, marked
+  idempotent. Each thing that an Agent's word can cause settles as `refused`, and never as `onError` (ADR-0067). A cut
+  writes a record before it changes git, so `refused` changes nothing and the next cut in the clone repairs a killed
+  cut. It never removes a folder that its record does not name. A re-cut that disagrees with the first cut is `refused`.
+  Cuts of one clone are serialized by a lock.
+- **A detached cut is forced from its own record** and cleaned with `-ffd`. Ignored files stay, because a reviewer runs
+  the tests (ADR-0028).
+- **A cut needs a Repo Slot.** `jr2 up` and the invoke refuse `worktree()` under a Workspace with no Repo Slot, as they
+  refuse a `push` (ADR-0051).
+- **v1 has no kit removal.** The docs give a `command` that runs `git worktree remove`.
+
+### What names a Worktree
+
+```ts
+coder:   { prompt, cwd: "/work/app/fix" }          // required under Repo Slots
+publish: { worktree: "/work/app/fix", sha }        // push
+test:    { worktree: "/work/app/fix" }             // command
+send:    { name: "r.md", worktree: "/work/app/fix" } // http with a file body
+```
+
+- **`cwd` and `worktree` are required under Repo Slots.** A Workspace that only clones has no Worktree for a default to
+  name, and `/work` is the wrong default: an Agent's search hits `default/`, and a relative write lands outside each
+  Worktree. That is the incident in ADR-0057. A Turn that wants `/work` states it. A Workspace with no Repo Slot, and an
+  Agent with `workspace: "none"`, need no `cwd`.
+- **`push` has no `to` and no `branch` in its input.** It keeps its static `slot`. The Orchestrator finds the cut's
+  settled row in the run's ledger, by the path and this Sandbox, and tells the Effector which branch to publish. An
+  Agent can change all of git in the pod, and it cannot change that row. With a read of HEAD, `git switch main` would
+  publish `main`. With an input key, a Chart could aim at any remote branch. A push with no row, a row of another slot,
+  or a detached Worktree is `rejected` at stage start. The ledger key is (slot, branch). The local name equals the
+  remote name, so an Agent, a Gate and a person in the pod all see the real branch.
+- **A `command` that names a secret and an `http` file body need the same row.** A path alone does not name the target
+  of a credential.
+- **A bad Worktree does not add an outcome.** A `command` settles `exited` 127 with the reason in its tail, and an
+  `http` file body settles `refused`.
+- **A compile error catches a wrong slot.** `Workspaced` types a handle as the literal `/work/<slot>`, and `jr2Setup`
+  maps the body's slots to each Worktree input. The compile check is a help and the guarantee is at run time. It sees
+  the slot and the first character of the name, under `jr2Setup`, on a literal path. It does not see a path held as
+  `string`, a plain `setup()`, a `repos: open` Machine, or a body that is generic in its slots. A helper must return
+  `as const`.
+
+### A Chart
+
+- A cut lent to a Chart must state `expect`, and a Chart reads it with the kit guard `jr2.ready`.
+- The door refuses `expect: "existing"` beside a lent force push, because together they let a Chart force-push any
+  existing branch that `default/` does not hold.
+- The door refuses a `cwd` that is a slot's folder.
+- A Chart's payload has no `pattern`, so a Chart cannot state the branch rule, and the cut refuses a bad name. A
+  hand-written Machine's pick param uses the kit schema `branchName`, so a bad name is refused at the Menu. The cut and
+  the push share that rule. Names with `@`, `#` or `+` are refused, as the Effector refuses them.
+
+### Output and the walk
+
+- **Every Effect outcome is open.** `worktree()`, `push`, `command` and `http` each hold a stand-in member in their
+  union, so that no author can write an exhaustive check. A later outcome is then no break.
+- **The load-time walk refuses an Effect's `onDone` with no unguarded last arm.** A type cannot see a missing arm, and
+  with no match a run stays in that state and shows no fault.
+
+### Fetches in one clone
+
+All Worktrees of a clone share `refs/remotes/origin/*`. A `git fetch` updates a ref only if it still holds the value
+that the fetch read, so two fetches that overlap on a moved remote can fail with
+`cannot lock ref … is at <sha> but expected <sha>`. The failure does no harm: the ref is already newer, and a second
+fetch works. But it costs a Turn, so `jr2-upload-pack` takes a per-clone lock and keeps it until the fetch ends. It
+takes the lock after it asks the node cache, so a dead remote does not make coders wait in line. The program execs
+`git upload-pack`. That process can end before the fetch writes its refs: that happens when a pack moves. In a shared
+clone, git often keeps the connection open to the end. The lock must last to the end of the fetch in both cases, so a
+small child process that watches the fetch holds it, and ends when the fetch ends. The child watches the `git fetch`
+process and not its parent, because `git remote-ext` ends with the connection.
+
+A cut keeps its own lock, and fetches under it. A fetch waits only for a fetch: a cut can wait for the fetch lock, and
+nothing that holds the fetch lock waits for a cut, so the two cannot deadlock. A fetch waits at most 30 s in line, then
+runs with no lock, because the lock only helps and must not fail a fetch.
+
+| Measured                                                               | 4 coders              | 8 coders |
+| ---------------------------------------------------------------------- | --------------------- | -------- |
+| Real pod, `ext::` path, 90 s, moving remote, no lock                   | 29% of fetches failed | 39%      |
+| Local, no lock                                                         | 8%                    | 11%      |
+| Local, `core.filesRefLockTimeout=5000`                                 | 8%                    | 11%      |
+| Local, lock for the connection only                                    | 3%                    | 4%       |
+| Local, lock held to the end of the fetch                               | 0%                    | 0%       |
+| Real pod, same load, lock held to the end of the fetch: failed fetches | 0 of 349              | 0 of 725 |
+| Real pod, same load, with the lock: fetch p95                          | 1066 ms               | 1078 ms  |
+| Real pod, same load, with the lock: cut p95                            | 4289 ms               | 8256 ms  |
+
+Git's lock timeout does not help, because no lock is busy: the compare fails. If the wait under the lock is too long in
+a pod, jr2 drops this lock and adds a `@model` claim that an Agent runs the fetch again.
+
+### Smaller rules
+
+- **A Pool's `next` reads `{ active, settled, input }`.** `input` is the Pool's input and `settled` holds the ids of the
+  finished and failed items, so a Source can fan out over a plan with no state of its own.
+- **A wrapper's door is parsed under a parent too**, so a parent that passes less than a `workspace()` or a `pool()`
+  requires fails (ADR-0033).
+- **A Sandbox delete waits for its pod**, because a retry can take the name of a pod that is still going away
+  (ADR-0021).
+- **An Agent's commits on a side branch are not published**, and `found` says `held`. A warning field can follow after
+  v1.
+- **`jr2 status <run>` shows each path and branch.** `jr2 ls` shows only Sandboxes, because it reads cluster labels.
+
+## Example
+
+A coder, a detached reviewer, and a signed push of the commit that the reviewer read. The reviewer has its own folder,
+which each round forces to the commit and cleans.
+
+```ts
+type BodyInput = Workspaced<{ prompt: string; branch: string }, "app">;
+const coderTree = (c: BodyInput) => `${c.workspace.repos.app}/work` as const;
+const reviewTree = (c: BodyInput) => `${c.workspace.repos.app}/review` as const;
+
+const body = jr2Setup({
+  types: {} as { input: BodyInput; context: BodyInput & { reviewed?: string } },
+  actors: {
+    coder: agent({ model, instructions: "You fix the bug. You commit the fix." }),
+    reviewer: agent({ model, workspace: "read", instructions: "You review one commit. You change nothing." }),
+    cut: worktree(),
+    publish: push({ sign: true, pin: true }),
+  },
+}).createMachine({
+  initial: "cutting",
+  states: {
+    cutting: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: coderTree(context), branch: context.branch }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+      },
+    },
+    coding: {
+      invoke: {
+        src: "coder",
+        input: ({ context }) => ({ prompt: context.prompt, cwd: coderTree(context), continue: true }),
+      },
+      on: { finished: "reading" },
+    },
+    // A cut is idempotent, so it also reads a Worktree. `head` is the tip of the branch, whatever HEAD the coder left.
+    reading: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: coderTree(context), branch: context.branch }),
+        onDone: [
+          {
+            guard: ({ event }) => isReady(event.output),
+            target: "detaching",
+            actions: assign({ reviewed: ({ event }) => readyOf(event.output).head }),
+          },
+          { target: "notCut" },
+        ],
+      },
+    },
+    detaching: {
+      invoke: {
+        src: "cut",
+        input: ({ context }) => ({ path: reviewTree(context), detach: context.reviewed! }),
+        onDone: [{ guard: ({ event }) => isReady(event.output), target: "reviewing" }, { target: "notCut" }],
+      },
+    },
+    reviewing: {
+      invoke: {
+        src: "reviewer",
+        input: ({ context }) => ({ prompt: `Review ${context.reviewed}.`, cwd: reviewTree(context) }),
+      },
+      on: { pass: "publishing", revise: "coding" },
+    },
+    publishing: {
+      invoke: {
+        src: "publish",
+        input: ({ context }) => ({ worktree: coderTree(context), sha: context.reviewed! }),
+        onDone: [{ guard: ({ event }) => event.output.outcome === "pushed", target: "done" }, { target: "coding" }],
+      },
+    },
+    done: { type: "final" },
+    notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
+  },
+});
+```
+
+Concurrent coders in one clone. A Pool in the body runs one worker for each task, and each worker cuts its own Worktree.
+The body cuts its merge target first, so a name conflict is refused before a coder works. Then it merges each branch, in
+one clone with no fetch, and pushes once.
+
+```ts
+const taskTree = (c: WorkerInput) => `${c.workspace.repos.app}/task-${c.id}` as const;
+const mergeTree = (c: BodyInput) => `${c.workspace.repos.app}/merge` as const;
+
+// In the worker:
+cutting: { invoke: { src: "cut", input: ({ context }) => ({ path: taskTree(context), branch: `task/${context.id}` }) } },
+coding: { invoke: { src: "coder", input: ({ context }) => ({ prompt: context.title, cwd: taskTree(context) }) } },
+
+// In the body:
+cutting: { invoke: { src: "cut", input: ({ context }) => ({ path: mergeTree(context), branch: context.branch }) } },
+working: { invoke: { src: "coders", input: ({ context }) => ({ tasks: context.tasks, workspace: context.workspace }) } },
+merging: {
+  invoke: {
+    src: "merge", // command(["git", "merge", "--no-edit", arg("branch")])
+    input: ({ context }) => ({ branch: `task/${context.left[0]!}`, worktree: mergeTree(context) }),
+  },
+},
+publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mergeTree(context) }) } },
+```
+
+## Considered options
+
+- **The branch as the reference: `worktree({ slot, branch })`, with the path as output.** Rejected. The path is known
+  only after the cut, so each later state reads it from context, and a Chart needs an output read. `/` in a branch must
+  map to a folder. S1 cost 29 more lines against 8 for this design, and its attack found three fatal faults.
+- **No step: a Worktree named as data, made on first use.** Rejected. A Turn has no route for a refused cut, and that is
+  the fault of its central idea. A planner's typo becomes a Turn that cannot start. It saves lines in the hard
+  scenarios, and it saves nothing in the common one.
+- **The name is the local branch.** Rejected. A door word then reaches a path, a slash needs a mapping, and `run` beside
+  `run/a` collides.
+- **`to` on `push`.** Rejected for v1: no scenario needs it, and it can be added with no break. A name chosen after the
+  work needs a cut first.
+- **`push` reads HEAD.** Rejected. An Agent can move HEAD.
+- **`default/` always on the Repo's default branch.** Rejected. An Agent would read the wrong version of a pinned
+  handbook with no sign, and a read-only slot is a reason for this design.
+- **`cwd` defaults to `/work`.** Rejected, as ADR-0057 rejected it.
+- **A bad path goes to `onError`.** Rejected by ADR-0067: an Agent's param can cause it.
+
+## Consequences
+
+- After v1, these are additive: a removal Effect, a sparse checkout, a new Worktree source, `to`, a relaxed `branch` or
+  `cwd`, a later outcome, and durable output under `/work/.jr2/` or on its own mount.
+- Park and restore can only restore all of `/work`. A restore from the remote alone cannot work: settled cuts do not run
+  again, and unpushed work is gone. v1 does not promise that form.
+- A packaged Machine with two slots still needs a static `slot` on its `push`.
+- A kill of the cut's node process alone can leave `git worktree add` running after the cut's lock frees, because git
+  does not inherit the lock.
+- The fetch lock's holder ends as an orphan, so PID 1 must reap it. A User Container whose PID 1 does not reap keeps one
+  more zombie for each fetch there: 50 fetches left 50, beside the 52 that git leaves by itself with no jr2 program.
+- A kill in the short `update-ref` step leaves a stale ref lock, and no cut removes it. So that name stays `refused`.
+- Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a
+  Pool in one clone. They share the one Harness and `/work`. Only the Harness process holds the control credential, and
+  each process it starts in `/work` runs confined, so no Agent's code can act as another Agent
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)).
+- This change alters the Frame, the Chart briefing and the door's refusal text. The full `@model` run read 18 of 19
+  scenarios. `chart-refusal/off` read 6 of 10, below its floor of 7, and each miss failed at the Menu's validation,
+  before the door, on the JSON-string Chart that ADR-0070 records. Run alone, two runs on each side at one time, `main`
+  read 8 and 8 of 10, and this change read 9 and 7 of 10. So this change does not lower the cell. The floor stays, and a
+  full run can miss it.

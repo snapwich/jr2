@@ -24,7 +24,18 @@
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, customize, defineEvent, fail, jr2Setup, open, workspace } from "@jr2/orchestrator";
+ * import {
+ *   agent,
+ *   customize,
+ *   defineEvent,
+ *   fail,
+ *   isReady,
+ *   jr2Setup,
+ *   open,
+ *   workspace,
+ *   worktree,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
  *
  * const finish = defineEvent({
  *   name: "finish",
@@ -32,19 +43,40 @@
  *   input: z.object({}),
  * });
  *
+ * type Input = Workspaced<{}, "app">;
+ *
+ * const fixTree = (context: Input) => `${context.workspace.repos.app}/fix` as const;
+ *
  * const body = jr2Setup({
+ *   types: {} as { context: Input; input: Input },
  *   events: [finish],
- *   actors: { coder: agent({ model: open, instructions: "You fix the failing test." }), fail: fail() },
+ *   actors: {
+ *     coder: agent({ model: open, instructions: "You fix the failing test." }),
+ *     cut: worktree(),
+ *     fail: fail(),
+ *   },
  * }).createMachine({
  *   id: "fix",
+ *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
- *   initial: "coding",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: fixTree(context), branch: "jr2/fix" }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+ *       },
+ *     },
  *     coding: {
- *       invoke: { src: "coder", input: { prompt: "Make `node --test` pass." } },
+ *       invoke: {
+ *         src: "coder",
+ *         input: ({ context }) => ({ prompt: "Make `node --test` pass.", cwd: fixTree(context) }),
+ *       },
  *       on: { finish: "done" },
  *     },
  *     done: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
@@ -53,7 +85,6 @@
  * // What a package exports: the repository and the model are Open.
  * export const fix = workspace(body, {
  *   repos: { app: open },
- *   spec: () => ({ branch: "jr2/fix" }),
  * });
  *
  * // What an Instance's `workflows/fix.ts` exports: the same Machine, its Open parts bound.

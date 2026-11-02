@@ -63,9 +63,11 @@ import type { PickAnswer } from "./wire.ts";
  *   command,
  *   defineEvent,
  *   fail,
+ *   isReady,
  *   jr2Setup,
  *   paramsOf,
  *   workspace,
+ *   worktree,
  *   type Workspaced,
  * } from "@jr2/orchestrator";
  *
@@ -83,6 +85,8 @@ import type { PickAnswer } from "./wire.ts";
  *
  * type Input = Workspaced<{}, "app">;
  *
+ * const fixTree = (context: Input) => `${context.workspace.repos.app}/fix` as const;
+ *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
  *   events: [runTest, finished],
@@ -91,6 +95,7 @@ import type { PickAnswer } from "./wire.ts";
  *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You are a careful engineer.",
  *     }),
+ *     cut: worktree(),
  *     test: command(["node", "--test", arg("file")]),
  *     fail: fail(),
  *   },
@@ -98,12 +103,22 @@ import type { PickAnswer } from "./wire.ts";
  *   id: "fix-tests",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
- *   initial: "coding",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: fixTree(context), branch: "fix-tests" }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+ *       },
+ *     },
  *     coding: {
  *       invoke: {
  *         src: "coder",
- *         input: { prompt: "Make the tests pass. Run the tests of one module at a time." },
+ *         input: ({ context }) => ({
+ *           prompt: "Make the tests pass. Run the tests of one module at a time.",
+ *           cwd: fixTree(context),
+ *         }),
  *       },
  *       on: { finished: "done" },
  *       initial: "ready",
@@ -113,13 +128,17 @@ import type { PickAnswer } from "./wire.ts";
  *           invoke: {
  *             src: "test",
  *             // A plain mapper: the Machine makes the file name from the pick's `module`.
- *             input: ({ event }) => ({ file: `test/${paramsOf(event, runTest).module}.test.js` }),
+ *             input: ({ context, event }) => ({
+ *               file: `test/${paramsOf(event, runTest).module}.test.js`,
+ *               worktree: fixTree(context),
+ *             }),
  *             onDone: "ready",
  *           },
  *         },
  *       },
  *     },
  *     done: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
@@ -127,7 +146,6 @@ import type { PickAnswer } from "./wire.ts";
  *
  * export const machine = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: () => ({ branch: "fix-tests" }),
  * });
  * ```
  *
@@ -640,8 +658,10 @@ export const isAnswer = (action: unknown): boolean =>
  *   command,
  *   defineEvent,
  *   fail,
+ *   isReady,
  *   jr2Setup,
  *   workspace,
+ *   worktree,
  *   type Workspaced,
  * } from "@jr2/orchestrator";
  *
@@ -659,6 +679,8 @@ export const isAnswer = (action: unknown): boolean =>
  *
  * type Input = Workspaced<{}, "app">;
  *
+ * const fixTree = (context: Input) => `${context.workspace.repos.app}/fix` as const;
+ *
  * const body = jr2Setup({
  *   types: {} as { context: Input; input: Input },
  *   events: [runTests, finished],
@@ -667,6 +689,7 @@ export const isAnswer = (action: unknown): boolean =>
  *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You are a careful engineer.",
  *     }),
+ *     cut: worktree(),
  *     tests: command(["npm", "test"]),
  *     fail: fail(),
  *   },
@@ -674,10 +697,20 @@ export const isAnswer = (action: unknown): boolean =>
  *   id: "fix-tests",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
- *   initial: "coding",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: fixTree(context), branch: "fix-tests" }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+ *       },
+ *     },
  *     coding: {
- *       invoke: { src: "coder", input: { prompt: "Make the tests pass." } },
+ *       invoke: {
+ *         src: "coder",
+ *         input: ({ context }) => ({ prompt: "Make the tests pass.", cwd: fixTree(context) }),
+ *       },
  *       on: { finished: "done" },
  *       initial: "ready",
  *       states: {
@@ -685,6 +718,7 @@ export const isAnswer = (action: unknown): boolean =>
  *         testing: {
  *           invoke: {
  *             src: "tests",
+ *             input: ({ context }) => ({ worktree: fixTree(context) }),
  *             onDone: {
  *               target: "ready",
  *               // The Agent reads this string, not the whole output of the command.
@@ -699,6 +733,7 @@ export const isAnswer = (action: unknown): boolean =>
  *       },
  *     },
  *     done: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
@@ -706,7 +741,6 @@ export const isAnswer = (action: unknown): boolean =>
  *
  * export const machine = workspace(body, {
  *   repos: { app: { url: "https://github.com/you/app.git" } },
- *   spec: () => ({ branch: "fix-tests" }),
  * });
  * ```
  *

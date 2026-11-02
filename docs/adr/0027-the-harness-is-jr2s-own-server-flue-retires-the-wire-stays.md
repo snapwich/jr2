@@ -106,6 +106,13 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
   no adapter: a test rig can pass another (`TurnDeps.engineAdapter`). So a second engine changes `engine-choice.ts`, not
   the Turn. The Working tools, the printer, the transcript and Compaction do not change.
 
+- **The Working tools run as confined children beside the engine.** The engine runs in the Harness process, which runs
+  jr2's code only and holds the control credential
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). Each process that a
+  Working tool starts — each `bash` call and what it runs, and the search tools' `rg` or `grep` — runs confined by the
+  Effector's Landlock confiner ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)), with an
+  explicit env. The file tools (read, write, edit) run in the Harness process, and resolve each path beneath `/work`,
+  with no escape by `..` or by a symbolic link. A second engine keeps this rule: it is the Harness's, not pi's.
 - **Assembly is runtime construction, not codegen.** `main.ts` constructs the server and listens; each admission carries
   its Agent's definition (ADR-0049), validated loudly and re-read per Submission. `boot.mjs`, the generated shims, the
   boot-time `flue build`, and the readiness lag it caused are deleted, and so — later — was the `JR2_AGENTS_JSON` roster
@@ -219,7 +226,8 @@ does not exist for a caller that owns tool assembly. jr2 owns the rest: the engi
 - **Kept verbatim**: the wire, the stub as the mechanics fixture, `AgentRunPort` and the admission ledger, ADR-0024's
   rule, receipt, and ordering, and the container split — restated in jr2 terms: the pod's credentials live in a separate
   container (the Custodian, ADR-0059) _because working tools execute in the Harness container_, so the
-  credential-isolation premise survives while `local()` leaves the vocabulary.
+  credential-isolation premise survives while `local()` leaves the vocabulary. The one credential that the Harness
+  process holds, the control Stand-in, is out of reach of the Working tools' children, which run confined (ADR-0076).
 - **The `flue-contract` tier dissolves into the conformance suite.** Its rig — scripted OpenAI-compatible provider, the
   Menu over a real socket to a killable fake Orchestrator, real server — moves into `packages/harness/test/` and runs in
   the default `test` gate: the opt-in-ness existed only because the tier owned a foreign pin and build. Its claims

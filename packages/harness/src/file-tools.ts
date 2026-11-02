@@ -9,13 +9,19 @@
 //
 // Each tool closes over the Frame's `cwd` (ADR-0057): a relative path resolves against it. The
 // schemas stay TypeBox (`Type` from pi-ai), so pi-ai coerces the arguments as it did on 0.82.1.
+//
+// Each tool's I/O runs in the domain, done by the spawner (`spawner.ts`, ADR-0076), so the kernel
+// applies the domain's rules to it: the tools reach what `bash` reaches. A path under `/run/jr2`, or
+// a link to one, fails as an unreadable file fails. Each error reads as Node's error for the same
+// system call did (`nodeError`), so the text the model reads is pi's.
 
-import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { constants as osConstants } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getSystemErrorMessage } from "node:util";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import type { EngineTool } from "./engine.ts";
+import { FileOpError, type FileOps } from "./spawner.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "./truncate.ts";
 
 // ─── the path rules ──────────────────────────────────────────────────────────
@@ -23,15 +29,15 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 const NARROW_NO_BREAK_SPACE = "\u202F";
 
-/** The environment's rule (pi's `resolvePath`): `~` and `~/x` under the home directory, a
- * `file://` URL to its path (a malformed one stays an ordinary path), a relative path against
- * `cwd`. */
-export function resolvePath(cwd: string, path: string): string {
+/** The environment's rule (pi's `resolvePath`): `~` and `~/x` under `home`, a `file://` URL to its
+ * path (a malformed one stays an ordinary path), a relative path against `cwd`. `home` is the
+ * domain's HOME, the one that `bash` expands `~` to, never the Harness process's own (ADR-0076). */
+export function resolvePath(cwd: string, path: string, home: string): string {
   let normalized = path;
   if (normalized === "~") {
-    normalized = homedir();
+    normalized = home;
   } else if (normalized.startsWith("~/")) {
-    normalized = join(homedir(), normalized.slice(2));
+    normalized = join(home, normalized.slice(2));
   } else if (normalized.startsWith("file://")) {
     try {
       normalized = fileURLToPath(normalized);
@@ -44,15 +50,18 @@ export function resolvePath(cwd: string, path: string): string {
 
 /** The tools' rule over the environment's: the Unicode spaces become a plain space, and a leading
  * `@` goes (a model that copies a path from a mention). */
-function resolveToolPath(cwd: string, path: string): string {
+function resolveToolPath(at: At, path: string): string {
   const spaced = path.replace(UNICODE_SPACES, " ");
-  return resolvePath(cwd, spaced.startsWith("@") ? spaced.slice(1) : spaced);
+  return resolvePath(at.cwd, spaced.startsWith("@") ? spaced.slice(1) : spaced, at.home);
 }
+
+/** Where the tools resolve a path: the Turn's Frame (`cwd`) and the domain's HOME (`~`). */
+type At = { cwd: string; home: string };
 
 /** `read` alone also tries the macOS variants of a name: a narrow no-break space before AM/PM
  * (screenshots), NFD, and a curly apostrophe. */
-async function resolveReadToolPath(cwd: string, path: string): Promise<string> {
-  const resolved = resolveToolPath(cwd, path);
+async function resolveReadToolPath(files: FileOps, at: At, path: string): Promise<string> {
+  const resolved = resolveToolPath(at, path);
   const variants = [
     resolved,
     resolved.replace(/ (AM|PM)\./gi, `${NARROW_NO_BREAK_SPACE}$1.`),
@@ -61,7 +70,7 @@ async function resolveReadToolPath(cwd: string, path: string): Promise<string> {
     resolved.normalize("NFD").replace(/'/g, "\u2019"),
   ];
   for (const variant of new Set(variants)) {
-    if (await exists(variant)) return variant;
+    if (await exists(files, variant)) return variant;
   }
   return resolved;
 }
@@ -103,21 +112,46 @@ function fileError(err: unknown): FileError {
   return new FileError(fileErrorCode(err), err instanceof Error ? err.message : String(err));
 }
 
-/** `lstat`'s kind, or an `invalid` error for a kind pi did not know (a socket, a FIFO). */
-async function kindOf(path: string): Promise<"file" | "directory" | "symlink"> {
-  const stats = await lstat(path).catch((err: unknown) => {
-    throw fileError(err);
+/**
+ * The spawner's failure as Node's error for the same system call: the errno, Node's words for it,
+ * the call and the path (`ENOENT: no such file or directory, open '/x'`). `read` and `write` on a
+ * descriptor name no path, as Node's do not. A failure that is not a file op's (the spawner ended)
+ * keeps its own words.
+ */
+function nodeError(err: unknown, path: string, syscall?: string): Error {
+  if (!(err instanceof FileOpError)) return err instanceof Error ? err : new Error(String(err));
+  const errno = (osConstants.errno as Record<string, number | undefined>)[err.code];
+  const words = errno === undefined ? err.code : getSystemErrorMessage(-errno);
+  const call = syscall ?? (err.syscall === "stat" || err.syscall === "lstat" ? "lstat" : err.syscall);
+  const named = call === "read" || call === "write" ? "" : ` '${call === "mkdir" ? err.path : path}'`;
+  return Object.assign(new Error(`${err.code}: ${words}, ${call}${named}`), { code: err.code, syscall: call, path });
+}
+
+/** The kind of what the path names, as `lstat` named it for pi: a link is `symlink`. The spawner's
+ * `stat` follows links, so a path whose last name is a link is told by its folder's real path. An
+ * `invalid` error for a kind pi did not know (a socket, a FIFO). */
+async function kindOf(files: FileOps, path: string): Promise<"file" | "directory" | "symlink"> {
+  const stats = await files.stat(path).catch((err: unknown) => {
+    throw fileError(nodeError(err, path, "lstat"));
   });
-  if (stats.isFile()) return "file";
-  if (stats.isDirectory()) return "directory";
-  if (stats.isSymbolicLink()) return "symlink";
+  if (stats.kind === "file") return "file";
+  if (await isLink(files, path, stats.realpath)) return "symlink";
+  if (stats.kind === "directory") return "directory";
   throw new FileError("invalid", "Unsupported file type");
 }
 
+/** True when the last name of `path` is a link: its real path is not its folder's real path and
+ * its name. */
+async function isLink(files: FileOps, path: string, real: string): Promise<boolean> {
+  const folder = await files.stat(dirname(path)).catch(() => undefined);
+  if (folder === undefined) return false;
+  return real !== join(folder.realpath, basename(path));
+}
+
 /** True when the path is there; false only when it is missing. Any other error throws. */
-async function exists(path: string): Promise<boolean> {
+async function exists(files: FileOps, path: string): Promise<boolean> {
   try {
-    await kindOf(path);
+    await kindOf(files, path);
     return true;
   } catch (err) {
     if (err instanceof FileError && err.code === "not_found") return false;
@@ -129,17 +163,27 @@ function aborted(signal: AbortSignal | undefined): FileError | undefined {
   return signal?.aborted ? new FileError("aborted", "aborted") : undefined;
 }
 
-async function writeContent(path: string, content: string, signal: AbortSignal | undefined): Promise<void> {
+/** The folders on the way, then the file: one op in the domain. */
+async function writeContent(
+  files: FileOps,
+  path: string,
+  content: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   const before = aborted(signal);
   if (before) throw before;
   try {
-    await mkdir(resolve(path, ".."), { recursive: true });
-    const afterMkdir = aborted(signal);
-    if (afterMkdir) throw afterMkdir;
-    await writeFile(path, content, { signal });
+    await files.write(path, content);
   } catch (err) {
-    throw fileError(err);
+    throw fileError(nodeError(err, path));
   }
+}
+
+/** The bytes of the file the path names. */
+async function readContent(files: FileOps, path: string): Promise<Buffer> {
+  return files.read(path).catch((err: unknown) => {
+    throw nodeError(err, path);
+  });
 }
 
 // ─── the file-mutation queue ─────────────────────────────────────────────────
@@ -148,18 +192,24 @@ async function writeContent(path: string, content: string, signal: AbortSignal |
  * (one tool set for each Submission), as pi keyed it by its environment. */
 type MutationQueue = { queues: Map<string, Promise<void>>; registration: Promise<void> };
 
-async function mutationKey(path: string): Promise<string> {
+/** The canonical path: two names of one file share a queue. A path that is not there is its own key. */
+async function mutationKey(files: FileOps, path: string): Promise<string> {
   try {
-    return await realpath(path);
+    return (await files.stat(path)).realpath;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return path;
-    throw fileError(err);
+    if (err instanceof FileOpError && err.code === "ENOENT") return path;
+    throw fileError(nodeError(err, path, "realpath"));
   }
 }
 
-async function withFileMutationQueue<T>(state: MutationQueue, path: string, fn: () => Promise<T>): Promise<T> {
+async function withFileMutationQueue<T>(
+  state: MutationQueue,
+  files: FileOps,
+  path: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   const registration = state.registration.then(async () => {
-    const key = await mutationKey(path);
+    const key = await mutationKey(files, path);
     const currentQueue = state.queues.get(key) ?? Promise.resolve();
     let releaseNext = () => {};
     const nextQueue = new Promise<void>((resolve) => {
@@ -191,16 +241,16 @@ const readSchema = Type.Object({
   limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
 });
 
-function readTool(cwd: string): EngineTool<typeof readSchema> {
+function readTool(at: At, files: FileOps): EngineTool<typeof readSchema> {
   return {
     name: "read",
     description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
     parameters: readSchema,
     async execute(_toolCallId, { path, offset, limit }, signal) {
-      const absolutePath = await resolveReadToolPath(cwd, path);
+      const absolutePath = await resolveReadToolPath(files, at, path);
       const before = aborted(signal);
       if (before) throw before;
-      const bytes = await readFile(absolutePath, { signal }).catch((err: unknown) => {
+      const bytes = await readContent(files, absolutePath).catch((err: unknown) => {
         throw fileError(err);
       });
       const mimeType = detectSupportedImageMimeType(bytes);
@@ -272,17 +322,17 @@ const writeSchema = Type.Object({
   content: Type.String({ description: "Content to write to the file" }),
 });
 
-function writeTool(cwd: string, queue: MutationQueue): EngineTool<typeof writeSchema> {
+function writeTool(at: At, files: FileOps, queue: MutationQueue): EngineTool<typeof writeSchema> {
   return {
     name: "write",
     description:
       "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
     parameters: writeSchema,
     async execute(_toolCallId, { path, content }, signal) {
-      const absolutePath = resolveToolPath(cwd, path);
-      return withFileMutationQueue(queue, absolutePath, async () => {
+      const absolutePath = resolveToolPath(at, path);
+      return withFileMutationQueue(queue, files, absolutePath, async () => {
         if (signal?.aborted) throw new Error("Operation aborted");
-        await writeContent(absolutePath, content, signal);
+        await writeContent(files, absolutePath, content, signal);
         if (signal?.aborted) throw new Error("Operation aborted");
         // UTF-8 bytes, as the text says. pi 0.82.1 counted UTF-16 units (`content.length`), which
         // is the same number for ASCII content only.
@@ -347,7 +397,7 @@ function editAccessError(path: string, error: unknown): Error {
   return new Error(`Could not edit file: ${path}. Error code: ${fileError(error).code}.`, { cause: error });
 }
 
-function editTool(cwd: string, queue: MutationQueue): EngineTool<typeof editSchema> {
+function editTool(at: At, files: FileOps, queue: MutationQueue): EngineTool<typeof editSchema> {
   return {
     name: "edit",
     description:
@@ -359,12 +409,12 @@ function editTool(cwd: string, queue: MutationQueue): EngineTool<typeof editSche
         throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
       }
       const { path, edits } = input;
-      const absolutePath = resolveToolPath(cwd, path);
-      return withFileMutationQueue(queue, absolutePath, async () => {
+      const absolutePath = resolveToolPath(at, path);
+      return withFileMutationQueue(queue, files, absolutePath, async () => {
         if (signal?.aborted) throw new Error("Operation aborted");
         let kind: string;
         try {
-          kind = await kindOf(absolutePath);
+          kind = await kindOf(files, absolutePath);
         } catch (err) {
           throw editAccessError(path, err);
         }
@@ -373,7 +423,7 @@ function editTool(cwd: string, queue: MutationQueue): EngineTool<typeof editSche
         try {
           const before = aborted(signal);
           if (before) throw before;
-          raw = await readFile(absolutePath, { encoding: "utf8", signal });
+          raw = (await readContent(files, absolutePath)).toString("utf8");
         } catch (err) {
           throw editAccessError(path, err);
         }
@@ -384,7 +434,7 @@ function editTool(cwd: string, queue: MutationQueue): EngineTool<typeof editSche
         const newContent = applyEditsToNormalizedContent(normalizedContent, edits, path);
         if (signal?.aborted) throw new Error("Operation aborted");
         try {
-          await writeContent(absolutePath, bom + restoreLineEndings(newContent, originalEnding), signal);
+          await writeContent(files, absolutePath, bom + restoreLineEndings(newContent, originalEnding), signal);
         } catch (err) {
           throw editAccessError(path, err);
         }
@@ -705,10 +755,18 @@ function startsWithAscii(buffer: Uint8Array, offset: number, text: string): bool
 
 // ─── the set ─────────────────────────────────────────────────────────────────
 
-/** The file tools rooted at `cwd`, in the order the model reads them. `write` and `edit` share
- * one mutation queue. `readOnly` gives `read` alone (ADR-0028). */
-export function fileTools(cwd: string, opts: { readOnly?: boolean } = {}): EngineTool[] {
+/** The file tools rooted at `cwd`, in the order the model reads them, each op done by `files` in
+ * the domain (ADR-0076). `~` is `home`, the domain's HOME: the Harness process has a HOME of its
+ * own, which no tool names. `write` and `edit` share one mutation queue. `readOnly` gives `read`
+ * alone (ADR-0028). */
+export function fileTools(cwd: string, opts: { files: FileOps; home: string; readOnly?: boolean }): EngineTool[] {
   const queue: MutationQueue = { queues: new Map(), registration: Promise.resolve() };
-  if (opts.readOnly) return [readTool(cwd) as EngineTool];
-  return [readTool(cwd) as EngineTool, writeTool(cwd, queue) as EngineTool, editTool(cwd, queue) as EngineTool];
+  const files = opts.files;
+  const at: At = { cwd, home: opts.home };
+  if (opts.readOnly) return [readTool(at, files) as EngineTool];
+  return [
+    readTool(at, files) as EngineTool,
+    writeTool(at, files, queue) as EngineTool,
+    editTool(at, files, queue) as EngineTool,
+  ];
 }

@@ -25,6 +25,7 @@ import {
   isOpenBody,
   lentIn,
   openBodyDeclarationOf,
+  repoSlotsAround,
   type LentParts,
   type OpenBodyDeclaration,
   type OpenBodyLogic,
@@ -305,6 +306,8 @@ export type ChartWrapper = {
   chartFields: string[];
   /** The door's other fields: the Chart's `input` keys the door can see (ADR-0070 rule 7). */
   inputKeys: string[];
+  /** The Repo Slots of the `workspace()` around the wrapper, where the door can read them. */
+  repoSlots?: readonly string[];
 };
 
 /**
@@ -333,7 +336,8 @@ export function chartWrapperOf(machine: AnyStateMachine): ChartWrapper | undefin
   const chartFields = Object.keys(shape).filter((k) => isChartSchema(shape[k]));
   // The door's other fields, less the body's placement: a Chart reads no url (open-body.ts).
   const inputKeys = Object.keys(chartInputOf(shape)).filter((k) => !chartFields.includes(k));
-  return { body: bodies[0]!.slot, bodies, chartFields, inputKeys };
+  const repoSlots = repoSlotsAround(machine);
+  return { body: bodies[0]!.slot, bodies, chartFields, inputKeys, ...(repoSlots ? { repoSlots } : {}) };
 }
 
 /**
@@ -347,7 +351,10 @@ export function admitUnder(wrapper: ChartWrapper, text: unknown): AdmittedChart 
   const report: string[] = [];
   for (const body of wrapper.bodies) {
     try {
-      return admitBodyChart(text, body.declaration, body.lent, { inputKeys: wrapper.inputKeys });
+      return admitBodyChart(text, body.declaration, body.lent, {
+        inputKeys: wrapper.inputKeys,
+        ...(wrapper.repoSlots ? { repoSlots: wrapper.repoSlots } : {}),
+      });
     } catch (err) {
       if (!(err instanceof ChartRefusal)) throw err;
       const prefix = wrapper.bodies.length > 1 ? `body "${body.slot}": ` : "";

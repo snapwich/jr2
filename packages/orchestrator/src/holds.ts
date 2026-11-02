@@ -38,6 +38,9 @@ export type Hold = {
   /** The Sandbox whose token may read the answer (ADR-0013) — the registration's, kept because the
    * answer outlives a registration that a route out of the Agent's state ends. */
   sandbox?: string;
+  /** The slot whose stated control requests may read the answer (ADR-0076) — the registration's,
+   * kept with `sandbox` for the same reason. */
+  slot?: string;
   /** The invoke id of the Agent's state when the pick was made: a re-registration of the same
    * address by another state is another Turn. */
   invokeId?: string;

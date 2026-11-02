@@ -115,8 +115,8 @@ It talks to the model, and it runs the tools of the Agent. The Agent can run eac
 Agent that needs only its Menu has no Sandbox. Its Turns run on the
 [Instance Harness](reference/glossary.md#instance-harness).
 
-The Harness container holds no credential, so a command that an Agent runs cannot read one. jr2 keeps each credential in
-one of the two containers beside it:
+The Harness runs each command of an Agent confined with Landlock, so the command cannot read a credential, and it cannot
+send a pick for a different Agent. jr2 keeps each credential in one of the two containers beside the Harness:
 
 - The [Custodian](reference/glossary.md#custodian) holds each [Held secret](reference/glossary.md#held-secret): a key
   that the Agents can use, but cannot read. The Harness holds only a [Stand-in](reference/glossary.md#stand-in) for it.
@@ -194,8 +194,9 @@ These steps follow one run of the example Machine in the diagram. You write a Ma
 1. **You start a run.** You run `jr2 run feature`, with the ticket as the input of the run. The Machine starts in its
    first state, `code`.
 2. **The coder works in a Sandbox.** The state `code` is in a Workspace, so jr2 makes a Sandbox for it. The Sandbox
-   holds a [Worktree](reference/glossary.md#worktree) of your Repo, on the branch of the run. The coder edits the files,
-   runs the tests and commits. Then it picks `finish`, and the Machine moves to `review`.
+   holds a clone of your Repo, and the Machine cuts a [Worktree](reference/glossary.md#worktree) on the branch of the
+   run. The coder edits the files, runs the tests and commits. Then it picks `finish`, and the Machine moves to
+   `review`.
 3. **The reviewer gets a Turn.** The state `review` gives the reviewer a prompt and its Menu: `approved` and `changes`.
    The reviewer reads the change in the same Sandbox.
 4. **The reviewer picks.** If it picks `approved`, the Machine moves to `approval`. If it picks `changes`, the Machine

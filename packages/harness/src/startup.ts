@@ -3,8 +3,9 @@
 // Since ADR-0037 the Harness is not baked into the image it runs in: the Sandbox Image is the
 // user's, byte-for-byte, and jr2's runtime arrives at pod time on the `/opt/jr2` volume with the
 // container's command overridden. So no `ENV` line in any Dockerfile can carry these — the only
-// place left that both placements share is the process itself, and a Working tool child inherits
-// what the process holds (`execFile(file, args, { cwd, signal })` passes no env, working-tools.ts).
+// place left that both placements share is the process itself. A process of the domain gets the
+// umask from the process, and PATH, HOME and git's default identity in the domain's env
+// (`children.ts`, ADR-0076), which takes them from the process's env as this module leaves it.
 // Four settings, each with a reason a comment must survive:
 //
 //   - `umask 002`, so even what the Agent writes OUTSIDE a repo tree lands group-writable for the
@@ -75,6 +76,28 @@ export function imageSystemGitConfig(env: NodeJS.ProcessEnv): string | undefined
   return undefined;
 }
 
+/** One run of the image's git: its exit code (null when it did not start or did not end), its stdout. */
+export type GitRun = (args: string[]) => Promise<{ code: number | null; stdout: string }>;
+
+/**
+ * `imageSystemGitConfig`, with git run by `git`. The Harness of a Sandbox runs it in the domain
+ * (ADR-0076): the `git` that PATH finds can be a program that Workspace code put in a folder that
+ * the uid writes (HOME, `/work`, an image folder), and such a folder outlives a restart of the
+ * container. So the Harness process never runs it. What the domain answers sets only the domain's
+ * own git identity.
+ */
+export async function imageSystemGitConfigBy(git: GitRun): Promise<string | undefined> {
+  const named = await git(["var", "GIT_CONFIG_SYSTEM"]);
+  if (named.code === null) return undefined;
+  if (named.code === 0) return named.stdout.trim() || undefined;
+  const exec = await git(["--exec-path"]);
+  if (exec.code === 0 && PREFIX_USR_EXEC_PATHS.includes(exec.stdout.trim())) return IMAGE_GITCONFIG;
+  return undefined;
+}
+
+/** A `systemFile` that runs nothing and answers "cannot be told": `defaultGitIdentity` then adds nothing. */
+export const NO_SYSTEM_FILE = (): undefined => undefined;
+
 /**
  * Point git's system level at jr2's default identity, unless that would hide a file the image's
  * git reads. jr2 adds nothing when:
@@ -119,7 +142,15 @@ export function prepareProcess(
   systemFile: (env: NodeJS.ProcessEnv) => string | undefined = imageSystemGitConfig,
 ): void {
   setUmask(WORK_UMASK);
+  conditionPathAndHome(env);
+  defaultGitIdentity(env, gitConfig, systemFile);
+}
 
+/**
+ * PATH and HOME as `prepareProcess` leaves them, on `env` alone: the Harness process's own env, and
+ * the domain's, which is made from the container's start env (`children.ts`, ADR-0076).
+ */
+export function conditionPathAndHome(env: Record<string, string | undefined>): void {
   // An EMPTY PATH entry means "the current directory" to every exec that walks PATH, and the
   // current directory here is agent-authored `/work` — so empties are dropped rather than carried.
   const entries = (env.PATH ?? "").split(":").filter((entry) => entry.length > 0);
@@ -128,6 +159,4 @@ export function prepareProcess(
   env.PATH = entries.join(":");
 
   if (!env.HOME) env.HOME = FALLBACK_HOME;
-
-  defaultGitIdentity(env, gitConfig, systemFile);
 }

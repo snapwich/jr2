@@ -45,7 +45,7 @@ const openSlotSrc =
   `import { setup } from ${XSTATE};\n` +
   `import { workspace, open } from ${INDEX};\n` +
   `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-  `export const machine = workspace(body, { repos: { app: open }, spec: () => ({ branch: "b" }) });\n`;
+  `export const machine = workspace(body, { repos: { app: open } });\n`;
 
 type Packed = { tar: Buffer; hash: string; dir: string };
 
@@ -779,7 +779,6 @@ test("a docker context a registered Machine names beside its module is not named
         `export const machine = workspace(body, {\n` +
         `  repos: { app: { url: "https://e.test/a.git" } },\n` +
         `  image: import.meta.resolve("./python"),\n` +
-        `  spec: () => ({ branch: "b" }),\n` +
         `});\n`,
       "workflows/python/Dockerfile": "FROM node:24-slim\n",
       "workflows/python/requirements.txt": "pytest\n",

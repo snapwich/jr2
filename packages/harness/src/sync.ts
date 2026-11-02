@@ -26,10 +26,16 @@
 // reference-transaction hook moved the branch back after a "synced"). The answer is a report, not a
 // fact: the Agent owns the repository and can move the branch at any time, so the next push trusts
 // none of it and derives everything again from the remote and the Agent's objects.
+//
+// The repository is the Agent's, so every git call also runs in the domain (`children.ts`,
+// ADR-0076): a filter or a textconv that the shared `.git/config` names runs in git's process, and
+// that process never reaches the control Stand-in. The bundle is written and removed, and the
+// repository's git dirs are listed and their state files read, by the spawner too, so the kernel
+// applies the domain's rules to each path. The Harness process touches no path of the Agent's.
 
-import { execFile } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { runIn, type ChildPolicy } from "./children.ts";
+import type { FileOps } from "./spawner.ts";
 import { isAbsolute, join, resolve } from "node:path";
 import type { SyncAnswer, SyncRequest } from "./wire.ts";
 
@@ -74,9 +80,9 @@ type SyncSeams = { env?: NodeJS.ProcessEnv; beforeMove?: () => Promise<void> };
 
 /**
  * The sync, bound to the work root. Calls are serialized: two syncs of one branch would race on
- * its ref.
+ * its ref. `children` is the domain, where its git runs (ADR-0076).
  */
-export function syncer(opts: SyncSeams = {}) {
+export function syncer(opts: SyncSeams & { children: ChildPolicy }) {
   let queue: Promise<unknown> = Promise.resolve();
   return (req: SyncRequest): Promise<SyncAnswer> => {
     const run = queue.then(() => sync(req, opts));
@@ -85,14 +91,17 @@ export function syncer(opts: SyncSeams = {}) {
   };
 }
 
-async function sync(req: SyncRequest, seams: SyncSeams): Promise<SyncAnswer> {
+async function sync(req: SyncRequest, seams: SyncSeams & { children: ChildPolicy }): Promise<SyncAnswer> {
   if (req.published === req.source)
     return { sync: "skipped", reason: "the push published your own commit: nothing to move" };
-  const home = await mkdtemp(join(tmpdir(), "jr2-sync-"));
+  // The bundle is in the domain's TMPDIR, written and at the end removed by the spawner, and its git
+  // reads it there (ADR-0076). Its git reads no global config (`GIT_CONFIG_GLOBAL`), so its HOME is
+  // the domain's own.
+  let bundle: string | undefined;
   try {
     const env: NodeJS.ProcessEnv = {
       PATH: "/usr/local/bin:/usr/bin:/bin",
-      HOME: home,
+      HOME: seams.children.env.HOME ?? "/nonexistent",
       LC_ALL: "C",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_GLOBAL: "/dev/null",
@@ -100,12 +109,17 @@ async function sync(req: SyncRequest, seams: SyncSeams): Promise<SyncAnswer> {
       GIT_TERMINAL_PROMPT: "0",
       ...seams.env,
     };
-    const git = (args: string[], input?: string) => run(req.worktree, env, [...CLEAN, ...args], input);
+    const git = (args: string[], input?: string) => run(seams.children, req.worktree, env, [...CLEAN, ...args], input);
     const ref = `refs/heads/${req.branch}`;
 
     if (req.bundle !== undefined) {
-      const file = join(home, "sync.bundle");
-      await writeFile(file, Buffer.from(req.bundle, "base64"));
+      const file = join(seams.children.env.TMPDIR ?? "/tmp", `jr2-sync-${randomUUID()}.bundle`);
+      bundle = file;
+      try {
+        await seams.children.spawner.write(file, Buffer.from(req.bundle, "base64"));
+      } catch {
+        return { sync: "not-synced", reason: "the published commits' bundle could not be written in your TMPDIR" };
+      }
       if ((await git(["bundle", "verify", "-q", file])).code !== 0) {
         return { sync: "not-synced", reason: "the published commits' bundle did not verify against your repository" };
       }
@@ -120,7 +134,7 @@ async function sync(req: SyncRequest, seams: SyncSeams): Promise<SyncAnswer> {
     if ((await tree(req.published)) !== (await tree(req.source))) {
       return { sync: "not-synced", reason: "the published commit's files are not your commit's" };
     }
-    const busy = await busyWith(req, git);
+    const busy = await busyWith(req, git, seams.children.spawner);
     if (busy) return { sync: "busy", reason: busy };
 
     for (let tries = 1; tries <= 3; tries++) {
@@ -155,7 +169,8 @@ async function sync(req: SyncRequest, seams: SyncSeams): Promise<SyncAnswer> {
     }
     return { sync: "not-synced", reason: "your branch kept moving while jr2 moved it" };
   } finally {
-    await rm(home, { recursive: true, force: true });
+    // An unlink removes the name, never what a link there names.
+    if (bundle !== undefined) await seams.children.spawner.unlink(bundle).catch(() => {});
   }
 }
 
@@ -184,22 +199,24 @@ function rewrite(raw: string, mapped: Map<string, string>): string {
 }
 
 /** Why the branch cannot move now, or undefined: a rebase of it, or an operation in progress in a
- * worktree whose HEAD is it. Read as files in the repository's git dirs. */
+ * worktree whose HEAD is it. Listed and read as files in the repository's git dirs, by the
+ * spawner: the Harness touches no path there itself. */
 async function busyWith(
   req: SyncRequest,
   git: (args: string[]) => Promise<{ code: number; out: string }>,
+  files: FileOps,
 ): Promise<string | undefined> {
   const common = resolve(req.worktree, (await git(["rev-parse", "--git-common-dir"])).out);
   const dirs = [common];
   try {
-    for (const name of await readdir(join(common, "worktrees"))) dirs.push(join(common, "worktrees", name));
+    for (const name of await files.readdir(join(common, "worktrees"))) dirs.push(join(common, "worktrees", name));
   } catch {
     // no linked worktree
   }
   const ref = `refs/heads/${req.branch}`;
-  const read = async (p: string) => (await readFile(p, "utf8").catch(() => "")).trim();
+  const read = async (p: string) => (await files.read(p).catch(() => Buffer.alloc(0))).toString("utf8").trim();
   const exists = (p: string) =>
-    stat(p).then(
+    files.stat(p).then(
       () => true,
       () => false,
     );
@@ -225,26 +242,21 @@ function opName(op: string): string {
         : "sequence";
 }
 
-function run(
+async function run(
+  children: ChildPolicy,
   cwd: string,
   env: NodeJS.ProcessEnv,
   args: string[],
   input?: string,
 ): Promise<{ code: number; out: string; raw: string }> {
-  return new Promise((done) => {
-    const child = execFile(
-      "git",
-      args,
-      { cwd, env, maxBuffer: 64 << 20, timeout: 120_000, encoding: "latin1" },
-      (err, stdout) => {
-        const code = err
-          ? typeof (err as { code?: unknown }).code === "number"
-            ? (err as { code: number }).code
-            : 1
-          : 0;
-        done({ code, out: stdout.trim(), raw: stdout });
-      },
-    );
-    if (input !== undefined) child.stdin?.end(Buffer.from(input, "latin1"));
+  const r = await runIn(children, ["git", ...args], {
+    cwd,
+    env,
+    maxBuffer: 64 << 20,
+    timeoutMs: 120_000,
+    encoding: "latin1",
+    ...(input !== undefined ? { input: Buffer.from(input, "latin1") } : {}),
   });
+  const code = r.error === undefined ? 0 : typeof r.code === "number" ? r.code : 1;
+  return { code, out: r.stdout.trim(), raw: r.stdout };
 }

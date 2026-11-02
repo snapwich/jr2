@@ -14,6 +14,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { z } from "zod";
+import type { LaterOutcome } from "./effect.ts";
 
 // --- The request (POST /effects/<id>) ------------------------------------------------------------
 //
@@ -104,10 +105,10 @@ export const PairShape = z.strictObject({
 });
 export type Pair = z.infer<typeof PairShape>;
 
-/** A `push` start: the Workspace's branch to the Repo Slot's Binding, with the push credential of
+/** A `push` start: a cut Worktree's branch to the Repo Slot's Binding, with the push credential of
  * the `git.credentials` entry the url falls under — the Effector's config holds the entries, and
  * matches the url as the fence does (`credential` names one by its `match` instead). `pin` is the
- * commit; absent, the Effector reads the Agent's branch tip and its answer carries it (`pinned`).
+ * commit; absent, the Effector reads the branch's tip and its answer carries it (`pinned`).
  */
 export const PushStartShape = z.strictObject({
   kind: z.literal("push"),
@@ -259,6 +260,8 @@ export const HttpOutputShape = z.union([
  * - `unknown`: the call can have gone out, but no answer came, or jr2 cannot tell after a restart.
  *   `reason` tells why. jr2 does not send it again unless it is marked `idempotent`.
  *
+ * The union is open (`LaterOutcome`): give the rest a last arm with no guard.
+ *
  * @example
  * ```ts
  * import { fail, http, jr2Setup, type HttpOutput } from "@jr2/orchestrator";
@@ -291,7 +294,7 @@ export const HttpOutputShape = z.union([
  * @see docs/guides/run-a-command-or-call-a-url.md
  * @see docs/reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md
  */
-export type HttpOutput = z.infer<typeof HttpOutputShape>;
+export type HttpOutput = z.infer<typeof HttpOutputShape> | LaterOutcome;
 
 /**
  * A `push` Effect's output (ADR-0067). `pushed`: the published commit, its source (the Agent's

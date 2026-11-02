@@ -46,8 +46,8 @@ function research(door?: z.ZodObject) {
     ...(door ? { input: door } : {}),
     initial: "coding",
     states: {
-      coding: { invoke: { src: "coder", input: { prompt: "go" } }, on: { done: "reviewing" } },
-      reviewing: { invoke: { src: "reviewer", input: { prompt: "look" } }, on: { done: "finished" } },
+      coding: { invoke: { src: "coder", input: { prompt: "go", cwd: "/work" } }, on: { done: "reviewing" } },
+      reviewing: { invoke: { src: "reviewer", input: { prompt: "look", cwd: "/work" } }, on: { done: "finished" } },
       finished: { type: "final" },
     },
   });
@@ -151,12 +151,11 @@ test("a slot that composes no Machine fails, naming the ones that do", () => {
 
 // --- The wrappers are transparent (ADR-0049) ---------------------------------------------------
 
-const spec = () => ({ branch: "feat-1" });
 const APP = "https://example.test/app.git";
 const repos = { app: APP };
 
 test("a workspace() is transparent to its body: the composer never writes `body`", () => {
-  const wrapped = workspace(research(), { repos, spec });
+  const wrapped = workspace(research(), { repos });
   const retuned = customize(wrapped, { agents: { coder: { model: opus } } });
 
   assert.equal(definitionAt(slotAt(retuned, "body"), "coder").model, opus);
@@ -167,7 +166,7 @@ test("a workspace() is transparent to its body: the composer never writes `body`
 
 test("a pool() is transparent to its worker, and a pool of Workspaces to what is inside both", () => {
   const wake = defineEvent({ name: "work_ready", input: z.object({}) });
-  const worker = workspace(research(), { repos, spec });
+  const worker = workspace(research(), { repos });
   const poolMachine = pool(worker, {
     source: source<{ id: string }>({
       next: fromPromise(async (): Promise<{ item: { id: string } | null; open: number }> => ({ item: null, open: 0 })),
@@ -209,7 +208,7 @@ test("a slot an AUTHOR spelled `body` is an ordinary child — transparency foll
 // --- The Sandbox seats: the one part `provide` cannot carry ------------------------------------
 
 test("image/user retune the workspace() the chain reaches, and the original keeps its own", () => {
-  const stock = workspace(research(), { repos, spec, image: "ghcr.io/acme/tools:1", user: "ghcr.io/acme/sshd:1" });
+  const stock = workspace(research(), { repos, image: "ghcr.io/acme/tools:1", user: "ghcr.io/acme/sshd:1" });
   const retuned = customize(stock, { image: "ghcr.io/acme/tools:2" });
 
   // Layered like a definition: naming `image` alone leaves the User Container seat — and the
@@ -224,7 +223,7 @@ test("image/user retune the workspace() the chain reaches, and the original keep
 });
 
 test("the door and the transparency survive the rebuild, and both parts can move at once", () => {
-  const stock = workspace(research(), { input: z.object({ topic: z.string() }), repos, spec });
+  const stock = workspace(research(), { input: z.object({ topic: z.string() }), repos });
   const retuned = customize(stock, { image: "ghcr.io/acme/tools:2", agents: { coder: { model: opus } } });
 
   assert.ok(inputSchemaOf(retuned), "the wrapper's door rides the rebuilt config");
@@ -239,7 +238,6 @@ test("the door and the transparency survive the rebuild, and both parts can move
 test("resources layer over the workspace()'s Size field by field; user replaces the seat whole (ADR-0060)", () => {
   const stock = workspace(research(), {
     repos,
-    spec,
     resources: { limits: { memory: "3Gi", cpu: "2" } },
     user: { image: "ghcr.io/acme/sshd:1", resources: { limits: { memory: "256Mi" } } },
   });
@@ -261,7 +259,7 @@ test("resources layer over the workspace()'s Size field by field; user replaces 
   assert.deepEqual(sandboxPartsOf(reseated).resources, { limits: { memory: "3Gi", cpu: "2" } });
 
   // A Workspace that stated no Size takes the composer's as its own.
-  const unsized = workspace(research(), { repos, spec });
+  const unsized = workspace(research(), { repos });
   assert.deepEqual(sandboxPartsOf(customize(unsized, { resources: { limits: { cpu: "4" } } })).resources, {
     limits: { cpu: "4" },
   });
@@ -311,7 +309,7 @@ function unbound() {
     id: "unbound",
     initial: "coding",
     states: {
-      coding: { invoke: { src: "coder", input: { prompt: "go" } }, on: { done: "finished" } },
+      coding: { invoke: { src: "coder", input: { prompt: "go", cwd: "/work" } }, on: { done: "finished" } },
       finished: { type: "final" },
     },
   });
@@ -359,7 +357,6 @@ test("repos bind the workspace() the chain reaches — an open slot, through a p
   // `worker`. The original is untouched, so the package's own object still reads as open.
   const packaged = workspace(research(), {
     repos: { target: open, docs: { url: "https://example.test/handbook.git", ref: "v3" } },
-    spec,
   });
   const wake = defineEvent({ name: "work_ready", input: z.object({}) });
   const pooled = pool(packaged, {
@@ -402,7 +399,6 @@ test("a per-run slot may be rebound statically — it becomes bound; and a bound
   const perRun = workspace(research(), {
     input: z.object({ repo: z.string() }),
     repos: { target: ({ input }) => input.repo },
-    spec,
   });
   const fixed = customize(perRun, { repos: { target: APP } });
   assert.deepEqual(sandboxPartsOf(fixed).repos, { target: APP });
@@ -411,7 +407,7 @@ test("a per-run slot may be rebound statically — it becomes bound; and a bound
     [APP],
   );
 
-  const dynamic = customize(workspace(research(), { repos, spec }), {
+  const dynamic = customize(workspace(research(), { repos }), {
     repos: { app: ({ input }) => (input as { repo: string }).repo },
   });
   assert.equal(typeof (sandboxPartsOf(dynamic).repos as Record<string, unknown>).app, "function");
@@ -422,7 +418,7 @@ test("an Open slot MAP takes the composer's whole map — any keys, in the compo
   // The Machine said `repos: open` (ADR-0051): it names no slot, so the map the composer writes IS
   // the declaration. Nothing to check a key against, and nothing to add to — the composer's words
   // are the slots, in the order they wrote them.
-  const stock = workspace(research(), { repos: open, spec });
+  const stock = workspace(research(), { repos: open });
   assert.equal(sandboxPartsOf(stock).repos, open);
   assert.deepEqual(partsOf([stock]).openSlots, [{ slot: undefined, path: [] }], "reported once, with no slot to name");
 
@@ -451,7 +447,7 @@ test("an Open slot MAP takes the composer's whole map — any keys, in the compo
 });
 
 test("only DECLARED slots can be bound: an undeclared key fails, naming the Machine's own", () => {
-  const stock = workspace(research(), { repos: { target: open, docs: APP }, spec });
+  const stock = workspace(research(), { repos: { target: open, docs: APP } });
   assert.throws(
     () => customize(stock, { repos: { taregt: APP } } as never),
     /machine "workspace" declares no Repo Slot "taregt" — its slots are: target, docs \(ADR-0051\)/,

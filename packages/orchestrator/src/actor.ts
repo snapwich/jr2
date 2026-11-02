@@ -50,11 +50,12 @@ import {
   type ThinkingLevel,
   type WorkspaceAccess,
 } from "./agent.ts";
+import type { AnyFramePath } from "./worktree.ts";
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import type { HarnessRestarts, MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { SENDER_KEY } from "@jr2/agent-protocol";
-import { agentAddress, continuedIid, allowedPicks, resolveAccepts, runBindingOf } from "./registration.ts";
+import { agentAddress, agentSlot, continuedIid, allowedPicks, resolveAccepts, runBindingOf } from "./registration.ts";
 import type { NoticeScope } from "./notices.ts";
 import { restOf } from "./rest.ts";
 import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice, type PodMemoryKill } from "./wire.ts";
@@ -143,15 +144,15 @@ export type AgentTurnInput = {
   /**
    * The other half of the FRAME (ADR-0057) — WHERE this Turn works: the absolute directory the
    * Harness roots the Working tools at. Per Turn by nature, which is why no definition names one:
-   * a Worktree path (`/work/<slot>/<branch>`) exists only once a run has a branch.
+   * a Worktree path (`/work/<slot>/<name>`) exists only once a Machine has cut it (ADR-0075).
    *
-   * Absent, the actor resolves it before admission: a `workspace: "none"` Agent frames no
-   * directory (it has no Working tools to root — ADR-0028), a Workspace with ONE Repo Slot frames
-   * that slot's Worktree, a Workspace with more REFUSES the Turn (the kit gives no slot a meaning
-   * — ADR-0051 — so the state must say which), and a run with no Workspace at all frames nothing
-   * and the Harness keeps `/work`. A relative path is refused at admission, by the Harness.
+   * Required under Repo Slots: a Turn with no `cwd` there is REFUSED before admission, and a Turn
+   * that wants `/work` states it. A `workspace: "none"` Agent frames no directory (it has no Working
+   * tools to root — ADR-0028), and a Workspace with no Repo Slot, or a run with no Workspace at all,
+   * frames nothing and the Harness keeps `/work`. A relative path is refused at admission, by the
+   * Harness.
    */
-  cwd?: string;
+  cwd?: AnyFramePath;
   /**
    * This turn's DIALS (ADR-0018) — how hard to run, layered over the definition's own
    * values. One definition value may be carried by several Machines, so the same persona
@@ -358,6 +359,10 @@ export interface AgentRunPort {
  * Machine edit that changed it. */
 export type AgentAdmitOptions = {
   definition: AgentDefinition;
+  /** This Agent's slot (ADR-0076): the actor path of its Machine and its agent name — the
+   * registration's. The Harness keeps it with the conversation and states it on each control
+   * request; it never derives it from an Instance ID, whose actor ids may hold a `/`. */
+  slot: string;
   signal?: AbortSignal;
   /** The pending notices in this admission's scope (ADR-0062), for the Briefing's Turn part. Not
    * on the persisted input either: they are the Orchestrator's, and delivered once. */
@@ -555,20 +560,15 @@ const READMIT_PROMPT =
  * an ABSENT one, and a directory a state named is never second-guessed — a Menu-only Agent handed
  * one simply has no Working tools to root there (ADR-0028/0031).
  *
- * Absent, a Menu-only Agent frames no directory; a Workspace with ONE Repo Slot frames that
- * slot's Worktree, which privileges nothing because there is nothing to choose between (ADR-0051);
- * a Workspace with more REFUSES the Turn, naming the slots in declaration order and the line that
- * ends it, because the kit gives no slot a meaning and a wrong guess is the silent failure
- * ADR-0057 was written for; and a Workspace with no Repo Slot, or a run outside any Workspace,
- * frames nothing, so the Harness keeps `/work`, the folder a slotless Workspace's steps share.
+ * Absent, a Menu-only Agent frames no directory, and a Workspace with no Repo Slot, or a run outside
+ * any Workspace, frames nothing, so the Harness keeps `/work`, the folder a slotless Workspace's
+ * steps share. Under Repo Slots the Workspace only clones, so no Worktree exists for a default to
+ * name, and the kit gives no slot a meaning: an absent `cwd` is REFUSED, because a wrong guess is
+ * the silent failure ADR-0057 was written for (ADR-0075).
  *
- * Resolution counts SLOTS, and a slot's Worktree is the writable branch checkout. The detached
- * review Worktree (`AmbientHandles.review`, ADR-0028's reviewer seat) is never resolved to: it is
- * per review round, so only the reviewing state knows which one, and it frames it (ADR-0028 hands
- * the reviewer its path as "cwd and prompt"). A `workspace: "read"` Agent that frames nothing
- * under a one-slot Workspace therefore works in the branch checkout with `write`/`edit` withheld
- * and `bash` kept — the tool layer's hint, not containment (ADR-0028): containment is the
- * detached review Worktree, and only a reviewing state that requested one can frame it.
+ * `workspace: "read"` withholds `write`/`edit` and keeps `bash`: the tool layer's hint, not
+ * containment (ADR-0028). The containment is a detached Worktree that the state cuts and names as
+ * its `cwd`.
  *
  * The refusal throws at invoke, like the Open-model fence: loudly, at the first Turn, before a
  * surface is registered or a pod is spent.
@@ -583,12 +583,11 @@ function frameCwd(
   if (workspace === "none") return undefined;
   const slots = Object.keys(ambient?.repos ?? {});
   if (slots.length === 0) return undefined;
-  if (slots.length === 1) return ambient!.repos[slots[0]!];
+  // A default here is ADR-0057's incident: an Agent's search hits `default/`, and a relative write
+  // lands outside each Worktree. An author who wants `/work` states it.
   throw new Error(
-    `turn ${instanceId}: agent "${input.agentName}" works under a Workspace carrying more than one ` +
-      `Repo Slot (${slots.join(", ")}) and its Turn framed no \`cwd\` — say which Worktree it works ` +
-      `in (\`cwd: context.workspace.repos.<slot>\`, one of those), because the kit gives no slot a ` +
-      `meaning (ADR-0051) and a Turn's Frame is where it works (ADR-0057)`,
+    `turn ${instanceId}: agent "${input.agentName}" works under a Workspace with Repo Slots (${slots.join(", ")}) ` +
+      'and its Turn framed no `cwd`: say where it works, a Worktree, or `cwd: "/work"` above them (ADR-0057)',
   );
 }
 
@@ -701,7 +700,7 @@ export function agentActorWith(
 
     // The Frame's other half (ADR-0057): WHERE this Turn works. Resolved HERE, before any surface
     // is registered and before a pod is spent, because the answer is a fact about the run — a
-    // Worktree path exists only once a run has a branch, so no definition could have named it.
+    // Worktree exists only once a run has cut it, so no definition could have named it.
     const cwd = frameCwd(instanceId, input, workspace, ambient);
     const framed: AgentRunInput = cwd === undefined ? input : { ...input, cwd };
 
@@ -732,8 +731,15 @@ export function agentActorWith(
     // This Agent's continued conversation in this Machine (ADR-0057) — the base id the epoch ledger
     // burns. This Turn is PART of it only when it continues it: a fresh Turn is new by definition.
     const conversation = continuedIid(self._parent, binding.runId, input.agentName);
+    // This Agent's slot (ADR-0076): the same identity without the run id. The Harness states it on
+    // every control request, and the Orchestrator speaks here only for it.
+    const slot = agentSlot(self._parent, input.agentName);
     // The iids whose surface the Harness has read (see `carried` below).
     const served = new Set<string>();
+    // Per iid, the notices a step boundary's surface read reserved and the Harness has not yet
+    // acknowledged (ADR-0062): by the id the read named, every id it stands for — equal notices
+    // are said once — and what each was raised as, for `reraiseUnheard`.
+    const boundary = new Map<string, Map<string, Array<{ id: string; raised: { notice: Notice; source?: string } }>>>();
     const registerSurface = (iid: string) =>
       disposers.push(
         binding.table.register({
@@ -744,6 +750,9 @@ export function agentActorWith(
           defs,
           menu,
           sandbox,
+          slot,
+          boundaryNotices: () => readBoundary(iid),
+          noticesHeard: (ids) => boundaryHeard(iid, ids),
           deliver: (event) => {
             signaled = true;
             // The settlement-pick marker (ADR-0023), BEFORE the delivery moves the Machine: the pick
@@ -824,7 +833,8 @@ export function agentActorWith(
     // LIVE conversation stamped on the record, so a restore settle-follows the live submission
     // AND re-addresses it (see `currentIid` above). The notices the admission carried are
     // delivered by this same write (ADR-0062).
-    const ledger = (admission: AgentAdmission, delivered: readonly string[]) =>
+    // The conversation is a member of its Workspace's audiences from this save on (ADR-0062).
+    const ledger = (admission: AgentAdmission, delivered: readonly string[], taker: string) =>
       binding.recordAdmission?.(
         instanceId,
         {
@@ -835,6 +845,10 @@ export function agentActorWith(
           ...(input.turnId === undefined ? {} : { turnId: input.turnId }),
         },
         delivered,
+        taker,
+        noticeWorkspace === undefined
+          ? undefined
+          : { workspace: noticeWorkspace, slot, continued: Boolean(input.continuation) && taker === conversationIid() },
       );
 
     // Where this Turn hears notices (ADR-0062). Its continued conversation's — the base id the
@@ -845,7 +859,11 @@ export function agentActorWith(
     const noticeScope: NoticeScope = {
       ...(input.continuation ? { conversation } : {}),
       ...(noticeWorkspace !== undefined ? { workspace: noticeWorkspace } : {}),
+      slot,
     };
+    // The Instance ID of the continued conversation this Turn rides — its epoch's spelling, which
+    // the minted `instanceId` is. A fresh Turn has none.
+    const conversationIid = (): string | undefined => (input.continuation ? instanceId : undefined);
     // No `agent`: the notice names no Turn — what the pod's list says (below).
     // No `limit`: the sizes read were not sizes, and the notice says none.
     const memoryLimit = ({ limit, peak, agent }: { limit?: string; peak?: string; agent?: string }): Notice => ({
@@ -859,12 +877,15 @@ export function agentActorWith(
     // Turn's Agent. A stopped actor's last poll names nothing: the state that asked for the Turn has
     // exited, and the pod's list carries the kill. Keyed by the kill's id, so a second running
     // conversation's stream, or the pod's list, adds nothing.
+    // The kill cut this Turn (D4 rule 2): its Agent's next Turn retries the broken work, and hears it.
     const onMemoryLimit = (kill: StreamedKill): void => {
       if (stopped || noticeWorkspace === undefined) return;
       binding.raiseNotice?.(
         memoryLimit({ limit: kill.limit, peak: kill.peak, agent: input.agentName }),
         noticeWorkspace,
         kill.legacy ? kill.id : guardSource(noticeWorkspace, kill.id),
+        [],
+        { retry: { slot, cut: currentIid }, at: new Date().toISOString() },
       );
     };
     // …but a stream is not every kill's path. A kill while no Submission ran — a process an earlier
@@ -906,6 +927,8 @@ export function agentActorWith(
         memoryLimit({ limit: kill.limit }),
         noticeWorkspace,
         kernelSource(noticeWorkspace, kill.at),
+        [],
+        { at: kill.at },
       );
     };
     let killMark = input.attach?.killMark;
@@ -937,7 +960,9 @@ export function agentActorWith(
         noticeWorkspace,
         guardSource(noticeWorkspace, newest.id),
         kills.slice(0, -1).map((kill) => guardSource(noticeWorkspace, kill.id)),
+        { at: newest.at, told: newest.told.map((t) => t.instanceId) },
       );
+      applyTold(kills);
       const toldHere = (kill: ListedKill): boolean =>
         kill.told.some((t) => t.agent === input.agentName && t.instanceId === currentIid);
       // The first kill after the Turn's mark. A mark no longer in the bounded list is older than
@@ -954,6 +979,86 @@ export function agentActorWith(
         unsaid: unsaid.map((kill) => guardSource(noticeWorkspace, kill.id)),
         said: kills.filter((kill) => !unsaid.includes(kill)).map((kill) => guardSource(noticeWorkspace, kill.id)),
       };
+    };
+
+    // The conversations each listed kill's `bash` answer told leave its audience (D4 rule 3) — a
+    // kill raised off a stream before its answer returned is found here too.
+    const applyTold = (kills: readonly ListedKill[]): void => {
+      if (noticeWorkspace === undefined) return;
+      const told = kills
+        .filter((kill) => kill.told.length > 0)
+        .map((kill) => ({ source: guardSource(noticeWorkspace, kill.id), takers: kill.told.map((t) => t.instanceId) }));
+      if (told.length > 0) binding.noticesTold?.(told);
+    };
+    // The step boundary's read (ADR-0062): this conversation's pending notices in their audience,
+    // reserved for this Turn until the Harness acknowledges the append. A guard kill's audience
+    // leaves out the conversations its `bash` answer told, which only the pod's list says — so when
+    // one is among them, the list is read first, and a read that could not tell takes no guard kill.
+    const readBoundary = async (iid: string): Promise<Array<{ id: string; notice: Notice }>> => {
+      if (stopped || iid !== currentIid || binding.takeNotices === undefined) return [];
+      const scope: NoticeScope = { ...noticeScope, taker: iid };
+      if (noticeWorkspace !== undefined) {
+        const guard = guardSource(noticeWorkspace, "");
+        if ((binding.peekNotices?.(scope) ?? []).some((p) => p.source?.startsWith(guard))) {
+          let kills: ListedKill[] | undefined;
+          try {
+            kills = await client.memoryKills({
+              signal: AbortSignal.any([controller.signal, AbortSignal.timeout(memoryKillsReadMs)]),
+            });
+          } catch {
+            kills = undefined;
+          }
+          if (kills === undefined) scope.exceptPrefix = guard;
+          else applyTold(kills);
+        }
+      }
+      if (stopped || iid !== currentIid) return [];
+      const taken = binding.takeNotices(scope);
+      const held = boundary.get(iid) ?? new Map();
+      const said = new Map<string, string>();
+      const out: Array<{ id: string; notice: Notice }> = [];
+      taken.ids.forEach((id, i) => {
+        const raised = taken.raised?.[i] ?? { notice: taken.notices[i]! };
+        const key = JSON.stringify(raised.notice);
+        const first = said.get(key);
+        if (first === undefined) {
+          said.set(key, id);
+          held.set(id, [{ id, raised }]);
+          out.push({ id, notice: raised.notice });
+        } else held.get(first)!.push({ id, raised });
+      });
+      if (held.size > 0) boundary.set(iid, held);
+      return out;
+    };
+    // A step boundary whose notices the Harness did not append — a stopped model with no Allowed
+    // picks, or a Turn ending as it read (`between-steps.ts`) — holds them until the next admission
+    // of the conversation, which takes them again: a wake or a nudge carries them (ADR-0062).
+    const releaseBoundary = (iid: string): void => {
+      const held = boundary.get(iid);
+      if (held === undefined) return;
+      boundary.delete(iid);
+      binding.releaseNotices?.(
+        [...held.values()].flatMap((hs) => hs.map((h) => h.id)),
+        iid,
+      );
+    };
+    // The Harness appended them: heard in this conversation, in one save. An id this read did not
+    // name changes nothing.
+    const boundaryHeard = (iid: string, ids: readonly string[]): number => {
+      const held = boundary.get(iid);
+      if (held === undefined) return 0;
+      const heard = ids.flatMap((id) => held.get(id) ?? []);
+      for (const id of ids) held.delete(id);
+      if (held.size === 0) boundary.delete(iid);
+      if (heard.length === 0) return 0;
+      binding.acknowledgeNotices?.(
+        heard.map((h) => h.id),
+        iid,
+      );
+      const bucket = carriedBy.get(iid) ?? { heard: [], unheard: [], task: false, fresh: [] };
+      bucket.heard.push(...heard.map((h) => h.raised));
+      carriedBy.set(iid, bucket);
+      return ids.filter((id) => heard.some((h) => h.id === id)).length;
     };
 
     // The Turn's admission and a reroll's carry the pending notices in scope — a reroll's
@@ -996,26 +1101,34 @@ export function agentActorWith(
     ) => {
       await hearKernelKill();
       const { known, unsaid, said } = await hearPodKills();
+      releaseBoundary(turn.instanceId);
+      // The conversation that takes a Workspace notice (ADR-0062): the one this admission rides, its
+      // Instance ID. A continued Turn's is the continued conversation's; a fresh Turn's, a reroll's
+      // and a burned conversation's successor's are each a new conversation, which has heard none.
+      // A Workspace notice is delivered once in each, so every conversation in the Workspace hears
+      // it — each child of a Pool has its own — and no conversation hears it twice.
+      const taker = turn.instanceId;
       // A read that could not tell leaves the same Turn no way to know which kills its own `bash`
       // reported: it takes none, as a nudge takes none then, and they stay for the next Turn.
       const sameTurn: NoticeScope = known
-        ? { ...noticeScope, except: said }
+        ? { ...noticeScope, taker, except: said }
         : {
             ...noticeScope,
+            taker,
             ...(noticeWorkspace === undefined ? {} : { exceptPrefix: guardSource(noticeWorkspace, "") }),
           };
       const scope: NoticeScope | undefined =
         opts.notices === "turn"
-          ? noticeScope
+          ? { ...noticeScope, taker, turn: true }
           : opts.notices === "same-turn"
             ? sameTurn
             : unsaid.length > 0
-              ? { workspace: noticeWorkspace, only: unsaid }
+              ? { workspace: noticeWorkspace, taker, only: unsaid }
               : undefined;
       const none = { ids: [] as string[], notices: [] as Notice[], raised: [] as Raised[] };
       const restored =
         opts.include && opts.include.length > 0
-          ? (binding.takeNotices?.({ ...noticeScope, only: opts.include }) ?? none)
+          ? (binding.takeNotices?.({ ...noticeScope, taker, only: opts.include }) ?? none)
           : none;
       const main = (scope ? binding.takeNotices?.(scope) : undefined) ?? none;
       const taken = {
@@ -1045,12 +1158,13 @@ export function agentActorWith(
       try {
         admission = await client.admit(turn, {
           definition,
+          slot,
           signal: controller.signal,
           ...(notices.length ? { notices } : {}),
           ...(opts.kept ? { kept: true } : {}),
         });
       } catch (err) {
-        binding.releaseNotices?.(taken.ids);
+        binding.releaseNotices?.(taken.ids, taker);
         if (heard) served.add(turn.instanceId);
         throw err;
       }
@@ -1071,7 +1185,7 @@ export function agentActorWith(
           ...(killMark === undefined ? {} : { killMark }),
         };
       }
-      ledger(admission, taken.ids);
+      ledger(admission, taken.ids, taker);
       const bucket = carriedBy.get(turn.instanceId) ?? { heard: [], unheard: [], task: false, fresh: [] };
       if (heard) {
         bucket.heard.push(...bucket.unheard);
@@ -1101,7 +1215,9 @@ export function agentActorWith(
         for (const { notice, source } of again) {
           const to = notice.scope === "conversation" ? conversation : noticeWorkspace;
           if (to === undefined) continue;
-          if (binding.restoreNotice) binding.restoreNotice(notice, to, source);
+          // A Workspace notice is pending again for the conversation that carried it, which did not
+          // hear it; the others it reached keep theirs.
+          if (binding.restoreNotice) binding.restoreNotice(notice, to, source, iid);
           else binding.raiseNotice?.(notice, to);
           if (source !== undefined) restored.push(source);
         }
@@ -1122,7 +1238,14 @@ export function agentActorWith(
       // Pool cancelling a child. The one exception is the host stopping the run for its own
       // reasons, which ADR-0007's restore re-attaches to.
       if (binding.hostStopping) return;
+      // A step boundary's notices the Harness never acknowledged are pending again (ADR-0062).
+      for (const iid of [...boundary.keys()]) releaseBoundary(iid);
       reraiseUnheard();
+      // The Turn ended: a fresh conversation leaves every audience in its Workspace, a continued one
+      // waits for its next Turn (ADR-0062).
+      if (noticeWorkspace !== undefined) {
+        binding.noticeTurnEnded?.(noticeWorkspace, [...new Set([...carriedBy.keys(), currentIid])]);
+      }
       // Fire-and-forget, and unreportable BY CONSTRUCTION: this actor is stopped, so there is no
       // `agent.fault` left to raise. An orphan that survives a failed abort 404s on every tool
       // call and settles on its own.
@@ -1548,10 +1671,13 @@ export function agentActorWith(
         const kill = lostHarness && sandbox !== undefined ? await memoryFault(sandbox) : undefined;
         if (stopped) return;
         if (kill !== undefined && noticeWorkspace !== undefined) {
+          // The kill cut this Turn (D4 rule 2): its Agent's next Turn retries the work, and hears it.
           binding.raiseNotice?.(
             memoryLimit({ limit: kill.limit, agent: input.agentName }),
             noticeWorkspace,
             kill.at === undefined ? undefined : kernelSource(noticeWorkspace, kill.at),
+            [],
+            { retry: { slot, cut: currentIid }, ...(kill.at === undefined ? {} : { at: kill.at }) },
           );
         }
         // A restart the Harness came back from keeps the conversation (ADR-0031); a 404 does not.

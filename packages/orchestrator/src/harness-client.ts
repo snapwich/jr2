@@ -107,6 +107,9 @@ export type HarnessClient = {
        * `/work` — the stub-Harness run with no Workspace. */
       cwd?: string;
       definition: AgentDefinition;
+      /** The Agent's slot (ADR-0076), which the Harness states on each control request for this
+       * conversation. Omitted only by a caller that drives no Machine (a test of the wire). */
+      slot?: string;
       model?: string;
       thinkingLevel?: ThinkingLevel;
       /** The pending notices in this admission's scope (ADR-0062). Omitted when there are none. */
@@ -382,6 +385,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             // `machine-doc.ts` and the surface read it — and the Harness neither validates nor
             // uses it, so it has no business on the Turn's wire.
             definition: admittedDefinition(sendOptions.definition),
+            // Who the conversation is (ADR-0076): the Harness states it on each control request.
+            ...(sendOptions.slot === undefined ? {} : { slot: sendOptions.slot }),
             // Omitted when unset, so an admission with no dials is byte-identical to before.
             ...(sendOptions.model ? { model: sendOptions.model } : {}),
             ...(sendOptions.thinkingLevel ? { thinkingLevel: sendOptions.thinkingLevel } : {}),
@@ -629,6 +634,7 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
         // to the Harness's refusal if it is not a path.
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         definition: opts.definition,
+        slot: opts.slot,
         model: input.model,
         thinkingLevel: input.thinkingLevel,
         ...(opts.notices?.length ? { notices: opts.notices } : {}),
@@ -751,8 +757,9 @@ export function createLiveSetPush(options: {
  * `invoke: { src: "coder", input: { prompt } }`. The key is the Agent's name.
  *
  * The invoke's `input` is the Turn: `prompt` (required), `cwd`, `model`, `thinkingLevel` and
- * `continue`. `cwd` is the absolute directory where the Working tools work. Absent, it is the
- * Worktree of the Workspace's one Repo Slot. `continue: true` continues the Agent's conversation
+ * `continue`. `cwd` is the absolute directory where the Working tools work. Under Repo Slots it
+ * is required: a Worktree that a cut made, `<slot>/default` to read, or `/work`. An Agent with
+ * `workspace: "none"`, and a Workspace with no Repo Slot, need no `cwd`. `continue: true` continues the Agent's conversation
  * in this Machine. Absent, each Turn starts a new conversation. `continue` is the literal `true`,
  * not a `boolean`. A Turn can join only a conversation that an earlier Turn started with
  * `continue: true`. Thus in a retry loop, put `continue: true` on each Turn, also on the first, so
@@ -778,10 +785,9 @@ export function createLiveSetPush(options: {
  * - a key in `input` that a Turn does not have: ``agent "<slot>": the Turn's input carries
  *   `<key>`, which a Turn has no use for — its input is its Frame (`prompt`, `cwd`), its Dials
  *   (`model`, `thinkingLevel`), and `continue` (ADR-0057)``
- * - no `cwd` under a Workspace with more than one Repo Slot: ``turn <id>: agent "<slot>" works
- *   under a Workspace carrying more than one Repo Slot (<slots>) and its Turn framed no `cwd` —
- *   say which Worktree it works in (`cwd: context.workspace.repos.<slot>`, one of those), because
- *   the kit gives no slot a meaning (ADR-0051) and a Turn's Frame is where it works (ADR-0057)``
+ * - no `cwd` under Repo Slots: ``turn <id>: agent "<slot>" works under a Workspace with Repo Slots
+ *   (<slots>) and its Turn framed no `cwd`: say where it works, a Worktree, or `cwd: "/work"` above
+ *   them (ADR-0057)``
  * - a `cwd` that is not an absolute path: ``agent "<slot>": the Turn's Frame carries a `cwd` that
  *   is not an absolute path — the Frame says WHERE this Turn works (ADR-0057), and a Turn rooted
  *   anywhere else would work in the wrong directory silently``. The Harness makes this refusal
@@ -801,7 +807,16 @@ export function createLiveSetPush(options: {
  * @example
  * ```ts
  * import { z } from "zod";
- * import { agent, defineEvent, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import {
+ *   agent,
+ *   defineEvent,
+ *   fail,
+ *   isReady,
+ *   jr2Setup,
+ *   workspace,
+ *   worktree,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
  *
  * const finish = defineEvent({
  *   name: "finish",
@@ -811,6 +826,8 @@ export function createLiveSetPush(options: {
  * const runInput = z.object({ branch: z.string() });
  * type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
  *
+ * const fixTree = (context: BodyInput) => `${context.workspace.repos.app}/fix` as const;
+ *
  * const body = jr2Setup({
  *   types: {} as { input: BodyInput; context: BodyInput },
  *   events: [finish],
@@ -819,26 +836,35 @@ export function createLiveSetPush(options: {
  *       model: "anthropic/claude-haiku-5-5",
  *       instructions: "You fix failing tests. You change no test.",
  *     }),
+ *     cut: worktree(),
  *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "fix",
  *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost", "agent.fault": ".failed" },
- *   initial: "coding",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: fixTree(context), branch: context.branch }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "coding" }, { target: "notCut" }],
+ *       },
+ *     },
  *     coding: {
  *       invoke: {
  *         src: "coder",
  *         input: ({ context }) => ({
  *           prompt: "Make `node --test` pass, then commit.",
- *           cwd: context.workspace.repos.app,
+ *           cwd: fixTree(context),
  *           thinkingLevel: "high",
  *         }),
  *       },
  *       on: { finish: "done" },
  *     },
  *     done: { type: "final" },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     failed: { invoke: { src: "fail", input: { reason: "the Agent's Turn could not go on" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
@@ -847,7 +873,6 @@ export function createLiveSetPush(options: {
  * export const machine = workspace(body, {
  *   input: runInput,
  *   repos: { app: "https://github.com/you/app.git" },
- *   spec: ({ input }) => ({ branch: input.branch }),
  * });
  * ```
  *
@@ -856,6 +881,9 @@ export function createLiveSetPush(options: {
  * @see docs/reference/decisions/0049-a-machine-carries-its-parts-and-composes-by-invoke.md
  * @see docs/reference/decisions/0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md
  */
+export function agent<const D extends AgentDeclaration>(
+  declaration: D,
+): AgentLogic & (D extends { workspace: "none" } ? { readonly definition: { readonly workspace: "none" } } : unknown);
 export function agent(declaration: AgentDeclaration): AgentLogic {
   // THE authoring surface for an Agent (ADR-0049): one definition in, one actor slot out. The
   // slot key is the Agent's name (the Harness route, the minted iid, the markers), so a name the
@@ -956,8 +984,8 @@ export function createExecPort(options: {
  *
  * Where it runs:
  * - With no Effect secret in `env`, in the Harness container of the enclosing Workspace's Sandbox.
- *   It runs in the Worktree of a Repo Slot, or in `/work` in a Workspace with no Repo Slot. The
- *   Agent's Working tools also run in this container.
+ *   It runs in the Worktree that `worktree` of the invoke's input names, or in `/work` in a
+ *   Workspace with no Repo Slot. The Agent's Working tools also run in this container.
  * - With an Effect secret in `env`, in the Sandbox Effector, against a commit of the branch. This
  *   is the branch tip when it starts, or with `pin: true` the commit that the invoke's `input.sha`
  *   names. The output then says `dirty: true` when the Worktree held edits that the command did
@@ -994,11 +1022,9 @@ export function createExecPort(options: {
  * And when it starts, with no Effect secret in `env`:
  * - outside a `workspace()`: `command "<slot>" runs in the Harness container of a Workspace, and
  *   its state is not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`
- * - no `slot` under a Workspace with more than one Repo Slot: `command "<slot>" runs under a
- *   Workspace carrying more than one Repo Slot (<slots>) and names none — say which Worktree it
- *   runs in: command(argv, { slot: "<slot>" }) (ADR-0051)`
- * - a `slot` that the Workspace does not have: `command "<slot>" names Repo Slot "<name>", which
- *   its Workspace does not carry (<slots>)`
+ * - no `worktree` under Repo Slots: `` command "<slot>" runs under a Workspace with Repo Slots
+ *   (<slots>) and its input names no `worktree`: say which, a Worktree that a cut gave or
+ *   `<slot>/default` ``
  * - an `arg()` with no string in `input`: `command "<slot>": argv slot <<name>> has no string
  *   value in its input (got <type>) — map it in the invoke's input`. The angle brackets around the
  *   arg's name are in the text: `argv slot <file>`. `<type>` is `nothing` when `input` has no such
@@ -1007,15 +1033,13 @@ export function createExecPort(options: {
  * And when it starts, with an Effect secret in `env`:
  * - outside a `workspace()`: `command "<slot>" runs in the Sandbox Effector of a Workspace, and its
  *   state is not inside a workspace() — invoke it from a Workspace's body (ADR-0067)`
- * - no `slot` under a Workspace with more than one Repo Slot: `command "<slot>" runs under a
- *   Workspace carrying more than one Repo Slot (<slots>) — say which: { slot: "<slot>" }
- *   (ADR-0051)`
  * - a Workspace with no Repo Slot: `command "<slot>" runs under a Workspace with no Repo Slot: a
  *   command with an Effect secret runs against one commit of a Repo Slot's branch, and there is
  *   none — declare a Repo Slot, or name no secret in its env, and it runs in /work beside the Agent
  *   (ADR-0051)`. `jr2 up` refuses it first, with the same reason
- * - a `slot` that the Workspace does not have: `command "<slot>" names Repo Slot "<name>", which
- *   its Workspace does not carry (<slots>)`
+ * - a `worktree` that no cut made in this Sandbox: the output is `exited` 127, with `no cut made
+ *   <path> in this Sandbox: cut it with worktree()` in its tail. A detached Worktree gets the same
+ *   form
  * - `pin: true` and an `input.sha` that is not a full commit id: `command "<slot>" (pin): its
  *   input's sha is not a full commit id`
  * - an `arg()` with no string in `input`: the same text as above.
@@ -1023,8 +1047,7 @@ export function createExecPort(options: {
  * @param argv - The program and its arguments: strings and `arg("name")` entries. Or `open`, in a
  *   Machine that you publish as a package, for the Instance that registers it to bind with
  *   `customize()`.
- * @param options - Optional. `slot`: the Repo Slot whose Worktree the command runs in; needed only
- *   where the Workspace has more than one. `timeout`: `"90s"`, `"10m"` or `"1h"`, default
+ * @param options - Optional. `timeout`: `"90s"`, `"10m"` or `"1h"`, default
  *   `"10m"`; when it expires, the output is `timeout`. `tail`: how many characters of the end of
  *   the output stream to keep, default 4096. `env`: environment variables. Each value is
  *   `secret("name")` for the value of an Effect secret, or `secret("name").path` for the path of a
@@ -1035,26 +1058,46 @@ export function createExecPort(options: {
  * @example
  * ```ts
  * import { z } from "zod";
- * import { arg, command, fail, jr2Setup, workspace, type Workspaced } from "@jr2/orchestrator";
+ * import {
+ *   arg,
+ *   command,
+ *   fail,
+ *   isReady,
+ *   jr2Setup,
+ *   workspace,
+ *   worktree,
+ *   type Workspaced,
+ * } from "@jr2/orchestrator";
  *
  * const runInput = z.object({ branch: z.string() });
  * type BodyInput = Workspaced<z.infer<typeof runInput>, "app">;
  *
+ * const testTree = (context: BodyInput) => `${context.workspace.repos.app}/test` as const;
+ *
  * const body = jr2Setup({
- *   types: {} as { input: BodyInput },
+ *   types: {} as { input: BodyInput; context: BodyInput },
  *   actors: {
+ *     cut: worktree(),
  *     tests: command(["node", "--test", arg("file")], { timeout: "5m" }),
  *     fail: fail(),
  *   },
  * }).createMachine({
  *   id: "check",
+ *   context: ({ input }) => input,
  *   on: { "workspace.lost": ".lost" },
- *   initial: "testing",
+ *   initial: "cutting",
  *   states: {
+ *     cutting: {
+ *       invoke: {
+ *         src: "cut",
+ *         input: ({ context }) => ({ path: testTree(context), branch: context.branch }),
+ *         onDone: [{ guard: ({ event }) => isReady(event.output), target: "testing" }, { target: "notCut" }],
+ *       },
+ *     },
  *     testing: {
  *       invoke: {
  *         src: "tests",
- *         input: { file: "test/greet.test.js" },
+ *         input: ({ context }) => ({ file: "test/greet.test.js", worktree: testTree(context) }),
  *         onDone: [
  *           {
  *             guard: ({ event }) => event.output.outcome === "exited" && event.output.code === 0,
@@ -1067,6 +1110,7 @@ export function createExecPort(options: {
  *     passed: { type: "final" },
  *     // Not final states: each one fails the run, and the run ends `failed`.
  *     failed: { invoke: { src: "fail", input: { reason: "the test did not pass" } } },
+ *     notCut: { invoke: { src: "fail", input: { reason: "the Worktree was not cut" } } },
  *     lost: { invoke: { src: "fail", input: { reason: "the Sandbox is gone" } } },
  *   },
  * });
@@ -1074,7 +1118,6 @@ export function createExecPort(options: {
  * export const machine = workspace(body, {
  *   input: runInput,
  *   repos: { app: "https://github.com/you/app.git" },
- *   spec: ({ input }) => ({ branch: input.branch }),
  * });
  * ```
  *
@@ -1086,7 +1129,7 @@ export function createExecPort(options: {
 export function command<const A extends readonly (string | Arg)[], const Opt extends CommandOptions = CommandOptions>(
   argv: A,
   options?: Opt,
-): EffectLogic<CommandInput<A, Opt["pin"]>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
+): EffectLogic<CommandInput<A, Opt["pin"], Opt>, CommandOutput> & OpenOf<EnvOpenParts<Opt>>;
 /**
  * Make a `command` Effect whose argv is Open: `command(open, options)`, in a Machine that you
  * publish as a package. The Instance that registers the Machine binds the argv one time:
@@ -1103,7 +1146,7 @@ export function command<const A extends readonly (string | Arg)[], const Opt ext
 export function command<const Opt extends CommandOptions = CommandOptions>(
   argv: typeof open,
   options?: Opt,
-): EffectLogic<OpenCommandInput<Opt["pin"]>, CommandOutput> & OpenEffect<"argv" | EnvOpenParts<Opt>>;
+): EffectLogic<OpenCommandInput<Opt["pin"], Opt>, CommandOutput> & OpenEffect<"argv" | EnvOpenParts<Opt>>;
 export function command(
   argv: readonly (string | Arg)[] | typeof open,
   options: CommandOptions = {},

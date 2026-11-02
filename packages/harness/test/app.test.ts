@@ -312,6 +312,32 @@ test("the Frame's cwd rides the admit body to the turn (ADR-0057)", async () => 
   assert.deepEqual(runs[0]!.submission, { definition: CODER, message: "go", cwd: "/work/target/feature" });
 });
 
+test("a Frame cwd that does not exist is a 400 that names it, and no Turn starts", async () => {
+  const { app, runs } = scripted({ frameExists: (path) => path !== "/work/app/nope" });
+  const res = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", cwd: "/work/app/nope", definition: CODER }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as { error: string }).error, /\/work\/app\/nope does not exist/);
+  assert.equal(runs.length, 0);
+});
+
+test('a Frame cwd that does not exist is no fault for a `workspace: "none"` Agent: only Working tools use it', async () => {
+  const { app, runs } = scripted({ menuOnly: true, frameExists: () => false });
+  const definition: AgentDefinition = { model: "faux/model", instructions: "pick", workspace: "none" };
+  const res = await app.request("/agents/own/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", cwd: "/work/app/", definition }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 200);
+  await flush();
+  assert.equal(runs.length, 1, "the Turn starts");
+  assert.equal(runs[0]!.submission.cwd, "/work/app/");
+});
+
 test("a Frame cwd that is not an absolute path is a 400 — never a silent /work (ADR-0057)", async () => {
   const { app, runs } = scripted();
   const res = await app.request("/agents/coder/i1", {
@@ -627,18 +653,18 @@ const attachInit = (body: unknown): RequestInit => ({
 test("attach hands a valid body to the attach and answers its paths", async () => {
   const seen: unknown[] = [];
   const { app } = scripted({
-    attach: async (req) => (seen.push(req), { repos: { app: "/work/app/b" } }),
+    attach: async (req) => (seen.push(req), { repos: { app: "/work/app" }, bases: { app: "main" } }),
   });
-  const res = await app.request("/attach", attachInit({ branch: "b", slots: [SLOT] }));
+  const res = await app.request("/attach", attachInit({ slots: [SLOT] }));
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { repos: { app: "/work/app/b" } });
-  assert.deepEqual(seen, [{ branch: "b", slots: [SLOT] }]);
+  assert.deepEqual(await res.json(), { repos: { app: "/work/app" }, bases: { app: "main" } });
+  assert.deepEqual(seen, [{ slots: [SLOT] }]);
 });
 
 test("attach refuses a malformed body with 400, naming what is wrong, and runs nothing", async () => {
   let runs = 0;
-  const { app } = scripted({ attach: async () => (runs++, { repos: {} }) });
-  const res = await app.request("/attach", attachInit({ branch: "b", slots: [] }));
+  const { app } = scripted({ attach: async () => (runs++, { repos: {}, bases: {} }) });
+  const res = await app.request("/attach", attachInit({ slots: [] }));
   assert.equal(res.status, 400);
   assert.match(((await res.json()) as { error: string }).error, /names no Repo Slot/);
   assert.equal(runs, 0);
@@ -651,7 +677,7 @@ test("a failed attach is 500 with the slot and git's own words", async () => {
       throw new AttachFault('the attach of slot "app" failed at git clone --shared: fatal: no such repo', "app");
     },
   });
-  const res = await app.request("/attach", attachInit({ branch: "b", slots: [SLOT] }));
+  const res = await app.request("/attach", attachInit({ slots: [SLOT] }));
   assert.equal(res.status, 500);
   assert.deepEqual(await res.json(), {
     error: 'the attach of slot "app" failed at git clone --shared: fatal: no such repo',
@@ -685,8 +711,8 @@ test("the sync hands a valid body to the syncer and answers its report; a malfor
 
 test("the Instance Harness refuses the attach: it has no /work (ADR-0031)", async () => {
   let runs = 0;
-  const { app } = scripted({ menuOnly: true, attach: async () => (runs++, { repos: {} }) });
-  const res = await app.request("/attach", attachInit({ branch: "b", slots: [SLOT] }));
+  const { app } = scripted({ menuOnly: true, attach: async () => (runs++, { repos: {}, bases: {} }) });
+  const res = await app.request("/attach", attachInit({ slots: [SLOT] }));
   assert.equal(res.status, 403);
   assert.equal(runs, 0);
 });

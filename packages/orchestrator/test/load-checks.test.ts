@@ -685,6 +685,96 @@ test("an Agent's state that is itself parallel is refused: its regions are below
   );
 });
 
+test("one Agent slot invoked by two states that can be active together is refused at build, naming both states and the fix (ADR-0015)", () => {
+  const turn = (target: string) => ({
+    invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+    on: { finish: target },
+  });
+  const build = (config: object, actors: Record<string, unknown> = { coder: slot() }) =>
+    jr2Setup({ events: [ev("finish")], actors: actors as never }).createMachine({
+      id: "m",
+      on: { "agent.fault": {} },
+      ...config,
+    } as never);
+  const fix = /use two slots \(one definition can fill both\), a child Machine in each region, or a Pool \(ADR-0075\)/;
+  // Two parallel regions: one sender, so `sentBy` cannot tell them apart; one conversation.
+  assert.throws(
+    () =>
+      build({
+        type: "parallel",
+        states: {
+          a: { initial: "t", states: { t: turn("d"), d: { type: "final" } } },
+          b: { initial: "t", states: { t: turn("d"), d: { type: "final" } } },
+        },
+      }),
+    (err: Error) => {
+      assert.match(err.message, /machine "m": Agent "coder" would run two Turns at once/);
+      assert.match(err.message, /"m\.a\.t" and "m\.b\.t" invoke it and can be active together \(parallel regions\)/);
+      assert.match(err.message, fix);
+      return true;
+    },
+  );
+  // One inside the other.
+  assert.throws(
+    () =>
+      build({
+        initial: "t",
+        states: { t: { ...turn("d"), initial: "i", states: { i: turn("#m.d") } }, d: { type: "final" } },
+      }),
+    /"m\.t" and "m\.t\.i" invoke it and can be active together \(one inside the other\)/,
+  );
+  // Twice by one state.
+  assert.throws(
+    () =>
+      build({
+        initial: "t",
+        states: {
+          t: {
+            invoke: [
+              { src: "coder", input: { prompt: "p", endpoint: EP } },
+              { src: "coder", input: { prompt: "q", endpoint: EP } },
+            ],
+            on: { finish: "d" },
+          },
+          d: { type: "final" },
+        },
+      }),
+    /state "m\.t" invokes it twice/,
+  );
+  // Legal: one slot in two states one after the other (`continue` is for this), and two slots in
+  // two regions.
+  build({ initial: "t", states: { t: turn("u"), u: turn("d"), d: { type: "final" } } });
+  build(
+    {
+      type: "parallel",
+      states: {
+        a: { initial: "t", states: { t: turn("d"), d: { type: "final" } } },
+        b: {
+          initial: "t",
+          states: {
+            t: { invoke: { src: "reviewer", input: { prompt: "p", endpoint: EP } }, on: { finish: "d" } },
+            d: { type: "final" },
+          },
+        },
+      },
+    },
+    { coder: slot(), reviewer: slot() },
+  );
+});
+
+test("a Machine built with xstate's own setup meets the same refusal in the load walk", () => {
+  const turn = { invoke: { src: "coder", input: { prompt: "p", endpoint: EP } }, on: { "agent.fault": {} } };
+  const raw = createMachine(
+    {
+      id: "raw",
+      type: "parallel",
+      states: { a: { initial: "t", states: { t: turn } }, b: { initial: "t", states: { t: turn } } },
+    },
+    { actors: { coder: slot() } as never },
+  );
+  assert.throws(() => partsOf([raw]), /machine "raw": Agent "coder" would run two Turns at once/);
+});
+
 test("a parallel state above an Agent's state is legal: background work goes there", () => {
   const m = jr2Setup({ events: [ev("finish")], actors: { coder: slot() } }).createMachine({
     on: { "agent.fault": {} },

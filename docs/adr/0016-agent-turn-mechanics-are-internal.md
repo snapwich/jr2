@@ -21,7 +21,7 @@ restore re-attaches to a Submission whose model is already fixed server-side and
 `agentRun` walks `self._parent` to the nearest registered ancestor. Invoked-actor registration (not an entry action) is
 what makes this restore-safe: invoked actors restart on snapshot restore, entry actions do not. Not under a workspace →
 fail loudly, unless input carries an explicit `endpoint` (the dev-stub, workspace-less path). Body-facing workspace
-handles are `{ repos, branch }` ([ADR-0012](0012-workspace-wrapper-machine.md)).
+handles are `{ repos }`: each is a Repo Slot's folder ([ADR-0012](0012-workspace-wrapper-machine.md)).
 
 **[ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)'s token scoping survives and
 strengthens**: the registration records the Sandbox resolved from the enclosing wrapper — the same deterministic
@@ -108,12 +108,14 @@ modes — `continue` governs only what a _new invocation_ means. The author name
 conversation's identity is already on the page. (This corrects the jr-parity exercise's "same iid = jr's resume
 machinery, free" — an inversion of jr's actual semantics.)
 
-Two live invocations of one continued iid — parallel states — are refused at the registration table: one live surface
-per address. A Submission that arrives behind a live one on the Harness queues: prompts for one instance enter one
-per-instance queue in admission order, and a Submission is promoted only when it is the first unsettled one for its
-conversation (ADR-0027 states this as jr2's own semantics). A queued prompt waits behind work that may never finish,
-which is why [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md) both ends the turn and orders the
-abort ahead of the next `send`.
+Two live invocations of one continued iid are refused: one live surface per address. The load walk refuses the shape
+that makes them, one Agent slot in two states that can be active together
+([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)), and the registration table refuses a second registration
+of one address as a second guard. A Submission that arrives behind a live one on the Harness queues: prompts for one
+instance enter one per-instance queue in admission order, and a Submission is promoted only when it is the first
+unsettled one for its conversation (ADR-0027 states this as jr2's own semantics). A queued prompt waits behind work that
+may never finish, which is why [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md) both ends the
+turn and orders the abort ahead of the next `send`.
 
 The minting doctrine — addresses are computed by jr2, never by the workflow — covers gate ids too: a gate with no
 authored id derives one from its actor path below the run root, through the same walk `mintIid` uses (`actorPath` in

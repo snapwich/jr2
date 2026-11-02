@@ -101,6 +101,22 @@ const DONE = { done: { input: { type: "object", properties: {} } } };
 
 // --- A Chart that admits -------------------------------------------------------------------------
 
+test("the door refuses a lent Effect's onDone with no unguarded last arm, and admits one with it", () => {
+  const chart = (onDone: unknown) => ({
+    initial: "testing",
+    states: {
+      testing: { invoke: { src: "tests", input: { filter: "unit" }, onDone } },
+      passed: { type: "final" },
+      red: { type: "final" },
+    },
+  });
+  refusedOnce(
+    chart([{ guard: "underLimit", target: "passed" }]),
+    /^\(chart\): state "[^"]*\.testing" \(Effect "tests"\) has an onDone with no unguarded last arm — .*\(ADR-0075\)$/,
+  );
+  admits(chart([{ guard: "underLimit", target: "passed" }, { target: "red" }]));
+});
+
 test("the review-loop fixture admits, with its events, its minted Agent, hash and size", () => {
   const admitted = admitChart(fixture, decl, lent, { inputKeys: ["task", "endpoint"] });
   assert.deepEqual(
@@ -259,7 +275,7 @@ test("3. a lent name the Chart wrapper no longer has is refused", () => {
 test("3. a guard that is not lent is refused", () => {
   refusedOnce(
     { initial: "a", states: { a: { always: { target: "b", guard: "isReady" } }, b: { type: "final" } } },
-    /^states\.a\.always\.guard: "isReady" is not a lent guard; lent guards: underLimit/,
+    /^states\.a\.always\.guard: "isReady" is not a lent guard; lent guards: underLimit \(and jr2\.sentBy with params \{ id \}, jr2\.failure and jr2\.ready\)$/,
   );
 });
 
@@ -590,6 +606,45 @@ test("6. a parallel state at or below an Agent's state is refused, with its path
     },
     /^states\.a\.states\.p: a parallel state at or below Agent "coder"'s state \(states\.a\) is refused/,
   );
+});
+
+test("6. one Agent invoked by two states that can be active together is refused, with both paths (ADR-0015)", () => {
+  const turn = (target: string) => ({ invoke: { src: "coder", input: { prompt: "go" } }, on: { done: target } });
+  // Two parallel regions.
+  refusedOnce(
+    {
+      events: DONE,
+      id: "c",
+      initial: "p",
+      states: {
+        p: {
+          type: "parallel",
+          states: {
+            l: { initial: "t", states: { t: turn("#c.p.l.d"), d: { type: "final" } } },
+            r: { initial: "t", states: { t: turn("#c.p.r.d"), d: { type: "final" } } },
+          },
+        },
+      },
+    },
+    /^states\.p\.states\.l\.states\.t, states\.p\.states\.r\.states\.t: Agent "coder" would run two Turns at once: these states invoke it and can be active together .*: invoke another Agent in one of them$/,
+  );
+  // One inside the other.
+  refusedOnce(
+    {
+      events: DONE,
+      id: "c",
+      initial: "a",
+      states: { a: { ...turn("#c.b"), initial: "i", states: { i: turn("#c.b") } }, b: { type: "final" } },
+    },
+    /^states\.a, states\.a\.states\.i: Agent "coder" would run two Turns at once/,
+  );
+  // One after the other is one Agent's two Turns.
+  admits({
+    events: DONE,
+    id: "c",
+    initial: "a",
+    states: { a: turn("#c.b"), b: { ...turn("#c.d") }, d: { type: "final" } },
+  });
 });
 
 test("6. jr2Setup's load warnings are refusals for a Chart: an unentered mode", () => {
@@ -930,11 +985,11 @@ test("8. a lent Effect takes exactly its input keys", () => {
   admits(invoking("tests", { filter: "chart" }));
   refusedOnce(
     invoking("tests", {}),
-    /^states\.a\.invoke\.input: the lent Effect "tests" takes exactly filter; missing: filter$/,
+    /^states\.a\.invoke\.input: the lent Effect "tests" takes filter, and optionally worktree; missing: filter$/,
   );
   refusedOnce(
     invoking("tests", { filter: "x", argv: "rm" }),
-    /^states\.a\.invoke\.input: the lent Effect "tests" takes exactly filter; not its input: argv$/,
+    /^states\.a\.invoke\.input: the lent Effect "tests" takes filter, and optionally worktree; not its input: argv$/,
   );
   refusedOnce(
     invoking("tests", { filter: { nested: true } }),
@@ -961,7 +1016,7 @@ test("8. a lent dispatch with no input schema takes any object, the run's body; 
     lines(invoking("go", { ticket: { nested: true } })).join("\n"),
     /states\.a\.invoke\.input\.ticket: an Effect's input slot takes a string or a reference/,
   );
-  assert.match(lines(invoking("typed", {})).join("\n"), /takes exactly ticket; missing: ticket/);
+  assert.match(lines(invoking("typed", {})).join("\n"), /takes ticket; missing: ticket/);
 });
 
 test("8. an Agent takes a prompt and its Dials, nothing else", () => {

@@ -33,6 +33,22 @@ below explains one field. Set only the fields that your cluster needs.
   API server and in the kubelets.
 - A container runtime that mounts image volumes, such as containerd 2.1 or later, or CRI-O 1.31 or later. `jr2 up` does
   not check the runtime. With an older runtime, the first Sandbox fails, and its pod events give the cause.
+- Landlock ABI 3 or later in the kernel of each [Sandbox node](../reference/glossary.md#sandbox-node): Linux 6.2 or
+  later, with `landlock` in its list of security modules. A distribution kernel can have it at an older version: the
+  check, not the version, decides. The Harness confines each program of an Agent with it. The Repo cache agent on each
+  Sandbox node checks it, and `jr2 up` refuses to converge while a Sandbox node has no Landlock. It names each such
+  node. To keep a node out, use `sandbox.nodeSelector` or a taint (see
+  [Choose the Sandbox nodes](#choose-the-sandbox-nodes)). A node that joins later and has no Landlock gets no working
+  Sandbox: its Harness does not start.
+- A CNI that enforces NetworkPolicy, and no node credential that a pod can get. `jr2 up` applies a NetworkPolicy that
+  stops each Harness pod at the cloud metadata addresses: `169.254.169.254`, `fd00:ec2::254`, `169.254.170.2`,
+  `169.254.170.23` and `100.100.100.200`. There, the metadata service of a node can give the node's cloud credential to
+  a pod. `jr2 up` does not check these. Do these checks:
+  - Find the metadata address of your cloud provider. If it is not in the list, block it with a NetworkPolicy of your
+    own.
+  - Make sure that the CNI enforces NetworkPolicy. Without it, the policy stops nothing.
+  - Give pods no node credential. On GKE, use Workload Identity. On AWS, use IMDSv2 with a hop limit of 1. Then a pod
+    gets no node credential from the metadata service, also where the policy does not apply.
 - Your kubectl user can apply objects outside the namespace of the Instance. `jr2 up` applies the operator in the
   `jr2-system` namespace, with its CustomResourceDefinitions, ClusterRoles and ClusterRoleBindings. It also applies two
   PriorityClasses, unless you name your own.
