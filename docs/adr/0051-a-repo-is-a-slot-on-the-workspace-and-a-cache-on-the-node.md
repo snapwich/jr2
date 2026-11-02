@@ -131,10 +131,13 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   whose clone Secret `git-clone.json` does not list gets none, and the clone is anonymous; the cache agent reads only
   that Secret, and the operator matches nothing. The Orchestrator writes and reads no git credential (ADR-0068). The
   Secret uses Flux's key names (`username`/`password`; `identity`, `identity.pub`, `known_hosts`), so a Flux or Argo
-  user reuses the Secret they have. **The list is also the fence.** A per-run url — a run input, a ticket field — is
-  otherwise a way to spend the cluster's credential against any host: one that matches no entry is refused at attach,
-  naming the list. A static binding is code the Instance typechecked and deployed, so it is admitted without a match and
-  cloned anonymously; a private one then fails at the cache with git's error. `jr2 init` scaffolds one wildcard entry —
+  user reuses the Secret they have. With a token, the cache agent's helper answers for the Repo's own origin alone
+  (scheme, host and port), and its clone, probe and fetch follow no redirect, so the token never reaches an origin
+  outside the entry. A repository that moved, and that its old url redirects to, is cloned by its new url. **The list is
+  also the fence.** A per-run url — a run input, a ticket field — is otherwise a way to spend the cluster's credential
+  against any host: one that matches no entry is refused at attach, naming the list. A static binding is code the
+  Instance typechecked and deployed, so it is admitted without a match and cloned anonymously; a private one then fails
+  at the cache with git's error. `jr2 init` scaffolds one wildcard entry —
   `{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }`, today's two implicit defaults made visible, with a
   comment saying to narrow it before anything untrusted can start a run, and that it also pushes: a `push()` whose Repo
   Slot url it matches, a per-run url included, spends the same token or key — so the open fence is in the user's file
