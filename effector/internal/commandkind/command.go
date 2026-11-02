@@ -71,17 +71,11 @@ type Runner struct {
 	// Deny is what the child may not reach, beside what no rule names: the Effector's key and
 	// config, its secrets and push credentials, the Worktree, the node caches, its whole scratch.
 	Deny []string
-	// Unconfinable, when set, is why this node cannot confine a child (the Landlock probe's
-	// answer): a credentialed command is then refused before it runs.
-	Unconfinable string
 }
 
-// Missing names a secret the command names that the Effector does not hold, or why no child can
-// run here, or "".
+// Missing names a secret the command names that the Effector does not hold, or "". A node that
+// cannot confine a child has no Runner: the Sandbox Effector refuses to start there (ADR-0077).
 func (r *Runner) Missing(req *wire.StartRequest) string {
-	if r.Unconfinable != "" {
-		return "a credentialed command, whose child this node cannot confine: " + r.Unconfinable
-	}
 	for _, name := range req.Secrets() {
 		if _, ok := r.Secrets[name]; !ok {
 			return name
@@ -168,7 +162,10 @@ func (r *Runner) run(ctx context.Context, spec *wire.CommandSpec, timeout time.D
 	for _, name := range slices.Sorted(maps.Keys(spec.Env)) {
 		ref := spec.Env[name]
 		file := filepath.Join(r.SecretsDir, ref.Secret)
-		named = append(named, file)
+		// The rule names the file's real path: a Secret volume's file is a link through `..data`,
+		// and the confiner refuses a rule through a link (ADR-0076). The child reads `file`, and the
+		// kernel checks the path it resolves to.
+		named = append(named, realPath(file))
 		if ref.Path {
 			env = append(env, name+"="+file)
 		} else {

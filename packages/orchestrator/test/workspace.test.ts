@@ -139,12 +139,9 @@ class FakeSandbox implements SandboxPort {
       });
     });
   }
-  /** Per-slot Harness endpoints the provision reports (ADR-0076) — set by a multi-slot test; a
-   * single-slot pod leaves it unset and every Turn resolves the one `endpoint`. */
-  slotEndpoints?: Record<string, string>;
-  async provision(name: string): Promise<{ endpoint: string; endpoints?: Record<string, string> }> {
+  async provision(name: string): Promise<{ endpoint: string }> {
     this.calls.push(`provision:${name}`);
-    return { endpoint: "http://sandbox.test", ...(this.slotEndpoints ? { endpoints: this.slotEndpoints } : {}) };
+    return { endpoint: "http://sandbox.test" };
   }
   async attach(req: {
     name: string;
@@ -854,56 +851,6 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
   const crName = [...sandbox.provisioned.keys()][0]!;
   assert.equal(surface?.sandbox, crName, "the registration records the ENCLOSING wrapper's Sandbox (ADR-0013)");
   assert.ok(host.status(runId), "run parked on the mock agent, alive");
-});
-
-test("per-slot resolution (ADR-0076): each Agent's Turn finds its OWN slot's Harness endpoint", async () => {
-  // Two workspace-ful slots in one pod: the provision reports one Harness endpoint per slot, and
-  // each Agent's Turn must resolve its OWN slot's — the per-container identity this ADR rests on,
-  // so a slot can neither read nor reach a co-resident sibling's container.
-  const seen: Record<string, string> = {};
-  const client = new MockFlueClient();
-  const factoryFor = (slot: string) => (endpoint: string) => {
-    seen[slot] = endpoint;
-    return client;
-  };
-  const twoSlotBody = jr2Setup({
-    types: {} as { context: Record<string, never>; input: Workspaced<{}, "app"> },
-    events: [approveDef],
-    actors: {
-      coder: agentActorWith(factoryFor("coder"), { model: "test/model", instructions: "i" }),
-      reviewer: agentActorWith(factoryFor("reviewer"), { model: "test/model", instructions: "i" }),
-    },
-  }).createMachine({
-    on: { "workspace.lost": {}, "agent.fault": {} },
-    id: "two-slot",
-    context: {},
-    initial: "working",
-    // Both slots' Turns run at once, so each resolves its endpoint off the one set of handles.
-    states: {
-      working: {
-        invoke: [
-          { src: "coder", input: { prompt: "go", cwd: "/work" } },
-          { src: "reviewer", input: { prompt: "go", cwd: "/work" } },
-        ],
-        on: { approve: "done" },
-      },
-      done: { type: "final" },
-    },
-  });
-  const wrapped = workspace(twoSlotBody, { repos: { app: APP } });
-
-  const sandbox = new FakeSandbox();
-  sandbox.slotEndpoints = { coder: "http://coder.slot:8090", reviewer: "http://reviewer.slot:8091" };
-  const host = new RunHost({ store: await mkStore(), sandbox });
-  host.register({ name: "two", machine: wrapped, provide: () => ({}) });
-  await host.start("two");
-
-  await waitFor(() => seen.coder !== undefined && seen.reviewer !== undefined);
-  assert.deepEqual(
-    seen,
-    { coder: "http://coder.slot:8090", reviewer: "http://reviewer.slot:8091" },
-    "each slot resolved its own container's endpoint, not the pod's canonical one",
-  );
 });
 
 // --- Repo Slots (ADR-0051) ----------------------------------------------------------------------

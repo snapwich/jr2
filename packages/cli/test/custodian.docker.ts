@@ -9,13 +9,17 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { connect, type Socket } from "node:net";
-import { writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { leafStem, standIn, type HeldManifest } from "@jr2/orchestrator/internal";
 import {
   connectThrough,
   controlRequest,
+  loopbackRequest,
+  CONTROL_STANDIN,
+  CONTROL_TOKEN,
+  heldStandInOf,
   lanAddress,
   requestThrough,
   SANDBOX_TOKEN,
@@ -100,7 +104,7 @@ const via = (
 
 describe("toward a bound host", () => {
   test("1. the Stand-in is swapped: x-api-key alone, Bearer, and two secrets in one request", async () => {
-    let r = await via(a, { headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") } });
+    let r = await via(a, { headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") } });
     assert.equal(r.status, 200, r.body);
     assert.equal(a.seen.at(-1)?.headers["x-api-key"], VALUES.ANTHROPIC_API_KEY, "the value, its trailing newline gone");
     // Nothing added either way (§5.4): no server, no x-envoy-*, no x-forwarded-*, no x-request-id.
@@ -112,12 +116,15 @@ describe("toward a bound host", () => {
       `the upstream got only the client's headers: ${Object.keys(up).join(", ")}`,
     );
 
-    r = await via(a, { headers: { authorization: `Bearer ${standIn("GATEWAY_TOKEN")}` } });
+    r = await via(a, { headers: { authorization: `Bearer ${heldStandInOf("GATEWAY_TOKEN")}` } });
     assert.equal(r.status, 200, r.body);
     assert.equal(a.seen.at(-1)?.headers.authorization, `Bearer ${VALUES.GATEWAY_TOKEN}`);
 
     r = await via(a, {
-      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY"), authorization: `Bearer ${standIn("GATEWAY_TOKEN")}` },
+      headers: {
+        "x-api-key": heldStandInOf("ANTHROPIC_API_KEY"),
+        authorization: `Bearer ${heldStandInOf("GATEWAY_TOKEN")}`,
+      },
     });
     assert.equal(r.status, 200, r.body);
     assert.equal(a.seen.at(-1)?.headers["x-api-key"], VALUES.ANTHROPIC_API_KEY);
@@ -134,20 +141,26 @@ describe("toward a bound host", () => {
 
   test("3. a foreign credential beside a swap is stripped; a duplicate credential header → 400", async () => {
     let r = await via(a, {
-      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY"), authorization: "Bearer mine", "api-key": "also-mine" },
+      headers: {
+        "x-api-key": heldStandInOf("ANTHROPIC_API_KEY"),
+        authorization: "Bearer mine",
+        "api-key": "also-mine",
+      },
     });
     assert.equal(r.status, 200, r.body);
     assert.equal(a.seen.at(-1)?.headers.authorization, undefined);
     assert.equal(a.seen.at(-1)?.headers["api-key"], undefined);
     const before = a.seen.length;
-    r = await via(a, { headers: { "x-api-key": [standIn("ANTHROPIC_API_KEY"), standIn("ANTHROPIC_API_KEY")] } });
+    r = await via(a, {
+      headers: { "x-api-key": [heldStandInOf("ANTHROPIC_API_KEY"), heldStandInOf("ANTHROPIC_API_KEY")] },
+    });
     assert.equal(r.status, 400);
     assert.equal(a.seen.length, before);
   });
 
   test("3b. a method outside the list → 405; an underscore header → 400; nothing is sent", async () => {
     const before = a.seen.length;
-    const k = { "x-api-key": standIn("ANTHROPIC_API_KEY") };
+    const k = { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") };
     for (const method of ["TRACE", "PROPFIND"]) {
       const r = await via(a, { method, headers: k });
       assert.equal(r.status, 405, method);
@@ -164,16 +177,16 @@ describe("toward a bound host", () => {
     const before = a.seen.length;
     // Envoy drops what Connection names before the swap, so the request has no Stand-in.
     let r = await via(a, {
-      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY"), connection: "keep-alive, x-api-key" },
+      headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY"), connection: "keep-alive, x-api-key" },
     });
     assert.equal(r.status, 403);
     r = await via(a, {
-      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY"), host: [`${a.host}:${a.port}`, "evil.example"] },
+      headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY"), host: [`${a.host}:${a.port}`, "evil.example"] },
     });
     assert.equal(r.status, 421);
     assert.equal(a.seen.length, before);
     r = await via(a, {
-      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY"), connection: "keep-alive, foo", foo: "x" },
+      headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY"), connection: "keep-alive, foo", foo: "x" },
     });
     assert.equal(r.status, 200, r.body);
     assert.equal(a.seen.at(-1)?.headers.foo, undefined);
@@ -182,44 +195,46 @@ describe("toward a bound host", () => {
 
   test("4. Host ≠ target → 421; outside `paths` → 403, after \\ and ..; are read; an encoded / or \\ → 400", async () => {
     const before = b.seen.length;
-    let r = await via(a, { headers: { host: "elsewhere.example:443", "x-api-key": standIn("ANTHROPIC_API_KEY") } });
+    let r = await via(a, {
+      headers: { host: "elsewhere.example:443", "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") },
+    });
     assert.equal(r.status, 421);
-    r = await via(b, { path: "/key/generate", headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` } });
+    r = await via(b, { path: "/key/generate", headers: { authorization: `Bearer ${heldStandInOf("LITELLM_KEY")}` } });
     assert.equal(r.status, 403);
     r = await via(b, {
       path: "/v1/messages/../../key/generate",
-      headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` },
+      headers: { authorization: `Bearer ${heldStandInOf("LITELLM_KEY")}` },
     });
     assert.equal(r.status, 403, "dot segments are removed before the prefix is checked");
     r = await via(b, {
       path: "/v1/messages%2F..%2Fkey",
-      headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` },
+      headers: { authorization: `Bearer ${heldStandInOf("LITELLM_KEY")}` },
     });
     assert.equal(r.status, 400);
     r = await via(b, {
       path: "/v1/messages%5C..%5Ckey",
-      headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` },
+      headers: { authorization: `Bearer ${heldStandInOf("LITELLM_KEY")}` },
     });
     assert.equal(r.status, 400, "an encoded \\, which IIS reads as /");
     // Envoy reads `\` as `/` and `..;` as `..` (Tomcat's reading) before the prefix is checked.
     for (const path of ["/v1/messages/..\\key", "/v1/messages/..;/key"]) {
-      r = await via(b, { path, headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` } });
+      r = await via(b, { path, headers: { authorization: `Bearer ${heldStandInOf("LITELLM_KEY")}` } });
       assert.equal(r.status, 403, path);
     }
     assert.equal(b.seen.length, before, "none of them reached the upstream");
     r = await via(b, {
       path: "/v1/messages?beta=true",
-      headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` },
+      headers: { authorization: `Bearer ${heldStandInOf("LITELLM_KEY")}` },
     });
     assert.equal(r.status, 200, r.body);
     assert.equal(b.seen.at(-1)?.headers.authorization, `Bearer ${VALUES.LITELLM_KEY}`);
-    r = await via(b, { path: "/v1/messages\\x", headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` } });
+    r = await via(b, { path: "/v1/messages\\x", headers: { authorization: `Bearer ${heldStandInOf("LITELLM_KEY")}` } });
     assert.equal(r.status, 200, r.body);
     assert.equal(b.seen.at(-1)?.url, "/v1/messages/x", "the upstream gets the path that was checked");
   });
 
   test("7. an upstream certificate upstream.crt does not trust → 502, and nothing is sent", async () => {
-    const r = await via(d, { headers: { "x-api-key": standIn("UNTRUSTED_KEY") } });
+    const r = await via(d, { headers: { "x-api-key": heldStandInOf("UNTRUSTED_KEY") } });
     assert.equal(r.status, 502);
     assert.match(r.body, new RegExp(`${d.host}:${d.port}`));
     // Never sent, so the words say so (ADR-0059).
@@ -230,7 +245,7 @@ describe("toward a bound host", () => {
   test("7b. an upstream that closes the connection after it got the request → 502 that says the request may have reached it", async () => {
     a.handler = (req) => req.socket.destroy();
     const before = a.seen.length;
-    const r = await via(a, { method: "POST", headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") } });
+    const r = await via(a, { method: "POST", headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") } });
     assert.equal(r.status, 502, r.body);
     assert.match(
       r.body,
@@ -259,7 +274,7 @@ describe("toward a bound host", () => {
     };
     const arrived: number[] = [];
     await via(a, {
-      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") },
+      headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") },
       onResponse: (res) => res.on("data", () => arrived.push(Date.now())),
     });
     assert.equal(arrived.length, 5, `five events, one read each (got ${arrived.length})`);
@@ -284,7 +299,7 @@ describe("toward a bound host", () => {
     };
     let abortedAt = 0;
     await via(a, {
-      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") },
+      headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") },
       onResponse: (res, req) => {
         let events = 0;
         res.on("data", () => {
@@ -310,7 +325,7 @@ describe("toward a bound host", () => {
       res.end();
     };
     const before = a.seen.length;
-    const r = await via(a, { headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") } });
+    const r = await via(a, { headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") } });
     assert.equal(r.status, 302);
     assert.equal(r.headers.location, "https://elsewhere.example/next");
     assert.equal(a.seen.length, before + 1);
@@ -326,10 +341,10 @@ describe("toward every other host", () => {
     const r = await requestThrough(
       custodian.ports.egress,
       { host: c.host, port: c.port },
-      { ca: c.ca.cert, headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") } },
+      { ca: c.ca.cert, headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") } },
     );
     assert.equal(r.status, 200, r.body);
-    assert.equal(c.seen.at(-1)?.headers["x-api-key"], standIn("ANTHROPIC_API_KEY"));
+    assert.equal(c.seen.at(-1)?.headers["x-api-key"], heldStandInOf("ANTHROPIC_API_KEY"));
   });
 
   test("6. the dial guard refuses loopback, link-local and localhost — each with a reason=guard line", async () => {
@@ -396,34 +411,39 @@ describe("toward every other host", () => {
   });
 });
 
-describe("toward the Orchestrator (the control listener)", () => {
-  const bearer = { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` };
+describe("toward the Orchestrator (the control socket and the fetch listener)", () => {
+  // The two tokens of ADR-0076 (C3): the secret control Stand-in on the agent routes, swapped for
+  // the control token; the public fetch Stand-in on the fetch route, swapped for the fetch token.
+  // The agent routes are on the control socket, the fetch on loopback (C9).
+  const bearer = { authorization: `Bearer ${CONTROL_STANDIN}` };
+  const fetchBearer = { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` };
 
-  test("the Menu's two routes carry the Sandbox token, and an encoded Instance ID stays one segment", async () => {
-    let r = await controlRequest(custodian.ports.control, "/agents/run%2Fcoder/surface", {
+  test("the Menu's two routes carry the control token, and an encoded Instance ID stays one segment", async () => {
+    let r = await controlRequest(custodian.socket, "/agents/run%2Fcoder/surface", {
       headers: { ...bearer, "x-api-key": "stray" },
     });
     assert.equal(r.status, 200, r.body);
     const surface = orchestrator.seen.at(-1)!;
     assert.equal(surface.url, "/agents/run%2Fcoder/surface");
-    assert.equal(surface.headers.authorization, `Bearer ${SANDBOX_TOKEN}`);
+    assert.equal(surface.headers.authorization, `Bearer ${CONTROL_TOKEN}`);
     assert.equal(surface.headers["x-api-key"], undefined, "no other credential rides along");
-    r = await controlRequest(custodian.ports.control, "/agents/run%2Fcoder/events", {
+    r = await controlRequest(custodian.socket, "/agents/run%2Fcoder/events", {
       method: "POST",
       headers: { ...bearer, "content-type": "application/json" },
       body: '{"type":"done"}',
     });
     assert.equal(r.status, 200, r.body);
     assert.equal(orchestrator.seen.at(-1)?.body, '{"type":"done"}');
+    assert.equal(orchestrator.seen.at(-1)?.headers.authorization, `Bearer ${CONTROL_TOKEN}`);
   });
 
   test("a connection the Orchestrator closes under a read is retried; under a pick, it says unreachable", async () => {
     orchestrator.drop(1);
-    let r = await controlRequest(custodian.ports.control, "/agents/run-1/surface", { headers: bearer });
+    let r = await controlRequest(custodian.socket, "/agents/run-1/surface", { headers: bearer });
     assert.equal(r.status, 200, r.body);
     const before = orchestrator.seen.length;
     orchestrator.drop(1);
-    r = await controlRequest(custodian.ports.control, "/agents/run-1/events", {
+    r = await controlRequest(custodian.socket, "/agents/run-1/events", {
       method: "POST",
       headers: { ...bearer, "content-type": "application/json" },
       body: '{"type":"done"}',
@@ -433,23 +453,24 @@ describe("toward the Orchestrator (the control listener)", () => {
     assert.equal(orchestrator.seen.length, before);
   });
 
-  test("an outstanding pick's answer is polled with the Sandbox token, and a connection dropped under a poll is retried (ADR-0024)", async () => {
+  test("an outstanding pick's answer is polled with the control token, and a connection dropped under a poll is retried (ADR-0024)", async () => {
     orchestrator.drop(1);
-    const r = await controlRequest(custodian.ports.control, "/agents/run%2Fcoder/deliveries/d-1", { headers: bearer });
+    const r = await controlRequest(custodian.socket, "/agents/run%2Fcoder/deliveries/d-1", { headers: bearer });
     assert.equal(r.status, 200, r.body);
     const poll = orchestrator.seen.at(-1)!;
     assert.equal(poll.url, "/agents/run%2Fcoder/deliveries/d-1");
-    assert.equal(poll.headers.authorization, `Bearer ${SANDBOX_TOKEN}`);
+    assert.equal(poll.headers.authorization, `Bearer ${CONTROL_TOKEN}`);
   });
 
-  test("the ask is addressed to THIS pod's Sandbox, whatever the caller writes", async () => {
-    const r: Awaited<ReturnType<typeof controlRequest>> = await controlRequest(custodian.ports.control, "/fetch", {
+  test("the ask is addressed to THIS pod's Sandbox, whatever the caller writes, with the fetch token", async () => {
+    const r: Awaited<ReturnType<typeof loopbackRequest>> = await loopbackRequest(custodian.ports.fetch, "/fetch", {
       method: "POST",
-      headers: bearer,
+      headers: fetchBearer,
       body: '{"identity":"github.com/a/b"}',
     });
     assert.equal(r.status, 200, r.body);
     assert.equal(orchestrator.seen.at(-1)?.url, "/sandboxes/ws-1/fetch");
+    assert.equal(orchestrator.seen.at(-1)?.headers.authorization, `Bearer ${SANDBOX_TOKEN}`);
   });
 
   test("nothing else reaches the Orchestrator: another route, another method, another Sandbox, no Stand-in", async () => {
@@ -458,6 +479,7 @@ describe("toward the Orchestrator (the control listener)", () => {
       ["/runs/r-1", "GET", bearer],
       ["/workflows/ping/runs", "POST", bearer],
       ["/runs/r-1/gates/review/events", "POST", bearer],
+      ["/runs/r-1/gates/review/events", "POST", fetchBearer],
       ["/agents/x/surface", "POST", bearer],
       ["/agents/x/deliveries/d-1", "POST", bearer],
       ["/agents/x/deliveries", "GET", bearer],
@@ -465,83 +487,218 @@ describe("toward the Orchestrator (the control listener)", () => {
       ["/agents/x/surface", "GET", {}],
       ["/agents/x/surface", "GET", { authorization: "Bearer ws-1.forged" }],
     ] as const) {
-      const r = await controlRequest(custodian.ports.control, path, { method, headers });
-      assert.ok(r.status === 404 || r.status === 403, `${method} ${path} → ${r.status}`);
+      for (const r of [
+        await controlRequest(custodian.socket, path, { method, headers }),
+        await loopbackRequest(custodian.ports.fetch, path, { method, headers }),
+      ]) {
+        assert.ok(r.status === 404 || r.status === 403, `${method} ${path} → ${r.status}`);
+      }
     }
     assert.equal(orchestrator.seen.length, before);
   });
-});
 
-describe("a multi-slot pod (ADR-0076): the public Sandbox Stand-in swaps on the fetch route alone", () => {
-  // The security invariant: on a pod with more than one agent slot the Custodian still holds the
-  // public Sandbox-scope Stand-in — jr2-upload-pack's `POST /fetch` bearer — but PATH-RESTRICTED to
-  // the fetch route. So it swaps for the real Sandbox token on `/fetch` and is refused on every
-  // agent-delivery path BEFORE any swap, which is what stops a co-resident slot from spending this
-  // derivable string to deliver a pick to another slot. Each slot's OWN secret Stand-in still
-  // delivers to its own surface.
-  const CODER_STANDIN = "standin-coder-unguessable-00000000000000000";
-  const REVIEWER_STANDIN = "standin-reviewer-unguessable-1111111111111111";
-  const CODER_TOKEN = "agent:ws-1/coder.coder-token-value";
-  const REVIEWER_TOKEN = "agent:ws-1/reviewer.reviewer-token-value";
-  let orch: Awaited<ReturnType<typeof startFakeOrchestrator>>;
-  let multi: Custodian;
-
-  before(async () => {
-    orch = await startFakeOrchestrator();
-    multi = await startCustodian({
-      manifest: { version: 1, secrets: [] },
-      values: {},
-      upstreamCas: [],
-      orchestrator: { host: lanAddress(), port: orch.port },
-      sandbox: "ws-1",
-      slots: [
-        { slot: "coder", standIn: CODER_STANDIN, token: CODER_TOKEN },
-        { slot: "reviewer", standIn: REVIEWER_STANDIN, token: REVIEWER_TOKEN },
-      ],
-    });
-  });
-  after(async () => {
-    await multi?.stop();
-    await orch?.close();
-  });
-
-  test("the public Sandbox Stand-in is swapped on POST /fetch — the one route jr2-upload-pack carries it on", async () => {
-    const r = await controlRequest(multi.ports.control, "/fetch", {
+  test("each listener answers 404 to the other's routes, with the right Stand-in, and sends nothing (C9)", async () => {
+    const before = orchestrator.seen.length;
+    // An agent route on loopback: a process that can reach the fetch port cannot reach the Menu
+    // there, even with the control Stand-in.
+    for (const [path, method] of [
+      ["/agents/run%2Fcoder/surface", "GET"],
+      ["/agents/run%2Fcoder/events", "POST"],
+      ["/agents/run%2Fcoder/deliveries/d-1", "GET"],
+      ["/agents/run%2Fcoder/notices", "POST"],
+    ] as const) {
+      const r = await loopbackRequest(custodian.ports.fetch, path, {
+        method,
+        headers: { ...bearer, "content-type": "application/json" },
+        ...(method === "POST" ? { body: "{}" } : {}),
+      });
+      assert.equal(r.status, 404, `${method} ${path} on loopback → ${r.status}`);
+    }
+    // The ask on the control socket.
+    const r = await controlRequest(custodian.socket, "/fetch", {
       method: "POST",
-      headers: { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` },
+      headers: fetchBearer,
       body: '{"identity":"github.com/a/b"}',
     });
-    assert.equal(r.status, 200, r.body);
-    const seen = orch.seen.at(-1)!;
-    assert.equal(seen.url, "/sandboxes/ws-1/fetch");
-    assert.equal(seen.headers.authorization, `Bearer ${SANDBOX_TOKEN}`, "swapped for the real Sandbox token");
+    assert.equal(r.status, 404, `POST /fetch on the control socket → ${r.status}`);
+    assert.equal(orchestrator.seen.length, before, "nothing reached the Orchestrator");
   });
 
-  test("the public Sandbox Stand-in is REFUSED on an agent-delivery path, before any swap (the ADR-0076 crux)", async () => {
-    const before = orch.seen.length;
-    for (const [path, method, body] of [
-      ["/agents/ws-1%2Fbody%2Freviewer/events", "POST", '{"type":"approve"}'],
-      ["/agents/ws-1%2Fbody%2Fcoder/surface", "GET", undefined],
-      ["/agents/ws-1%2Fbody%2Freviewer/deliveries/d-1", "GET", undefined],
-    ] as const) {
-      const r = await controlRequest(multi.ports.control, path, {
+  test("the control socket is a socket that any uid of the pod can connect to (mode 0666)", async () => {
+    // The Harness runs as a uid that is not Envoy's. The folder under `/run/jr2`, not the mode,
+    // keeps the domain out (ADR-0076).
+    const st = await stat(custodian.socket);
+    assert.ok(st.isSocket(), "a Unix socket");
+    assert.equal(st.mode & 0o777, 0o666);
+  });
+});
+
+describe("two tokens, each on its own routes (ADR-0076, C3)", () => {
+  const control = { authorization: `Bearer ${CONTROL_STANDIN}` };
+  const fetchBearer = { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` };
+  const agentRoutes = [
+    ["/agents/ws-1%2Fbody%2Freviewer/events", "POST", '{"type":"approve"}'],
+    ["/agents/ws-1%2Fbody%2Fcoder/surface", "GET", undefined],
+    ["/agents/ws-1%2Fbody%2Freviewer/deliveries/d-1", "GET", undefined],
+    ["/agents/ws-1%2Fbody%2Freviewer/notices", "POST", '{"heard":["n-1"]}'],
+  ] as const;
+
+  test("the public fetch Stand-in is REFUSED on every agent route, before any swap", async () => {
+    // jr2-upload-pack holds it as a constant, and every confined child can read it: it must open
+    // the fetch route alone, or planted code could deliver a pick with it.
+    const before = orchestrator.seen.length;
+    for (const [path, method, body] of agentRoutes) {
+      const r = await controlRequest(custodian.socket, path, {
         method,
-        headers: { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}`, "content-type": "application/json" },
+        headers: { ...fetchBearer, "content-type": "application/json" },
         ...(body !== undefined ? { body } : {}),
       });
       assert.equal(r.status, 403, `${method} ${path} refused by the path guard`);
     }
-    assert.equal(orch.seen.length, before, "nothing reached the Orchestrator");
+    assert.equal(orchestrator.seen.length, before, "nothing reached the Orchestrator");
   });
 
-  test("a slot's own secret Stand-in delivers to its surface, swapped for that slot's per-slot token", async () => {
-    const r = await controlRequest(multi.ports.control, "/agents/ws-1%2Fbody%2Fcoder/events", {
+  test("the control Stand-in swaps on every agent route, the notice acknowledgment included (C5)", async () => {
+    for (const [path, method, body] of agentRoutes) {
+      const r = await controlRequest(custodian.socket, path, {
+        method,
+        headers: { ...control, "content-type": "application/json" },
+        ...(body !== undefined ? { body } : {}),
+      });
+      assert.equal(r.status, 200, `${method} ${path}: ${r.body}`);
+      const seen = orchestrator.seen.at(-1)!;
+      assert.equal(seen.url, path);
+      assert.equal(seen.headers.authorization, `Bearer ${CONTROL_TOKEN}`, `${path}: swapped for the control token`);
+    }
+  });
+
+  test("the control Stand-in is REFUSED on the fetch route: the control token never reaches it", async () => {
+    const before = orchestrator.seen.length;
+    const r = await loopbackRequest(custodian.ports.fetch, "/fetch", {
       method: "POST",
-      headers: { authorization: `Bearer ${CODER_STANDIN}`, "content-type": "application/json" },
-      body: '{"type":"built"}',
+      headers: control,
+      body: '{"identity":"github.com/a/b"}',
+    });
+    assert.equal(r.status, 403, r.body);
+    assert.equal(orchestrator.seen.length, before);
+  });
+
+  test("the stated slot (X-Jr2-Slot) passes unchanged on an agent route, and is stripped on the fetch route", async () => {
+    const slot = "body/reviewer";
+    let r = await controlRequest(custodian.socket, "/agents/ws-1%2Fbody%2Freviewer/surface", {
+      headers: { ...control, "x-jr2-slot": slot },
     });
     assert.equal(r.status, 200, r.body);
-    assert.equal(orch.seen.at(-1)?.headers.authorization, `Bearer ${CODER_TOKEN}`, "swapped for the coder's token");
+    assert.equal(orchestrator.seen.at(-1)?.headers["x-jr2-slot"], slot);
+    r = await loopbackRequest(custodian.ports.fetch, "/fetch", {
+      method: "POST",
+      headers: { ...fetchBearer, "x-jr2-slot": slot },
+      body: '{"identity":"github.com/a/b"}',
+    });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(orchestrator.seen.at(-1)?.url, "/sandboxes/ws-1/fetch");
+    assert.equal(orchestrator.seen.at(-1)?.headers["x-jr2-slot"], undefined, "no slot rides the fetch");
+  });
+
+  test("the stated slot never leaves toward a bound host", async () => {
+    const r = await via(a, {
+      headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY"), "x-jr2-slot": "body/coder" },
+    });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(a.seen.at(-1)?.headers["x-jr2-slot"], undefined);
+  });
+
+  test("the PUBLIC form of a held secret's Stand-in is no Stand-in: 403, and the upstream gets nothing (C1b)", async () => {
+    // Before ADR-0076 every Stand-in was `jr2-held-<NAME>`, which any code could write. Now each
+    // is minted per pod, and the readable form alone swaps nothing.
+    const before = a.seen.length;
+    const r = await via(a, { headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") } });
+    assert.equal(r.status, 403, r.body);
+    assert.equal(a.seen.length, before);
+  });
+});
+
+describe("the Instance Harness's shape (ADR-0076): the control token alone, no fetch", () => {
+  let orch: Awaited<ReturnType<typeof startFakeOrchestrator>>;
+  let instance: Custodian;
+  before(async () => {
+    orch = await startFakeOrchestrator();
+    instance = await startCustodian({
+      manifest: { version: 1, secrets: [] },
+      values: {},
+      upstreamCas: [],
+      orchestrator: { host: lanAddress(), port: orch.port },
+    });
+  });
+  after(async () => {
+    await instance?.stop();
+    await orch?.close();
+  });
+
+  test("the control Stand-in swaps on the agent routes; the fetch Stand-in opens nothing", async () => {
+    let r = await controlRequest(instance.socket, "/agents/run%2Fadvisor/surface", {
+      headers: { authorization: `Bearer ${CONTROL_STANDIN}` },
+    });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(orch.seen.at(-1)?.headers.authorization, `Bearer ${CONTROL_TOKEN}`);
+    const before = orch.seen.length;
+    for (const [path, method] of [
+      ["/agents/run%2Fadvisor/surface", "GET"],
+      ["/fetch", "POST"],
+    ] as const) {
+      for (const answer of [
+        await controlRequest(instance.socket, path, {
+          method,
+          headers: { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` },
+        }),
+        await loopbackRequest(instance.ports.fetch, path, {
+          method,
+          headers: { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` },
+        }),
+      ]) {
+        assert.ok(answer.status === 403 || answer.status === 404, `${method} ${path} → ${answer.status}`);
+      }
+    }
+    assert.equal(orch.seen.length, before, "nothing reached the Orchestrator");
+  });
+});
+
+describe("a restart in the same pod (ADR-0076): the socket's folder outlives the container", () => {
+  let orch: Awaited<ReturnType<typeof startFakeOrchestrator>>;
+  let current: Custodian | undefined;
+  before(async () => {
+    orch = await startFakeOrchestrator();
+  });
+  after(async () => {
+    await current?.stop();
+    await orch?.close();
+  });
+
+  test("a Custodian that starts where a stopped one left its socket binds the path again and serves", async () => {
+    const start = (dir?: string) =>
+      startCustodian({
+        manifest: { version: 1, secrets: [] },
+        values: {},
+        upstreamCas: [],
+        orchestrator: { host: lanAddress(), port: orch.port },
+        ...(dir !== undefined ? { dir } : {}),
+      });
+    const surface = (c: Custodian) =>
+      controlRequest(c.socket, "/agents/run%2Fadvisor/surface", {
+        headers: { authorization: `Bearer ${CONTROL_STANDIN}` },
+      });
+    const first = await start();
+    current = first;
+    assert.equal((await surface(first)).status, 200);
+    // `docker rm -f` kills Envoy, which leaves its socket file behind, as a crash in a pod does.
+    await first.stop({ keep: true });
+    assert.ok((await stat(first.socket)).isSocket(), "the stopped Envoy's socket file is still there");
+    await assert.rejects(surface(first), /ECONNREFUSED/, "and nothing listens on it");
+    const second = await start(first.dir);
+    current = second;
+    const r = await surface(second);
+    assert.equal(r.status, 200, r.body);
+    assert.equal(orch.seen.at(-1)?.headers.authorization, `Bearer ${CONTROL_TOKEN}`);
   });
 });
 
@@ -564,8 +721,8 @@ describe("the health listener (0.0.0.0, the one a peer can reach)", () => {
       await new Promise((r) => setTimeout(r, 500));
       const open = sockets.filter((s) => !s.destroyed && s.readyState === "open").length;
       assert.ok(open <= 32, `the health listener holds few connections, not ${open}`);
-      const r = await controlRequest(custodian.ports.control, "/agents/run-1/surface", {
-        headers: { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` },
+      const r = await controlRequest(custodian.socket, "/agents/run-1/surface", {
+        headers: { authorization: `Bearer ${CONTROL_STANDIN}` },
       });
       assert.equal(r.status, 200, r.body);
     } finally {
@@ -603,16 +760,16 @@ describe("start-up and the log", () => {
   });
 
   test("12. the log holds names, never a value or a Stand-in", async () => {
-    await controlRequest(custodian.ports.health, "/healthz");
+    await loopbackRequest(custodian.ports.health, "/healthz");
     await logLines(1, (l) => l.includes("jr2.custodian ready"));
     const out = custodian.output();
     assert.match(
       out,
-      /jr2\.custodian ready secrets=JR2_SANDBOX_TOKEN,ANTHROPIC_API_KEY,GATEWAY_TOKEN,LITELLM_KEY,UNTRUSTED_KEY hosts=3/,
+      /jr2\.custodian ready secrets=JR2_CONTROL_TOKEN,JR2_SANDBOX_TOKEN,ANTHROPIC_API_KEY,GATEWAY_TOKEN,LITELLM_KEY,UNTRUSTED_KEY hosts=3/,
     );
     assert.match(out, /action=intercept target=\S+ secret=ANTHROPIC_API_KEY .*method=GET status=200/);
     assert.match(out, /action=tunnel target=\S+/);
-    for (const value of [...Object.values(VALUES), SANDBOX_TOKEN]) {
+    for (const value of [...Object.values(VALUES), SANDBOX_TOKEN, CONTROL_TOKEN, CONTROL_STANDIN]) {
       assert.ok(!out.includes(value), "a value in the log");
       assert.ok(!out.includes(Buffer.from(value).toString("base64")), "a base64 value in the log");
     }
@@ -663,7 +820,7 @@ describe("a real client", () => {
         cwd: join(import.meta.dirname, ".."),
         env: {
           PATH: process.env.PATH,
-          ANTHROPIC_API_KEY: standIn("ANTHROPIC_API_KEY"),
+          ANTHROPIC_API_KEY: heldStandInOf("ANTHROPIC_API_KEY"),
           BASE: `https://${a.host}:${a.port}`,
           HTTPS_PROXY: `http://127.0.0.1:${custodian.ports.egress}`,
           NODE_USE_ENV_PROXY: "1",
@@ -690,7 +847,7 @@ describe("a real client", () => {
       const start = performance.now();
       let at = 0;
       const onResponse = (res: import("node:http").IncomingMessage) => res.once("data", () => (at = performance.now()));
-      if (through) await via(a, { headers: { "x-api-key": standIn("ANTHROPIC_API_KEY") }, onResponse });
+      if (through) await via(a, { headers: { "x-api-key": heldStandInOf("ANTHROPIC_API_KEY") }, onResponse });
       else {
         const { request } = await import("node:https");
         await new Promise<void>((resolve, reject) => {

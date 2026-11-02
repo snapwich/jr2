@@ -50,3 +50,27 @@ export const SIGNING_CREDENTIALS: readonly string[] = [
   "AWS_PROFILE",
   "GOOGLE_APPLICATION_CREDENTIALS",
 ];
+
+/**
+ * Names whose value is the path of a credential or trust file that the Harness PROCESS reads (the
+ * AWS SDK, Google's library), when `harness.env` or `harness.envFrom` sets one (ADR-0076). The
+ * Harness runs with the control Stand-in in its memory, so such a file must be one that the Agent's
+ * code cannot write: `~/.aws/config` can name a `credential_process`, which the SDK runs. `jr2 up`
+ * refuses a path that the domain writes for certain (`DOMAIN_WRITABLE_ROOTS`), and warns on any
+ * other, because whether the Sandbox's uid can write a path of the image is the image's, which jr2
+ * cannot read. An image's own `ENV` never reaches the Harness process.
+ */
+export const CREDENTIAL_FILES: readonly string[] = [
+  "AWS_CONFIG_FILE",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+  "AWS_CA_BUNDLE",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_API_CERTIFICATE_CONFIG",
+  "CLOUDSDK_CONFIG",
+];
+
+/** Folders of a Sandbox's Harness container that the domain writes in every pod: the Worktree root,
+ * the temporary folders, `/dev/shm`, and the HOME that jr2 gives an image with no `USER`. */
+export const DOMAIN_WRITABLE_ROOTS: readonly string[] = ["/work", "/tmp", "/var/tmp", "/dev/shm", "/home/jr2"];

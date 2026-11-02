@@ -4175,47 +4175,6 @@ spec:
                   - name
                   type: object
                 type: array
-              slots:
-                description: |-
-                  Slots are the Sandbox's additional agent slots beyond the primary
-                  (ADR-0076): one Harness container runs each declared, workspace-ful agent
-                  slot, so no slot's code can read another's control credential. The
-                  containers themselves ride `sidecars` as opaque fragments — the operator
-                  stays agnostic (ADR-0001) and reads this list ONLY to wire, per slot, one
-                  ServicePort and one status endpoint beside the primary's. The primary slot
-                  is not here: it keeps `port` (8080), the one ServicePort, and
-                  status.endpoint. Each entry's port is an explicit 8090+ the composer chose
-                  so neither side recomputes it, clear of the reserved ports (ADR-0005).
-                  Empty on a single-agent pod, which stays byte-for-byte what it is today.
-                items:
-                  description: |-
-                    SandboxSlot is one additional agent slot's name and serving port (ADR-0076).
-                    The operator wires a ServicePort (name=Name, port=Port) and a status endpoint
-                    for it; the slot's Harness container arrives in Sidecars named `harness-<Name>`
-                    and listens on Port.
-                  properties:
-                    name:
-                      description: |-
-                        Name is the agent slot key — the agent name (ADR-0076) — and the name of
-                        the slot's ServicePort and status endpoint.
-                      minLength: 1
-                      type: string
-                    port:
-                      description: |-
-                        Port is the port the slot's Harness container serves on, an explicit
-                        8090+ the composer chose (ADR-0005, ADR-0076).
-                      format: int32
-                      maximum: 65535
-                      minimum: 1
-                      type: integer
-                  required:
-                  - name
-                  - port
-                  type: object
-                type: array
-                x-kubernetes-list-map-keys:
-                - name
-                x-kubernetes-list-type: map
               tolerations:
                 description: |-
                   Tolerations place the Pod (ADR-0052): the Instance's
@@ -6344,39 +6303,8 @@ spec:
               endpoint:
                 description: |-
                   Endpoint is the in-cluster Service DNS the Orchestrator uses to reach the
-                  primary slot's Harness, e.g. http://<name>.<ns>.svc:8080. It is the one
-                  endpoint of a single-agent pod and the printcolumn; the additional slots'
-                  endpoints are in Endpoints (ADR-0076).
+                  Harness, e.g. http://<name>.<ns>.svc:8080.
                 type: string
-              endpoints:
-                description: |-
-                  Endpoints is one in-cluster Service DNS per additional agent slot
-                  (ADR-0076), keyed by slot name, in spec.slots order. The Orchestrator
-                  resolves a slot's Turn to its own endpoint, as it resolves the enclosing
-                  workspace() today. The primary slot is NOT here — it is Endpoint — so a
-                  single-agent pod carries none, byte-for-byte what it is today.
-                items:
-                  description: |-
-                    SandboxSlotEndpoint is one additional agent slot's in-cluster Service DNS
-                    (ADR-0076): the address the Orchestrator reaches that slot's Harness at.
-                  properties:
-                    endpoint:
-                      description: |-
-                        Endpoint is the in-cluster Service DNS for the slot, e.g.
-                        http://<name>.<ns>.svc:8090.
-                      type: string
-                    slot:
-                      description: Slot is the agent slot key, as spec.slots names
-                        it.
-                      type: string
-                  required:
-                  - endpoint
-                  - slot
-                  type: object
-                type: array
-                x-kubernetes-list-map-keys:
-                - slot
-                x-kubernetes-list-type: map
               harness:
                 description: |-
                   Harness is what the kubelet reports about the primary container of the

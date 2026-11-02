@@ -9,10 +9,14 @@
 // withholds write and edit (ADR-0028) — bash stays, because the tool layer states intent and stops
 // the honest path; the worktree layer is the containment. `"none"` withholds the whole set — the
 // Menu-only Agent has no data plane at all.
+//
+// Every process a tool starts, and every file op of the file tools, runs in the domain, started by
+// the spawner with the domain's env (`children.ts`, `spawner.ts`, ADR-0076): the kernel applies the
+// domain's rules to each. What the model reads does not change.
 
-import { execFile } from "node:child_process";
 import { Type } from "@earendil-works/pi-ai";
 import { bashTool } from "./bash-tool.ts";
+import { runIn, type ChildPolicy, type RunResult } from "./children.ts";
 import type { EngineTool, EngineToolResult } from "./engine.ts";
 import { fileTools } from "./file-tools.ts";
 import type { GuardOwner, MemoryGuard } from "./memory-guard.ts";
@@ -32,17 +36,31 @@ const MAX_LINES = 200;
  * Agent converses and picks from its Menu alone (ADR-0028). That field IS the definition's own
  * (`spec.ts`, mirroring the Orchestrator's `AgentDefinition`): what an Agent may do is identity.
  * `guard` is the process's memory guard, which watches every `bash` call (ADR-0061); `owner` is
- * the conversation the tools serve (ADR-0062).
+ * the conversation the tools serve (ADR-0062). `children` is the domain: where the tools start a
+ * process and do their file I/O (ADR-0076). A Harness with none (the Instance Harness) gives Working
+ * tools to no Agent, and says so.
  */
 export function workingToolsFor(
   definition: AgentDefinition,
   cwd: string,
-  opts: { guard?: MemoryGuard | undefined; owner?: GuardOwner | undefined } = {},
+  opts: { guard?: MemoryGuard | undefined; owner?: GuardOwner | undefined; children?: ChildPolicy | undefined } = {},
 ): WorkingTool[] {
   if (definition.workspace === "none") return [];
-  const search: WorkingTool[] = [grepTool(cwd), globTool(cwd)];
-  const bash = bashTool({ cwd, guard: opts.guard, owner: opts.owner }) as WorkingTool;
-  return [...fileTools(cwd, { readOnly: definition.workspace === "read" }), bash, ...search];
+  const children = opts.children;
+  if (children === undefined) {
+    throw new Error(
+      `this Harness has no domain to run a tool in, so it gives no Working tool: workspace "${definition.workspace ?? "write"}" ` +
+        "needs the Harness of a Sandbox (ADR-0031, ADR-0076)",
+    );
+  }
+  const search: WorkingTool[] = [grepTool(cwd, children), globTool(cwd, children)];
+  const bash = bashTool({ cwd, children, guard: opts.guard, owner: opts.owner }) as WorkingTool;
+  const home = children.env.HOME ?? "/";
+  return [
+    ...fileTools(cwd, { files: children.spawner, home, readOnly: definition.workspace === "read" }),
+    bash,
+    ...search,
+  ];
 }
 
 const grepSchema = Type.Object({
@@ -52,7 +70,7 @@ const grepSchema = Type.Object({
   ),
 });
 
-function grepTool(cwd: string): EngineTool<typeof grepSchema> {
+function grepTool(cwd: string, children: ChildPolicy): EngineTool<typeof grepSchema> {
   return {
     name: "grep",
     description:
@@ -61,8 +79,8 @@ function grepTool(cwd: string): EngineTool<typeof grepSchema> {
     parameters: grepSchema,
     execute: async (_id, { pattern, path }, signal) => {
       const target = path ?? ".";
-      let r = await run("rg", ["-n", "--no-heading", "--", pattern, target], cwd, signal);
-      if (spawnFailed(r)) r = await run("grep", ["-rn", "--", pattern, target], cwd, signal);
+      let r = await run(children, "rg", ["-n", "--no-heading", "--", pattern, target], cwd, signal);
+      if (spawnFailed(r)) r = await run(children, "grep", ["-rn", "--", pattern, target], cwd, signal);
       if (r.code === 0) return text(bounded(r.stdout));
       if (r.code === 1 && !r.stderr) return text("no matches");
       throw new Error(r.stderr.trim() || r.error?.message || `search exited ${r.code}`);
@@ -77,7 +95,7 @@ const globSchema = Type.Object({
   ),
 });
 
-function globTool(cwd: string): EngineTool<typeof globSchema> {
+function globTool(cwd: string, children: ChildPolicy): EngineTool<typeof globSchema> {
   return {
     name: "glob",
     description: `Find files by name pattern. Answers matching paths, first ${MAX_LINES}.`,
@@ -86,7 +104,7 @@ function globTool(cwd: string): EngineTool<typeof globSchema> {
       // A slash-less pattern matches basenames anywhere (-name); a pattern with directories
       // matches against the whole path — find's `*` spans `/`, so `**` collapses to `*`.
       const matcher = pattern.includes("/") ? ["-path", `*/${pattern.replaceAll("**", "*")}`] : ["-name", pattern];
-      const r = await run("find", [path ?? ".", "-type", "f", ...matcher], cwd, signal);
+      const r = await run(children, "find", [path ?? ".", "-type", "f", ...matcher], cwd, signal);
       if (r.code !== 0) throw new Error(r.stderr.trim() || r.error?.message || `find exited ${r.code}`);
       const found = r.stdout.split("\n").filter(Boolean).sort().join("\n");
       return text(found ? bounded(found) : "no matches");
@@ -94,15 +112,16 @@ function globTool(cwd: string): EngineTool<typeof globSchema> {
   };
 }
 
-type RunResult = { code: number | null; stdout: string; stderr: string; error?: Error };
-
-function run(file: string, args: string[], cwd: string, signal?: AbortSignal): Promise<RunResult> {
-  return new Promise((resolve) => {
-    execFile(file, args, { cwd, signal, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      const code = error == null ? 0 : typeof error.code === "number" ? error.code : null;
-      resolve({ code, stdout, stderr, ...(error ? { error } : {}) });
-    });
-  });
+/** One search process, in the domain (ADR-0076), as `execFile` ran it: a program the domain's PATH
+ * does not hold is a spawn that never ran. */
+function run(
+  children: ChildPolicy,
+  file: string,
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<RunResult> {
+  return runIn(children, [file, ...args], { cwd, ...(signal ? { signal } : {}), maxBuffer: 8 * 1024 * 1024 });
 }
 
 /** The command never ran (code is a string like ENOENT, not an exit code) and was not aborted —

@@ -30,6 +30,17 @@ RUN printf '#!/bin/sh\necho jr2-toolchain-ok\n' > /usr/local/bin/jr2-toolchain \
 RUN mkdir -p /srv/jr2-e2e
 WORKDIR /srv/jr2-e2e
 
+# A folder of the image that the Sandbox uid (1000) owns, outside /work, and a variable of the
+# image's own ENV. An Agent writes where its uid can write, and its bash has the image's env
+# (ADR-0076): a scenario writes and moves files in /app, and prints E2E_IMAGE_ENV. The name is not
+# JR2_*, because the domain's env drops jr2's own names.
+RUN mkdir -p /app && chown 1000:1000 /app
+ENV E2E_IMAGE_ENV=from-images-default
+# An image-only name that loads code from a path: the Agent's bash sees it, and the Harness process
+# does not (ADR-0076: `effector nocore --harness-env`). /app/lib does not exist, so it changes no
+# program's libraries.
+ENV LD_LIBRARY_PATH=/app/lib
+
 # No USER on purpose: this is the no-USER FALLBACK image (ADR-0037), so the pod must run it as uid
 # 1000 with HOME=/home/jr2 on an emptyDir. A scenario asserts exactly that — it is the one branch of
 # the composition that no image can prove about itself.

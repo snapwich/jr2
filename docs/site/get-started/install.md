@@ -19,7 +19,7 @@ kind makes the cluster from Docker containers. `jr2 up` builds an image with Doc
 kubectl is the tool that `jr2 up`, `jr2 run` and the other commands use to speak to the cluster.
 
 The kind cluster uses the Linux kernel of Docker: the kernel of your computer, or on macOS and Windows, the kernel of
-the virtual machine of Docker. jr2 needs Landlock in that kernel: Linux 5.13 or later, with `landlock` in its list of
+the virtual machine of Docker. jr2 needs Landlock in that kernel: Linux 6.2 or later, with `landlock` in its list of
 security modules. `jr2 up` refuses to converge without Landlock.
 
 ## Check Node.js

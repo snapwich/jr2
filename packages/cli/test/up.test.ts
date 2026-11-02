@@ -22,9 +22,12 @@ import {
   KIT_VERSION,
   harnessTokenDigest,
   leafStem,
-  sandboxToken,
+  controlStandIn,
+  controlToken,
+  heldStandIn,
   workspaceHeldPod,
   type HeldManifest,
+  type JR2Config,
   type PlacementWalk,
 } from "@jr2/orchestrator/internal";
 import { linkKit } from "./_kit.ts";
@@ -35,9 +38,16 @@ import {
   podFault,
   CHECK_MODEL_SECONDS,
   checkVerdicts,
+  envFromHeldRefusal,
   up,
 } from "../src/commands/up.ts";
-import { checkPodObjects, instanceObjects, LABEL_PROVIDER_PREFLIGHT, type HeldObjects } from "../src/deploy.ts";
+import {
+  checkPodObjectNames,
+  checkPodObjects,
+  instanceObjects,
+  LABEL_PROVIDER_PREFLIGHT,
+  type HeldObjects,
+} from "../src/deploy.ts";
 // The Harness's own result-line writer, from beside it, so the CLI's parser is held to its format.
 // Loaded at run time: it is another package's source, outside this one's compiled tree.
 type PreflightVerdict = { kind: "ok" } | { kind: "fault" | "busy" | "warn"; reason: string };
@@ -1759,10 +1769,11 @@ test("a bound Repo is narrated as the boot's to create; each token git.credentia
     assert.ok(!(name in instance.stringData), `${name} is not in the Orchestrator's Secret`);
   }
   // What it does hold is jr2's own, as ADR-0068 and ADR-0069 name it: the signing key, the
-  // Instance token, the publish token, the Instance Harness's token — and nothing else.
+  // Instance token, the publish token — and nothing else. The Instance Harness's credentials ride
+  // its own Secret (ADR-0076).
   assert.deepEqual(
     Object.keys(instance.stringData).sort(),
-    ["JR2_INSTANCE_HARNESS_TOKEN", "JR2_INSTANCE_TOKEN", "JR2_PUBLISH_TOKEN", "JR2_SIGNING_KEY"],
+    ["JR2_INSTANCE_TOKEN", "JR2_PUBLISH_TOKEN", "JR2_SIGNING_KEY"],
     "the Orchestrator's Secret holds jr2's own keys alone",
   );
   assert.ok(
@@ -1896,6 +1907,57 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
   assert.ok(w.kube.rollouts.includes("myinst/daemonset/jr2-repo-cache"), `got: ${w.kube.rollouts.join(", ")}`);
   assert.match(w.err.join("\n"), /repo cache: verified — 1 pod\(s\) running ghcr\.io\/snapwich\/jr2-operator:/);
   assert.ok(!w.kube.deleted.some((d) => d.includes("jr2-repo-cache")), "nothing of its own is deleted");
+  // The detector (ADR-0077): its exit message reaches the pod's status, where `jr2 up` reads it.
+  assert.equal(agent.terminationMessagePolicy, "FallbackToLogsOnError");
+});
+
+test("a Sandbox node without Landlock: jr2 up refuses to converge and names the node, the reason and the fix (ADR-0077)", async () => {
+  // The cache agent on each Sandbox node probes Landlock at start; without it, it exits with a
+  // termination message and never gets Ready, so its rollout does not complete. The refusal is an
+  // ordinary converge failure inside that wait: one list call of the DaemonSet's pods.
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  w.kube.rolloutFails.add("myinst/jr2-repo-cache");
+  const agentPod = (name: string, node: string, message: string) => ({
+    metadata: { name },
+    spec: { nodeName: node, containers: [{ name: "agent", image: "op" }] },
+    status: {
+      phase: "Running",
+      containerStatuses: [
+        {
+          name: "agent",
+          ready: false,
+          state: { waiting: { reason: "CrashLoopBackOff", message: "back-off 10s restarting failed container" } },
+          lastState: { terminated: { reason: "Error", exitCode: 1, message } },
+        },
+      ],
+    },
+  });
+  w.kube.failedPods["app=jr2-repo-cache"] = [
+    agentPod(
+      "jr2-repo-cache-a",
+      "old-node",
+      "no Landlock on node old-node: the kernel has no Landlock (ENOSYS) — jr2 needs Landlock on every Sandbox node (ADR-0077)",
+    ),
+    {
+      metadata: { name: "jr2-repo-cache-b" },
+      spec: { nodeName: "good-node" },
+      status: { containerStatuses: [{ ready: true }] },
+    },
+  ];
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      assert.match(err.message, /a Sandbox node has no Landlock, and jr2 needs it on every Sandbox node \(ADR-0077\)/);
+      assert.match(err.message, /^ {2}old-node: the kernel has no Landlock \(ENOSYS\)$/m);
+      assert.doesNotMatch(err.message, /good-node/, "a node with Landlock is not named");
+      assert.match(err.message, /sandbox\.nodeSelector or a taint \(ADR-0052\), or enable Landlock/);
+      assert.match(err.message, /run `jr2 up` again/);
+      return true;
+    },
+  );
+  // Nothing that comes after the cache agent was converged on a guess.
+  assert.ok(!w.kube.rollouts.some((r) => r.includes("jr2-instance-harness")));
 });
 
 test("`sandbox.nodeSelector`/`tolerations` ride the cache agent verbatim, and the Sandbox nodes are reported (ADR-0052)", async () => {
@@ -2446,12 +2508,9 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
   assert.equal(instance.stringData.JR2_INSTANCE_TOKEN, "tok-old", "an existing token is kept (Sandboxes hold it)");
   assert.ok(instance.stringData.JR2_SIGNING_KEY, "a missing signing key is minted");
-  // The Instance Harness Custodian's credential (ADR-0031): a sandbox-style token signed for the
-  // placement's name — derived from the kept key, so re-runs converge to the same value.
-  assert.equal(
-    instance.stringData.JR2_INSTANCE_HARNESS_TOKEN,
-    sandboxToken(Buffer.from(instance.stringData.JR2_SIGNING_KEY, "base64"), "jr2-instance-harness"),
-  );
+  // The Instance Harness's credentials are not in the Orchestrator's Secret (ADR-0076): they ride
+  // `jr2-instance-harness-token`, which its Harness container mounts the Stand-ins of.
+  assert.equal(instance.stringData.JR2_INSTANCE_HARNESS_TOKEN, undefined);
 
   // The ADR-0013 boundary: harness env lands in its OWN Secret — the Harness container envFroms
   // jr2-harness-env, and the Instance token/signing key must be unreachable from Agent code.
@@ -2601,6 +2660,56 @@ test("a known model key in harness.env or in an envFrom Secret is refused, namin
   assert.ok(!viaSecret.kube.applied.some((m) => m.includes(`"kind":"List"`)), "refused before anything is applied");
 });
 
+test("a held secret's name that is a key of an envFrom Secret is refused, naming the Secret, the key and the held secret (R14)", async () => {
+  // The Stand-ins are files (ADR-0076), so nothing in the Harness's env hides the key: the
+  // Secret's real value would reach the Harness under the held secret's name (ADR-0059). The
+  // custom provider's key is held as JR2_PROVIDER_API_KEY, and it is no model key, so R1 is silent.
+  const config = (envFrom: string) =>
+    `export default { name: "myinst", harness: { envFrom: [${envFrom}], provider: { id: "vllm", ` +
+    `api: "openai-completions", baseUrl: "https://llm.corp.example/v1", apiKey: "sk-provider-value" } } };\n`;
+  const plain = mkWorld(await mkInstance(config(`{ secretRef: { name: "team" } }`), "myinst", VLLM_ADVISOR));
+  plain.kube.set("myinst", "secret", "team", { data: { OTHER: "eA==" } } as never);
+  // The prefix decides the env name, as the kubelet writes it: JR2_PROVIDER_ + API_KEY.
+  const prefixed = mkWorld(
+    await mkInstance(
+      config(`{ secretRef: { name: "team" } }, { prefix: "JR2_PROVIDER_", secretRef: { name: "keys" } }`),
+      "myinst",
+      VLLM_ADVISOR,
+    ),
+  );
+  prefixed.kube.set("myinst", "secret", "team", { data: { OTHER: "eA==" } } as never);
+  prefixed.kube.set("myinst", "secret", "keys", { data: { API_KEY: "eA==" } } as never);
+  await assert.rejects(
+    () => up(["--yes"], prefixed.io),
+    (err: Error) => {
+      // A JR2_ name from envFrom is refused first: JR2_ names are jr2's own (ADR-0076). R14 for a
+      // held name of the user's own is the test below.
+      assert.match(err.message, /harness\.envFrom\[1\] loads Secret "keys", which carries JR2_PROVIDER_API_KEY/);
+      assert.match(err.message, /JR2_ names are jr2's own/);
+      assert.doesNotMatch(err.message, /sk-provider-value/, "never a value");
+      return true;
+    },
+  );
+  assert.ok(!prefixed.kube.applied.some(isInstanceList), "refused before the instance is applied");
+  // A key that is no held secret's name is not refused.
+  assert.equal(await up(["--yes"], plain.io), 0);
+});
+
+test("R14: a held secret of the user's own whose name is a key of an envFrom Secret is refused, by name, never a value", () => {
+  const config = {
+    harness: { envFrom: [{ secretRef: { name: "team" } }, { prefix: "GATEWAY_", secretRef: { name: "keys" } }] },
+  } as JR2Config;
+  const manifest = { secrets: [{ name: "GATEWAY_KEY" }] } as unknown as HeldManifest;
+  const keys = new Map([
+    ["secret/team", ["OTHER"]],
+    ["secret/keys", ["KEY"]],
+  ]);
+  const refusal = envFromHeldRefusal(config, manifest, keys) ?? "";
+  assert.match(refusal, /^harness\.envFrom\[1\] loads Secret "keys", whose key "KEY" is the env var GATEWAY_KEY/);
+  assert.match(refusal, /GATEWAY_KEY is a held secret.*R14/);
+  assert.equal(envFromHeldRefusal(config, manifest, new Map([["secret/team", ["OTHER"]]])), undefined);
+});
+
 test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a missing file fails loudly", async () => {
   const config =
     `export default { name: "myinst", harness: { caBundle: "ca.crt", ` +
@@ -2703,11 +2812,22 @@ test("provider preflight: the custom provider's models go the same path, its key
     "vllm/qwen-small",
     "vllm/qwen-x",
   ]);
-  const env = pod.spec.containers[0].env as Array<{ name: string; value?: string }>;
-  assert.equal(env.find((e) => e.name === "JR2_PROVIDER_API_KEY")?.value, "jr2-held-JR2_PROVIDER_API_KEY");
+  const env = pod.spec.containers[0].env as Array<{ name: string; value?: string; valueFrom?: any }>;
+  // The check pod's own secret Stand-in (ADR-0019, ADR-0059): in its env by reference to its own
+  // Secret, never a value in the pod spec, and never the public form.
+  const providerEnv = env.find((e) => e.name === "JR2_PROVIDER_API_KEY")!;
+  assert.equal(providerEnv.value, undefined);
+  assert.deepEqual(providerEnv.valueFrom, {
+    secretKeyRef: { name: pod.metadata.name, key: "standin-JR2_PROVIDER_API_KEY" },
+  });
   const checkList = JSON.parse(ok.kube.applied.find((m) => m.includes(`"name":"${pod.metadata.name}"`))!) as {
     items: Array<Record<string, any>>;
   };
+  const checkSecret = checkList.items.find((i) => i.kind === "Secret" && i.metadata.name === pod.metadata.name)!;
+  assert.match(
+    checkSecret.stringData["standin-JR2_PROVIDER_API_KEY"],
+    /^jr2-held-JR2_PROVIDER_API_KEY\.[A-Za-z0-9_-]{43}$/,
+  );
   assert.deepEqual(
     checkList.items
       .filter((i) => JSON.stringify(i).includes("sk-vllm-real"))
@@ -2914,6 +3034,23 @@ test("podFault: the hint follows the kubelet's reason, and quotes the Custodian'
   );
 });
 
+/** The egress rule of every Harness pod (ADR-0076): all but the cloud metadata addresses, and
+ * every pod of the cluster as its own peer. */
+const METADATA_EGRESS = [
+  {
+    to: [
+      {
+        ipBlock: {
+          cidr: "0.0.0.0/0",
+          except: ["169.254.169.254/32", "169.254.170.2/32", "169.254.170.23/32", "100.100.100.200/32"],
+        },
+      },
+      { ipBlock: { cidr: "::/0", except: ["fd00:ec2::254/128"] } },
+      { namespaceSelector: {} },
+    ],
+  },
+];
+
 test("checkPodObjects: the check pod takes its placement, and labels that select no Harness pod", () => {
   const list = JSON.parse(
     checkPodObjects({
@@ -2928,7 +3065,7 @@ test("checkPodObjects: the check pod takes its placement, and labels that select
       leaves: {},
       trust: {},
       custodian: { bootstrap: "{}", script: "" },
-      token: "t",
+      credentials: { "control-token": "t", "control-standin": "s" },
       harnessEnvData: {},
       models: ["anthropic/m"],
       priorityClassName: "jr2-sandbox",
@@ -2957,6 +3094,23 @@ test("checkPodObjects: the check pod takes its placement, and labels that select
     ["jr2-provider-preflight-ab12cd34-0"],
   );
   assert.ok(!pod.spec.containers[0].env.some((e: { name: string }) => e.name === "HTTPS_PROXY"));
+
+  // The egress of a Harness pod (ADR-0076): the check reaches a provider only as a Turn does. The
+  // policy is in the List before the pod, and it selects the check pods of this run alone.
+  const policy = list.items.find((i) => i.kind === "NetworkPolicy")!;
+  assert.equal(policy.metadata.name, "jr2-provider-preflight-ab12cd34-0");
+  assert.ok(list.items.indexOf(policy) < list.items.indexOf(pod), "the policy is applied before the pod");
+  assert.deepEqual(policy.spec.podSelector, {
+    matchLabels: { app: "jr2-provider-preflight", "jr2.dev/provider-preflight": "ab12cd34" },
+  });
+  assert.deepEqual(policy.spec.policyTypes, ["Egress"]);
+  assert.deepEqual(policy.spec.egress, METADATA_EGRESS);
+  // Its deletion goes with the check pod's other objects.
+  assert.ok(
+    checkPodObjectNames("jr2-provider-preflight-ab12cd34-0").some(
+      (o) => o.kind === "networkpolicy" && o.name === "jr2-provider-preflight-ab12cd34-0",
+    ),
+  );
 });
 
 const CATALOG_CONFIG = `export default { name: "myinst", secrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant-real-value" }] };\n`;
@@ -2992,6 +3146,7 @@ test("provider preflight: a Harness-shaped pod with its own objects, before anyt
   assert.deepEqual(namespaced(appliedBefore, "myinst").sort(), [
     `ConfigMap/${o}`,
     `ConfigMap/${o}-ca`,
+    `NetworkPolicy/${o}`,
     `Pod/${o}`,
     `Secret/${o}`,
     `Secret/${o}-env`,
@@ -3011,7 +3166,11 @@ test("provider preflight: a Harness-shaped pod with its own objects, before anyt
   const harnessPod = findInstanceHarness(w).statefulSet!.spec.template.spec;
   assert.equal(check.image, harnessPod.containers[0].image);
   const env = check.env as Array<{ name: string; value?: string; valueFrom?: any }>;
-  assert.equal(env.find((e) => e.name === "ANTHROPIC_API_KEY")?.value, "jr2-held-ANTHROPIC_API_KEY");
+  // Its own secret Stand-in, by reference to its own Secret (ADR-0019): it runs no Workspace code.
+  assert.deepEqual(env.find((e) => e.name === "ANTHROPIC_API_KEY")?.valueFrom, {
+    secretKeyRef: { name: o, key: "standin-ANTHROPIC_API_KEY" },
+  });
+  assert.ok(!env.some((e) => e.value?.startsWith("jr2-held-")), "no Stand-in is a literal of the pod spec");
   assert.equal(env.find((e) => e.name === "HTTPS_PROXY")?.value, "http://127.0.0.1:15001");
   assert.equal(env.find((e) => e.name === "NODE_EXTRA_CA_CERTS")?.value, "/etc/jr2/ca/extra.crt");
   assert.equal(env.find((e) => e.name === "JR2_HARNESS_JSON")?.valueFrom.configMapKeyRef.name, o);
@@ -3024,7 +3183,14 @@ test("provider preflight: a Harness-shaped pod with its own objects, before anyt
   assert.deepEqual(same, harnessPod.initContainers[0]);
   // …and reads the check pod's own copies, by the same paths.
   const volumes = JSON.stringify(pod.spec.volumes);
-  for (const shared of ['"jr2-held"', '"jr2-held-tls"', '"jr2-ca"', '"jr2-held-secrets-instance"', '"jr2-harness"']) {
+  for (const shared of [
+    '"jr2-held"',
+    '"jr2-held-tls"',
+    '"jr2-ca"',
+    '"jr2-held-secrets-instance"',
+    '"jr2-harness"',
+    '"jr2-instance-harness-token"',
+  ]) {
     assert.ok(!volumes.includes(shared) && !JSON.stringify(check).includes(shared), `the check pod reads no ${shared}`);
   }
   assert.equal(pod.spec.restartPolicy, "Never");
@@ -3085,7 +3251,7 @@ test("provider preflight: before the first check, only the namespace, the Priori
     "Namespace/myinst",
     "PriorityClass/jr2-control",
     "PriorityClass/jr2-sandbox",
-    `List ConfigMap/${o},ConfigMap/${o}-ca,Secret/${o},Secret/${o}-tls,Secret/${o}-env,Pod/${o}`,
+    `List ConfigMap/${o},ConfigMap/${o}-ca,Secret/${o},Secret/${o}-tls,Secret/${o}-env,NetworkPolicy/${o},Pod/${o}`,
   ]);
   assert.deepEqual(labeledBefore, [], "no label either: the operator's comes after the check");
   // …and both come after it.
@@ -3278,7 +3444,7 @@ test("checkPodObjects: a binding with no leaf is a jr2 defect, thrown before any
         leaves: {},
         trust: {},
         custodian: { bootstrap: "{}", script: "" },
-        token: "t",
+        credentials: { "control-token": "t", "control-standin": "s" },
         harnessEnvData: {},
         models: ["anthropic/m"],
         priorityClassName: "jr2-sandbox",
@@ -3583,6 +3749,7 @@ test("provider preflight: this Instance's check pods that ended over 10 minutes 
       "jr2.dev/provider-preflight,jr2.dev/instance=myinst",
       "jr2.dev/provider-preflight,jr2.dev/instance=myinst",
       "jr2.dev/provider-preflight,jr2.dev/instance=myinst",
+      "jr2.dev/provider-preflight,jr2.dev/instance=myinst",
     ],
     "this Instance's alone",
   );
@@ -3595,18 +3762,21 @@ test("provider preflight: this Instance's check pods that ended over 10 minutes 
       "myinst/configmap/jr2-provider-preflight-dead0000-0-ca",
       "myinst/configmap/jr2-provider-preflight-orphan00-0-ca",
       "myinst/pod/jr2-provider-preflight-dead0000-0",
+      "myinst/networkpolicy/jr2-provider-preflight-dead0000-0",
       "myinst/secret/jr2-provider-preflight-dead0000-0",
       "myinst/secret/jr2-provider-preflight-dead0000-0-env",
       "myinst/secret/jr2-provider-preflight-dead0000-0-tls",
       "myinst/configmap/jr2-provider-preflight-older000-0",
       "myinst/configmap/jr2-provider-preflight-older000-0-ca",
       "myinst/pod/jr2-provider-preflight-older000-0",
+      "myinst/networkpolicy/jr2-provider-preflight-older000-0",
       "myinst/secret/jr2-provider-preflight-older000-0",
       "myinst/secret/jr2-provider-preflight-older000-0-env",
       "myinst/secret/jr2-provider-preflight-older000-0-tls",
       "myinst/configmap/jr2-provider-preflight-stuck000-0",
       "myinst/configmap/jr2-provider-preflight-stuck000-0-ca",
       "myinst/pod/jr2-provider-preflight-stuck000-0",
+      "myinst/networkpolicy/jr2-provider-preflight-stuck000-0",
       "myinst/secret/jr2-provider-preflight-stuck000-0",
       "myinst/secret/jr2-provider-preflight-stuck000-0-env",
       "myinst/secret/jr2-provider-preflight-stuck000-0-tls",
@@ -3906,8 +4076,8 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   );
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
-    ["custodian-values", "custodian-config"],
-    "no /work — nothing to attach; the Custodian's own two alone",
+    ["custodian-values", "custodian-config", "custodian-socket", "harness-credentials"],
+    "no /work — nothing to attach; the Custodian's own two, its control socket and the Harness's Stand-ins alone",
   );
   // Its Custodian's two files from the ConfigMap `jr2 up` rendered for this pod, beside the one
   // program every pod projects from `jr2-held` (ADR-0059).
@@ -3955,24 +4125,53 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
     "the Harness is told it is the Instance Harness",
   );
 
-  // The Custodian's credential is the PLACEMENT's own signed token, not the Instance token: it may
-  // deliver only for registrations recording the Instance Harness (tokens.ts, ADR-0013/0031). A
-  // FILE in the Custodian alone — one key of the instance Secret, and no other key of it.
+  // The Custodian's credential is the PLACEMENT's own signed CONTROL token, not the Instance token:
+  // it may deliver only for registrations recording the Instance Harness (tokens.ts, ADR-0013/0031,
+  // ADR-0076). It and its secret Stand-in ride the pod's own credentials Secret, which `jr2 up`
+  // mints — never `jr2-instance`. FILES: the token in the Custodian alone, the Stand-in in both.
+  const objects = appliedObjects(w);
+  const credentials = objects.get("Secret/jr2-instance-harness-token")!;
+  const signing = Buffer.from(
+    (objects.get("Secret/jr2-instance")!.stringData as Record<string, string>).JR2_SIGNING_KEY!,
+    "base64",
+  );
+  assert.deepEqual(credentials.stringData, {
+    "control-token": controlToken(signing, "jr2-instance-harness"),
+    "control-standin": controlStandIn(signing, "jr2-instance-harness"),
+  });
   const values = podSpec.volumes.find((v: { name: string }) => v.name === "custodian-values");
   assert.deepEqual(values.projected.sources, [
-    { secret: { name: "jr2-instance", items: [{ key: "JR2_INSTANCE_HARNESS_TOKEN", path: "JR2_SANDBOX_TOKEN" }] } },
+    {
+      secret: {
+        name: "jr2-instance-harness-token",
+        items: [
+          { key: "control-token", path: "JR2_CONTROL_TOKEN" },
+          { key: "control-standin", path: "JR2_CONTROL_TOKEN.standin" },
+        ],
+      },
+    },
   ]);
+  assert.ok(!JSON.stringify(podSpec).includes('"jr2-instance"'), "no container of this pod mounts jr2-instance");
+  // The Harness holds the control Stand-in as a file, never in env (ADR-0059, C1).
+  assert.ok(
+    !harness.env.some((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN" || e.name === "JR2_CONTROL_TOKEN"),
+    "no Stand-in rides the Harness's env",
+  );
+  assert.ok(
+    harness.volumeMounts.some(
+      (m: { name: string; mountPath: string }) => m.name === "harness-credentials" && m.mountPath === "/run/jr2",
+    ),
+  );
+  // Its control requests go to the Custodian's control socket, as a Sandbox's do (ADR-0076).
   assert.ok(
     harness.env.some(
       (e: { name: string; value?: string }) =>
-        e.name === "JR2_SANDBOX_TOKEN" && e.value === "jr2-held-JR2_SANDBOX_TOKEN",
+        e.name === "JR2_CUSTODIAN_SOCKET" && e.value === "/run/jr2/custodian/control.sock",
     ),
-    "the Harness holds the token's Stand-in",
   );
   assert.equal(podSpec.securityContext.fsGroup, 2000, "the values are readable by the Custodian's uid");
   // Where the Custodian carries the Menu: this instance's Orchestrator Service, rendered by `jr2 up`
   // for the one pod it makes — and the script is the HELD table, which loads the program.
-  const objects = appliedObjects(w);
   const files = objects.get("ConfigMap/jr2-held-custodian")!;
   assert.deepEqual(Object.keys(files.data).sort(), ["custodian.lua", "envoy.json"]);
   assert.match(files.data["envoy.json"], /jr2-orchestrator\.myinst\.svc/);
@@ -4002,8 +4201,10 @@ test("the Instance Harness checks the bearer derived for ITS placement — a dig
     name: string;
     value?: string;
   }>;
-  // Last, so a `harness.env` entry of the same name cannot choose it.
-  assert.deepEqual(env.at(-1), {
+  // Last of the names a `harness.env` entry could take, so none chooses it. Only the list of the
+  // container's names, for the Harness's start (ADR-0076), comes after it.
+  assert.equal(env.at(-1)?.name, "JR2_HARNESS_ENV_NAMES");
+  assert.deepEqual(env.at(-2), {
     name: "JR2_HARNESS_TOKEN_SHA256",
     value: harnessTokenDigest(key, "jr2-instance-harness"),
   });
@@ -4055,7 +4256,36 @@ test("the ingress policies converge with the instance, whatever it composes — 
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst");
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.deepEqual(Object.keys(policiesOf(w)).sort(), ["jr2-instance-harness-ingress", "jr2-sandbox-ingress"]);
+  assert.deepEqual(Object.keys(policiesOf(w)).sort(), [
+    "jr2-instance-harness-egress",
+    "jr2-instance-harness-ingress",
+    "jr2-sandbox-egress",
+    "jr2-sandbox-ingress",
+  ]);
+});
+
+test("no Harness pod reaches a cloud metadata address, and its other egress stays open (ADR-0076)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const policies = policiesOf(w);
+
+  const sandboxes = policies["jr2-sandbox-egress"]!;
+  assert.equal(sandboxes.metadata.namespace, "myinst");
+  // The same pods as the ingress policy: every pod the operator makes for a Sandbox.
+  assert.deepEqual(sandboxes.spec.podSelector, policies["jr2-sandbox-ingress"]!.spec.podSelector);
+  // Egress alone: the ingress rule stays the ingress policy's, and policies of one direction add up.
+  assert.deepEqual(sandboxes.spec.policyTypes, ["Egress"]);
+  assert.deepEqual(sandboxes.spec.egress, METADATA_EGRESS);
+
+  const instanceHarness = policies["jr2-instance-harness-egress"]!;
+  assert.deepEqual(instanceHarness.spec.podSelector, { matchLabels: { app: "jr2-instance-harness" } });
+  assert.deepEqual(instanceHarness.spec.policyTypes, ["Egress"]);
+  assert.deepEqual(instanceHarness.spec.egress, METADATA_EGRESS);
+
+  // Not all of the link-local range: NodeLocal DNSCache answers on 169.254.20.10.
+  const except = JSON.stringify(sandboxes.spec.egress);
+  assert.ok(!except.includes("169.254.0.0/16"), "the link-local range stays open");
 });
 
 test("both readiness probes set a period — a ~1s boot must not be billed as a 10s rollout wait", async () => {
@@ -4134,10 +4364,12 @@ test("the Instance Harness is a StatefulSet of one: its conversations on a claim
   assert.equal(pod.securityContext.fsGroup, 2000, "the claim is writable by the Harness's group");
   const [harness] = pod.containers;
   const [custodian] = pod.initContainers;
-  assert.deepEqual(harness.volumeMounts[0], { name: "conversations", mountPath: "/conversations" });
+  // Under `/run/jr2`, with every other path that the Harness holds alone (ADR-0076).
+  assert.deepEqual(harness.volumeMounts[0], { name: "conversations", mountPath: "/run/jr2/conversations" });
   assert.ok(
     harness.env.some(
-      (e: { name: string; value?: string }) => e.name === "JR2_CONVERSATIONS_DIR" && e.value === "/conversations",
+      (e: { name: string; value?: string }) =>
+        e.name === "JR2_CONVERSATIONS_DIR" && e.value === "/run/jr2/conversations",
     ),
     "the Harness is told where its conversations persist",
   );
@@ -4366,10 +4598,29 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
 
   const pod = findInstanceHarness(w).statefulSet!.spec.template.spec;
   const env = pod.containers[0].env as Array<{ name: string; value?: string }>;
-  assert.equal(env.find((e) => e.name === "ANTHROPIC_API_KEY")?.value, "jr2-held-ANTHROPIC_API_KEY");
-  assert.equal(env.find((e) => e.name === "OPENAI_API_KEY")?.value, "jr2-held-OPENAI_API_KEY");
+  // The Stand-ins are SECRET and FILES (ADR-0059, ADR-0076): minted by `jr2 up` for this pod
+  // (`instance`), in the pod's credentials Secret, mounted under `/run/jr2/standins/` — never env.
+  assert.ok(!env.some((e) => e.name === "ANTHROPIC_API_KEY" || e.name === "OPENAI_API_KEY"), "no Stand-in in env");
+  const objects = appliedObjects(w);
+  const signing = Buffer.from(
+    (objects.get("Secret/jr2-instance")!.stringData as Record<string, string>).JR2_SIGNING_KEY!,
+    "base64",
+  );
+  const minted = objects.get("Secret/jr2-instance-harness-token")!.stringData as Record<string, string>;
+  for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
+    assert.equal(minted[`standin-${name}`], heldStandIn(signing, "instance", name));
+    assert.match(minted[`standin-${name}`]!, new RegExp(`^jr2-held-${name}\\.[A-Za-z0-9_-]{43}$`));
+    assert.ok(!minted[`standin-${name}`]!.includes("sk-ant-oat"), "never pi's OAuth mark (ADR-0059)");
+  }
+  const credentials = pod.volumes.find((v: { name: string }) => v.name === "harness-credentials");
+  assert.deepEqual(credentials.projected.sources[0].secret.items, [
+    { key: "control-standin", path: "control/standin" },
+    { key: "standin-ANTHROPIC_API_KEY", path: "standins/ANTHROPIC_API_KEY" },
+    { key: "standin-OPENAI_API_KEY", path: "standins/OPENAI_API_KEY" },
+  ]);
   assert.equal(env.find((e) => e.name === "HTTPS_PROXY")?.value, "http://127.0.0.1:15001");
-  assert.deepEqual(env.at(-1)?.name, "JR2_HARNESS_TOKEN_SHA256", "the gate still rides last");
+  assert.deepEqual(env.at(-2)?.name, "JR2_HARNESS_TOKEN_SHA256", "the gate still rides after harness.env");
+  assert.deepEqual(env.at(-1)?.name, "JR2_HARNESS_ENV_NAMES", "the list of the container's names, last (ADR-0076)");
 
   // Only the Custodian references what it holds; no manifest but its own Secret names the CA.
   const held = ["jr2-held-secrets-instance", "jr2-held-tls", "team"];
@@ -4378,7 +4629,7 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
   const values = pod.volumes.find((v: { name: string }) => v.name === "custodian-values");
   assert.deepEqual(
     values.projected.sources.map((s: { secret: { name: string } }) => s.secret.name),
-    ["jr2-instance", "jr2-held-secrets-instance", "team"],
+    ["jr2-instance-harness-token", "jr2-held-secrets-instance", "team"],
   );
   // The provider preflight's check pod holds its own copy for its life (ADR-0019); it is left out here.
   const everything = w.kube.applied.filter((m) => !m.includes(`"jr2.dev/provider-preflight"`)).join("\n");

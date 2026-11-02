@@ -48,8 +48,8 @@ for one Turn, because then the name of the Agent would not tell what it is.
 
 The [Working tools](../reference/glossary.md#working-tools) are the file and shell tools of an Agent: read, write, edit,
 bash, grep and glob. The [Harness](../reference/glossary.md#harness) runs them in its own container. Each program that
-bash, grep or glob starts runs confined with Landlock. It can use the files in `/work`, but it cannot read what the
-Harness holds. Read, write and edit open only paths in `/work`. [Secrets and trust](secrets-and-trust.md) tells why. The
+they start, and the file I/O of read, write and edit, runs confined with Landlock. It can do all that the user of the
+container can do, but it cannot read what the Harness holds. [Secrets and trust](secrets-and-trust.md) tells why. The
 `workspace` field selects the Working tools:
 
 - `"write"` gives all the Working tools.

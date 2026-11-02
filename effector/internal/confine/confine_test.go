@@ -2,6 +2,7 @@ package confine
 
 import (
 	"bytes"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,9 @@ func TestMain(m *testing.M) {
 		// syscall.Exit, not os.Exit: under -coverprofile the test binary's exit hook writes
 		// "GOCOVERDIR not set" to stderr, into the output the test reads. The Effector's binary has no such hook.
 		syscall.Exit(Main(os.Args[2:]))
+	}
+	if len(os.Args) > 2 && os.Args[1] == "dial-abstract" {
+		syscall.Exit(dialAbstract(os.Args[2]))
 	}
 	os.Exit(m.Run())
 }
@@ -187,7 +191,7 @@ func TestAFailedProbeRunsNothing(t *testing.T) {
 // SystemPaths follows the image: every top-level entry the image holds is allowed but the denied
 // names, so a tool under a non-FHS top-level (`/google-cloud-sdk`, `/nix`) runs, and `/proc`,
 // `/sys`, `/run`, `/home` and the rest are denied. A system path that holds one of the Effector's
-// own paths descends around it; a link into a denied path is skipped whole.
+// own paths descends around it; a link gets no rule.
 func TestSystemPathsFollowTheImageAndDescendAroundWhatIsDenied(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	must(t, err)
@@ -198,16 +202,18 @@ func TestSystemPathsFollowTheImageAndDescendAroundWhatIsDenied(t *testing.T) {
 	}
 	must(t, os.Symlink("usr/bin", filepath.Join(root, "bin")))
 	must(t, os.Symlink("usr/lib", filepath.Join(root, "lib")))
-	// A system path that is a link into a denied path is skipped whole.
+	// A system path that is a link into a denied path, or into a denied top-level, is skipped whole.
 	must(t, os.Symlink("run/jr2/secrets", filepath.Join(root, "sbin")))
+	must(t, os.Symlink("var/lib", filepath.Join(root, "data")))
 	at := func(p string) string { return filepath.Join(root, p) }
 	rx, err := SystemPaths(root, []string{at("run/jr2/effector"), at("run/jr2/secrets"), at("work"),
 		at("etc/jr2-mount")})
 	must(t, err)
 	slices.Sort(rx)
 	// The image's own tool trees are allowed — google-cloud-sdk and nix among them — and the
-	// denied names (run, home, root, var, srv, mnt, media, proc, sys, tmp) and work are not.
-	want := []string{at("bin"), at("etc/ssl"), at("google-cloud-sdk"), at("lib"), at("nix"), at("opt"), at("usr")}
+	// denied names (run, home, root, var, srv, mnt, media, proc, sys, tmp) and work are not. A link
+	// gets no rule (`/bin` works through the rule on `/usr`), so `/data -> var/lib` reaches nothing.
+	want := []string{at("etc/ssl"), at("google-cloud-sdk"), at("nix"), at("opt"), at("usr")}
 	if !slices.Equal(rx, want) {
 		t.Fatalf("read+exec %v, want %v", rx, want)
 	}
@@ -257,11 +263,12 @@ func TestTheChildCannotReadOutsideTheSystemPaths(t *testing.T) {
 }
 
 func TestArgsRoundTrip(t *testing.T) {
-	r := Rules{ReadExec: []string{"/usr"}, ReadWrite: []string{"/tmp", "/s/1"}, Read: []string{"/run/jr2/secrets/aws"}}
+	r := Rules{ReadExec: []string{"/usr"}, ReadWrite: []string{"/tmp", "/s/1"}, Read: []string{"/run/jr2/secrets/aws"},
+		ReadDir: []string{"/"}}
 	got, path, argv, err := Parse(r.Args("/usr/bin/env", []string{"env", "--", "-x"}))
 	must(t, err)
 	if !slices.Equal(got.ReadExec, r.ReadExec) || !slices.Equal(got.ReadWrite, r.ReadWrite) ||
-		!slices.Equal(got.Read, r.Read) || path != "/usr/bin/env" || !slices.Equal(argv, []string{"env", "--", "-x"}) {
+		!slices.Equal(got.Read, r.Read) || !slices.Equal(got.ReadDir, r.ReadDir) || path != "/usr/bin/env" || !slices.Equal(argv, []string{"env", "--", "-x"}) {
 		t.Fatalf("got %+v %q %q", got, path, argv)
 	}
 	for _, bad := range [][]string{{"--rx"}, {"--rx", "relative", "--", "/x", "x"}, {"/x"}, {"--", "/x"}} {
@@ -275,5 +282,374 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The Harness's domain (ADR-0076): every right on every path but the denied one. A confined process
+// writes a folder that the uid owns outside the Worktree, writes /tmp, renames a file into another
+// folder (the same inode: REFER, not a copy), and reads the /proc of a process of its own domain.
+// It lists `/`, each folder above the denied path and the denied path itself, as a user does on a
+// machine. It reads, writes, makes, removes, moves and links nothing under the denied path, by its
+// name or through a link, and reaches neither the Harness's environ nor its memory.
+func TestTheHarnessDomainDoesWhatTheUidDoesButReachesNothingDenied(t *testing.T) {
+	requireLandlock(t)
+	l := newLayout(t)
+	dirs := map[string]string{}
+	for _, d := range []string{"work2", "app", "a", "b", "run-jr2/standins", "run-jr2/control", "run-jr2/conversations"} {
+		dirs[d] = filepath.Join(l.root, d)
+		must(t, os.MkdirAll(dirs[d], 0o700))
+	}
+	denied := filepath.Join(l.root, "run-jr2")
+	control := filepath.Join(dirs["run-jr2/control"], "standin")
+	must(t, os.WriteFile(control, []byte("control-stand-in-value"), 0o400))
+	must(t, os.WriteFile(filepath.Join(dirs["run-jr2/standins"], "ANTHROPIC_API_KEY"), []byte("model-stand-in"), 0o400))
+	must(t, os.WriteFile(filepath.Join(dirs["run-jr2/conversations"], "record"), []byte("a conversation"), 0o600))
+	must(t, os.WriteFile(filepath.Join(dirs["a"], "f"), []byte("moved\n"), 0o600))
+	must(t, os.Symlink(control, filepath.Join(dirs["work2"], "to-standin")))
+	must(t, os.Symlink(denied, filepath.Join(dirs["work2"], "to-run-jr2")))
+	rules, err := ForHarness("/", []string{denied})
+	must(t, err)
+	if len(rules.ReadExec) != 0 || len(rules.Read) != 0 || !slices.Equal(rules.ReadDir, []string{"/"}) {
+		t.Fatalf("the Harness's domain has rules that are not every right, or READ_DIR on the root: %+v", rules)
+	}
+	for _, p := range rules.ReadWrite {
+		if within(p, denied) || within(denied, p) {
+			t.Fatalf("a rule reaches the denied path: %s", p)
+		}
+	}
+	tmp, err := os.MkdirTemp("", "jr2-harness-domain-")
+	must(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+	a, b := filepath.Join(dirs["a"], "f"), filepath.Join(dirs["b"], "f")
+	out, err := confined(t, rules, dirs["work2"], strings.Join([]string{
+		"echo made > made && cat made",
+		"echo app > " + filepath.Join(dirs["app"], "owned") + " && cat " + filepath.Join(dirs["app"], "owned"),
+		"echo tmp > " + filepath.Join(tmp, "t") + " && cat " + filepath.Join(tmp, "t"),
+		"before=$(stat -c %i " + a + ") && mv " + a + " " + b + " && after=$(stat -c %i " + b + ")" +
+			" && [ \"$before\" = \"$after\" ] && cat " + b,
+		"JR2_MARK=sibling sleep 30 & pid=$!; sleep 0.2; tr '\\0' '\\n' < /proc/$pid/environ | grep -x JR2_MARK=sibling" +
+			" && kill $pid",
+	}, " && "))
+	if err != nil || out != "made\napp\ntmp\nmoved\nJR2_MARK=sibling\n" {
+		t.Fatalf("%v: %q", err, out)
+	}
+	// The root, each folder above the denied path, and the denied path itself list, as they do outside
+	// jr2: the names there are not secrets. find walks into the denied path and reads no file there.
+	listed := []string{denied, dirs["run-jr2/standins"]}
+	for p := denied; p != "/"; {
+		p = filepath.Dir(p)
+		listed = append(listed, p)
+	}
+	for _, p := range listed {
+		out, err := confined(t, rules, dirs["work2"], "ls -a "+p)
+		if err != nil || !strings.Contains(out, "..") {
+			t.Errorf("ls %s: %v %q", p, err, out)
+		}
+	}
+	out, err = confined(t, rules, dirs["work2"], "ls "+dirs["run-jr2/standins"]+" && find "+denied+" -maxdepth 2 | sort")
+	if err != nil || !strings.Contains(out, "ANTHROPIC_API_KEY\n") || !strings.Contains(out, control+"\n") {
+		t.Errorf("the names in the denied path: %v %q", err, out)
+	}
+	for name, script := range map[string]string{
+		"the control Stand-in":               "cat " + control,
+		"a held Stand-in":                    "cat " + filepath.Join(dirs["run-jr2/standins"], "ANTHROPIC_API_KEY"),
+		"the conversations":                  "cat " + filepath.Join(dirs["run-jr2/conversations"], "record"),
+		"a write under the denied path":      "echo x > " + filepath.Join(dirs["run-jr2/conversations"], "new"),
+		"a folder made in the denied path":   "mkdir " + filepath.Join(denied, "new"),
+		"a write over a Stand-in":            "echo x > " + filepath.Join(dirs["run-jr2/standins"], "ANTHROPIC_API_KEY"),
+		"a truncate of a Stand-in":           "truncate -s 0 " + filepath.Join(dirs["run-jr2/standins"], "ANTHROPIC_API_KEY"),
+		"a remove of a Stand-in":             "rm -f " + filepath.Join(dirs["run-jr2/standins"], "ANTHROPIC_API_KEY"),
+		"a move of the denied path":          "mv " + denied + " " + filepath.Join(dirs["work2"], "stolen"),
+		"a move out of the denied path":      "mv " + control + " " + filepath.Join(dirs["work2"], "stolen"),
+		"a move into the denied path":        "mv " + filepath.Join(dirs["work2"], "made") + " " + filepath.Join(denied, "made"),
+		"a hard link to a Stand-in":          "ln " + control + " " + filepath.Join(dirs["work2"], "hard"),
+		"a symbolic link in the denied path": "ln -s /etc/passwd " + filepath.Join(denied, "planted"),
+		"a link to the Stand-in":             "cat " + filepath.Join(dirs["work2"], "to-standin"),
+		"a write through that link":          "echo x > " + filepath.Join(dirs["work2"], "to-standin"),
+		"a link to the denied folder":        "cat " + filepath.Join(dirs["work2"], "to-run-jr2", "control", "standin"),
+		"the Harness's environ":              "cat /proc/" + strconv.Itoa(os.Getpid()) + "/environ",
+		"the Harness's memory":               "head -c 1 /proc/" + strconv.Itoa(os.Getpid()) + "/mem",
+	} {
+		out, err := confined(t, rules, dirs["work2"], script)
+		if err == nil {
+			t.Errorf("%s: the child succeeded: %q", name, out)
+		}
+		if strings.Contains(out, "stand-in") || strings.Contains(out, "a conversation") {
+			t.Errorf("%s: the output carries what the child may not read: %q", name, out)
+		}
+	}
+	for _, p := range []string{filepath.Join(dirs["run-jr2/conversations"], "new"), filepath.Join(denied, "new"),
+		filepath.Join(denied, "made"), filepath.Join(denied, "planted"), filepath.Join(dirs["work2"], "stolen")} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("the child made %s", p)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dirs["run-jr2/standins"], "ANTHROPIC_API_KEY")); string(got) != "model-stand-in" {
+		t.Errorf("the held Stand-in changed: %q", got)
+	}
+	if got, _ := os.ReadFile(control); string(got) != "control-stand-in-value" {
+		t.Errorf("the control Stand-in changed: %q", got)
+	}
+}
+
+// ForHarness carves around the denied path one level at a time: every top-level entry whole but
+// the one that holds it, and that one's other entries. A link gets no rule: its target has its own
+// where it is allowed.
+func TestForHarnessCarvesAroundTheDeniedPathOneLevelAtATime(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	must(t, err)
+	for _, d := range []string{"usr/bin", "etc", "work", "tmp", "proc", "run/jr2/control", "run/lock", "var"} {
+		must(t, os.MkdirAll(filepath.Join(root, d), 0o700))
+	}
+	at := func(p string) string { return filepath.Join(root, p) }
+	must(t, os.Symlink(at("run"), at("var/run")))
+	must(t, os.Symlink(at("run/jr2/control"), at("etc/control")))
+	must(t, os.Symlink(at("usr/bin"), at("bin")))
+	must(t, os.WriteFile(at("run/pidfile"), nil, 0o600))
+	rules, err := ForHarness(root, []string{at("run/jr2")})
+	must(t, err)
+	got := slices.Clone(rules.ReadWrite)
+	slices.Sort(got)
+	want := []string{at("etc"), at("proc"), at("run/lock"), at("run/pidfile"), at("tmp"), at("usr"),
+		at("var"), at("work")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("read+write %v, want %v", got, want)
+	}
+	if !slices.Equal(rules.ReadDir, []string{root}) {
+		t.Fatalf("READ_DIR %v, want the root alone", rules.ReadDir)
+	}
+	// A folder whose entries are links into the denied path, one level down.
+	rules, err = ForHarness(at("etc"), []string{at("run/jr2")})
+	must(t, err)
+	if len(rules.ReadWrite) != 0 {
+		t.Fatalf("a link into the denied path got a rule: %v", rules.ReadWrite)
+	}
+	if _, err := ForHarness(root, nil); err == nil {
+		t.Fatal("a domain with no denied path was made")
+	}
+}
+
+// ADR-0076: the rules are made once, and the spawner's confiner opens them again at each restart.
+// A link beside the denied path whose target is in a folder that the domain writes (here `w`) once
+// carried a rule; the domain retargeted the link's target onto the denied path and ended the
+// spawner, and the next confiner allowed the denied path. Now a link gets no rule, so the Stand-in
+// read fails before and after the retarget, with the same rules (a restart).
+func TestARetargetedLinkGivesARestartedDomainNothingDenied(t *testing.T) {
+	requireLandlock(t)
+	l := newLayout(t)
+	at := func(p string) string { return filepath.Join(l.root, p) }
+	for _, d := range []string{"run/jr2/control", "w/target"} {
+		must(t, os.MkdirAll(at(d), 0o700))
+	}
+	denied := at("run/jr2")
+	must(t, os.WriteFile(at("run/jr2/control/standin"), []byte("control-stand-in-value"), 0o400))
+	must(t, os.Symlink(at("w/target"), at("run/link")))
+	rules, err := ForHarness("/", []string{denied})
+	must(t, err)
+	for _, p := range rules.ReadWrite {
+		if p == at("run/link") {
+			t.Fatalf("the link got a rule: %v", rules.ReadWrite)
+		}
+	}
+	read := "cat " + at("run/link/control/standin") + "; cat " + at("run/jr2/control/standin")
+	if out, _ := confined(t, rules, at("w"), read); strings.Contains(out, "control-stand-in-value") {
+		t.Fatalf("the first domain read the Stand-in: %q", out)
+	}
+	if out, err := confined(t, rules, at("w"), "rmdir target && ln -s "+denied+" target"); err != nil {
+		t.Fatalf("the domain could not retarget the link's target: %v %q", err, out)
+	}
+	out, _ := confined(t, rules, at("w"), read)
+	if strings.Contains(out, "control-stand-in-value") {
+		t.Fatalf("after the retarget, the restarted domain read the Stand-in: %q", out)
+	}
+}
+
+// A rule path with a symbolic link at any component stops the confiner (ELOOP): it never follows a
+// link to find what a rule allows, and it runs nothing.
+func TestTheConfinerRefusesARuleThroughALink(t *testing.T) {
+	requireLandlock(t)
+	l := newLayout(t)
+	link := filepath.Join(l.root, "to-work")
+	must(t, os.Symlink(l.work, link))
+	for _, p := range []string{link, filepath.Join(link, "file")} {
+		out, err := confined(t, Rules{Read: []string{p}}, l.root, "echo ran")
+		if err == nil || strings.Contains(out, "ran") || !strings.Contains(out, p+": a symbolic link") {
+			t.Errorf("a rule through %s: %v %q", p, err, out)
+		}
+	}
+}
+
+// With the signal scope (ABI 6), a confined child cannot signal a process outside its domain; below
+// it, it can (ADR-0076: a denial of service, not an impersonation).
+func TestTheSignalScopeHoldsWhenTheKernelOffersIt(t *testing.T) {
+	requireLandlock(t)
+	abi, _ := Probe()
+	l := newLayout(t)
+	out, err := confined(t, l.rules(t), l.effect, "kill -0 "+strconv.Itoa(os.Getpid()))
+	if abi >= 6 && err == nil {
+		t.Fatalf("ABI %d: the child signalled a process outside its domain: %q", abi, out)
+	}
+	if abi < 6 && err != nil {
+		t.Fatalf("ABI %d: %v %q", abi, err, out)
+	}
+}
+
+// dialAbstract is the test binary as a confined program: `dial-abstract <name>` connects to the
+// abstract Unix socket <name>, or, with name "self", to one it makes itself, so in its own domain.
+// It prints "connected" and exits 0, or prints the error and exits 1.
+func dialAbstract(name string) int {
+	if name == "self" {
+		name = "@jr2-confine-self-" + strconv.Itoa(os.Getpid())
+		l, err := net.Listen("unix", name)
+		if err != nil {
+			_, _ = os.Stdout.WriteString("listen: " + err.Error() + "\n")
+			return 1
+		}
+		defer func() { _ = l.Close() }()
+	}
+	c, err := net.Dial("unix", name)
+	if err != nil {
+		_, _ = os.Stdout.WriteString(err.Error() + "\n")
+		return 1
+	}
+	_ = c.Close()
+	_, _ = os.Stdout.WriteString("connected\n")
+	return 0
+}
+
+// With the abstract Unix socket scope (ABI 6), a confined process cannot connect to an abstract
+// socket that a process outside its domain made: the Harness's and the Custodian's, in a pod whose
+// containers share one network namespace. It still connects to one that its own domain made. It
+// holds in the Harness's domain and in a credentialed command's (ADR-0068): the confiner is one.
+func TestTheAbstractSocketScopeHoldsWhenTheKernelOffersIt(t *testing.T) {
+	requireLandlock(t)
+	abi, _ := Probe()
+	name := "@jr2-confine-outside-" + strconv.Itoa(os.Getpid())
+	l, err := net.Listen("unix", name)
+	must(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	lay := newLayout(t)
+	denied := filepath.Join(lay.root, "run-jr2")
+	must(t, os.Mkdir(denied, 0o700))
+	harness, err := ForHarness("/", []string{denied})
+	must(t, err)
+	// A credentialed command's child runs the test binary only if its folder is a system path: copy
+	// it into the Effect's own directory, which the child may run from.
+	bin := filepath.Join(lay.effect, "confine.test")
+	self, err := os.ReadFile(os.Args[0])
+	must(t, err)
+	must(t, os.WriteFile(bin, self, 0o700))
+	for domain, rules := range map[string]Rules{"the Harness's domain": harness, "a credentialed command": lay.rules(t)} {
+		out, err := confined(t, rules, lay.effect, bin+" dial-abstract self")
+		if err != nil || out != "connected\n" {
+			t.Errorf("%s: a socket of its own domain: %v %q", domain, err, out)
+		}
+		out, err = confined(t, rules, lay.effect, bin+" dial-abstract "+name)
+		if abi >= 6 && (err == nil || !strings.Contains(out, "operation not permitted")) {
+			t.Errorf("ABI %d, %s: the child connected to an abstract socket outside its domain: %v %q", abi, domain, err, out)
+		}
+		if abi < 6 && (err != nil || out != "connected\n") {
+			t.Errorf("ABI %d, %s: %v %q", abi, domain, err, out)
+		}
+	}
+	if abi < 6 {
+		t.Skipf("the host offers Landlock ABI %d: the abstract Unix socket scope needs ABI 6 (Linux 6.12), so only "+
+			"the connect without it was checked", abi)
+	}
+}
+
+// `effector harness-rules --deny <path>...` writes ForHarness's rules in confine's own format:
+// Parse reads them back with a program after `--`. Every rule is read and write, none reaches the
+// denied path, and any other flag, a relative path or no --deny at all is refused.
+func TestHarnessRulesMainWritesConfinesFormat(t *testing.T) {
+	var out, errs bytes.Buffer
+	if code := HarnessRulesMain([]string{"--deny", "/run/jr2"}, &out, &errs); code != 0 {
+		t.Fatalf("exit %d: %s", code, errs.String())
+	}
+	args := strings.Split(strings.TrimSuffix(out.String(), "\x00"), "\x00")
+	rules, path, argv, err := Parse(append(args, "--", "/bin/sh", "sh"))
+	if err != nil || path != "/bin/sh" || !slices.Equal(argv, []string{"sh"}) {
+		t.Fatalf("%v %q %q", err, path, argv)
+	}
+	if len(rules.ReadExec) != 0 || len(rules.Read) != 0 || !slices.Contains(rules.ReadWrite, "/proc") ||
+		!slices.Contains(rules.ReadWrite, "/tmp") || !slices.Equal(rules.ReadDir, []string{"/"}) {
+		t.Fatalf("got %+v", rules)
+	}
+	for _, p := range rules.ReadWrite {
+		if p == "/" || p == "/run" || within(p, "/run/jr2") {
+			t.Fatalf("%s reaches /run/jr2: %+v", p, rules.ReadWrite)
+		}
+	}
+	for _, bad := range [][]string{{"--deny", "run/jr2"}, {}, {"--rw", "/work"}, {"--deny"}} {
+		errs.Reset()
+		if code := HarnessRulesMain(bad, &out, &errs); code != 2 {
+			t.Errorf("%q: exit %d", bad, code)
+		}
+	}
+}
+
+// A missing denied path is resolved through the links above it, so a link on its way is followed.
+func TestRealPathFollowsALinkAboveAMissingPath(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	must(t, err)
+	must(t, os.Mkdir(filepath.Join(root, "real"), 0o700))
+	must(t, os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "link")))
+	got, err := realPath(filepath.Join(root, "link", "missing", "deeper"))
+	must(t, err)
+	if want := filepath.Join(root, "real", "missing", "deeper"); got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+// `effector probe` is the Harness's probe (ADR-0077): the ABI and 0, or the reason and 1.
+func TestProbeMainSaysTheABIOrWhyThereIsNone(t *testing.T) {
+	var out, errs bytes.Buffer
+	old := SetProbe(func() (int, error) { return 3, nil })
+	if code := ProbeMain(&out, &errs); code != 0 || out.String() != "landlock abi=3\n" {
+		t.Fatalf("exit %d: %q %q", code, out.String(), errs.String())
+	}
+	SetProbe(func() (int, error) { return 0, syscall.ENOSYS })
+	defer SetProbe(old)
+	out.Reset()
+	if code := ProbeMain(&out, &errs); code != 1 || !strings.Contains(errs.String(), "landlock: the kernel has no Landlock") {
+		t.Fatalf("exit %d: %q %q", code, out.String(), errs.String())
+	}
+}
+
+// ABI 3 is the minimum (ADR-0077): a kernel that offers ABI 1 or 2 is refused, with the ABI it
+// offers, by the probe and by the confiner, which then runs nothing. Under ABI 2 the domain could
+// truncate a file under /run/jr2.
+func TestTheProbeRefusesABI1And2WithTheABIItFound(t *testing.T) {
+	old := SetProbe(func() (int, error) { return 1, nil })
+	defer SetProbe(old)
+	for _, found := range []int{1, 2} {
+		SetProbe(func() (int, error) { return found, nil })
+		var out, errs bytes.Buffer
+		want := "Landlock ABI " + strconv.Itoa(found)
+		if code := ProbeMain(&out, &errs); code != 1 || !strings.Contains(errs.String(), want) ||
+			!strings.Contains(errs.String(), "needs ABI 3 or later (Linux 6.2)") {
+			t.Fatalf("ABI %d: exit %d: %q %q", found, code, out.String(), errs.String())
+		}
+		marker := filepath.Join(t.TempDir(), "ran")
+		if err := Exec(Rules{}, "/bin/sh", []string{"sh", "-c", "touch " + marker}, nil); err == nil ||
+			!strings.Contains(err.Error(), want) {
+			t.Fatalf("ABI %d: got %v", found, err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("ABI %d: the program ran", found)
+		}
+	}
+	SetProbe(func() (int, error) { return 3, nil })
+	if abi, err := Probe(); err != nil || abi != 3 {
+		t.Fatalf("ABI 3: %d %v", abi, err)
 	}
 }

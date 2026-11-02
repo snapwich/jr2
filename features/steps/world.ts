@@ -161,6 +161,16 @@ export class E2EWorld {
   endpointBefore?: string;
   /** @kind: stdout of the last command run INSIDE a Sandbox container (ADR-0013 boundary probes). */
   podSays?: string;
+  /** A held secret's Stand-in, as the Harness container's file holds it (ADR-0076). */
+  standIn?: string;
+  /** @kind: the secret Stand-ins of the run's Sandbox, read from its credentials Secret (ADR-0076). */
+  podStandIns?: string[];
+  /** @kind: what a confined child's Stand-in scan saw (ADR-0076). */
+  scanSeen?: {
+    files: Record<string, string>;
+    harness: { pid: string | null; environ: string | null; mem: string | null };
+    found: string[];
+  };
   /** @kind: the branch head sha captured when the review worktree was attached — the ref the
    * ADR-0028 containment scenario asserts unmoved after the rogue commit. */
   branchHeadBefore?: string;
@@ -183,6 +193,11 @@ export class E2EWorld {
    * `import-<date>@<digest>` only containerd knows, and the bare `sha256:<id>`. The sweep has to
    * take all of them, so the assertion (and the teardown) works from this set, not from the tag. */
   plantedRefs?: Record<string, string[]>;
+  /** @kind: the kind node whose loopback the egress scenario gave the metadata address (ADR-0076),
+   * for the After hook to take it away. */
+  metadataNode?: string;
+  /** @kind: what a connect to the metadata address got from a pod that no egress policy selects. */
+  metadataControl?: string;
 
   /** @console: the real Chromium the browser tier drives (ADR-0010 as amended) — launched by the
    * `Before("@console")` hook, closed in `After`. Type-only import: the default profile never
@@ -207,6 +222,9 @@ export class E2EWorld {
   /** The key the scripted model wants (ADR-0059) — this scenario's `harness.provider.apiKey`, which
    * the Custodian holds and the Harness container must not. */
   providerKey?: string;
+  /** @kind: the value of `PROBE_KEY`, the held secret the `sibling` workflow grants its Agents'
+   * programs (ADR-0076). The Custodian alone holds it. */
+  probeKey?: string;
   /** This scenario's Effect secret (ADR-0068): the kind instance's `echo-token`, which only the
    * Instance Effector holds. The steps look for every form of it in what came back. */
   echoToken?: string;
@@ -215,6 +233,8 @@ export class E2EWorld {
   selfToken?: string;
   /** @kind: every request the port takeover wrote down (ADR-0068), read while the run's Sandbox was live. */
   takeoverSeen?: string;
+  /** @kind: the Sandbox pod whose Effector's port the takeover holds. That pod is never Ready again. */
+  takeoverPod?: string;
   /** The `m-…` segment a `called` run sends, which the echo counts (ADR-0068's one-send proof). */
   marker?: string;
   /** The unbound echo's url, as a pod reaches it. */
@@ -268,6 +288,10 @@ export class E2EWorld {
     this.providerUrl = `https://${address}:${this.provider.port}/v1`;
     this.extraEnv.JR2_FAKE_PROVIDER_URL = this.providerUrl;
     this.extraEnv.JR2_FAKE_PROVIDER_KEY = this.providerKey;
+    // `PROBE_KEY` (ADR-0076): a held secret bound to the same host, which the `sibling` workflow
+    // grants its Agents' programs. Set for every scenario, since every converge places it.
+    this.probeKey = `probe-${randomBytes(12).toString("hex")}`;
+    this.extraEnv.JR2_PROBE_KEY = this.probeKey;
     // The kind instance's one Effect secret (ADR-0068), per scenario like the provider key: the
     // `called` and `asked` workflows name it, so every converge places it in the Instance Effector.
     this.echoToken = `echo-${randomBytes(12).toString("hex")}`;

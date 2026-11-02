@@ -30,7 +30,7 @@ import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
 import type { EffectMarker, EffectRow } from "./effect.ts";
 import type { EffectorPlacement, EffectorTarget } from "./http-effect.ts";
-import type { NoticeScope, TakenNotices } from "./notices.ts";
+import type { NoticeScope, RaiseOptions, TakenNotices } from "./notices.ts";
 import type { AnswerSeat } from "./pick.ts";
 import type { Notice, PickAnswer } from "./wire.ts";
 import type { SandboxPort } from "./workspace.ts";
@@ -83,13 +83,19 @@ export type Registration = {
    */
   sandbox?: string;
   /**
-   * The agent SLOT this surface belongs to (ADR-0076) — the agent name, which is this Turn's slot
-   * key. A multi-slot pod gives each slot its own Harness container and per-slot token, so a
-   * per-slot credential may deliver here only when its slot is this one; a bare Sandbox token (a
-   * single-agent pod) matches on the Sandbox alone. Absent on gates and on a workspace-less Agent
-   * turn, where no pod's credential delivers at all.
+   * An Agent's: its SLOT (ADR-0076) — the actor path of its Machine and its agent name, which is its
+   * continued conversation's Instance ID without the run id ({@link continuedIid}). The Harness
+   * states it on every control request, from its own record of the conversation, and the
+   * Orchestrator speaks here only for that slot. Two Agents with one key in two child Machines are
+   * two slots. Absent on gates.
    */
   slot?: string;
+  /** An Agent's: the step boundary's read of its conversation's pending notices (ADR-0062), each
+   * reserved for this Turn until {@link noticesHeard} or the Turn's end releases it. */
+  boundaryNotices?: () => Promise<Array<{ id: string; notice: Notice }>>;
+  /** An Agent's: the Harness appended these step-boundary notices — they are heard, ledgered in one
+   * save. Answers how many were this Turn's reservations. */
+  noticesHeard?: (ids: readonly string[]) => number;
   /** Close over the invoking state's `sendBack`; delivery lands where the actor was invoked. */
   deliver: (event: DeliveredEvent) => void;
   /** An Agent's: the Harness read this surface (`GET /agents/:iid/surface`), so it has the Turn in
@@ -321,9 +327,15 @@ export function actorPath(ref: AnyActorRef): string[] {
  * Turn adds a random suffix, a burned conversation's successor its epoch), and the Agent's Actor
  * names the conversation it burns with it.
  */
-export function continuedIid(machine: AnyActorRef | undefined, runId: string, agentName: string): string {
+/** An Agent's slot (ADR-0076): its continued conversation's Instance ID without the run id —
+ * `<machine actor path>/<agent>`. What the Harness states and the registration records. */
+export function agentSlot(machine: AnyActorRef | undefined, agentName: string): string {
   const path = (machine ? actorPath(machine).join(".") : "") || "root";
-  return `${runId}/${path}/${agentName}`;
+  return `${path}/${agentName}`;
+}
+
+export function continuedIid(machine: AnyActorRef | undefined, runId: string, agentName: string): string {
+  return `${runId}/${agentSlot(machine, agentName)}`;
 }
 
 /** The address of a run's gate: gate ids are run-scoped by construction (ADR-0011). */
@@ -496,9 +508,18 @@ export type RunBinding = {
    * Record an Agent invocation's durable admission in the host ledger (ADR-0016): persisted
    * beside the snapshot in the same RunBlob save, keyed by iid (globally unique, so the map is
    * flat). Optional so a bare unit-test binding can omit it — then admissions simply are not
-   * durable.
+   * durable. `delivered` are the notices the admission carried, delivered by this save in `taker`'s
+   * conversation — the Instance ID the admission rides (ADR-0062). `member`: the Workspace the
+   * conversation was admitted in, its slot and whether it continues — so it is in the audience of
+   * every kill there from now on, in the same save.
    */
-  recordAdmission?: (instanceId: string, admission: AgentAdmission, delivered?: readonly string[]) => void;
+  recordAdmission?: (
+    instanceId: string,
+    admission: AgentAdmission,
+    delivered?: readonly string[],
+    taker?: string,
+    member?: { workspace: string; slot: string; continued: boolean },
+  ) => void;
   /**
    * The admission ledger's READ half (ADR-0016): the last admission ledgered under this iid. A
    * continued Turn asks it whether its conversation was ever admitted — only then can the Harness
@@ -529,14 +550,27 @@ export type RunBinding = {
    * `older` names earlier events this one tells the same as, marked raised with it (`NoticeLedger`).
    * A burned conversation's notice is raised by `bumpEpoch` itself, in the same save.
    */
-  raiseNotice?: (notice: Notice, to: string, source?: string, older?: readonly string[]) => void;
+  raiseNotice?: (notice: Notice, to: string, source?: string, older?: readonly string[], opts?: RaiseOptions) => void;
   /** Put back a notice an admission carried that no model heard, WITH its source (`NoticeLedger.restore`):
-   * a raise would drop it, its source being seen. Persisted at the write. */
-  restoreNotice?: (notice: Notice, to: string, source?: string) => void;
-  /** Reserve the pending notices in one admission's scope. They are delivered by the
-   * `recordAdmission` that ledgers it (its `delivered` ids), or released if the admission fails. */
+   * a raise would drop it, its source being seen. A Workspace notice is pending again for `taker`,
+   * the conversation that did not hear it. Persisted at the write. */
+  restoreNotice?: (notice: Notice, to: string, source?: string, taker?: string) => void;
+  /** Reserve the pending notices in one admission's scope, for its conversation (`scope.taker`).
+   * They are delivered by the `recordAdmission` that ledgers it (its `delivered` ids and `taker`),
+   * or released for that conversation if the admission fails. */
   takeNotices?: (scope: NoticeScope) => TakenNotices;
-  releaseNotices?: (ids: readonly string[]) => void;
+  releaseNotices?: (ids: readonly string[], taker?: string) => void;
+  /** What `takeNotices` would reserve in this scope, reserving nothing (`NoticeLedger.peek`). */
+  peekNotices?: (scope: NoticeScope) => Array<{ id: string; notice: Notice; source?: string }>;
+  /** The Harness acknowledged a step boundary's notices (ADR-0062): each that `taker` reserved is
+   * heard there, persisted at the write. Answers how many were. */
+  acknowledgeNotices?: (ids: readonly string[], taker: string) => number;
+  /** The conversations each kill's `bash` answer told (ADR-0062, D4 rule 3), off the pod's list:
+   * they leave that kill's audience. Persisted at the write when anything changed. */
+  noticesTold?: (told: ReadonlyArray<{ source: string; takers: readonly string[] }>) => void;
+  /** A Turn of these conversations in `workspace` ended: a fresh one leaves every audience there,
+   * a continued one stays for its next Turn (ADR-0062). Persisted at the write. */
+  noticeTurnEnded?: (workspace: string, takers: readonly string[]) => void;
   /**
    * The pick the Turn now at this address has outstanding, or answered and not yet read (ADR-0024):
    * what the Agent's Actor asks when its Harness restarted under a Turn — a Turn whose pick is still

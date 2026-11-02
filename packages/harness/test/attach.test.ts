@@ -11,11 +11,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AttachFault, attacher, attachFault } from "../src/attach.ts";
+import { deniedDir, testChildren } from "./support/children.ts";
 
 const URL_ = "https://example.test/acme/app.git";
 const IDENTITY = "example.test/acme/app";
@@ -50,8 +51,15 @@ async function layout() {
   );
   await chmod(join(runtime, "bin", "work-acl"), 0o755);
   const workRoot = join(root, "work");
-  const attach = attacher({ paths: { workRoot, reposMount, runtime }, env });
-  return { root, src, git, workRoot, runtime, stamped, globalConfig, attach };
+  // Confined as in a pod (ADR-0076): the whole fixture is the children's TMPDIR, so the stubbed
+  // runtime runs and the clone lands; the caches are read only.
+  const children = testChildren({ tmp: root, repos: reposMount });
+  const attach = attacher({
+    children,
+    paths: { workRoot, reposMount, runtime },
+    env: { GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_SYSTEM: "/dev/null" },
+  });
+  return { root, src, git, workRoot, reposMount, runtime, stamped, globalConfig, attach };
 }
 
 test("attach clones each slot off its cache, splits fetch from push, and cuts no Worktree", async () => {
@@ -193,4 +201,44 @@ test("attachFault refuses a body that is not an AttachRequest, naming what is wr
     assert.match(attachFault({ slots: [{ ...slot, key: bad }] }) ?? "", /key/, `key ${bad}`);
   }
   assert.match(attachFault({ slots: [slot, slot] }) ?? "", /twice/);
+});
+
+// ADR-0076 (G2): jr2's own git for the attach runs confined. The cache's objects are moved to a
+// store the policy denies, which the cache names in its `objects/info/alternates`: a git that ran
+// unconfined would read them, and the clone would land; the confined one cannot, and the attach
+// fails at its clone.
+test("the attach's git runs confined: a store the cache names outside its reach is not read (ADR-0076)", async () => {
+  const l = await layout();
+  const cache = join(l.root, "repos", KEY);
+  const denied = deniedDir("jr2-attach-denied-");
+  execFileSync("cp", ["-a", join(cache, "objects"), join(denied, "objects")]);
+  execFileSync("sh", ["-c", `cd "${join(cache, "objects")}" && rm -rf -- [0-9a-f][0-9a-f] pack/*`]);
+  await writeFile(join(cache, "objects", "info", "alternates"), `${join(denied, "objects")}\n`);
+  assert.ok(l.git(cache, "rev-parse", "main"), "unconfined, git reads the store");
+  const attach = attacher({
+    children: testChildren({ tmp: l.root, repos: join(l.root, "repos"), deny: [denied] }),
+    paths: { workRoot: l.workRoot, reposMount: join(l.root, "repos"), runtime: l.runtime },
+    env: { GIT_CONFIG_GLOBAL: l.globalConfig, GIT_CONFIG_SYSTEM: "/dev/null" },
+  });
+  await assert.rejects(attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] }), AttachFault);
+});
+
+test("the slot's folder is made in the domain: a /work that links to a denied folder gets nothing there (ADR-0076)", async () => {
+  const l = await layout();
+  const denied = deniedDir("attach-work-");
+  await symlink(denied, l.workRoot);
+  const attach = attacher({
+    children: testChildren({ tmp: l.root, repos: l.reposMount, deny: [denied] }),
+    paths: { workRoot: l.workRoot, reposMount: l.reposMount, runtime: l.runtime },
+    env: { GIT_CONFIG_GLOBAL: l.globalConfig, GIT_CONFIG_SYSTEM: "/dev/null" },
+  });
+  await assert.rejects(
+    attach({ slots: [{ slot: "app", url: URL_, identity: IDENTITY, key: KEY }] }),
+    (err: unknown) => {
+      assert.ok(err instanceof AttachFault);
+      assert.match(err.message, /make the slot's folder/);
+      return true;
+    },
+  );
+  assert.deepEqual(await readdir(denied), [], "the Harness process made no folder through the link");
 });

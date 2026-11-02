@@ -21,7 +21,10 @@ import {
   type Surface,
 } from "../src/menu.ts";
 
-const STAND_IN = "jr2-held-JR2_SANDBOX_TOKEN";
+/** The control Stand-in (ADR-0076): secret, held by the Harness process alone. */
+const STAND_IN = "Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx5";
+/** The slot the Harness states for the conversation (ADR-0076). */
+const SLOT = "root/reviewer";
 
 const SURFACE: Surface = {
   instanceId: "run-1/reviewer",
@@ -65,7 +68,13 @@ function fakeFetch(answer: (call: Call) => Response | Promise<Response>): { fetc
   };
 }
 
-const opts = (f: typeof fetch) => ({ url: "http://127.0.0.1:8081/", token: STAND_IN, fetch: f, log: () => {} });
+const opts = (f: typeof fetch) => ({
+  url: "http://127.0.0.1:8081/",
+  token: STAND_IN,
+  slot: SLOT,
+  fetch: f,
+  log: () => {},
+});
 
 /** The items of a read that found a live surface — every read here but the turn-is-over ones. */
 async function menuOf(...args: Parameters<typeof readMenu>) {
@@ -95,6 +104,7 @@ test("the surface becomes the Menu: the bare name, sanitized, the event's schema
   // The iid is ONE path segment on the wire, and the bearer is the Stand-in — never a token.
   assert.equal(calls[0]!.url, "http://127.0.0.1:8081/agents/run-1%2Freviewer/surface");
   assert.equal(calls[0]!.headers.authorization, `Bearer ${STAND_IN}`);
+  assert.equal(calls[0]!.headers["x-jr2-slot"], SLOT, "the stated slot rides the read (ADR-0076)");
 });
 
 test("the Orchestrator's mark on a Chart pick rides the item, for the Turn part alone (ADR-0070)", async () => {
@@ -126,6 +136,7 @@ test("a pick is one delivery with the Stand-in, and the receipt comes back as pr
   assert.equal(post.method, "POST");
   assert.equal(post.url, "http://127.0.0.1:8081/agents/run-1%2Freviewer/events");
   assert.equal(post.headers.authorization, `Bearer ${STAND_IN}`);
+  assert.equal(post.headers["x-jr2-slot"], SLOT, "the stated slot rides the pick (ADR-0076)");
   assert.deepEqual(JSON.parse(post.body!), { type: "review_verdict", verdict: "approved" });
   assert.equal(prose, receiptProse(receipt));
   assert.match(receiptProse(receipt), /your turn is over/);
@@ -395,7 +406,7 @@ test("the Submission's signal ends a read in flight at once (ADR-0024 hot path)"
 test("over a real socket: the Menu reads and delivers through whatever answers at the Custodian's address", async () => {
   const seen: string[] = [];
   const server = createServer((req, res) => {
-    seen.push(`${req.method} ${req.url} ${req.headers.authorization}`);
+    seen.push(`${req.method} ${req.url} ${req.headers.authorization} ${req.headers["x-jr2-slot"]}`);
     let body = "";
     req.on("data", (b: Buffer) => (body += b));
     req.on("end", () => {
@@ -412,14 +423,42 @@ test("over a real socket: the Menu reads and delivers through whatever answers a
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    const menu = await menuOf({ url, token: STAND_IN }, "run-1/reviewer");
+    const menu = await menuOf({ url, token: STAND_IN, slot: SLOT }, "run-1/reviewer");
     await menu[1]!.pick({});
     assert.deepEqual(seen, [
-      `GET /agents/run-1%2Freviewer/surface Bearer ${STAND_IN}`,
-      `POST /agents/run-1%2Freviewer/events Bearer ${STAND_IN}`,
+      `GET /agents/run-1%2Freviewer/surface Bearer ${STAND_IN} ${SLOT}`,
+      `POST /agents/run-1%2Freviewer/events Bearer ${STAND_IN} ${SLOT}`,
     ]);
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("the delivery poll of an outstanding pick carries the control Stand-in and the stated slot (ADR-0076)", async () => {
+  const { fetch, calls } = fakeFetch((call) => {
+    if (call.method === "GET" && call.url.endsWith("/surface")) return Response.json(SURFACE);
+    if (call.method === "POST") {
+      return Response.json({
+        delivered: true,
+        event: "review_verdict",
+        turnComplete: false,
+        deliveryId: "d-7",
+        outstanding: true,
+      });
+    }
+    return Response.json({
+      delivered: true,
+      event: "review_verdict",
+      turnComplete: true,
+      deliveryId: "d-7",
+      answered: true,
+    });
+  });
+  const menu = await menuOf(opts(fetch), "run-1/reviewer");
+  await menu[0]!.pick({ verdict: "approved" });
+  const poll = calls.find((c) => c.url.includes("/deliveries/"))!;
+  assert.equal(poll.url, "http://127.0.0.1:8081/agents/run-1%2Freviewer/deliveries/d-7");
+  assert.equal(poll.headers.authorization, `Bearer ${STAND_IN}`);
+  assert.equal(poll.headers["x-jr2-slot"], SLOT);
 });

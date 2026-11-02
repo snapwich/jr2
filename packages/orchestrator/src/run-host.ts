@@ -34,7 +34,7 @@ import { SENDER_KEY, type EventDef, type EventSemantics, type Sender } from "@jr
 import { partiesAt, seatOf, senderText } from "./party.ts";
 import { placeAnswers, type AnswerSeat } from "./pick.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
-import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
+import type { EchoEvent, EchoStatusChild, LiveConversation, Notice, PickAnswer } from "./wire.ts";
 import { answerOf, childErrorOf, replyOf, type Hold } from "./holds.ts";
 import { PickCauses } from "./cause.ts";
 import { restOf, runningBelow } from "./rest.ts";
@@ -677,8 +677,8 @@ export type AgentSurfaceView = {
   instanceId: string;
   runId: string;
   sandbox?: string;
-  /** The agent slot this surface belongs to (ADR-0076) — what the slot check reads beside
-   * `sandbox`. Absent on a workspace-less Turn. */
+  /** The slot this surface belongs to (ADR-0076): its Agent's actor path and agent name — the slot
+   * the Harness must state to speak here. Absent on a registration no pod hosts. */
   slot?: string;
   menu: SurfaceEvent[];
   allowed: string[];
@@ -973,8 +973,10 @@ type RunBlob = {
    * The pending NOTICES (ADR-0062): what the next Turn in a scope must be told — a memory kill in
    * its Workspace, a conversation that is new. The Orchestrator is their only keeper, so they ride
    * this blob beside the two ledgers, for the same reasons: the run's exact lifetime, and the
-   * snapshot's atomicity. A notice leaves it in the save that ledgers the admission that carried
-   * it, so a restart before that save delivers it again and a restart after does not.
+   * snapshot's atomicity. A notice is cleared for a conversation in the save that ledgers the
+   * admission that carried it there, so a restart before that save delivers it again and a restart
+   * after does not. A conversation notice then leaves it; a Workspace notice stays, with the
+   * conversations that heard it, for the Workspace's other conversations.
    */
   notices?: NoticeLedgerState;
   /**
@@ -1752,7 +1754,7 @@ export class RunHost {
       instanceId,
       runId: reg.runId,
       sandbox: reg.sandbox,
-      slot: reg.slot,
+      ...(reg.slot !== undefined ? { slot: reg.slot } : {}),
       menu: [...menuOf(reg).values()].map((def) => ({
         name: def.name,
         description: def.description,
@@ -1768,6 +1770,19 @@ export class RunHost {
    * carried reach a model now, so an end to the Turn no longer raises them again (ADR-0062). */
   agentSurfaceServed(instanceId: string): void {
     this.table.lookup(agentAddress(instanceId))?.served?.();
+  }
+
+  /** The notices this Turn's conversation hears at a step boundary (ADR-0062): its pending notices
+   * in their audience, reserved for this read until the Harness acknowledges them
+   * ({@link noticesHeard}) or the Turn ends. Empty for a registration that hears none. */
+  async boundaryNotices(instanceId: string): Promise<Array<{ id: string; notice: Notice }>> {
+    return (await this.table.lookup(agentAddress(instanceId))?.boundaryNotices?.()) ?? [];
+  }
+
+  /** The Harness appended these step-boundary notices to the Turn (ADR-0062): they are heard in its
+   * conversation, ledgered in one save. Answers how many were this conversation's reservations. */
+  noticesHeard(instanceId: string, ids: readonly string[]): number {
+    return this.table.lookup(agentAddress(instanceId))?.noticesHeard?.(ids) ?? 0;
   }
 
   /**
@@ -2191,8 +2206,8 @@ export class RunHost {
     return this.parked.has(`${instanceId} ${deliveryId}`);
   }
 
-  /** The Sandbox and slot that may read a delivery's answer (ADR-0013, ADR-0076), or undefined for
-   * an unknown one. */
+  /** The pod and slot that may read a delivery's answer (ADR-0013, ADR-0076), or undefined for an
+   * unknown one. */
   deliveryScope(instanceId: string, deliveryId: string): { sandbox?: string; slot?: string } | undefined {
     const found = this.holdAt(instanceId, deliveryId);
     return (
@@ -2852,10 +2867,20 @@ export class RunHost {
       // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
       // exactly like the persist scheduler's tracked-run guard.
-      recordAdmission: (instanceId, admission, delivered = []) => {
+      recordAdmission: (instanceId, admission, delivered = [], taker, member) => {
         agents[instanceId] = admission;
-        // The notices this admission carried are delivered by THIS save (ADR-0062).
-        notices.delivered(delivered);
+        // The notices this admission carried are delivered by THIS save, in the conversation it
+        // rode (ADR-0062): a Workspace notice stays pending for the rest of its audience. And the
+        // conversation is a member of its Workspace's audiences from now on, in the same save.
+        notices.delivered(delivered, taker);
+        if (member !== undefined && taker !== undefined) {
+          notices.admitted(member.workspace, {
+            taker,
+            slot: member.slot,
+            continued: member.continued,
+            since: new Date().toISOString(),
+          });
+        }
         const run = this.runs.get(record.runId);
         if (run && run.agents === agents) this.persist(run);
       },
@@ -2867,6 +2892,9 @@ export class RunHost {
       // invoke would otherwise restore into the burned conversation.
       epochOf: (conversation) => epochs[conversation] ?? 0,
       bumpEpoch: (conversation, reason) => {
+        // The burned conversation can take no Turn again: it leaves every audience (ADR-0062).
+        const burned = epochs[conversation] ? `${conversation}/${epochs[conversation]}` : conversation;
+        notices.forget(burned);
         epochs[conversation] = (epochs[conversation] ?? 0) + 1;
         // The next `continue` lands on a virgin conversation and is told so, with the fault's own
         // words (ADR-0062) — raised in the SAME save as the bump, so no restart can split them.
@@ -2876,18 +2904,36 @@ export class RunHost {
       },
       // The notices' other halves (ADR-0062). A raise is saved at the write, like the ledgers; a
       // take is a reservation in memory, delivered by `recordAdmission` or released on failure.
-      raiseNotice: (notice, to, source, older) => {
-        if (!notices.raise(notice, to, source, older)) return;
+      raiseNotice: (notice, to, source, older, raiseOpts) => {
+        if (!notices.raise(notice, to, source, older, raiseOpts)) return;
         const run = this.runs.get(record.runId);
         if (run && run.notices === notices) this.persist(run);
       },
-      restoreNotice: (notice, to, source) => {
-        if (!notices.restore(notice, to, source)) return;
+      restoreNotice: (notice, to, source, taker) => {
+        if (!notices.restore(notice, to, source, taker)) return;
         const run = this.runs.get(record.runId);
         if (run && run.notices === notices) this.persist(run);
       },
       takeNotices: (scope) => notices.take(scope),
-      releaseNotices: (ids) => notices.release(ids),
+      releaseNotices: (ids, taker) => notices.release(ids, taker),
+      peekNotices: (scope) => notices.peek(scope),
+      acknowledgeNotices: (ids, taker) => {
+        const heard = notices.acknowledge(ids, taker);
+        const run = this.runs.get(record.runId);
+        if (heard > 0 && run && run.notices === notices) this.persist(run);
+        return heard;
+      },
+      noticesTold: (told) => {
+        let changed = false;
+        for (const { source, takers } of told) changed = notices.told(source, takers) || changed;
+        const run = this.runs.get(record.runId);
+        if (changed && run && run.notices === notices) this.persist(run);
+      },
+      noticeTurnEnded: (workspace, takers) => {
+        if (!notices.ended(workspace, takers)) return;
+        const run = this.runs.get(record.runId);
+        if (run && run.notices === notices) this.persist(run);
+      },
       // Absorbed-retry attempts go straight to the run's observers (SSE/CLI watch) — they are
       // feed events, not machine events (ADR-0016: the workflow sees only the terminal fault).
       telemetry: (event) => {

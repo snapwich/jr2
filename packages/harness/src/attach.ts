@@ -16,10 +16,12 @@
 // ADR-0012) finds everything present and answers the same paths. As a child of the Harness it
 // inherits the process's `umask 002` (startup.ts), which the exec'd script had to set itself.
 // Each step runs git directly — no shell — so a hostile ref or url is an argument, never syntax,
-// and a failure names its slot, its step, and git's own stderr.
+// and a failure names its slot, its step, and git's own stderr. Each step runs in the domain, with
+// its env (`children.ts`, ADR-0076): a second attach runs git in a clone whose `.git/config` an
+// Agent can write, and a filter or a hook there runs in git's process. The slot's folder is made in
+// the domain too: the Harness process makes nothing under `/work`.
 
-import { execFile } from "node:child_process";
-import { access, mkdir } from "node:fs/promises";
+import { runIn, type ChildPolicy, type RunResult } from "./children.ts";
 import type { AttachRequest, AttachResponse, AttachSlot } from "./wire.ts";
 
 /** Where the attach reads and writes, as the operator composes the pod (ADR-0004, ADR-0037,
@@ -41,20 +43,22 @@ export class AttachFault extends Error {
 
 /**
  * The attach, bound to its paths. Calls are serialized: two attaches racing on one clone would
- * each see it absent and the second `git clone` would fail on the first's directory. `env` is a
- * seam for the tests (a sealed git config); production inherits the process's.
+ * each see it absent and the second `git clone` would fail on the first's directory. `children` is
+ * how each step starts (ADR-0076); `env` is a seam for the tests (a sealed git config) over the
+ * domain's env.
  */
-export function attacher(opts: { paths?: AttachPaths; env?: NodeJS.ProcessEnv } = {}) {
+export function attacher(opts: { children: ChildPolicy; paths?: AttachPaths; env?: NodeJS.ProcessEnv }) {
   const paths = opts.paths ?? POD_PATHS;
+  const env: Env = { children: opts.children, env: { ...opts.children.env, ...opts.env } };
   let queue: Promise<unknown> = Promise.resolve();
   return (req: AttachRequest): Promise<AttachResponse> => {
-    const run = queue.then(() => attach(req, paths, opts.env));
+    const run = queue.then(() => attach(req, paths, env));
     queue = run.catch(() => {});
     return run;
   };
 }
 
-async function attach(req: AttachRequest, paths: AttachPaths, env?: NodeJS.ProcessEnv): Promise<AttachResponse> {
+async function attach(req: AttachRequest, paths: AttachPaths, env: Env): Promise<AttachResponse> {
   if (req.slots.length === 0) {
     throw new AttachFault(
       "the attach names no Repo Slot — nothing to attach (a Workspace with no Repo Slot skips the attach, ADR-0051)",
@@ -75,10 +79,12 @@ async function attach(req: AttachRequest, paths: AttachPaths, env?: NodeJS.Proce
     const cache = `${paths.reposMount}/${s.key}`;
     repos[s.slot] = slotDir;
 
-    await mkdir(slotDir, { recursive: true });
+    // In the domain, as each other step (ADR-0076): `/work` is the domain's, and a link that Workspace
+    // code put there names a folder that the Harness process can write and the domain cannot.
+    await run("make the slot's folder", s.slot, "mkdir", ["-p", "--", slotDir], env);
     // On a filesystem without POSIX ACLs the helper warns and exits 0, degrading to the umask.
     await run("stamp the work ACL", s.slot, `${paths.runtime}/bin/work-acl`, [slotDir], env);
-    if (!(await exists(`${dflt}/.git`))) {
+    if (!(await exists(env, `${dflt}/.git`))) {
       await git("git clone --shared", s.slot, ["clone", "--shared", "--", cache, dflt]);
     }
     // A guard, so that a second attach changes nothing: an Agent's edit in `default/`, or a fetch that
@@ -114,7 +120,7 @@ async function attach(req: AttachRequest, paths: AttachPaths, env?: NodeJS.Proce
  * two, the local default branch goes: it holds no work, nothing holds it, and it would freeze at the
  * clone, so a cut of it finds `origin/<default>` and tracks it.
  */
-async function placeDefault(dflt: string, s: AttachSlot, env?: NodeJS.ProcessEnv): Promise<string> {
+async function placeDefault(dflt: string, s: AttachSlot, env: Env): Promise<string> {
   const placed = await exec("git", ["-C", dflt, "config", "--local", "jr2.base"], env);
   if (placed.code === 0 && placed.stdout.trim() !== "") return placed.stdout.trim();
   const git = (step: string, args: string[]) => runGit(step, s.slot, ["-C", dflt, ...args], env);
@@ -185,25 +191,25 @@ function fetchUrl(s: AttachSlot, paths: AttachPaths): string {
  * create the BASE branch and discard `-b` — the Agent would commit on the base it was meant to
  * branch FROM. Naming the remote-tracking ref outright leaves nothing to guess.
  */
-async function baseOf(dflt: string, ref: string, env?: NodeJS.ProcessEnv): Promise<string> {
+async function baseOf(dflt: string, ref: string, env: Env): Promise<string> {
   const remote = `refs/remotes/origin/${ref}`;
   const r = await exec("git", ["-C", dflt, "rev-parse", "--verify", "-q", remote], env);
   return r.code === 0 ? remote : ref;
 }
 
-/** A path is present — the old script's `[ -d … ] ||` guards. */
-async function exists(path: string): Promise<boolean> {
-  return access(path).then(
+/** A path is present — the old script's `[ -d … ] ||` guards. Asked in the domain, as git sees it. */
+async function exists(env: Env, path: string): Promise<boolean> {
+  return env.children.spawner.stat(path).then(
     () => true,
     () => false,
   );
 }
 
-async function runGit(step: string, slot: string | undefined, args: string[], env?: NodeJS.ProcessEnv) {
+async function runGit(step: string, slot: string | undefined, args: string[], env: Env) {
   return run(step, slot, "git", args, env);
 }
 
-async function run(step: string, slot: string | undefined, file: string, args: string[], env?: NodeJS.ProcessEnv) {
+async function run(step: string, slot: string | undefined, file: string, args: string[], env: Env) {
   const r = await exec(file, args, env);
   if (r.code === 0) return;
   const said = r.stderr.trim() || r.stdout.trim() || r.error?.message || `exited ${r.code}`;
@@ -211,13 +217,12 @@ async function run(step: string, slot: string | undefined, file: string, args: s
   throw new AttachFault(`${where} failed at ${step}: ${said}`, slot);
 }
 
-type ExecResult = { code: number | null; stdout: string; stderr: string; error?: Error };
+type ExecResult = RunResult;
 
-function exec(file: string, args: string[], env?: NodeJS.ProcessEnv): Promise<ExecResult> {
-  return new Promise((resolve) => {
-    execFile(file, args, { env: env ?? process.env, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      const code = error == null ? 0 : typeof error.code === "number" ? error.code : null;
-      resolve({ code, stdout, stderr, ...(error ? { error } : {}) });
-    });
-  });
+/** How a step starts: the domain, and the env the step runs with. */
+type Env = { children: ChildPolicy; env: NodeJS.ProcessEnv };
+
+function exec(file: string, args: string[], env: Env): Promise<ExecResult> {
+  // From `/`: each step names its paths, and the Harness's own folder is no repository of the step's.
+  return runIn(env.children, [file, ...args], { cwd: "/", env: env.env, maxBuffer: 8 * 1024 * 1024 });
 }

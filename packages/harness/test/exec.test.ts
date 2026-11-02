@@ -1,18 +1,31 @@
 // The exec (ADR-0067): a `command` Effect runs here, in the Harness container, as a child of the
-// Harness process — so as the Agent's user, with the same Stand-ins — and never through a shell.
-// Real processes, no sockets: `Execs` directly, then the routes through `app.request()`.
+// Harness process — so as the Agent's user, confined with the explicit env the Agent's `bash` gets
+// (ADR-0076) — and never through a shell. Real processes under the real confiner, no sockets:
+// `Execs` directly, then the routes through `app.request()`.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Execs } from "../src/exec.ts";
 import { harnessApp } from "../src/app.ts";
 import type { ExecRead } from "../src/wire.ts";
+import { deniedDir, testChildren } from "./support/children.ts";
 
 const node = process.execPath;
+// The run's own tmpdir is the children's TMPDIR, so a test's markers there are theirs to write.
+const children = testChildren({ tmp: tmpdir() });
+const grantedChildren = testChildren({
+  tmp: tmpdir(),
+  standIns: new Map([
+    ["JIRA_TOKEN", "jr2-held-JIRA_TOKEN.granted"],
+    ["ANTHROPIC_API_KEY", "jr2-held-ANTHROPIC_API_KEY.model"],
+  ]),
+  granted: ["JIRA_TOKEN"],
+  control: "the-control-stand-in",
+});
 
 /** Read until settled, as the Orchestrator does: long-polls from offset 0, the stream collected. */
 async function settled(execs: Execs, id: string): Promise<{ read: ExecRead; stream: string }> {
@@ -28,7 +41,7 @@ async function settled(execs: Execs, id: string): Promise<{ read: ExecRead; stre
 }
 
 test("argv is never shell text: a metacharacter stays inside its one argument", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
   const marker = join(dir, "pwned");
   const arg = `x; touch ${marker} && echo $(id) | cat`;
@@ -44,7 +57,7 @@ test("argv is never shell text: a metacharacter stays inside its one argument", 
 });
 
 test("a `cwd` that is not there settles exited 127, with the reason in the tail, and nothing runs (ADR-0075)", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
   const cwd = join(dir, "never-cut");
   const marker = join(dir, "ran");
@@ -63,7 +76,7 @@ test("a `cwd` that is not there settles exited 127, with the reason in the tail,
 });
 
 test("`root`: a folder with no `.git` settles exited 127, and a folder that has one runs (ADR-0075)", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
   const marker = join(dir, "ran");
   const start = (id: string) =>
@@ -92,7 +105,7 @@ test("`root`: a folder with no `.git` settles exited 127, and a folder that has 
 });
 
 test("the exit code is the output; the tail is bounded and the full stream is read in order", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   execs.start("e2", {
     argv: [node, "-e", "for (let i = 0; i < 50; i++) console.log('line ' + i); console.error('err'); process.exit(3)"],
     timeoutMs: 10_000,
@@ -111,7 +124,7 @@ test("the exit code is the output; the tail is bounded and the full stream is re
 });
 
 test("a command not found is output, exit 127 — an Agent's param can cause it", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   execs.start("e3", { argv: ["jr2-no-such-program"], timeoutMs: 5_000, tail: 4096 });
   const { read } = await settled(execs, "e3");
   assert.equal(read.output?.outcome, "exited");
@@ -120,7 +133,7 @@ test("a command not found is output, exit 127 — an Agent's param can cause it"
 });
 
 test("the timeout kills the process group, children included", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
   const pidFile = join(dir, "child.pid");
   // The top process starts a grandchild that would outlive it, then waits.
@@ -139,7 +152,7 @@ test("the timeout kills the process group, children included", async () => {
 });
 
 test("kill ends the group and settles `killed`", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   execs.start("e5", { argv: [node, "-e", "setInterval(() => {}, 1000)"], timeoutMs: 60_000, tail: 4096 });
   await sleep(50);
   assert.equal(execs.kill("e5"), true);
@@ -149,7 +162,7 @@ test("kill ends the group and settles `killed`", async () => {
 });
 
 test("its top process exits: the group ends with it, a grandchild included", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
   const pidFile = join(dir, "child.pid");
   // The top process starts a grandchild that would outlive it, detached from its pipes, and exits.
@@ -168,7 +181,7 @@ test("its top process exits: the group ends with it, a grandchild included", asy
 });
 
 test("a kill that arrives before its start: the start runs nothing (D1 holds a fast exit)", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
   const marker = join(dir, "ran");
   assert.equal(execs.kill("e5c"), true, "kept: this kill keeps it from running");
@@ -182,7 +195,7 @@ test("a kill that arrives before its start: the start runs nothing (D1 holds a f
 });
 
 test("one id runs once: a second start of the same id runs nothing", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
   const count = join(dir, "count");
   const argv = [node, "-e", `require('node:fs').appendFileSync(${JSON.stringify(count)}, 'x')`];
@@ -194,7 +207,7 @@ test("one id runs once: a second start of the same id runs nothing", async () =>
 });
 
 test("a read with no offset starts at the end: a re-attach reads only what comes next", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
   // The second line waits for the test's word, so the re-attach lands between the two lines
   // whatever the host's speed.
@@ -224,21 +237,34 @@ test("a read with no offset starts at the end: a re-attach reads only what comes
   assert.equal(stream, "after\n");
 });
 
-test("the child inherits the Harness's environment — the Agent's Stand-ins — and its cwd is the one asked", async () => {
-  const execs = new Execs({ env: { ...process.env, JR2_SANDBOX_TOKEN: "stand-in" } });
+test("the child's env is the explicit one — the granted Stand-in, no model key's, no control — and its cwd is the one asked", async () => {
+  const execs = new Execs({ children: grantedChildren });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
-  execs.start("e8", {
-    argv: [node, "-e", "process.stdout.write(process.env.JR2_SANDBOX_TOKEN + ' ' + process.cwd())"],
-    cwd: dir,
-    timeoutMs: 5_000,
-    tail: 4096,
-  });
+  const script =
+    "const e = process.env; process.stdout.write([e.JIRA_TOKEN, e.ANTHROPIC_API_KEY, " +
+    "Object.values(e).includes('the-control-stand-in'), process.cwd()].join(' '))";
+  execs.start("e8", { argv: [node, "-e", script], cwd: dir, timeoutMs: 5_000, tail: 4096 });
   const { read } = await settled(execs, "e8");
-  assert.equal(read.output?.tail, `stand-in ${dir}`);
+  assert.equal(read.output?.tail, `jr2-held-JIRA_TOKEN.granted  false ${dir}`);
+});
+
+test("the child runs confined (ADR-0076): a folder a child may not reach is refused", async () => {
+  const secret = deniedDir("exec-secret-");
+  writeFileSync(join(secret, "standin"), "control-value");
+  try {
+    const execs = new Execs({ children: testChildren({ tmp: tmpdir(), deny: [secret] }) });
+    execs.start("e8b", { argv: ["cat", join(secret, "standin")], timeoutMs: 5_000, tail: 4096 });
+    const { read } = await settled(execs, "e8b");
+    assert.deepEqual(read.output?.outcome, "exited");
+    assert.match(read.output?.tail ?? "", /Permission denied/);
+    assert.doesNotMatch(read.output?.tail ?? "", /control-value/);
+  } finally {
+    rmSync(secret, { recursive: true, force: true });
+  }
 });
 
 test("forget drops a settled exec; a running one is not forgotten", async () => {
-  const execs = new Execs();
+  const execs = new Execs({ children });
   execs.start("e9", { argv: [node, "-e", "setTimeout(() => {}, 200)"], timeoutMs: 5_000, tail: 10 });
   assert.equal(execs.forget("e9"), false, "running");
   await settled(execs, "e9");
@@ -257,7 +283,7 @@ test("the routes: start, read, kill, forget — and a relative cwd or a shell st
   const app = harnessApp({
     checkBearer: () => true,
     runSubmissionFor: () => async () => {},
-    execs: new Execs(),
+    execs: new Execs({ children }),
   });
   const bad = await app.request("/exec/r1", json("POST", { argv: "echo hi", timeoutMs: 1000, tail: 10 }));
   assert.equal(bad.status, 400, "argv is a list, never shell text");
@@ -299,7 +325,11 @@ test("the routes: start, read, kill, forget — and a relative cwd or a shell st
 });
 
 test("the routes are gated on the bearer, like every other (ADR-0058)", async () => {
-  const app = harnessApp({ checkBearer: () => false, runSubmissionFor: () => async () => {}, execs: new Execs() });
+  const app = harnessApp({
+    checkBearer: () => false,
+    runSubmissionFor: () => async () => {},
+    execs: new Execs({ children }),
+  });
   assert.equal((await app.request("/exec/r1")).status, 401);
 });
 
@@ -307,7 +337,7 @@ test("the Instance Harness holds no Workspace and refuses every exec route (ADR-
   const app = harnessApp({
     checkBearer: () => true,
     runSubmissionFor: () => async () => {},
-    execs: new Execs(),
+    execs: new Execs({ children }),
     menuOnly: true,
   });
   const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));

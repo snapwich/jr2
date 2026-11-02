@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harnessApp } from "@jr2/harness/app";
 import { Execs } from "@jr2/harness/exec";
+import { testChildren } from "@jr2/harness/test-children";
 import { ExecNotSent, ExecRefused } from "../src/effect.ts";
 import { createExecPort } from "../src/harness-client.ts";
 
@@ -13,7 +14,7 @@ function wired(checkBearer: (b: string | undefined) => boolean = (b) => b === "b
   const app = harnessApp({
     checkBearer,
     runSubmissionFor: () => async () => {},
-    execs: new Execs(),
+    execs: new Execs({ children: testChildren() }),
     longPollMs: 1_000,
   });
   const fetchImpl = ((url: string, init?: RequestInit) => app.request(url, init)) as typeof fetch;

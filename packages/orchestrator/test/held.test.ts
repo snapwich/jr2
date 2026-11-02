@@ -2000,10 +2000,12 @@ test("a re-admission onto a conversation the rebuilt Harness lost is a Turn: eve
   await waitFor(() => rig.coder.admits.length === 3);
   const readmit = rig.coder.admits[2]!;
   assert.match(readmit.prompt ?? "", /^Your previous turn was cut[\s\S]*\n\nFix the ticket\.$/, "the task follows");
+  // k-1's verdict came back on the coder's own `bash` answer, so the conversation is not in k-1's
+  // audience (ADR-0062, D4 rule 3) — and the Turn it cut is this one, so it is not its own retry.
   assert.deepEqual(
     rig.coder.notices[2]!.map((n) => (n.kind === "memory-limit" ? `memory ${n.peak}` : n.kind)).sort(),
-    ["conversation-new", "memory 1.7Gi", "memory 1.9Gi", "pick-answer"],
-    "the conversation that heard them is gone: k-1 and k-2 are told again, with the task",
+    ["conversation-new", "memory 1.7Gi", "pick-answer"],
+    "the conversation that heard k-2 is gone: k-2 is told again, with the task",
   );
 });
 
@@ -2035,13 +2037,10 @@ const kill0 = () => ({
   told: [] as Array<{ agent: string; instanceId: string }>,
 });
 
-test("a kill the cut first admission carried, unheard, reaches the re-admission on a kept conversation, with the task (ADR-0026, ADR-0031, ADR-0062)", async () => {
+test("a cut first admission whose surface was never read: the re-admission on a kept conversation carries the task (ADR-0026, ADR-0031, ADR-0062)", async () => {
   const { host, runId, coder, iid } = await startedWithKills([kill0()]);
-  assert.deepEqual(
-    coder.notices[0]!.map((n) => n.kind),
-    ["memory-limit"],
-    "the first admission carries k-0",
-  );
+  // k-0 came before this fresh Turn: the Turn was not there for it (ADR-0062, D4).
+  assert.deepEqual(coder.notices[0], [], "the first admission carries no kill from before the Turn");
   // The Harness never read the first admission's surface: neither k-0 nor the task reached a model.
   assert.equal(host.sendToAgent(iid, { type: "ask" }).outstanding, true);
   coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
@@ -2050,7 +2049,7 @@ test("a kill the cut first admission carried, unheard, reaches the re-admission 
   await waitFor(() => coder.admits.length === 2);
   assert.deepEqual(
     coder.notices[1]!.map((n) => n.kind),
-    ["memory-limit", "pick-answer"],
+    ["pick-answer"],
   );
   assert.match(coder.admits[1]!.prompt ?? "", /^Your previous turn was cut[\s\S]*\n\nFix the ticket\.$/);
   await host.close();
@@ -2058,7 +2057,7 @@ test("a kill the cut first admission carried, unheard, reaches the re-admission 
 
 test("a re-admission onto a lost conversation tells every notice the Turn's admissions carried (ADR-0031, ADR-0062)", async () => {
   const { host, runId, coder, iid } = await startedWithKills([kill0()]);
-  // The first admission carried k-0 and was read; a nudge carried k-1 and was read too.
+  // k-0 came before the Turn, which was not there for it; a nudge carried k-1 and was read.
   host.agentSurfaceServed(iid);
   coder.podKills = [kill0(), { id: "k-1", at: new Date().toISOString(), peak: "1.7Gi", limit: "2Gi", told: [] }];
   coder.complete();
@@ -2073,7 +2072,6 @@ test("a re-admission onto a lost conversation tells every notice the Turn's admi
   assert.deepEqual(coder.notices[2]!.map((n) => (n.kind === "memory-limit" ? `memory ${n.peak}` : n.kind)).sort(), [
     "conversation-new",
     "memory 1.7Gi",
-    "memory 1.9Gi",
     "pick-answer",
   ]);
   await host.close();

@@ -314,7 +314,7 @@ re-prompt of an open Turn)
 
 **Working tools**:
 The file and shell tools that the Harness runs in its own container: what an Agent may do, as its Menu is what it may
-say. Every program that they run is confined, so it cannot reach what the Harness itself holds. The Agent's access to
+say. Every program that they run, and their file I/O, is confined, so it cannot reach what the Harness itself holds. The Agent's access to
 the Workspace decides which of them it gets, and a Menu-only Agent gets none.
 _Avoid_: tools (unqualified), sandbox tools
 

@@ -204,7 +204,9 @@ loudly narrated, safe to re-run:
   - **A limit.** The check pod has labels of its own. It does not get the labels of a Harness pod: the Instance Harness
     Service selects its pods by label, and would send Turns to the check pod. So a NetworkPolicy that selects Harness
     pods by label does not select the check pod. When such a policy closes the egress of the Harness pods, the check can
-    pass while a Turn fails.
+    pass while a Turn fails. jr2's own egress policy, which closes the cloud metadata addresses
+    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), gives the check pod one
+    of its own, so it does not have this limit.
 
 **`jr2 down`** removes the instance from the cluster. It asks for confirmation unless `--yes` is given (for CI). `--all`
 takes the operator too.

@@ -19,17 +19,7 @@ import type { AnyActorRef } from "xstate";
 /** The mechanism-facing handles a workspace registers: where the Harness is, WHICH Sandbox
  * (ADR-0013 token scope), and the worktree geography the body-facing subset is cut from. */
 export type AmbientHandles = {
-  /** The canonical (primary slot's) Harness endpoint — the Sandbox's one endpoint in a single-slot
-   * pod, and in a multi-slot pod the primary slot's, where a pod-level cut and the run-narrative
-   * echo run (ADR-0076). A Turn whose agent is not a declared slot (an Open body's lent Agent)
-   * resolves here too. */
   endpoint: string;
-  /** The Harness endpoint of each declared, workspace-ful agent slot's container, by slot — the
-   * agent name (ADR-0076). An Agent's Turn resolves its OWN slot's endpoint here, so it can neither
-   * read nor reach a co-resident slot's container. In a single-slot pod the one slot maps to
-   * {@link endpoint}. Absent on a stand-in registrar that publishes only the one endpoint — a Turn
-   * then resolves {@link endpoint}, the behavior every pod had before this ADR. */
-  endpoints?: Record<string, string>;
   sandbox: string;
   /** Every Repo Slot's folder, `/work/<slot>`, by slot (ADR-0051). */
   repos: Record<string, string>;

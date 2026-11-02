@@ -29,7 +29,7 @@ test("the stub records the Frame's cwd off the wire — the Turn's directory lef
         cwd: "/work/target/feature",
         tools: [],
       },
-      { definition: coder },
+      { definition: coder, slot: "root/coder" },
     );
     assert.deepEqual(stub.admissions, [
       { agentName: "coder", instanceId: "iid-1", message: "hello", cwd: "/work/target/feature", definition: coder },
@@ -45,8 +45,8 @@ test("the stub records an admission's notices off the wire (ADR-0062)", async ()
     const port = createHarnessAgentRunClient({ baseUrl: stub.url });
     const notices = [{ kind: "conversation-new" as const, scope: "conversation" as const, reason: "a fault" }];
     const turn = { agentName: "coder", instanceId: "iid-1", endpoint: stub.url, prompt: "hello", tools: [] };
-    await port.admit(turn, { definition: coder, notices });
-    await port.admit(turn, { definition: coder });
+    await port.admit(turn, { definition: coder, slot: "root/coder", notices });
+    await port.admit(turn, { definition: coder, slot: "root/coder" });
     assert.deepEqual(
       stub.admissions.map((a) => a.notices),
       [notices, undefined],
@@ -65,7 +65,7 @@ test("the real wire port admits against the stub, gets its admission, and parks 
     // persistable immediately (the ledger's write happens before settlement — ADR-0016).
     const admission = await port.admit(
       { agentName: "coder", instanceId: "iid-9", endpoint: stub.url, prompt: "hello", tools: [] },
-      { definition: coder },
+      { definition: coder, slot: "root/coder" },
     );
     assert.deepEqual(stub.admissions, [
       { agentName: "coder", instanceId: "iid-9", message: "hello", definition: coder },
@@ -98,10 +98,10 @@ test("abort ends every unsettled submission for the instance, its cause decides 
   try {
     const port = createHarnessAgentRunClient({ baseUrl: stub.url });
     const input = { agentName: "coder", instanceId: "iid-9", endpoint: stub.url, prompt: "go", tools: [] };
-    const first = await port.admit(input, { definition: coder });
+    const first = await port.admit(input, { definition: coder, slot: "root/coder" });
     // A second submission on the same instance — what `continue: true` produces, and what
     // flue queues rather than rejects. An abort ends the running one AND everything behind it.
-    const queued = await port.admit(input, { definition: coder });
+    const queued = await port.admit(input, { definition: coder, slot: "root/coder" });
 
     await port.abort("coder", "iid-9");
 
@@ -115,8 +115,8 @@ test("abort ends every unsettled submission for the instance, its cause decides 
 
     // A sweep whose cause is the Turn's own pick: the running Submission settles `ended`, as the
     // real Harness settles it; what is queued behind it never ran, so it settles `aborted`.
-    const ended = await port.admit({ ...input, instanceId: "iid-10" }, { definition: coder });
-    const behind = await port.admit({ ...input, instanceId: "iid-10" }, { definition: coder });
+    const ended = await port.admit({ ...input, instanceId: "iid-10" }, { definition: coder, slot: "root/coder" });
+    const behind = await port.admit({ ...input, instanceId: "iid-10" }, { definition: coder, slot: "root/coder" });
     await port.abort("coder", "iid-10", { cause: "pick", submissionId: ended.submissionId });
     const picked = (await (await fetch(`${stub.url}/agents/coder/iid-10?view=history`)).json()) as {
       settlements: Array<{ submissionId: string; outcome: string }>;
@@ -127,7 +127,7 @@ test("abort ends every unsettled submission for the instance, its cause decides 
     ]);
 
     // The cause names another Submission than the running one: it is not about this one, `aborted`.
-    const other = await port.admit({ ...input, instanceId: "iid-11" }, { definition: coder });
+    const other = await port.admit({ ...input, instanceId: "iid-11" }, { definition: coder, slot: "root/coder" });
     await port.abort("coder", "iid-11", { cause: "pick", submissionId: "stub-elsewhere" });
     const elsewhere = (await (await fetch(`${stub.url}/agents/coder/iid-11?view=history`)).json()) as {
       settlements: Array<{ submissionId: string; outcome: string }>;

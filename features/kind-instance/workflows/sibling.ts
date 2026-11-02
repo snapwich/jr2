@@ -1,19 +1,9 @@
-// The @kind acceptance test for ADR-0076 (per-agent identity in one Sandbox). Two workspace-ful
-// Agents share one Sandbox: `coder` works, then `reviewer` decides. The scenario releases the
-// coder's pick, leaves the reviewer parked (so the reviewer never picks), and then — from the
-// coder's Harness container — posts the reviewer's `approve` to the reviewer's iid through the
-// Custodian, with the Stand-in that container holds.
-//
-// Today that delivery is ACCEPTED: the one Harness container holds the one Sandbox Stand-in, the
-// Custodian swaps it for the Sandbox token, and the Orchestrator sees only that the Sandbox
-// matches — so the coder approves its own review. The scenario asserts the ADR-0076 behavior
-// (refused, and the run does not settle), so it is RED until the build lands and GREEN after:
-// each agent slot runs in its own Harness container with its own per-slot credential, and the
-// Orchestrator refuses a pick whose credential's slot is not the registration's.
-//
-// No Repo Slot: the two Agents share `/work`, as a GitHub Actions job's steps do (ADR-0051). The
-// point under test is the control channel, not the filesystem — a shared Workspace is the
-// motivating case, where the two seats are meant to collaborate but not act as each other.
+// Two workspace-ful Agents in one Sandbox, its one Harness and its `/work` (ADR-0076): `coder`
+// works, then `reviewer` decides. Both Turns CONTINUE, so each registers at its bare base iid
+// `<runId>/body/<agent>` (ADR-0057). No Repo Slot: the two Agents share `/work` (ADR-0051).
+// ADR-0076's acceptance case: code the coder plants in `/work`, run by the reviewer's own programs,
+// cannot act as the reviewer. The `workspace()` grants `PROBE_KEY`, so the same programs show that a
+// granted held secret works and the model key stays out of their reach.
 
 import { z } from "zod";
 import { assign } from "xstate";
@@ -41,8 +31,8 @@ const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: unknown },
   events: [built, approve, reject],
   actors: {
-    // Two Agents, both workspace-ful (default `workspace: "write"`), so both share the Sandbox and
-    // its token. The slot key is each one's name on the Harness wire.
+    // Two Agents, both workspace-ful (default `workspace: "write"`), so both run in the Sandbox's one
+    // Harness. The slot key is each one's name on the Harness wire.
     coder: agent(coder),
     reviewer: agent(coder),
     fail: fail(),
@@ -54,16 +44,14 @@ const body = jr2Setup({
   on: { "workspace.lost": ".lost", "agent.fault": ".faulted" },
   states: {
     building: {
-      invoke: { src: "coder", input: { prompt: "make a change" } },
+      invoke: { src: "coder", input: { prompt: "make a change", continue: true } },
       on: { built: "reviewing" },
     },
     // The reviewer decides. The scenario never releases this Turn, so a run that reaches `approved`
     // was moved by something other than the reviewer.
     reviewing: {
-      // A CONTINUED Turn, so the reviewer registers at the BARE base iid `<runId>/body/reviewer`
-      // (no per-Turn nonce) — the derivable, co-resident target the attack step posts to (ADR-0013,
-      // ADR-0076). A fresh Turn would register under a nonce'd iid the attacker cannot name, so the
-      // attack POST would 404 before the slot check it is meant to exercise ever runs.
+      // A CONTINUED Turn, at the bare base iid `<runId>/body/reviewer`: the target the planted code
+      // posts to.
       invoke: { src: "reviewer", input: { prompt: "review the change: approve or reject", continue: true } },
       on: {
         approve: { target: "approved", actions: assign({ verdict: () => "approved" }) },
@@ -78,5 +66,6 @@ const body = jr2Setup({
   output: ({ context }: { context: BodyContext }) => ({ verdict: context.verdict }),
 });
 
-// No `repos`: the Workspace clones nothing, and its two Agents share `/work`.
-export const machine = workspace(body, { input: door });
+// No `repos`: the Workspace clones nothing, and its two Agents share `/work`. `PROBE_KEY` is the one
+// held secret its Agents' programs hold a Stand-in for (ADR-0076).
+export const machine = workspace(body, { input: door, secrets: ["PROBE_KEY"] });

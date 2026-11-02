@@ -172,6 +172,15 @@ export interface Engine {
  * Harness on another engine does not read this engine's part, and continues from the record.
  */
 export type EngineAdapter = {
+  /**
+   * Where the engine runs its loop. `"harness"`: in the Harness process, as pi does, so that only
+   * the engine's tools run in the domain. `"domain"`: in a process of its own, which the spawner
+   * starts in the domain. jr2 refuses `"domain"` (`refuseEngineInDomain`): every process of the
+   * domain sees, signals and traces each other, so a sibling Agent's code could write the engine's
+   * stdin, read its environ and forge its Menu calls (ADR-0076). ADR-0076 names what an engine
+   * outside the Harness process needs first.
+   */
+  readonly loop: "harness" | "domain";
   /** The conversation's engine part: opened from `seat`, or new and seeded with the record's
    * history. `first` is the first Turn's: the transcript's header, and the identity a seeded
    * assistant message is written under. `say` is where a fallback is logged. */
@@ -182,3 +191,15 @@ export type EngineAdapter = {
   ): EnginePart;
   make(options: EngineOptions): Engine;
 };
+
+/** The adapter, when its engine runs its loop in the Harness process; else a throw (ADR-0076). */
+export function refuseEngineInDomain(adapter: EngineAdapter): EngineAdapter {
+  if (adapter.loop !== "harness") {
+    throw new Error(
+      `the engine adapter runs its engine in the domain (loop: ${String(adapter.loop)}): every Agent of the Sandbox ` +
+        "shares the domain, so another Agent's code could drive that engine. jr2 runs an engine's loop in the " +
+        "Harness process only (ADR-0076)",
+    );
+  }
+  return adapter;
+}

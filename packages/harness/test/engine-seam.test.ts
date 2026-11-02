@@ -6,6 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   createModels,
@@ -16,12 +17,23 @@ import {
   type AssistantMessage,
   type Message,
 } from "@earendil-works/pi-ai";
-import type { Engine, EngineAdapter, EngineListener, EngineRun, EngineTool } from "../src/engine.ts";
+import {
+  refuseEngineInDomain,
+  type Engine,
+  type EngineAdapter,
+  type EngineListener,
+  type EngineRun,
+  type EngineTool,
+} from "../src/engine.ts";
+import { ENGINE_ADAPTER } from "../src/engine-choice.ts";
 import { piAdapter } from "../src/pi-engine.ts";
 import { modelsFor } from "../src/provider.ts";
 import type { HistoryMessage } from "../src/wire.ts";
 import { openEnginePart } from "../src/transcript.ts";
 import { runSubmissionFor } from "../src/turn.ts";
+import { testChildren } from "./support/children.ts";
+
+const children = testChildren({ tmp: tmpdir() });
 
 const models = modelsFor(
   { provider: { id: "fake", api: "openai-completions", baseUrl: "http://unused.invalid", models: { m: {} } } },
@@ -38,6 +50,7 @@ test("a Turn runs on any EngineAdapter: the part it opens, the run it gives, the
   const opened: string[] = [];
   const runs: EngineRun[] = [];
   const adapter: EngineAdapter = {
+    loop: "harness",
     open: (seat, first) => {
       opened.push(first.cwd);
       return openEnginePart(seat, "fake", first);
@@ -86,6 +99,7 @@ test("a Turn runs on any EngineAdapter: the part it opens, the run it gives, the
   const turn = runSubmissionFor({
     models,
     menu: { url: "http://custodian.invalid", token: "t", fetch: fetchSurface },
+    children,
     agentName: "coder",
     instanceId: "i",
     appendMessage: (message) => history.push(message),
@@ -175,6 +189,7 @@ test("the Turn blocks a second pick of one model answer: the first is the first 
     timestamp,
   });
   const adapter: EngineAdapter = {
+    loop: "harness",
     open: (seat, first) => openEnginePart(seat, "fake", first),
     make: (options): Engine => {
       const listeners: EngineListener[] = [];
@@ -206,6 +221,7 @@ test("the Turn blocks a second pick of one model answer: the first is the first 
   const turn = runSubmissionFor({
     models,
     menu: { url: "http://custodian.invalid", token: "t", fetch: fetchSurface },
+    children,
     agentName: "coder",
     instanceId: "i",
     appendMessage: () => {},
@@ -223,4 +239,16 @@ test("the Turn blocks a second pick of one model answer: the first is the first 
     undefined,
     undefined,
   ]);
+});
+
+// ADR-0076: every Agent of a Sandbox shares one Landlock domain, so an engine that runs its loop in
+// a process of the domain could be driven by another Agent's code (its stdin, its environ). jr2
+// refuses such an adapter; pi runs its loop in the Harness process.
+test("an adapter whose engine runs in the domain is refused; pi's runs in the Harness process", () => {
+  assert.equal(ENGINE_ADAPTER.loop, "harness");
+  assert.equal(piAdapter.loop, "harness");
+  const inDomain: EngineAdapter = { ...piAdapter, loop: "domain" };
+  assert.throws(() => refuseEngineInDomain(inDomain), /runs its engine in the domain.*ADR-0076/);
+  assert.throws(() => refuseEngineInDomain({ ...piAdapter, loop: undefined } as unknown as EngineAdapter), /ADR-0076/);
+  assert.equal(refuseEngineInDomain(piAdapter), piAdapter);
 });

@@ -92,8 +92,13 @@ The Instance Harness has a token of its own for the Menu. It runs no program of 
   send requests through the Custodian to the bound host of that key. A key that can make new keys gives the Agent a key
   that it can take away. Use a key with no admin rights. Set narrow `paths`.
 - **A response passes with no change.** If a host puts the full key in a response, the Agent reads it.
-- **jr2 does not control egress.** A client that does not use the Custodian sends only the Stand-in, which is worth
-  nothing outside the pod. The cluster decides which hosts a pod can reach.
+- **jr2 controls egress only at the cloud metadata addresses.** A client that does not use the Custodian sends only the
+  Stand-in, which is worth nothing outside the pod. The cluster decides which hosts a pod can reach. One exception: a
+  NetworkPolicy of jr2 stops each Harness pod at the metadata addresses of the large cloud providers (`169.254.169.254`,
+  `fd00:ec2::254`, `169.254.170.2`, `169.254.170.23` and `100.100.100.200`). There, the metadata service of a node can
+  give the node's cloud credential to a pod. The list is not complete for every provider, and only a CNI that enforces
+  NetworkPolicy applies it. See
+  [Move from kind to a shared cluster](../guides/move-from-kind-to-a-shared-cluster.md#check-the-cluster).
 - **A key that signs the request cannot be a Held secret.** A SigV4 or ADC credential signs the request, and the
   Custodian cannot put a value into a signature. Use an Effect secret for such a credential. For a model provider, use a
   gateway that holds the credential, and make the key of the gateway a Held secret.
@@ -103,24 +108,56 @@ The Instance Harness has a token of its own for the Menu. It runs no program of 
 
 ## Confined programs
 
-The Harness runs the [Turns](../reference/glossary.md#turn) of each Agent of the Sandbox. The Harness itself runs only
-jr2's code. Each program that it starts in `/work` runs confined with Landlock: each command of the Agent's shell, the
-tests, the builds, git and its hooks, and each `command` Effect that names no Effect secret. Code that one Agent writes
-in `/work` can run in a program of a different Agent, for example when a reviewer runs the tests of a coder. Thus jr2
-confines each such program, and not only the programs of one Agent.
+The Harness runs the [Turns](../reference/glossary.md#turn) of each Agent of the Sandbox. The Harness process itself
+runs only jr2's code. Each other process in the Harness container runs confined with Landlock: each command of the
+Agent's shell, and so the tests, the builds, git and its hooks; the search tools; the I/O of the read, write and edit
+tools; jr2's own git; and each `command` Effect that names no Effect secret. Code that one Agent writes in `/work` can
+run in a program of a different Agent, for example when a reviewer runs the tests of a coder. Thus jr2 confines each
+such program, and not only the programs of one Agent.
 
-A confined program can do these things:
+All these programs are in one Landlock domain. They can see, signal and trace each other, as the programs of one user on
+a computer can. Thus a later shell command can find and stop a server that an earlier command started. When the process
+that starts these programs stops, the Harness starts it again, in a new domain. The programs of the old domain continue,
+and a program of the new domain cannot trace them.
 
-- Read and write `/work`, its home folder and its temporary folder.
-- Read the caches of each [Repo](../reference/glossary.md#repo) at `/repos`, and read and run the programs of the image.
-- Connect to each address that the pod can reach.
+A confined program can do all that the user of the container can do, with these exceptions:
 
-It cannot read the control Stand-in, the conversations of the Harness, or the memory of the Harness. Its environment
-holds the Stand-ins of the Held secrets that the `workspace()` lists, and the variables that the tools need. It holds no
-control Stand-in. It holds the Stand-in of a model key only when the `workspace()` lists that key. Thus code in `/work`
-cannot call the model with your key unless you allow it. jr2 records the use of each Turn, and a call that you did not
-allow cannot go around that record. The read, write and edit tools run in the Harness, and they open only paths in
-`/work`.
+- It cannot read, write, make, remove, move or link a file in `/run/jr2`. That folder holds the control Stand-in, the
+  Stand-in of each Held secret, the socket of the Custodian for the picks, and the conversations of the Harness. A
+  program can list the names in `/run/jr2`, as it can list each folder: `ls /` and `find /` work. The names are not
+  secrets.
+- It cannot make a socket in `/run/jr2`. It can connect to the socket of the Custodian, but the Custodian refuses each
+  request on the socket that does not have the control Stand-in, and the program cannot read that Stand-in.
+- It cannot trace the Harness process, or read its environment or its memory.
+- When the kernel has Landlock ABI 6 or later, it cannot send a signal to the Harness process, or connect to an abstract
+  Unix socket that the Harness or the Custodian made.
+
+Thus a program can write in a folder of the image that its user owns, move a file from one folder to another, and run
+the tools of the image. The kernel keeps the shared parts safe: the caches of each [Repo](../reference/glossary.md#repo)
+at `/repos`, the runtime of jr2 at `/opt/jr2` and the CA bundles are read-only. The pod has no ServiceAccount token. A
+program can connect to each address that the pod can reach.
+
+The environment of a confined program is the environment with which the container started: the `ENV` of the image,
+`harness.env`, `harness.envFrom`, and the proxy and trust variables. jr2 removes its own `JR2_` names from it, except
+`JR2_CUSTODIAN_URL`. jr2 adds `HOME`, `TMPDIR` and the Stand-in of each Held secret that the `workspace()` lists, under
+the name of that secret. The environment holds no control Stand-in. It holds the Stand-in of a model key only when the
+`workspace()` lists that key. Thus code in `/work` cannot call the model with your key unless you allow it. jr2 records
+the use of each Turn, and a call that you did not allow cannot go around that record.
+
+The read, write and edit tools reach the same paths as the shell. A path in `/run/jr2`, or a link to one, gives the
+error of a file that the user cannot read. In a path, `~` is the `HOME` of the confined programs.
+
+The Harness process has its own `HOME`, in `/run/jr2`, from before Node starts. Thus a file that a program writes in its
+`HOME`, such as `~/.aws/config` or a module in `~/.node_modules`, does not change what the Harness process does. The
+Harness does not start when Node would look for a module outside `/opt/jr2` and `/run/jr2`.
+
+The Harness process gets only the env that jr2 composes: `harness.env`, `harness.envFrom`, the proxy and trust
+variables, and jr2's own names. It does not get the `ENV` of the image. It also does not get a name that loads code from
+a path, such as `NODE_OPTIONS`, `LD_PRELOAD` or `OPENSSL_CONF`, from any of them. Thus an image with
+`NODE_OPTIONS=--require /app/hook.js` changes the Agent's programs, as you expect, and not the Harness process. In
+`kubectl exec`, each key of `harness.envFrom` has the prefix `JR2_ENVFROM_`. The programs of the Agent see each key
+under its own name. A name that starts with `JR2_` is jr2's own: `jr2 up` refuses one in `harness.env` or in a Secret or
+a ConfigMap that `harness.envFrom` loads, and the Harness does not start with one from `harness.envFrom`.
 
 Thus code in `/work` cannot send a pick for an Agent, also when a different Agent runs it. An Agent can still try to
 change what a different Agent does with the text that it writes, such as a comment in a file. The other Agent's model
@@ -207,6 +244,9 @@ who can read the pod logs of the namespace can read these conversations.
   not `https://`. A local model over plain `http://` has no key.
 - [`harness.env`](../reference/config.md#harness-env) and `harness.envFrom` put each value into the Harness container,
   and the Agent can read it. Put a credential in the `secrets` list.
+- A file that the Harness process reads, such as the one that `AWS_CONFIG_FILE` or `GOOGLE_APPLICATION_CREDENTIALS`
+  names in `harness.env`, cannot be in `/work`, `/tmp`, `/dev/shm` or `/home/jr2`: `jr2 up` refuses it. In another
+  folder, `jr2 up` gives a warning: make sure that the user of the Sandbox cannot write the file.
 - A Held secret must name its `hosts`, unless it is a known model key with one default host.
 - A name that a `workspace()` lists must be in the `secrets` list. A name that an Effect gives to `secret()` must be in
   it too.
@@ -215,9 +255,11 @@ who can read the pod logs of the namespace can read these conversations.
 - The Orchestrator can make and change a Secret, but it cannot get or list one.
 - A changed value does not reach a live Sandbox. A new Sandbox gets it. When a Menu-only Agent uses the value, the next
   `jr2 up` restarts the Instance Harness with it.
-- jr2 needs Landlock in the kernel of each Sandbox node: Linux 5.13 or later, with `landlock` in its list of security
-  modules. `jr2 up` refuses to converge while a Sandbox node has no Landlock. On a node without it, a Harness or a
-  Sandbox Effector does not start, and the provision of the Sandbox fails.
+- jr2 needs Landlock ABI 3 or later in the kernel of each Sandbox node: Linux 6.2 or later, or a kernel with a backport,
+  with `landlock` in its list of security modules. `jr2 up` refuses to converge while a Sandbox node has no Landlock, or
+  only ABI 1 or 2. On a node without it, a Harness or a Sandbox Effector does not start, and the provision of the
+  Sandbox fails.
+- A name in `harness.env`, or a key that `harness.envFrom` loads, cannot start with `JR2_`.
 - When a pod holds a Held secret other than the tokens of its Sandbox, `SSL_CERT_FILE` and the other trust variables
   replace the trust store of the image. They hold the public roots, `harness.caBundle` and the CA of the Instance. Thus
   a private CA goes in [`harness.caBundle`](../reference/config.md#harness-cabundle), not in the image.

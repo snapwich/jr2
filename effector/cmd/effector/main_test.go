@@ -42,6 +42,9 @@ func TestMain(m *testing.M) {
 		// "GOCOVERDIR not set" to stderr, into the output the test reads. The Effector's binary has no such hook.
 		syscall.Exit(confine.Main(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "nocore" {
+		syscall.Exit(noCore(os.Args[2:]))
+	}
 	// The overlap tests' gpg-agent, which tells the test when an agent starts and what it left.
 	if len(os.Args) > 1 && os.Args[1] == "agent-witness" {
 		syscall.Exit(agentWitness(os.Args[2:]))
@@ -53,6 +56,11 @@ func TestMain(m *testing.M) {
 		// A node whose kernel cannot confine a child, for the probe's tests.
 		if os.Getenv("JR2_EFFECTOR_TEST_NO_LANDLOCK") == "1" {
 			confine.SetProbe(func() (int, error) { return 0, syscall.EOPNOTSUPP })
+		}
+		// A kernel whose Landlock is older than jr2's minimum (ADR-0077).
+		if abi := os.Getenv("JR2_EFFECTOR_TEST_LANDLOCK_ABI"); abi != "" {
+			n, _ := strconv.Atoi(abi)
+			confine.SetProbe(func() (int, error) { return n, nil })
 		}
 		// A toolset of the test's own for jr2's programs: the overlap tests' gpg-agent witness.
 		if tools := os.Getenv("JR2_EFFECTOR_TEST_TOOLS"); tools != "" {

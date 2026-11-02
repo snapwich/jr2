@@ -1261,39 +1261,44 @@ test("each admission asks for the notices in ITS scope: a Menu-only Agent never 
     { instanceHarness: "http://ih.test", takeNotices: takeFor(advisorAsked) },
   );
   await tick();
-  assert.deepEqual(advisorAsked, [{ conversation: "run-1/root/coder" }]);
+  assert.deepEqual(advisorAsked, [
+    { conversation: "run-1/root/coder", slot: "root/coder", taker: "run-1/root/coder", turn: true },
+  ]);
 
   // A FRESH Turn in a Workspace: the Workspace's notices, and no conversation's — a fresh
-  // conversation is new by definition, and the notice waits for the `continue` that needs it.
+  // conversation is new by definition, and the notice waits for the `continue` that needs it. It
+  // takes the Workspace's as its own new conversation, its Instance ID, which hears each once (ADR-0062).
   const coderAsked: unknown[] = [];
   harness(new MockFlueClient(), { ...baseInput, sandbox: "ws-7" }, undefined, undefined, {
     takeNotices: takeFor(coderAsked),
   });
   await tick();
-  assert.deepEqual(coderAsked, [{ workspace: "ws-7" }]);
+  // Its slot and that it starts a Turn: a cut Turn's retry is found by them (D4 rule 2).
+  assert.deepEqual(coderAsked, [{ workspace: "ws-7", slot: "root/coder", taker: "inst-42", turn: true }]);
 });
 
 test("an admission that fails releases its notices for the next one; a ledgered one delivers them", async () => {
-  const released: Array<readonly string[]> = [];
-  const delivered: Array<readonly string[] | undefined> = [];
+  const released: Array<[readonly string[], string | undefined]> = [];
+  const delivered: Array<[readonly string[] | undefined, string | undefined]> = [];
   const notice = { kind: "memory-limit" as const, scope: "workspace" as const, agent: "coder", limit: "2Gi" };
   const binding: Partial<RunBinding> = {
     takeNotices: () => ({ ids: ["n1"], notices: [notice] }),
-    releaseNotices: (ids) => released.push(ids),
-    recordAdmission: (_iid, _admission, ids) => delivered.push(ids),
+    releaseNotices: (ids, taker) => released.push([ids, taker]),
+    recordAdmission: (_iid, _admission, ids, taker) => delivered.push([ids, taker]),
   };
 
   const failing = new MockFlueClient();
   failing.admit = () => Promise.reject(new Error("harness admission failed (400): bad cwd"));
   harness(failing, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
   await tick();
-  assert.deepEqual(released, [["n1"]], "never reached a ledger, so it is pending again");
+  // Both name the conversation that took them: a Workspace notice is delivered once in EACH (ADR-0062).
+  assert.deepEqual(released, [[["n1"], "inst-42"]], "never reached a ledger, so it is pending again");
 
   const ok = new MockFlueClient();
   harness(ok, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
   await tick();
   assert.deepEqual(ok.notices, [[notice]], "the notices ride the admission");
-  assert.deepEqual(delivered, [["n1"]], "and are delivered by the SAME ledger write");
+  assert.deepEqual(delivered, [[["n1"], "inst-42"]], "and are delivered by the SAME ledger write");
 });
 
 test("a nudge takes no pending notice of the kinds a Turn takes: it re-prompts the Turn within itself (ADR-0016, ADR-0062)", async () => {
@@ -1321,14 +1326,32 @@ function ledgerBinding() {
   /** The admissions ledgered, by iid — the latest wins, as the host's ledger keeps it. */
   const admissions: Record<string, AgentAdmission> = {};
   const binding: Partial<RunBinding> = {
-    raiseNotice: (notice, to, source, older) => void notices.raise(notice, to, source, older),
+    raiseNotice: (notice, to, source, older, opts) => void notices.raise(notice, to, source, older, opts),
+    restoreNotice: (notice, to, source, taker) => void notices.restore(notice, to, source, taker),
     takeNotices: (scope) => notices.take(scope),
-    recordAdmission: (iid, admission, delivered) => {
+    releaseNotices: (ids, taker) => notices.release(ids, taker),
+    peekNotices: (scope) => notices.peek(scope),
+    acknowledgeNotices: (ids, taker) => notices.acknowledge(ids, taker),
+    noticesTold: (told) => {
+      for (const { source, takers } of told) notices.told(source, takers);
+    },
+    noticeTurnEnded: (workspace, takers) => void notices.ended(workspace, takers),
+    recordAdmission: (iid, admission, delivered, taker, member) => {
       admissions[iid] = admission;
-      notices.delivered(delivered ?? []);
+      notices.delivered(delivered ?? [], taker);
+      if (member && taker) notices.admitted(member.workspace, { taker, ...member, since: new Date().toISOString() });
     },
   };
   return { notices, binding, admissions };
+}
+
+/** These conversations were admitted in `ws` an hour ago and continue between Turns: each is in the
+ * audience of a kill there from then on (ADR-0062, D4). */
+function earlier(notices: NoticeLedger, ws: string, ...takers: string[]): void {
+  const since = new Date(Date.now() - 3_600_000).toISOString();
+  for (const taker of takers) {
+    notices.admitted(ws, { taker, slot: `root/${taker.split("/").at(-1)}`, continued: true, since });
+  }
 }
 
 /** A kill in the pod's list; `at` defaults to now — after the Turn under test started. */
@@ -1339,28 +1362,39 @@ const podKill = (
   at = new Date().toISOString(),
 ) => ({ id, at, peak, limit: "2Gi", told });
 /** A guard kill's notice from the pod's list: it names no Turn. */
-const listed = (peak = "1.9Gi") => ({ kind: "memory-limit", scope: "workspace", peak, limit: "2Gi" });
+const listed = (peak = "1.9Gi") => ({ kind: "memory-limit" as const, scope: "workspace" as const, peak, limit: "2Gi" });
 /** A guard kill's notice from a live stream: it names the Turn whose Submission ran. */
 const streamed = (agent: string) => ({ ...listed(), agent });
 
 test("a Turn admitted into a Workspace first reads the pod's guard kills, and a burst is one notice, the newest's (ADR-0062)", async () => {
   const { notices, binding } = ledgerBinding();
-  // Two dev servers the last Turn left running passed the limit while the workflow waited at a Gate.
+  // The coder's continued conversation took a Turn here earlier. Two dev servers its last Turn left
+  // running passed the limit while the workflow waited at a Gate.
+  earlier(notices, "ws-7", "run-1/root/coder");
   const mock = new MockFlueClient();
   mock.podKills = [podKill("k-1", [], "1.8Gi"), podKill("k-2")];
-  harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
+  harness(
+    mock,
+    { ...baseInput, instanceId: "run-1/root/coder", continuation: true, sandbox: "ws-7" },
+    undefined,
+    undefined,
+    binding,
+  );
   await tick();
   assert.equal(mock.podKillsAsked, 1, "read before the admission");
   assert.deepEqual(mock.notices[0], [listed()], "the newest kill tells the same as the older one");
   assert.deepEqual(notices.state().seen, ["ws-7@guard:k-1", "ws-7@guard:k-2"]);
+  assert.deepEqual(notices.state().pending, [], "its whole audience heard it: retired");
 
   // The next Turn in the Workspace reads the same list — a read removes nothing on the Harness —
-  // and carries nothing: both ids are in `seen`.
+  // and raises nothing: both ids are in `seen`. It is a new conversation that was not there for the
+  // kill, so it hears nothing (D4).
   const next = new MockFlueClient();
   next.podKills = mock.podKills;
   harness(next, { ...baseInput, instanceId: "inst-43", sandbox: "ws-7" }, undefined, undefined, binding);
   await tick();
   assert.deepEqual(next.notices[0], []);
+  assert.deepEqual(notices.state().pending, [], "no second notice");
 });
 
 test("a nudge carries the guard kills that no bash call of its conversation answered (ADR-0016, ADR-0062)", async () => {
@@ -1412,11 +1446,11 @@ test("a kill that this conversation's bash call answered is not the nudge's: the
 test("a nudge carries no kill its Turn's first read saw: that kill came before the Turn (ADR-0062)", async () => {
   const { binding, admissions: ledger } = ledgerBinding();
   const mock = new MockFlueClient();
-  // A kill before this Turn: the Turn's own admission carries it, and the read marks it.
-  mock.podKills = [podKill("k-1")];
+  // A kill before this fresh Turn: it was not there for it (D4), and the read marks it.
+  mock.podKills = [podKill("k-1", [], "1.9Gi", new Date(Date.now() - 60_000).toISOString())];
   harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
   await tick();
-  assert.deepEqual(mock.notices[0], [listed()]);
+  assert.deepEqual(mock.notices[0], []);
   assert.equal(ledger["inst-42"]!.killMark, "k-1", "the mark is ledgered with the admission");
 
   // Its nudge reads the same list: nothing after the mark, nothing carried.
@@ -1427,7 +1461,9 @@ test("a nudge carries no kill its Turn's first read saw: that kill came before t
 });
 
 test("when the Turn's first read failed, its start time is the mark: a nudge carries no kill stamped before it (ADR-0062)", async () => {
-  const { binding, admissions: ledger } = ledgerBinding();
+  const { binding, notices, admissions: ledger } = ledgerBinding();
+  // The coder's continued conversation was there before the kill.
+  earlier(notices, "ws-7", "run-1/root/coder");
   const mock = new MockFlueClient();
   const before = new Date(Date.now() - 60_000).toISOString();
   // The real client over a Harness that answers 500 once, then the list: the client says "could
@@ -1455,13 +1491,21 @@ test("when the Turn's first read failed, its start time is the mark: a nudge car
 
   const next = new MockFlueClient();
   next.podKills = [podKill("k-1", [], "1.9Gi", before)];
-  harness(next, { ...baseInput, instanceId: "inst-43", sandbox: "ws-7" }, undefined, undefined, binding);
+  harness(
+    next,
+    { ...baseInput, instanceId: "run-1/root/coder", continuation: true, sandbox: "ws-7" },
+    undefined,
+    undefined,
+    binding,
+  );
   await tick();
-  assert.deepEqual(next.notices[0], [listed()], "the next Turn's");
+  assert.deepEqual(next.notices[0], [listed()], "the continued conversation's next Turn: it was there");
 });
 
 test("a restored Turn keeps its start and its mark: its nudge carries a kill from between the start and the restore (ADR-0007, ADR-0062)", async () => {
-  const { binding } = ledgerBinding();
+  const { binding, notices } = ledgerBinding();
+  // Its conversation was admitted before the restore: the persisted ledger says it was there.
+  earlier(notices, "ws-7", "inst-42");
   // The Turn started an hour ago, its first read saw nothing; the Orchestrator restarted since.
   const attach: AgentAdmission = {
     streamUrl: "http://mock/agents/coder/inst-42",
@@ -1502,7 +1546,8 @@ test("a restored Turn reads its mark back: a kill its first read saw is not its 
 });
 
 test("a restored Turn whose first read failed holds kills against its real start, not the restore's (ADR-0007, ADR-0062)", async () => {
-  const { binding } = ledgerBinding();
+  const { binding, notices } = ledgerBinding();
+  earlier(notices, "ws-7", "inst-42");
   const attach: AgentAdmission = {
     streamUrl: "http://mock/agents/coder/inst-42",
     offset: "adm-9",
@@ -1588,6 +1633,77 @@ test("one guard kill on two running conversations' streams and in the pod's list
   assert.deepEqual(next.notices[0], [streamed("coder")]);
 });
 
+test("one kill reaches every conversation that was there for it, each once — and none that came after (ADR-0062, D4)", async () => {
+  const { notices, binding } = ledgerBinding();
+  // The coder and the tester took Turns here; a dev server one of them left running passed the
+  // limit while no Turn ran: the pod lists it.
+  earlier(notices, "ws-7", "run-1/root/coder", "run-1/root/tester");
+  const kills = [podKill("k-1")];
+  const turn = (agentName: string, instanceId: string, continuation = true) => {
+    const client = new MockFlueClient();
+    client.podKills = kills;
+    harness(
+      client,
+      { ...baseInput, agentName, instanceId, sandbox: "ws-7", ...(continuation ? { continuation: true } : {}) },
+      undefined,
+      undefined,
+      binding,
+    );
+    return client;
+  };
+
+  const coder = turn("coder", "run-1/root/coder");
+  await tick();
+  assert.deepEqual(coder.notices[0], [listed()], "the coder's conversation hears it");
+  // The tester works in the same Workspace: the coder's delivery is the coder's alone.
+  const tester = turn("tester", "run-1/root/tester");
+  await tick();
+  assert.deepEqual(tester.notices[0], [listed()], "the tester's hears it too");
+  assert.deepEqual(notices.state().seen, ["ws-7@guard:k-1"], "one notice for the one kill");
+
+  // Each heard it once: neither conversation's next Turn hears it again, and the list raises no second.
+  const coderAgain = turn("coder", "run-1/root/coder");
+  const testerAgain = turn("tester", "run-1/root/tester");
+  await tick();
+  assert.deepEqual(coderAgain.notices[0], []);
+  assert.deepEqual(testerAgain.notices[0], []);
+  assert.deepEqual(notices.state().pending, [], "its whole audience heard it: retired");
+  // A conversation that never took a Turn in the Workspace before the kill was not there for it —
+  // nor a fresh Turn, a new conversation.
+  const reviewer = turn("reviewer", "run-1/root/reviewer");
+  const fresh = turn("coder", "inst-9", false);
+  await tick();
+  assert.deepEqual(reviewer.notices[0], []);
+  assert.deepEqual(fresh.notices[0], []);
+});
+
+test("a fresh Turn hearing a kill does not use up the Agent's continued conversation's (ADR-0057, ADR-0062)", async () => {
+  const { binding, notices } = ledgerBinding();
+  // A fresh Turn of the coder was open, and its continued conversation was between Turns.
+  earlier(notices, "ws-7", "inst-3", "run-1/root/coder");
+  const kills = [podKill("k-1")];
+  const turn = (instanceId: string, continuation: boolean) => {
+    const client = new MockFlueClient();
+    client.podKills = kills;
+    harness(
+      client,
+      { ...baseInput, instanceId, sandbox: "ws-7", ...(continuation ? { continuation: true } : {}) },
+      undefined,
+      undefined,
+      binding,
+    );
+    return client;
+  };
+  // The kill lands; a clean Turn of the coder hears it in its own new conversation…
+  const clean = turn("inst-3", false);
+  await tick();
+  assert.deepEqual(clean.notices[0], [listed()]);
+  // …and the next `continue` joins the earlier conversation, which never heard it: it does now.
+  const continued = turn("run-1/root/coder", true);
+  await tick();
+  assert.deepEqual(continued.notices[0], [listed()]);
+});
+
 test("a kill after the wait stopped and before the abort landed reaches the next Turn from the pod's list — once (ADR-0024, ADR-0062)", async () => {
   // The real Harness wire, socket-free, under the real client: the window is between the actor's
   // stop of its wait and the Harness's sweep, so both halves must be real.
@@ -1617,7 +1733,9 @@ test("a kill after the wait stopped and before the abort landed reaches the next
     createHarnessClient({ baseUrl: "http://h.test", fetch: fetchImpl, backoffInitialMs: 1, backoffMaxMs: 2 }),
   );
   const wait = () => new Promise((r) => setTimeout(r, 20));
-  const { binding } = ledgerBinding();
+  const { binding, notices } = ledgerBinding();
+  // The coder's continued conversation was there before; its next Turn is the one that hears.
+  earlier(notices, "ws-7", "run-1/root/coder");
   const first = harness(port, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
   await wait();
   // The Agent's state exits: the actor stops its wait and sends the abort, which has not landed
@@ -1638,7 +1756,13 @@ test("a kill after the wait stopped and before the abort landed reaches the next
     ...port,
     admit: (input, opts) => (sent.push(opts.notices ?? []), port.admit(input, opts)),
   };
-  const second = harness(next, { ...baseInput, instanceId: "inst-43", sandbox: "ws-7" }, undefined, undefined, binding);
+  const second = harness(
+    next,
+    { ...baseInput, instanceId: "run-1/root/coder", continuation: true, sandbox: "ws-7" },
+    undefined,
+    undefined,
+    binding,
+  );
   await wait();
   // No Agent named: the notice came from the list, not from the stopped actor's stream.
   assert.deepEqual(sent, [[listed()]]);
@@ -1750,4 +1874,130 @@ test("an older Harness's stream kill is raised with the source it had before; a 
     notices.state().pending.map((p) => p.notice),
     [streamed("coder"), { kind: "memory-limit", scope: "workspace", agent: "coder" }],
   );
+});
+
+// ---- The step boundary (ADR-0062, ADR-0076 C5): an open Turn hears its notices between steps ----
+
+test("a step boundary hands the open Turn the kill it was there for, once; the acknowledgment makes it heard", async () => {
+  const { notices, binding } = ledgerBinding();
+  const mock = new MockFlueClient();
+  const h = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
+  await tick();
+  const reg = h.table.lookup(agentAddress("inst-42"))!;
+  assert.equal(reg.slot, "root/coder", "the registration's slot: the actor path and the agent name (ADR-0076)");
+
+  // Another Agent's Turn reads a guard kill on its stream while this Turn is open.
+  mock.podKills = [podKill("k-5")];
+  notices.raise(listed(), "ws-7", "ws-7@guard:k-5", [], { at: new Date().toISOString() });
+  const read = await reg.boundaryNotices!();
+  assert.deepEqual(
+    read.map((r) => r.notice),
+    [listed()],
+  );
+  assert.deepEqual(await reg.boundaryNotices!(), [], "reserved for that read");
+  assert.equal(reg.noticesHeard!(["n-unknown"]), 0, "an id the read did not name changes nothing");
+  assert.equal(reg.noticesHeard!(read.map((r) => r.id)), 1);
+  assert.deepEqual(notices.state().pending, [], "its one member heard it: retired");
+});
+
+test("a step boundary leaves out a guard kill its conversation's own bash answer told, and one it cannot check", async () => {
+  const { notices, binding } = ledgerBinding();
+  const mock = new MockFlueClient();
+  const h = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
+  await tick();
+  const reg = h.table.lookup(agentAddress("inst-42"))!;
+  // Its own `bash` answer returned the kill's verdict: the pod's list says so.
+  mock.podKills = [podKill("k-6", [{ agent: "coder", instanceId: "inst-42" }])];
+  notices.raise(listed(), "ws-7", "ws-7@guard:k-6");
+  assert.deepEqual(await reg.boundaryNotices!(), []);
+  assert.deepEqual(notices.state().pending, [], "told: it left the audience, which is now empty");
+
+  // A list that cannot be read: no guard kill at the boundary, but a kernel kill still goes.
+  mock.memoryKills = () => Promise.reject(new Error("harness draining"));
+  notices.raise(listed(), "ws-7", "ws-7@guard:k-7");
+  notices.raise({ kind: "memory-limit", scope: "workspace", limit: "2Gi" }, "ws-7", "ws-7@kernel:2026");
+  assert.deepEqual(
+    (await reg.boundaryNotices!()).map((r) => r.notice),
+    [{ kind: "memory-limit", scope: "workspace", limit: "2Gi" }],
+  );
+});
+
+// The Harness reads a boundary and does not append what it read — a stopped model with no Allowed
+// picks (`between-steps.ts`). The read's hold must not outlive it: the wake or the nudge of the same
+// conversation carries the kill, or a fresh Turn never hears a kill it was there for.
+test("a step boundary's notices the Harness did not append are the next admission's: the nudge carries them", async () => {
+  const { notices, binding } = ledgerBinding();
+  const mock = new MockFlueClient();
+  const h = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
+  await tick();
+  const reg = h.table.lookup(agentAddress("inst-42"))!;
+  // Another Agent's bash is killed while this fresh Turn is open.
+  mock.podKills = [podKill("k-5")];
+  notices.raise(listed(), "ws-7", "ws-7@guard:k-5", [], { at: new Date().toISOString() });
+  assert.equal((await reg.boundaryNotices!()).length, 1, "the boundary read reserved it");
+  // The model stops, and the Harness appends nothing; the Orchestrator's nudge re-prompts it.
+  mock.complete();
+  await tick();
+  assert.equal(mock.admits.length, 2, "the nudge");
+  assert.deepEqual(mock.notices[1], [listed()], "the nudge carries the kill the boundary did not append");
+});
+
+test("a step boundary's notices never acknowledged are pending again when the Turn ends: the next Turn hears them", async () => {
+  const { notices, binding } = ledgerBinding();
+  const kernel = { kind: "memory-limit" as const, scope: "workspace" as const, limit: "2Gi" };
+  const mock = new MockFlueClient();
+  const conversation = "run-1/root/coder";
+  const h = harness(
+    mock,
+    { ...baseInput, instanceId: conversation, continuation: true, sandbox: "ws-7" },
+    undefined,
+    undefined,
+    binding,
+  );
+  await tick();
+  notices.raise(kernel, "ws-7", "ws-7@kernel:2026");
+  const reg = h.table.lookup(agentAddress(conversation))!;
+  assert.equal((await reg.boundaryNotices!()).length, 1);
+  // The Turn ends before the Harness acknowledged the append.
+  h.actor.send({ type: "CANCEL_RUN" });
+  await tick();
+  assert.equal(notices.state().members!["ws-7"]![0]!.open, false, "a continued conversation stays a member");
+  const next = new MockFlueClient();
+  harness(
+    next,
+    { ...baseInput, instanceId: conversation, continuation: true, sandbox: "ws-7" },
+    undefined,
+    undefined,
+    binding,
+  );
+  await tick();
+  assert.deepEqual(next.notices[0], [kernel]);
+});
+
+test("a kill that cut a Turn is its Agent's retry: the next fresh Turn of that slot hears it, another Agent's does not (D4 rule 2)", async () => {
+  const { notices, binding } = ledgerBinding();
+  const mock = new MockFlueClient();
+  const h = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
+  await tick();
+  // The kill is read on this Turn's own stream: it names this Turn.
+  mock.guardKill({ id: "k-8", peak: "1.9Gi", limit: "2Gi" });
+  assert.deepEqual(notices.state().pending[0]!.retry, [{ slot: "root/coder", cut: "inst-42" }]);
+  // The Turn ends without hearing it (its state exits): it leaves the audience; the retry is owed.
+  h.actor.send({ type: "CANCEL_RUN" });
+  await tick();
+  assert.equal(notices.state().pending.length, 1);
+  const reviewer = new MockFlueClient();
+  harness(
+    reviewer,
+    { ...baseInput, agentName: "reviewer", instanceId: "inst-50", sandbox: "ws-7" },
+    undefined,
+    undefined,
+    binding,
+  );
+  const retry = new MockFlueClient();
+  harness(retry, { ...baseInput, instanceId: "inst-51", sandbox: "ws-7" }, undefined, undefined, binding);
+  await tick();
+  assert.deepEqual(reviewer.notices[0], [], "another Agent's fresh Turn was not there");
+  assert.deepEqual(retry.notices[0], [streamed("coder")], "the coder's next Turn retries the work");
+  assert.deepEqual(notices.state().pending, [], "retired");
 });

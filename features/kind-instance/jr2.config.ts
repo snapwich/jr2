@@ -58,9 +58,20 @@ export default defineConfig({
   // Secret before `jr2 up`, which keeps it; in every other scenario it unlocks nothing. Not a
   // `valueFrom` on `jr2-instance`: that Secret does not exist yet when a first converge resolves
   // what its Effects name, so the converge would be refused.
+  //
+  // `PROBE_KEY` is a Held secret (ADR-0059, ADR-0076): the `sibling` workflow's `workspace()` grants
+  // it, so its Agents' confined programs hold its Stand-in in env, and the Custodian puts the value
+  // in `x-probe-key` toward the scripted model's host alone. Its own header, because two secrets
+  // bound to one host share no header.
   secrets: [
     { name: "echo-token", value: process.env.JR2_ECHO_TOKEN },
     { name: "self-token", value: process.env.JR2_SELF_TOKEN },
+    {
+      name: "PROBE_KEY",
+      value: process.env.JR2_PROBE_KEY,
+      hosts: [process.env.JR2_FAKE_PROVIDER_URL ?? ""],
+      headers: ["x-probe-key"],
+    },
   ],
   // The Size of every Sandbox this tier provisions (ADR-0060): below the kit default, because jr2
   // reserves the whole Size and the tier runs several scenarios at once on ONE kind node — at 2Gi

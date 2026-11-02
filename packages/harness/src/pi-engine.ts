@@ -30,6 +30,8 @@ const ENGINE = "pi";
 
 /** pi as the seam's adapter: its engine part is the transcript under `engine/pi`. */
 export const piAdapter: EngineAdapter = {
+  // pi-agent-core runs its loop in this process, and starts no process of its own (ADR-0076).
+  loop: "harness",
   open: (seat, first, say) => openEnginePart(seat, ENGINE, first, say),
   make: (options) => piEngine(options),
 };

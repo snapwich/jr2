@@ -107,6 +107,9 @@ export type HarnessClient = {
        * `/work` — the stub-Harness run with no Workspace. */
       cwd?: string;
       definition: AgentDefinition;
+      /** The Agent's slot (ADR-0076), which the Harness states on each control request for this
+       * conversation. Omitted only by a caller that drives no Machine (a test of the wire). */
+      slot?: string;
       model?: string;
       thinkingLevel?: ThinkingLevel;
       /** The pending notices in this admission's scope (ADR-0062). Omitted when there are none. */
@@ -382,6 +385,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             // `machine-doc.ts` and the surface read it — and the Harness neither validates nor
             // uses it, so it has no business on the Turn's wire.
             definition: admittedDefinition(sendOptions.definition),
+            // Who the conversation is (ADR-0076): the Harness states it on each control request.
+            ...(sendOptions.slot === undefined ? {} : { slot: sendOptions.slot }),
             // Omitted when unset, so an admission with no dials is byte-identical to before.
             ...(sendOptions.model ? { model: sendOptions.model } : {}),
             ...(sendOptions.thinkingLevel ? { thinkingLevel: sendOptions.thinkingLevel } : {}),
@@ -629,6 +634,7 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
         // to the Harness's refusal if it is not a path.
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         definition: opts.definition,
+        slot: opts.slot,
         model: input.model,
         thinkingLevel: input.thinkingLevel,
         ...(opts.notices?.length ? { notices: opts.notices } : {}),

@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { custodianBootstrap, custodianScript } from "../src/custodian.ts";
-import { EMPTY_HELD, leafStem, standIn, workspaceHeldPod, type HeldManifest } from "../src/held-secrets.ts";
+import { EMPTY_HELD, heldStandIn, leafStem, workspaceHeldPod, type HeldManifest } from "../src/held-secrets.ts";
 import { imageContextDigest } from "../src/images.ts";
 import { kubeClient } from "../src/kube-client.ts";
 import { repoKey } from "../src/repo-identity.ts";
@@ -26,11 +26,20 @@ import type { PlacementRoute } from "../src/parts.ts";
 import {
   kubeSandbox as kubePort,
   memoryFaultOf,
+  repoMountPath,
+  repoVolumeName,
   sandboxEffectorContainer,
   type KubeSandboxOptions,
 } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
-import { effectorKey, harnessToken, harnessTokenDigest } from "../src/tokens.ts";
+import {
+  controlStandIn,
+  controlToken,
+  effectorKey,
+  harnessToken,
+  harnessTokenDigest,
+  sandboxToken,
+} from "../src/tokens.ts";
 import {
   effectorManifestKey,
   sandboxEffectorKeySecret,
@@ -280,14 +289,27 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     { name: "work", mountPath: "/work" },
     // jr2's runtime, read-only in the container where the Agent has code execution.
     RUNTIME_AT_OPT,
-    // The conversations' directory (ADR-0031), the Harness container's alone.
-    { name: "conversations", mountPath: "/conversations" },
+    // The conversations' directory (ADR-0031), the Harness container's alone, under `/run/jr2`,
+    // which no confined child can read (ADR-0076).
+    { name: "conversations", mountPath: "/run/jr2/conversations" },
+    // Its Stand-ins, as files no confined child can read (ADR-0076, C1).
+    { name: "harness-credentials", mountPath: "/run/jr2", readOnly: true },
+    // The Custodian's control socket, which it connects to and cannot write (ADR-0076).
+    { name: "custodian-socket", mountPath: "/run/jr2/custodian", readOnly: true },
   ]);
-  // Then the Custodian's own two (ADR-0059): what it holds and how it is told to hold it. With
-  // nothing held and no CA bundle, the Harness container mounts neither.
+  // Then the Custodian's own two (ADR-0059): what it holds and how it is told to hold it — and the
+  // Harness's Stand-ins. With nothing held and no CA bundle, the Harness container mounts no trust.
   assert.deepEqual(
     applied.spec.volumes.map((v: { name: string }) => v.name),
-    ["work", "runtime", "conversations", "custodian-values", "custodian-config"],
+    [
+      "work",
+      "runtime",
+      "conversations",
+      "custodian-values",
+      "custodian-config",
+      "custodian-socket",
+      "harness-credentials",
+    ],
   );
   assert.deepEqual(applied.spec.volumes.slice(0, 3), [
     { name: "work", emptyDir: {} },
@@ -310,7 +332,8 @@ test("a Sandbox's Harness persists its conversations to an emptyDir no other con
   // Told where, by the env the Harness reads — mechanism, so it comes after `harness.env`.
   assert.ok(
     applied.spec.env.some(
-      (e: { name: string; value?: string }) => e.name === "JR2_CONVERSATIONS_DIR" && e.value === "/conversations",
+      (e: { name: string; value?: string }) =>
+        e.name === "JR2_CONVERSATIONS_DIR" && e.value === "/run/jr2/conversations",
     ),
   );
   // CR-level volumeMounts are the Harness container's (the operator's contract); every other
@@ -321,143 +344,12 @@ test("a Sandbox's Harness persists its conversations to an emptyDir no other con
       !(c.volumeMounts ?? []).some((m: { name: string }) => m.name === "conversations"),
       `${c.name} must not read an Agent's history`,
     );
+    // Nor the Harness's Stand-ins: the User Container gets no credential at all (ADR-0005, ADR-0076).
+    assert.ok(
+      !(c.volumeMounts ?? []).some((m: { name: string }) => m.name === "harness-credentials"),
+      `${c.name} must not read the Harness's Stand-ins`,
+    );
   }
-});
-
-test("a multi-slot pod runs one Harness container per slot with its own credential; a single-slot pod is byte-for-byte unchanged (ADR-0076)", async () => {
-  // One slot (what every other test here provisions, since `slots` is absent): the pod of today —
-  // one primary Harness container, one `<name>-token` Secret, no `spec.slots`, no `harness-*`
-  // sidecar, and the one shared Sandbox-token Stand-in on the primary by value.
-  const one = cluster();
-  const port1 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...one.exec });
-  await port1.provision({ name: "sb-one", runId: "r", workflow: "w", slots: ["coder"], ...withApp });
-  const cr1 = crOf(one.calls);
-  assert.ok(!("slots" in cr1.spec), "no spec.slots on a single-agent pod");
-  assert.deepEqual(
-    cr1.spec.sidecars.map((s: { name: string }) => s.name),
-    ["custodian"],
-    "no harness-* sidecar",
-  );
-  assert.ok(
-    cr1.spec.env.some(
-      (e: { name: string; value?: string }) =>
-        e.name === "JR2_SANDBOX_TOKEN" && e.value === "jr2-held-JR2_SANDBOX_TOKEN",
-    ),
-    "the primary keeps the one shared Stand-in by value",
-  );
-  assert.deepEqual(
-    applies(one.calls, "secrets").map((s) => s.metadata.name),
-    ["sb-one-token"],
-    "the one Sandbox token Secret, and no per-slot Secret",
-  );
-
-  // Two slots: a primary Harness container (coder, first-declared) PLUS one `harness-reviewer`
-  // sidecar on its own port; a per-slot credential Secret for each; `spec.slots` naming the extra.
-  const two = cluster();
-  const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...two.exec });
-  await port2.provision({ name: "sb-two", runId: "r", workflow: "w", slots: ["coder", "reviewer"], ...withApp });
-  const cr2 = crOf(two.calls);
-  // The additional slot (reviewer) at 8090 — the primary (coder) keeps the serving port (8080).
-  assert.deepEqual(cr2.spec.slots, [{ name: "reviewer", port: 8090 }]);
-  // The primary's own JR2_SANDBOX_TOKEN is coder's secret Stand-in, by secretKeyRef — never a value,
-  // so the real credential is not in the Agent's env.
-  const primaryToken = cr2.spec.env.find((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN");
-  assert.deepEqual(primaryToken.valueFrom, { secretKeyRef: { name: "sb-two-slot-coder", key: "standin" } });
-  assert.ok(!("value" in primaryToken), "the real credential never rides the Agent's env");
-  // Two Harness containers in all: the primary, and the reviewer sidecar beside the Custodian.
-  assert.deepEqual(
-    cr2.spec.sidecars.map((s: { name: string }) => s.name),
-    ["custodian", "harness-reviewer"],
-  );
-  const reviewer = cr2.spec.sidecars.find((s: { name: string }) => s.name === "harness-reviewer");
-  assert.equal(reviewer.image, cr2.spec.image, "same Sandbox Image");
-  assert.deepEqual(reviewer.command, cr2.spec.command, "same Harness command");
-  assert.deepEqual(reviewer.securityContext, cr2.spec.securityContext, "same hardened seat — nothing relaxed");
-  assert.deepEqual(reviewer.ports, [{ name: "reviewer", containerPort: 8090 }]);
-  assert.deepEqual(reviewer.readinessProbe, { httpGet: { path: "/healthz", port: 8090 }, periodSeconds: 1 });
-  assert.deepEqual(reviewer.env.at(-1), { name: "PORT", value: "8090" }, "told its port, last so nothing overrides it");
-  assert.deepEqual(
-    reviewer.env.find((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN").valueFrom,
-    { secretKeyRef: { name: "sb-two-slot-reviewer", key: "standin" } },
-    "its own secret Stand-in, by secretKeyRef into this container alone",
-  );
-  // Its OWN conversations emptyDir at /conversations, and the one shared /work emptyDir read-write.
-  assert.ok(
-    cr2.spec.volumes.some(
-      (v: { name: string; emptyDir?: object }) => v.name === "conversations-reviewer" && !!v.emptyDir,
-    ),
-  );
-  assert.ok(
-    reviewer.volumeMounts.some(
-      (m: { name: string; mountPath: string }) =>
-        m.name === "conversations-reviewer" && m.mountPath === "/conversations",
-    ),
-  );
-  assert.ok(
-    reviewer.volumeMounts.some(
-      (m: { name: string; mountPath: string; readOnly?: boolean }) =>
-        m.name === "work" && m.mountPath === "/work" && !m.readOnly,
-    ),
-    "the one /work emptyDir, read-write, shared with the primary",
-  );
-  // A per-slot Secret for EACH slot (standin + token), CR-owned.
-  const slotSecrets = applies(two.calls, "secrets").filter((s) => s.metadata.name.startsWith("sb-two-slot-"));
-  assert.deepEqual(slotSecrets.map((s) => s.metadata.name).sort(), ["sb-two-slot-coder", "sb-two-slot-reviewer"]);
-  for (const s of slotSecrets) assert.deepEqual(Object.keys(s.data).sort(), ["standin", "token"]);
-  // The Sandbox token Secret is STILL minted on a multi-slot pod (ADR-0076): the Custodian swaps the
-  // public Sandbox-scope Stand-in for it on the fetch route (`jr2-upload-pack`'s `POST /fetch`).
-  assert.ok(
-    applies(two.calls, "secrets").some((s) => s.metadata.name === "sb-two-token"),
-    "the Sandbox token Secret is minted for the fetch route (ADR-0076)",
-  );
-  // It is projected into the CUSTODIAN alone — the `custodian-values` volume references it, beside
-  // the per-slot tokens — and NO slot container (primary or sidecar) takes it: a slot's credential is
-  // only its own secret Stand-in, so the Sandbox token never reaches model-controlled code.
-  const values = cr2.spec.volumes.find((v: { name: string }) => v.name === "custodian-values") as {
-    projected: { sources: Array<{ secret?: { name: string } }> };
-  };
-  assert.ok(
-    values.projected.sources.some((s) => s.secret?.name === "sb-two-token"),
-    "custodian-values projects the Sandbox token into the Custodian",
-  );
-  const refsSandboxToken = (env: Array<{ valueFrom?: { secretKeyRef?: { name: string } } }>) =>
-    env.some((e) => e.valueFrom?.secretKeyRef?.name === "sb-two-token");
-  assert.ok(!refsSandboxToken(cr2.spec.env), "the primary slot container never references the Sandbox token Secret");
-  assert.ok(!refsSandboxToken(reviewer.env), "the reviewer slot container never references the Sandbox token Secret");
-});
-
-test("provision surfaces the operator's per-slot status.endpoints, keyed by slot (ADR-0076)", async () => {
-  // The operator publishes the primary on `status.endpoint` and each additional slot on
-  // `status.endpoints` — one DNS per slot container. provision must read both back, or every slot
-  // resolves to the primary and the additional slot containers are never reached.
-  const READY_MULTI = {
-    phase: "Ready",
-    endpoint: "http://sb-m.default.svc:8080",
-    endpoints: [{ slot: "reviewer", endpoint: "http://sb-m.default.svc:8090" }],
-    podUID: "pod-uid-m",
-  };
-  const { exec } = cluster([READY_MULTI]);
-  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
-  const out = await port.provision({
-    name: "sb-m",
-    runId: "r",
-    workflow: "w",
-    slots: ["coder", "reviewer"],
-    ...withApp,
-  });
-  // The primary stays on `endpoint`; the additional slot's own container endpoint is in `endpoints`,
-  // by slot name — so the ambient handles reach the reviewer's container, not the coder's.
-  assert.equal(out.endpoint, "http://sb-m.default.svc:8080");
-  assert.deepEqual(out.endpoints, { reviewer: "http://sb-m.default.svc:8090" });
-});
-
-test("provision on a single-slot Sandbox reports no per-slot endpoints (byte-for-byte today, ADR-0076)", async () => {
-  // The operator writes no `status.endpoints` for a single-slot Sandbox: provision reports no
-  // per-slot map (byte-for-byte today's return), and the one slot resolves off `endpoint` downstream.
-  const { exec } = cluster([READY]);
-  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
-  const out = await port.provision({ name: "sb-1", runId: "r", workflow: "w", slots: ["coder"], ...withApp });
-  assert.deepEqual(out, { endpoint: "http://sb-1.default.svc:8080" });
 });
 
 test("two slots spelling one repository are ONE CR entry; two repositories are two", async () => {
@@ -491,8 +383,20 @@ test("the Harness arrives at POD time: an /opt/jr2 image volume and a command ov
   const applied = crOf(calls);
   // The one thing jr2 takes from the image. A container has one command and it must be the
   // Harness's, or the operator's Ready probe and restart semantics are lies.
-  // `tini` is PID 1 (ADR-0061): a tree the memory guard kills leaves no zombies.
-  assert.deepEqual(applied.spec.command, ["/opt/jr2/bin/tini", "--", "/opt/jr2/bin/node", "/opt/jr2/src/main.ts"]);
+  // `tini` is PID 1 (ADR-0061): a tree the memory guard kills leaves no zombies. A confined child
+  // can still signal the Harness below Landlock ABI 6 (ADR-0076): no core file, and no inspector
+  // on SIGUSR1.
+  assert.deepEqual(applied.spec.command, [
+    "/opt/jr2/bin/tini",
+    "--",
+    "/opt/jr2/bin/effector",
+    "nocore",
+    "--harness-env",
+    "--",
+    "/opt/jr2/bin/node",
+    "--disable-sigusr1",
+    "/opt/jr2/src/main.ts",
+  ]);
 
   // The runtime rides the KIT's image, mounted — nothing copies it, so no init step populates it.
   const runtime = applied.spec.volumes.find((v: { name: string }) => v.name === "runtime");
@@ -621,7 +525,11 @@ test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH plac
   // all — so jr2 supplies one as a pod volume rather than expecting a layer for it.
   assert.deepEqual(applied.spec.env[0], { name: "HOME", value: "/home/jr2" });
   assert.ok(applied.spec.volumes.some((v: { name: string }) => v.name === "home"));
-  assert.deepEqual(applied.spec.volumeMounts.at(-1), { name: "home", mountPath: "/home/jr2" });
+  assert.ok(
+    applied.spec.volumeMounts.some(
+      (m: { name: string; mountPath: string }) => m.name === "home" && m.mountPath === "/home/jr2",
+    ),
+  );
 
   // The probe runs in the SAME seat, or it proved a different uid's $HOME and proved nothing.
   const preflight = applied.spec.initContainers[0];
@@ -1109,7 +1017,10 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
     [
       "FLUE_LOG",
       "JR2_CUSTODIAN_URL",
-      "JR2_SANDBOX_TOKEN",
+      // Where the control socket is (ADR-0076): a path, never a credential.
+      "JR2_CUSTODIAN_SOCKET",
+      // Where the control Stand-in's file is (C1): never a Stand-in in env.
+      "JR2_CONTROL_STANDIN_FILE",
       // The CPU hints (ADR-0060): mechanism, so after the instance's own.
       "JR2_CPUS",
       "OMP_NUM_THREADS",
@@ -1118,9 +1029,44 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
       // Where the conversations persist (ADR-0031): mechanism too.
       "JR2_CONVERSATIONS_DIR",
       "JR2_HARNESS_TOKEN_SHA256",
+      // The names above, for the Harness's start (ADR-0076, `harness-env.ts`).
+      "JR2_HARNESS_ENV_NAMES",
     ],
   );
-  assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "anthropic" } }]);
+  assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "anthropic" }, prefix: "JR2_ENVFROM_" }]);
+});
+
+// ADR-0076: the Harness process gets only the names jr2 composed. The start (`effector nocore
+// --harness-env`) reads them off JR2_HARNESS_ENV_NAMES, and off the prefix of each envFrom key —
+// a user's Secret's keys are not known here. A source's own prefix comes after jr2's.
+test("the Harness container's env names its own names in JR2_HARNESS_ENV_NAMES, and each envFrom key gets the prefix JR2_ENVFROM_ (ADR-0076)", async () => {
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    ...exec,
+    env: [
+      { name: "FLUE_LOG", value: "debug" },
+      { name: "JR2_HARNESS_ENV_NAMES", value: "NODE_OPTIONS" },
+    ],
+    envFrom: [{ secretRef: { name: "team" } }, { configMapRef: { name: "conf" }, prefix: "APP_" }],
+  });
+  await port.provision({ name: "sb-names", runId: "r", workflow: "w", ...withApp });
+  const applied = crOf(calls);
+  const env = applied.spec.env as { name: string; value?: string }[];
+  const marks = env.filter((e) => e.name === "JR2_HARNESS_ENV_NAMES");
+  assert.equal(marks.length, 1, "one list, which no harness.env entry chooses");
+  assert.equal(env.at(-1), marks[0], "last, after every name it lists");
+  assert.deepEqual(
+    marks[0]!.value!.split(","),
+    env.slice(0, -1).map((e) => e.name),
+  );
+  assert.ok(marks[0]!.value!.split(",").includes("FLUE_LOG"));
+  assert.ok(!marks[0]!.value!.split(",").includes("NODE_OPTIONS"));
+  assert.deepEqual(applied.spec.envFrom, [
+    { secretRef: { name: "team" }, prefix: "JR2_ENVFROM_" },
+    { configMapRef: { name: "conf" }, prefix: "JR2_ENVFROM_APP_" },
+  ]);
 });
 
 test("each Sandbox's Harness gets the DIGEST of its own placement's bearer, last — never the bearer (ADR-0058)", async () => {
@@ -1170,23 +1116,41 @@ test("the Custodian is UNCONDITIONAL and is the pod's only credential holder (AD
   assert.deepEqual(custodian.env, [{ name: "JR2_SANDBOX", value: "sb-env2" }]);
   const values = applied.spec.volumes.find((v: { name: string }) => v.name === "custodian-values");
   assert.deepEqual(values.projected.sources, [
-    { secret: { name: "sb-env2-token", items: [{ key: "JR2_SANDBOX_TOKEN", path: "JR2_SANDBOX_TOKEN" }] } },
+    {
+      secret: {
+        name: "sb-env2-token",
+        items: [
+          { key: "control-token", path: "JR2_CONTROL_TOKEN" },
+          { key: "control-standin", path: "JR2_CONTROL_TOKEN.standin" },
+          { key: "token", path: "JR2_SANDBOX_TOKEN" },
+        ],
+      },
+    },
   ]);
-  // The Harness holds the token's Stand-in, never the token.
-  assert.ok(
-    applied.spec.env.some(
-      (e: { name: string; value?: string }) =>
-        e.name === "JR2_SANDBOX_TOKEN" && e.value === standIn("JR2_SANDBOX_TOKEN"),
-    ),
-  );
-  assert.ok(
-    !applied.spec.volumeMounts.some((m: { name: string }) => m.name.startsWith("custodian-")),
-    "the Harness container mounts nothing of the Custodian's",
+  // The Harness holds the control Stand-in as a file, never a token, and no Stand-in in env (C1).
+  assert.ok(!applied.spec.env.some((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN"));
+  const credentials = applied.spec.volumes.find((v: { name: string }) => v.name === "harness-credentials");
+  assert.deepEqual(credentials.projected.sources, [
+    { secret: { name: "sb-env2-token", items: [{ key: "control-standin", path: "control/standin" }] } },
+  ]);
+  // Nothing of the Custodian's but the folder of its control socket, which the Harness connects to
+  // and cannot write (ADR-0076).
+  assert.deepEqual(
+    applied.spec.volumeMounts.filter((m: { name: string }) => m.name.startsWith("custodian-")),
+    [{ name: "custodian-socket", mountPath: "/run/jr2/custodian", readOnly: true }],
+    "the Harness container mounts nothing else of the Custodian's",
   );
   const [secret] = applies(calls, "secrets");
   assert.equal(secret.metadata.name, "sb-env2-token");
-  // `data`, not `stringData`: a server-side apply owns the fields it names (ADR-0063).
-  assert.ok(Buffer.from(secret.data.JR2_SANDBOX_TOKEN, "base64").toString().length > 0);
+  // `data`, not `stringData`: a server-side apply owns the fields it names (ADR-0063). The fetch
+  // token, the control token and the control Stand-in, each a signed name (ADR-0076, C1, C2).
+  const key = provisionable.signingKey;
+  const decoded = (k: string) => Buffer.from(secret.data[k], "base64").toString();
+  assert.deepEqual(Object.keys(secret.data).sort(), ["control-standin", "control-token", "token"]);
+  assert.equal(decoded("token"), sandboxToken(key, "sb-env2"));
+  assert.equal(decoded("control-token"), controlToken(key, "sb-env2"));
+  assert.equal(decoded("control-standin"), controlStandIn(key, "sb-env2"));
+  assert.match(decoded("control-standin"), /^[A-Za-z0-9_-]{43}$/, "secret: 43 base64url characters");
   assert.equal(secret.stringData, undefined);
   // …and it is the CR's child from birth, by the uid the CR's apply answered with (ADR-0001).
   assert.deepEqual(secret.metadata.ownerReferences, [
@@ -1282,12 +1246,20 @@ test("a Sandbox's Custodian files are rendered at provision, AFTER the CR, owned
     JSON.parse(cm.data["envoy.json"]),
     custodianBootstrap(manifest, { host: "jr2-orchestrator.jr2-dev.svc", port: 4000 }),
   );
-  assert.equal(cm.data["custodian.lua"], custodianScript(manifest));
+  assert.equal(cm.data["custodian.lua"], custodianScript(manifest, { fetch: true }));
   assert.match(cm.data["custodian.lua"], /\ndofile\("\/etc\/jr2\/custodian\/config\/program\.lua"\)\n$/);
-  // Names, hosts, headers — never a value, never a Stand-in.
+  // Names, hosts, headers — never a value, never a secret Stand-in: the public fetch Stand-in alone.
   const text = JSON.stringify(cm.data);
-  assert.ok(!/jr2-held-/.test(text), "no Stand-in in a ConfigMap");
-  assert.ok(!text.includes(Buffer.from(applies(calls, "secrets")[0].data.JR2_SANDBOX_TOKEN, "base64").toString()));
+  assert.ok(!/jr2-held-(?!JR2_SANDBOX_TOKEN)/.test(text), "no secret Stand-in in a ConfigMap");
+  const secretData = applies(calls, "secrets")[0].data as Record<string, string>;
+  for (const value of Object.values(secretData)) {
+    assert.ok(!text.includes(Buffer.from(value, "base64").toString()), "no token and no Stand-in value");
+  }
+  // The held secret's Stand-in is minted into the pod's Secret: secret, and its own pod's (C1b).
+  const held = Buffer.from(secretData["standin-JIRA_TOKEN"]!, "base64").toString();
+  assert.equal(held, heldStandIn(provisionable.signingKey, "sb-files", "JIRA_TOKEN"));
+  assert.match(held, /^jr2-held-JIRA_TOKEN\.[A-Za-z0-9_-]{43}$/);
+  assert.ok(!held.includes("sk-ant-oat"));
 });
 
 test("the Sandbox Effector joins the pod when jr2 up placed an Effect there: its image, its mounts, and a key the CR owns (ADR-0068)", async () => {
@@ -1580,11 +1552,15 @@ test("a Workspace's Custodian holds its own pod's Held secrets, found by its wor
       config: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-config").projected.sources,
       files: applies(calls, "configmaps")[0].data,
       values: cr.spec.volumes.find((v: { name: string }) => v.name === "custodian-values").projected.sources,
+      standIns: JSON.stringify(cr.spec.volumes.find((v: { name: string }) => v.name === "harness-credentials")),
     };
   };
   const review = await envOf(["review"]);
   const pod = workspaceHeldPod({ workflow: "w", route: ["review"] });
-  assert.ok(review.env.includes("JIRA_TOKEN"), "the review Workspace's pod holds what its workspace() lists");
+  assert.ok(
+    review.standIns.includes("standins/JIRA_TOKEN"),
+    "the review Workspace's pod holds what its workspace() lists",
+  );
   // Its Custodian's own two files, rendered at provision from THIS pod's manifest, beside the one
   // program from `jr2-held`.
   assert.deepEqual(review.config, [
@@ -1599,16 +1575,16 @@ test("a Workspace's Custodian holds its own pod's Held secrets, found by its wor
     },
     { configMap: { name: "jr2-held", items: [{ key: "program.lua", path: "program.lua" }] } },
   ]);
-  assert.equal(review.files["custodian.lua"], custodianScript(jira));
+  assert.equal(review.files["custodian.lua"], custodianScript(jira, { fetch: true }));
   assert.deepEqual(review.values.at(-1), {
     secret: { name: `jr2-held-secrets-${pod}`, items: [{ key: "JIRA_TOKEN", path: "JIRA_TOKEN" }] },
   });
   const root = await envOf([]);
-  assert.ok(!root.env.includes("JIRA_TOKEN"), "the root Workspace's pod names nothing, and holds nothing");
+  assert.ok(!root.standIns.includes("JIRA_TOKEN"), "the root Workspace's pod names nothing, and holds nothing");
   assert.ok(!root.env.includes("HTTPS_PROXY"));
 });
 
-test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alone mounts values and leaves (ADR-0059)", async () => {
+test("a held secret: the Harness gets Stand-in files and the proxy, the Custodian alone mounts values and leaves (ADR-0059, ADR-0076)", async () => {
   const manifest: HeldManifest = {
     version: 1,
     secrets: [
@@ -1634,19 +1610,29 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
     ...exec,
     caBundle: true,
     env: [{ name: "FLUE_LOG", value: "debug" }],
-    // A same-named key in an envFrom Secret loses to the Stand-in: `env` wins over `envFrom`.
+    // No Stand-in rides env, so `jr2 up` refuses a held name that is a key here (R14).
     envFrom: [{ secretRef: { name: "stale-keys" } }],
-  }).provision({ name: "sb-held", runId: "r", workflow: "w", user: "ghcr.io/acme/sshd:1", ...withApp });
+  }).provision({
+    name: "sb-held",
+    runId: "r",
+    workflow: "w",
+    user: "ghcr.io/acme/sshd:1",
+    // The `workspace()` grants one of the two to its confined children; the model key it does not.
+    secrets: ["OPENAI_API_KEY"],
+    ...withApp,
+  });
   const applied = crOf(calls);
 
   assert.deepEqual(
-    applied.spec.env.map((e: { name: string; value?: string }) => [e.name, e.value]),
+    applied.spec.env
+      .filter((e: { name: string }) => e.name !== "JR2_HARNESS_ENV_NAMES")
+      .map((e: { name: string; value?: string }) => [e.name, e.value]),
     [
       ["FLUE_LOG", "debug"],
       ["JR2_CUSTODIAN_URL", "http://127.0.0.1:8081"],
-      ["JR2_SANDBOX_TOKEN", "jr2-held-JR2_SANDBOX_TOKEN"],
-      ["ANTHROPIC_API_KEY", "jr2-held-ANTHROPIC_API_KEY"],
-      ["OPENAI_API_KEY", "jr2-held-OPENAI_API_KEY"],
+      ["JR2_CUSTODIAN_SOCKET", "/run/jr2/custodian/control.sock"],
+      ["JR2_CONTROL_STANDIN_FILE", "/run/jr2/control/standin"],
+      ["JR2_GRANTED_SECRETS", "OPENAI_API_KEY"],
       ["HTTPS_PROXY", "http://127.0.0.1:15001"],
       ["https_proxy", "http://127.0.0.1:15001"],
       ["NO_PROXY", "localhost,127.0.0.1,::1"],
@@ -1657,11 +1643,36 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
       ["REQUESTS_CA_BUNDLE", "/etc/jr2/ca/bundle.crt"],
       ["GIT_SSL_CAINFO", "/etc/jr2/ca/bundle.crt"],
       ...CPU_HINTS.map((h) => [h.name, undefined]),
-      ["JR2_CONVERSATIONS_DIR", "/conversations"],
+      ["JR2_CONVERSATIONS_DIR", "/run/jr2/conversations"],
       ["JR2_HARNESS_TOKEN_SHA256", harnessTokenDigest(provisionable.signingKey, "sb-held")],
     ],
   );
-  assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "stale-keys" } }]);
+  assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "stale-keys" }, prefix: "JR2_ENVFROM_" }]);
+  // Each held secret's Stand-in is a file in the Harness container, from the pod's Secret (C1b).
+  assert.deepEqual(
+    applied.spec.volumes.find((v: { name: string }) => v.name === "harness-credentials").projected.sources,
+    [
+      {
+        secret: {
+          name: "sb-held-token",
+          items: [
+            { key: "control-standin", path: "control/standin" },
+            { key: "standin-ANTHROPIC_API_KEY", path: "standins/ANTHROPIC_API_KEY" },
+            { key: "standin-OPENAI_API_KEY", path: "standins/OPENAI_API_KEY" },
+          ],
+        },
+      },
+    ],
+  );
+  const minted = applies(calls, "secrets").find(
+    (x: { metadata: { name: string } }) => x.metadata.name === "sb-held-token",
+  )!;
+  for (const name of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
+    assert.equal(
+      Buffer.from(minted.data[`standin-${name}`], "base64").toString(),
+      heldStandIn(provisionable.signingKey, "sb-held", name),
+    );
+  }
 
   const custodian = applied.spec.sidecars.find((c: { name: string }) => c.name === "custodian");
   assert.deepEqual(
@@ -1669,6 +1680,7 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
     [
       ["custodian-values", "/etc/jr2/custodian/values"],
       ["custodian-config", "/etc/jr2/custodian/config"],
+      ["custodian-socket", "/run/jr2/custodian"],
       ["custodian-tls", "/etc/jr2/custodian/tls"],
       ["custodian-trust", "/etc/jr2/ca"],
     ],
@@ -1724,18 +1736,24 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
     ...withApp,
   });
   const applied = crOf(withCa.calls);
-  assert.deepEqual(applied.spec.env, [
+  assert.deepEqual(applied.spec.env.slice(0, -1), [
     { name: "JR2_CUSTODIAN_URL", value: "http://127.0.0.1:8081" },
-    { name: "JR2_SANDBOX_TOKEN", value: "jr2-held-JR2_SANDBOX_TOKEN" },
+    { name: "JR2_CUSTODIAN_SOCKET", value: "/run/jr2/custodian/control.sock" },
+    { name: "JR2_CONTROL_STANDIN_FILE", value: "/run/jr2/control/standin" },
     { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/ca.crt" },
     ...CPU_HINTS,
-    { name: "JR2_CONVERSATIONS_DIR", value: "/conversations" },
+    { name: "JR2_CONVERSATIONS_DIR", value: "/run/jr2/conversations" },
     { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(provisionable.signingKey, "sb-ca") },
   ]);
-  assert.deepEqual(applied.spec.volumes.at(-1), { name: "ca", configMap: { name: "jr2-ca" } });
+  assert.ok(
+    applied.spec.volumes.some(
+      (v: Record<string, unknown>) =>
+        JSON.stringify(v) === JSON.stringify({ name: "ca", configMap: { name: "jr2-ca" } }),
+    ),
+  );
   // CR-level volumeMounts land on the HARNESS container only (operator contract). With nothing
   // held, the Custodian verifies no upstream, so it mounts no trust at all.
-  assert.deepEqual(applied.spec.volumeMounts.at(-1), { name: "ca", mountPath: "/etc/jr2/ca", readOnly: true });
+  assert.deepEqual(applied.spec.volumeMounts.at(-3), { name: "ca", mountPath: "/etc/jr2/ca", readOnly: true });
   const custodian = applied.spec.sidecars.find((c: { name: string }) => c.name === "custodian");
   assert.ok(!custodian.volumeMounts.some((m: { name: string }) => m.name === "ca" || m.name === "custodian-trust"));
 
@@ -2512,4 +2530,106 @@ test("a secret named `git` takes no path of the push credentials, which the oper
   const gitDir = gitVar && "value" in gitVar ? gitVar.value : "";
   // Where the operator projects them: `@git` under the secrets mount, a name no secret can take.
   assert.equal(gitDir, "/run/jr2/secrets/@git");
+});
+
+// ---- the Harness container's mounts (ADR-0076) ---------------------------------------------------
+
+/** A mount in the Harness container, as the pod spec states it. */
+type Mount = { name: string; mountPath: string; readOnly?: boolean };
+
+/** The mounts that the operator adds to the Harness container (its contract,
+ * `operator/internal/controller/sandbox_controller.go`): each Repo cache, read-only at
+ * `/repos/<key>`, and the memory-backed `/dev/shm` when the CR states a `shmSize`. */
+function operatorMounts(spec: { repos?: Array<{ key: string }>; shmSize?: unknown }): Mount[] {
+  return [
+    ...(spec.repos ?? []).map((r) => ({
+      name: repoVolumeName(r.key),
+      mountPath: repoMountPath(r.key),
+      readOnly: true,
+    })),
+    ...(spec.shmSize !== undefined ? [{ name: "shm", mountPath: "/dev/shm" }] : []),
+  ];
+}
+
+/**
+ * The classification (ADR-0076): each writable mount of the Harness container is either under
+ * `/run/jr2`, which the domain cannot reach, or the Workspace's own, which the domain is meant to
+ * use. `/work` and HOME are the Workspace's own. So is `/dev/shm`: the shared memory of the
+ * container, which programs use as on any Linux machine, and where jr2 puts nothing of the
+ * Harness's. A mount that is none of these is a path that the Harness and the domain share, and
+ * a new one must be classified here before it ships.
+ */
+function unclassified(mounts: readonly Mount[], home: string | undefined): Mount[] {
+  const workspace = new Set(["/work", "/dev/shm", ...(home ? [home] : [])]);
+  return mounts.filter(
+    (m) =>
+      m.readOnly !== true &&
+      m.mountPath !== "/run/jr2" &&
+      !m.mountPath.startsWith("/run/jr2/") &&
+      !workspace.has(m.mountPath),
+  );
+}
+
+test("each mount of the Harness container is read-only, under /run/jr2, or the Workspace's own (ADR-0076)", async () => {
+  const manifest: HeldManifest = {
+    version: 1,
+    secrets: [
+      {
+        name: "ANTHROPIC_API_KEY",
+        source: { kind: "literal" },
+        hosts: [{ host: "litellm.corp.example", port: 443, leaf: leafStem("litellm.corp.example", 443) }],
+        headers: ["x-api-key"],
+      },
+    ],
+  };
+  const bare = {
+    ...REFS,
+    sandbox: { ...REFS.sandbox, [BARE.key]: "jr2-sandbox-inst-bare:b00" },
+    sandboxUser: { [BARE.key]: "" },
+  };
+  // The shapes that change the mounts: the image's own seat or the fallback seat (a HOME volume),
+  // nothing held or a held secret with a CA bundle (the trust), and a User Container.
+  const shapes = [
+    { images: REFS, heldDir: NOTHING_HELD, caBundle: false, req: {} },
+    { images: bare, heldDir: await mkHeld(manifest), caBundle: true, req: { image: BARE.url, user: RUST.url } },
+  ];
+  for (const [i, shape] of shapes.entries()) {
+    const { exec, calls } = cluster();
+    await kubeSandbox({
+      imagesPath: await mkImages(shape.images),
+      ...provisionable,
+      heldDir: shape.heldDir,
+      caBundle: shape.caBundle,
+      ...exec,
+    }).provision({ name: `sb-mounts-${i}`, runId: "r", workflow: "w", ...shape.req, ...withApp });
+    const spec = crOf(calls).spec;
+    const home = (spec.env as Array<{ name: string; value?: string }>).find((e) => e.name === "HOME")?.value;
+    const mounts: Mount[] = [...spec.volumeMounts, ...operatorMounts(spec)];
+    assert.deepEqual(unclassified(mounts, home), [], `shape ${i}: a mount that the Harness and the domain share`);
+    // The paths that the Harness holds alone are each under `/run/jr2` (ADR-0076): the Stand-ins,
+    // the control socket and the conversations.
+    for (const path of ["/run/jr2", "/run/jr2/custodian", "/run/jr2/conversations"]) {
+      assert.ok(
+        mounts.some((m) => m.mountPath === path),
+        `shape ${i}: ${path} is mounted`,
+      );
+    }
+    // The operator's Repo mounts are read-only: a Sandbox names its Repos, so the list is not empty.
+    assert.ok(operatorMounts(spec).some((m) => m.mountPath.startsWith("/repos/") && m.readOnly === true));
+  }
+  // The classifier itself: a writable mount outside `/run/jr2` and the Workspace's own fails it.
+  assert.deepEqual(
+    unclassified(
+      [
+        { name: "work", mountPath: "/work" },
+        { name: "creds", mountPath: "/etc/jr2/creds" },
+        { name: "lookalike", mountPath: "/run/jr2x" },
+      ],
+      undefined,
+    ),
+    [
+      { name: "creds", mountPath: "/etc/jr2/creds" },
+      { name: "lookalike", mountPath: "/run/jr2x" },
+    ],
+  );
 });

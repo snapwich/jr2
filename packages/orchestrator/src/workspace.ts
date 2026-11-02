@@ -59,7 +59,6 @@ import {
   open,
   repoSlotState,
   sandboxPartsOf,
-  sandboxSlotsOf,
   wrapperBodyOf,
   type Binding,
   type JR2Repos,
@@ -302,12 +301,9 @@ export type PlaceRequest = {
   image?: string;
   user?: string;
   workGroup?: number;
-  /** The pod's declared, workspace-ful agent slots (ADR-0076), in first-declared order — the port
-   * composes one Harness container per slot and names each on the CR. `<= 1` is the single-container
-   * no-op (the CR, pod and endpoints are byte-for-byte today). Empty for a `workspace()` that runs no
-   * workspace-ful Agent. The run host's `place` always sends it; absent only from a test that drives
-   * the port directly, where the port reads it as `[]` (the single-container path). */
-  slots?: string[];
+  /** The Held secrets the `workspace()`'s `secrets` list names (ADR-0059): the ones the Harness may
+   * put in a confined child's env, by Stand-in (ADR-0076). Names, never a value. Absent → none. */
+  secrets?: string[];
   repos: ProvisionedRepo[];
   resources?: Size;
   userResources?: Size;
@@ -350,12 +346,10 @@ export interface SandboxPort {
   /**
    * Wait for the placed Sandbox's `phase: Ready` under the port's budget, which starts NOW — the
    * pod is scheduled, so it measures only what jr2 controls: the image pull, the Harness start, the
-   * Repos (ADR-0064). Resolves with `endpoint`, the canonical (primary slot's) Harness endpoint the
-   * orchestrator can reach, and `endpoints`, one Harness endpoint per declared slot by slot name
-   * when the pod runs more than one (ADR-0076) — absent or empty for a single-slot pod, whose one
-   * slot is the canonical `endpoint`. Lost, or gone, rejects naming why.
+   * Repos (ADR-0064). Resolves with the Harness endpoint the orchestrator can reach. Lost, or gone,
+   * rejects naming why.
    */
-  provision(name: string): Promise<{ endpoint: string; endpoints?: Record<string, string> }>;
+  provision(name: string): Promise<{ endpoint: string }>;
   /** Post-Ready attach (ADR-0004): per slot, `git clone --shared` off the node's read-only
    * cache (the `default/` checkout). A Machine cuts each Worktree (ADR-0075). Resolves with the
    * folder of each slot; `stale` names the slots whose cache could not be fetched before this
@@ -472,14 +466,7 @@ type WsContext = {
   wsId: string;
   /** Every slot's resolved Binding, by slot, in declaration order — assigned at provision. */
   bindings?: Record<string, ResolvedBinding>;
-  /** The pod's declared, workspace-ful agent slots (ADR-0076), read off the wrapper at `place` —
-   * the per-slot endpoints the handles publish are keyed by these. First entry is the primary. */
-  slots?: string[];
-  /** The canonical (primary slot's) Harness endpoint, from provision. */
   endpoint?: string;
-  /** The per-slot Harness endpoints provision reported, by slot (ADR-0076) — empty for a single-slot
-   * pod, whose one slot resolves to {@link endpoint}. */
-  slotEndpoints?: Record<string, string>;
   /** Why the Sandbox waits for a node, while `placing` (ADR-0064) — persisted, so a restart keeps
    * when the wait began and `RunStatus.waiting` reads it off the snapshot. Cleared once placed. */
   wait?: WorkspaceWait;
@@ -700,8 +687,11 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
   /**
    * The Held secrets that this Sandbox can use: names from the `secrets` list in `jr2.config.ts`.
    * The Sandbox's Custodian holds each value and puts it into requests to the hosts of that Held
-   * secret. The Agent sees only a Stand-in. You need not list the model key of an Agent that runs
-   * here: its provider claims it. Each name once.
+   * secret. Listing a name also gives its Stand-in to the Agent's programs — each `bash` call, test,
+   * build and `command` — in their env under that name, so code in `/work` can spend it (ADR-0076).
+   * You need not list the model key of an Agent that runs here: its provider claims it, and the
+   * Harness gives it to the model calls alone. List the model key only when code in `/work` must
+   * call the model itself: such a call is outside the Turn's usage record. Each name once.
    */
   secrets?: readonly string[];
   // The container exists only when an Effect below this `workspace()` is placed there (ADR-0068,
@@ -1316,7 +1306,7 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
    * and so the same name, which that Workspace has placed again by then (ADR-0073).
    */
   const place = fromPromise<
-    { bindings: Record<string, ResolvedBinding>; runInput: Record<string, unknown>; slots: string[] },
+    { bindings: Record<string, ResolvedBinding>; runInput: Record<string, unknown> },
     { wsId: string; runInput: Record<string, unknown> }
   >(async ({ input, self, system, signal }) => {
     const binding = runBindingOf(system);
@@ -1327,10 +1317,6 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
     // content-addressed tag, which would outlive the image it names. The RESOLVED bindings are
     // persisted, because a per-run mapper's answer is this run's fact.
     const parts = sandboxPartsOf(invokingMachine(self));
-    // The pod's declared, workspace-ful agent slots (ADR-0076), read off the wrapper NOW, beside the
-    // images and slots — one Harness container per slot. The same walk `jr2 up` runs, so the set the
-    // provision composes matches the set the converge placed.
-    const slots = sandboxSlotsOf(invokingMachine(self)!);
     const wrapper = self._parent;
     // RunHost parsed a root run's door and added `instanceId`, so that value is final: a second
     // parse would refuse the added key under a strict door and transform a value twice. A parent's
@@ -1379,7 +1365,8 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
         ...(parts.image !== undefined ? { image: parts.image } : {}),
         ...(user.image !== undefined ? { user: user.image } : {}),
         ...(parts.workGroup !== undefined ? { workGroup: parts.workGroup } : {}),
-        slots,
+        // The Held secrets the `workspace()` grants its confined children (ADR-0076): names only.
+        ...(parts.secrets?.length ? { secrets: [...parts.secrets] } : {}),
         repos: Object.entries(bindings).map(([slot, b]) => ({ slot, ...b })),
         // The Size as the Machine states it, re-read here like the images (ADR-0060): a redeploy
         // that retuned it reaches the next provision, and no snapshot holds it.
@@ -1417,12 +1404,12 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
         openedAt !== undefined ? Math.round(performance.now() - openedAt) : Math.max(0, Date.now() - Date.parse(since));
       binding.marker?.({ kind: "placed", child, since, after });
     }
-    return { bindings, runInput, slots };
+    return { bindings, runInput };
   });
 
   /** `provisioning`: the placed pod's Ready, under the port's budget, which starts here (ADR-0064). */
-  const provision = fromPromise<{ endpoint: string; endpoints?: Record<string, string> }, { wsId: string }>(
-    async ({ input, system }) => sandboxOf(system).provision(workspaceName(runBindingOf(system).runId, input.wsId)),
+  const provision = fromPromise<{ endpoint: string }, { wsId: string }>(async ({ input, system }) =>
+    sandboxOf(system).provision(workspaceName(runBindingOf(system).runId, input.wsId)),
   );
 
   const attach = fromPromise<
@@ -1599,7 +1586,6 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
                   (event as unknown as { output: { bindings: Record<string, ResolvedBinding> } }).output.bindings,
                 runInput: ({ event }) =>
                   (event as unknown as { output: { runInput: Record<string, unknown> } }).output.runInput,
-                slots: ({ event }) => (event as unknown as { output: { slots: string[] } }).output.slots,
                 wait: undefined,
               }),
             },
@@ -1624,8 +1610,6 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
               target: "attaching",
               actions: assign({
                 endpoint: ({ event }) => (event as unknown as { output: { endpoint: string } }).output.endpoint,
-                slotEndpoints: ({ event }) =>
-                  (event as unknown as { output: { endpoints?: Record<string, string> } }).output.endpoints ?? {},
               }),
             },
           },
@@ -1651,16 +1635,8 @@ function buildWorkspaceMachine(body: AnyStateMachine): AnyStateMachine {
                       output: { repos: Record<string, string>; bases?: Record<string, string> };
                     }
                   ).output;
-                  // One Harness endpoint per declared slot (ADR-0076): a slot the provision named
-                  // its own, else the pod's canonical endpoint — so a single-slot pod maps its one
-                  // slot to the one endpoint, byte-for-byte today. An Agent's Turn reads its OWN
-                  // slot's here and reaches no co-resident sibling's container.
-                  const endpoints = Object.fromEntries(
-                    (ctx.slots ?? []).map((slot) => [slot, ctx.slotEndpoints?.[slot] ?? ctx.endpoint!]),
-                  );
                   return {
                     endpoint: ctx.endpoint!,
-                    endpoints,
                     // Derived, not remembered: the same function every port operation names the CR
                     // with, so the Sandbox the registrar publishes — and the Agent actor records on its
                     // registration — is the one the Custodian's token is scoped to, by construction

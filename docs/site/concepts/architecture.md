@@ -26,8 +26,8 @@ its pod can reach. Thus jr2 puts each thing that the Agent must not touch in a d
   processes. Agents in two Workspaces share no files and no ports. [Workspaces](workspaces.md) tells more.
 - The credentials are in containers in which the Agent executes nothing: the Custodian, the Effector and the Repo cache.
   [Secrets and trust](secrets-and-trust.md) tells how.
-- The Harness holds one secret value, with which it sends the picks. Each program that it starts in `/work` runs
-  confined with Landlock, so the code of an Agent cannot read that value.
+- The Harness holds one secret value, with which it sends the picks. Each program that it starts runs confined with
+  Landlock, so the code of an Agent cannot read that value.
 
 ## What runs where
 
@@ -133,16 +133,20 @@ The Harness has two placements:
 
 A Harness answers only the Orchestrator. The Orchestrator sends a bearer token on each call, and the Harness accepts no
 call without it, except its health check. `jr2 up` also converges NetworkPolicies that let only the Orchestrator's pods
-connect to a Harness pod.
+connect to a Harness pod, and that stop each Harness pod at the cloud metadata addresses
+([Secrets and trust](secrets-and-trust.md#what-a-held-secret-does-not-stop)).
 
 ## The Custodian
 
 Each Harness pod has a Custodian: each Sandbox, and the Instance Harness. The Custodian is a container beside the
 Harness. The Agent executes no code in it. It does two things:
 
-- It carries four kinds of call from the pod to the Orchestrator: the Menu reads, the picks, the polls for the answer to
-  a pick, and the fetch asks. It sends the first three with the control token of the Sandbox, and the fetch asks with
-  its fetch token. These four routes are all that it forwards. It refuses all other routes.
+- It carries five kinds of call from the pod to the Orchestrator: the Menu reads, the picks, the polls for the answer to
+  a pick, the reports that a step boundary gave its notices to the model, and the fetch asks. It sends the first four
+  with the control token of the Sandbox, and the fetch asks with its fetch token. These five routes are all that it
+  forwards. It refuses all other routes. The Harness sends the first four on a Unix socket in `/run/jr2`. A confined
+  program cannot make a socket there, and the Custodian refuses a request on it that does not have the control Stand-in.
+  The fetch asks go to port `8081` on loopback.
 - It holds the [Held secrets](../reference/glossary.md#held-secret) of its pod, such as a model API key. It puts the
   value into the requests that go to the hosts of each Held secret.
 
@@ -209,7 +213,7 @@ credential to fetch.
 - A Harness accepts a call only from the Orchestrator, with the bearer of its own pod. Only its health check needs no
   bearer.
 - The Agent executes code only in the Harness container. It executes nothing in the Custodian or in the Effector.
-- In the Harness container, each program in `/work` runs confined. It cannot read what the Harness holds.
+- In the Harness container, each program that the Harness starts runs confined. It cannot read what the Harness holds.
 - Each Sandbox node needs Landlock in its kernel. `jr2 up` refuses to converge while a Sandbox node has none.
 - The Orchestrator watches the Sandbox resources and never reads a pod. The operator puts the facts of the pod on the
   status of the Sandbox resource.

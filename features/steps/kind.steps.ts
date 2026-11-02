@@ -384,38 +384,573 @@ When(
     // the router's, not the refusal under test.
     const probe =
       `fetch(${JSON.stringify(`${url}/agents/${encodeURIComponent(iid)}/events`)},{method:"POST",` +
-      `headers:{"content-type":"application/json",authorization:"Bearer "+process.env.JR2_SANDBOX_TOKEN},` +
+      `headers:{"content-type":"application/json",authorization:"Bearer jr2-held-JR2_SANDBOX_TOKEN"},` +
       `body:${JSON.stringify(JSON.stringify({ type: tool, summary: "self-approved" }))}})` +
-      `.then(r=>console.log("HTTP",r.status,process.env.JR2_SANDBOX_TOKEN)).catch(e=>console.log("ERR",e.message))`;
+      `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message))`;
     this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
   },
 );
 
+// --- no Workspace code acts as an Agent (ADR-0076) ---------------------------------------------
+//
+// Each probe is the model's own `bash` call, so it runs where planted code runs: a confined child
+// of the Harness, with the env the Harness gave it. Its output comes back the way the model reads
+// it, in the next request to the model. The secret Stand-ins it looks for are read on the host,
+// from the Sandbox's credentials Secret, and never travel in the command as themselves.
+
+/** The secret Stand-ins of the run's Sandbox: the control one and the model key's, as its
+ * credentials Secret (`<sandbox>-token`) holds them. */
+async function podStandIns(world: E2EWorld): Promise<string[]> {
+  const sandbox = (await waitForReadySandbox(world)).metadata.name;
+  const keys = ["control-standin", "standin-JR2_PROVIDER_API_KEY"];
+  const out: string[] = [];
+  for (const key of keys) {
+    const b64 = await kubectl(world, [
+      "get",
+      "secret",
+      `${sandbox}-token`,
+      "-o",
+      `jsonpath={.data.${key.replace(/\./g, "\\.")}}`,
+    ]);
+    const value = Buffer.from(b64.trim(), "base64").toString("utf8").trim();
+    assert.ok(value.length > 20, `the Secret ${sandbox}-token holds "${key}"`);
+    out.push(value);
+  }
+  return out;
+}
+
 /**
- * The sibling-injection attack ADR-0076 exists to stop, run for real. While the `reviewer` slot's
- * Turn is live and parked (the scenario never releases it), the `coder` slot's container posts the
- * reviewer's `approve` to the reviewer's iid through the Custodian on loopback — exactly the path
- * the Harness uses for its own picks — with the control Stand-in that container holds. Today the
- * one Harness container holds the one Sandbox Stand-in, the Custodian swaps it for the Sandbox
- * token, and the Orchestrator sees only a matching Sandbox — so the coder approves its own review.
- * After ADR-0076 the coder's container holds only the coder's per-slot credential, which the
- * Orchestrator refuses on the reviewer's iid.
+ * The text of the first tool result, in any request to the model, that holds `marker`. Only a
+ * message with the `tool` role counts: the command that printed the marker holds it too.
  */
+async function toolResultWith(world: E2EWorld, marker: string, ms = 300_000): Promise<string> {
+  assert.ok(world.provider, "the scenario's scripted model is running");
+  const textOf = (content: unknown): string =>
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((p) => (typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : ""))
+            .join("")
+        : "";
+  for (const deadline = Date.now() + ms; Date.now() < deadline; await sleep(500)) {
+    for (const c of world.provider.calls) {
+      if (!c.stream || !c.raw.includes(marker)) continue;
+      const messages = (JSON.parse(c.raw) as { messages?: Array<{ role?: string; content?: unknown }> }).messages ?? [];
+      const hit = messages
+        .filter((m) => m.role === "tool")
+        .map((m) => textOf(m.content))
+        .find((t) => t.includes(marker));
+      if (hit) return hit;
+    }
+  }
+  throw new Error(`no request to the model held a tool result with "${marker}"`);
+}
+
+/** The JSON a probe printed after `marker` on one line. */
+function probeJson<T>(text: string, marker: string): T {
+  const line = text.split("\n").find((l) => l.startsWith(marker));
+  assert.ok(line, `the probe printed "${marker}" (got: ${text.slice(0, 2000)})`);
+  return JSON.parse(line.slice(marker.length).trim()) as T;
+}
+
+/** What the Stand-in scan saw (`STANDIN_SCAN`). */
+type ScanSeen = {
+  files: Record<string, string>;
+  harness: { pid: string | null; environ: string | null; mem: string | null };
+  found: string[];
+};
+
+/**
+ * The scan, as a confined child runs it. The values come in reversed and base64-encoded, so no file
+ * and no env holds them as themselves; the scan turns them back in its own memory. It tries the two
+ * Stand-in files, finds the Harness process by its title `jr2-harness` (its comm and its command
+ * line, which any process can read) and
+ * tries its environ and its memory (which ptrace rules guard, and Landlock scopes), then reads
+ * every environ and every regular file it can.
+ */
+function standInScan(values: string[]): string {
+  const sealed = Buffer.from(JSON.stringify(values.map((v) => [...v].reverse().join("")))).toString("base64");
+  return [
+    `const fs=require("fs"),path=require("path");`,
+    `const keys=JSON.parse(Buffer.from("${sealed}","base64").toString()).map(k=>[...k].reverse().join(""));`,
+    `const has=b=>keys.some(k=>b.includes(k));`,
+    `const out={files:{},harness:{pid:null,environ:null,mem:null},found:[]};`,
+    `for(const f of ["/run/jr2/control/standin","/run/jr2/standins/JR2_PROVIDER_API_KEY"]){`,
+    `try{fs.readFileSync(f);out.files[f]="READ"}catch(e){out.files[f]=e.code}}`,
+    `for(const [k,v] of Object.entries(process.env))if(has(v))out.found.push("env:"+k);`,
+    `for(const pid of fs.readdirSync("/proc")){if(!/^\\d+$/.test(pid))continue;`,
+    `let cmd="",comm="";try{cmd=fs.readFileSync("/proc/"+pid+"/cmdline","utf8")}catch{}`,
+    `try{comm=fs.readFileSync("/proc/"+pid+"/comm","utf8").trim()}catch{}`,
+    `const harness=comm==="jr2-harness"||cmd.split("\\0")[0]==="jr2-harness";`,
+    `if(harness){out.harness.pid=pid;`,
+    `try{fs.closeSync(fs.openSync("/proc/"+pid+"/mem","r"));out.harness.mem="READ"}catch(e){out.harness.mem=e.code}}`,
+    `try{const env=fs.readFileSync("/proc/"+pid+"/environ");if(harness)out.harness.environ="READ";`,
+    `if(has(env))out.found.push("/proc/"+pid+"/environ")}catch(e){if(harness)out.harness.environ=e.code}}`,
+    `const skip=new Set(["/proc","/sys","/dev"]);`,
+    `const walk=d=>{let es;try{es=fs.readdirSync(d,{withFileTypes:true})}catch{return}`,
+    `for(const e of es){const p=path.join(d,e.name);if(skip.has(p))continue;`,
+    `if(e.isDirectory())walk(p);else if(e.isFile()){try{if(fs.statSync(p).size>(64<<20))continue;`,
+    `if(has(fs.readFileSync(p)))out.found.push(p)}catch{}}}};walk("/");`,
+    `console.log("STANDIN-SCAN "+JSON.stringify(out));`,
+  ].join("");
+}
+
 When(
-  "the coder's Harness container posts {string} to the reviewer through the Custodian",
-  async function (this: E2EWorld, pick: string): Promise<void> {
+  "the Agent's bash looks everywhere it can for the pod's Stand-ins",
+  { timeout: 120_000 },
+  async function (this: E2EWorld): Promise<void> {
+    await waitForAttached(this);
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    this.podStandIns = await podStandIns(this);
+    // A file in TMPDIR, so the scan is not in the shell's argv: the shell is not the probe.
+    const command =
+      `cat > "$TMPDIR/scan.cjs" <<'JR2_SCAN'\n${standInScan(this.podStandIns)}\nJR2_SCAN\n` +
+      `${RUNTIME_NODE} "$TMPDIR/scan.cjs"`;
+    await this.provider.release("bash", { command });
+  },
+);
+
+Then(
+  "the Agent's bash could not read a Stand-in file, nor the Harness's environ or memory",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const seen = probeJson<ScanSeen>(await toolResultWith(this, "STANDIN-SCAN "), "STANDIN-SCAN ");
+    this.scanSeen = seen;
+    for (const [file, result] of Object.entries(seen.files)) {
+      assert.notEqual(result, "READ", `a confined child read ${file}`);
+      assert.notEqual(result, "ENOENT", `${file} is where the Harness holds it, so the refusal is a refusal`);
+    }
+    assert.ok(seen.harness.pid, `the scan found the Harness process (${JSON.stringify(seen)})`);
+    assert.notEqual(seen.harness.environ, "READ", "a confined child read the Harness's environ");
+    assert.notEqual(seen.harness.mem, "READ", "a confined child opened the Harness's memory");
+  },
+);
+
+// ADR-0076 (the red team's F1): node reads HOME once, at its start, into the folders where a bare
+// require() looks last (`$HOME/.node_modules`, `$HOME/.node_libraries`). The domain writes its own
+// HOME, so the Agent's bash plants a module in each, as an attacker would. What this tier can see
+// is the Harness process's HOME, read from outside the pod: `effector nocore --harness-env` gave it
+// /run/jr2/home before node started. The scripted provider loads none of pi-ai's lazy provider
+// modules (the Bedrock path that asks for `supports-color`), so whether a planted module would run
+// is the unit tests' (`children.test.ts`: node under nocore looks in no folder of the container's
+// HOME; `module-paths.test.ts`: the Harness refuses a node that would).
+When(
+  "the Agent's bash plants a module in its HOME's .node_modules and .node_libraries",
+  { timeout: 120_000 },
+  async function (this: E2EWorld): Promise<void> {
+    await waitForAttached(this);
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    const body = `require("fs").writeFileSync("/tmp/jr2-planted-ran", String(process.pid)); module.exports = () => false;`;
+    const command = [
+      `for d in "$HOME/.node_modules/supports-color" "$HOME/.node_libraries/supports-color"; do`,
+      `  mkdir -p "$d" && printf '%s\n' '${body}' > "$d/index.js"`,
+      `done`,
+      `echo "PLANTED-IN $HOME"`,
+    ].join("\n");
+    await this.provider.release("bash", { command });
+  },
+);
+
+Then(
+  "the Harness process's HOME, read from outside the pod, is not the HOME where the Agent planted",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const planted = (await toolResultWith(this, "PLANTED-IN "))
+      .split("\n")
+      .find((l) => l.startsWith("PLANTED-IN "))
+      ?.slice("PLANTED-IN ".length)
+      .trim();
+    assert.ok(planted && planted !== "/run/jr2/home", `the Agent's bash planted in its own HOME (${planted})`);
     const pod = (await waitForReadySandbox(this)).metadata.name;
-    // The reviewer's live registration, addressed as the Harness's Menu encodes it (menu.ts).
+    // kubectl exec is the container's uid outside the domain: it reads the Harness's environ, which
+    // the domain cannot.
+    const script =
+      `for p in /proc/[0-9]*; do ` +
+      `if [ "$(cat "$p/comm" 2>/dev/null)" = jr2-harness ]; then tr '\\0' '\\n' < "$p/environ" | grep '^HOME='; fi; done`;
+    const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-c", script]);
+    const homes = out.split("\n").filter((l) => l.startsWith("HOME="));
+    assert.deepEqual(homes, ["HOME=/run/jr2/home"], `the Harness process's HOME (pod said: ${out.trim()})`);
+  },
+);
+
+Then("the Agent's bash found no Stand-in of the pod", function (this: E2EWorld): void {
+  assert.deepEqual(this.scanSeen?.found, [], `a confined child found a Stand-in: ${JSON.stringify(this.scanSeen)}`);
+});
+
+Then("no request to the model holds a Stand-in of the pod", function (this: E2EWorld): void {
+  // The strongest form: whatever a child read, it could print, and the model would read it here.
+  for (const value of this.podStandIns ?? []) {
+    assert.ok(!this.provider!.calls.some((c) => c.raw.includes(value)), "a Stand-in of the pod reached the model");
+  }
+});
+
+/** The test the coder plants (ADR-0076's motivating attack). It runs in whatever process runs the
+ * tests: here the reviewer's own bash. It sends the reviewer's `approve` to the reviewer's iid
+ * through the Custodian, with each bearer that it can find, and writes down each answer. */
+function plantedTest(iid: string): string {
+  return [
+    `import { test } from "node:test";`,
+    `import { readFileSync, writeFileSync } from "node:fs";`,
+    `import { request } from "node:http";`,
+    `test("the change builds", async () => {`,
+    `  const bearers = { "fetch-standin": "jr2-held-JR2_SANDBOX_TOKEN" };`,
+    `  try { bearers["control-file"] = readFileSync("/run/jr2/control/standin", "utf8").trim(); }`,
+    `  catch (e) { bearers["control-file"] = null; }`,
+    // Every env value that could be a bearer: a token has no space, no slash and no colon.
+    `  for (const [k, v] of Object.entries(process.env)) if (v && v.length >= 16 && !/[\\s\\/:]/.test(v)) bearers["env:" + k] = v;`,
+    `  const base = process.env.JR2_CUSTODIAN_URL || "http://127.0.0.1:8081";`,
+    `  const sent = [];`,
+    `  for (const [from, bearer] of Object.entries(bearers)) {`,
+    `    if (!bearer) { sent.push({ from, status: "no bearer" }); continue; }`,
+    `    try {`,
+    `      const r = await fetch(base + "/agents/" + encodeURIComponent(${JSON.stringify(iid)}) + "/events", {`,
+    `        method: "POST",`,
+    `        headers: { "content-type": "application/json", authorization: "Bearer " + bearer, "x-jr2-slot": "body/reviewer" },`,
+    `        body: JSON.stringify({ type: "approve", summary: "planted" }),`,
+    `      });`,
+    `      sent.push({ from, status: r.status });`,
+    `    } catch (e) { sent.push({ from, status: "ERR " + e.message }); }`,
+    `  }`,
+    // The control routes are on the Custodian's socket under /run/jr2 (ADR-0076): try it as well.
+    `  const viaSocket = (bearer) => new Promise((resolve) => {`,
+    `    const req = request({ socketPath: "/run/jr2/custodian/control.sock", method: "POST",`,
+    `      path: "/agents/" + encodeURIComponent(${JSON.stringify(iid)}) + "/events",`,
+    `      headers: { "content-type": "application/json", authorization: "Bearer " + bearer, "x-jr2-slot": "body/reviewer" } },`,
+    `      (r) => { r.resume(); resolve(r.statusCode); });`,
+    `    req.on("error", (e) => resolve("ERR " + e.code));`,
+    `    req.end(JSON.stringify({ type: "approve", summary: "planted" }));`,
+    `  });`,
+    `  sent.push({ from: "control-socket", status: await viaSocket("jr2-held-JR2_SANDBOX_TOKEN") });`,
+    `  writeFileSync("/work/planted.json", JSON.stringify(sent));`,
+    `});`,
+  ].join("\n");
+}
+
+When(
+  "the coder's bash plants a test in \\/work that approves the review as the reviewer",
+  async function (this: E2EWorld): Promise<void> {
+    await waitForAttached(this);
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
     const iid = continuedIid(this.runId!, "body", "reviewer");
-    // A direct loopback call to the Custodian's control listener (NO_PROXY covers 127.0.0.1), with
-    // the Stand-in from the container's env. The build updates the env name to the coder's per-slot
-    // Stand-in; the assertion (refused) is what changes the day it lands.
-    const probe =
-      `fetch(${JSON.stringify(`http://127.0.0.1:8081/agents/${encodeURIComponent(iid)}/events`)},{method:"POST",` +
-      `headers:{"content-type":"application/json",authorization:"Bearer "+process.env.JR2_SANDBOX_TOKEN},` +
-      `body:${JSON.stringify(JSON.stringify({ type: pick, summary: "self-approved" }))}})` +
-      `.then(async r=>console.log("HTTP",r.status,(await r.text()).slice(0,200))).catch(e=>console.log("ERR",e.message))`;
-    this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", CODER_CONTAINER, "--", RUNTIME_NODE, "-e", probe]);
+    await this.provider.release("bash", {
+      command: `cat > /work/review.test.mjs <<'JR2_PLANT'\n${plantedTest(iid)}\nJR2_PLANT\necho PLANTED-OK`,
+    });
+    await toolResultWith(this, "PLANTED-OK", 120_000);
+  },
+);
+
+When("the reviewer's bash runs the tests in \\/work", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+  await this.provider.release("bash", {
+    command: `cd /work && ${RUNTIME_NODE} --test review.test.mjs >/dev/null 2>&1; printf 'PLANTED-SENT '; cat /work/planted.json; echo`,
+  });
+});
+
+Then(
+  "each approval the planted test sent was refused",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const sent = probeJson<Array<{ from: string; status: number | string }>>(
+      await toolResultWith(this, "PLANTED-SENT ").catch(async (e: Error) => {
+        // A forged approval ENDS the reviewer's Turn, so no tool result follows: say what moved.
+        const s = await wsStatus(this);
+        throw new Error(
+          `${e.message}; the run is ${s.status}, verdict ${String((s.context as { verdict?: string }).verdict)}`,
+        );
+      }),
+      "PLANTED-SENT ",
+    );
+    // Not vacuous: the public Stand-in, which any process knows, was sent and answered.
+    const fetch = sent.find((s) => s.from === "fetch-standin");
+    assert.ok(typeof fetch?.status === "number", `the planted test reached the Custodian (${JSON.stringify(sent)})`);
+    // The control socket is under /run/jr2. Landlock does not limit a connect to a named socket, so
+    // the domain can connect: the Custodian then refuses a request that carries no control Stand-in
+    // (a 403). An error of the connect is a refusal too.
+    const socket = sent.find((s) => s.from === "control-socket");
+    assert.ok(socket, `the planted test tried the control socket (${JSON.stringify(sent)})`);
+    for (const s of sent) {
+      assert.ok(
+        s.status === "no bearer" ||
+          (typeof s.status === "number" && s.status >= 400) ||
+          (s.from === "control-socket" && typeof s.status === "string" && s.status.startsWith("ERR ")),
+        `the planted test delivered a pick with ${s.from}: ${JSON.stringify(sent)}`,
+      );
+    }
+    assert.equal(
+      sent.find((s) => s.from === "control-file")?.status,
+      "no bearer",
+      "the planted test could not read the control Stand-in",
+    );
+  },
+);
+
+Then("the reviewer's Turn still waits for its model", async function (this: E2EWorld): Promise<void> {
+  // The reviewer's request after its bash call is parked: its model has not picked.
+  await this.provider!.holding("approve");
+  const s = await wsStatus(this);
+  assert.equal((s.context as { verdict?: string }).verdict, undefined, "no verdict was given");
+});
+
+When(
+  "the Agent's bash sends the {string} Stand-in from its env to the model's host",
+  async function (this: E2EWorld, name: string): Promise<void> {
+    await waitForAttached(this);
+    assert.ok(this.provider && this.providerUrl, "the scenario's scripted model is running (World.setupKind)");
+    const send =
+      `fetch(process.argv[1]+"/probe",{headers:{"x-probe-key":process.env[${JSON.stringify(name)}]??""}})` +
+      `.then(r=>console.log("PROBE-SENT",r.status)).catch(e=>console.log("PROBE-SENT ERR",e.message,e.cause?.code??""))`;
+    await this.provider.release("bash", {
+      command:
+        `printf 'PROBE-ENV {"granted":"%s","model":"%s"}\\n' "\${${name}:-}" "\${JR2_PROVIDER_API_KEY:-}"; ` +
+        `${RUNTIME_NODE} -e '${send}' ${JSON.stringify(this.providerUrl)}`,
+    });
+  },
+);
+
+Then(
+  "the Agent's bash held the {string} Stand-in and no {string}",
+  { timeout: 360_000 },
+  async function (this: E2EWorld, granted: string, model: string): Promise<void> {
+    const text = await toolResultWith(this, "PROBE-SENT");
+    const env = probeJson<{ granted: string; model: string }>(text, "PROBE-ENV ");
+    assert.match(env.granted, new RegExp(`^jr2-held-${granted}\\.[A-Za-z0-9_-]{43}$`), "the granted Stand-in");
+    assert.equal(env.model, "", `the child's env holds no ${model}`);
+    assert.match(text, /PROBE-SENT 200/, `the probe reached the model's host: ${text}`);
+  },
+);
+
+Then(
+  "the model's host received the value of {string}, and no Stand-in",
+  function (this: E2EWorld, _name: string): void {
+    const seen = this.provider!.probes.map((h) => h["x-probe-key"]);
+    assert.deepEqual(seen, [this.probeKey], "the Custodian put the value in place of the Stand-in");
+  },
+);
+
+// --- the domain does not stop normal work (ADR-0076, ADR-0077) ---------------------------------
+//
+// Each claim is a tool call of the model, released through the scripted model, and each step reads
+// the tool result that the model reads. The probes do what an Agent does on a machine. They do not
+// use `setsid` or `nohup`, because an Agent does not use them either.
+
+/** The folder of the server probe. HOME is one emptyDir for the container, so each call finds it. */
+const SERVE_DIR = "$HOME/.e2e-serve";
+
+When("the Agent's bash starts a server in the background", async function (this: E2EWorld): Promise<void> {
+  await waitForAttached(this);
+  assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+  const server =
+    `require("http").createServer((q,s)=>s.end("serve-ok")).listen(0,"127.0.0.1",function(){` +
+    `require("fs").writeFileSync(process.argv[2],String(this.address().port))})`;
+  await this.provider.release("bash", {
+    command: [
+      `mkdir -p "${SERVE_DIR}" && rm -f "${SERVE_DIR}/port"`,
+      `cat > "${SERVE_DIR}/serve.cjs" <<'JR2_SERVE'\n${server}\nJR2_SERVE`,
+      `E2E_SERVER_MARK=serve-mark ${RUNTIME_NODE} "${SERVE_DIR}/serve.cjs" "${SERVE_DIR}/port" >"${SERVE_DIR}/log" 2>&1 &`,
+      `echo $! > "${SERVE_DIR}/pid"`,
+      `for i in $(seq 1 100); do [ -s "${SERVE_DIR}/port" ] && break; sleep 0.1; done`,
+      `reply=$(${RUNTIME_NODE} -e 'fetch("http://127.0.0.1:"+process.argv[1]).then(r=>r.text()).then(t=>console.log(t),e=>console.log("ERR",e.message))' "$(cat "${SERVE_DIR}/port")")`,
+      `printf 'SERVER-STARTED {"pid":"%s","port":"%s","cwd":"%s","reply":"%s"}\\n' "$(cat "${SERVE_DIR}/pid")" "$(cat "${SERVE_DIR}/port")" "$(pwd -P)" "$reply"`,
+    ].join("\n"),
+  });
+});
+
+type ServerStarted = { pid: string; port: string; cwd: string; reply: string };
+
+async function serverStarted(world: E2EWorld): Promise<ServerStarted> {
+  return probeJson<ServerStarted>(await toolResultWith(world, "SERVER-STARTED "), "SERVER-STARTED ");
+}
+
+Then(
+  "the Agent's bash started the server, and it answers",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const started = await serverStarted(this);
+    assert.match(started.pid, /^\d+$/, `the call printed the server's pid (${JSON.stringify(started)})`);
+    assert.match(started.port, /^\d+$/, `the server wrote its port (${JSON.stringify(started)})`);
+    assert.equal(started.reply, "serve-ok", `the server answered on 127.0.0.1 (${JSON.stringify(started)})`);
+  },
+);
+
+When("a later bash call of the Agent finds the server and ends it", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+  // The server's parent shell has exited, so a reaper takes the server. Until the reaper waits on
+  // it, it is a zombie, and `kill -0` still finds it: the state in /proc tells the two apart.
+  const state = `$(sed -n 's/^State:[[:space:]]*\\([A-Z]\\).*/\\1/p' "/proc/$pid/status" 2>/dev/null)`;
+  await this.provider.release("bash", {
+    command: [
+      `pid=$(cat "${SERVE_DIR}/pid")`,
+      `marks=$(tr '\\0' '\\n' <"/proc/$pid/environ" 2>/dev/null | grep -c '^E2E_SERVER_MARK=serve-mark$')`,
+      `cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo unreadable)`,
+      `kill "$pid" && killed=yes || killed=no`,
+      `for i in $(seq 1 50); do s=${state}; [ -z "$s" ] || [ "$s" = Z ] && break; sleep 0.1; done`,
+      `s=${state}; if [ -z "$s" ] || [ "$s" = Z ]; then gone=yes; else gone="no ($s)"; fi`,
+      `printf 'SERVER-ENDED {"pid":"%s","marks":"%s","cwd":"%s","killed":"%s","gone":"%s"}\\n' "$pid" "$marks" "$cwd" "$killed" "$gone"`,
+    ].join("\n"),
+  });
+});
+
+Then(
+  "the later call read the server's env and its working folder, and the server is gone",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const started = await serverStarted(this);
+    const ended = probeJson<{ pid: string; marks: string; cwd: string; killed: string; gone: string }>(
+      await toolResultWith(this, "SERVER-ENDED "),
+      "SERVER-ENDED ",
+    );
+    const seen = JSON.stringify({ started, ended });
+    assert.equal(ended.pid, started.pid, `the later call found the server by the pid the first call wrote (${seen})`);
+    // Reading another process's environ and cwd needs the access that ptrace checks.
+    assert.equal(ended.marks, "1", `the later call read the server's /proc/<pid>/environ (${seen})`);
+    assert.equal(ended.cwd, started.cwd, `the later call read the server's working folder (${seen})`);
+    assert.equal(ended.killed, "yes", `the later call's kill reached the server (${seen})`);
+    assert.equal(ended.gone, "yes", `the server ended (${seen})`);
+  },
+);
+
+When(
+  "the Agent's bash writes in {string}, moves files across folders, and prints {string}",
+  async function (this: E2EWorld, folder: string, name: string): Promise<void> {
+    await waitForAttached(this);
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    // Three moves: from TMPDIR into /work (often across file systems, so a copy), from one folder of
+    // /work into another (a rename, which needs Landlock's REFER right), and the same in the image's
+    // folder. Each step prints "ok" or "fail", and the errors follow on their own lines.
+    const run = (key: string, cmd: string): string => `if ${cmd} 2>>"$err"; then r_${key}=ok; else r_${key}=fail; fi`;
+    await this.provider.release("bash", {
+      command: [
+        `err=$(mktemp)`,
+        run("write", `echo owned > ${folder}/e2e-write.txt && [ "$(cat ${folder}/e2e-write.txt)" = owned ]`),
+        `mkdir -p "$TMPDIR/e2e-mv" /work/.e2e-mv/a /work/.e2e-mv/b ${folder}/e2e-mv/a ${folder}/e2e-mv/b`,
+        `echo moved > "$TMPDIR/e2e-mv/f.txt"; echo moved > /work/.e2e-mv/a/f.txt; echo moved > ${folder}/e2e-mv/a/f.txt`,
+        run("tmpWork", `mv "$TMPDIR/e2e-mv/f.txt" /work/.e2e-mv/g.txt && [ -f /work/.e2e-mv/g.txt ]`),
+        run("work", `mv /work/.e2e-mv/a/f.txt /work/.e2e-mv/b/f.txt && [ -f /work/.e2e-mv/b/f.txt ]`),
+        run("image", `mv ${folder}/e2e-mv/a/f.txt ${folder}/e2e-mv/b/f.txt && [ -f ${folder}/e2e-mv/b/f.txt ]`),
+        // The root and the folders above /run/jr2 list, as on a machine (ADR-0076: READ_DIR on the root).
+        run("root", `ls / >/dev/null && ls /run >/dev/null && ls /run/jr2 >/dev/null`),
+        `rm -rf /work/.e2e-mv`,
+        `printf 'NORMAL-WORK {"write":"%s","tmpWork":"%s","work":"%s","image":"%s","root":"%s","env":"%s","ld":"%s"}\\n' "$r_write" "$r_tmpWork" "$r_work" "$r_image" "$r_root" "\${${name}:-}" "\${LD_LIBRARY_PATH:-}"`,
+        `cat "$err"`,
+      ].join("\n"),
+    });
+  },
+);
+
+type NormalWork = {
+  write: string;
+  tmpWork: string;
+  work: string;
+  image: string;
+  root: string;
+  env: string;
+  ld: string;
+};
+
+async function normalWork(world: E2EWorld): Promise<{ seen: NormalWork; text: string }> {
+  const text = await toolResultWith(world, "NORMAL-WORK ");
+  return { seen: probeJson<NormalWork>(text, "NORMAL-WORK "), text };
+}
+
+Then(
+  "the Agent's bash wrote in {string}",
+  { timeout: 360_000 },
+  async function (this: E2EWorld, folder: string): Promise<void> {
+    const { seen, text } = await normalWork(this);
+    assert.equal(seen.write, "ok", `a write in ${folder}, which the uid owns, succeeds: ${text}`);
+  },
+);
+
+Then(
+  "the Agent's bash listed {string}, {string} and {string}",
+  { timeout: 360_000 },
+  async function (this: E2EWorld, a: string, b: string, c: string): Promise<void> {
+    const { seen, text } = await normalWork(this);
+    assert.equal(seen.root, "ok", `ls of ${a}, ${b} and ${c} succeeds, as on a machine: ${text}`);
+  },
+);
+
+// ADR-0076: an image-only name that loads code from a path reaches the Agent's programs and never the
+// Harness process. The Harness's environ is out of the domain's reach, so the step reads it from
+// outside, with a `kubectl exec` that Landlock does not confine.
+Then(
+  "the Agent's bash saw the image's LD_LIBRARY_PATH, and the Harness process has none",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const { seen, text } = await normalWork(this);
+    assert.equal(seen.ld, "/app/lib", `the image's LD_LIBRARY_PATH is in the env of bash: ${text}`);
+    const environ = await shell(
+      this,
+      `for p in /proc/[0-9]*; do if [ "$(cat "$p/comm" 2>/dev/null)" = jr2-harness ]; then ` +
+        `tr '\\0' '\\n' < "$p/environ"; echo HARNESS-FOUND; fi; done`,
+    );
+    assert.match(environ, /HARNESS-FOUND/, `the Harness process was found by its title: ${environ}`);
+    assert.match(environ, /^JR2_HARNESS_JSON=/m, `the Harness process has jr2's names: ${environ.slice(0, 2000)}`);
+    // JR2_START_ENV is there (its value is base64, never a name of its own); the image's names are not.
+    for (const name of ["LD_LIBRARY_PATH", "E2E_IMAGE_ENV"]) {
+      assert.doesNotMatch(environ, new RegExp(`^${name}=`, "m"), `the Harness process has ${name}`);
+    }
+  },
+);
+
+Then("each move of the Agent's bash succeeded", { timeout: 360_000 }, async function (this: E2EWorld): Promise<void> {
+  const { seen, text } = await normalWork(this);
+  assert.equal(seen.tmpWork, "ok", `a move from TMPDIR into /work succeeds: ${text}`);
+  assert.equal(seen.work, "ok", `a move from one folder of /work into another succeeds: ${text}`);
+  assert.equal(seen.image, "ok", `a move from one folder of the image into another succeeds: ${text}`);
+});
+
+Then(
+  "the Agent's bash saw {string} as {string}",
+  { timeout: 360_000 },
+  async function (this: E2EWorld, name: string, value: string): Promise<void> {
+    const { seen, text } = await normalWork(this);
+    assert.equal(seen.env, value, `the image's ENV ${name} is in the env of bash: ${text}`);
+  },
+);
+
+/** The bash probe prints this many lines, more than the 2000 that the model is shown. */
+const LONG_OUTPUT_LINES = 3000;
+
+When("the Agent's bash prints more lines than the model is shown", async function (this: E2EWorld): Promise<void> {
+  await waitForAttached(this);
+  assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+  // `%s` splits each marker, so only the output holds it, never the command.
+  await this.provider.release("bash", {
+    command: `printf 'LONG-%s\\n' HEAD; seq 1 ${LONG_OUTPUT_LINES} | sed 's/^/long-line-/'; printf 'LONG-%s\\n' END`,
+  });
+});
+
+/** The file that the truncated bash result names as its full output. */
+async function fullOutputFile(world: E2EWorld): Promise<{ path: string; text: string }> {
+  const text = await toolResultWith(world, "LONG-END");
+  const m = /Full output: ([^\]\s]+)\]/.exec(text);
+  assert.ok(m, `the truncated result names the full output's file: ${text.slice(-500)}`);
+  return { path: m[1]!, text };
+}
+
+Then(
+  "the model was shown the tail and the name of the full output's file",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const { text } = await fullOutputFile(this);
+    assert.ok(!text.includes("LONG-HEAD"), "the first line is not in the tail that the model is shown");
+  },
+);
+
+When("the Agent reads the full output's file", { timeout: 360_000 }, async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+  const { path } = await fullOutputFile(this);
+  await this.provider.release("read", { path, limit: 5 });
+});
+
+Then(
+  "the model was shown the first line of the full output",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const text = await toolResultWith(this, "LONG-HEAD");
+    assert.match(text, /long-line-1\b/, `read gave the head of the full output: ${text.slice(0, 500)}`);
   },
 );
 
@@ -430,10 +965,6 @@ When(
 
 /** The runtime's node, which every Harness container has at the same path (ADR-0037). */
 const RUNTIME_NODE = "/opt/jr2/bin/node";
-// The container that runs the `coder` slot's Turns and Working tools. Today one Harness container
-// serves every slot, so it is `harness`; ADR-0076 gives each slot its own Harness container, and
-// the build points this at the coder's. The sibling-injection test posts from here.
-const CODER_CONTAINER = "harness";
 
 /**
  * The scan: every process's environment and every regular file under `/` but the kernel's trees,
@@ -471,7 +1002,7 @@ Then(
 );
 
 Then(
-  "the Harness container's environment holds the stand-in for {string}",
+  "the Harness container holds the stand-in for {string} as a file, in no env",
   async function (this: E2EWorld, name: string): Promise<void> {
     const pod = (await waitForReadySandbox(this)).metadata.name;
     const seen = await kubectl(this, [
@@ -482,9 +1013,13 @@ Then(
       "--",
       RUNTIME_NODE,
       "-e",
-      `console.log(process.env[${JSON.stringify(name)}])`,
+      `console.log(JSON.stringify({file:require("fs").readFileSync("/run/jr2/standins/"+${JSON.stringify(name)},"utf8").trim(),env:process.env[${JSON.stringify(name)}]??null}))`,
     ]);
-    assert.equal(seen.trim(), `jr2-held-${name}`);
+    const { file, env } = JSON.parse(seen.trim()) as { file: string; env: string | null };
+    // ADR-0059, ADR-0076: a secret Stand-in, minted for this pod, with the readable prefix.
+    assert.match(file, new RegExp(`^jr2-held-${name}\\.[A-Za-z0-9_-]{43}$`));
+    assert.equal(env, null, "no env var of the Harness container holds it");
+    this.standIn = file;
   },
 );
 
@@ -542,7 +1077,7 @@ When(
     // Through the container's own HTTPS_PROXY: the Custodian tunnels a target no secret is bound to,
     // untouched — and the echo's certificate is trusted because the tier's CA is the `caBundle`.
     const probe =
-      `fetch(${JSON.stringify(this.echoUrl)},{headers:{authorization:"Bearer "+process.env[${JSON.stringify(name)}]}})` +
+      `fetch(${JSON.stringify(this.echoUrl)},{headers:{authorization:"Bearer "+require("fs").readFileSync("/run/jr2/standins/"+${JSON.stringify(name)},"utf8").trim()}})` +
       `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message,e.cause?.code??""))`;
     this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", RUNTIME_NODE, "-e", probe]);
   },
@@ -552,7 +1087,7 @@ Then("the unbound echo received the stand-in, and not the key", function (this: 
   assert.match(this.podSays ?? "", /HTTP 200/, `the echo answered (pod said: ${this.podSays?.trim()})`);
   const seen = this.provider?.echo.seen ?? [];
   assert.ok(
-    seen.some((r) => r.headers.authorization === "Bearer jr2-held-JR2_PROVIDER_API_KEY"),
+    seen.some((r) => /^Bearer jr2-held-JR2_PROVIDER_API_KEY\.[A-Za-z0-9_-]{43}$/.test(String(r.headers.authorization))),
     `the echo received the Stand-in as sent (got: ${JSON.stringify(seen.map((r) => r.headers.authorization))})`,
   );
   assert.ok(!JSON.stringify(seen).includes(this.providerKey ?? "\u0000"), "the key never reached the echo");
@@ -627,6 +1162,94 @@ Then("the connection never completes", function (this: E2EWorld): void {
       `(pod said: ${this.podSays?.trim()})`,
   );
 });
+
+// --- no Harness pod reaches a cloud metadata address (ADR-0076) ---------------------------------
+//
+// kind has no metadata service, and a connect to 169.254.169.254 times out there with no policy at
+// all, so a timeout alone proves nothing. So the step gives the address to the loopback of the
+// Sandbox pod's node: a connect to it from a pod then reaches the node, which refuses a port that
+// nothing listens on. A pod that the policy does not select (the Orchestrator's) gets that refusal.
+// The Agent's bash must not: kindnet drops its packet before the node sees it. The Agent's bash
+// also connects to the model's host, outside the cluster, and to the Orchestrator's Service, inside
+// it, so the step proves the block and not a dead network.
+
+/** The address that each metadata service of AWS, GCP and Azure answers on. */
+const METADATA_ADDRESS = "169.254.169.254";
+
+/** A TCP connect with a 3 s limit, as planted code does it: `connected`, `timeout`, or the error's code. */
+const CONNECT_PROBE =
+  `const net=require("net");` +
+  `const probe=(host,port)=>new Promise((r)=>{const s=net.connect({host,port});` +
+  `const t=setTimeout(()=>{s.destroy();r("timeout")},3000);` +
+  `s.on("connect",()=>{clearTimeout(t);s.destroy();r("connected")});` +
+  `s.on("error",(e)=>{clearTimeout(t);r(e.code||e.message)})});`;
+
+When(
+  "the Agent's bash connects to the cloud metadata address, the model's host and the Orchestrator",
+  async function (this: E2EWorld): Promise<void> {
+    await waitForAttached(this);
+    assert.ok(this.provider && this.providerUrl, "the scenario's scripted model is running (World.setupKind)");
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const node = (await kubectl(this, ["get", `pod/${pod}`, "-o", "jsonpath={.spec.nodeName}"])).trim();
+    assert.ok(node, `the Sandbox pod ${pod} is on a node`);
+    // A kind node is a docker container of the same name. The After hook removes the address.
+    this.metadataNode = node;
+    await exec("docker", ["exec", node, "ip", "addr", "replace", `${METADATA_ADDRESS}/32`, "dev", "lo"]);
+
+    // The control: a pod that no egress policy selects reaches the address, and the node refuses it.
+    this.metadataControl = (
+      await kubectl(this, [
+        "exec",
+        "deployment/jr2-orchestrator",
+        "--",
+        "node",
+        "-e",
+        `${CONNECT_PROBE}probe(${JSON.stringify(METADATA_ADDRESS)},80).then((r)=>console.log(r))`,
+      ])
+    ).trim();
+
+    const provider = new URL(this.providerUrl);
+    const orchestrator = `jr2-orchestrator.${this.namespace}.svc`;
+    const script =
+      `${CONNECT_PROBE}(async()=>{const out={` +
+      `metadata:await probe(${JSON.stringify(METADATA_ADDRESS)},80),` +
+      `provider:await probe(${JSON.stringify(provider.hostname)},${Number(provider.port)}),` +
+      `orchestrator:await probe(${JSON.stringify(orchestrator)},4000)};` +
+      `console.log("EGRESS-PROBE "+JSON.stringify(out))})()`;
+    await this.provider.release("bash", { command: `${RUNTIME_NODE} -e '${script}'` });
+  },
+);
+
+Then(
+  "the metadata address did not answer the Agent's bash, and the model's host and the Orchestrator did",
+  { timeout: 360_000 },
+  async function (this: E2EWorld): Promise<void> {
+    // Not vacuous: the node answers the address for a pod that no egress policy selects.
+    assert.equal(
+      this.metadataControl,
+      "ECONNREFUSED",
+      `the metadata address answers a pod that no egress policy selects (the Orchestrator's got: ${this.metadataControl})`,
+    );
+    const seen = probeJson<{ metadata: string; provider: string; orchestrator: string }>(
+      await toolResultWith(this, "EGRESS-PROBE "),
+      "EGRESS-PROBE ",
+    );
+    assert.ok(
+      seen.metadata !== "connected" && seen.metadata !== "ECONNREFUSED",
+      `the Agent's bash reached the metadata address, which the egress policy blocks (${JSON.stringify(seen)})`,
+    );
+    assert.equal(
+      seen.provider,
+      "connected",
+      `the Agent's bash reaches a host outside the cluster (${JSON.stringify(seen)})`,
+    );
+    assert.equal(
+      seen.orchestrator,
+      "connected",
+      `the Agent's bash reaches a Service in the cluster (${JSON.stringify(seen)})`,
+    );
+  },
+);
 
 /**
  * A detached Worktree (ADR-0028), made with the same git steps as a detached cut (ADR-0075), exec'd
@@ -823,7 +1446,8 @@ Then("the Harness container satisfies the injection contracts", async function (
     `/opt/jr2/bin/rg --version >/dev/null`,
     // tini is PID 1 (ADR-0061): it reaps what the memory guard's kill orphans.
     `[ "$(tr '\\0' ' ' </proc/1/cmdline | cut -d' ' -f1)" = /opt/jr2/bin/tini ]`,
-    `harness=; for p in /proc/[0-9]*; do if tr '\\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q '^/opt/jr2/bin/node /opt/jr2/src/main.ts'; then harness="$p"; fi; done`,
+    // The Harness names its process `jr2-harness` (ADR-0076), so its comm, not its argv, finds it.
+    `harness=; for p in /proc/[0-9]*; do if [ "$(cat "$p/comm" 2>/dev/null)" = jr2-harness ]; then harness="$p"; fi; done`,
     `[ -n "$harness" ]`,
     `printf 'umask=%s\\n' "$(sed -n 's/^Umask:[[:space:]]*//p' "$harness/status")"`,
     `printf 'node=%s\\n' "$(command -v node)"`,
@@ -988,7 +1612,7 @@ Then("the run's Sandbox runs the Custodian beside the Harness", async function (
 Then("the delivery is refused as unauthorized", function (this: E2EWorld): void {
   assert.match(
     this.podSays ?? "",
-    /HTTP 401 jr2-held-JR2_SANDBOX_TOKEN/,
+    /HTTP 401/,
     `the Orchestrator must refuse an Agent bearing only the Stand-in (pod said: ${this.podSays?.trim()})`,
   );
 });
@@ -996,14 +1620,6 @@ Then("the delivery is refused as unauthorized", function (this: E2EWorld): void 
 Then("the run has not settled", async function (this: E2EWorld): Promise<void> {
   const s = await wsStatus(this);
   assert.equal(s.status, "active", "the refused delivery moved nothing");
-});
-
-Then("the sibling delivery is refused", function (this: E2EWorld): void {
-  assert.match(
-    this.podSays ?? "",
-    /HTTP 403/,
-    `ADR-0076: the coder's container must not deliver a pick as the reviewer (pod said: ${this.podSays?.trim()})`,
-  );
 });
 
 Then("the run's Sandbox is the same one, at the same endpoint", async function (this: E2EWorld): Promise<void> {
@@ -2476,6 +3092,12 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
   // for — but the tier must not depend on that to stay clean. Every ref the load added goes, since
   // taking the tag alone is what leaves the bytes behind. `ctr images rm` is delete-if-present.
   if (this.plantedImage) await exec("docker", ["rmi", this.plantedImage]).catch(() => {});
+  // The metadata address that the egress scenario gave to a node's loopback (ADR-0076).
+  if (this.metadataNode) {
+    await exec("docker", ["exec", this.metadataNode, "ip", "addr", "del", "169.254.169.254/32", "dev", "lo"]).catch(
+      () => {},
+    );
+  }
   for (const [node, refs] of Object.entries(this.plantedRefs ?? {})) {
     if (refs.length === 0) continue;
     await exec("docker", ["exec", node, "ctr", "-n", "k8s.io", "images", "rm", ...refs]).catch(() => {});
@@ -3126,6 +3748,7 @@ When(
     // The body holds on its Gate: the Workspace is attached and its Effector is up.
     await openGate(this);
     const pod = await sandboxPodOf(this);
+    this.takeoverPod = pod;
     await kubectlInput(
       this,
       ["exec", "-i", `pod/${pod}`, "-c", "harness", "--", "sh", "-c", "cat > /work/takeover.js"],
@@ -3173,11 +3796,14 @@ When("the held Effect is released", async function (this: E2EWorld): Promise<voi
 });
 
 /** Releases the held file-body http, then reads what the takeover was sent WHILE the run is live: once the
- * Effect settles, the wrapper deletes the Sandbox CR, and the pod's `/work` goes with it. */
+ * Effect settles, the wrapper deletes the Sandbox CR, and the pod's `/work` goes with it. The pod is the
+ * one the takeover step found. Do not wait for the Sandbox to be Ready here: the restarted Effector cannot
+ * bind its port, so the pod is never Ready again. */
 When(
   "the held Effect is released, and the takeover writes down its start",
   async function (this: E2EWorld): Promise<void> {
-    const pod = await sandboxPodOf(this);
+    const pod = this.takeoverPod;
+    assert.ok(pod, "the takeover step found the Sandbox pod");
     await releaseHeld(this);
     for (let i = 0; i < 120; i++) {
       const seen = await kubectl(this, [
@@ -3432,7 +4058,13 @@ const WT_DRIVERS: Record<string, (w: E2EWorld, m: string) => Promise<void>> = {
     await w.provider!.release("revise", { notes: "once more" });
     await w.provider!.release("bash", { command: commitIn("round2") });
     await w.provider!.release("finished", {});
-    await w.provider!.release("bash", { command: "ls round2.txt && git status --porcelain" });
+    // ADR-0076 (c): the second Agent's confined git, in its own review Worktree, and its output.
+    await w.provider!.release("bash", {
+      command:
+        'ls round2.txt && git log -1 --pretty=reviewed-%s && test -z "$(git status --porcelain)" && echo tree-clean',
+    });
+    const reviewed = await toolResultWith(w, "reviewed-round2", 120_000);
+    assert.match(reviewed, /^tree-clean$/m, `the reviewer's git saw a clean tree: ${reviewed}`);
     await w.provider!.release("pass", {});
     await sendGate(w, "approve");
     assert.equal((await waitSettled(w)).status, "done");
@@ -3647,9 +4279,10 @@ const KILL_MARK = "/work/app/default/.git/killed-in-add";
 /**
  * A kill in the middle of `git worktree add`: the folder exists, and the admin entry has `locked` and
  * `index.lock`, which git holds through the checkout. The kill goes to the cut's process group, or to
- * the Harness, the parent of the cut. The script waits inside the pod, because the window is seconds,
- * and it marks the file `armed` first, so that the step sends the cut only after the kill is in place.
- * `[s]` keeps this script's own command line out of its match.
+ * the Harness. The parent of the cut is the confined spawner (ADR-0076), not the Harness, so the script
+ * finds the Harness by its title `jr2-harness` (its comm). The script waits inside the pod, because the
+ * window is seconds, and it marks the file `armed` first, so that the step sends the cut only after the
+ * kill is in place. `[s]` keeps this script's own command line out of its match.
  */
 const KILL_AT_CUT = (what: "cut" | "harness") => `
 : > /tmp/armed
@@ -3663,8 +4296,16 @@ for p in /proc/[0-9]*; do
   case "$c" in
     */src/cut.t[s]" "*)
       read -r pid comm st ppid pgrp rest < "$p/stat"
-      : > ${KILL_MARK}
-      ${what === "cut" ? `kill -9 -"$pgrp"` : `kill -9 "$ppid"`}
+      ${
+        what === "cut"
+          ? `: > ${KILL_MARK}; kill -9 -"$pgrp"`
+          : `for h in /proc/[0-9]*; do
+        if [ "$(cat "$h/comm" 2>/dev/null)" = jr2-harness ]; then
+          : > ${KILL_MARK}; kill -9 "\${h#/proc/}"; echo killed; exit 0
+        fi
+      done
+      echo no-harness; exit 5`
+      }
       echo killed
       exit 0
       ;;

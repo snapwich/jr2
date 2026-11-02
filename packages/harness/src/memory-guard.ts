@@ -20,6 +20,7 @@
 
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { runIn, type ChildPolicy } from "./children.ts";
 
 /** How often the guard reads the cgroup. The lab won 6/6 on amd64 at
  * 10 ms (0.8% of a core) and only half at 50 ms (ADR-0061). Turn mechanics, not an author dial. */
@@ -155,11 +156,15 @@ export class MemoryGuard {
   }
 }
 
-/** The guard for this process's own cgroup (cgroup v2, read-only at `/sys/fs/cgroup`). */
-export function podMemoryGuard(): MemoryGuard {
+/**
+ * The guard for this process's own cgroup (cgroup v2, read-only at `/sys/fs/cgroup`). With a
+ * domain (ADR-0076), its spawner is spared — the processes it started are not — and `/dev/shm` is
+ * emptied by a process of the domain (`clearShmInDomain`).
+ */
+export function podMemoryGuard(children?: ChildPolicy): MemoryGuard {
   return new MemoryGuard(cgroupReader(), {
-    killAgentProcesses: () => killAgentProcesses(),
-    clearShm: () => clearShm(),
+    killAgentProcesses: () => killAgentProcesses(CGROUP, children?.spawner.pid),
+    clearShm: () => (children ? void clearShmInDomain(children) : clearShm()),
     log: (line) => console.error(line),
   });
 }
@@ -192,18 +197,19 @@ export function cgroupReader(root = CGROUP): CgroupRead {
 }
 
 /** The Agent's processes (ADR-0061): every process in the container's cgroup except PID 1 — tini,
- * whose reaping keeps a killed tree from leaving zombies — and the Harness itself. */
-export function agentPids(root = CGROUP): number[] {
+ * whose reaping keeps a killed tree from leaving zombies — the Harness itself, and `spare` (the
+ * spawner, ADR-0076, which every later call needs; the processes it started are not spared). */
+export function agentPids(root = CGROUP, spare?: number): number[] {
   const procs = readOr(join(root, "cgroup.procs")) ?? "";
   return procs
     .split("\n")
     .map(Number)
-    .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid);
+    .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid && pid !== spare);
 }
 
-function killAgentProcesses(root = CGROUP): number {
+function killAgentProcesses(root = CGROUP, spare?: number): number {
   let killed = 0;
-  for (const pid of agentPids(root)) {
+  for (const pid of agentPids(root, spare)) {
     try {
       process.kill(pid, "SIGKILL");
       killed++;
@@ -230,6 +236,28 @@ export function clearShm(dir = "/dev/shm"): void {
       // Another uid's file (a User Container's, ADR-0005): not ours to free.
     }
   }
+}
+
+/** `clearShm`, as a program: node runs it with the folder as its one argument. */
+const CLEAR_SHM = `
+const { readdirSync, rmSync } = require("node:fs");
+const dir = process.argv[1];
+let entries = [];
+try { entries = readdirSync(dir); } catch { process.exit(0); }
+for (const entry of entries) {
+  try { rmSync(require("node:path").join(dir, entry), { recursive: true, force: true }); } catch {}
+}
+`;
+
+/**
+ * Empty `/dev/shm` in the domain (ADR-0076). The domain writes `/dev/shm`, so it can put a link in
+ * place of a folder there while a removal walks it: a removal by the Harness would then follow the
+ * link into `/run/jr2`. A process of the domain can follow it only where the domain reaches. The
+ * program is this process's own node, which every Sandbox holds on the runtime volume.
+ */
+export async function clearShmInDomain(children: ChildPolicy, dir = "/dev/shm"): Promise<void> {
+  const r = await runIn(children, [process.execPath, "-e", CLEAR_SHM, dir], { cwd: "/", timeoutMs: 60_000 });
+  if (r.error !== undefined) console.error(`jr2 harness: /dev/shm was not emptied: ${r.error.message.trim()}`);
 }
 
 /** A byte count the way a Size is written: `2Gi`, `1.9Gi`, `512Mi`. */

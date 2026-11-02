@@ -42,6 +42,7 @@ func Main(args []string) int {
 	cloneTimeout := fs.Duration("clone-timeout", defaultCloneTimeout, "The budget for one git clone; past it the clone is killed and fails.")
 	fetchTimeout := fs.Duration("fetch-timeout", defaultFetchTimeout, "The budget for one interval git fetch or probe; past it the call is killed and fails.")
 	onDemandFetchTimeout := fs.Duration("on-demand-fetch-timeout", defaultOnDemandFetchTimeout, "The budget for the git fetch a Sandbox waits on before its attach; past it the Sandbox goes Ready stale.")
+	terminationLog := fs.String("termination-log", "/dev/termination-log", "Where the kubelet reads this container's termination message; empty writes none.")
 	zapOpts := zap.Options{}
 	zapOpts.BindFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -53,6 +54,15 @@ func Main(args []string) int {
 	if *namespace == "" || *node == "" {
 		log.Error(fmt.Errorf("namespace %q, node %q", *namespace, *node), "Both --namespace and --node are required")
 		return 2
+	}
+
+	// Landlock first (ADR-0077): on a node without it no Sandbox can run, and this pod is the one
+	// that says so. It exits before it serves, so the pod is NotReady with the reason in its status.
+	abi, err := checkLandlock(*node)
+	if err != nil {
+		writeTerminationMessage(*terminationLog, err.Error())
+		log.Error(err, "This node cannot run a Sandbox")
+		return 1
 	}
 
 	scheme := runtime.NewScheme()
@@ -92,7 +102,7 @@ func Main(args []string) int {
 		return 1
 	}
 
-	log.Info("Starting cache agent", "namespace", *namespace, "node", *node, "cacheDir", *cacheDir)
+	log.Info("Starting cache agent", "namespace", *namespace, "node", *node, "cacheDir", *cacheDir, "landlockABI", abi)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Error(err, "Failed to run manager")
 		return 1

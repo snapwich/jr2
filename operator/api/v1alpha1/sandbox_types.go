@@ -43,21 +43,6 @@ type SandboxSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
 
-	// Slots are the Sandbox's additional agent slots beyond the primary
-	// (ADR-0076): one Harness container runs each declared, workspace-ful agent
-	// slot, so no slot's code can read another's control credential. The
-	// containers themselves ride `sidecars` as opaque fragments — the operator
-	// stays agnostic (ADR-0001) and reads this list ONLY to wire, per slot, one
-	// ServicePort and one status endpoint beside the primary's. The primary slot
-	// is not here: it keeps `port` (8080), the one ServicePort, and
-	// status.endpoint. Each entry's port is an explicit 8090+ the composer chose
-	// so neither side recomputes it, clear of the reserved ports (ADR-0005).
-	// Empty on a single-agent pod, which stays byte-for-byte what it is today.
-	// +listType=map
-	// +listMapKey=name
-	// +optional
-	Slots []SandboxSlot `json:"slots,omitempty"`
-
 	// SecurityContext overrides the primary container's security context. Unset
 	// takes the operator's hardened default (non-root, no privilege escalation,
 	// all capabilities dropped) — the same rule sidecars follow: the operator
@@ -213,25 +198,6 @@ type SandboxSpec struct {
 	GitCredentials []SandboxGitCredential `json:"gitCredentials,omitempty"`
 }
 
-// SandboxSlot is one additional agent slot's name and serving port (ADR-0076).
-// The operator wires a ServicePort (name=Name, port=Port) and a status endpoint
-// for it; the slot's Harness container arrives in Sidecars named `harness-<Name>`
-// and listens on Port.
-type SandboxSlot struct {
-	// Name is the agent slot key — the agent name (ADR-0076) — and the name of
-	// the slot's ServicePort and status endpoint.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// Port is the port the slot's Harness container serves on, an explicit
-	// 8090+ the composer chose (ADR-0005, ADR-0076).
-	// +required
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port"`
-}
-
 // SandboxGitCredential names one entry's push Secret, in the Sandbox's
 // namespace.
 type SandboxGitCredential struct {
@@ -290,21 +256,9 @@ type SandboxStatus struct {
 	Phase SandboxPhase `json:"phase,omitempty"`
 
 	// Endpoint is the in-cluster Service DNS the Orchestrator uses to reach the
-	// primary slot's Harness, e.g. http://<name>.<ns>.svc:8080. It is the one
-	// endpoint of a single-agent pod and the printcolumn; the additional slots'
-	// endpoints are in Endpoints (ADR-0076).
+	// Harness, e.g. http://<name>.<ns>.svc:8080.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
-
-	// Endpoints is one in-cluster Service DNS per additional agent slot
-	// (ADR-0076), keyed by slot name, in spec.slots order. The Orchestrator
-	// resolves a slot's Turn to its own endpoint, as it resolves the enclosing
-	// workspace() today. The primary slot is NOT here — it is Endpoint — so a
-	// single-agent pod carries none, byte-for-byte what it is today.
-	// +listType=map
-	// +listMapKey=slot
-	// +optional
-	Endpoints []SandboxSlotEndpoint `json:"endpoints,omitempty"`
 
 	// PodRef references the Pod backing this Sandbox.
 	// +optional
@@ -385,19 +339,6 @@ type SandboxStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// SandboxSlotEndpoint is one additional agent slot's in-cluster Service DNS
-// (ADR-0076): the address the Orchestrator reaches that slot's Harness at.
-type SandboxSlotEndpoint struct {
-	// Slot is the agent slot key, as spec.slots names it.
-	// +required
-	Slot string `json:"slot"`
-
-	// Endpoint is the in-cluster Service DNS for the slot, e.g.
-	// http://<name>.<ns>.svc:8090.
-	// +required
-	Endpoint string `json:"endpoint"`
 }
 
 // SandboxHarnessStatus is one container's restarts and last end — the

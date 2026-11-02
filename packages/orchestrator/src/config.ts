@@ -257,7 +257,7 @@ export type HarnessProvider = {
   // Harness sends the wire library's placeholder, which vLLM/Ollama ignore).
   /** The API key, when the endpoint needs one. Read it from `process.env`. It is a Held secret,
    * `JR2_PROVIDER_API_KEY`: `jr2 up` gives the value to the Custodian only, bound to the host of
-   * `baseUrl`, and the Harness container holds only its Stand-in. Thus `baseUrl` must be
+   * `baseUrl`, and the Harness process holds only its secret Stand-in. Thus `baseUrl` must be
    * `https://` when you set it:
    * `harness.provider.apiKey is set, and harness.provider.baseUrl is not https://`. Default: none,
    * for an endpoint that needs no key. */
@@ -302,8 +302,9 @@ export type CatalogReach = {
  *
  * - It is a Held secret in each Harness pod that names it. A pod names it when its `workspace()`
  *   lists it under `secrets`, or when it is the model key of a provider that an Agent there uses. The Harness
- *   container's env var then holds only its Stand-in, `jr2-held-<name>`, and the pod's Custodian
- *   puts the value into requests toward `hosts` only.
+ *   process then holds only its Stand-in, a secret value that starts `jr2-held-<name>.`, and the
+ *   pod's Custodian puts the value into requests toward `hosts` only. The Agent's programs get the
+ *   Stand-in, in their env under this name, only when the `workspace()` lists it under `secrets`.
  * - It is an Effect secret where an Effect names it with `secret("name")`: a file in that
  *   Effect's Effector.
  *
@@ -312,8 +313,9 @@ export type CatalogReach = {
  * `secrets[<i>] (<NAME>) is named by nothing; goes nowhere`.
  */
 export type SecretEntry = {
-  /** As a Held secret, the name of the env var that the Harness container sees, which holds the
-   * Stand-in. As an Effect secret, the name that `secret("<name>")` names, and the name of the
+  /** As a Held secret, the name of its Stand-in: the file the Harness reads it from, the env var
+   * that the engine reads a model key from, and the env var of the Agent's programs when the
+   * `workspace()` lists it under `secrets`. As an Effect secret, the name that `secret("<name>")` names, and the name of the
    * Effector's file. For a Held secret, it must match `[A-Z_][A-Z0-9_]*`:
    * `secrets[<i>].name "<name>" is not an env var name ([A-Z_][A-Z0-9_]*)`. It must not start with
    * `JR2_` and must not be a proxy or trust variable of the kit:
@@ -386,12 +388,20 @@ export type HarnessConfig = {
   // `jr2 up`. A known model key here is refused (ADR-0059).
   /** Env vars for the Harness container. The Agent can read every one of them, so do not put a
    * credential here. A known model key is refused here. Put it in the top-level `secrets` list.
+   * The Harness process gets each one, except a name that loads code from a path, such as
+   * `NODE_OPTIONS` or `LD_PRELOAD`, and `HOME`, which is its own; the Agent's programs get each
+   * one. A name that starts with `JR2_` is jr2's own, and is refused. A credential file that the
+   * Harness process reads, such as `AWS_CONFIG_FILE`, is refused in a folder that the Agent's code
+   * writes (`/work`, `/tmp`, `/home/jr2`), and gives a warning anywhere else.
    * See {@link HarnessEnvVar}. */
   env?: readonly HarnessEnvVar[];
   // `jr2 up` preflights that each referenced Secret exists (ADR-0019), and refuses one that
   // carries a known model key (ADR-0059).
   /** Secrets and ConfigMaps that you manage, whose keys all become env vars of the Harness
-   * container. See {@link HarnessEnvFromSource}. */
+   * process and of the Agent's programs, as `env` does. In the container's spec each key has the
+   * prefix `JR2_ENVFROM_`, so that the Harness can tell jr2's names from the image's; the Harness
+   * removes it. A key that starts with `JR2_` is refused: `jr2 up` refuses it, and the Harness does
+   * not start with one. See {@link HarnessEnvFromSource}. */
   envFrom?: readonly HarnessEnvFromSource[];
   // Only `jr2 up` reads it (host-side): it materializes the `jr2-ca` ConfigMap and runs the
   // provider preflight with the same trust (ADR-0020, ADR-0059).

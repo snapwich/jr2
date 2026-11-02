@@ -78,26 +78,29 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   The thread is locked from the probe to the `execve`, so the domain is the one `execve` keeps. Landlock is an
   allow-list the kernel enforces and every descendant inherits, and a confined process cannot ptrace a process outside
   its domain, so `/proc/<effector>/mem` and `/proc/<effector>/environ` are closed too. The ruleset handles every
-  filesystem right of ABI 1, and `REFER` and `TRUNCATE` when the kernel offers ABI 2 and 3. It allows: read and execute
-  on the image's system paths — every top-level directory the image holds that is not a denied name, whole, so the rules
-  follow the image and break on no layout (the usual `/usr`, `/bin`, `/etc`, `/opt`, and a tool tree of the image's own
-  such as `/google-cloud-sdk` or `/nix` alike; a link such as `/lib -> usr/lib` is followed when what it names holds
-  none of the Effector's own paths); read and write on the devices (`/dev/null`, `/dev/zero`, `/dev/full`,
-  `/dev/random`, `/dev/urandom`, `/dev/tty`) and the Effect's own scratch, one per Effect (the checkout, `$HOME` and
-  `$TMPDIR`); read on each secret file the command names, by `secret("x")` and `.path` alike. The denied names — the
-  kernel and process pseudo-filesystems (`/proc`, `/sys`, the rest of `/dev`), the runtime tree where jr2 mounts the
-  Effector's own files (`/run`, the key and config under `/run/jr2/effector`), and the volatile and per-user trees that
-  hold no tool an image ships (`/home`, `/root`, `/var`, `/srv`, `/mnt`, `/media`, `/lost+found`) — are denied, and so
-  is every path named in the Effector's own deny list: the secrets the command does not name, the push credentials
-  (`@git`), the Worktree (`/work`), the node caches (`/repos`), the rest of its scratch (another Effect's, and a push's
-  copied keys). Every jr2 mount in the Effector's container that holds a secret or the Agent's files is under a denied
-  name (`/run`: the key, the config, the secrets, `@git`) or in that deny list (`/work`, `/repos`, the scratch). The two
-  others hold only public data and the child may read them: the runtime volume at `/opt/jr2`, which holds the programs
-  jr2 ships, and the instance's caBundle ConfigMap at `/etc/jr2/effector-ca` (ADR-0020). So a jr2 mount that holds a
-  secret goes under `/run/jr2`; one under `/etc`, `/opt` or a new top-level name is readable by the child. A top-level
-  directory that holds one of the Effector's own paths is allowed one level down at a time around it, so a mount placed
-  inside one stays denied. Network is not restricted. Any failure before `execve` ends the confiner with exit 126 and
-  its reason on stderr: nothing runs unconfined. The design needs ABI 1; measured from a hardened non-root pod (every
+  filesystem right of ABI 1, `REFER` (ABI 2) and `TRUNCATE` (ABI 3). At ABI 6 it also sets the scopes of abstract Unix
+  sockets and of signals: the child cannot connect to an abstract socket that a process outside its domain made, or
+  signal such a process. It allows: read and execute on the image's system paths — every top-level directory the image
+  holds that is not a denied name, whole, so the rules follow the image and break on no layout (the usual `/usr`,
+  `/bin`, `/etc`, `/opt`, and a tool tree of the image's own such as `/google-cloud-sdk` or `/nix` alike; a link such as
+  `/lib -> usr/lib` gets no rule, and works through the rule on what it names, because the kernel checks the path that a
+  link resolves to; the confiner opens each rule's path with no link on it, and refuses to start when one is there);
+  read and write on the devices (`/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom`, `/dev/tty`) and
+  the Effect's own scratch, one per Effect (the checkout, `$HOME` and `$TMPDIR`); read on each secret file the command
+  names, by `secret("x")` and `.path` alike. The denied names — the kernel and process pseudo-filesystems (`/proc`,
+  `/sys`, the rest of `/dev`), the runtime tree where jr2 mounts the Effector's own files (`/run`, the key and config
+  under `/run/jr2/effector`), and the volatile and per-user trees that hold no tool an image ships (`/home`, `/root`,
+  `/var`, `/srv`, `/mnt`, `/media`, `/lost+found`) — are denied, and so is every path named in the Effector's own deny
+  list: the secrets the command does not name, the push credentials (`@git`), the Worktree (`/work`), the node caches
+  (`/repos`), the rest of its scratch (another Effect's, and a push's copied keys). Every jr2 mount in the Effector's
+  container that holds a secret or the Agent's files is under a denied name (`/run`: the key, the config, the secrets,
+  `@git`) or in that deny list (`/work`, `/repos`, the scratch). The two others hold only public data and the child may
+  read them: the runtime volume at `/opt/jr2`, which holds the programs jr2 ships, and the instance's caBundle ConfigMap
+  at `/etc/jr2/effector-ca` (ADR-0020). So a jr2 mount that holds a secret goes under `/run/jr2`; one under `/etc`,
+  `/opt` or a new top-level name is readable by the child. A top-level directory that holds one of the Effector's own
+  paths is allowed one level down at a time around it, so a mount placed inside one stays denied. Network is not
+  restricted. Any failure before `execve` ends the confiner with exit 126 and its reason on stderr: nothing runs
+  unconfined. The design needs ABI 3, the minimum of jr2 (ADR-0077); measured from a hardened non-root pod (every
   capability dropped, `RuntimeDefault` seccomp): kind on WSL2 6.6 — ABI 3; the home cluster's arm64 nodes (6.8) — ABI 4;
   spark (6.11, arm64) — ABI 5. Landlock is a requirement of jr2
   ([ADR-0077](0077-jr2-requires-landlock-on-every-sandbox-node.md)). The confiner is shared: the Harness runs each
@@ -409,11 +412,12 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   echo, a side channel. The claim is that an Effector does not return a secret it holds, in the forms it sent or in
   common encodings.
 - **What a credentialed command's child can still do.** It reads the secret the command names — the author put it there,
-  and a file the Agent wrote that the argv runs reads it too — and egress is open, so the claim is the three of
-  ADR-0067: the Agent never reads or spends the secret from its own container, the tool sees a pinned commit and not the
-  live Worktree, and the output is scrubbed. It shares the Effector's uid, so it can signal the Effector (a fault of its
-  own run, not a leak) and connect to its port, where nothing without the key is accepted. It cannot outlive its Effect
-  (rule 1), share a temporary tree with another child (rule 3), or be alive beside a `gpg-agent` (rule 2).
+  and a file the Agent wrote that the argv runs reads it too — and egress is open but for the cloud metadata addresses
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)), so the claim is the three
+  of ADR-0067: the Agent never reads or spends the secret from its own container, the tool sees a pinned commit and not
+  the live Worktree, and the output is scrubbed. It shares the Effector's uid, so it can signal the Effector (a fault of
+  its own run, not a leak) and connect to its port, where nothing without the key is accepted. It cannot outlive its
+  Effect (rule 1), share a temporary tree with another child (rule 3), or be alive beside a `gpg-agent` (rule 2).
 - **A long GPG push delays a concurrent credentialed command** by its duration, against that command's timeout, and the
   reverse. Rejected: refusing a credentialed command beside a GPG-signing push at `jr2 up` — the hole is open only while
   a GPG push signs, so the rule is that the two never overlap; and a second container per credentialed placement — its

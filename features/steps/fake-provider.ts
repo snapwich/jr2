@@ -68,6 +68,8 @@ export type FakeProvider = {
   /** Requests refused 401 for not carrying the key — a turn request among them is a key that never
    * reached the wire. */
   unauthorized: Array<{ url: string; headers: IncomingHttpHeaders }>;
+  /** The headers of every request to a path that ends in `/probe`, key or not (ADR-0076). */
+  probes: IncomingHttpHeaders[];
   /** The unbound echo's port, and every request it received. */
   echo: { port: number; seen: Array<{ url: string; headers: IncomingHttpHeaders }> };
   /**
@@ -108,6 +110,7 @@ export async function startFakeProvider(opts: {
 }): Promise<FakeProvider> {
   const calls: RecordedCall[] = [];
   const unauthorized: FakeProvider["unauthorized"] = [];
+  const probes: IncomingHttpHeaders[] = [];
   const held: Held[] = [];
   const sockets = new Set<Socket>();
   let seq = 0;
@@ -116,6 +119,15 @@ export async function startFakeProvider(opts: {
     let raw = "";
     req.on("data", (chunk: Buffer) => (raw += chunk));
     req.on("end", () => {
+      // The PROBE path (ADR-0076): what a confined child sends with a held secret its `workspace()`
+      // grants. Recorded before the key check, because what the step asserts is the header the
+      // Custodian put on it, not this endpoint's verdict.
+      if (req.url?.endsWith("/probe")) {
+        probes.push(req.headers);
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("probe\n");
+        return;
+      }
       // The key or nothing (ADR-0059). A request carries it only if its Custodian swapped the
       // Stand-in for it: a Harness pod's and the check pod's alike.
       if (req.headers.authorization !== `Bearer ${opts.apiKey}`) {
@@ -212,6 +224,7 @@ export async function startFakeProvider(opts: {
     port,
     calls,
     unauthorized,
+    probes,
     echo: { port: echoPort, seen: echoSeen },
     release: async (tool, args) => {
       const wanted = [`mcp__jr2__${tool}`, tool];

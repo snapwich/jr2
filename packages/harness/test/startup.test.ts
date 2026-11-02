@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 import {
   FALLBACK_HOME,
   imageSystemGitConfig,
+  imageSystemGitConfigBy,
+  NO_SYSTEM_FILE,
   prepareProcess,
   RUNTIME_BIN,
   RUNTIME_GITCONFIG,
@@ -229,4 +231,27 @@ test("git identity: no git on PATH gets nothing", () => {
   const empty = mkdtempSync(join(tmpdir(), "jr2-nogit-"));
   assert.equal(imageSystemGitConfig({ PATH: empty }), undefined);
   assert.equal(systemWith(empty), undefined);
+});
+
+// The Harness of a Sandbox never runs the image's git itself (ADR-0076): a `git` on PATH can be
+// Workspace code. It runs no git at its start, and asks the domain the same question.
+test("git identity: the Harness of a Sandbox runs no git — NO_SYSTEM_FILE sets nothing and runs nothing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jr2-plantedgit-"));
+  const ran = join(dir, "ran");
+  writeFileSync(join(dir, "git"), `#!/bin/sh\ntouch '${ran}'\necho /etc/gitconfig\n`, { mode: 0o755 });
+  const config = join(mkdtempSync(join(tmpdir(), "jr2-gitcfg-")), "gitconfig");
+  writeFileSync(config, "");
+  const env: NodeJS.ProcessEnv = { PATH: dir };
+  prepareProcess(env, () => {}, config, NO_SYSTEM_FILE);
+  assert.equal(env.GIT_CONFIG_SYSTEM, undefined);
+  assert.throws(() => readFileSync(ran), "the planted git did not run");
+});
+
+test("git identity: the domain's answer, by imageSystemGitConfigBy, reads as imageSystemGitConfig's", async () => {
+  const by = (named: { code: number | null; stdout: string }, exec: { code: number | null; stdout: string }) =>
+    imageSystemGitConfigBy(async (args) => (args[0] === "var" ? named : exec));
+  assert.equal(await by({ code: 0, stdout: "/etc/gitconfig\n" }, { code: 0, stdout: "" }), "/etc/gitconfig");
+  assert.equal(await by({ code: 129, stdout: "" }, { code: 0, stdout: "/usr/lib/git-core\n" }), "/etc/gitconfig");
+  assert.equal(await by({ code: 129, stdout: "" }, { code: 0, stdout: "/opt/conda/libexec/git-core" }), undefined);
+  assert.equal(await by({ code: null, stdout: "" }, { code: 0, stdout: "/usr/lib/git-core" }), undefined, "no git");
 });

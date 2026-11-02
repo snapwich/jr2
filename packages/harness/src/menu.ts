@@ -5,22 +5,31 @@
 // Allowed-picks text, each receipt, each refusal — so a presenter only maps items to its tool API
 // and places the text it is handed, and a second presenter reuses it (ADR-0029).
 //
-// The Harness reads the surface from the Orchestrator itself, through the Custodian on this pod's
-// loopback (`$JR2_CUSTODIAN_URL`, ADR-0059). It sends `Authorization: Bearer <Stand-in>`: its env
-// holds the Sandbox token's Stand-in, never the token, and the Custodian — a container the Agent
-// executes nothing in — puts the token on the three routes this needs and on no other. So the
-// Agent, which has code execution here, holds nothing the Orchestrator would accept, and
-// everything a pick is judged by is judged there: the token's scope, the live registration, the
-// event's name and payload (ADR-0013).
+// The Harness reads the surface from the Orchestrator itself, through the Custodian's control
+// socket under `/run/jr2` (`unix-fetch.ts`, ADR-0059, ADR-0076), never a loopback port: no process of
+// the domain can make a socket there. It sends `Authorization: Bearer <control Stand-in>`:
+// the Harness PROCESS alone holds that Stand-in, read once from its file (`children.ts`), and no
+// process it confines can read it (ADR-0076). The Custodian — a container the Agent executes
+// nothing in — puts the control token in its place on the agent routes and on no other. So no
+// Workspace code holds anything the Orchestrator would accept, and everything a pick is judged by
+// is judged there: the token's scope, the live registration, the event's name and payload
+// (ADR-0013).
 //
-//   GET  /agents/<iid>/surface   → the Menu and this Turn's Allowed picks (404: the turn is over —
-//                                  NO surface, and the Turn is never prompted, ADR-0026; 503: the
-//                                  Orchestrator is stopping — re-asked, ADR-0042)
+// Each request also states its slot (`X-Jr2-Slot: <actor path>/<agent name>`), from the Harness's
+// own record of the conversation, never from the URL. The Orchestrator checks it against the
+// registration's slot: a check for a routing fault, not the boundary (ADR-0076).
+//
+//   GET  /agents/<iid>/surface   → the Menu, this Turn's Allowed picks and its pending notices
+//                                  (404: the turn is over — NO surface, and the Turn is never
+//                                  prompted, ADR-0026; 503: the Orchestrator is stopping —
+//                                  re-asked, ADR-0042)
 //   POST /agents/<iid>/events    → one pick, and the receipt, rendered as prose (ADR-0024/0029);
 //                                  `outstanding` when the workflow runs it, 409 while one is out
 //   GET  /agents/<iid>/deliveries/<id>
 //                                → an outstanding pick's answer, long-polled inside the one tool
 //                                  call until the workflow is back at Rest (ADR-0013, ADR-0024)
+//   POST /agents/<iid>/notices   → `{ heard }`: the notices a read reserved, appended to the Turn
+//                                  (ADR-0062); a reservation not heard is released at the Turn's end
 //
 // One pick at a time per Turn: the engine runs the calls of one model answer one at a time, in the
 // model's order (ADR-0027), and the Turn sends only the first pick of a model answer — the model
@@ -30,7 +39,8 @@
 // Each Submission reads afresh, and the iid in the path is how the Orchestrator knows which turn is
 // live — no push channel, no turn index (ADR-0013's enabling fact).
 
-import type { PickAnswer } from "./wire.ts";
+import { isNotice } from "./notices.ts";
+import type { Notice, PickAnswer } from "./wire.ts";
 
 /**
  * One pick on the Menu. `name` is the event's name made safe for a model API, bare: whoever
@@ -58,9 +68,14 @@ export function briefingsOf(menu: Menu): Map<string, string> {
 /** One conversation's Menu (ADR-0029): the same items, in the same order, on every Turn. */
 export type Menu = MenuItem[];
 
-/** One Submission's read of a live surface: the Menu, presented as the tools block, and the Turn's
- * Allowed picks — event names, stated in the Briefing's Turn part and enforced at delivery. */
-export type MenuRead = { menu: Menu; allowed: string[] };
+/** A pending notice a surface read reserved for this conversation (ADR-0062): its id, which the
+ * Harness acknowledges once the notice is appended to the Turn, and the notice. */
+export type HeldNotice = { id: string; notice: Notice };
+
+/** One Submission's read of a live surface: the Menu, presented as the tools block, the Turn's
+ * Allowed picks — event names, stated in the Briefing's Turn part and enforced at delivery — and the
+ * notices the read reserved. */
+export type MenuRead = { menu: Menu; allowed: string[]; notices: HeldNotice[] };
 
 /** One event on an agent's live surface, as the Orchestrator serves it. */
 export type SurfaceEvent = {
@@ -90,6 +105,9 @@ export type Surface = {
   allowed?: string[];
   /** Skew only: an Orchestrator from before ADR-0029's fixed Menu. */
   accepts?: SurfaceEvent[];
+  /** The conversation's pending notices in its audience, reserved for this read (ADR-0062). Absent
+   * from an Orchestrator that delivers notices at admission alone. */
+  notices?: Array<{ id: string; notice: unknown }>;
 };
 
 /**
@@ -130,13 +148,22 @@ export type DeliveryReceipt = {
   stopped?: boolean;
 };
 
-export type MenuOptions = {
-  /** The Custodian's control listener — `$JR2_CUSTODIAN_URL` (ADR-0059). */
+/** Where the Menu is: the Custodian's control listener and the control Stand-in — the pod's, the
+ * same for each conversation. */
+export type MenuReach = {
+  /** The base of each control request's URL. Its host is a name: `fetch` names the socket. */
   url: string;
-  /** What this container holds for the Sandbox token: its Stand-in (`$JR2_SANDBOX_TOKEN`). */
+  /** The control Stand-in, which the Harness process alone holds (ADR-0076): read from its file. */
   token: string;
-  /** Injectable for tests. Defaults to global `fetch`. */
+  /** How a request reaches the Custodian's control socket (`unixFetch`). Tests inject one. Default:
+   * global `fetch`. */
   fetch?: typeof globalThis.fetch;
+};
+
+export type MenuOptions = MenuReach & {
+  /** The slot this conversation belongs to (ADR-0076): `<actor path>/<agent name>`, as its
+   * admission stated it (`TurnFrame.slot`). Sent on every control request. */
+  slot: string;
   /** Surface-read retry ladder and window (ADR-0042) — see `readSurface`. Defaults 250ms → 5s
    * (jittered per rung) over 90s; tests shrink them. */
   retryInitialMs?: number;
@@ -221,7 +248,18 @@ export async function readMenu(
   // and a wrong "allowed" costs one refused pick where a wrong "not allowed" costs the Turn.
   const events = surface.menu ?? surface.accepts ?? [];
   const allowed = surface.allowed ?? events.map((event) => event.name);
-  return { menu: events.map((event) => menuItem(opts, instanceId, event)), allowed };
+  return { menu: events.map((event) => menuItem(opts, instanceId, event)), allowed, notices: heldNotices(surface) };
+}
+
+/** The notices a surface read reserved, each one this Harness can word (`notices.ts`). One it cannot
+ * word is not taken: it is not acknowledged, and its reservation is released at the Turn's end. */
+function heldNotices(surface: Surface): HeldNotice[] {
+  if (!Array.isArray(surface.notices)) return [];
+  return surface.notices.flatMap((n) =>
+    typeof n === "object" && n !== null && typeof n.id === "string" && isNotice(n.notice)
+      ? [{ id: n.id, notice: n.notice }]
+      : [],
+  );
 }
 
 function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent): MenuItem {
@@ -806,19 +844,23 @@ async function awaitAnswer(
   }
 }
 
+/** What a step boundary reads (`between-steps.ts`): the Allowed picks now, and the notices the read
+ * reserved for this conversation (ADR-0062). */
+export type StepRead = { allowed: string[]; notices: HeldNotice[] };
+
 /**
- * The Allowed picks NOW, read at a step boundary of a running Turn (`between-steps.ts`). ONE
- * attempt, bounded, and every failure is `undefined`: unlike `readSurface`, this read is not the
- * Turn's footing. A 404 (the Turn is over), a stopping Orchestrator's 503, the Custodian's
- * unreachable, a blip — each means "say nothing at this boundary", and the next boundary asks
- * again. It never stalls or fails a Turn.
+ * The Allowed picks NOW and the pending notices, read at a step boundary of a running Turn
+ * (`between-steps.ts`). ONE attempt, bounded, and every failure is `undefined`: unlike
+ * `readSurface`, this read is not the Turn's footing. A 404 (the Turn is over), a stopping
+ * Orchestrator's 503, the Custodian's unreachable, a blip — each means "say nothing at this
+ * boundary", and the next boundary asks again. It never stalls or fails a Turn.
  */
-export async function readAllowed(
+export async function readStep(
   opts: MenuOptions,
   instanceId: string,
   signal?: AbortSignal,
   timeoutMs = 2_000,
-): Promise<string[] | undefined> {
+): Promise<StepRead | undefined> {
   const url = `${base(opts)}/agents/${encodeURIComponent(instanceId)}/surface`;
   const bound = AbortSignal.timeout(timeoutMs);
   try {
@@ -832,9 +874,40 @@ export async function readAllowed(
     }
     const surface = (await res.json()) as Surface;
     // ADR-0029's skew, as in `readMenu`: absent `allowed` is the whole Menu, never empty.
-    return surface.allowed ?? (surface.menu ?? surface.accepts ?? []).map((event) => event.name);
+    const allowed = surface.allowed ?? (surface.menu ?? surface.accepts ?? []).map((event) => event.name);
+    return { allowed, notices: heldNotices(surface) };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Acknowledge the notices this conversation heard (ADR-0062): `POST /agents/<iid>/notices` with
+ * `{ heard }`, sent once the notices are appended to the Turn. ONE attempt, bounded; true when the
+ * Orchestrator took it. A failure is no fault of the Turn: the reservation is released at the
+ * Turn's end, and the next admission carries the notice again, so it is heard twice at worst.
+ */
+export async function ackNotices(
+  opts: MenuOptions,
+  instanceId: string,
+  heard: readonly string[],
+  signal?: AbortSignal,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  if (heard.length === 0) return true;
+  const url = `${base(opts)}/agents/${encodeURIComponent(instanceId)}/notices`;
+  const bound = AbortSignal.timeout(timeoutMs);
+  try {
+    const res = await (opts.fetch ?? globalThis.fetch)(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authorization(opts) },
+      body: JSON.stringify({ heard }),
+      signal: signal ? AbortSignal.any([signal, bound]) : bound,
+    });
+    await res.body?.cancel();
+    return res.ok && res.headers.get("x-jr2-custodian") !== "unreachable";
+  } catch {
+    return false;
   }
 }
 
@@ -842,8 +915,12 @@ function base(opts: MenuOptions): string {
   return opts.url.replace(/\/+$/, "");
 }
 
+/** The header that states the slot (ADR-0076). The Custodian passes it on the agent routes alone. */
+export const SLOT_HEADER = "x-jr2-slot";
+
+/** The credential and the stated slot, on every control request (ADR-0076). */
 function authorization(opts: MenuOptions): Record<string, string> {
-  return { authorization: `Bearer ${opts.token}` };
+  return { authorization: `Bearer ${opts.token}`, [SLOT_HEADER]: opts.slot };
 }
 
 /** Throw the Custodian's "never answered", so it reads as the transport failure it is. */
@@ -917,7 +994,8 @@ class PickNotice extends Error {}
  * failed. Every other failure — a reset, a socket the other side closed, a headers timeout — can
  * come after the request left. */
 const NEVER_LEFT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT"]);
-const NEVER_LEFT_ON_CONNECT = new Set(["ENETUNREACH", "EHOSTUNREACH"]);
+// ENOENT: no socket at the control socket's path (the Custodian has not bound it yet).
+const NEVER_LEFT_ON_CONNECT = new Set(["ENETUNREACH", "EHOSTUNREACH", "ENOENT"]);
 
 /** True when a transport failure proves the request never left (`NEVER_LEFT`). */
 function neverLeft(err: unknown, depth = 0): boolean {

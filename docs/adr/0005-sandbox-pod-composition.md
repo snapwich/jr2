@@ -141,8 +141,8 @@ The seat is zero-_contract_, not zero-_physics_. What an image brought here must
 - **The entrypoint must block.** The pod's restart policy restarts an exited container, so a `CMD` that finishes
   crash-loops. Run a long-lived process — an sshd, an IDE server, `sleep infinity` at minimum.
 - **The ports of jr2's seats are taken** — one network namespace: `:8080` (the Harness), the Custodian's
-  `127.0.0.1:8081` (control), `127.0.0.1:15001` (egress) and `:15021` (health), and `:8082` (the Sandbox Effector, in a
-  pod that has one). Everything else is the image's. A process that binds `:8082` while the Sandbox Effector is down
+  `127.0.0.1:8081` (the fetch), `127.0.0.1:15001` (egress) and `:15021` (health), and `:8082` (the Sandbox Effector, in
+  a pod that has one). Everything else is the image's. A process that binds `:8082` while the Sandbox Effector is down
   gets signed requests it can neither forge nor answer (ADR-0068): the Effect fails closed.
 - **Root is allowed.** The hardened security context (non-root, all capabilities dropped, no escalation) applies to the
   seats jr2 owns — Harness, Custodian and Sandbox Effector, per container — and deliberately not here: the seat's

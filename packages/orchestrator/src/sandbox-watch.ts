@@ -39,10 +39,6 @@ export type SandboxStatus = {
    * Ready again. */
   phase?: SandboxPhase;
   endpoint?: string;
-  /** One in-cluster endpoint per additional agent slot (ADR-0076): the address the Orchestrator
-   * reaches that slot's own Harness container at. Empty for a single-slot Sandbox — the primary
-   * slot is `endpoint`, never here — so the single-agent path is byte-for-byte today's. */
-  endpoints?: SandboxSlotEndpoint[];
   /** The pod the operator created for this Sandbox — its once-only record that it did. The
    * Orchestrator judges no identity from it: Lost is the operator's verdict (ADR-0021). */
   podUID?: string;
@@ -71,10 +67,6 @@ export type SandboxStatus = {
     lastTerminated?: { reason?: string; exitCode?: number; finishedAt?: string; message?: string };
   };
 };
-
-/** One additional agent slot's in-cluster endpoint, as the operator publishes it in
- * `status.endpoints` (ADR-0076). The primary slot is never here — it is `status.endpoint`. */
-export type SandboxSlotEndpoint = { slot: string; endpoint: string };
 
 /** A Sandbox's phase as the operator publishes it. `Lost` is terminal (ADR-0021). */
 export type SandboxPhase = "Pending" | "Ready" | "Terminating" | "Lost" | (string & {});

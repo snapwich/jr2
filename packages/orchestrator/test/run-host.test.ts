@@ -1088,8 +1088,9 @@ test("two reads of the same list save once: a raise that changes nothing is not 
   assert.equal(await windowOf(3), 0, "the same list again changes nothing: no save");
 });
 
-/** THREE fresh Turns in one Workspace — `code`, `check`, `recheck` — so a restart can fall between
- * the second and the third. */
+/** THREE Turns of one continued conversation in one Workspace — `code`, `check`, `recheck` — so a
+ * restart can fall between the second and the third. A Workspace notice is delivered once in each
+ * conversation (ADR-0062), so the three hear it once. */
 const threeTurnsTemplate = jr2Setup({
   types: {} as { context: Ctx; input: { sandbox?: string } },
   events: [doneEvent, requestReviewEvent],
@@ -1103,27 +1104,45 @@ const threeTurnsTemplate = jr2Setup({
     code: {
       invoke: {
         src: "coder",
-        input: ({ context }) => ({ endpoint: "http://harness.invalid", sandbox: context.sandbox, prompt: "write it" }),
+        input: ({ context }) => ({
+          continue: true,
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "write it",
+        }),
       },
       on: { request_review: "check" },
     },
     check: {
       invoke: {
         src: "coder",
-        input: ({ context }) => ({ endpoint: "http://harness.invalid", sandbox: context.sandbox, prompt: "check it" }),
+        input: ({ context }) => ({
+          continue: true,
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "check it",
+        }),
       },
       on: { request_review: "recheck" },
     },
     recheck: {
       invoke: {
         src: "coder",
-        input: ({ context }) => ({ endpoint: "http://harness.invalid", sandbox: context.sandbox, prompt: "again" }),
+        input: ({ context }) => ({
+          continue: true,
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "again",
+        }),
       },
       on: { done: "#w3.done" },
     },
     done: { type: "final" },
   },
 });
+
+/** The conversations the one pending Workspace notice was delivered in (ADR-0062). */
+const heardBy = (pending: unknown[]): string[] => (pending as Array<{ heardBy?: string[] }>)[0]?.heardBy ?? [];
 
 /** The three-Turn Workspace workflow; `podKills` is what each new client's Harness lists. */
 function threeTurnsDef(clients: Map<string, MockFlueClient>, podKills: () => MockFlueClient["podKills"]): WorkflowDef {
@@ -1142,8 +1161,9 @@ function threeTurnsDef(clients: Map<string, MockFlueClient>, podKills: () => Moc
 test("a guard kill while no Submission ran is told to the next Turn in that Workspace — once, across Orchestrator restarts (ADR-0061, ADR-0062)", async () => {
   const store = await mkStore();
   // What the pod's Harness keeps for `GET /memory-kills`: a read removes nothing, so every client
-  // of this pod — each restored one too — reads the same kill once it is there.
-  const kill = { id: "k-1", at: "2026-10-22T10:00:00.000Z", peak: "1.8Gi", limit: "1920Mi", told: [] };
+  // of this pod — each restored one too — reads the same kill once it is there. Its time is set when
+  // it happens, after the coder's continued conversation was admitted: that conversation was there.
+  const kill = { id: "k-1", at: "", peak: "1.8Gi", limit: "1920Mi", told: [] };
   const idle = { kind: "memory-limit", scope: "workspace", peak: "1.8Gi", limit: "1920Mi" };
   const noticesOf = async (runId: string) =>
     ((await blobOf(store, runId)).notices ?? {}) as { pending?: unknown[]; seen?: unknown[] };
@@ -1158,6 +1178,7 @@ test("a guard kill while no Submission ran is told to the next Turn in that Work
 
   // The coder's Turn ended; while no Submission ran, a process it left passed the limit. The next
   // Turn's admission is held, so nothing is ledgered when the Orchestrator goes away.
+  kill.at = new Date().toISOString();
   flueA.podKills = [kill];
   flueA.holdAdmits = true;
   hostA.sendToAgent(coder, { type: "request_review", summary: "PR up" });
@@ -1181,6 +1202,7 @@ test("a guard kill while no Submission ran is told to the next Turn in that Work
   assert.equal(flueB.admits[0]!.prompt, "check it");
   assert.deepEqual(flueB.notices[0], [idle], "not yet delivered, so delivered again — and once");
   let seen: unknown[] = [];
+  // Delivered in the coder's conversation, its whole audience (ADR-0062, D4): retired.
   await waitFor(() => {
     void noticesOf(runId).then((n) => ((pending = n.pending ?? []), (seen = n.seen ?? [])));
     return pending.length === 0;
@@ -1202,6 +1224,143 @@ test("a guard kill while no Submission ran is told to the next Turn in that Work
   assert.equal(flueC.admits[0]!.prompt, "again");
   assert.ok(flueC.podKillsAsked >= 1, "it read the list");
   assert.deepEqual(flueC.notices[0], [], "delivered once");
+});
+
+/** Two Agents in one Workspace, each with two Turns of its one continued conversation: coder,
+ * tester, coder, tester. */
+const twoAgentsTemplate = jr2Setup({
+  types: {} as { context: Ctx; input: { sandbox?: string } },
+  events: [doneEvent, requestReviewEvent],
+  actors: { coder: agent(coderDefinition), tester: agent(coderDefinition) },
+}).createMachine({
+  on: { "agent.fault": {} },
+  id: "w2",
+  context: ({ input }) => ({ sandbox: input.sandbox }),
+  initial: "code",
+  states: {
+    code: {
+      invoke: {
+        src: "coder",
+        input: ({ context }) => ({
+          continue: true,
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "write it",
+        }),
+      },
+      on: { request_review: "test" },
+    },
+    test: {
+      invoke: {
+        src: "tester",
+        input: ({ context }) => ({
+          continue: true,
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "test it",
+        }),
+      },
+      on: { request_review: "recode" },
+    },
+    recode: {
+      invoke: {
+        src: "coder",
+        input: ({ context }) => ({
+          continue: true,
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "fix it",
+        }),
+      },
+      on: { request_review: "retest" },
+    },
+    retest: {
+      invoke: {
+        src: "tester",
+        input: ({ context }) => ({
+          continue: true,
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "again",
+        }),
+      },
+      on: { done: "#w2.done" },
+    },
+    done: { type: "final" },
+  },
+});
+
+test("a guard kill reaches each conversation that was there for it once, and none that came after, across an Orchestrator restart (ADR-0062 D4, ADR-0076)", async () => {
+  const store = await mkStore();
+  const kill = { id: "k-1", at: "", peak: "1.8Gi", limit: "1920Mi", told: [] };
+  const idle = { kind: "memory-limit", scope: "workspace", peak: "1.8Gi", limit: "1920Mi" };
+  const def = (clients: Map<string, MockFlueClient>, podKills: () => MockFlueClient["podKills"]): WorkflowDef => ({
+    name: "two",
+    machine: twoAgentsTemplate,
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      client.podKills = podKills();
+      clients.set(instanceId, client);
+      return {
+        actors: {
+          coder: agentActorWith(() => client, coderDefinition),
+          tester: agentActorWith(() => client, coderDefinition),
+        },
+      };
+    },
+  });
+  const pendingOf = async (runId: string) =>
+    (((await blobOf(store, runId)).notices ?? {}) as { pending?: unknown[] }).pending ?? [];
+
+  const clientsA = new Map<string, MockFlueClient>();
+  const hostA = new RunHost({ store });
+  hostA.register(def(clientsA, () => []));
+  const { runId, instanceId } = await hostA.start("two", { sandbox: "ws-1" });
+  const flueA = clientsA.get(instanceId)!;
+  await waitFor(() => flueA.settled.length === 1);
+  assert.deepEqual(flueA.notices[0], []);
+
+  // The coder's Turn ended; while no Submission ran, a process it left passed the limit. The
+  // tester's first Turn comes after the kill: it was not there for it, and does not hear it.
+  kill.at = new Date().toISOString();
+  flueA.podKills = [kill];
+  hostA.sendToAgent(flueA.admits[0]!.instanceId, { type: "request_review", summary: "PR up" });
+  await waitFor(() => flueA.settled.length === 2);
+  assert.deepEqual(flueA.notices[1], [], "the tester came after the kill");
+  let pending: unknown[] = [];
+  await waitFor(() => {
+    void pendingOf(runId).then((p) => (pending = p));
+    return pending.length === 1;
+  });
+  assert.deepEqual(heardBy(pending), [], "kept for the coder's conversation, which was there");
+  await hostA.stop(runId);
+
+  // A restart: the coder's conversation has not heard it yet.
+  const clientsB = new Map<string, MockFlueClient>();
+  const hostB = new RunHost({ store });
+  hostB.register(def(clientsB, () => [kill]));
+  assert.deepEqual((await hostB.restore()).reattached, [runId]);
+  await tick();
+  const flueB = clientsB.get(instanceId)!;
+  hostB.sendToAgent(flueA.admits[1]!.instanceId, { type: "request_review", summary: "tests fail" });
+  await waitFor(() => flueB.admits.length === 1);
+  assert.equal(flueB.admits[0]!.prompt, "fix it");
+  assert.deepEqual(flueB.notices[0], [idle], "the coder's conversation hears it at its next Turn");
+  // The re-attached tester Turn's settle, then the coder's.
+  await waitFor(() => flueB.settled.length === 2);
+
+  // The Harness read the coder's surface: a model heard the admission, so the end of its Turn does
+  // not put the notice back for the coder (ADR-0026).
+  hostB.agentSurfaceServed(flueB.admits[0]!.instanceId);
+  hostB.sendToAgent(flueB.admits[0]!.instanceId, { type: "request_review", summary: "fixed" });
+  await waitFor(() => flueB.admits.length === 2);
+  assert.equal(flueB.admits[1]!.prompt, "again");
+  assert.deepEqual(flueB.notices[1], [], "the tester was not there for it");
+  await waitFor(() => {
+    void pendingOf(runId).then((p) => (pending = p));
+    return pending.length === 0;
+  });
+  await hostB.stop(runId);
 });
 
 /** A Sandbox port whose watch has the Harness container's last end, as the operator publishes it
@@ -1248,7 +1407,8 @@ test("a kernel kill while no Turn ran is told to the next Turn in that Workspace
 
   // The coder's Turn ended; while no Turn ran, a process it left passed the limit, and the kernel
   // killed the whole container. The restarted Harness rebuilt its conversations: no Turn faulted.
-  sandbox.end({ reason: "OOMKilled", exitCode: 137, finishedAt: "2026-10-23T10:00:00Z" });
+  const finishedAt = new Date().toISOString();
+  sandbox.end({ reason: "OOMKilled", exitCode: 137, finishedAt });
   flueA.holdAdmits = true;
   hostA.sendToAgent(flueA.admits[0]!.instanceId, { type: "request_review", summary: "PR up" });
   await waitFor(() => flueA.admits.length === 2);
@@ -1261,7 +1421,7 @@ test("a kernel kill while no Turn ran is told to the next Turn in that Workspace
     return pending.length === 1;
   });
   // Keyed as the fault of a Turn the kill ended keys it, so the two paths are one notice.
-  assert.ok(seen.includes("ws-1@2026-10-23T10:00:00Z"), JSON.stringify(seen));
+  assert.ok(seen.includes(`ws-1@${finishedAt}`), JSON.stringify(seen));
   await hostA.stop(runId);
 
   // Restart before the ledger write: delivered again, and once.
@@ -1272,6 +1432,7 @@ test("a kernel kill while no Turn ran is told to the next Turn in that Workspace
   const flueB = clientsB.get(instanceId)!;
   await waitFor(() => flueB.admits.length === 1);
   assert.deepEqual(flueB.notices[0], [notice], "not yet delivered, so delivered again — and once");
+  // Delivered in the coder's conversation, its whole audience: retired.
   await waitFor(() => {
     void noticesOf(runId).then((n) => (pending = n.pending ?? []));
     return pending.length === 0;

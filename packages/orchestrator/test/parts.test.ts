@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
-import { customizeLine, open, partsOf, placedEffectsOf, sandboxSlotsOf, workspacePodsOf } from "../src/parts.ts";
+import { customizeLine, open, partsOf, placedEffectsOf, workspacePodsOf } from "../src/parts.ts";
 import { dispatch } from "../src/dispatch-effect.ts";
 import { agent, command } from "../src/harness-client.ts";
 import { file, http, secret } from "../src/http-effect.ts";
@@ -619,13 +619,9 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
     secrets: ["JIRA_TOKEN"],
     models: ["anthropic/claude-x", "openai/gpt-x", "vllm/qwen"],
     effects: [],
-    // The workspace-ful agent slots, in first-declared order (ADR-0076): `coder` and `reviewer`
-    // here, `linter` from the child Machine — but not `advisor`, whose `workspace: "none"` Turn runs
-    // on the Instance Harness, and not `fixer`, which the nested workspace() owns.
-    slots: ["coder", "reviewer", "linter"],
     bindings,
   };
-  const innerPod = { secrets: ["INNER_KEY"], models: ["xai/grok"], effects: [], slots: ["fixer"], bindings };
+  const innerPod = { secrets: ["INNER_KEY"], models: ["xai/grok"], effects: [], bindings };
   assert.deepEqual(workspacePodsOf(root), [
     { path: ["a"], route: ["a"], ...outerPod },
     { path: ["a", "nested"], route: ["a", "nested"], ...innerPod },
@@ -634,49 +630,6 @@ test("each Workspace's pod: its workspace()'s secrets and the models its Turns r
     { path: ["b", "nested"], route: ["b", "nested"], ...innerPod },
   ]);
   assert.deepEqual(workspacePodsOf(outer)[0], { path: [], route: [], ...outerPod }, "the registered root is route []");
-});
-
-test("sandboxSlotsOf reads a wrapper's slots at the provision — the same set, in first-declared order (ADR-0076)", () => {
-  // A provision reads the slots off the live wrapper, not the whole tree: the pod composes one
-  // Harness container per workspace-ful agent slot. A single-agent body is the one-container no-op.
-  const solo = workspace(carrier("body", "coder", "vllm/qwen"), { repos: { app: "https://example.test/app.git" } });
-  assert.deepEqual(sandboxSlotsOf(solo), ["coder"], "one slot — the single-container path");
-
-  // First-declared order, a Menu-only agent excluded (ADR-0031), a child Machine's agent included,
-  // and the nested workspace()'s agent left to its own pod.
-  const body = jr2Setup({
-    events: [],
-    actors: {
-      coder: agent(def("anthropic/claude-x")),
-      reviewer: agent(def("openai/gpt-x", "read")),
-      advisor: agent(def("google/gemini-x", "none")),
-      helper: carrier("helper", "linter", "vllm/qwen"),
-      nested: workspace(carrier("inner", "fixer", "xai/grok"), {
-        repos: { app: "https://example.test/app.git" },
-      }),
-    },
-  }).createMachine({ on: { "workspace.lost": {} }, id: "body", initial: "idle", states: { idle: {} } });
-  const multi = workspace(body, { repos: { app: "https://example.test/app.git" } });
-  assert.deepEqual(sandboxSlotsOf(multi), ["coder", "reviewer", "linter"]);
-
-  // A Pool fan-out of one slot collapses to one slot: the walk sees the worker Machine once, so a
-  // pod that runs `cap` concurrent workers in one clone (ADR-0075) still composes one container.
-  const workReady = defineEvent({ name: "work_ready", input: z.object({}) });
-  const pooledBody = jr2Setup({
-    events: [],
-    actors: {
-      swarm: pool(carrier("worker", "scribe", "anthropic/claude-x"), {
-        source: source<{ id: string }>({
-          next: fromPromise(async () => ({ item: null as { id: string } | null, open: 0 })),
-          wake: workReady,
-        }),
-        itemId: (i) => i.id,
-      }),
-    },
-  }).createMachine({ on: { "workspace.lost": {} }, id: "pooledBody", initial: "idle", states: { idle: {} } });
-  assert.deepEqual(sandboxSlotsOf(workspace(pooledBody, { repos: { app: "https://example.test/app.git" } })), [
-    "scribe",
-  ]);
 });
 
 test("each Workspace's pod carries the Effects placed in its Sandbox Effector, down to the next workspace(), and its effector image (ADR-0068)", () => {

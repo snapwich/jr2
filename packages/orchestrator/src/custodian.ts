@@ -21,14 +21,17 @@
 //                             so the two pod shapes cannot drift
 //
 // The Custodian is a separate container from the Harness, and that is the point: the Agent
-// executes code in the Harness container and nothing here (ADR-0005). What it holds — the
-// Sandbox token and every held secret its pod claims — is mounted into this container alone, and
-// `shareProcessNamespace` stays off, so the Agent cannot read its env, its files or its `/proc`.
+// executes code in the Harness container and nothing here (ADR-0005). What it holds — the pod's
+// control and fetch tokens and every held secret its pod claims — is mounted into this container
+// alone, and `shareProcessNamespace` stays off, so the Agent cannot read its env, its files or its
+// `/proc`. The Harness container gets the Stand-ins, every one but the public fetch Stand-in
+// secret, as files under `/run/jr2/` that no child the Harness confines can read (ADR-0076).
 
 import { readFileSync } from "node:fs";
 import type { HarnessEnvVar } from "./config.ts";
 import type { ResourceRequirements } from "./size.ts";
 import {
+  CONTROL_TOKEN_NAME,
   CREDENTIAL_HEADERS,
   SANDBOX_TOKEN_NAME,
   standIn,
@@ -37,10 +40,12 @@ import {
 } from "./held-secrets.ts";
 import {
   CA_CONFIGMAP,
-  CUSTODIAN_CONTROL_PORT,
+  CUSTODIAN_CONTROL_SOCKET,
+  CUSTODIAN_FETCH_PORT,
   CUSTODIAN_HEALTH_PORT,
   CUSTODIAN_PORT,
   CUSTODIAN_PROGRAM_KEY,
+  CUSTODIAN_SOCKET_DIR,
   HELD_CONFIGMAP,
   HELD_TLS_SECRET,
   heldSecretsSecret,
@@ -96,8 +101,60 @@ export const CUSTODIAN_ARGS: readonly string[] = [
   "warning",
 ];
 
-/** The address the Harness reaches the Custodian's control listener at: its Menu and the ask. */
-export const CUSTODIAN_URL = `http://127.0.0.1:${CUSTODIAN_CONTROL_PORT}`;
+/** The address of the Custodian's fetch listener: the ask alone (ADR-0053), which
+ * `jr2-upload-pack` makes from the domain. The Harness container gets it as `JR2_CUSTODIAN_URL`,
+ * the one `JR2_*` name that a confined process keeps (ADR-0076). The agent routes are not here. */
+export const CUSTODIAN_URL = `http://127.0.0.1:${CUSTODIAN_FETCH_PORT}`;
+
+/** The Harness env that names the Custodian's control socket ({@link CUSTODIAN_CONTROL_SOCKET}):
+ * where the Harness sends each control request — the surface read, a pick, a delivery's poll and a
+ * notice's acknowledgment (ADR-0076). A path, never a value; the domain's env does not keep it. */
+export const CUSTODIAN_SOCKET_ENV = "JR2_CUSTODIAN_SOCKET";
+/** The volume of the control socket's folder ({@link CUSTODIAN_SOCKET_DIR}): an emptyDir in the
+ * Harness container and the Custodian container, and in no other container of the pod. */
+export const CUSTODIAN_SOCKET_VOLUME = "custodian-socket";
+
+/** Where the Harness container holds its Stand-ins (ADR-0059, ADR-0076): a read-only mount that no
+ * child the Harness confines can read — the confiner denies all of `/run/jr2`. Never env. */
+export const HARNESS_CREDENTIALS = "/run/jr2";
+/** The secret control Stand-in, as the Harness reads it once at start (C1). */
+export const CONTROL_STANDIN_FILE = `${HARNESS_CREDENTIALS}/control/standin`;
+/** The directory of the held secrets' Stand-ins, one file per name: `<dir>/<NAME>`. */
+export const STANDINS_DIR = `${HARNESS_CREDENTIALS}/standins`;
+/** The Harness env that names the control Stand-in's file; its default is {@link CONTROL_STANDIN_FILE}. */
+export const CONTROL_STANDIN_FILE_ENV = "JR2_CONTROL_STANDIN_FILE";
+/** The Harness env that names the held secrets the `workspace()` grants a confined child (its
+ * `secrets` list, ADR-0076), comma-separated: names, never a value. Absent → none is granted. */
+export const GRANTED_SECRETS_ENV = "JR2_GRANTED_SECRETS";
+
+/**
+ * The keys of a pod's credentials Secret (a Sandbox's `<sandbox>-token`): the fetch token, the
+ * control token, the secret control Stand-in, and one secret Stand-in per held secret
+ * ({@link heldStandInKey}). The pod's maker mints them all. The tokens are projected into the
+ * Custodian alone; each Stand-in into the Custodian, for its swap, and the Harness container.
+ */
+export const CREDENTIAL_KEYS = {
+  fetchToken: "token",
+  controlToken: "control-token",
+  controlStandIn: "control-standin",
+} as const;
+
+/** The key of one held secret's secret Stand-in in its pod's credentials Secret. */
+export function heldStandInKey(name: string): string {
+  return `standin-${name}`;
+}
+
+/** The file of a Stand-in among the Custodian's values: beside its value, `<NAME>.standin`. A held
+ * name is an env var's, so it holds no `.` and never meets another value's file. */
+export function standInValueFile(name: string): string {
+  return `${name}.standin`;
+}
+
+/** The path prefixes each control credential may ride, after the control listener's rewrite
+ * (ADR-0076, C3): the control token on the agent routes alone, the fetch token on the fetch route
+ * alone. The program's path guard refuses either one elsewhere, before any swap. */
+export const CONTROL_PATHS = "/agents/";
+export const FETCH_PATHS = "/sandboxes/";
 
 /** Where the Orchestrator's Service is, from inside a Harness pod. */
 export type OrchestratorAddress = { host: string; port: number };
@@ -409,9 +466,14 @@ function isIpLiteral(host: string): boolean {
  * The Custodian's static bootstrap (ADR-0059): Envoy's whole configuration, rendered once per
  * converge by `jr2 up`, identical for every Harness pod of the Instance.
  *
- *   control   127.0.0.1:8081   the Menu, a pick's answer and the ask, plain HTTP, to the Orchestrator's Service —
- *                              four routes and nothing else, each swapping the Sandbox token's
- *                              Stand-in for the token (ADR-0013, ADR-0053)
+ *   control   /run/jr2/custodian/control.sock
+ *                              the four agent routes — the Menu, a pick, a delivery's poll and a
+ *                              notice's acknowledgment — plain HTTP, to the Orchestrator's Service.
+ *                              They swap the control Stand-in for the control token. A Unix socket
+ *                              in a folder that no confined process can write, so no process in
+ *                              the domain can take this listener's place (ADR-0013, ADR-0076)
+ *   fetch     127.0.0.1:8081   the ask alone, plain HTTP, to the same Service: it swaps the public
+ *                              fetch Stand-in for the fetch token (ADR-0053, ADR-0076)
  *   health    0.0.0.0:15021    GET /healthz, for the kubelet, which cannot reach loopback
  *   egress    127.0.0.1:15001  CONNECT only — present when a held secret exists; a bound target
  *                              goes to its intercept listener, every other one is tunneled
@@ -428,55 +490,76 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
     metadata: meta({ role: "control", route: name }),
   });
 
+  // One listener toward the Orchestrator, with its routes and the deny route after them: a route
+  // of the other listener gets the deny route's 404 here.
+  const toOrchestrator = (name: string, address: Json, routes: Json[]): Json => ({
+    name,
+    address,
+    filter_chains: [
+      {
+        filters: [
+          hcm(name, {
+            target: orchestratorTarget,
+            idleSeconds: 3600,
+            lua: true,
+            local: ORCHESTRATOR_UNREACHABLE,
+            routes: {
+              virtual_hosts: [
+                {
+                  name: "orchestrator",
+                  domains: ["*"],
+                  routes: [
+                    ...routes,
+                    {
+                      name: "deny",
+                      match: { prefix: "/" },
+                      direct_response: { status: 404 },
+                      metadata: meta({ role: "deny" }),
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+        ],
+      },
+    ],
+  });
+
   const listeners: Json[] = [
-    {
-      name: "control",
-      address: { socket_address: { address: "127.0.0.1", port_value: CUSTODIAN_CONTROL_PORT } },
-      filter_chains: [
-        {
-          filters: [
-            hcm("control", {
-              target: orchestratorTarget,
-              idleSeconds: 3600,
-              lua: true,
-              local: ORCHESTRATOR_UNREACHABLE,
-              routes: {
-                virtual_hosts: [
-                  {
-                    name: "orchestrator",
-                    domains: ["*"],
-                    routes: [
-                      // A read retries any reset. A pick or an ask retries only a reset before
-                      // it was sent: one the Orchestrator may have read is not sent twice.
-                      route("surface", "GET", "/agents/[^/]+/surface", {
-                        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
-                      }),
-                      route("events", "POST", "/agents/[^/]+/events", {
-                        retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
-                      }),
-                      // An outstanding pick's answer, long-polled (ADR-0024): a read, so any reset
-                      // is retried — an Orchestrator restart mid-poll costs a retry, not the pick.
-                      route("deliveries", "GET", "/agents/[^/]+/deliveries/[^/]+", {
-                        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
-                      }),
-                      route("fetch", "POST", "/fetch", {
-                        retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
-                      }),
-                      {
-                        name: "deny",
-                        match: { prefix: "/" },
-                        direct_response: { status: 404 },
-                        metadata: meta({ role: "deny" }),
-                      },
-                    ],
-                  },
-                ],
-              },
-            }),
-          ],
-        },
-      ],
-    },
+    // The agent routes, on the control socket (ADR-0076). A Unix socket, not a loopback port: a
+    // confined process can bind a free loopback port while the Custodian restarts, and it then gets
+    // the control Stand-in on the Harness's next request. It cannot make a socket under `/run/jr2`.
+    // Envoy removes a socket that a stopped Envoy left, before it binds. Mode 0666, because the
+    // Harness runs as a uid that is not Envoy's: the folder, not the mode, keeps the domain out.
+    toOrchestrator("control", { pipe: { path: CUSTODIAN_CONTROL_SOCKET, mode: 0o666 } }, [
+      // A read retries any reset. A pick retries only a reset before it was sent: one the
+      // Orchestrator may have read is not sent twice.
+      route("surface", "GET", "/agents/[^/]+/surface", {
+        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
+      }),
+      route("events", "POST", "/agents/[^/]+/events", {
+        retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
+      }),
+      // An outstanding pick's answer, long-polled (ADR-0024): a read, so any reset is retried — an
+      // Orchestrator restart mid-poll costs a retry, not the pick.
+      route("deliveries", "GET", "/agents/[^/]+/deliveries/[^/]+", {
+        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
+      }),
+      // The acknowledgment of the notices a step boundary appended (ADR-0062, ADR-0076): marking
+      // them heard twice changes nothing, so any reset is retried.
+      route("notices", "POST", "/agents/[^/]+/notices", {
+        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
+      }),
+    ]),
+    // The ask (ADR-0053), on loopback: `jr2-upload-pack` runs in the domain, and the fetch Stand-in
+    // is public, so a process that takes this port gets nothing secret. Like a pick, it retries only
+    // a reset before it was sent.
+    toOrchestrator("fetch", { socket_address: { address: "127.0.0.1", port_value: CUSTODIAN_FETCH_PORT } }, [
+      route("fetch", "POST", "/fetch", {
+        retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
+      }),
+    ]),
     {
       name: "health",
       address: { socket_address: { address: "0.0.0.0", port_value: CUSTODIAN_HEALTH_PORT } },
@@ -789,83 +872,43 @@ function luaList(values: readonly string[]): string {
   return `{ ${values.map(lua).join(", ")} }`;
 }
 
-/** One agent slot's Custodian plumbing (ADR-0076). `standIn` is the slot's SECRET Stand-in — the
- * bearer its Harness container sends — which rides the rendered config (the `HELD` table below) so
- * the control swap can match it; `token` is where its per-slot token VALUE lives, a Secret key the
- * `custodian-values` volume projects so the swap reads it as a file. Only the token value touches a
- * Secret and the Custodian; the Stand-in is also mounted into the slot's container alone, by the
- * pod's maker (`secretKeyRef`). A single-agent pod has none — it keeps the one Sandbox token. */
-export type CustodianSlot = {
-  slot: string;
-  standIn: string;
-  token: { secret: string; key: string };
-};
-
-/** The held-name a slot's per-slot token is projected and loaded under (ADR-0076): the file in
- * `custodian-values`, the `HELD` entry's name, and the name the access log prints. The `slot:`
- * domain keeps it apart from a held secret's env-var name and the bare Sandbox token, and a DNS
- * label cannot produce it, so it never collides with a Sandbox or slot name on the wire. */
-export function slotHeldName(slot: string): string {
-  return `slot:${slot}`;
-}
-
-/** The path prefix the control listener rewrites `POST /fetch` to (`custodian.lua` `control`:
- * `/sandboxes/<sandbox>/fetch`). On a multi-slot pod the public Sandbox-scope Stand-in is confined
- * to this prefix (ADR-0076), so it swaps on the fetch route and on NO agent-delivery path — the
- * `hold` path guard refuses it everywhere else. It ends in `/` so no sibling spelling
- * (`/sandboxesX`) matches. A control request never reaches `hold` with this path except on the
- * fetch route: the other control routes are the `/agents/<iid>/*` set, and any other `/sandboxes/…`
- * request hits the control listener's `deny` route (404) before the script's `control` role runs. */
-export const FETCH_ROUTE_PREFIX = "/sandboxes/";
-
 /**
  * The script the Custodian runs: a generated `HELD` table, then `dofile` of the fixed program
  * (`CUSTODIAN_PROGRAM`, mounted beside it from `jr2-held`). The table names every secret this pod
- * holds — the control credential(s) first, then the manifest's — with the headers and paths each
- * may ride and the targets each is bound to. It never holds a value: the program reads those from
- * the mounted files at start.
+ * holds — the control credentials first, then the manifest's — with the headers and paths each may
+ * ride and the targets each is bound to. It never holds a value, and never a secret Stand-in: the
+ * program reads both from the mounted files at start (ADR-0059).
  *
- * The control credential is the one Sandbox token on a single-agent pod (`slots` empty —
- * byte-for-byte today), or on a multi-slot pod (ADR-0076) one entry per agent slot — each carrying
- * its slot's secret Stand-in, which the program matches to swap in that slot's own per-slot token —
- * PLUS the public Sandbox-scope Stand-in, path-restricted to the fetch route ({@link
- * FETCH_ROUTE_PREFIX}) so it can only swap on `POST /fetch` and never deliver a pick to an agent
- * surface. The Stand-ins ride here; the token VALUES ride the mounted files, as the Sandbox token's
- * does.
+ * The control credentials (ADR-0076, C3): the control token, path-restricted to the agent routes,
+ * whose secret Stand-in the program reads from its values; and, on a pod that serves a Sandbox
+ * (`fetch`), the fetch token, path-restricted to the fetch route, whose Stand-in is the one public
+ * one and so rides the table. The Instance Harness and a check pod serve no fetch, and hold the
+ * control token alone.
  */
-export function custodianScript(manifest: HeldManifest, slots: readonly CustodianSlot[] = []): string {
-  const control: Array<{ name: string; standIn?: string; paths?: readonly string[] }> =
-    slots.length > 0
+export function custodianScript(manifest: HeldManifest, opts: { fetch: boolean }): string {
+  const control = [
+    `{ name = ${lua(CONTROL_TOKEN_NAME)}, headers = { "authorization" }, paths = ${luaList([CONTROL_PATHS])} }`,
+    ...(opts.fetch
       ? [
-          ...slots.map((s) => ({ name: slotHeldName(s.slot), standIn: s.standIn })),
-          // The public Sandbox-scope Stand-in rides the multi-slot Custodian too (ADR-0076), for the
-          // one caller that carries it: `jr2-upload-pack`'s `POST /fetch` (the pod's shared Repo
-          // caches are Sandbox-scoped — ADR-0053, not an Agent's control channel). It is
-          // PATH-RESTRICTED to the fetch route the control listener rewrites to, so the `hold` path
-          // guard lets it swap on `/sandboxes/…` alone: a pick POSTed with this derivable string to
-          // `/agents/<iid>/events` is refused (403 `path`) before any swap. The per-slot entries
-          // carry no path restriction — a slot's own secret Stand-in delivers to its own surface.
-          { name: SANDBOX_TOKEN_NAME, paths: [FETCH_ROUTE_PREFIX] },
+          `{ name = ${lua(SANDBOX_TOKEN_NAME)}, headers = { "authorization" }, standIn = ${lua(standIn(SANDBOX_TOKEN_NAME))}, ` +
+            `paths = ${luaList([FETCH_PATHS])} }`,
         ]
-      : [{ name: SANDBOX_TOKEN_NAME }];
+      : []),
+  ];
   const lines = [
     "-- Generated by `jr2 up` from its pod's held manifest (ADR-0059). Names, headers, paths, targets; never a value.",
     `HELD = { secrets = {}, targets = {}, hosts = ${targetsOf(manifest).length} }`,
     `HELD.credential = ${luaList(CREDENTIAL_HEADERS)}`,
+    ...control.map((entry, i) => `HELD.secrets[${i + 1}] = ${entry}`),
+    `HELD.control = { ${control.map((_, i) => `HELD.secrets[${i + 1}]`).join(", ")} }`,
   ];
-  control.forEach((c, i) => {
-    const standIn = c.standIn !== undefined ? `, standIn = ${lua(c.standIn)}` : "";
-    const paths = c.paths !== undefined ? `, paths = ${luaList(c.paths)}` : "";
-    lines.push(`HELD.secrets[${i + 1}] = { name = ${lua(c.name)}, headers = { "authorization" }${standIn}${paths} }`);
-  });
-  lines.push(`HELD.control = { ${control.map((_, i) => `HELD.secrets[${i + 1}]`).join(", ")} }`);
-  const offset = control.length;
+  const offset = control.length + 1;
   manifest.secrets.forEach((s, i) => {
     const paths = s.paths ? `, paths = ${luaList(s.paths)}` : "";
-    lines.push(`HELD.secrets[${i + offset + 1}] = { name = ${lua(s.name)}, headers = ${luaList(s.headers)}${paths} }`);
+    lines.push(`HELD.secrets[${i + offset}] = { name = ${lua(s.name)}, headers = ${luaList(s.headers)}${paths} }`);
   });
   for (const t of targetsOf(manifest)) {
-    const refs = t.secrets.map((s) => `HELD.secrets[${manifest.secrets.indexOf(s) + offset + 1}]`);
+    const refs = t.secrets.map((s) => `HELD.secrets[${manifest.secrets.indexOf(s) + offset}]`);
     lines.push(`HELD.targets[${lua(t.key)}] = { ${refs.join(", ")} }`);
   }
   // `dofile`, not a copy: Envoy's Lua opens the standard libraries (the program already reads its
@@ -886,12 +929,26 @@ export type CustodianCompositionOptions = {
    * makes the pod: the Orchestrator at provision (`sandboxCustodianConfigMap`, owned by the CR),
    * `jr2 up` for the Instance Harness (`INSTANCE_CUSTODIAN_CONFIGMAP`). */
   config: string;
-  /** Where the Sandbox token lives: a Sandbox's `<name>-token` Secret, or the Instance Harness's key
-   * of `jr2-instance`. Mounted into the Custodian alone (ADR-0013). */
-  token: { secret: string; key: string };
-  /** This pod's Sandbox — the name the ask is addressed by (ADR-0053). Absent on the Instance
-   * Harness, which mounts no Repo and answers an ask by saying so. */
+  /**
+   * The pod's credentials Secret (ADR-0076): its control token, its secret control Stand-in, its
+   * fetch token (a Sandbox alone) and one secret Stand-in per held secret, under
+   * {@link CREDENTIAL_KEYS} and {@link heldStandInKey} — a key may be renamed here. The pod's maker
+   * mints them: the Orchestrator a Sandbox's (`<sandbox>-token`), `jr2 up` the Instance Harness's
+   * and a check pod's. The tokens are mounted into the Custodian alone (ADR-0013); each Stand-in
+   * into the Custodian and the Harness container, as files.
+   */
+  credentials: {
+    secret: string;
+    keys?: Partial<Record<keyof typeof CREDENTIAL_KEYS, string>>;
+  };
+  /** This pod's Sandbox — the name the ask is addressed by (ADR-0053), and the reason the pod holds
+   * a fetch token. Absent on the Instance Harness and a check pod, which mount no Repo and answer an
+   * ask by saying so. */
   sandbox?: string;
+  /** The held secrets the `workspace()` grants its confined children (its `secrets` list, ADR-0076):
+   * the Harness puts their Stand-ins, and only theirs, in a child's env. Names the manifest does not
+   * hold are left out. Absent → none. */
+  granted?: readonly string[];
   /** The names of the Instance objects that this Custodian reads in place of the defaults. The
    * defaults are the Instance's own: `pod`'s literal values (`heldSecretsSecret(pod)`),
    * `jr2-held-tls`, `jr2-ca`, and the program in `jr2-held`.
@@ -903,25 +960,27 @@ export type CustodianCompositionOptions = {
   /** The Custodian container's resources (ADR-0060) — the placement's to choose: a Sandbox's fixed
    * slice of its Size (requests = limits), the Instance Harness's kit-sized request. */
   resources?: ResourceRequirements;
-  /** The pod's agent slots (ADR-0076), present only when it runs more than one. The
-   * `custodian-values` volume then projects each slot's per-slot token (keyed by {@link slotHeldName})
-   * BESIDE the one Sandbox token (from `token`, which the fetch route's path-restricted control entry
-   * swaps), and the Harness env omits the shared Sandbox-token Stand-in — each slot container carries
-   * its OWN, by `secretKeyRef`, which the pod's maker adds. A single-agent pod passes none and is
-   * byte-for-byte today (the one Sandbox token, from `token`). */
-  slots?: readonly CustodianSlot[];
 };
 
 type Container = Record<string, unknown>;
+
+/** The Harness container's credentials volume: its Stand-ins, mounted at {@link HARNESS_CREDENTIALS}. */
+export const HARNESS_CREDENTIALS_VOLUME = "harness-credentials";
 type Volume = Record<string, unknown>;
 type VolumeMount = { name: string; mountPath: string; readOnly?: boolean };
 
 /** What one Harness pod gains from the Custodian. */
 export type CustodianComposition = {
-  /** The Harness container's env — in `env`, after `harness.env`, before the wire's gate (§5.1). In
-   * Kubernetes `env` wins over `envFrom`, so a Stand-in overrides a same-named key of any `envFrom`
-   * Secret, even one that changes after the converge. */
+  /** The Harness container's env — in `env`, after `harness.env`, before the wire's gate (§5.1):
+   * the Custodian's fetch address and control socket, the control Stand-in's file, the granted
+   * names, the proxy and the
+   * trust. Never a Stand-in: those are files ({@link HARNESS_CREDENTIALS}), so no `envFrom` key is
+   * hidden by one, and `jr2 up` refuses a held name that is a key of an `envFrom` Secret (R14). */
   harnessEnv: HarnessEnvVar[];
+  /** The Harness container's mounts: the trust bundles, its Stand-ins at {@link HARNESS_CREDENTIALS},
+   * and the control socket's folder below it. Each is read-only. A placement mounts the
+   * conversations' volume at `/run/jr2/conversations`, below the Stand-ins too: the kubelet makes
+   * the mount point of a volume that is below a projected volume (ADR-0076). */
   harnessMounts: VolumeMount[];
   custodianContainer: Container;
   volumes: Volume[];
@@ -955,17 +1014,22 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
     program = HELD_CONFIGMAP,
   } = opts.reads ?? {};
 
-  const slots = opts.slots ?? [];
-  const harnessEnv: HarnessEnvVar[] = [{ name: "JR2_CUSTODIAN_URL", value: CUSTODIAN_URL }];
-  // The Sandbox-token Stand-in is the one credential on a single-agent pod. On a multi-slot pod
-  // (ADR-0076) each slot container carries its OWN secret Stand-in as `JR2_SANDBOX_TOKEN`, by
-  // `secretKeyRef` into that container alone — the pod's maker adds it — so the shared env omits it.
-  if (slots.length === 0) harnessEnv.push({ name: SANDBOX_TOKEN_NAME, value: standIn(SANDBOX_TOKEN_NAME) });
+  const keys = { ...CREDENTIAL_KEYS, ...opts.credentials.keys };
+  const fetch = opts.sandbox !== undefined;
+  const heldNames = new Set(manifest.secrets.map((s) => s.name));
+  const granted = (opts.granted ?? []).filter((n) => heldNames.has(n));
+
+  // No Stand-in rides env (ADR-0059, ADR-0076): each is a file under `/run/jr2/`, below.
+  const harnessEnv: HarnessEnvVar[] = [
+    { name: "JR2_CUSTODIAN_URL", value: CUSTODIAN_URL },
+    { name: CUSTODIAN_SOCKET_ENV, value: CUSTODIAN_CONTROL_SOCKET },
+    { name: CONTROL_STANDIN_FILE_ENV, value: CONTROL_STANDIN_FILE },
+    ...(granted.length ? [{ name: GRANTED_SECRETS_ENV, value: granted.join(",") }] : []),
+  ];
   if (held) {
     const proxy = `http://127.0.0.1:${CUSTODIAN_PORT}`;
     const noProxy = "localhost,127.0.0.1,::1";
     harnessEnv.push(
-      ...manifest.secrets.map((s) => ({ name: s.name, value: standIn(s.name) })),
       { name: "HTTPS_PROXY", value: proxy },
       { name: "https_proxy", value: proxy },
       { name: "NO_PROXY", value: noProxy },
@@ -988,19 +1052,20 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
         // Group-readable, for the pod's fsGroup: the Custodian runs as Envoy's own uid.
         defaultMode: 0o440,
         sources: [
-          // The control credential(s): the one Sandbox token on a single-agent pod, or on a
-          // multi-slot pod (ADR-0076) one per-slot token per agent slot (each under its {@link
-          // slotHeldName}) PLUS the one Sandbox token, which the path-restricted control entry swaps
-          // on the fetch route. The Sandbox token is projected into the CUSTODIAN alone here; no slot
-          // container ever mounts it.
-          ...(slots.length > 0
-            ? [
-                ...slots.map((s) => ({
-                  secret: { name: s.token.secret, items: [{ key: s.token.key, path: slotHeldName(s.slot) }] },
-                })),
-                { secret: { name: opts.token.secret, items: [{ key: opts.token.key, path: SANDBOX_TOKEN_NAME }] } },
-              ]
-            : [{ secret: { name: opts.token.secret, items: [{ key: opts.token.key, path: SANDBOX_TOKEN_NAME }] } }]),
+          // The control credentials (ADR-0076): the control token beside its secret Stand-in, and
+          // on a Sandbox the fetch token, whose Stand-in is public and rides the script. Then each
+          // held secret's secret Stand-in, beside the value the Custodian swaps it for.
+          {
+            secret: {
+              name: opts.credentials.secret,
+              items: [
+                { key: keys.controlToken, path: CONTROL_TOKEN_NAME },
+                { key: keys.controlStandIn, path: standInValueFile(CONTROL_TOKEN_NAME) },
+                ...(fetch ? [{ key: keys.fetchToken, path: SANDBOX_TOKEN_NAME }] : []),
+                ...manifest.secrets.map((s) => ({ key: heldStandInKey(s.name), path: standInValueFile(s.name) })),
+              ],
+            },
+          },
           ...(literal.length ? [{ secret: { name: literals, items: literal.map((n) => ({ key: n, path: n })) } }] : []),
           ...manifest.secrets.flatMap((s) =>
             s.source.kind === "secret"
@@ -1039,6 +1104,31 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
         ]
       : []),
     ...(trust ? [{ name: "ca", configMap: { name: trustMap } }] : []),
+    // The control socket's folder (ADR-0076): the Custodian makes the socket, and the Harness
+    // connects to it. It goes with the pod, and it outlives a restart of either container, so the
+    // socket's path never changes.
+    { name: CUSTODIAN_SOCKET_VOLUME, emptyDir: {} },
+    // The Harness container's Stand-ins (ADR-0076): the secret control Stand-in and each held
+    // secret's, as files under `/run/jr2/`, which the confiner denies to every child the Harness
+    // starts. Group-readable for the pod's fsGroup — the Harness runs as no fixed uid, and the
+    // kubelet writes the files as root — so 0440 is the least mode the Harness can read.
+    {
+      name: HARNESS_CREDENTIALS_VOLUME,
+      projected: {
+        defaultMode: 0o440,
+        sources: [
+          {
+            secret: {
+              name: opts.credentials.secret,
+              items: [
+                { key: keys.controlStandIn, path: "control/standin" },
+                ...manifest.secrets.map((s) => ({ key: heldStandInKey(s.name), path: `standins/${s.name}` })),
+              ],
+            },
+          },
+        ],
+      },
+    },
   ];
 
   const custodianContainer: Container = {
@@ -1051,6 +1141,8 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
     volumeMounts: [
       { name: "custodian-values", mountPath: CUSTODIAN_VALUES, readOnly: true },
       { name: "custodian-config", mountPath: CUSTODIAN_CONFIG, readOnly: true },
+      // The one folder that the Custodian writes: where it makes its control socket.
+      { name: CUSTODIAN_SOCKET_VOLUME, mountPath: CUSTODIAN_SOCKET_DIR },
       ...(held
         ? [
             { name: "custodian-tls", mountPath: CUSTODIAN_TLS, readOnly: true },
@@ -1073,7 +1165,12 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
 
   return {
     harnessEnv,
-    harnessMounts: trust ? [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] : [],
+    harnessMounts: [
+      ...(trust ? [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] : []),
+      { name: HARNESS_CREDENTIALS_VOLUME, mountPath: HARNESS_CREDENTIALS, readOnly: true },
+      // Read-only: the Harness connects to the socket, and nothing in its container writes here.
+      { name: CUSTODIAN_SOCKET_VOLUME, mountPath: CUSTODIAN_SOCKET_DIR, readOnly: true },
+    ],
     custodianContainer,
     volumes,
   };

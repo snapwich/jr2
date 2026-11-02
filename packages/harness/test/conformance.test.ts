@@ -33,8 +33,10 @@ import { runSubmissionFor } from "../src/turn.ts";
 import { MemoryGuard } from "../src/memory-guard.ts";
 import type { HistoryView, MemoryKillsResponse, Notice, Settlement, StreamEvent } from "../src/wire.ts";
 import { startAnthropicGateway, type AnthropicGateway } from "./support/anthropic-gateway.ts";
+import { testChildren } from "./support/children.ts";
+import { unixFetch } from "../src/unix-fetch.ts";
 import {
-  SANDBOX_STAND_IN,
+  CONTROL_STAND_IN,
   severKeepAliveSockets,
   startFakeCustodian,
   startFakeProvider,
@@ -178,6 +180,8 @@ before(async () => {
     },
   };
   const models = modelsFor(harness, {});
+  // The host's tmpdir is this rig's `/work` and its TMPDIR: every Frame's cwd here is in it.
+  const children = testChildren({ tmp: tmpdir(), work: tmpdir() });
   type Seams = {
     stepBudget?: number;
     identicalCallLimit?: number;
@@ -208,7 +212,17 @@ before(async () => {
         const { retries, guard, sweepWaitMs: _sweepWaitMs, ...turnSeams } = seams ?? {};
         return runSubmissionFor({
           models: registry,
-          menu: { url: sandbox.url, token: SANDBOX_STAND_IN, retryWindowMs: 50, retryInitialMs: 1 },
+          // Over the control socket, as in a pod (ADR-0076).
+          menu: {
+            url: "http://jr2-custodian",
+            token: CONTROL_STAND_IN,
+            fetch: unixFetch(sandbox.socket),
+            retryWindowMs: 50,
+            retryInitialMs: 1,
+          },
+          // Each Working tool's child is confined by the real confiner (ADR-0076); the run's tmpdir,
+          // where every Frame's cwd here is, is the children's TMPDIR.
+          children,
           // No provider-stream retries: a scripted failure must settle on the first attempt. The
           // `retries` seam leaves the Harness's own number in place.
           ...(retries === "harness" ? {} : { maxRetries: 0 }),
@@ -271,15 +285,24 @@ async function admit(
   dials?: { model?: string; thinkingLevel?: string },
   agent = AGENT,
   via: Hono = app,
-  frame?: { cwd: string },
+  frame?: { cwd?: string; slot?: string },
 ): Promise<{ offset: string; submissionId: string }> {
-  const cwd = frame ? frame.cwd : frameCwd[agent];
+  const cwd = frame?.cwd ?? frameCwd[agent];
+  // The Agent's slot, as the Orchestrator registered it (ADR-0076): the Harness states it on each
+  // control request. Absent, an empty slot, which the rig does not check.
+  const slot = frame?.slot;
   const res = await via.request(conversationPath(iid, agent), {
     method: "POST",
     // The definition rides every admission (ADR-0049) — the real turn loop reads the one it was
     // handed, so this suite hands it the same one the Machine's slot would — and the Frame rides
     // beside it (ADR-0057): the prompt, and where this Turn works.
-    body: JSON.stringify({ message, ...(cwd ? { cwd } : {}), definition: definitions[agent], ...dials }),
+    body: JSON.stringify({
+      message,
+      ...(cwd ? { cwd } : {}),
+      ...(slot ? { slot } : {}),
+      definition: definitions[agent],
+      ...dials,
+    }),
     headers: { "content-type": "application/json" },
   });
   assert.equal(res.status, 200);
@@ -524,7 +547,7 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
   // …and the pick alone is what settled the turn: it reached the Orchestrator as a delivery.
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
-  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
+  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${CONTROL_STAND_IN}`));
 });
 
 test("the Frame's cwd is re-read per Submission: two turns of one conversation work in different directories (ADR-0057)", async () => {
@@ -1324,7 +1347,7 @@ test("a Menu pick reaches the Orchestrator and its receipt reaches the model; th
 
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
-  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
+  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${CONTROL_STAND_IN}`));
   // The receipt ended the Turn, so the run asked nothing more: the log holds what the model read.
   assert.equal(provider.calls.length, 1);
   const [receipt] = pickAnswers(iid);
@@ -1983,7 +2006,7 @@ test("a turn compacts MID-flight: the cut lands between two requests of ONE Subm
   // The turn went on to its pick: a compacted turn still concludes (ADR-0006).
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
-  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
+  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${CONTROL_STAND_IN}`));
   // One Submission, one settlement — the cut settles nothing, and it leaves no history entry: jr2
   // records what was SAID, and Compaction changes only what the model sees (ADR-0036).
   const view = await history(iid, compactApp);
@@ -2268,7 +2291,7 @@ test("a healthy turn is untouched: varied calls, a sub-K repeat, then the pick (
   assert.deepEqual(settlement.error, { type: "submission_aborted", message: NO_SWEEP_MESSAGE });
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
-  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
+  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${CONTROL_STAND_IN}`));
 });
 
 // ─── the outstanding pick (ADR-0024, ADR-0013) ─────────────────────────────────────────────────────
@@ -3095,4 +3118,68 @@ test("an abort that lands after the step boundary asks for no summary, and the r
   provider.summarize({});
   assert.equal(settlement.outcome, "aborted");
   assert.equal(provider.summaries.length, 0, "an ended run buys no summarizer round-trip");
+});
+
+// ADR-0062 through the real loop: a notice the step boundary's read reserved is appended to the Turn
+// at that boundary — the next request's newest message — and acknowledged once it is in the Turn,
+// with the slot the Harness states for the conversation (ADR-0076).
+test("step boundary: a pending notice is appended mid-Turn and acknowledged, with the stated slot", async () => {
+  provider.reset([
+    bashCall("w1", "echo one"),
+    bashCall("w2", "echo two"),
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  const kill = { kind: "memory-limit", scope: "workspace", peak: "1.9Gi", limit: "2Gi" };
+  // The kill lands after the Turn starts: the read at its first step boundary carries it.
+  sandbox.surfaceByRead((read) => ({
+    ...surfaceAllowing(MODES_MENU, CODING),
+    ...(read === 2 ? { notices: [{ id: "kill-1", notice: kill }] } : {}),
+  }));
+  sandbox.answerWith(endsTurn);
+  // The slot is the admission's, never read off the Instance ID (ADR-0076): an actor id may hold a
+  // `/`, as a Pool item's does.
+  const iid = "run-n/root.review/fix/123/reviewer/1a2b3c4d";
+
+  const admission = await admit(iid, "Fix the ticket.", undefined, AGENT, app, {
+    slot: "root.review/fix/123/reviewer",
+  });
+  assert.equal((await settled(iid, admission)).outcome, "aborted");
+
+  const calls = provider.calls;
+  assert.equal(calls.length, 3);
+  // The newest message of request 2, right after model answer 1's tool result.
+  assert.equal(
+    lastUserText(calls[1]),
+    "<jr2-turn>\nNotice: the Sandbox's processes were killed at its memory limit (peak 1.9Gi of 2Gi); /dev/shm " +
+      "was cleared. Anything that was running in the Sandbox at that time is gone.\n</jr2-turn>",
+  );
+  const said = calls.map((c) => JSON.stringify(c.messages).split("killed at its memory limit").length - 1);
+  assert.deepEqual(said, [0, 1, 1], "said once, at the first step boundary, and kept after");
+  await until(() => sandbox.acks.length > 0, "the acknowledgment");
+  assert.deepEqual(sandbox.acks, [["kill-1"]]);
+  assert.ok(
+    sandbox.slots.length > 0 && sandbox.slots.every((s) => s === "root.review/fix/123/reviewer"),
+    JSON.stringify(sandbox.slots),
+  );
+});
+
+test("a notice the Turn's first surface read reserved rides its Turn part, and is acknowledged once the prompt is in the Turn", async () => {
+  provider.reset([{ toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } }]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  const kill = { kind: "memory-limit", scope: "workspace", peak: "1.9Gi", limit: "2Gi" };
+  sandbox.surfaceByRead((read) => ({
+    ...surfaceAllowing(MODES_MENU, CODING),
+    ...(read === 1 ? { notices: [{ id: "kill-2", notice: kill }] } : {}),
+  }));
+  sandbox.answerWith(endsTurn);
+  const iid = "run-n/root/reviewer";
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "aborted");
+  assert.match(
+    lastUserText(provider.calls[0]),
+    /^Fix the ticket\.\n\n<jr2-turn>\n[^\n]*\nNotice: the Sandbox's processes were killed/,
+  );
+  await until(() => sandbox.acks.length > 0, "the acknowledgment");
+  assert.deepEqual(sandbox.acks, [["kill-2"]]);
 });

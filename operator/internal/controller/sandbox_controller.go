@@ -284,10 +284,7 @@ func lastKeepalive(ctx context.Context, sandbox *corev1alpha1.Sandbox) time.Time
 }
 
 // reconcileService ensures the headed Service fronting the Sandbox exists and
-// targets the primary container's port, plus one port per additional agent
-// slot (ADR-0076): each slot's Harness container listens on its own port, and
-// the Service routes the slot's endpoint there. A single-agent pod declares no
-// slots, so it gets exactly the one `http` port of today.
+// targets the primary container's port.
 func (r *SandboxReconciler) reconcileService(ctx context.Context, sandbox *corev1alpha1.Sandbox) error {
 	port := portFor(sandbox)
 	svc := &corev1.Service{
@@ -296,21 +293,12 @@ func (r *SandboxReconciler) reconcileService(ctx context.Context, sandbox *corev
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 		svc.Labels = sandboxLabels(sandbox)
 		svc.Spec.Selector = sandboxLabels(sandbox)
-		ports := []corev1.ServicePort{{
+		svc.Spec.Ports = []corev1.ServicePort{{
 			Name:       "http",
 			Port:       port,
 			TargetPort: intstrFromInt32(port),
 			Protocol:   corev1.ProtocolTCP,
 		}}
-		for _, slot := range sandbox.Spec.Slots {
-			ports = append(ports, corev1.ServicePort{
-				Name:       slot.Name,
-				Port:       slot.Port,
-				TargetPort: intstrFromInt32(slot.Port),
-				Protocol:   corev1.ProtocolTCP,
-			})
-		}
-		svc.Spec.Ports = ports
 		return controllerutil.SetControllerReference(sandbox, svc, r.Scheme)
 	})
 	return err
@@ -643,7 +631,6 @@ func (r *SandboxReconciler) reconcileRefused(ctx context.Context, sandbox *corev
 	observed := sandbox.Status.DeepCopy()
 	sandbox.Status.Phase = corev1alpha1.SandboxPending
 	sandbox.Status.Endpoint = endpointFor(sandbox)
-	sandbox.Status.Endpoints = endpointsFor(sandbox)
 	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
 	for _, t := range []string{conditionScheduled, conditionReady} {
 		meta.SetStatusCondition(&sandbox.Status.Conditions, metav1.Condition{
@@ -1000,7 +987,6 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	admitted := reposAdmitted(sandbox, pod)
 	observed := sandbox.Status.DeepCopy()
 	sandbox.Status.Endpoint = endpointFor(sandbox)
-	sandbox.Status.Endpoints = endpointsFor(sandbox)
 	sandbox.Status.PodRef = &corev1.LocalObjectReference{Name: pod.Name}
 	// The Pod this Sandbox has for its life (ADR-0021), recorded when it was
 	// created; restated here for a Pod created before the operator recorded it.
@@ -1089,31 +1075,9 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 }
 
 // endpointFor is the in-cluster Service address the Orchestrator reaches the
-// primary slot's Harness at.
+// Harness at.
 func endpointFor(sandbox *corev1alpha1.Sandbox) string {
-	return serviceEndpoint(sandbox, portFor(sandbox))
-}
-
-// endpointsFor is one in-cluster Service address per additional agent slot
-// (ADR-0076), in spec.slots order — what the Orchestrator resolves a slot's
-// Turn to. Nil on a single-agent pod, which declares no slots.
-func endpointsFor(sandbox *corev1alpha1.Sandbox) []corev1alpha1.SandboxSlotEndpoint {
-	if len(sandbox.Spec.Slots) == 0 {
-		return nil
-	}
-	out := make([]corev1alpha1.SandboxSlotEndpoint, 0, len(sandbox.Spec.Slots))
-	for _, slot := range sandbox.Spec.Slots {
-		out = append(out, corev1alpha1.SandboxSlotEndpoint{
-			Slot:     slot.Name,
-			Endpoint: serviceEndpoint(sandbox, slot.Port),
-		})
-	}
-	return out
-}
-
-// serviceEndpoint is the in-cluster Service DNS for one of the Sandbox's ports.
-func serviceEndpoint(sandbox *corev1alpha1.Sandbox, port int32) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, port)
+	return fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
 }
 
 // containerStatus copies one container's restarts and last end off the Pod

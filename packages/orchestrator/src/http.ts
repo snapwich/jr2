@@ -61,7 +61,14 @@ import {
 } from "./registration.ts";
 import type { RepoStatus } from "./repos.ts";
 import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
-import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
+import {
+  isAgentPrincipal,
+  mayAskForSandbox,
+  mayDeliverToAgent,
+  SLOT_HEADER,
+  type Authenticator,
+  type Principal,
+} from "./tokens.ts";
 import {
   DispatchKeyConflictError,
   keyAnswer,
@@ -387,8 +394,9 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
     method: "GET",
     path: "/agents/:instanceId/surface",
     band: "authenticated",
-    summary: "An Agent's Menu and this Turn's Allowed picks. A Sandbox token reads only its own Sandbox's.",
-    response: "AgentSurfaceView",
+    summary:
+      "An Agent's Menu, this Turn's Allowed picks and the conversation's pending notices. A control token reads only its own pod's, for the slot it states.",
+    response: "AgentSurfaceView & { notices: Array<{ id, notice }> }",
     stream: false,
     adrs: ["0013", "0029"],
   },
@@ -413,9 +421,19 @@ export const HTTP_ROUTES: readonly HttpRoute[] = [
   },
   {
     method: "POST",
+    path: "/agents/:instanceId/notices",
+    band: "authenticated",
+    summary: "Acknowledge the notices a step boundary appended to the Turn: they are heard in its conversation.",
+    body: "{ heard: string[] }",
+    response: "{ heard: number }",
+    stream: false,
+    adrs: ["0062", "0076"],
+  },
+  {
+    method: "POST",
     path: "/sandboxes/:name/fetch",
     band: "authenticated",
-    summary: "Ask the node cache to fetch one Repo that this Sandbox mounts. A Sandbox token asks only for its own.",
+    summary: "Ask the node cache to fetch one Repo that this Sandbox mounts. A fetch token asks only for its own.",
     body: "{ identity }",
     response: "FetchAnswer: { fetched } | { stale, asOf }",
     stream: false,
@@ -828,7 +846,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
    * hand every Agent in the cluster a delivery API, which is the hole this ADR exists to close. */
   const authenticated: MiddlewareHandler<JR2Env> = async (c, next) => {
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
-    const principal = auth(bearerOf(c));
+    // The slot a control request states (ADR-0076): a control token without one resolves to nothing.
+    const principal = auth(bearerOf(c), c.req.header(SLOT_HEADER));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
     if (principal.kind === "publisher") return c.json({ error: PUBLISHER_ONLY }, 403);
     c.set("principal", principal);
@@ -847,7 +866,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
    */
   const instanceOnly: MiddlewareHandler<JR2Env> = async (c, next) => {
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
-    const principal = auth(bearerOf(c));
+    const principal = auth(bearerOf(c), c.req.header(SLOT_HEADER));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
     if (principal.kind === "publisher") return c.json({ error: PUBLISHER_ONLY }, 403);
     if (principal.kind !== "instance") {
@@ -1288,11 +1307,11 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // the gated state. Unknown gate (never opened, state exited, run settled) → 404; a name the gate
   // doesn't accept, or a payload failing its schema → 400 naming what IS accepted.
   //
-  // A Gate is a HUMAN's decision (or a webhook's, or CI's). An Agent holding a Sandbox token is
-  // refused here unconditionally — this is the exact line between "the Agent reports an outcome"
-  // and "the Agent approves its own PR" (ADR-0013).
+  // A Gate is a HUMAN's decision (or a webhook's, or CI's). Every Agent principal — a control
+  // token or a fetch token — is refused here unconditionally: this is the exact line between "the
+  // Agent reports an outcome" and "the Agent approves its own PR" (ADR-0013, ADR-0076).
   app.post("/runs/:runId/gates/:gate/events", authenticated, async (c) => {
-    if (principalOf(c).kind === "sandbox") {
+    if (isAgentPrincipal(principalOf(c))) {
       return c.json({ error: "a Sandbox token cannot deliver to a gate — gates are not on the Agent's surface" }, 403);
     }
     const body = await readJson(c.req.text());
@@ -1419,7 +1438,9 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // and delivery are implemented once, in `registration.ts`.
 
   /** Guard: the surface must exist, and this principal must be allowed to speak for it. */
-  const agentRegistration = (c: Context<JR2Env, "/agents/:instanceId/surface" | "/agents/:instanceId/events">) => {
+  const agentRegistration = (
+    c: Context<JR2Env, "/agents/:instanceId/surface" | "/agents/:instanceId/events" | "/agents/:instanceId/notices">,
+  ) => {
     const instanceId = c.req.param("instanceId");
     // Only a Turn that is over answers 404 (ADR-0026). While the host is stopping its runs are
     // parked for restore, not over, so every `/agents/*` call answers 503: the Harness re-asks a
@@ -1442,10 +1463,10 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     // iid) → there is no surface to serve. 404 BEFORE the scope check — a caller with a valid
     // token learns nothing from it that it did not already know.
     if (!surface) return { error: c.json({ error: `no live agent surface for instance "${instanceId}"` }, 404) };
-    if (!mayDeliverToAgent(principalOf(c), surface.sandbox, surface.slot)) {
-      // A token for a DIFFERENT Sandbox or slot (or for a workspace-less run, which no Sandbox
-      // owns). This is the check that keeps one feature's coder out of another's reviewer, and a
-      // co-resident slot out of its sibling's surface (ADR-0076).
+    if (!mayDeliverToAgent(principalOf(c), surface)) {
+      // A control token for a DIFFERENT pod (or for a workspace-less run, which no pod owns), a
+      // stated slot that is not this registration's (ADR-0076), or a fetch token. The first is the
+      // check that keeps one feature's coder out of another's reviewer.
       return { error: c.json({ error: `this token cannot speak for instance "${instanceId}"` }, 403) };
     }
     return { surface };
@@ -1455,11 +1476,28 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // semantics, fixed for the conversation — and this Turn's Allowed picks (ADR-0029). A transition
   // swaps the registration, which swaps the Allowed picks, never the Menu; the Harness reads both
   // per Submission and needs no `list_changed`.
-  app.get("/agents/:instanceId/surface", authenticated, (c) => {
+  // The same read at a step boundary carries the conversation's pending notices in its audience
+  // (ADR-0062), reserved for this read: the Harness appends them and acknowledges them below.
+  app.get("/agents/:instanceId/surface", authenticated, async (c) => {
     const { surface, error } = agentRegistration(c);
     if (error) return error;
     host.agentSurfaceServed(c.req.param("instanceId"));
-    return c.json(surface);
+    const notices = await host.boundaryNotices(c.req.param("instanceId"));
+    return c.json({ ...surface, notices });
+  });
+
+  // The Harness appended a step boundary's notices to the Turn (ADR-0062, ADR-0076): they are heard
+  // in that conversation, ledgered in one save. An id this conversation did not reserve is ignored,
+  // so the call says nothing a caller did not already know.
+  app.post("/agents/:instanceId/notices", authenticated, async (c) => {
+    const { error } = agentRegistration(c);
+    if (error) return error;
+    const body = await readJson(c.req.text());
+    const heard = (body as { heard?: unknown }).heard;
+    if (!Array.isArray(heard) || heard.some((id) => typeof id !== "string")) {
+      return c.json({ error: "an acknowledgment names the notices heard: { heard: string[] }" }, 400);
+    }
+    return c.json({ heard: host.noticesHeard(c.req.param("instanceId"), heard as string[]) });
   });
 
   // The Agent's pick, delivered into the state that invoked it. The receipt describes itself
@@ -1515,7 +1553,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       return c.json({ error: restorePendingMessage(`delivery "${deliveryId}"`) }, 503);
     }
     if (!scope) return c.json({ error: `no delivery "${deliveryId}" for instance "${instanceId}"` }, 404);
-    if (!mayDeliverToAgent(principalOf(c), scope.sandbox, scope.slot)) {
+    if (!mayDeliverToAgent(principalOf(c), scope)) {
       return c.json({ error: `this token cannot speak for instance "${instanceId}"` }, 403);
     }
     const receipt = await host.awaitDelivery(instanceId, deliveryId, opts.deliveryWaitMs, c.req.raw.signal);

@@ -29,8 +29,13 @@ boundary, to support and to test.
   backstop for a node that joins after the converge.
 - **No component keeps a path for a node that cannot confine a child.** ADR-0068's Effector refuses to start on such a
   node, whatever its Workspace holds.
-- **The minimum ABI is what the confiner needs: ABI 1.** The confiner uses the newer rights and scopes when the kernel
-  offers them: `REFER` (ABI 2), `TRUNCATE` (ABI 3), and the scope of signals (ABI 6).
+- **The minimum ABI is 3.** Under ABI 1, a confined process can never move or link a file into another folder, whatever
+  the rules allow, and package managers, git and `mv` do that. ABI 2 adds the `REFER` right, so the domain can do it
+  (ADR-0076). Under ABI 2, Landlock does not handle `truncate(2)`, so a confined process can truncate a file that the
+  rules let it do nothing else to: a conversation under `/run/jr2`, which the Harness rebuilds an Agent's record from.
+  ABI 3 adds the `TRUNCATE` right, and the confiner always handles it. The confiner uses the scopes of abstract Unix
+  sockets and of signals (ABI 6) when the kernel offers them. Each probe refuses a kernel below ABI 3, with the ABI that
+  it found.
 - **The components that probe.** The cache agent probes as the detector, though it confines nothing. The Harness of a
   Sandbox and the Sandbox Effector probe because they confine. The Instance Harness and the Instance Effector confine
   nothing: a Menu-only Agent has no Working tools ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)),
@@ -38,6 +43,11 @@ boundary, to support and to test.
 
 ## Considered options
 
+- **A minimum of ABI 1.** Rejected: under it no confined process can move a file into another folder, which stops normal
+  work.
+- **A minimum of ABI 2.** Rejected: under it the domain can truncate a file under `/run/jr2`. One Agent's code can then
+  erase or roll back another Agent's conversation, and below ABI 6 it can end the Harness so that the Harness rebuilds
+  from the cut file. It admits Linux 5.19 to 6.1 (Debian 12's stock kernel among them), for a boundary with a hole.
 - **Refuse only a Sandbox with more than one Agent on a node without Landlock.** Rejected: it keeps a less secure
   branch, which jr2 must then support and test.
 - **Run unconfined, with a warning.** Rejected: Workspace code can then read the control credential, and a warning does
@@ -51,12 +61,13 @@ boundary, to support and to test.
 
 ## Consequences
 
-- **The kernels that this excludes.** Landlock is in Linux 5.13 and later. A node with an older kernel cannot run jr2:
-  for example RHEL 8 (4.18), Debian 11 (5.10), Ubuntu 20.04 on its first kernel (5.4), and Amazon Linux 2 (4.14 or
-  5.10). A newer kernel must also enable Landlock: its list of security modules (`CONFIG_LSM`, or the `lsm=` boot
-  parameter) must name `landlock`. On a node, `/sys/kernel/security/lsm` lists the modules that run. Measured from a
-  hardened pod with no capabilities: kind on WSL2 (6.6) offers ABI 3; the home cluster's arm64 nodes (6.8), ABI 4; spark
-  (6.11, arm64), ABI 5.
+- **The kernels that this excludes.** Landlock ABI 3 is in Linux 6.2 and later. A node with an older kernel cannot run
+  jr2: for example RHEL 8 (4.18), Debian 11 (5.10), Debian 12 on its stock kernel (6.1), Ubuntu 20.04 and 22.04 on their
+  first kernels (5.4, 5.15), and Amazon Linux 2 (4.14 or 5.10). A distribution kernel can carry a backport: the probe,
+  not the version, decides. A newer kernel must also enable Landlock: its list of security modules (`CONFIG_LSM`, or the
+  `lsm=` boot parameter) must name `landlock`. On a node, `/sys/kernel/security/lsm` lists the modules that run.
+  Measured from a hardened pod with no capabilities: kind on WSL2 (6.6) offers ABI 3; the home cluster's arm64 nodes
+  (6.8), ABI 4; spark (6.11, arm64), ABI 5.
 - **kind on a host inherits the host's kernel.** A kind node is a container, so the kernel of the host decides. On macOS
   or Windows, Docker runs the nodes in a virtual machine, and the kernel of that machine decides.
 - **A mixed cluster.** `jr2 up` names each Sandbox node without Landlock and refuses until the admin keeps it out of the

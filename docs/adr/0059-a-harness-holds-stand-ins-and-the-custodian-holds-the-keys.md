@@ -40,8 +40,10 @@ decision generalizes that container. It holds every credential the Harness in it
   listener and no xDS, so nothing in the pod can change the configuration or read it back.
 - **The Custodian replaces the Adapter.** The `@jr2/adapter` package and the `jr2-adapter` image are deleted. A
   Sandbox's two tokens are held secrets of the kit's own (ADR-0013): the Custodian holds the control token and the fetch
-  token as files from the `<sandbox>-token` Secret (the Instance Harness: the `JR2_INSTANCE_HARNESS_TOKEN` key of
-  `jr2-instance`). No other container mounts them, and the real tokens never leave the Custodian.
+  token as files from the `<sandbox>-token` Secret (the Instance Harness: its control token, from
+  `jr2-instance-harness-token`, which `jr2 up` mints as that pod's maker; it serves no fetch). No other container mounts
+  the tokens, and the real tokens never leave the Custodian. The same Secret holds the pod's Stand-ins, which the
+  Harness container mounts as files; so it is never `jr2-instance`, which holds the Instance token and the signing key.
   - The **control Stand-in** is secret, as every Stand-in but one. The Harness process alone holds it, as a file under
     `/run/jr2/` that no process it confines can read, and no `secrets` list can grant it: it is in no child's env
     (ADR-0076). The Custodian puts the control token in its place on the agent routes. There is one control Stand-in for
@@ -49,33 +51,43 @@ decision generalizes that container. It holds every credential the Harness in it
   - The **fetch Stand-in** is public, `jr2-held-JR2_SANDBOX_TOKEN`. `jr2-upload-pack` holds it as a constant. The
     Custodian puts the fetch token in its place on the fetch route alone, and refuses it on every agent route.
 - **The Harness reads its Menu itself.** There is no MCP. For each Submission, `menu.ts` reads
-  `GET /agents/<iid>/surface` and delivers a pick with `POST /agents/<iid>/events`, both to the Custodian on
-  `127.0.0.1:8081`, with the control Stand-in as the bearer and the slot it states for the conversation (ADR-0076).
-  `menu-tools.ts` gives pi each accepted event as a tool. The tool names stay `mcp__jr2__<event>`, because shipped
-  instructions and the printer depend on them; the name is no longer a transport. `menu-tools.ts` adds the prefix, and
-  `menu.ts` keeps the bare name, because an MCP client adds `mcp__<server>__` itself. The Harness keeps what the Adapter
-  did: a turn that is over is never prompted ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)), a receipt is
-  prose ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md),
+  `GET /agents/<iid>/surface` and delivers a pick with `POST /agents/<iid>/events`, both to the Custodian's control
+  socket, `/run/jr2/custodian/control.sock`, with the control Stand-in as the bearer and the slot it states for the
+  conversation (ADR-0076). `menu-tools.ts` gives pi each accepted event as a tool. The tool names stay
+  `mcp__jr2__<event>`, because shipped instructions and the printer depend on them; the name is no longer a transport.
+  `menu-tools.ts` adds the prefix, and `menu.ts` keeps the bare name, because an MCP client adds `mcp__<server>__`
+  itself. The Harness keeps what the Adapter did: a turn that is over is never prompted
+  ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)), a receipt is prose
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md),
   [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)), the surface read retries
   on the ladder with the `jr2.routability` line
   ([ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md)), and a `poll` event refuses the turn
   (`deferred` is retired, ADR-0006). The event's own JSON Schema is the tool's parameters, so the model sees the
   contract the Orchestrator validates against.
-- **The control listener forwards four routes and no other.** `127.0.0.1:8081`, plain HTTP, to the Orchestrator's
-  Service (`jr2-orchestrator.<ns>.svc:4000`, written into the pod's bootstrap by whoever makes the pod — see "Objects,
-  per pod"):
+- **The control listener forwards five routes and no other.** Plain HTTP, to the Orchestrator's Service
+  (`jr2-orchestrator.<ns>.svc:4000`, written into the pod's bootstrap by whoever makes the pod — see "Objects, per
+  pod"):
 
   ```
   GET  /agents/<iid>/surface          → the same path     the Menu
   POST /agents/<iid>/events           → the same path     a pick
   GET  /agents/<iid>/deliveries/<id>  → the same path     an outstanding pick's answer (ADR-0024)
+  POST /agents/<iid>/notices          → the same path     a step boundary's notices heard (ADR-0062, ADR-0076)
   POST /fetch                         → /sandboxes/<this pod's Sandbox>/fetch     the ask (ADR-0053)
   anything else                       → 404, from the Custodian
   ```
 
-  A read — the surface, a delivery's poll — is retried on any reset; a pick and the ask only on a reset before they were
-  sent, so one the Orchestrator may have read is not sent twice. A poll holds up to about 25 s, far below the listener's
-  3600 s idle limit, so an outstanding pick never rides one long request (ADR-0002).
+  The four agent routes are on a Unix socket, `/run/jr2/custodian/control.sock`, in a folder that the Harness and the
+  Custodian share and that no confined program can write (ADR-0076). The fetch is on `127.0.0.1:8081`, because
+  `jr2-upload-pack` runs in the domain, and the fetch Stand-in is public. Each listener answers 404 to the other's
+  routes. Landlock does not limit a connect to a named socket, so a confined program can connect to the control socket.
+  It holds no control Stand-in, so the Custodian refuses each agent route that it asks for there, with the fetch
+  Stand-in or with none, and the control socket answers 404 to the fetch route.
+
+  A read — the surface, a delivery's poll — and an acknowledgment of notices, which marks them heard however often it
+  lands, are retried on any reset; a pick and the ask only on a reset before they were sent, so one the Orchestrator may
+  have read is not sent twice. A poll holds up to about 25 s, far below the listener's 3600 s idle limit, so an
+  outstanding pick never rides one long request (ADR-0002).
 
   On each forwarded request, the Custodian swaps `Authorization: Bearer <Stand-in>` for the token of that route — the
   control token on an agent route, the fetch token on the fetch route — and removes every other credential header. A
@@ -213,22 +225,22 @@ decision generalizes that container. It holds every credential the Harness in it
   `jr2 up` alone checks the claimed entries (`heldSecretsOf`), host-side, because `.env` values are absent in-cluster.
   An entry no pod claims is not checked as a held secret:
 
-  | #   | Refused                                                                                                                                                                                                                                                                                                             |
-  | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | R1  | A known model key (`MODEL_KEYS`) in `harness.env`, or as a key of a Secret or ConfigMap `harness.envFrom` names.                                                                                                                                                                                                    |
-  | R2  | A held-secret name that is `JR2_*` or a proxy or trust variable.                                                                                                                                                                                                                                                    |
-  | R3  | One name held twice, or held and set by `harness.env`.                                                                                                                                                                                                                                                              |
-  | R4  | Not exactly one of `value`/`valueFrom`; an empty value; a byte outside `0x20`–`0x7E`; leading or trailing space.                                                                                                                                                                                                    |
-  | R5  | A claimed entry with no `hosts` where no default exists; a wildcard, userinfo, a non-`https` scheme, a bare-host path, a bad port; two secrets on one host in one header.                                                                                                                                           |
-  | R6  | A `headers` entry that is not a lowercase token, or that frames or routes the request; a duplicate.                                                                                                                                                                                                                 |
-  | R7  | `provider.apiKey` with a non-`https` `baseUrl`; a non-`https` catalog `baseUrl`.                                                                                                                                                                                                                                    |
-  | R8  | A catalog key that is not a known provider, or that is the custom provider's id.                                                                                                                                                                                                                                    |
-  | R9  | Explicit `hosts` on a known model key that leave out where a carried Agent's provider sends its calls.                                                                                                                                                                                                              |
-  | R10 | A `secretKeyRef` whose Secret or key does not exist.                                                                                                                                                                                                                                                                |
-  | R11 | While a secret is held: `harness.env` sets a proxy or trust variable.                                                                                                                                                                                                                                               |
-  | R12 | A `paths` entry that does not start with `/`, or holds `..`, `;`, `\`, `%2e`, `%2f` or `%5c`.                                                                                                                                                                                                                       |
-  | R13 | A held value that also reaches the Harness: its Secret loaded by `harness.envFrom`, its key read by a `harness.env` `secretKeyRef`, or its literal set by `harness.env`. A kit Secret (`jr2-instance`, `jr2-held-*`, `jr2-instance-effector`, `jr2-effector-*`, `<sandbox>-effector`, `jr2-git-*`) named by either. |
-  | R14 | A held secret's name that is also a key of a Secret that `harness.envFrom` names. The message names the Secret, the key and the held secret.                                                                                                                                                                        |
+  | #   | Refused                                                                                                                                                                                                                                                                                                                                                                                             |
+  | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | R1  | A known model key (`MODEL_KEYS`) in `harness.env`, or as a key of a Secret or ConfigMap `harness.envFrom` names.                                                                                                                                                                                                                                                                                    |
+  | R2  | A held-secret name that is `JR2_*` or a proxy or trust variable.                                                                                                                                                                                                                                                                                                                                    |
+  | R3  | One name held twice, or held and set by `harness.env`.                                                                                                                                                                                                                                                                                                                                              |
+  | R4  | Not exactly one of `value`/`valueFrom`; an empty value; a byte outside `0x20`–`0x7E`; leading or trailing space.                                                                                                                                                                                                                                                                                    |
+  | R5  | A claimed entry with no `hosts` where no default exists; a wildcard, userinfo, a non-`https` scheme, a bare-host path, a bad port; two secrets on one host in one header.                                                                                                                                                                                                                           |
+  | R6  | A `headers` entry that is not a lowercase token, or that frames or routes the request; a duplicate.                                                                                                                                                                                                                                                                                                 |
+  | R7  | `provider.apiKey` with a non-`https` `baseUrl`; a non-`https` catalog `baseUrl`.                                                                                                                                                                                                                                                                                                                    |
+  | R8  | A catalog key that is not a known provider, or that is the custom provider's id.                                                                                                                                                                                                                                                                                                                    |
+  | R9  | Explicit `hosts` on a known model key that leave out where a carried Agent's provider sends its calls.                                                                                                                                                                                                                                                                                              |
+  | R10 | A `secretKeyRef` whose Secret or key does not exist.                                                                                                                                                                                                                                                                                                                                                |
+  | R11 | While a secret is held: `harness.env` sets a proxy or trust variable.                                                                                                                                                                                                                                                                                                                               |
+  | R12 | A `paths` entry that does not start with `/`, or holds `..`, `;`, `\`, `%2e`, `%2f` or `%5c`.                                                                                                                                                                                                                                                                                                       |
+  | R13 | A held value that also reaches the Harness: its Secret loaded by `harness.envFrom`, its key read by a `harness.env` `secretKeyRef`, or its literal set by `harness.env`. A kit Secret (`jr2-instance`, `jr2-held-*`, `jr2-instance-effector`, `jr2-effector-*`, `<sandbox>-effector`, `jr2-git-*`, and each pod's credentials, `jr2-instance-harness-token` and `<sandbox>-token`) named by either. |
+  | R14 | A held secret's name that is also a key of a Secret that `harness.envFrom` names. The message names the Secret, the key and the held secret.                                                                                                                                                                                                                                                        |
 
   R14 exists because the Stand-ins are files, not env: no Stand-in hides such a key, so its real value would reach the
   Harness's env, and the Harness uses a held secret but never holds it. `up` already reads each `envFrom` Secret to
@@ -343,8 +355,10 @@ decision generalizes that container. It holds every credential the Harness in it
 - **Response echo.** Responses pass unchanged. An upstream that echoes the full credential in a response hands it to the
   Agent. Providers mask keys in errors; jr2 does not scrub responses.
 - **Bypass.** A client that ignores `HTTPS_PROXY` goes direct and sends the Stand-in, which is worth nothing. It is not
-  blocked: egress control stays the cluster's decision (ADR-0058's open egress gap). The same holds for the control
-  plane: a caller that skips the Custodian and sends the Stand-in to the Orchestrator gets 401 on every route
+  blocked: egress control stays the cluster's decision (ADR-0058's open egress gap), except for the cloud metadata
+  addresses, which no Harness pod reaches
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). The same holds for the
+  control plane: a caller that skips the Custodian and sends the Stand-in to the Orchestrator gets 401 on every route
   (`auth.test.ts`).
 - **Clients that do not trust the jr2 CA** (Java, a pinned client) fail TLS to a bound host. They fail closed and send
   nothing. Unbound hosts still work for them.
@@ -375,8 +389,9 @@ decision generalizes that container. It holds every credential the Harness in it
 - **Two Harness env shapes.** With no held secret in it, a pod gets the Custodian's address and no proxy, and its HTTPS
   goes direct. The Harness process holds the control Stand-in in both shapes. The Custodian runs in both shapes, because
   it carries the Menu.
-- **The dial guard adds no confinement while egress is open.** The Agent can dial those addresses itself. The guard
-  matters when a cluster closes egress to everything but the Custodian: then the Custodian is not a way around it.
+- **The dial guard adds no confinement while egress is open.** The Agent can dial those addresses itself, except the
+  cloud metadata addresses, which jr2's egress policy closes on a CNI that enforces it (ADR-0076). The guard matters
+  when a cluster closes egress to everything but the Custodian: then the Custodian is not a way around it.
 - **One container holds two kinds of credential.** A fault in Envoy's TLS or HTTP parsing is a fault in the container
   that holds both the Sandbox's tokens and the model keys. The branch with a separate Adapter keeps them apart.
 - **The Harness process speaks the Orchestrator's agent routes itself.** Nothing is judged in the pod. No process that
