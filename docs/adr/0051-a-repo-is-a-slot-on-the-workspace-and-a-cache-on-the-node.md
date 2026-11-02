@@ -90,6 +90,14 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   is the thing, not a reference into someone else's file. Two spellings of one repository (`https://`, `git@…:`,
   `ssh://`, with or without `.git`) resolve to one identity — host plus path, scheme and user dropped — and therefore
   one cache. A door that offers a menu of repositories is the Instance's own `z.enum` of urls.
+- **The cache key names one identity.** The key is the Repo CR's name, the hostPath folder, the volume name `repo-<key>`
+  and the mount `/repos/<key>`: a slug of the identity's last segment, at most 16 characters, a dash, and the first 32
+  hex digits (128 bits) of the identity's sha256, at most 49 characters in all. No one can find two identities with one
+  key, and a per-run url is the Agent's text, so a shorter hash is a way into another Repo's cache: with 32 bits, a
+  search found a url of an attacker's repository with the key of a private one in seconds. Each Repo CR states its
+  identity (`jr2.dev/identity`). The Orchestrator refuses to write a CR whose stated identity is not the one that it
+  attaches or binds, and names both urls: no url, no `secretRef` and no clock of one repository is written on a CR of
+  another.
 - **The cluster keeps a bare cache per node, not a volume.** Each repository is a `Repo` custom resource the operator
   reconciles (spec: url, refresh interval; status: per node — synced, generation, last error). A cache agent runs as a
   DaemonSet per Instance over its Sandbox nodes (ADR-0052) with a hostPath directory: it clones a repository onto its
@@ -218,7 +226,7 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   Binding's base.
 - The Console's start form loses the catalog dropdown: a per-run repository is a url field unless the Machine's door
   enumerates its own.
-- The volume paths change: the in-pod source mount is `/repos/<key>` where `<key>` is derived from the identity, and the
+- The volume paths change: the in-pod source mount is `/repos/<key>` where `<key>` is the identity's cache key, and the
   pod-local layout is `/work/<slot>/{default,<name>}`. Existing checkouts on a pre-0051 PVC are not migrated.
 - ADR-0047's deploy-key prompt reads ssh urls off the walk. A per-run ssh url first seen at attach was never prompted
   for; its first attach fails with the key hint, as any unregistered key does.

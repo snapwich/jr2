@@ -18,7 +18,8 @@ export type RepoIdentity = {
    * absolute path for a local repository. Path case is KEPT: hosts are case-insensitive, paths on
    * most forges are not. */
   identity: string;
-  /** `<slug>-<sha256(identity)[:8]>` — a DNS-1123 label of at most 49 characters. */
+  /** `<slug>-<sha256(identity)[:32]>` — a DNS-1123 label of at most 49 characters: a slug of at
+   * most 16 characters and 128 bits of the hash, so no one finds two identities with one key. */
   key: string;
   scheme: "https" | "http" | "ssh" | "git" | "local";
 };
@@ -139,7 +140,10 @@ function keyOf(identity: string): string {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 40)
+      .slice(0, 16)
       .replace(/-+$/, "") || "repo";
-  return `${slug}-${createHash("sha256").update(identity).digest("hex").slice(0, 8)}`;
+  // 128 bits (ADR-0051): the key names the cache that a Sandbox mounts, and a per-run url is the
+  // Agent's text. With 32 bits a search found a url of another repository with the same key in
+  // seconds, and that url mounted the other repository's cache.
+  return `${slug}-${createHash("sha256").update(identity).digest("hex").slice(0, 32)}`;
 }

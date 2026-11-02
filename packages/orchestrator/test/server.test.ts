@@ -246,8 +246,12 @@ test("a boot finding its bound Repo already there RESTATES the Machine's spec â€
   const src = await mkWorkspaceAssembly();
   const lines: string[] = [];
   const { api, kube } = fakeCluster();
-  const { key } = repoIdentity("https://example.test/app.git");
-  api.seed("repos", { metadata: { name: key }, spec: { url: "https://old.example/app.git" } } as never);
+  // The same identity under another spelling: a key names one identity (ADR-0051).
+  const { key, identity } = repoIdentity("https://example.test/app.git");
+  api.seed("repos", {
+    metadata: { name: key, annotations: { "jr2.dev/identity": identity } },
+    spec: { url: "git@example.test:app.git" },
+  } as never);
   const { inst, dir } = await bootPublished(src, kube, (line) => lines.push(line));
   try {
     assert.deepEqual(await announcedRepos(lines, 1), [{ repo: key, url: "https://example.test/app.git", bound: true }]);

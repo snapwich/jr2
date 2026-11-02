@@ -43,7 +43,7 @@ const patches = (api: FakeKube): any[] =>
 /** One standing resource in the store — `create` then answers AlreadyExists, `get` answers it. */
 function standing(item: object): FakeKube {
   const api = fakeKube();
-  api.seed("repos", { metadata: { name: key }, ...item } as never);
+  api.seed("repos", { metadata: { name: key, annotations: { "jr2.dev/identity": identity } }, ...item } as never);
   return api;
 }
 
@@ -269,6 +269,43 @@ test("ensure(per-run) of an EXISTING resource ANOTHER Machine binds moves the cl
   await port.ensure({ url: SSH, identity, key, bound: false });
   assert.deepEqual(secretCalls(api), [], "no Secret minted for a resource the run does not write");
   assert.deepEqual(patches(api), [{ metadata: { annotations: { "jr2.dev/last-attached": NOW.toISOString() } } }]);
+});
+
+// ADR-0051, the gaps review's C1: a key names one identity. A resource of another identity under
+// the key (a collision, or a stale resource) is refused by name, both urls in the message, and no
+// statement writes it: not its url, not its secretRef, not its clock.
+test("bind() and ensure() refuse a resource of another identity under the key, and write nothing on it", async () => {
+  const other = { "jr2.dev/identity": "github.com/victim-org/app" };
+  for (const call of [
+    (port: ReturnType<typeof portOn>) => port.bind({ url: HTTPS, identity, key }),
+    (port: ReturnType<typeof portOn>) => port.ensure({ url: HTTPS, identity, key, bound: true }),
+    (port: ReturnType<typeof portOn>) => port.ensure({ url: HTTPS, identity, key, bound: false }),
+  ]) {
+    const api = standing({
+      metadata: { name: key, annotations: other },
+      spec: { url: "https://github.com/victim-org/app", secretRef: { name: "victims" } },
+    });
+    const port = portOn(api, {
+      credentials: [{ match: "*", token: "GH_TOKEN" }],
+      cloneSecrets: written("*"),
+      now: () => NOW,
+    });
+    await assert.rejects(
+      call(port),
+      (err: Error) =>
+        err.message.includes('"github.com/victim-org/app" (url https://github.com/victim-org/app)') &&
+        err.message.includes(`"${identity}" (url ${HTTPS})`) &&
+        err.message.includes("ADR-0051"),
+    );
+    assert.deepEqual(patches(api), [], "nothing is written on another identity's resource");
+    assert.equal(api.object("repos", key).spec.secretRef.name, "victims");
+  }
+  // A resource that states no identity is refused as well.
+  const api = standing({ metadata: { name: key }, spec: { url: HTTPS } });
+  await assert.rejects(
+    portOn(api, { credentials: [], now: () => NOW }).ensure({ url: HTTPS, identity, key, bound: true }),
+    /no stated identity/,
+  );
 });
 
 test("a create failure that is not AlreadyExists propagates — the caller announces it", async () => {

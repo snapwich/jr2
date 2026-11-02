@@ -155,7 +155,7 @@ test("a push: the start names the Workspace's repositories and Binding; the pinn
     worktree: "app/jr2-run-1",
     cache: req.push.repo.cache,
   });
-  assert.match(req.push.repo.cache, /^app-[0-9a-f]{8}$/);
+  assert.match(req.push.repo.cache, /^app-[0-9a-f]{32}$/);
   assert.equal(req.push.url, "https://github.com/ourorg/app.git");
   assert.equal(req.push.branch, "jr2/run-1");
   assert.equal(req.push.sign, true);

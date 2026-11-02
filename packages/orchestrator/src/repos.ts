@@ -192,10 +192,28 @@ export function kubeRepos(opts: KubeReposOptions): RepoResources {
     return item;
   };
 
+  /** The resource that stands under `repo.key`, when it is `repo`'s identity; else a throw that names
+   * both urls (ADR-0051). The key is collision-resistant, so another identity under one key is a
+   * defect or an attack, and no statement of this port writes a resource of another identity: not
+   * its url, not its `secretRef`, not its clock. */
+  const sameIdentity = async (repo: { url: string; identity: string; key: string }): Promise<RepoItem> => {
+    const item = await get(repo.key);
+    const stands = item.metadata?.annotations?.[ANNOTATION_REPO_IDENTITY];
+    if (stands !== repo.identity) {
+      throw new Error(
+        `Repo "${repo.key}" stands for ${stands === undefined ? "no stated identity" : `"${stands}"`} ` +
+          `(url ${item.spec?.url ?? "unknown"}), not for "${repo.identity}" (url ${repo.url}): one key, two ` +
+          "repositories, so jr2 changes nothing on it (ADR-0051). Delete that Repo if it is stale.",
+      );
+    }
+    return item;
+  };
+
   return {
     async bind(repo) {
       const { secretRef, cr } = await resourceFor({ ...repo, bound: true });
       if (await create(cr)) return;
+      await sameIdentity(repo);
       // Already there from an earlier deploy: ONE merge patch says what the Machine resolves now —
       // url, credential, and the label `jr2 gc` honors. `secretRef: null` clears a credential the
       // config no longer names, so a dropped entry does not linger. The clock is not touched: it
@@ -216,12 +234,12 @@ export function kubeRepos(opts: KubeReposOptions): RepoResources {
       // Already there — the boot's statement, or an earlier run's. The eviction clock moves: the
       // run attached it now. The url stays as stated, whatever spelling this run brought.
       const clock = { metadata: { annotations: { [ANNOTATION_REPO_LAST_ATTACHED]: attached } } };
+      const standing = await sameIdentity(repo);
       // A Machine's slot binds it: the boot is its writer, and restates the credential at the next
-      // deploy. Read nothing.
+      // deploy.
       if (repo.bound) return patch(repo.key, clock);
       // This run's slot is per-run, but another registered Machine may bind the identity — the
       // label says so, and then the boot is still the writer.
-      const standing = await get(repo.key);
       if (standing.metadata?.labels?.[LABEL_REPO_BOUND] === "true") return patch(repo.key, clock);
       // Nothing binds it: no boot ever restates it, so this attach does — the credential resolved
       // against the url that STANDS, since the scheme picks the Secret's kind (config.ts) and the
