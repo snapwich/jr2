@@ -259,12 +259,14 @@ test("the calls of a kept conversation: timestamped lines, read after the trial'
   assert.equal(told(calledIn(kept, "t0-aaaaaa")!), "bash (restated) ask_approval (prompt) submit");
 });
 
-test("a kept conversation is read from the trial's own prompt when it carries the marker, else from its first", () => {
+test("a kept conversation is read from the trial's own prompt, and from the first only when no marker is asked", () => {
   const kept = ["[advisor] [hold] {}", "[advisor] [prompt] [t1-bbbbbb] The next trial.", "[advisor] [release] {}"].join(
     "\n",
   );
   assert.deepEqual(calledIn(kept, "t1-bbbbbb"), [{ call: "release" }]);
-  assert.deepEqual(calledIn("[coder] [prompt] go\n[coder] [bash] ls", "t9-none"), [{ call: "bash" }]);
+  // The trial's prompt is not in the log: its calls cannot be told from another prompt's.
+  assert.equal(calledIn("[coder] [prompt] go\n[coder] [bash] ls", "t9-none"), undefined);
+  assert.deepEqual(calledIn("[coder] [prompt] go\n[coder] [bash] ls", undefined), [{ call: "bash" }]);
   assert.equal(calledIn("no conversation printed", "t9-none"), undefined);
 });
 
@@ -278,7 +280,7 @@ test("a kept conversation that opens with an earlier trial's late lines is read 
     "[advisor] [release] {}",
   ].join("\n");
   assert.deepEqual(calledIn(kept, "t1-bbbbbb"), [{ call: "release" }]);
-  assert.deepEqual(calledIn(kept, "t9-none"), [{ call: "hold" }], "no own prompt: read from the first");
+  assert.equal(calledIn(kept, "t9-none"), undefined, "no own prompt: no reading");
 });
 
 test("a kept conversation's calls are its Agents' own: the run narrative echo and another Harness's markers are not calls", () => {
@@ -366,6 +368,12 @@ test("an answer pairs with the oldest unanswered call of its pick; a call still 
     { call: "run_tests", input: "{}" },
   ]);
   assert.equal(answersIn("no conversation printed", "t9-none"), undefined);
+  // A log that lost the trial's own prompt: the calls after another prompt are not the trial's, so
+  // there is no reading, not an empty one (an empty one is a miss for a claim that counts calls).
+  const lost = ["[planner] [prompt] <jr2-turn>", "[planner] [run_chart] {}", "[planner] [run_chart answer] {}"].join(
+    "\n",
+  );
+  assert.equal(answersIn(lost, "t9-none"), undefined);
 });
 
 test("a call a Harness restart cut gets jr2's text, printed by the next container before its prompt", () => {

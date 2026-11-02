@@ -49,15 +49,20 @@ const UNAVAILABLE = /^<unavailable: (.*)>\n?$/s;
 /**
  * The note's head (ADR-0066): what the model called, read off the kept conversation, as the
  * Menu-only notes print it — `said bash (restated) submit`. A conversation that cannot be read says
- * so, and why: `said <unread: why>`. `why` is the reason when nothing was kept.
+ * so, and why: `said <unread: why>`. `why` is the reason when nothing was kept. A trial whose own
+ * prompt (the one that carries `marker`) is not in the kept conversation is read from the first
+ * prompt, and the note says so: the prompt of a Sandbox claim can carry no marker, and the follow
+ * can lose a prompt that does.
  */
 export function saidNote(kept: string, marker: string, why: string): string {
   const gone = UNAVAILABLE.exec(kept);
   if (gone) return `said <unread: ${gone[1]}>`;
   if (kept.trim() === "") return `said <unread: ${why}>`;
   const said = calledIn(kept, marker);
-  if (said === undefined) return "said <unread: no prompt printed in the kept conversation>";
-  return `said ${told(said) || "nothing"}`;
+  if (said !== undefined) return `said ${told(said) || "nothing"}`;
+  const first = calledIn(kept, undefined);
+  if (first === undefined) return "said <unread: no prompt printed in the kept conversation>";
+  return `said <no prompt carries ${marker}; from the first> ${told(first) || "nothing"}`;
 }
 
 /**

@@ -49,11 +49,12 @@ export function saidAfterPrompt(log: string, agent: string, opening: string): Sa
  * lines of an Agent whose prompt printed there are read: a Harness also prints the run narrative
  * echo (ADR-0023), `[run] [status] ...` and `[run] [emit] ...`, and the admission and pick of an
  * Agent whose Turn ran on another Harness, and the model called none of them. It is read after the
- * trial's own prompt (the one that carries `marker`) when that printed, else after the first
- * prompt, and stops where `saidIn` does: at another trial's Frame. `undefined` when no prompt
- * printed.
+ * trial's own prompt (the one that carries `marker`), and stops where `saidIn` does: at another
+ * trial's Frame. `undefined` when the trial's own prompt is not in the kept log: the follow can
+ * lose it, and the lines after another prompt are not this trial's. With `marker` `undefined`, it
+ * is read after the first prompt: for a trial whose prompt carries no marker.
  */
-export function calledIn(kept: string, marker: string): Said[] | undefined {
+export function calledIn(kept: string, marker: string | undefined): Said[] | undefined {
   const trial = trialOf(kept, marker);
   return trial && saidFrom(trial.lines, trial.at, trial.agent);
 }
@@ -76,7 +77,9 @@ export type Answered = { call: string; input: string; answer?: string; error?: t
  * answered by the next container, before its first prompt, and a call an abort cut while the model
  * was still writing it before the conversation's next prompt. A body's later lines (they carry no
  * label) belong to it. The same lines as `calledIn`: the Agents whose prompt printed, from the
- * trial's own prompt to another trial's Frame. `undefined` when no prompt printed.
+ * trial's own prompt to another trial's Frame. `undefined` when the trial's own prompt is not in
+ * the kept log: then no call can be placed after it, and a claim that reads the answers has nothing
+ * to measure (its trial is void, never a miss).
  */
 export function answersIn(kept: string, marker: string): Answered[] | undefined {
   const trial = trialOf(kept, marker);
@@ -128,15 +131,17 @@ export function answersIn(kept: string, marker: string): Answered[] | undefined 
 }
 
 /** A kept conversation's (untimed) lines, where its trial starts, and its Agents as a regular
- * expression source — the reading `calledIn` and `answersIn` share. */
-function trialOf(kept: string, marker: string): { lines: string[]; at: number; agent: string } | undefined {
+ * expression source — the reading `calledIn` and `answersIn` share. The trial starts at its own
+ * prompt, the one that carries `marker`, and never at another: `undefined` when that prompt is not
+ * in the lines. With `marker` `undefined`, at the first prompt. */
+function trialOf(kept: string, marker: string | undefined): { lines: string[]; at: number; agent: string } | undefined {
   const lines = kept.split("\n").map((l) => withoutIid(untimed(l)));
   const agents = promptedAgents(lines);
   if (agents.length === 0) return undefined;
   const agent = `(?:${agents.map(escaped).join("|")})`;
   const prompt = new RegExp(`^\\[${agent}\\] \\[prompt\\] `);
-  const own = lines.findIndex((l) => prompt.test(l) && l.includes(`[${marker}]`));
-  return { lines, at: own !== -1 ? own : lines.findIndex((l) => prompt.test(l)), agent };
+  const at = lines.findIndex((l) => prompt.test(l) && (marker === undefined || l.includes(`[${marker}]`)));
+  return at === -1 ? undefined : { lines, at, agent };
 }
 
 /** The Agents whose prompt printed in a conversation's (untimed) lines, in order, each once. */
