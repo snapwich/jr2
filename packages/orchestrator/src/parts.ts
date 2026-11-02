@@ -58,6 +58,7 @@ import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import { refuseUnroutedOutcome } from "./effect-checks.ts";
 import { refuseUnroutedAgentFault } from "./mechanism-routes.ts";
+import { refuseSlotActiveTwice } from "./party.ts";
 import { refuseLostOutput } from "./run-output.ts";
 import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 
@@ -811,6 +812,8 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     refuseLostOutput(machine);
     refuseUnroutedAgentFault(machine);
     refuseUnroutedOutcome(machine);
+    // Here too, for a Machine built with xstate's own setup: the Turns' identity is the runtime's.
+    refuseSlotActiveTwice(machine);
     const parts = sandboxPartsOf(machine);
     const user = userSeatOf(parts.user);
     collectImage(parts.image);

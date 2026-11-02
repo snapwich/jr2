@@ -53,7 +53,7 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   is written below (on a state's entry or exit, or on a transition of a state, at or below that Agent's state). On a
   transition below no Agent's state it shapes the pick of the Agent whose event took the transition — the sender of a
   pick, or the Agent whose pick started the child whose done or error event it is — and the other Agent's pick keeps its
-  default answer; when one Agent slot is invoked in two regions, it shapes the pick at the same invoke as the pick that
+  default answer; when one Agent slot is invoked by two states, it shapes the pick at the same invoke as the pick that
   sent the event or started the child, and none when that pick is not being answered; an event that names no Agent
   shapes the pick in its own send, and outside one shapes no pick while two Agents' states are active; on an entry or an
   exit below no Agent's state it sets nothing. One action object written in several places runs from each by that

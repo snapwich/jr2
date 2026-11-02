@@ -143,8 +143,14 @@ sends there, and every case with the Agent's state at Rest.
 **Load checks on modes and audience.** `createMachine` refuses a registered event that no state handles: it is in no
 derived set, so it is on no Menu and no Gate. It refuses a parallel region below a state that invokes an Agent — the
 Agent's state itself being parallel included, since its regions are below it: the shape is reserved for picks the Agent
-does not wait for, which jr2 does not build, and background work goes above the Agent's state. It warns — the Machine
-stays legal; the doc carries the warning, `jr2 up` prints it and the Console shows it with the seats — about a mode that
+does not wait for, which jr2 does not build, and background work goes above the Agent's state. It refuses one Agent slot
+invoked by two states that can be active together — two parallel regions, one state inside the other, or one state
+twice: a slot is one Agent of the Machine, so its two Turns would have one sender, which `sentBy` cannot tell apart, and
+one conversation, which `continue` cannot give to both. Two Agents at once are two slots (one definition can fill both),
+a child Machine in each region, or a Pool ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)).
+jr2 refuses this shape and does not support it as a special case, because jr2 can remove a refusal later without
+breaking a Machine, but a refusal that it adds later breaks each Machine that loads now. It warns — the Machine stays
+legal; the doc carries the warning, `jr2 up` prints it and the Console shows it with the seats — about a mode that
 nothing enters (not initial, and no state the Machine can enter has a transition into it or a state inside it — so
 neither the mode's own `initial` nor its transition into itself counts: its picks are on the Menu and never allowed; a
 transition into a history state enters that history state's default target, shallow or deep, or its parent's initial

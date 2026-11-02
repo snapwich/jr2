@@ -404,7 +404,7 @@ type Sending = {
 
 /**
  * Whose pick started a child (ADR-0067): the Agent's slot, and the invoke id of the Agent's state the
- * pick was made at, which tells one slot's two regions apart. `invoke` is absent when the event that
+ * pick was made at, which tells apart two states that invoke one slot, one after the other. `invoke` is absent when the event that
  * started the child named the Agent and not where (a pick taken outside its own send).
  */
 type StartedBy = { agent: string; invoke?: string };
@@ -2102,8 +2102,8 @@ export class RunHost {
    * its own send, else the one outstanding. On a transition below no Agent's state (`null`): the
    * event that took the transition names the Agent — the sender of a pick, or the Agent whose pick
    * started the child whose done or error event it is — and that Agent's pick is the one shaped, and
-   * no other; none when that Agent has no pick being answered. When one slot is invoked in two
-   * regions, the event names an invoke too, and only the pick at that invoke is shaped: the sending
+   * no other; none when that Agent has no pick being answered. When one slot is invoked by two
+   * states, the event names an invoke too, and only the pick at that invoke is shaped: the sending
    * pick, or the pick at the invoke whose pick started the child; none when that pick is not being
    * answered (its Turn ended, and its child runs on). An event that names no Agent (a timer,
    * a Gate's answer, an outside send) shapes the pick in its own send. Outside one, it shapes the one
@@ -2135,7 +2135,7 @@ export class RunHost {
         const { agent } = named;
         const own = sending && sending.reg.sender?.id === agent ? sending : undefined;
         // That Agent's picks being answered: the one in its own send, and the ones outstanding at
-        // its other invokes (one slot invoked in two regions). The event names the invoke of the
+        // its other invokes (one slot invoked by two states). The event names the invoke of the
         // pick that sent it or started its child, and only the pick at that invoke is shaped; none
         // when that pick is not being answered, and each other pick keeps its default answer.
         const held = open.filter((hold) => hold.agent === agent && hold.instanceId !== own?.reg.id);

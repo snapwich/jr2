@@ -53,7 +53,7 @@ import { effectChecks, refuseUnroutedOutcome } from "./effect-checks.ts";
 import { gate } from "./gate.ts";
 import { attachLent, isOpenBody, openBodyDeclarationOf, type LentParts } from "./open-body.ts";
 import { refuseInlineParts } from "./parts.ts";
-import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
+import { partyWarnings, refuseSlotActiveTwice, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { refuseLostOutput } from "./run-output.ts";
 import { refuseUnroutedAgentFault } from "./mechanism-routes.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
@@ -486,6 +486,8 @@ export function jr2Setup<
     // state and show no fault. A compiled Chart comes here too, so the door refuses it.
     refuseUnroutedOutcome(machine);
     refuseParallelBelowAgents(machine, def.actors ?? {});
+    // One slot, two Turns at once (ADR-0015): one sender and one conversation cannot hold both.
+    refuseSlotActiveTwice(machine);
     refuseUnknownSentBy(machine);
     // Before the Effect checks: they ask who may send a writing (`mayTake`), which reads its audience.
     attachVocabulary(machine, defs);

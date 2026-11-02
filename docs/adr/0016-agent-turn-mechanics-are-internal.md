@@ -108,12 +108,14 @@ modes — `continue` governs only what a _new invocation_ means. The author name
 conversation's identity is already on the page. (This corrects the jr-parity exercise's "same iid = jr's resume
 machinery, free" — an inversion of jr's actual semantics.)
 
-Two live invocations of one continued iid — parallel states — are refused at the registration table: one live surface
-per address. A Submission that arrives behind a live one on the Harness queues: prompts for one instance enter one
-per-instance queue in admission order, and a Submission is promoted only when it is the first unsettled one for its
-conversation (ADR-0027 states this as jr2's own semantics). A queued prompt waits behind work that may never finish,
-which is why [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md) both ends the turn and orders the
-abort ahead of the next `send`.
+Two live invocations of one continued iid are refused: one live surface per address. The load walk refuses the shape
+that makes them, one Agent slot in two states that can be active together
+([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)), and the registration table refuses a second registration
+of one address as a second guard. A Submission that arrives behind a live one on the Harness queues: prompts for one
+instance enter one per-instance queue in admission order, and a Submission is promoted only when it is the first
+unsettled one for its conversation (ADR-0027 states this as jr2's own semantics). A queued prompt waits behind work that
+may never finish, which is why [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md) both ends the
+turn and orders the abort ahead of the next `send`.
 
 The minting doctrine — addresses are computed by jr2, never by the workflow — covers gate ids too: a gate with no
 authored id derives one from its actor path below the run root, through the same walk `mintIid` uses (`actorPath` in

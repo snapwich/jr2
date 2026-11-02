@@ -1720,6 +1720,7 @@ class Door {
   private checkParties(): void {
     const agents = new Set<string>();
     const gates = new Set<string>();
+    const slotStates = new Map<string, Node[]>();
     for (const node of this.nodes) {
       const invokes = listAt(node.state.invoke, `${node.doc}.invoke`);
       // A Gate's invoke id, as jr2Setup names an unnamed one: the state's key path.
@@ -1734,6 +1735,7 @@ class Door {
         if (kind === "gate") gates.add(inv.id ?? (unnamed > 1 ? `${key}.${ordinal++}` : key));
         if (kind !== "agent" && kind !== "minted") continue;
         agents.add(inv.src);
+        slotStates.set(inv.src, [...(slotStates.get(inv.src) ?? []), node]);
         if (inv.onDone !== undefined) {
           this.fail(
             6,
@@ -1754,6 +1756,25 @@ class Door {
           );
         }
       }
+    }
+    // One Agent, two Turns at once: one sender and one conversation cannot hold both.
+    // One line for each Agent: every state of it that can be active with another of them.
+    for (const [slot, states] of slotStates) {
+      const clash = new Set<Node>();
+      for (let i = 0; i < states.length; i++) {
+        for (let j = i + 1; j < states.length; j++) {
+          const [a, b] = [states[i]!, states[j]!];
+          const together =
+            a === b || isAncestorOrSelf(a, b) || isAncestorOrSelf(b, a) || nearestCommon(a, b)?.kind === "parallel";
+          if (together) clash.add(a).add(b);
+        }
+      }
+      if (clash.size === 0) continue;
+      const docs = [...clash].map((n) => n.doc).join(", ");
+      this.fail(
+        6,
+        `${docs}: Agent "${slot}" would run two Turns at once: these states invoke it and can be active together (in parallel regions, one inside the other, or one state twice); an Agent runs one Turn at a time: invoke another Agent in one of them`,
+      );
     }
     for (const { id, path } of this.sentBys) {
       if (id.includes("{{")) {
@@ -2302,6 +2323,12 @@ type RefCheck = { fault: string; optional?: true } | undefined;
 function wholeRefOf(v: unknown): string | undefined {
   if (typeof v === "string") return WHOLE_PLACEHOLDER.exec(v)?.[1]!.trim();
   return isRef(v) ? (v as { $ref: string }).$ref : undefined;
+}
+
+/** The nearest state at or above both `a` and `b`. */
+function nearestCommon(a: Node, b: Node): Node | undefined {
+  for (let n: Node | undefined = a; n; n = n.parent) if (isAncestorOrSelf(n, b)) return n;
+  return undefined;
 }
 
 /** Is `a` the state `b` or a state above it? */

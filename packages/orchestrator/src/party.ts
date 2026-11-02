@@ -422,6 +422,39 @@ function orthogonal(a: Node, b: Node): boolean {
 /** Can the two states be active at the same time? */
 const together = (a: Node, b: Node): boolean => isAncestorOrSelf(a, b) || isAncestorOrSelf(b, a) || orthogonal(a, b);
 
+/**
+ * Refuse one Agent slot invoked by two states that can be active together (ADR-0015): in two
+ * parallel regions, one state inside the other, or twice by one state. A slot is one Agent of this
+ * Machine: its Turns share one sender, so `sentBy` cannot tell them apart and one pick matches both
+ * writings, and they share one conversation, so `continue` cannot hold two. Two Agents at once are
+ * two slots (one definition can fill both), a child Machine in each region, or a Pool (ADR-0075).
+ */
+export function refuseSlotActiveTwice(machine: AnyStateMachine): void {
+  const bySlot = new Map<string, Node[]>();
+  for (const node of allNodes(machine))
+    for (const p of partiesAt(node, machine))
+      if (p.party === "agent") bySlot.set(p.id, [...(bySlot.get(p.id) ?? []), node]);
+  for (const [slot, nodes] of bySlot) {
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const [a, b] = [nodes[i]!, nodes[j]!];
+        if (!together(a, b)) continue;
+        const how =
+          a === b
+            ? `state "${a.id}" invokes it twice`
+            : `"${a.id}" and "${b.id}" invoke it and can be active together ` +
+              (orthogonal(a, b) ? "(parallel regions)" : "(one inside the other)");
+        throw new Error(
+          `machine "${machine.id}": Agent "${slot}" would run two Turns at once: ${how}. A slot is one Agent, with ` +
+            "one sender and one conversation, so `sentBy` cannot tell its two Turns apart and `continue` cannot " +
+            "hold both. For two Agents at once, use two slots (one definition can fill both), a child Machine in " +
+            "each region, or a Pool (ADR-0075)",
+        );
+      }
+    }
+  }
+}
+
 /** One writing: one `on` key on one state, with its candidates (an array writing has several). */
 type Writing = { node: Node; name: string; candidates: Transition[] };
 

@@ -608,6 +608,45 @@ test("6. a parallel state at or below an Agent's state is refused, with its path
   );
 });
 
+test("6. one Agent invoked by two states that can be active together is refused, with both paths (ADR-0015)", () => {
+  const turn = (target: string) => ({ invoke: { src: "coder", input: { prompt: "go" } }, on: { done: target } });
+  // Two parallel regions.
+  refusedOnce(
+    {
+      events: DONE,
+      id: "c",
+      initial: "p",
+      states: {
+        p: {
+          type: "parallel",
+          states: {
+            l: { initial: "t", states: { t: turn("#c.p.l.d"), d: { type: "final" } } },
+            r: { initial: "t", states: { t: turn("#c.p.r.d"), d: { type: "final" } } },
+          },
+        },
+      },
+    },
+    /^states\.p\.states\.l\.states\.t, states\.p\.states\.r\.states\.t: Agent "coder" would run two Turns at once: these states invoke it and can be active together .*: invoke another Agent in one of them$/,
+  );
+  // One inside the other.
+  refusedOnce(
+    {
+      events: DONE,
+      id: "c",
+      initial: "a",
+      states: { a: { ...turn("#c.b"), initial: "i", states: { i: turn("#c.b") } }, b: { type: "final" } },
+    },
+    /^states\.a, states\.a\.states\.i: Agent "coder" would run two Turns at once/,
+  );
+  // One after the other is one Agent's two Turns.
+  admits({
+    events: DONE,
+    id: "c",
+    initial: "a",
+    states: { a: turn("#c.b"), b: { ...turn("#c.d") }, d: { type: "final" } },
+  });
+});
+
 test("6. jr2Setup's load warnings are refusals for a Chart: an unentered mode", () => {
   refusedOnce(
     {

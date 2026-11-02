@@ -180,6 +180,9 @@ transition refuse other senders. It never gives an event to a party. The positio
   body that has one.
 - `createMachine` refuses an `on` key that no listed event has, and a listed event that no state takes.
 - `createMachine` refuses a parallel state at or below a state that invokes an Agent.
+- `createMachine` refuses one Agent slot in two states that can be active together: two parallel regions, one state
+  inside the other, or one state that invokes the slot twice. The two Turns would have one sender and one conversation.
+  For two Agents at once, use two slots (one definition can fill both), a child Machine in each region, or a Pool.
 - `createMachine` refuses a `sentBy` that names no Agent slot and no Gate invoke id of the Machine.
 - `jr2 up` warns about a mode that no transition enters. Its picks are on the Menu, but never in the Allowed picks.
 - `jr2 up` warns about a Gate below an Agent's state whose event has no target. The Gate stays open after that event, so
