@@ -82,20 +82,21 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   ([ADR-0071](0071-a-run-starts-a-run-through-a-dispatch-effect.md)). There is no `placement:` key and no kind per
   placement: naming a secret places a command, the body places an `http`, and the target places a `dispatch` — one name
   per thing, so there is no `upload` kind beside it (ADR-0068).
-- **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a child of the
-  Harness process: the Agent's user, the Sandbox Image's tools, the same Stand-ins as the Agent's `bash` (ADR-0059), and
-  no credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route
-  (ADR-0058); the Instance Harness holds no Workspace and refuses it (ADR-0031). Outside a `workspace()` a command is
-  refused at invoke. Its cwd is the Worktree its input names (`worktree`), which is required under Repo Slots, because a
-  Workspace that only clones has no Worktree for a default to name (ADR-0075). In a Workspace with no Repo Slot its cwd
-  is `/work`, which the Workspace's steps share — named in the start, never left to the Harness, whose own cwd is the
+- **A `command` that names no secret runs in the Harness container of its Workspace's Sandbox**, as a confined child of
+  the Harness process ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)): the
+  Agent's user, the Sandbox Image's tools, the same confined env and Stand-ins as the Agent's `bash` (ADR-0059), and no
+  credential of its own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route (ADR-0058);
+  the Instance Harness holds no Workspace and refuses it (ADR-0031). Outside a `workspace()` a command is refused at
+  invoke. Its cwd is the Worktree its input names (`worktree`), which is required under Repo Slots, because a Workspace
+  that only clones has no Worktree for a default to name (ADR-0075). In a Workspace with no Repo Slot its cwd is
+  `/work`, which the Workspace's steps share — named in the start, never left to the Harness, whose own cwd is the
   Sandbox Image's `WORKDIR`.
 - **`worktree()` runs on the `command` machinery.** `actors: { cut: worktree({ expect? }) }`, with the input
-  `{ path, branch, from? }` or `{ path, detach }`: a kit program in the Harness container, no new wire kind, marked
-  idempotent. Its outcomes are `ready | refused | unknown`, and its output is the contract in ADR-0075. Each thing that
-  an Agent's word can cause settles `refused`, with nothing changed, and never goes to `onError`. A settled `ready` row
-  in the ledger holds the cut's Repo Slot, path and branch, and it is the one thing a `push`, a credentialed `command`
-  and an `http` file body read for their target.
+  `{ path, branch, from? }` or `{ path, detach }`: a kit program in the Harness container, its git confined (ADR-0076),
+  no new wire kind, marked idempotent. Its outcomes are `ready | refused | unknown`, and its output is the contract in
+  ADR-0075. Each thing that an Agent's word can cause settles `refused`, with nothing changed, and never goes to
+  `onError`. A settled `ready` row in the ledger holds the cut's Repo Slot, path and branch, and it is the one thing a
+  `push`, a credentialed `command` and an `http` file body read for their target.
 - **Every outcome is output**: `exited | timeout | killed | unknown` for a `command` (`killed` with the signal that
   ended it; a stopped credentialed command's is `exited` with the stop's signal, D1);
   `response | unreachable | refused | unknown` for an `http` Effect; `pushed | rejected | diverged | unknown` for a
@@ -262,43 +263,44 @@ Orchestrator's own process, the one Effect that does: it starts the run through 
   copies, or one squashed commit, signed or not; the decision keys on `published` ≠ `source`, never on `sign` — in the
   Harness container (`POST /sync`, behind the Harness bearer, ADR-0058), from the bundle the Effector wrote, which the
   Orchestrator relays — never a shared volume: the Worktree stays read-only on the credentialed side. Under a cleared
-  environment and a config that names no hook, no fsmonitor, no alternate-refs command and no maintenance, the Harness
-  verifies and unbundles the bundle (objects only), checks that the published tip is a commit with the source's tree (it
-  reads no signature), answers `busy` when a rebase of the branch, or a merge, cherry-pick, revert or sequence in a
-  worktree whose HEAD is the branch, is in progress, and otherwise copies each commit the Agent made after the source as
-  its raw object with only its parents changed, then moves the branch with one `git update-ref <new> <old>` — a
-  compare-and-swap, tried again from the new tip at most 3 times — so files, index, HEAD and stash do not change. Its
-  answer is a field of the push's output beside the outcome: `sync: synced | already | skipped | busy | not-synced`,
-  with `syncReason` when it moved nothing (a push that published the Agent's own commit is `skipped`, with no call and
-  no bundle; every other push is synced, one that published nothing new included, so a plain push of the slot after a
-  squash is a fast-forward of the squashed commit). A Harness that cannot be reached answers `not-synced`; the push
-  stays `pushed`. When the last push of a (slot, branch) answered `busy` or `not-synced`, jr2 runs its sync again before
-  the next push of that key, in the Worktree of that push and with its bundle, which its row keeps until a sync finished
-  or a newer push of that key published. The push never trusts the sync's answer: the Agent owns its repository and can
-  move the branch at any time, so the next push derives everything again from the remote and the Agent's objects. After
-  such a push the Agent reads, beside the output, what moved — signed copies of its commits with new ids, or its commits
-  squashed into one commit, named "signed" only when it is — and that jr2 moved its branch to it, or did not and why;
-  that its files, index and stash did not change; and that amending, rebasing or resetting the pushed commits makes the
-  next push `diverged`. The Harness keys that paragraph on a synced push whose published commit is not the Agent's, and
-  its words on `squashed`. A push in which jr2 counted no new commit (`newCommits: 0`) is still `pushed`, because the
-  push ran and the remote's branch may have moved (a new branch at a commit the remote held on another branch). But
-  `pushed` alone does not tell the Agent that its work did not go out: in a real Haiku 5.5 run, the model sent a
-  `git commit` that failed and the push in one answer, the push published the branch at a commit the remote already
-  held, and the model read `pushed` as its work published. So beside the output the Agent reads that jr2 counted no new
-  commit in this push, that it found the published commit already on the remote or in jr2's copy of the remote, and that
-  a change it did not commit before the push is not in this push. The words name where jr2 looked because the count
-  reads the Repo cache, which fetches without pruning: a commit the remote dropped can stay there, and then a count of 0
-  is not a fact about the remote, which is why the first clause names what jr2 counted. No @model claim reaches
-  `newCommits: 0`, so no measurement has read these words. When the signed-copies or squash paragraph above also
-  applies, it names "an earlier push" as the one that signed or squashed, so the two do not contradict. The Harness keys
-  the sentence on `newCommits: 0` alone, and says nothing with no count. The count is optional on the wire: a live
-  Sandbox keeps the runtime it started with (ADR-0037), so after `jr2 up` its older Effector answers `pushed` with no
-  `newCommits`, and a required field would fault a push that reached the remote. The count's input to
-  `git rev-list --stdin` is revisions only (`^<sha>` for each tip the remote held), never `--not`: git takes an option
-  there only from 2.42, and the Sandbox Effector runs its image's git — the Sandbox Image's, unless the `workspace()`
-  names one — which can be older (Debian bookworm's is 2.39). A distinct outcome (`unchanged`, `up-to-date`) was
-  rejected: every consumer of a push keys on `pushed` (the ledger's pairs, the sync, the Machines' guards), and a push
-  that made a new branch did change the remote.
+  environment and a config that names no hook, no fsmonitor, no alternate-refs command and no maintenance — and with its
+  git confined, as every process it starts in `/work` (ADR-0076), because a filter or a textconv in the shared
+  `.git/config` runs in git's process — the Harness verifies and unbundles the bundle (objects only), checks that the
+  published tip is a commit with the source's tree (it reads no signature), answers `busy` when a rebase of the branch,
+  or a merge, cherry-pick, revert or sequence in a worktree whose HEAD is the branch, is in progress, and otherwise
+  copies each commit the Agent made after the source as its raw object with only its parents changed, then moves the
+  branch with one `git update-ref <new> <old>` — a compare-and-swap, tried again from the new tip at most 3 times — so
+  files, index, HEAD and stash do not change. Its answer is a field of the push's output beside the outcome:
+  `sync: synced | already | skipped | busy | not-synced`, with `syncReason` when it moved nothing (a push that published
+  the Agent's own commit is `skipped`, with no call and no bundle; every other push is synced, one that published
+  nothing new included, so a plain push of the slot after a squash is a fast-forward of the squashed commit). A Harness
+  that cannot be reached answers `not-synced`; the push stays `pushed`. When the last push of a (slot, branch) answered
+  `busy` or `not-synced`, jr2 runs its sync again before the next push of that key, in the Worktree of that push and
+  with its bundle, which its row keeps until a sync finished or a newer push of that key published. The push never
+  trusts the sync's answer: the Agent owns its repository and can move the branch at any time, so the next push derives
+  everything again from the remote and the Agent's objects. After such a push the Agent reads, beside the output, what
+  moved — signed copies of its commits with new ids, or its commits squashed into one commit, named "signed" only when
+  it is — and that jr2 moved its branch to it, or did not and why; that its files, index and stash did not change; and
+  that amending, rebasing or resetting the pushed commits makes the next push `diverged`. The Harness keys that
+  paragraph on a synced push whose published commit is not the Agent's, and its words on `squashed`. A push in which jr2
+  counted no new commit (`newCommits: 0`) is still `pushed`, because the push ran and the remote's branch may have moved
+  (a new branch at a commit the remote held on another branch). But `pushed` alone does not tell the Agent that its work
+  did not go out: in a real Haiku 5.5 run, the model sent a `git commit` that failed and the push in one answer, the
+  push published the branch at a commit the remote already held, and the model read `pushed` as its work published. So
+  beside the output the Agent reads that jr2 counted no new commit in this push, that it found the published commit
+  already on the remote or in jr2's copy of the remote, and that a change it did not commit before the push is not in
+  this push. The words name where jr2 looked because the count reads the Repo cache, which fetches without pruning: a
+  commit the remote dropped can stay there, and then a count of 0 is not a fact about the remote, which is why the first
+  clause names what jr2 counted. No @model claim reaches `newCommits: 0`, so no measurement has read these words. When
+  the signed-copies or squash paragraph above also applies, it names "an earlier push" as the one that signed or
+  squashed, so the two do not contradict. The Harness keys the sentence on `newCommits: 0` alone, and says nothing with
+  no count. The count is optional on the wire: a live Sandbox keeps the runtime it started with (ADR-0037), so after
+  `jr2 up` its older Effector answers `pushed` with no `newCommits`, and a required field would fault a push that
+  reached the remote. The count's input to `git rev-list --stdin` is revisions only (`^<sha>` for each tip the remote
+  held), never `--not`: git takes an option there only from 2.42, and the Sandbox Effector runs its image's git — the
+  Sandbox Image's, unless the `workspace()` names one — which can be older (Debian bookworm's is 2.39). A distinct
+  outcome (`unchanged`, `up-to-date`) was rejected: every consumer of a push keys on `pushed` (the ledger's pairs, the
+  sync, the Machines' guards), and a push that made a new branch did change the remote.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing that stays in the group outlives it. In the Harness container a descendant
   that leaves the group (`setsid`) is not killed; it holds no credential. A credentialed command's descendant cannot

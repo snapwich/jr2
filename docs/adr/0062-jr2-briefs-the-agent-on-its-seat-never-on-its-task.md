@@ -34,20 +34,22 @@ whose processes are gone, with no way to know why.
   than the Agent's own pick changes them inside the Turn, the Harness appends the Allowed picks again at the next step
   boundary, in a `<jr2-turn>` block of their own: "The workflow's state changed since you last read the Allowed picks.
   Allowed now: …" ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). It is
-  appended, never a rewrite of the first, so the cache argument above holds for it too. It carries no notice: notices
-  are for the next Turn in their scope. It carries a pick's briefing when the restatement opens that pick.
+  appended, never a rewrite of the first, so the cache argument above holds for it too. It carries a pick's briefing
+  when the restatement opens that pick. The same read at a step boundary returns the conversation's pending notices, and
+  the Harness appends them in the same way (below).
 - **The Turn part comes last, because a model obeys what it read last.** Measured on the home-lab vLLM model: with a
   prompt that argued for a pick the Turn did not allow, the Allowed picks placed ahead of the prompt were obeyed 0/10
   (thinking off) and 5/10 (thinking on); placed after it, 10/10 both. Wording made no difference. The author's task
   still reads first, as it would with no jr2.
 - **Always on.** No author can turn it off: every fact in it passes the rule above, so removing one can only make the
   Agent act worse. An `instructions` that repeats a fact is harmless.
-- **A notice is delivered once in each conversation its scope reaches**, then cleared for that conversation. A Workspace
-  notice reaches every conversation in the Workspace, so each hears it once — not one Turn for the whole Workspace. A
-  conversation takes it at its next Turn, at a step boundary of an open Turn (its surface read appends it, as it appends
-  a changed Allowed-picks list —
-  [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md), ADR-0002), or, for a
-  guard kill the Agent of an open Turn was not told, at that Turn's nudge or wake (below).
+- **A notice is heard once by each member of its audience.** A member takes it at its next admission, or at a step
+  boundary of an open Turn: the surface read of the open Turn returns the conversation's pending notices, and the
+  Harness appends them, as it appends a changed Allowed-picks list
+  ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md), ADR-0002). For a guard
+  kill that the Agent of an open Turn was not told, a member also takes it at that Turn's nudge or wake (below). A
+  conversation is an Instance ID ([ADR-0057](0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md)): a fresh
+  Turn, a runaway reroll and a burned conversation's successor each start a new one.
   - **Conversation scope** ("this conversation is new; earlier context is gone") goes to that Agent's next Turn. So does
     a pick's answer that never reached its call
     ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): the route left the Agent's state, and
@@ -57,21 +59,31 @@ whose processes are gone, with no way to know why.
     and that stopped it" (`stopped`), with an earlier link's reply when one came. No pick-answer notice says the work
     ran to its end. A fresh picking Turn has no such conversation, and its answer is no notice.
   - **Workspace scope** ("the Sandbox's processes were killed at its memory limit during `coder`'s Turn; `/dev/shm` was
-    cleared. Anything that was running in the Sandbox at that time is gone.") goes to every conversation in that
-    Workspace: each takes it once, at its next admission or at a step boundary of an open Turn, so a Pool of coders in
-    one Workspace all hear it, not only the first ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)
-    makes several Agents in one Workspace normal). One kill is one notice in each conversation, however many Turns saw
-    it, and jr2 keeps no "handled" state: a conversation that already acted judges from the Sandbox's own effects
-    whether it must act again. Only a kill read on a stream while its wait is live names the Turn whose Submission ran.
-    Both forms end with the whole Sandbox, because every process in it died, a shared Workspace's too, and in the past
-    tense, because the Agent may hear it after processes started again. A kill read from the pod's list names no Turn
-    and says nothing of when or whose: "the Sandbox's processes were killed at its memory limit (peak X of Y); /dev/shm
-    was cleared. Anything that was running in the Sandbox at that time is gone." The list cannot say whose Turn a kill
-    ended: the kill may land after a state exits, or end an attach, a sync or a command. A kernel kill read from the
-    Sandbox's last end (below) says the same, with the limit and no peak: "the Sandbox's processes were killed at its
-    memory limit of Y; …". A Menu-only Agent outside a Workspace receives conversation notices only.
+    cleared. Anything that was running in the Sandbox at that time is gone.") goes to an **audience** that the ledger
+    fixes when it raises the notice. The rule is: an Agent hears a kill if it was there for it.
+    1. Each conversation admitted in that Workspace before the kill that can still take a Turn: the conversation of an
+       open Turn, which hears it at its next step boundary, or a continued conversation, which hears it at its next
+       Turn. A fresh Turn that already ended is not in the audience.
+    2. When the kill cut a specific Turn — a kill read on that Turn's stream names it — that Agent's next Turn, fresh or
+       continued: the retry of the broken work.
+    3. Minus each conversation whose own `bash` answer returned the kill's verdict (`told`, below). That answer told it
+       already.
+
+    Each member hears the notice once. The notice retires when every member has heard it. A conversation that starts
+    after the kill does not hear it, except the retry of (2). So a Pool of coders in one Workspace
+    ([ADR-0075](0075-a-machine-cuts-a-worktree-and-the-workspace-only-clones.md)) all hear a kill that cut their work.
+    Only a kill read on a stream while its wait is live names the Turn whose Submission ran. Both forms end with the
+    whole Sandbox, because every process in it died, a shared Workspace's too, and in the past tense, because the Agent
+    may hear it after processes started again. A kill read from the pod's list names no Turn and says nothing of when or
+    whose: "the Sandbox's processes were killed at its memory limit (peak X of Y); /dev/shm was cleared. Anything that
+    was running in the Sandbox at that time is gone." The list cannot say whose Turn a kill ended: the kill may land
+    after a state exits, or end an attach, a sync or a command. A kernel kill read from the Sandbox's last end (below)
+    says the same, with the limit and no peak: "the Sandbox's processes were killed at its memory limit of Y; …". A
+    Menu-only Agent outside a Workspace receives conversation notices only.
+
   - A notice never replaces a fault. The Machine still receives `agent.fault` and decides (ADR-0016); the notice makes
     sure the next Agent is not working blind.
+
 - **The Orchestrator is the only keeper of notices**: pending notices are plain data in the run's persisted state
   (ADR-0007). It sees kernel kills and fresh conversations itself. A kernel kill (ADR-0061, layer 5) has two paths,
   under one source, the Workspace and the time the Harness container ended. A Turn that the kill ended faults on it, and
@@ -96,13 +108,15 @@ whose processes are gone, with no way to know why.
     the only limit. A read that never left the Orchestrator, or a draining Harness's 503, is sent again in that time. A
     read that fails or times out is none, and the next admission reads again: the list keeps the kill. The Orchestrator
     logs one line when the reads from a Harness start to fail. It logs no line when a read works again, and it logs the
-    failure again only when a read fails after a read that worked. The Agent's uid can write the file, as it can the
-    conversation records: it can change only what its own Workspace is told. So a `peak` or a `limit` that is not a size
-    in the guard's form, or is long, is left out and logged, on the Harness's read of the file and on the Orchestrator's
-    read of the list and of a stream. The kill is kept, so a real kill is never lost, and its notice says no sizes: "the
-    Sandbox's processes were killed at its memory limit; /dev/shm was cleared. …". Only a kill with no id or no time, or
-    one outside the bounds below, is dropped. A stream event from an older Harness has no id; its source is then its
-    place on the stream, exactly as the Orchestrator raised it before.
+    failure again only when a read fails after a read that worked. The file is beside the Harness's conversations, which
+    no confined child can reach
+    ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). The bounds stay as a
+    second layer: a `peak` or a `limit` that is not a size in the guard's form, or is long, is left out and logged, on
+    the Harness's read of the file and on the Orchestrator's read of the list and of a stream. The kill is kept, so a
+    real kill is never lost, and its notice says no sizes: "the Sandbox's processes were killed at its memory limit;
+    /dev/shm was cleared. …". Only a kill with no id or no time, or one outside the bounds below, is dropped. A stream
+    event from an older Harness has no id; its source is then its place on the stream, exactly as the Orchestrator
+    raised it before.
 
   Both paths raise the notice with the same source, the Workspace and the kill's id. The ledger keeps every source it
   raised (`seen`) in the run's persisted state. So a kill read on both paths, or on two streams, is one notice. Each
@@ -114,62 +128,64 @@ whose processes are gone, with no way to know why.
   restart of the Orchestrator raises no kill twice. A restart of the Harness container keeps the file, which is on the
   pod's emptyDir with its conversations (ADR-0031). A lost pod takes the file with it, but then the Workspace is lost
   (ADR-0021). The list keeps the newest 16 kills, each with at most 32 conversations in `told`, and the Orchestrator
-  reads at most 256 KiB of it. The Agent's uid can write the file, so the two sides hold the same bounds: an `id` and an
-  `at` of at most 64, an `agent` and an `instanceId` of at most 128, and an `at` that parses as a time. A kill outside
-  them is dropped, and a `told` entry outside them is left out. The Harness counts the bytes of the JSON text, and the
-  Orchestrator counts characters, which are never more, so the Harness keeps no kill that the Orchestrator drops. The
-  Harness reads at most the last 256 KiB of the file. With these bounds the largest list is 149,259 bytes. When more
-  come between two admissions, the oldest is lost, and a newer kill tells the same thing. When more than 16 come in one
-  Turn, the Turn's mark leaves the list too, and every kill in the list then counts as after the mark; a nudge or a wake
-  of that Turn may then carry a kill from before it. The Instance Harness keeps no kill, because it holds no Workspace.
+  reads at most 256 KiB of it. The two sides hold the same bounds: an `id` and an `at` of at most 64, an `agent` and an
+  `instanceId` of at most 128, and an `at` that parses as a time. A kill outside them is dropped, and a `told` entry
+  outside them is left out. The Harness counts the bytes of the JSON text, and the Orchestrator counts characters, which
+  are never more, so the Harness keeps no kill that the Orchestrator drops. The Harness reads at most the last 256 KiB
+  of the file. With these bounds the largest list is 149,259 bytes. When more come between two admissions, the oldest is
+  lost, and a newer kill tells the same thing. When more than 16 come in one Turn, the Turn's mark leaves the list too,
+  and every kill in the list then counts as after the mark; a nudge or a wake of that Turn may then carry a kill from
+  before it. The Instance Harness keeps no kill, because it holds no Workspace.
 
   A notice counts as delivered when its admission is ledgered, so a restart before that point delivers it again and a
-  restart after it does not. Delivered is not yet heard: if the Orchestrator ends the Turn before the Harness reads its
-  surface, the Harness never prompts it (ADR-0026), so the Orchestrator raises that admission's notices again. This
-  holds for a nudge and a wake too: each one must have its surface read again before its notices count as heard. An
-  admission that fails leaves the earlier admission's notices heard. A nudge and a wake re-prompt the Turn within
-  itself, so they take no notice of the kind a Turn takes. They take only the guard kills of the list that come after
-  the newest kill whose `told` names their conversation. That `bash` answer told the Agent that all its processes died,
-  so it covers every kill up to it. They also take no kill from before the Turn started. Such a kill would tell the
-  Agent that processes it started in this Turn died. The Turn's first read of the list sets its mark: the id of the
-  newest kill it saw, or "none". The mark is ledgered with every admission of the Turn, and a restore reads it back, so
-  a nudge or a wake takes only kills after it. Only when the first read failed is the Turn's start the mark, ledgered
-  the same way, with one second allowed for a pod clock that runs behind. A read that failed is "could not tell", never
-  an empty list, so it sets no mark. The kills they do not take stay pending for the next Turn. The re-admission after a
-  Harness restart cut the Turn continues the same Turn, so it takes every notice in scope except the guard kills that
-  this rule leaves out. When its read could not tell, it takes no guard kill at all, as a nudge then takes none: it
-  cannot know which kills its own `bash` reported. The notices that the Turn's admissions carried since the Harness last
-  read the Turn's surface are pending again first, each with the source it was raised with, and this re-admission
-  carries them whatever else its scope leaves out. A notice with no source merges only into a pending one with no
-  source, so an equal notice of another kill never takes its place. When such an unread admission carried the Turn's
-  task, the task follows the re-admit text. When the rebuilt Harness lost the conversation, nothing of the Turn is left:
-  every notice that the Turn's admissions carried is pending again whatever the surface reads said, the re-admission
-  takes every notice in scope, as a Turn's admission does, and the Turn's task follows the re-admit text. It says once
-  that the conversation is new. A restore drops the prompt from a Turn's input, so the task rides the ledgered admission
-  too; a lost conversation with no task to send faults the Turn instead. Whether the Harness still holds the
-  conversation is asked again for up to 30 seconds while the new container does not listen yet or drains, and only then
-  is the answer taken as "held". The continue path asks the same way, so a continued Turn after a restart can wait up to
-  30 seconds before its admission. A Harness in CrashLoopBackOff can take longer than that: the answer is then "held",
-  and it can be wrong. So every admission to a conversation that the Harness was taken to keep says so with
-  `kept: true`: the re-admission after a cut, a continued Turn, and a nudge or a wake. A Harness that keeps no such
-  conversation refuses it with 404 and `kept: false` in the body, and seats none. The Orchestrator takes only that 404
-  as the refusal; another 404 is a failed admission. Without the refusal the Harness would seat a new conversation, and
-  a model on an empty context would read "continue your task" with no task. On the refusal the Turn takes the path of a
-  lost conversation. The re-admission is admitted as a Turn, with the task after the re-admit text and the notice that
-  the conversation is new, or faults when it has no task to send. A continued Turn is told that its conversation is new,
-  and is admitted again. A nudge or a wake is admitted again as a Turn: its prompt is the task alone, because nothing
-  was cut, with the notice that the conversation is new and every notice in scope. Every notice that the Turn's
-  admissions carried is pending again first, as for a lost conversation after a cut. With no task to send, the Turn
-  faults. The Instance Harness's restart is on no watch, so this refusal is the only way a nudge or a wake learns of it.
-  What the Turn's admissions carried, and whether the Harness read their surface, is kept in the Orchestrator's memory
-  alone: after a restore of the Orchestrator before a surface read, nothing is raised again. A fresh Turn's "this
-  conversation is new", which rides an admission alone, is carried again by the next re-admission when the Harness has
-  not read the one before.
+  restart after it does not. A notice at a step boundary has no admission. The surface read of the open Turn reserves it
+  for that member, and it counts as delivered, and heard, when the Harness acknowledges the append. When the Turn ends
+  with no acknowledgment, the reservation is released, and the notice is pending again for that member. A reservation
+  lives in the Orchestrator's memory only, so a restart forgets it: the notice is pending again, and the next read or
+  admission carries it. So a conversation can hear a notice twice after a crash, as for an admission. Delivered is not
+  yet heard: if the Orchestrator ends the Turn before the Harness reads its surface, the Harness never prompts it
+  (ADR-0026), so the Orchestrator raises that admission's notices again. This holds for a nudge and a wake too: each one
+  must have its surface read again before its notices count as heard. An admission that fails leaves the earlier
+  admission's notices heard. A nudge and a wake re-prompt the Turn within itself. Of the notices, they take only the
+  guard kills of the list that come after the newest kill whose `told` names their conversation. That `bash` answer told
+  the Agent that all its processes died, so it covers every kill up to it. They also take no kill from before the Turn
+  started. Such a kill would tell the Agent that processes it started in this Turn died. The Turn's first read of the
+  list sets its mark: the id of the newest kill it saw, or "none". The mark is ledgered with every admission of the
+  Turn, and a restore reads it back, so a nudge or a wake takes only kills after it. Only when the first read failed is
+  the Turn's start the mark, ledgered the same way, with one second allowed for a pod clock that runs behind. A read
+  that failed is "could not tell", never an empty list, so it sets no mark. The kills they do not take stay pending for
+  the next Turn. The re-admission after a Harness restart cut the Turn continues the same Turn, so it takes every notice
+  in scope except the guard kills that this rule leaves out. When its read could not tell, it takes no guard kill at
+  all, as a nudge then takes none: it cannot know which kills its own `bash` reported. The notices that the Turn's
+  admissions carried since the Harness last read the Turn's surface are pending again first, each with the source it was
+  raised with, and this re-admission carries them whatever else its scope leaves out. A notice with no source merges
+  only into a pending one with no source, so an equal notice of another kill never takes its place. When such an unread
+  admission carried the Turn's task, the task follows the re-admit text. When the rebuilt Harness lost the conversation,
+  nothing of the Turn is left: every notice that the Turn's admissions carried is pending again whatever the surface
+  reads said, the re-admission takes every notice in scope, as a Turn's admission does, and the Turn's task follows the
+  re-admit text. It says once that the conversation is new. A restore drops the prompt from a Turn's input, so the task
+  rides the ledgered admission too; a lost conversation with no task to send faults the Turn instead. Whether the
+  Harness still holds the conversation is asked again for up to 30 seconds while the new container does not listen yet
+  or drains, and only then is the answer taken as "held". The continue path asks the same way, so a continued Turn after
+  a restart can wait up to 30 seconds before its admission. A Harness in CrashLoopBackOff can take longer than that: the
+  answer is then "held", and it can be wrong. So every admission to a conversation that the Harness was taken to keep
+  says so with `kept: true`: the re-admission after a cut, a continued Turn, and a nudge or a wake. A Harness that keeps
+  no such conversation refuses it with 404 and `kept: false` in the body, and seats none. The Orchestrator takes only
+  that 404 as the refusal; another 404 is a failed admission. Without the refusal the Harness would seat a new
+  conversation, and a model on an empty context would read "continue your task" with no task. On the refusal the Turn
+  takes the path of a lost conversation. The re-admission is admitted as a Turn, with the task after the re-admit text
+  and the notice that the conversation is new, or faults when it has no task to send. A continued Turn is told that its
+  conversation is new, and is admitted again. A nudge or a wake is admitted again as a Turn: its prompt is the task
+  alone, because nothing was cut, with the notice that the conversation is new and every notice in scope. Every notice
+  that the Turn's admissions carried is pending again first, as for a lost conversation after a cut. With no task to
+  send, the Turn faults. The Instance Harness's restart is on no watch, so this refusal is the only way a nudge or a
+  wake learns of it. What the Turn's admissions carried, and whether the Harness read their surface, is kept in the
+  Orchestrator's memory alone: after a restore of the Orchestrator before a surface read, nothing is raised again. A
+  fresh Turn's "this conversation is new", which rides an admission alone, is carried again by the next re-admission
+  when the Harness has not read the one before.
 
-  A continued Turn of the same conversation is told, as a notice, a kill that its own `bash` call answered in an earlier
-  Turn. The Agent reads that kill twice, which is true and costs little. The `told` rule could later extend to the first
-  admission of a continued Turn too; it does not now, because a fresh Turn's conversation holds no earlier answer, and
-  the rule would then need the conversation in the ledger's scope.
+  A conversation whose own `bash` call answered a kill is not in that kill's audience, so it does not hear the kill
+  again as a notice, at its next Turn or at a step boundary.
 
 - **The Harness writes every word.** The admit body carries typed notices
   (`notices: [{ kind: "memory-limit", scope, agent?, limit?, peak? } | { kind: "conversation-new", reason } | { kind: "pick-answer", pick, cut, answer?, stopped? } …]`,
@@ -216,9 +232,8 @@ whose processes are gone, with no way to know why.
 - The Briefing is how a Turn learns its Allowed picks: the tools block is the whole Menu, fixed for a conversation so it
   does not break the cache
   ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)).
-- A Workspace notice now reaches every conversation in the Workspace, and an open Turn hears it at its next step
-  boundary, not only at its next admission (ADR-0002,
-  [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). This is what makes a
-  memory kill reach a Pool of coders that share one Workspace
-  ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)).
+- A Workspace notice reaches each conversation that was there for the kill, and the retry of the Turn that it cut; an
+  open Turn hears it at its next step boundary, not only at its next admission (ADR-0002,
+  [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). So a memory kill reaches
+  every coder of a Pool that shares one Workspace (ADR-0075).
 - GLOSSARY.md gains **Briefing**.

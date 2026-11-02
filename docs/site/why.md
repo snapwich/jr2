@@ -115,8 +115,8 @@ It talks to the model, and it runs the tools of the Agent. The Agent can run eac
 Agent that needs only its Menu has no Sandbox. Its Turns run on the
 [Instance Harness](reference/glossary.md#instance-harness).
 
-The Harness container holds no credential, so a command that an Agent runs cannot read one. jr2 keeps each credential in
-one of the two containers beside it:
+The Harness runs each command of an Agent confined with Landlock, so the command cannot read a credential, and it cannot
+send a pick for a different Agent. jr2 keeps each credential in one of the two containers beside the Harness:
 
 - The [Custodian](reference/glossary.md#custodian) holds each [Held secret](reference/glossary.md#held-secret): a key
   that the Agents can use, but cannot read. The Harness holds only a [Stand-in](reference/glossary.md#stand-in) for it.

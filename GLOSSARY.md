@@ -314,7 +314,8 @@ re-prompt of an open Turn)
 
 **Working tools**:
 The file and shell tools that the Harness runs in its own container: what an Agent may do, as its Menu is what it may
-say. The Agent's access to the Workspace decides which of them it gets, and a Menu-only Agent gets none.
+say. Every program that they run is confined, so it cannot reach what the Harness itself holds. The Agent's access to
+the Workspace decides which of them it gets, and a Menu-only Agent gets none.
 _Avoid_: tools (unqualified), sandbox tools
 
 ### Sandboxes, Harnesses and secrets
@@ -351,14 +352,30 @@ firewall
 
 **Held secret**:
 A credential that the Harness uses through its pod's Custodian but never holds: a model API key above all, and the
-Sandbox token. The Harness holds only its Stand-in, so the Agent cannot take the secret out of the pod, but it can spend
-it through the Custodian while the pod lives.
+Sandbox tokens. The Harness holds only its Stand-in, so no Agent can take the secret out of the pod. Workspace code can
+spend it through the Custodian, while the pod lives, only when its Workspace grants that secret.
 _Avoid_: masked secret, injected secret, proxied key, secret (unqualified)
 
 **Stand-in**:
-The public value that the Harness holds in place of a Held secret. It means something only to the Custodian, and only
-toward a host that the secret is bound to; sent anywhere else, it arrives as it left.
+The value that the Harness holds in place of a Held secret. It means something only to the Custodian, and only toward a
+host or a route that the secret is bound to; sent anywhere else, it arrives as it left. It is secret, and only the
+Harness itself holds it: Workspace code gets a Stand-in only for a secret that its Workspace grants, and never the one
+for the control token. The one public Stand-in is the fetch token's, which can only ask for a fetch.
 _Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
+
+**Sandbox token**:
+A credential that jr2 makes for one Sandbox, which its Custodian alone holds. There are two. The **control token** lets
+the Harness read each Agent's Menu and deliver its picks, for the Agent that the Harness names. The **fetch token** lets
+a process in the pod ask for a fetch of a Repo that the Sandbox holds. Each one is good only for its own work and in its
+own Sandbox, and neither one reaches a Gate.
+_Avoid_: pod token, agent token, slot token, Instance token (the Caller's credential)
+
+**Workspace code**:
+Each process in a Sandbox whose program or input comes from the Workspace's shared files: what an Agent's Working tools
+run, tests and builds, git and what a repository's own config makes it run, and a command that a Machine runs there. Any
+Agent can run what another Agent wrote, so jr2 trusts none of it, and no credential that acts for an Agent is where
+Workspace code runs.
+_Avoid_: agent code (any Agent can run another's), user code, untrusted code (unqualified), tool process
 
 **Check pod**:
 The one-shot pod in which the provider preflight of `jr2 up` checks the models of one class of Harness pod, before the

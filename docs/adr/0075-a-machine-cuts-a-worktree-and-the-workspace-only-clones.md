@@ -284,11 +284,10 @@ publishing: { invoke: { src: "publish", input: ({ context }) => ({ worktree: mer
 - The fetch lock's holder ends as an orphan, so PID 1 must reap it. A User Container whose PID 1 does not reap keeps one
   more zombie for each fetch there: 50 fetches left 50, beside the 52 that git leaves by itself with no jr2 program.
 - A kill in the short `update-ref` step leaves a stale ref lock, and no cut removes it. So that name stays `refused`.
-- Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder). Each agent slot runs in its
-  own Harness container with its own control credential, so no Agent can act as another
-  ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)). Concurrent same-slot Pool workers in one
-  clone share that slot's container and credential — they are one agent fanned out; a Pool that needs
-  mutually-distrusting workers uses a Pool of `workspace()` workers, one Sandbox each.
+- Several Agents now share one Sandbox (concurrent coders, or a reviewer beside a coder), and so do the workers of a
+  Pool in one clone. They share the one Harness and `/work`. Only the Harness process holds the control credential, and
+  each process it starts in `/work` runs confined, so no Agent's code can act as another Agent
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)).
 - This change alters the Frame, the Chart briefing and the door's refusal text. The full `@model` run read 18 of 19
   scenarios. `chart-refusal/off` read 6 of 10, below its floor of 7, and each miss failed at the Menu's validation,
   before the door, on the JSON-string Chart that ADR-0070 records. Run alone, two runs on each side at one time, `main`

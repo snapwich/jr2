@@ -47,8 +47,10 @@ for one Turn, because then the name of the Agent would not tell what it is.
 ## The Working tools
 
 The [Working tools](../reference/glossary.md#working-tools) are the file and shell tools of an Agent: read, write, edit,
-bash, grep and glob. The [Harness](../reference/glossary.md#harness) runs them in its own container. The `workspace`
-field selects them:
+bash, grep and glob. The [Harness](../reference/glossary.md#harness) runs them in its own container. Each program that
+bash, grep or glob starts runs confined with Landlock. It can use the files in `/work`, but it cannot read what the
+Harness holds. Read, write and edit open only paths in `/work`. [Secrets and trust](secrets-and-trust.md) tells why. The
+`workspace` field selects the Working tools:
 
 - `"write"` gives all the Working tools.
 - `"read"` gives no write tool and no edit tool. The Agent keeps bash, so a command can still write a file. A review
@@ -180,9 +182,18 @@ itself. It tells nothing about the task: the prompt tells the task. It has two p
   carries a [Chart](../reference/glossary.md#chart), the Turn part also tells how a Chart runs (see
   [Charts](charts.md)).
 
-A notice tells the next Turn what happened before it. For example: the conversation is new and the earlier context is
-gone, or the processes of the Sandbox stopped at its memory limit. jr2 gives each notice one time, to the next Turn that
-it is for.
+A notice tells a Turn what happened before it. For example: the conversation is new and the earlier context is gone, or
+the processes of the Sandbox stopped at its memory limit. A notice about a conversation goes to the next Turn of that
+conversation. A notice about the Workspace goes to each conversation that was in the Workspace when the processes
+stopped:
+
+- A Turn that is open hears it before its next model request.
+- A continued conversation hears it at its next Turn.
+- The next Turn of the Agent whose Turn the stop cut hears it, also when that Turn is fresh.
+
+A conversation hears each notice one time. A conversation whose own bash call already told it about the stop does not
+hear the notice. A conversation that starts after the stop does not hear it, except the next Turn of the Agent whose
+Turn the stop cut.
 
 You cannot turn the Briefing off. It contains only facts that make the Agent work better. An `instructions` that tells
 the same fact again does no harm.

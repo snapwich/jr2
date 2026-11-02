@@ -99,7 +99,10 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   inside one stays denied. Network is not restricted. Any failure before `execve` ends the confiner with exit 126 and
   its reason on stderr: nothing runs unconfined. The design needs ABI 1; measured from a hardened non-root pod (every
   capability dropped, `RuntimeDefault` seccomp): kind on WSL2 6.6 — ABI 3; the home cluster's arm64 nodes (6.8) — ABI 4;
-  spark (6.11, arm64) — ABI 5.
+  spark (6.11, arm64) — ABI 5. Landlock is a requirement of jr2
+  ([ADR-0077](0077-jr2-requires-landlock-on-every-sandbox-node.md)). The confiner is shared: the Harness runs each
+  process it starts in `/work` through the same program, with its own rules
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)).
 - **One child cannot reach another.** Three rules, in the Effector:
   1. **The subreaper.** The Effector sets `PR_SET_CHILD_SUBREAPER` when it starts, so a descendant whose parent ends is
      reparented to the Effector, never to the container's init. Every child an Effect starts runs in its own session and
@@ -141,16 +144,16 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   3. **A private TMPDIR.** Each credentialed child gets `TMPDIR` set to a directory of its Effect's own scratch, which
      goes when the outcome is read, and `/tmp` is not in the ruleset: a child neither reads nor writes it, so what one
      child writes no other child reads.
-- **Fail-closed at the pod, not at `jr2 up`.** A Sandbox Effector probes Landlock when it starts
-  (`landlock_create_ruleset` with `LANDLOCK_CREATE_RULESET_VERSION`). When its Workspace holds a credentialed command
-  (`effector.json`'s `commands`, which `jr2 up` writes) and the probe fails, it does not become ready: it ends, and its
-  termination message — written to `/dev/termination-log`, the container's `FallbackToLogsOnError` the fallback — says
-  `landlock: unavailable on node <node> (<why>)`, with the node from the downward API (`NODE_NAME`). The operator copies
-  the Effector container's restarts and last end onto the Sandbox's status (`status.effector`), and the provision fails
-  on an Effector that ended before the pod was Ready, in those words, before any Turn. A Workspace that holds no
-  credentialed command starts on such a node and refuses a command start (400, with the same reason). No `jr2 up` probe:
-  one probe Job reports one node, which says nothing in a mixed cluster, and in a uniform one the provision says the
-  same one step later; a Node's `kernelVersion` does not say whether `landlock` is in its LSM list.
+- **Fail-closed at `jr2 up` and at the pod.** Landlock is a requirement of jr2 (ADR-0077): `jr2 up` refuses to converge
+  while a Sandbox node lacks it, as the Repo cache agent on that node reports, and a Sandbox Effector probes it when it
+  starts (`landlock_create_ruleset` with `LANDLOCK_CREATE_RULESET_VERSION`), whatever its Workspace holds. The Instance
+  Effector confines nothing and does not probe. When the probe fails, the Sandbox Effector does not become ready: it
+  ends, and its termination message — written to `/dev/termination-log`, the container's `FallbackToLogsOnError` the
+  fallback — says `landlock: unavailable on node <node> (<why>)`, with the node from the downward API (`NODE_NAME`). The
+  operator copies the Sandbox Effector container's restarts and last end onto the Sandbox's status (`status.effector`),
+  and the provision fails on an Effector that ended before the pod was Ready, in those words, before any Turn. The pod's
+  probe is the backstop for a node that joins after the converge. A Node's `kernelVersion` does not say whether
+  `landlock` is in its LSM list, so only a probe on the node can tell.
 - **The wire.** `POST /effects/<id>` starts an Effect and answers at once (202, `state: running`). A second `POST` with
   the same id starts nothing and attaches (200). The answer to a `push` start names the commit it runs against
   (`pinned`), read before the answer, so the Orchestrator writes it to the ledger's intent row. `GET /effects/<id>`
@@ -416,26 +419,26 @@ only asks. Its Role reads no Secret either: it may create and patch one, never g
   a GPG push signs, so the rule is that the two never overlap; and a second container per credentialed placement — its
   child would still share a uid with that container's Effector and could spend that container's key, so it would need
   Landlock anyway, plus a key, a Secret, a port and a NetworkPolicy per placement.
-- **A node with no Landlock runs no credentialed command.** Its Sandboxes that hold one fail at provision, naming the
-  node; the fix is a kernel with `landlock` in its LSM list. The home cluster's nodes are arm64, so the Effector binary
-  and the Kit images need `linux/arm64` builds there.
+- **A node with no Landlock runs no Sandbox** (ADR-0077). A Sandbox placed there fails at provision, naming the node;
+  the fix is a kernel with `landlock` in its LSM list. The home cluster's nodes are arm64, so the Effector binary and
+  the Kit images need `linux/arm64` builds there.
 - An `unknown` outcome is the Machine's to route. jr2 sends an `http` call again only when the author marked it
   `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
 - The Effector's Go tests run Landlock for real on the host's kernel: a child that reads the key, an unnamed secret or
   `@git`, or writes the Worktree, ends with a permission error and an answer with no secret in it; one that reads its
   named secret from env and from its file succeeds; a child of the child is confined too; a failing probe stops the
-  start of a Workspace that holds a credentialed command, with the node in the reason. And the three rules of "One child
-  cannot reach another" run with real processes: a `setsid` escapee, and an escapee of that escapee, is dead once its
-  command has settled; a live command's daemon, under its keeper, lives through the settle of another Effect beside it;
-  the keeper ends what its child left and answers the child's own end; a command started during a GPG push runs only
-  after the agent is gone, and the reverse, with no sample of that Effector's processes seeing both alive — the
-  command's child matched to its scratch, and the agent known from a witness in place of `gpg-agent` that tells the test
-  before the launcher runs and, after it exits, which processes the agent left, so an agent that lives less than one
-  sample is never missed; a waiter past its timeout settles timed out and never runs late; a child's `TMPDIR` write is
-  invisible to the next child, and `/tmp` refuses both; a signed DELETE ends a credentialed command's group, `exited`
-  with SIGTERM, a program that catches SIGTERM gives its code beside the signal, a child that ignores SIGTERM is killed
-  past the grace (`exited` with SIGKILL), an unsigned DELETE stops nothing, a DELETE on a push or an `http` path answers
-  405, and a command start that arrives after a DELETE of its id runs nothing, while a push or an `http` start does.
+  start of the Effector, with the node in the reason. And the three rules of "One child cannot reach another" run with
+  real processes: a `setsid` escapee, and an escapee of that escapee, is dead once its command has settled; a live
+  command's daemon, under its keeper, lives through the settle of another Effect beside it; the keeper ends what its
+  child left and answers the child's own end; a command started during a GPG push runs only after the agent is gone, and
+  the reverse, with no sample of that Effector's processes seeing both alive — the command's child matched to its
+  scratch, and the agent known from a witness in place of `gpg-agent` that tells the test before the launcher runs and,
+  after it exits, which processes the agent left, so an agent that lives less than one sample is never missed; a waiter
+  past its timeout settles timed out and never runs late; a child's `TMPDIR` write is invisible to the next child, and
+  `/tmp` refuses both; a signed DELETE ends a credentialed command's group, `exited` with SIGTERM, a program that
+  catches SIGTERM gives its code beside the signal, a child that ignores SIGTERM is killed past the grace (`exited` with
+  SIGKILL), an unsigned DELETE stops nothing, a DELETE on a push or an `http` path answers 405, and a command start that
+  arrives after a DELETE of its id runs nothing, while a push or an `http` start does.
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built

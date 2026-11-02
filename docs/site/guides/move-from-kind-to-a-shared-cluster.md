@@ -33,6 +33,12 @@ below explains one field. Set only the fields that your cluster needs.
   API server and in the kubelets.
 - A container runtime that mounts image volumes, such as containerd 2.1 or later, or CRI-O 1.31 or later. `jr2 up` does
   not check the runtime. With an older runtime, the first Sandbox fails, and its pod events give the cause.
+- Landlock in the kernel of each [Sandbox node](../reference/glossary.md#sandbox-node): Linux 5.13 or later, with
+  `landlock` in its list of security modules. The Harness confines each program of an Agent with it. The Repo cache
+  agent on each Sandbox node checks it, and `jr2 up` refuses to converge while a Sandbox node has no Landlock. It names
+  each such node. To keep a node out, use `sandbox.nodeSelector` or a taint (see
+  [Choose the Sandbox nodes](#choose-the-sandbox-nodes)). A node that joins later and has no Landlock gets no working
+  Sandbox: its Harness does not start.
 - Your kubectl user can apply objects outside the namespace of the Instance. `jr2 up` applies the operator in the
   `jr2-system` namespace, with its CustomResourceDefinitions, ClusterRoles and ClusterRoleBindings. It also applies two
   PriorityClasses, unless you name your own.

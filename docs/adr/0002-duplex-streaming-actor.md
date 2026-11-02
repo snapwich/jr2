@@ -16,27 +16,28 @@ action observably occurred only post-approval.
 
 The split-channel model:
 
-| Direction | Kind                                                      | Mechanism                                     |
-| --------- | --------------------------------------------------------- | --------------------------------------------- |
-| up        | control / decision (the workflow's events, ADR-0011)      | Menu tool call → Custodian → delivery         |
-| up        | progress / telemetry (tokens, attempts, "still working")  | Harness stream (lossy, observation-only)      |
-| down      | the next turn's prompt (feedback, steering at a boundary) | a new submission on the same iid              |
-| down      | the Turn part, restated (the Allowed picks changed)       | the Harness's read at each step boundary      |
-| down      | a jr2 notice (a memory kill, ADR-0062), typed, broadcast  | the same step-boundary read, per conversation |
-| down      | interrupts (deliberate terminal cancel)                   | `abort` on the wire                           |
+| Direction | Kind                                                           | Mechanism                                     |
+| --------- | -------------------------------------------------------------- | --------------------------------------------- |
+| up        | control / decision (the workflow's events, ADR-0011)           | Menu tool call → Custodian → delivery         |
+| up        | progress / telemetry (tokens, attempts, "still working")       | Harness stream (lossy, observation-only)      |
+| down      | the next turn's prompt (feedback, steering at a boundary)      | a new submission on the same iid              |
+| down      | the Turn part, restated (the Allowed picks changed)            | the Harness's read at each step boundary      |
+| down      | a jr2 notice (a memory kill, ADR-0062), typed, to its audience | the same step-boundary read, per conversation |
+| down      | interrupts (deliberate terminal cancel)                        | `abort` on the wire                           |
 
 Tool calls are Agent-initiated, so the Machine speaks inside a Turn only as an answer. The one exception is the
 **restated Turn part**: when something other than the Agent's own pick changes its Allowed picks — a Gate's answer, an
 outside event — the Harness learns it by reading the surface at each step boundary and appends the new list
 ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). It is a pull, not a push:
-nothing new reaches the Harness, and what is restated is fixed text plus Menu names. jr2's own **typed notices** now
-ride that same step-boundary read: the Harness takes a pending notice for the conversation and appends it, so a running
-Agent hears a fact the mechanism knows — a memory kill above all — without an interrupt
-([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). The residual case is **free-text human
-steering** — arbitrary text from a human Caller to an Agent that has not asked. jr2 reserves it for v1 on this same
-channel, authenticated as a Caller ([ADR-0011](0011-workflow-defined-events.md)) rather than by a Sandbox-scoped
-credential; its sender and authorization are designed with the Caller. It is one behavior, not a dependency of the whole
-control plane.
+the Harness asks at a step boundary, and nothing reaches it that it did not ask for. What is restated is fixed text plus
+Menu names. jr2's own **typed notices** ride that same step-boundary read: the read of an open Turn returns its
+conversation's pending notices, the Harness appends them, and its acknowledgment of the append delivers them. So a
+running Agent hears a fact the mechanism knows — a memory kill above all — without an interrupt. A notice is typed data,
+and the Harness words it ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). The residual case is
+**free-text human steering** — arbitrary text from a human Caller to an Agent that has not asked. jr2 reserves it for v1
+on this same channel, authenticated as a Caller ([ADR-0011](0011-workflow-defined-events.md)) rather than by a
+Sandbox-scoped credential; its sender and authorization are designed with the Caller. It is one behavior, not a
+dependency of the whole control plane.
 
 ## Durability: the admission is the handle
 

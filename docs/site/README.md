@@ -759,6 +759,7 @@ The user must decide these items. Until then, obey the rule for each item.
 | Fact                | Value                                                                                    |
 | ------------------- | ---------------------------------------------------------------------------------------- |
 | The tools (page 1)  | Node.js 24 or later, Docker, kind and kubectl.                                           |
+| The kernel (page 1) | Linux 5.13 or later with Landlock: the kernel of the computer, or of Docker's VM.        |
 | The jr2 CLI         | `npm i -g @jr2/cli`                                                                      |
 | The kind cluster    | `kind create cluster --name jr2`. Its kubectl context is `kind-jr2`.                     |
 | The package manager | npm.                                                                                     |

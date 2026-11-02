@@ -27,6 +27,11 @@ use. **Which nodes are an Instance's Sandbox nodes, and who follows that set** i
   Sandbox node, so a cache is only ever present where a Sandbox can land, and the affinity it feeds only ever names a
   usable node. The build set (ADR-0045) is the union of the nodes an ordinary pod lands on — the Orchestrator
   Deployment's own placement — and the Sandbox nodes, intersected with the supported set as before.
+- **The cache agent also reports Landlock for its node.** It probes Landlock when it starts, and on a node without it
+  the agent is NotReady, with the reason. `jr2 up` reads the DaemonSet's pods and refuses to converge while a Sandbox
+  node lacks Landlock, naming each one ([ADR-0077](0077-jr2-requires-landlock-on-every-sandbox-node.md)). This is the
+  one refusal on the node set: Landlock is a fact that each Sandbox node must have, not a set that can be empty. The
+  admin keeps a bad node out with `sandbox.nodeSelector` or a taint.
 - **The Sandbox CR carries the placement.** `Sandbox.spec` gains `nodeSelector` and `tolerations` beside `resources`,
   `initContainers`, and `volumes`; the Orchestrator writes them from its baked config at provision and the operator
   copies them onto the pod, merging nothing. The operator stays config-blind (ADR-0001), and every Instance's placement

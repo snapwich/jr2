@@ -6,17 +6,20 @@ A Sandbox pod composes up to four containers around one shared worktree volume (
   [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) with jr2's runtime mounted at
   `/opt/jr2` and the command overridden to start the Harness. The Agent's toolchain lives here because the Working tools
   (read/write/edit/bash) execute here — the tools the Agent can reach are this image's. It is also where a human
-  `kubectl exec`s to inspect a run with the agent's exact tools, worktrees, and filesystem. A Sandbox runs one Harness
-  container for each of its workspace-ful agent slots; they share this image and `/work`, and each holds its own
-  per-slot control credential, so no Agent can act as another
-  ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)).
+  `kubectl exec`s to inspect a run with the agent's exact tools, worktrees, and filesystem. One Harness container serves
+  every workspace-ful Agent of the Sandbox. Each process that the Harness starts in `/work` — a Working tool's shell, a
+  test, git, a `command` Effect — runs as a confined child of the Harness process, so no code from `/work` reaches the
+  control credential that the Harness process holds
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)).
 - **Custodian container** — jr2-composed sidecar, upstream Envoy configured at provision by the Orchestrator
   ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md),
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): the pod's credential holder. It holds
   the Sandbox token and the held secrets its pod names — model API keys above all — as files, and carries the Harness's
   traffic out: its Menu and the ask to the Orchestrator, and its outbound HTTPS. It exists as a separate container
   precisely _because_ the Working tools give the Agent code execution in the Harness container — the credentials live
-  where the Agent cannot read them, and the Harness container's env holds only their Stand-ins.
+  where the Agent cannot read them, and the Harness container holds only their Stand-ins, which are secret: only the
+  Harness process holds them, as files, and a process it confines gets only those that its `workspace()` grants
+  (ADR-0059, ADR-0076).
 - **User Container** — opt-in third seat, composed only when the `workspace()` names its image (a `file:` docker context
   the Machine ships or a registry ref, the same resolution as the Sandbox Image, no default —
   [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)). The authoring surface is that string —
@@ -66,8 +69,8 @@ What each container mounts of the credentials, stated once:
 
 | Container   | Mounts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `harness`   | `jr2-ca` at `/etc/jr2/ca` (the trust bundles). None of the Custodian's volumes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `custodian` | its values (the Sandbox token, its pod's `jr2-held-secrets-<pod>`, each user `secretKeyRef` its pod names) at `/etc/jr2/custodian/values`; its leaves (`jr2-held-tls`); its pod's config (its own `<sandbox>-custodian`, and `program.lua` from `jr2-held`); `upstream.crt`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `harness`   | `jr2-ca` at `/etc/jr2/ca` (the trust bundles); the Stand-ins — the control one and each held secret's — as files under `/run/jr2/` that only the Harness process reads and no process it confines can (ADR-0059, ADR-0076); no Stand-in is in its env. None of the Custodian's volumes.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `custodian` | its values (the Sandbox's control token and fetch token, its pod's `jr2-held-secrets-<pod>`, each user `secretKeyRef` its pod names) at `/etc/jr2/custodian/values`; its leaves (`jr2-held-tls`); its pod's config (its own `<sandbox>-custodian`, and `program.lua` from `jr2-held`); `upstream.crt`.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `user`      | the checkouts' three volumes, and nothing else.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `effector`  | `/work`, `/repos/<key>` and `/opt/jr2` read-only; at `/run/jr2/secrets` (0400) the secrets its Effects name — its pod's `jr2-effector-<pod>` literals, each user `secretKeyRef` by reference — and at `@git/<name>/` each `git.credentials` entry's push Secret the Sandbox CR names (`gitCredentials`), which the operator projects from that entry's Secret by reference into this container alone (`@` is no character of a secret's name, so no secret's file takes that directory); at `/run/jr2/effector` its key (its own `<sandbox>-effector`) and `effector.json`; an emptyDir at `/run/jr2/scratch` as `$HOME`; at `/etc/jr2/effector-ca`, read-only, the instance's caBundle ConfigMap when the instance ships one (ADR-0020). |
 
@@ -127,9 +130,9 @@ session user in the work group itself (`groupadd -g 2000 work && usermod -aG wor
 carries no default ACL, so files there fall back to the writer's umask. The Harness runs at `umask 002` (itself and
 every tool child) and the attach script opens with the same line, so jr2's own writes are group-writable even there;
 what a User Container session writes outside a repo tree is its own business. A Workspace with no Repo Slot (ADR-0051)
-has no repo tree: its steps share `/work` itself, every Agent and `command` of it at the one uid — each Agent in its own
-Harness container ([ADR-0076](0076-each-agent-slot-runs-in-its-own-harness-container.md)) — so they need no ACL; a User
-Container's writes there have this paragraph's limit, until a user of that seat needs more.
+has no repo tree: its steps share `/work` itself, every Agent and `command` of it at the one uid in the one Harness
+container, so they need no ACL; a User Container's writes there have this paragraph's limit, until a user of that seat
+needs more.
 
 ## Constraints on the seat
 
@@ -166,7 +169,10 @@ namespace, node, and the worktree volume, and are one trust domain in every isol
 container edge does provide is **credential visibility** — the asymmetry ADR-0013 builds on: the Agent executes code in
 the Harness container and none in the others, so a secret that exists only in another container's mount namespace is out
 of its reach. That is why the Custodian holds the Orchestrator credential and the model keys, and it is what the User
-Container offers a human session — with its edges stated plainly:
+Container offers a human session. Inside the Harness container, a second edge holds the one credential the Harness keeps
+itself, the control Stand-in: the Harness process is jr2's code, and each process it starts in `/work` is confined from
+that Stand-in by Landlock (ADR-0076, [ADR-0077](0077-jr2-requires-landlock-on-every-sandbox-node.md)). The edges, stated
+plainly:
 
 - It holds only for what stays in the private filesystem or session. Anything on `/work` or listening on `localhost` is
   shared with the Agent — the pod has one network namespace. The Custodian's listeners are on `localhost` too; what they

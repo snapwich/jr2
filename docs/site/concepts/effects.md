@@ -190,8 +190,9 @@ commands in it:
 | A `dispatch` with a `target`            | The Instance Effector                                                               |
 
 A `command` that names no Effect secret runs beside the Agent's [Working tools](../reference/glossary.md#working-tools).
-It runs as the Agent's user, with the tools of the [Sandbox Image](../reference/glossary.md#sandbox-image). It has the
-same [Stand-ins](../reference/glossary.md#stand-in) as the Agent's shell, and no credential of its own.
+It runs as the Agent's user, with the tools of the [Sandbox Image](../reference/glossary.md#sandbox-image). The Harness
+confines it with Landlock, as it confines the Agent's shell. It has the same
+[Stand-ins](../reference/glossary.md#stand-in) as the Agent's shell, and no credential of its own.
 
 A `command` that names an Effect secret in its `env` runs in the Sandbox Effector, a container in which the Agent runs
 nothing. It does not run in the live Worktree. It runs against one commit: the tip of the branch when it starts, or with

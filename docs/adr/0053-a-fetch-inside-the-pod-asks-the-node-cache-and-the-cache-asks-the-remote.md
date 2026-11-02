@@ -29,8 +29,8 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   Binding's own spelling, the caller's own credential, never the Agent's (ADR-0005).
 
 - **The ask rides the Sandbox CR and reaches the agent through the pod.** The program asks the Custodian on `localhost`
-  (`POST /fetch`, with the Sandbox token's Stand-in — a constant, because the User Container gets no env); the Custodian
-  puts the token it holds in place of the Stand-in and asks the Orchestrator for THIS pod's Sandbox
+  (`POST /fetch`, with the fetch token's Stand-in — a constant, because the User Container gets no env); the Custodian
+  puts the fetch token in place of the Stand-in, on this route alone and asks the Orchestrator for THIS pod's Sandbox
   (`POST /sandboxes/<name>/fetch` — the program cannot name another,
   [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); the Orchestrator patches one
   annotation on the Sandbox CR, per Repo key, timestamp value — the Lease's shape, an annotation the Orchestrator
@@ -45,11 +45,13 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   sticky, once per pod life. The Orchestrator's route waits on that entry — a Sandbox watch event, never a poll
   ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)) — then answers the Custodian, which answers the program.
   One wait, and it is the wait an attach already makes.
-- **The scope is the Sandbox token's scope, and no seat gains a credential.** A Sandbox may ask for the caches it mounts
-  and nothing else; the remote is reached by the cache agent with the Repo CR's `secretRef`, the credential that cloned
-  the cache. The pod holds none before and none after. The Menu is untouched — a fetch is not something the Agent
-  _says_, it is something it _does_ — and no Machine declares anything: the ability is ambient in every Workspace pod,
-  the way Working tools are, and absent on the Instance Harness, which mounts no Repo.
+- **The scope is the fetch token's scope, and no seat gains a credential.** The fetch token is valid on the fetch route
+  alone, and the control token is not valid there
+  ([ADR-0076](0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md)). A Sandbox may ask for the
+  caches it mounts and nothing else; the remote is reached by the cache agent with the Repo CR's `secretRef`, the
+  credential that cloned the cache. The pod holds none before and none after. The Menu is untouched — a fetch is not
+  something the Agent _says_, it is something it _does_ — and no Machine declares anything: the ability is ambient in
+  every Workspace pod, the way Working tools are, and absent on the Instance Harness, which mounts no Repo.
 - **Freshness degrades, absence does not, and the caller is told.** A remote fetch that fails or outruns the on-demand
   budget lets the program fall through to the objects the cache holds — ADR-0051's stance for attach — and writes one
   line to stderr, which git passes through verbatim:

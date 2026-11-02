@@ -17,8 +17,8 @@ runs and what it does.
 ## Why the parts are separate
 
 An Agent that works on a Repo runs code. Its [Working tools](../reference/glossary.md#working-tools) give it a shell.
-With the shell, it can read each file and each variable in its container. It can also connect to each address that its
-pod can reach. Thus jr2 puts each thing that the Agent must not touch in a different place:
+With the shell, it can run each program of its image on the files in `/work`. It can also connect to each address that
+its pod can reach. Thus jr2 puts each thing that the Agent must not touch in a different place:
 
 - The control of a run is in the Orchestrator. An Agent cannot change its own Machine. It can only pick from its
   [Menu](../reference/glossary.md#menu), and the Orchestrator decides what each pick does.
@@ -26,6 +26,8 @@ pod can reach. Thus jr2 puts each thing that the Agent must not touch in a diffe
   processes. Agents in two Workspaces share no files and no ports. [Workspaces](workspaces.md) tells more.
 - The credentials are in containers in which the Agent executes nothing: the Custodian, the Effector and the Repo cache.
   [Secrets and trust](secrets-and-trust.md) tells how.
+- The Harness holds one secret value, with which it sends the picks. Each program that it starts in `/work` runs
+  confined with Landlock, so the code of an Agent cannot read that value.
 
 ## What runs where
 
@@ -115,14 +117,15 @@ To isolate two sets of Workflows, use two Instances. Each Instance has its own n
 
 The Harness is jr2's own server for the Turns of Agents. It speaks to the model provider. It gives the model the Agent's
 Menu and its Working tools. It executes each Working tool that the model calls, and sends each pick through the
-Custodian. It holds no Agents of its own. Each Turn brings the Agent's definition with it.
-[Agents and Turns](agents-and-turns.md) tells what happens in a Turn.
+Custodian. Each program that a Working tool starts runs confined with Landlock. The Harness holds no Agents of its own.
+Each Turn brings the Agent's definition with it. [Agents and Turns](agents-and-turns.md) tells what happens in a Turn.
 
 The Harness has two placements:
 
 - **In each Sandbox.** The Harness is the primary container of the Sandbox pod, named `harness`. It runs in the
   [Sandbox Image](../reference/glossary.md#sandbox-image), and jr2 mounts the Harness into the pod at `/opt/jr2`. Thus
-  the Working tools of the Agent reach the tools of that image. An Agent that works on a Repo has its Turns here.
+  the Working tools of the Agent reach the tools of that image. Each Agent that works on a Repo has its Turns here: one
+  Harness serves all the Agents of the Sandbox.
 - **As the Instance Harness.** The Instance Harness is one StatefulSet for each Instance, `jr2-instance-harness`. Each
   Turn of a Menu-only Agent (`workspace: "none"`) runs here. Its pod has a Harness and a Custodian, and no Worktree. It
   keeps each conversation on its volume while a run can continue it. `jr2 up` converges it when a Machine of the
@@ -138,8 +141,8 @@ Each Harness pod has a Custodian: each Sandbox, and the Instance Harness. The Cu
 Harness. The Agent executes no code in it. It does two things:
 
 - It carries four kinds of call from the pod to the Orchestrator: the Menu reads, the picks, the polls for the answer to
-  a pick, and the fetch asks. It sends each one with the pod's Sandbox token. These four routes are all that it
-  forwards. It refuses all other routes.
+  a pick, and the fetch asks. It sends the first three with the control token of the Sandbox, and the fetch asks with
+  its fetch token. These four routes are all that it forwards. It refuses all other routes.
 - It holds the [Held secrets](../reference/glossary.md#held-secret) of its pod, such as a model API key. It puts the
   value into the requests that go to the hosts of each Held secret.
 
@@ -162,7 +165,8 @@ where. It has two placements:
   that Orchestrator as an Effect secret. It runs in the `jr2-harness` Kit image.
 
 Each placement exists only when a Machine of the Instance puts an Effect there. A `command` that names no Effect secret
-does not use an Effector. It runs in the Harness container of its Sandbox, with the same tools and access as the Agent.
+does not use an Effector. It runs in the Harness container of its Sandbox, with the same tools and access as the Agent,
+and confined in the same way.
 
 The Orchestrator signs each request that it sends to an Effector, and the Effector signs each answer. The Orchestrator
 only asks, and the Effector holds the credentials.
@@ -188,7 +192,8 @@ the Orchestrator stopped for longer than the Lease allows. [Workspaces](workspac
 
 The Repo cache keeps one bare clone of each Repo on each node that needs it. It is a DaemonSet, `jr2-repo-cache`, in the
 namespace of the Instance. It has one pod on each [Sandbox node](../reference/glossary.md#sandbox-node). `jr2 up`
-converges it when a Machine of the Instance uses a Sandbox.
+converges it when a Machine of the Instance uses a Sandbox. Each pod also checks that the kernel of its node has
+Landlock. On a node without Landlock, the pod is not ready, and `jr2 up` names that node and refuses to converge.
 
 The operator mounts the cache of each Repo into a Sandbox, read-only, at `/repos`. The clone in the Sandbox gets its
 objects from that cache. A `git fetch origin` in the Sandbox asks the Repo cache for a fetch. Then the Repo cache
@@ -204,6 +209,8 @@ credential to fetch.
 - A Harness accepts a call only from the Orchestrator, with the bearer of its own pod. Only its health check needs no
   bearer.
 - The Agent executes code only in the Harness container. It executes nothing in the Custodian or in the Effector.
+- In the Harness container, each program in `/work` runs confined. It cannot read what the Harness holds.
+- Each Sandbox node needs Landlock in its kernel. `jr2 up` refuses to converge while a Sandbox node has none.
 - The Orchestrator watches the Sandbox resources and never reads a pod. The operator puts the facts of the pod on the
   status of the Sandbox resource.
 - A Sandbox has one pod for its life. A lost pod is never made again.
@@ -226,5 +233,7 @@ credential to fetch.
   [ADR-0053](../reference/decisions/0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md),
   [ADR-0058](../reference/decisions/0058-a-harness-answers-the-orchestrator-alone.md),
   [ADR-0059](../reference/decisions/0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md),
-  [ADR-0063](../reference/decisions/0063-the-orchestrator-watches-the-cluster.md) and
-  [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)
+  [ADR-0063](../reference/decisions/0063-the-orchestrator-watches-the-cluster.md),
+  [ADR-0068](../reference/decisions/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md),
+  [ADR-0076](../reference/decisions/0076-an-agents-control-credential-lives-only-where-no-workspace-code-runs.md) and
+  [ADR-0077](../reference/decisions/0077-jr2-requires-landlock-on-every-sandbox-node.md)
