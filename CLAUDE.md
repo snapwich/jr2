@@ -13,6 +13,21 @@ jr2 is greenfield. Nothing currently runs in production. Therefore:
   make the next decision easier or harder? Is the name correct?
 - A wrong design costs more here than in a mature codebase, because everything written later builds on it.
 
+## ADRs
+
+An ADR in [docs/adr/](./docs/adr/) states a decision that is in force now. Keep each one true:
+
+- **Update in place.** When a decision changes, rewrite the ADR that states it, so that it states the current decision.
+  Do not add "amended by", "superseded" or history notes. Do not write a new ADR that says an older one is out of date.
+- **Delete what no longer applies.** Delete an ADR, or a section of one, that no longer states a live decision. Then fix
+  every link to it. `pnpm docs:site` finds a dead link.
+- **Change every record that the decision touches.** When you write or change an ADR, `git grep` the other ADRs,
+  GLOSSARY.md and `docs/site/` for each statement that it changes. Rewrite those statements in the same change.
+- **A rejected design appears once:** in the Considered options of the ADR that replaced it, with the reason.
+- **Write a new ADR only when all three are true:** the decision is hard to reverse, a reader would be surprised without
+  the reason, and it came from a real trade-off. Otherwise, change an existing ADR or write nothing.
+- Refer to another ADR only where a reader needs its reason.
+
 ## Docs (ADR-0072)
 
 The docs ship in the Kit and on the site (https://snapwich.github.io/jr2/). Their source is `docs/site/`. **Read
