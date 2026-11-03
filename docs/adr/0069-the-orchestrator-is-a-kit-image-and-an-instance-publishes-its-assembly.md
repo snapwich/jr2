@@ -71,7 +71,7 @@ resolve a Workflow's name only to the new Machine. The grill of 2026-10-18 split
   an image cost: cluster write access. The token lives in the Instance's Secret beside the Instance token, `jr2 up`
   reads it through the kube API alone, and no env var and no `--url` path can supply it, so an ingress-exposed Instance
   exposes no publish door. The Instance token keeps its meaning
-  ([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)): start runs, answer Gates, read. `GET /assembly`,
+  ([ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)): start runs, answer Gates, read. `GET /assembly`,
   public like `GET /workflows`: the current hash and Kit version, the Assemblies held with the runs that hold them, and,
   when deployed, the digest of each ConfigMap the process reads through a mount (`jr2-images`, `jr2-held`), so a
   publisher can see what the process reads. `jr2 status` prints it; `/healthz` prints the current hash where it printed

@@ -233,7 +233,7 @@ delivered approve to gate "review" on c44c6e49-452d-4150-8ce4-4d036363d2a0
 - [ADR-0011](../reference/decisions/0011-workflow-defined-events.md): a Gate, its events, and its `meta`.
 - [ADR-0013](../reference/decisions/0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md): why an
   Agent cannot answer a Gate, and why a refused event is not delivered.
-- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-the-instance-token.md): the Instance token in the
+- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md): the Instance token in the
   Console.
 - [Start a run](start-a-run.md)
 - [Watch a run](watch-a-run.md)

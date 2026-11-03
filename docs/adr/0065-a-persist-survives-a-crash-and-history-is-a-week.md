@@ -36,6 +36,14 @@ upserts cost 0.04 ms (1 KB) and 0.18 ms (100 KB). A run's blob is about 1 KB; a 
   never swept: a run parked on a Gate for a month stays and is restored. The value is fixed like the Sandbox idle
   timeout, not config: jr2 is not the record of a run's results (a Machine sends its output where it belongs — a PR, a
   Source), and `jr2 status` on an old run is a debugging act. A swept id frees its abbreviations (ADR-0009).
+- **The hook log keeps each Hook's delivery a week**, as a row of its own: the Hook, the delivery id, the body's digest
+  and the outcome ([ADR-0011](0011-workflow-defined-events.md)). The repeat check reads it, so a repeat is found for a
+  week; a body caught and sent again with a new id after that week passes the check, and a handler that compares the
+  commit limits what it can do. A `slack` or `discord` delivery carries a signed timestamp, and jr2 refuses one more
+  than 300 seconds from its clock, so that replay fails for them
+  ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). A run's blob keeps its
+  own `(delivery, gate)` pairs. A standing Pool's run is handed over before its Effect ledger makes its blob large:
+  after 500 dispatches or one day ([ADR-0017](0017-pool-over-a-source-port.md)).
 - **The store is sqlite on the Instance's volume. No Postgres is owed.** The `SnapshotStore` interface stays as the
   seam, with one implementation. `DATABASE_URL` is not a thing jr2 reads.
 

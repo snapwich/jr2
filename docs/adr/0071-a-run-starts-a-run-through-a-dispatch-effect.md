@@ -48,9 +48,11 @@ composition and does not replace it. The two uses stay two mechanisms.
   the url and the token together, one Open part, with `customize(m, { effects: { task: { target: { url, token } } } })`
   ([ADR-0054](0054-the-kit-ships-machines-and-a-shipped-machine-leaves-its-parts-open.md)); `secret(open)` inside a
   target is refused, since the whole target is the part. Another Instance may run another Kit version, so the HTTP door
-  is the only contract there. The token is the Instance token, which unlocks all control
-  ([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)); a start-only token is a token kind of its own and
-  is deferred.
+  is the only contract there. The token is any Caller's credential of the other Instance with `start` for the callee
+  Workflow ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)): a named Caller
+  token made for this, or that Instance's Instance token. A `wait` also polls `GET /runs/<id>`, so its token needs
+  `read` for that Workflow too. The start may carry the Caller that started the calling run as `onBehalfOf`, which the
+  other Instance records and does not check.
 - **Two settlements, `started` by default, and every outcome is output.** `{ outcome: "started", run }` settles when the
   Orchestrator accepts the run; the watcher goes round again. `wait: true` settles
   `{ outcome: "settled", run, status, output }` when that run ends, `status` in the store's own words (`done`, `failed`,
@@ -69,12 +71,12 @@ composition and does not replace it. The two uses stay two mechanisms.
   a DELETE of the Effect ends that poll and never touches the run. No callback from the callee: a callback needs the
   callee to hold its caller's address and a token for it, which inverts the trust. A door refusal is OUTPUT,
   `{ outcome: "refused", status, report }`, with the door's status — 400 for bad input, 404 for a name the current
-  Assembly lacks, 409 for an unrunnable named Chart or a key another Workflow's run holds, 422 for a Chart the door
-  refuses, 413 for a start over the bytes an Effector reads, 0 when the Effector refused it before anything was sent —
-  as a Chart refusal is ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)): the body may have come from a model,
-  and the report must be able to reach it through the Chain. A target no replica could reach is
-  `{ outcome: "unreachable" }`, output, as an `http` Effect's is (ADR-0067): nothing was started. The invoke's error is
-  kept for defects: no run host or Effector, input that fails the slot's schema, a refused or malformed wire.
+  Assembly lacks, 409 for an unrunnable named Chart, 422 for a Chart the door refuses, 413 for a start over the bytes an
+  Effector reads, 0 when the Effector refused it before anything was sent — as a Chart refusal is
+  ([ADR-0070](0070-a-machine-lends-its-parts-to-a-chart.md)): the body may have come from a model, and the report must
+  be able to reach it through the Chain. A target no replica could reach is `{ outcome: "unreachable" }`, output, as an
+  `http` Effect's is (ADR-0067): nothing was started. The invoke's error is kept for defects: no run host or Effector,
+  input that fails the slot's schema, a refused or malformed wire.
 - **The two runs are independent.** Cancelling the caller never cancels the callee; the caller's end never ends it;
   leaving the state stops a wait and never the run; the callee's Workspaces are its own. Temporal's parent-close policy
   (`TERMINATE` by default, `REQUEST_CANCEL`, `ABANDON`) exists because a child there is both a run and a child, and its
@@ -89,7 +91,8 @@ composition and does not replace it. The two uses stay two mechanisms.
   `dispatched [{ slot, run, at }]`, the chain's other direction. `jr2 runs` carries `dispatchedBy` after the id,
   `jr2 status` prints `dispatched by:` and `dispatched:` lines, and the Console shows both. The word is **dispatched
   by**. The callee reads nothing of its caller from its input: a Machine that wants to tell its callee something passes
-  it as input like any caller.
+  it as input like any caller. A local dispatch records its caller's run as the callee's `startedBy`,
+  `{ kind: "run", run, slot }`, and `jr2 status` walks that chain to the first Caller (ADR-0078).
 - **A chain of dispatches is unbounded.** A run may dispatch a Workflow that dispatches another, or itself: a run that
   dispatches its own successor and ends is Temporal's continue-as-new, the honest way to keep a watcher's snapshot
   small, and a depth ceiling would refuse it. A runaway chain is a resource problem the cluster owner's quota and
@@ -100,13 +103,20 @@ composition and does not replace it. The two uses stay two mechanisms.
   key, out of band — the `jr2-dispatched-by` header, the `dispatchedBy` record as JSON, never a body field the callee's
   door would have to reserve — and `POST /workflows/<name>/runs` asks the key before anything else, so a re-sent start
   answers its run even when the name would be refused now: 201 with the run for a new one, 200 with
-  `{ runId, instanceId, existing: true }` for a repeat, 409 when a run of ANOTHER Workflow holds the key (the caller
-  asked for one Workflow and would wait on a run of another), 400 when the header does not parse, and 500, never 404,
-  for any other throw, since a foreign caller reads a 404 as "nothing was started" (ADR-0033 as amended). The key lives
-  in the callee's blob, and the store copies it into a `dispatch_effect` column of its own at every save and indexes
-  that, not an expression index over `json_extract`: SQLite's JSON parser refuses a blob nested about a thousand deep,
-  and such an index would fail that row's save and every later open of the volume. A run restore marks `lost` keeps its
-  row and its blob, so its key keeps answering; the weekly sweep
+  `{ runId, instanceId, existing: true }` for a repeat, 400 when the header does not parse, and 500, never 404, for any
+  other throw, since a foreign caller reads a 404 as "nothing was started" (ADR-0033 as amended). **The key is scoped to
+  the callee Workflow**: the store finds a key with the Workflow's name, so the same key in two Workflows is two runs,
+  and a key never answers with a run of another Workflow. A key answers `existing` while its run's row lives, in any
+  status: live, and a week after it ends. A retry after a failure is then a person's act, not a re-sent start's. The
+  Effect checks the key before it checks its input against the slot's schema, in-process and on the foreign path, as the
+  door does: a start sent again across a change of the callee's door answers `existing`, not an error. A `wait` sent
+  again under a key that answers `existing` follows that run, and settles when it ends. **A Pool's worker sends its
+  `itemId` as the key** ([ADR-0017](0017-pool-over-a-source-port.md)), so a Pool's hand-over re-attaches to each live
+  run. An author's own key (`dispatch({ key })`) is not offered now; to add it later breaks nothing. The key lives in
+  the callee's blob, and the store copies it into a `dispatch_effect` column of its own at every save and indexes that,
+  not an expression index over `json_extract`: SQLite's JSON parser refuses a blob nested about a thousand deep, and
+  such an index would fail that row's save and every later open of the volume. A run restore marks `lost` keeps its row
+  and its blob, so its key keeps answering; the weekly sweep
   ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)) removes the key with the row, and a re-send
   after it starts a new run: known, and not guarded. In-process the ledger is consulted directly, through the same start
   under the same key, with the starts in flight held so two arrivals of one key before the first save are one run. So a
@@ -180,4 +190,4 @@ composition and does not replace it. The two uses stay two mechanisms.
   routing of both, without the key.
 - An Open body may lend a `dispatch` slot as it lends any Effect (`lends.effects`), so a Chart can start a run of a
   Workflow its wrapper chose; the Chart fills the body only.
-- Deferred, named: a start-only token; a depth ceiling; a capability check for a door that ignores the key.
+- Deferred, named: a depth ceiling; a capability check for a door that ignores the key; an author's own key.

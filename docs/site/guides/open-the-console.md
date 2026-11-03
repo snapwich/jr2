@@ -83,7 +83,7 @@ The Console keeps the token in the browser tab. A reload keeps it. When you clos
 ## Read next
 
 - [Architecture](../concepts/architecture.md)
-- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-the-instance-token.md): why the token unlocks the
+- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md): why the token unlocks the
   Console.
 - [ADR-0014](../reference/decisions/0014-observation-is-open-run-state-is-not.md): what the Console shows with no token.
 - [`GET /`](../reference/http-api.md#get) and the [open band](../reference/http-api.md#band-open)

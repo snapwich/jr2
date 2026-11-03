@@ -17,7 +17,12 @@ a definition lives, and the gate that enforces it.
   an Effect names it with `secret("name")`, and the Instance declares it in the top-level `secrets` list
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). The name is a string, not a type: the
   walk after the typecheck refuses an Effect that names a secret the list does not hold, before anything is built.
-  `jr2.config.ts` holds reach and credentials (`harness`, `secrets`, `git.credentials`, `registry`).
+  `jr2.config.ts` holds reach and credentials (`harness`, `secrets`, `git.credentials`, `registry`, and the Callers'
+  `callers`, `hooks` and `cors`,
+  [ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). A Machine names no Hook: a
+  Gate's or a Source's handlers are keyed by the Hook's kind ([ADR-0011](0011-workflow-defined-events.md)), and only a
+  Hook's address names it. A Hook kind is code that the config and the Workflows import by name, so it is neither
+  declared nor discovered: it comes in by `import`, as a nested Machine does, and `jr2 up` bundles it into the Assembly.
 - **The slot key types a Repo.** A `workspace()` declares its Repos as slots —
   `repos: { target: open, docs: { url, ref } }` — and the keys are a phantom on the wrapper type, read through
   `pool()`'s `worker` and `workspace()`'s `body` as the image is (ADR-0049). A

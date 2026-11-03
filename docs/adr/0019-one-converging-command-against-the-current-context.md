@@ -229,8 +229,9 @@ takes the operator too.
   instance error with "not deployed here — right context?". This is the guardrail against silently pointing at the wrong
   cluster, without a state file that can itself go stale.
 - **CLI transport**: run-verbs port-forward the Orchestrator Service via the kube API for the duration of the command
-  and read the Instance token from its Secret — kube RBAC is the real gate. `--url`/`JR2_URL` (+ token env) is the
-  escape hatch for ingress-exposed instances and callers without cluster creds.
+  and read the Instance token from its Secret — kube RBAC is the real gate. `--url`/`JR2_URL` (+ token env, any Caller's
+  credential, [ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)) is the escape
+  hatch for ingress-exposed instances and callers without cluster creds.
 - **A dead ADDRESS and an absent IDENTITY are two faults, and resolution names which.** They share a verb and a context
   but not a fix: one is the network, the other is `jr2 up`. A cluster that answered and holds no instance Secret is "not
   deployed here — right context?"; a cluster that could not answer at all is "cannot reach the cluster — context X: …",

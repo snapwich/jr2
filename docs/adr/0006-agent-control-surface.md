@@ -44,7 +44,7 @@ is the only structured channel. Consequences:
 
 jr2's own typed notices now reach a running Agent through the step-boundary read (ADR-0002,
 [ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)); the Menu still opens only when the Agent
-reaches a checkpoint or a turn boundary. Free-text human steering is the remaining case, reserved for v1 as a
-Caller-authenticated message on the same channel (ADR-0002, [ADR-0011](0011-workflow-defined-events.md)). Evidence for
-the findings above: `poc/actor/POC-5B-FINDINGS.md`, `poc/actor/POC-5C-FINDINGS.md` (`poc/` is gitignored; conclusions
-live here).
+reaches a checkpoint or a turn boundary. Free text from a Caller, or from the Machine, is a Steering message on the same
+channel (ADR-0002, [ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)): the Agent
+hears it once, and it is never a pick or a workflow event. Evidence for the findings above:
+`poc/actor/POC-5B-FINDINGS.md`, `poc/actor/POC-5C-FINDINGS.md` (`poc/` is gitignored; conclusions live here).

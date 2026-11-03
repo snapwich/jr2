@@ -1,11 +1,11 @@
 # The Console renders with Preact, and the server erases the types
 
-The Console ([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)) outgrew its framework-free form: `main.js`
-reached ~1,500 lines, much of it hand-rolled DOM reconciliation (`memo()`, `paint()`, manual list diffing) — work a view
-library exists to own. Three standing constraints shaped the replacement: the repo is zero-build (Node 24 strips types;
-nothing compiles), the Console serves only its own assets (ADR-0032), and `@jr2/orchestrator` is a library that serves
-its files from disk wherever the process starts. A fourth arrived with this decision: Console source is TypeScript like
-everything else.
+The Console ([ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)) outgrew its framework-free form:
+`main.js` reached ~1,500 lines, much of it hand-rolled DOM reconciliation (`memo()`, `paint()`, manual list diffing) —
+work a view library exists to own. Three standing constraints shaped the replacement: the repo is zero-build (Node 24
+strips types; nothing compiles), the Console serves only its own assets (ADR-0032), and `@jr2/orchestrator` is a library
+that serves its files from disk wherever the process starts. A fourth arrived with this decision: Console source is
+TypeScript like everything else.
 
 ## Decision
 

@@ -280,7 +280,7 @@ who can read the pod logs of the namespace can read these conversations.
 - [ADR-0013](../reference/decisions/0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md),
   [ADR-0014](../reference/decisions/0014-observation-is-open-run-state-is-not.md),
   [ADR-0023](../reference/decisions/0023-the-harness-prints-the-conversation.md),
-  [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-the-instance-token.md),
+  [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md),
   [ADR-0051](../reference/decisions/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md),
   [ADR-0058](../reference/decisions/0058-a-harness-answers-the-orchestrator-alone.md),
   [ADR-0059](../reference/decisions/0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md),

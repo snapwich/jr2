@@ -81,7 +81,7 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   one is the tier watching the fix rather than merely enjoying it: the retry is absorbed by design, so without it a
   cluster drifting toward the 90s window would keep passing — slightly slower, silently — until the day it did not.
 - **An opt-in `@console` tier for the Console's UX** (added with
-  [ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)). The Console's risky behavior is interaction —
+  [ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)). The Console's risky behavior is interaction —
   token-mode switching, the frame-triggered gate inbox, selection vs. folding — which no reducer test sees and no CLI
   step drives. These scenarios hold a **Playwright page inside ordinary Cucumber steps** (Playwright the _library_, not
   the `@playwright/test` runner): the browser is a second driver of the same black box, reusing the per-scenario

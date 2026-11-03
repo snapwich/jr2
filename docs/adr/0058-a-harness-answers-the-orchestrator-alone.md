@@ -42,7 +42,7 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   bearer. A 401 comes before a 404, so a refused caller does not learn which conversations exist. A refused admission
   creates no conversation. The Harness requires `JR2_HARNESS_TOKEN_SHA256` at boot and fails loudly without it.
 - **The echo uses the same bearer.** `JR2_ECHO_TOKEN_SHA256` is removed. The Instance token no longer enters any pod,
-  which is what [ADR-0032](0032-the-console-unlocks-with-the-instance-token.md) and
+  which is what [ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md) and
   [Secrets and trust](../site/concepts/secrets-and-trust.md) say.
 - **A refused stream is a fault, not a reconnect.** The bearer is derived, so a Harness that refuses it once refuses it
   on every retry. `wait` settles a 401 or 403 as a `SettlementFault` and does not park the Turn forever.
@@ -52,9 +52,11 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   Orchestrator pods (`app: jr2-orchestrator`, `jr2.dev/instance: <name>`). They are converged unconditionally, so a
   Harness pod is never created before its policy exists. The Instance Effector gets a third of the same form,
   `jr2-instance-effector`, applied with it in one List (ADR-0068).
-- **Starting a run needs the Instance token.** `POST /workflows/:name/runs` moves from `authenticated` to
-  `instanceOnly`. The scope of a Sandbox token is its own agent surface. The Custodian's route allowlist does not
-  forward this route, but that is not a control.
+- **Starting a run needs a Caller with `start`.** `POST /workflows/:name/runs` moves from `authenticated` to the guarded
+  band, where a Caller's `start` scope opens it
+  ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). A Sandbox token is no
+  Caller: its scope is its own agent surface. The Custodian's route allowlist does not forward this route, but that is
+  not a control.
 
 ## Considered options
 

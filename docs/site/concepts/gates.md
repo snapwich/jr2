@@ -128,5 +128,5 @@ A Pool that has a `wake` event serves it as a Gate with the id `source` (see [Po
   cannot send to a Gate, and a send that the run does not take is refused
 - [ADR-0015](../reference/decisions/0015-authoring-surface-absorbs-the-mechanism.md): the position of an `on` key gives
   its event to a Gate or to an Agent
-- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-the-instance-token.md): the Console sends to a Gate
+- [ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md): the Console sends to a Gate
   with the Instance token

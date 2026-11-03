@@ -48,7 +48,7 @@ can get away with fetching once, because a person can press a button; an API can
   which is why it is wired to the handler's exit.
 - **A settled run is the client's own memory.** A run appears in the page's `settled` list iff _this page_ watched it
   leave. After a hard reload they are gone, and that is correct rather than a defect: serving a finished run's state to
-  an unauthenticated reader is a read-through, which stays behind the Instance token on `/runs/:id` (ADR-0014).
+  an unauthenticated reader is a read-through, which stays behind the `read` scope on `/runs/:id` (ADR-0014).
 - **`jr2 visualize` is deleted.** Its job was to find an orchestrator, forward a port, and open a browser. With the page
   now useful on its own, that is one `kubectl port-forward` the reader already knows how to run — and the command's
   ephemeral-fallback path was quietly forwarding to a _different_ instance than the deployed one. Its one unique piece

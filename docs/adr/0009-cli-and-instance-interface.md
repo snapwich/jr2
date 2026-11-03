@@ -63,6 +63,10 @@ export default defineConfig({
   ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)): the credentials the Agents use — an
   Anthropic key, read from `process.env`/`.env`, held by the Custodian and never by the Harness (ADR-0059) — and the
   ones an Effect names, which only its Effector holds. Where each goes is read, never declared.
+- **`callers`, `hooks` and `cors`** are the Instance's reach for Callers
+  ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)): the named Caller tokens
+  and the JWT issuers with their scopes, the Hooks with their credentials and the Hook kinds that the config imports,
+  and the origins a browser app may call from.
 - **`registry`** (deployment-varying, resolve from env): absent → images are `kind load`-ed; present → pushed
   (ADR-0019). **`kitRegistry`** (also env) re-homes the published Kit image refs for self-hosted, air-gapped, or
   mirror-only clusters ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)).
@@ -86,19 +90,23 @@ definition contract growing that seat (ADR-0018).
 
 Push + control + observe only — the **pull** path needs no HTTP (the Orchestrator's Source pulls, ADR-0017). Auth bands
 per ADR-0014: structure + observation open; the Agent surface takes the Sandbox token; run state, control, and gates
-take the Instance token.
+take a Caller with the scope in brackets (ADR-0078); `[instance]` is the Instance token alone.
 
 ```
 GET  /workflows                        # list registered workflows                       [open]
 GET  /workflows/:name/machine  /viz/*  # machine structure + visualizer                  [open]
 GET  /workflows/:name/runs[, /:runId/events]  # observation projection (ADR-0014)        [open]
 GET  /workflows/:name/events           # SSE: the whole workflow, level-triggered (ADR-0022) [open]
-POST /workflows/:name/runs             # start a run (push work); body = input → { runId } [instance]
-GET  /runs   GET /runs/:runId          # live list; durable run status (read-through)    [instance]
-GET  /runs/resolve?prefix=<p>          # run ids sharing a prefix, live + settled        [instance]
-GET  /runs/:runId/events               # SSE: status replay + live deltas                [instance]
-POST /runs/:runId/events               # run-level infra interrupt: CANCEL               [instance]
-POST /runs/:runId/gates/:gate/events   # deliver a workflow event to an open gate        [instance]
+POST /workflows/:name/runs             # start a run (push work); body = input → { runId } [start]
+GET  /runs   GET /runs/:runId          # live list; durable run status (read-through)    [read]
+GET  /runs/resolve?prefix=<p>          # run ids sharing a prefix, live + settled        [any scope]
+GET  /runs/:runId/events               # SSE: status replay + live deltas                [read]
+POST /runs/:runId/events               # run-level infra interrupt: CANCEL               [cancel]
+POST /runs/:runId/gates/:gate/events   # deliver a workflow event to an open gate        [answer]
+POST /runs/:runId/steering             # a Steering message to an Agent slot (ADR-0002)  [steer]
+GET  /runs/:runId/agents               # the conversation list, one row per Agent slot   [steer]
+GET  /whoami                           # the request's Caller record (ADR-0078)          [any Caller]
+POST /hooks/:name                      # a Hook's delivery (ADR-0011)                    [the Hook's verifier]
 GET  /repos                            # per-Repo node-cache sync state (ADR-0048)        [instance]
 GET  /agents/:iid/surface   POST /agents/:iid/events   # the Menu, via the Custodian    [sandbox]
 POST /sandboxes/:name/fetch                            # the ask (ADR-0053)             [sandbox]
@@ -137,9 +145,17 @@ jr2 version [--local] [--json]     # this jr2, the global that handed off, the I
 
 # runs / workflows (wrap the HTTP API)
 jr2 run <workflow> [--input <json>] [--detach]
+jr2 run <workflow> [--drop-held]   # resume a paused standing Pool (ADR-0017)
 jr2 runs   jr2 status [runId|abbrev]   jr2 logs <runId|abbrev> [-f]   # bare `status` = the instance's repos (ADR-0048)
 jr2 send <runId|abbrev> --event CANCEL
 jr2 send <runId|abbrev> --gate <gate> --event <name> [--input <json>]
+jr2 steer <runId|abbrev> <agent> "<text>"   # a Steering message (ADR-0002)
+
+# Callers and Hooks (ADR-0078, ADR-0011)
+jr2 whoami                         # the Caller this credential is
+jr2 caller token <name>            # print a named Caller token's value
+jr2 caller rotate <name>           # make a new value; the old one stops working
+jr2 hooks <name>                   # the Hook's log of deliveries
 
 # workspaces (kubectl-style, over the operator's Sandbox CRs) — decided, not yet in the binary
 jr2 ls                             # list workspaces + run + status + endpoint
@@ -165,9 +181,10 @@ covers the interim (ADR-0019).
 **Instance addressing.** The CLI finds its instance by walking up from cwd to the directory containing `jr2.config.ts` —
 the root marker. The _deployment_ is addressed by the current kube context + the instance's namespace: run-verbs
 port-forward the Orchestrator Service for the duration of the command and read the Instance token from its in-cluster
-Secret (kube RBAC is the gate). `--url` / `JR2_URL` (+ token env) overrides both — the ingress-exposed/remote-caller
-case — and skips the folder walk entirely. Every run-verb prints the context it targets on stderr, so ambient-context
-drift is visible (ADR-0019).
+Secret (kube RBAC is the gate); its Caller is `token/instance`, on behalf of the kube user (ADR-0078). `--url` /
+`JR2_URL` (+ `JR2_TOKEN`, any Caller's credential) overrides both — the ingress-exposed/remote-caller case — and skips
+the folder walk entirely. Every run-verb prints the context it targets on stderr, so ambient-context drift is visible
+(ADR-0019).
 
 **The command table.** Each verb is an entry in `packages/cli/src/command-table.ts`: its arguments, its flags, the env
 vars it reads, what it prints, and its ADRs, as data. The verb's `parseArgs` options come from its entry, and so does
@@ -251,9 +268,10 @@ The candidate set is the ids that **exist**, not the ones that read: `lost` runs
 would let a prefix they share with a live run resolve silently to the live one. The set unions the live registry with
 the store — neither alone is complete, since `persist()` is microtask-scheduled (a just-started run is live before it is
 stored) and a settled run is stored but not live. Note the deliberate tension with `GET /runs`'s deferred `?all`: this
-route does reveal that settled run **ids** exist to an Instance-token holder. It answers ids only — no status, no
-context, no gates — to keep that widening as small as the feature allows, and it is Instance-only rather than open,
-since prefix probing on an open route would be a run-id enumeration oracle.
+route does reveal that settled run **ids** exist to a Caller with a scope for their Workflow. It answers ids only — no
+status, no context, no gates — to keep that widening as small as the feature allows, and it is guarded rather than open,
+since prefix probing on an open route would be a run-id enumeration oracle. Any scope opens it, for the Workflows of
+that scope, because a Caller that may only cancel or steer also addresses a run by a prefix.
 
 **`jr2 init` (v1).** Scaffolds the minimum runnable instance: `jr2.config.ts` (root marker), `package.json` (deps on
 `@jr2/*` + xstate), one starter `workflows/<name>.ts`, `images/default/Dockerfile` (the Sandbox Image every Workspace

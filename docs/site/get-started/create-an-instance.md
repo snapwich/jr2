@@ -180,7 +180,7 @@ it. [Machines and Workflows](../concepts/machines-and-workflows.md) explains the
 
 The Console is a page that the Orchestrator serves, at [`GET /`](../reference/http-api.md#get). Anyone who can reach it
 can see the runs. Only the holder of the Instance token can start a run or answer a Gate
-([ADR-0032](../reference/decisions/0032-the-console-unlocks-with-the-instance-token.md)).
+([ADR-0032](../reference/decisions/0032-the-console-unlocks-with-a-callers-credential.md)).
 
 `jr2 init` wrote `AGENTS.md` for your Assistant. It points to the docs that the Kit installs in
 `node_modules/@jr2/orchestrator/docs/`. These are the docs of your Kit version

@@ -23,21 +23,57 @@ The split-channel model:
 | down      | the next turn's prompt (feedback, steering at a boundary)      | a new submission on the same iid              |
 | down      | the Turn part, restated (the Allowed picks changed)            | the Harness's read at each step boundary      |
 | down      | a jr2 notice (a memory kill, ADR-0062), typed, to its audience | the same step-boundary read, per conversation |
+| down      | a Steering message (a Caller's or the Machine's free text)     | the same step-boundary read, per Agent slot   |
 | down      | interrupts (deliberate terminal cancel)                        | `abort` on the wire                           |
 
-Tool calls are Agent-initiated, so the Machine speaks inside a Turn only as an answer. The one exception is the
-**restated Turn part**: when something other than the Agent's own pick changes its Allowed picks — a Gate's answer, an
-outside event — the Harness learns it by reading the surface at each step boundary and appends the new list
+Tool calls are Agent-initiated, so the Machine answers a pick only when the Agent makes one. Inside a Turn, three other
+things reach the Agent, and each one at a step boundary. The first is the **restated Turn part**: when something other
+than the Agent's own pick changes its Allowed picks — a Gate's answer, an outside event — the Harness learns it by
+reading the surface at each step boundary and appends the new list
 ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). It is a pull, not a push:
 the Harness asks at a step boundary, and nothing reaches it that it did not ask for. What is restated is fixed text plus
-Menu names. jr2's own **typed notices** ride that same step-boundary read: the read of an open Turn returns its
-conversation's pending notices, the Harness appends them, and its acknowledgment of the append delivers them. So a
-running Agent hears a fact the mechanism knows — a memory kill above all — without an interrupt. A notice is typed data,
-and the Harness words it ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). The residual case is
-**free-text human steering** — arbitrary text from a human Caller to an Agent that has not asked. jr2 reserves it for v1
-on this same channel, authenticated as a Caller ([ADR-0011](0011-workflow-defined-events.md)) rather than by a
-Sandbox-scoped credential; its sender and authorization are designed with the Caller. It is one behavior, not a
-dependency of the whole control plane.
+Menu names. The second is jr2's own **typed notices**, which ride that same step-boundary read: the read of an open Turn
+returns its conversation's pending notices, the Harness appends them, and its acknowledgment of the append delivers
+them. So a running Agent hears a fact the mechanism knows — a memory kill above all — without an interrupt. A notice is
+typed data, and the Harness words it ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). The third
+is a **Steering message**: free text to an Agent that has not asked for it, on the same read (below). Each is a pull at
+a step boundary, never an interrupt.
+
+## Steering messages
+
+- **Two senders.** A Caller ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md))
+  sends one with `POST /runs/:runId/steering { agent, text }` or `jr2 steer <run> <agent> "<text>"`, and needs the
+  `steer` scope for the run's Workflow. A text above 16 KiB is 413. The Machine sends one with the authoring action
+  `steer(<agent>, text)`, which can name the Sender whose words it carries.
+- **Addressed by Agent slot.** `agent` names an Agent slot of the run, as the run's conversation list names it. The
+  list, `{ agent, open, steerable }` for each slot at `GET /runs/:runId/agents`, is open to a Caller with `steer`, so a
+  Caller can see where a message would go. An Instance ID is not the address: jr2 computes it, a Caller cannot know it,
+  and a fresh Turn gets a new one. A slot is the name that the author gave, and the walk lets at most one state of a
+  Machine instance hold it at a time ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)), so it names one
+  conversation at a time.
+- **Delivery.** When the slot has an open Turn, its Harness appends the message at the Turn's next step boundary, on the
+  same read as a notice. Otherwise the message is held for the slot's next Turn of the same Machine instance, and that
+  Turn's admission carries it. A held message belongs to the Machine instance that was live when it was sent: when that
+  instance ends, the message retires, and the run records it "not delivered". When the slot's Machine has ended, the
+  route answers 409. The Agent hears each message once, by the rules of a notice (ADR-0062), and the run records each
+  message with its author.
+- **Never a Machine event.** A Steering message is in no Vocabulary, no Gate takes it, and no guard reads it. The Agent
+  decides what to do with it, and acts on the workflow only by its picks.
+- **Agents message each other only through the Machine.** An Agent's Menu offers a pick that the author declared; the
+  Machine's transition relays its payload with `steer(<agent>, …)`. jr2 gives no built-in message tool.
+- **The Harness frames the message by its author** (ADR-0062). A Caller's message is an instruction from outside the
+  run, with the Caller's name. A message that the Machine relays from another Agent is a peer's word, and the frame says
+  that it is not an order. A Machine's message that relays no one is the workflow's own text.
+- **`steerable: false` on an Agent definition refuses Callers only.** The Machine can still steer that Agent: the author
+  wrote both.
+- **What a model reads changes, so two `@model` claims are owed**
+  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)): `steer-follow`, an
+  Agent follows a Caller's Steering message that comes in its open Turn, and `peer-not-order`, an Agent does not obey a
+  peer's relayed word as an order. Their floors are set before a measured run, as `chart-refusal`'s was.
+
+Considered and rejected: address a message by conversation (an Instance ID), which a Caller cannot know and which
+changes at a fresh Turn; a built-in tool with which an Agent messages another Agent, which goes around the Machine that
+the author wrote; and a Steering message as a Machine event, which makes free text control.
 
 ## Durability: the admission is the handle
 

@@ -15,11 +15,13 @@ else.
 
 - **The rule.** A name is on the surface when an author writes it in a workflow module or in `jr2.config.ts`. No other
   name is. A name that an author only gets by inference stays off the surface: the event union that `jr2Setup` derives,
-  a Gate's input, an Agent's Frame. The `gate` actor is off the surface too. `jr2Setup` registers it, and a state
-  invokes it as `src: "gate"`, so no author writes the value. A type is on the surface when an author must write its
-  name, for example `Workspaced`, `HostInjectedInput`, `AgentDefinition`, and the types of the parts that `customize()`
-  takes. `JR2Config` is on the surface too: the `jr2.config.ts` Reference documents its fields, and an author names it
-  to type a config that is built outside `defineConfig()`.
+  a Gate's input, an Agent's Frame. The plain `gate` actor is off the surface too. `jr2Setup` registers it, and a state
+  invokes it as `src: "gate"`, so no author writes the value. The `gate()` factory of a Gate slot that hears a Hook is
+  on the surface, because an author writes it in `actors` ([ADR-0011](0011-workflow-defined-events.md)); the walk knows
+  such a slot by identity, not only by `src === "gate"`. A type is on the surface when an author must write its name,
+  for example `Workspaced`, `HostInjectedInput`, `AgentDefinition`, and the types of the parts that `customize()` takes.
+  `JR2Config` is on the surface too: the `jr2.config.ts` Reference documents its fields, and an author names it to type
+  a config that is built outside `defineConfig()`.
 - **Named exports only.** `src/index.ts` names each export (`export { a } from …`, `export type { T } from …`), in
   groups by topic, and has no `export *`. Thus an Assistant that reads the file sees the full surface, and each change
   to the surface is a line in a diff.
@@ -73,7 +75,7 @@ another Agent slot (a nested Turn: its picks are its own) or a `gate` (its trans
 leaves out everything below that child; a child that runs anything else stays in. A state that invokes `gate` gets its
 accepted set from its own and its ancestors' transitions and those written on its plain children, by the same descent:
 position gives a Gate the writings below it that no other party answers for, as it gives an Agent its modes (the Pool's
-wake Gate, on its root, takes the writing on `parked`). The consumer names neither; MCP appears nowhere in workflow
+`source` Gate, on its root, takes the writing on `parked`). The consumer names neither; MCP appears nowhere in workflow
 code. Mechanics: the **vocabulary** derivation is static, in `jr2Setup.createMachine` — a config walk wraps each
 invoke's `input` to append the derived names, so names still ride serializable input and the ADR-0007 restore path and
 invoke-time validation are unchanged. The same walk unions the derived sets of every state that invokes an Agent of one
@@ -89,7 +91,9 @@ excluded.
 **A transition belongs to the party that its state, or the nearest state above it, invokes.** The party is the Agent
 slot or the `gate` that state invokes, or both when one state invokes both; root transitions, with no such state above,
 belong to both. That is who may send an event whose def leaves `audience` unset
-(`defineEvent({ audience?: "agent" | "external" | "any" })`, no default):
+(`defineEvent({ audience?: "agent" | "external" | "any" })`, no default). One case reads as `external`: an event in a
+Gate slot's `delivers` whose def leaves the audience unset, so a Hook's event is never on the Menu of an Agent below
+that Gate ([ADR-0011](0011-workflow-defined-events.md)):
 
 | Transition written on                                                                             | Unset audience: who may send                                         |
 | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |

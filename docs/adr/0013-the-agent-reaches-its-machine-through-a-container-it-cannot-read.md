@@ -60,9 +60,9 @@ is needed either (ADR-0006).
   keeps two thin HTTP surfaces, neither of them MCP:
 
   ```
-  # human / webhook / CI — the Gate resource of ADR-0011, authenticated
-  GET  /runs/:id                       → open gates: accepts + schemas + acceptsNow + meta  [Instance token]
-  POST /runs/:id/gates/:gate/events    → validate + deliver, or 409                   [Instance token]
+  # human / Hook / CI — the Gate resource of ADR-0011, a Caller's (ADR-0078)
+  GET  /runs/:id                       → open gates: accepts + schemas + acceptsNow + meta  [answer]
+  POST /runs/:id/gates/:gate/events    → validate + deliver, or 409                   [answer]
 
   # the Agent's, through its pod's Custodian
   GET  /agents/:iid/surface            → Menu + Allowed picks + schemas + semantics [control token]
@@ -100,7 +100,10 @@ is needed either (ADR-0006).
     accepts each token only on its own routes. Neither reaches a Gate: a Gate refuses every principal of an Agent.
     Neither reaches another Sandbox. A Stand-in is refused on every route.
   - **Instance token** — the human/CLI credential for Gates and run control. Minted into an in-cluster Secret at
-    `jr2 up`; the CLI reads it over the kube API (RBAC is the gate) while port-forwarding the Service (ADR-0019).
+    `jr2 up`; the CLI reads it over the kube API (RBAC is the gate) while port-forwarding the Service (ADR-0019). It is
+    one Caller among others: a named Caller token, a JWT and a Hook reach Gates within their scopes
+    ([ADR-0078](0078-a-caller-comes-from-one-authenticator-seam-and-acts-within-its-scopes.md)). No Caller is a
+    principal of an Agent.
   - **The Instance-token door.** The Instance token may also read any Agent's surface and deliver to it —
     `GET /agents/:iid/surface`, `POST /agents/:iid/events` — because it is the operator. That is the operator speaking
     AS the Agent: it reads the Agent's Menu and Allowed picks and its picks are judged as the Agent's — they carry the
@@ -143,7 +146,7 @@ is needed either (ADR-0006).
 - **The Orchestrator serves MCP, and the Custodian forwards it.** Rejected: it keeps the MCP transport and its session
   handling in the control plane and on both ends, to carry two plain HTTP calls.
 - **A uniform `/registrations/:address` API** for every caller. Rejected: it dissolves the run-scoped, discoverable Gate
-  resource ADR-0011 designed on purpose (a webhook translator finds its Gate by `meta.prUrl`; `GET /runs/:id` lists open
+  resource ADR-0011 designed on purpose (a hooked Gate's handler matches its own `meta.pr`; `GET /runs/:id` lists open
   decisions) in exchange for aesthetic symmetry.
 
 ## Consequences
@@ -170,6 +173,5 @@ is needed either (ADR-0006).
   Custodian in every Harness pod must reach it and no policy can tell the Custodian's packets from the Agent's.
 - **The Harness wire is authenticated in the other direction.** The Orchestrator bears a token derived for the placement
   on every Harness call, and the Harness holds only its digest (ADR-0058). Same signed-name idea, reversed caller.
-- **Open: authn for non-kube callers.** The Instance token rides kube RBAC for anyone with cluster creds; what an
-  ingress-exposed jr2 Application uses for human/webhook callers without them (`--url` mode) is out of scope here
-  (ADR-0014 inherits the same question).
+- **Callers without kube credentials are ADR-0078's.** The Instance token rides kube RBAC for anyone with cluster creds;
+  a Caller without them (`--url` mode, a browser, a Hook) holds a named token, a JWT or a Hook's signature.

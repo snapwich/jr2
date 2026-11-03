@@ -3,7 +3,7 @@
 `POST /workflows/:name/runs` takes a JSON body and hands it to the machine as xstate `input` — unvalidated, and
 undescribed: the module contract is `export const machine` alone (ADR-0011/0015), so nothing at runtime says what a run
 of a given workflow should be started _with_. The Console's start form
-([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)) forced the question, but the gap predates it —
+([ADR-0032](0032-the-console-unlocks-with-a-callers-credential.md)) forced the question, but the gap predates it —
 `jr2 run` has the same blindness, and a typo'd input surfaces as a confusing mid-run failure instead of a refusal at the
 door. Meanwhile every event a machine _accepts_ already carries a zod schema, attached to the machine itself
 ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)'s vocabulary-on-the-machine). The input that starts a
