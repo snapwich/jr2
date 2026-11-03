@@ -82,6 +82,16 @@ const keepExited = 5 * time.Minute
 
 const prSetDumpable = 4
 
+// The ops that the spawner names in more than one place.
+const (
+	opSpawn   = "spawn"
+	opRead    = "read"
+	opWrite   = "write"
+	opStat    = "stat"
+	opReaddir = "readdir"
+	opUnlink  = "unlink"
+)
+
 // inFrame is every field a frame from the Harness can carry.
 type inFrame struct {
 	Op     string            `json:"op"`
@@ -144,8 +154,8 @@ func closeOnExecAbove(n int) error {
 			continue
 		}
 		// The fd that read the folder is closed already, and answers EBADF.
-		if _, _, errno := syscall.RawSyscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFD, syscall.FD_CLOEXEC); errno != 0 &&
-			errno != syscall.EBADF {
+		_, _, errno := syscall.RawSyscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFD, syscall.FD_CLOEXEC)
+		if errno != 0 && errno != syscall.EBADF {
 			return fmt.Errorf("fd %d: close-on-exec: %w", fd, errno)
 		}
 	}
@@ -253,6 +263,11 @@ func (s *spawner) send(frame map[string]any) {
 	s.dead = true
 }
 
+// sendOut sends one chunk of a process's stdout or stderr.
+func (s *spawner) sendOut(id, stream string, b []byte) {
+	s.send(map[string]any{"id": id, "op": "out", "stream": stream, "data": base64.StdEncoding.EncodeToString(b)})
+}
+
 func (s *spawner) fail(id, code, message string) {
 	s.send(map[string]any{"id": id, "op": "error", "code": code, "message": message})
 }
@@ -260,7 +275,7 @@ func (s *spawner) fail(id, code, message string) {
 func (s *spawner) handle(f *inFrame) {
 	id := *f.ID
 	switch f.Op {
-	case "spawn":
+	case opSpawn:
 		s.spawn(id, f)
 	case "stdin":
 		data, ok := decode(f.Data)
@@ -285,13 +300,13 @@ func (s *spawner) handle(f *inFrame) {
 			// ESRCH: the group has ended. Nothing to do, as a kill of an ended process.
 			_ = syscall.Kill(-p.pgid, sig)
 		}
-	case "read", "write", "stat", "readdir", "unlink":
+	case opRead, opWrite, opStat, opReaddir, opUnlink:
 		if !filepath.IsAbs(f.Path) {
 			s.fail(id, "EINVAL", fmt.Sprintf("%s: the path %q is not absolute", f.Op, f.Path))
 			return
 		}
 		var data []byte
-		if f.Op == "write" {
+		if f.Op == opWrite {
 			var ok bool
 			if data, ok = decode(f.Data); !ok || f.Data == nil {
 				s.fail(id, "EINVAL", "write: data is missing or not base64")
@@ -350,7 +365,7 @@ func (s *spawner) start(id string, p *proc, f *inFrame) error {
 	env := make([]string, 0, len(f.Env))
 	for k, v := range f.Env {
 		if k == "" || strings.ContainsAny(k, "=\x00") || strings.Contains(v, "\x00") {
-			return &os.PathError{Op: "spawn", Path: k, Err: syscall.EINVAL}
+			return &os.PathError{Op: opSpawn, Path: k, Err: syscall.EINVAL}
 		}
 		env = append(env, k+"="+v)
 	}
@@ -463,7 +478,9 @@ func (s *spawner) relay(id string, p *proc, cmd *exec.Cmd, outR, errR *os.File) 
 // the process has ended and the pipes stayed quiet for GraceAfterExit. It returns the process's
 // state, which comes on done. wake is a pipe that becomes readable when the state is on done, or
 // -1: then the loop looks at done every 10 ms.
-func (s *spawner) readOutput(id string, p *proc, outR, errR *os.File, wake int, done <-chan *os.ProcessState) *os.ProcessState {
+func (s *spawner) readOutput(
+	id string, p *proc, outR, errR *os.File, wake int, done <-chan *os.ProcessState,
+) *os.ProcessState {
 	// Fd puts the file in blocking mode; set it back, so that a read after a spurious wake-up
 	// cannot hold the loop.
 	outFd, errFd := int(outR.Fd()), int(errR.Fd())
@@ -483,8 +500,7 @@ func (s *spawner) readOutput(id string, p *proc, outR, errR *os.File, wake int, 
 	}
 	if err != nil {
 		// The spawner cannot read the pipes: end the process, and say why on its stderr.
-		s.send(map[string]any{"id": id, "op": "out", "stream": "stderr",
-			"data": base64.StdEncoding.EncodeToString([]byte("spawner: cannot read the output: " + err.Error() + "\n"))})
+		s.sendOut(id, "stderr", []byte("spawner: cannot read the output: "+err.Error()+"\n"))
 		_ = syscall.Kill(-p.pgid, syscall.SIGKILL)
 		return <-done
 	}
@@ -538,8 +554,7 @@ func (s *spawner) readOutput(id string, p *proc, outR, errR *os.File, wake int, 
 			r, err := syscall.Read(fd, buf)
 			switch {
 			case r > 0:
-				s.send(map[string]any{"id": id, "op": "out", "stream": stream,
-					"data": base64.StdEncoding.EncodeToString(buf[:r])})
+				s.sendOut(id, stream, buf[:r])
 				if ended {
 					// The grace counts from the end of the last send: a slow channel is not a quiet pipe.
 					deadline = time.Now().Add(GraceAfterExit)
@@ -644,20 +659,20 @@ func lookPath(file, path, cwd string) (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", &os.PathError{Op: "spawn", Path: file, Err: syscall.ENOENT}
+	return "", &os.PathError{Op: opSpawn, Path: file, Err: syscall.ENOENT}
 }
 
 // fileOp does one file tool's I/O, in this process, so the domain's rules apply to it.
 func (s *spawner) fileOp(id, op, path string, data []byte) {
 	switch op {
-	case "read":
+	case opRead:
 		b, err := os.ReadFile(path)
 		if err != nil {
 			s.fail(id, errnoName(err), err.Error())
 			return
 		}
 		s.send(map[string]any{"id": id, "op": "ok", "data": base64.StdEncoding.EncodeToString(b)})
-	case "write":
+	case opWrite:
 		if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
 			s.fail(id, errnoName(err), err.Error())
 			return
@@ -667,7 +682,7 @@ func (s *spawner) fileOp(id, op, path string, data []byte) {
 			return
 		}
 		s.send(map[string]any{"id": id, "op": "ok"})
-	case "stat":
+	case opStat:
 		info, err := os.Stat(path)
 		if err != nil {
 			s.fail(id, errnoName(err), err.Error())
@@ -687,7 +702,7 @@ func (s *spawner) fileOp(id, op, path string, data []byte) {
 		}
 		s.send(map[string]any{"id": id, "op": "ok", "kind": kind, "size": info.Size(),
 			"mtimeMs": info.ModTime().UnixMilli(), "realpath": real})
-	case "readdir":
+	case opReaddir:
 		// The names alone, sorted. A name that is not UTF-8 travels with U+FFFD in place of each bad
 		// byte (JSON text), so the Harness names a folder by such a name only to show it.
 		entries, err := os.ReadDir(path)
@@ -700,10 +715,10 @@ func (s *spawner) fileOp(id, op, path string, data []byte) {
 			names[i] = e.Name()
 		}
 		s.send(map[string]any{"id": id, "op": "ok", "names": names})
-	case "unlink":
+	case opUnlink:
 		// unlink(2) alone, not os.Remove, which also tries rmdir: the op removes one file's name.
 		if err := syscall.Unlink(path); err != nil {
-			perr := &os.PathError{Op: "unlink", Path: path, Err: err}
+			perr := &os.PathError{Op: opUnlink, Path: path, Err: err}
 			s.fail(id, errnoName(perr), perr.Error())
 			return
 		}

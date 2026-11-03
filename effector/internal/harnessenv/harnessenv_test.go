@@ -73,13 +73,16 @@ func TestSplitGivesTheHarnessJr2sNamesAndTheDomainEverything(t *testing.T) {
 // Every denied name, and a TZ that names a file, stays out of the Harness's env even when jr2
 // composed it; JR2_HARNESS_ENV_NAMES is required.
 func TestSplitDeniesEachCodeLoadingNameAndRequiresTheNames(t *testing.T) {
-	names := []string{"TZ"}
-	start := []string{"TZ=:/app/zone"}
+	loaders := []string{"LD_AUDIT", "LD_PRELOAD", "LD_LIBRARY_PATH", "MALLOC_TRACE", "MALLOC_ARENA_MAX"}
+	names := make([]string, 0, 1+len(Denied)+len(loaders))
+	start := make([]string, 0, 1+len(Denied)+len(loaders))
+	names = append(names, "TZ")
+	start = append(start, "TZ=:/app/zone")
 	for n := range Denied {
 		names = append(names, n)
 		start = append(start, n+"=/app/x")
 	}
-	for _, n := range []string{"LD_AUDIT", "LD_PRELOAD", "LD_LIBRARY_PATH", "MALLOC_TRACE", "MALLOC_ARENA_MAX"} {
+	for _, n := range loaders {
 		names = append(names, n)
 		start = append(start, n+"=/app/x")
 	}

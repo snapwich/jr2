@@ -76,12 +76,12 @@ func eventually(t *testing.T, what string, ok func() bool) {
 	}
 }
 
-func runWith(t *testing.T, p pod, service string, wait time.Duration, held func(*os.File, process) error) *exec1 {
+func runWith(t *testing.T, p pod, service string, wait time.Duration, held func(*os.File, process) error) {
 	t.Helper()
-	return runAs(t, p, service, wait, thisProcess, held)
+	runAs(t, p, service, wait, thisProcess, held)
 }
 
-func runAs(t *testing.T, p pod, service string, wait time.Duration, fetch func() (process, bool), held func(*os.File, process) error) *exec1 {
+func runAs(t *testing.T, p pod, service string, wait time.Duration, fetch func() (process, bool), held func(*os.File, process) error) {
 	t.Helper()
 	server, _ := custodian(t, http.StatusOK, map[string]any{keyFetched: someTime})
 	e := &exec1{}
@@ -93,7 +93,6 @@ func runAs(t *testing.T, p pod, service string, wait time.Duration, fetch func()
 	if code != 0 || !e.ran {
 		t.Fatalf("exit %d, exec'd %v: the lock must not fail a fetch", code, e.ran)
 	}
-	return e
 }
 
 func TestAFetchTakesTheLockInTheCommonDirAndLeavesItWithTheHolder(t *testing.T) {
@@ -481,15 +480,13 @@ func TestOverlappingFetchesOnAMovingRemoteDoNotLoseARace(t *testing.T) {
 	var wg sync.WaitGroup
 	failures := make(chan string, coders*rounds)
 	for _, tree := range trees {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range rounds {
 				if out, err := fetchIn(ctx, tree, env); err != nil {
 					failures <- fmt.Sprintf("%v: %s", err, out)
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	stop()

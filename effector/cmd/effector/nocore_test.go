@@ -44,7 +44,7 @@ func TestNoCoreHarnessEnvGivesTheProgramTheHarnessEnv(t *testing.T) {
 		t.Fatalf("%v: %s", err, out)
 	}
 	got := map[string]string{}
-	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		n, v, _ := strings.Cut(l, "=")
 		got[n] = v
 	}

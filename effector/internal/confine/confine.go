@@ -366,8 +366,9 @@ func SystemPaths(root string, deny []string) (readExec []string, err error) {
 // rule: what it names gets its own where it is allowed, and the kernel checks the path that a link
 // resolves to. A rule on a link would follow it each time the confiner opens the rules, and a
 // confined process that writes the folder of the link's target can retarget it onto a denied path
-// before the next open (ADR-0076). Every path in deny is a real path (no link in it). Landlock allows a path only by a rule, so a folder that holds a denied path gets no rule of
-// its own: a confined process cannot list it, or add or remove an entry directly in it.
+// before the next open (ADR-0076). Every path in deny is a real path (no link in it). Landlock
+// allows a path only by a rule, so a folder that holds a denied path gets no rule of its own: a
+// confined process cannot list it, or add or remove an entry directly in it.
 func carve(root string, deny, skip []string) (allowed []string, err error) {
 	denied := func(p string) bool { return slices.ContainsFunc(deny, func(d string) bool { return within(p, d) }) }
 	holds := func(p string) bool { return slices.ContainsFunc(deny, func(d string) bool { return within(d, p) }) }

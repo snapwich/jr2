@@ -31,7 +31,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -127,7 +127,7 @@ func Split(environ []string) ([]string, error) {
 			"does not start (ADR-0076)", NamesName)
 	}
 	composed := map[string]bool{}
-	for _, n := range strings.Split(rawNames, ",") {
+	for n := range strings.SplitSeq(rawNames, ",") {
 		if n = strings.TrimSpace(n); n != "" {
 			composed[n] = true
 		}
@@ -162,7 +162,7 @@ func Split(environ []string) ([]string, error) {
 	for n := range start {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	var data strings.Builder
 	var harness []string
