@@ -805,6 +805,43 @@ func TestAnAskInsideTheAttemptsOwnSecondWaitsForTheTopOfTheNextAndFetchesOnce(t 
 	}
 }
 
+// TestAnAskWhoseSecondEndsDuringTheReconcileIsStillFetched pins the wait
+// above at the edge of the second: the agent reads its stamp, then runs git to
+// pin the cache, then measures the wait on the raw clock. When the top of the
+// ask's second passes in between, the wait is zero or less, and
+// controller-runtime drops a result with no positive RequeueAfter: the ask
+// would then wait for the refresh interval, and the `git fetch` in the pod
+// for its whole budget. The wait is never less than a moment.
+func TestAnAskWhoseSecondEndsDuringTheReconcileIsStillFetched(t *testing.T) {
+	last := fixedNow.Add(-time.Minute)
+	pod := podOn("sb", node, fixedNow.Add(-10*time.Minute))
+	pod.Annotations = map[string]string{
+		corev1alpha1.AskedAnnotation(key): fixedNow.Add(900 * time.Millisecond).UTC().Format(time.RFC3339Nano),
+	}
+	git := &fakeGit{}
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}),
+		pod,
+	)
+	// The stamp is read at .950; the pin's git calls take the clock past the second.
+	reads := 0
+	a.Now = func() time.Time {
+		reads++
+		if reads == 1 {
+			return fixedNow.Add(950 * time.Millisecond)
+		}
+		return fixedNow.Add(time.Second + 10*time.Millisecond)
+	}
+	makePresent(t, a)
+	result, err := reconcile1(t, a)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !git.has("fetch", "origin") && result.RequeueAfter <= 0 {
+		t.Fatalf("the ask is neither fetched nor waited for: RequeueAfter %s drops the key", result.RequeueAfter)
+	}
+}
+
 // TestAFetchDueAnywayInsideAnAsksSecondRunsNowAndComesBackForTheAsk is the
 // other side of that wait: a fetch the interval (or a spec change, or a first
 // attempt) owes runs at once, whatever second it is — and since its stamp

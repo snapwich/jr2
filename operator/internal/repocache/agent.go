@@ -454,9 +454,12 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 	// leave — `now`, at the second — sits below the bar the ask raised. Fetching
 	// now would settle nothing; wait for the top of the ask's second and fetch
 	// once (ADR-0053). Measured against the raw clock, so the wait is the
-	// remainder of this second and not a whole one.
+	// remainder of this second and not a whole one. The pin's git calls run
+	// between `now` and this read, so the top of the second can pass first: a
+	// wait of zero or less is a result controller-runtime drops, and the ask
+	// would then wait for the interval. So the wait is at least a moment.
 	if !dueAnyway && asked.After(now.Time) {
-		return ctrl.Result{RequeueAfter: asked.Sub(a.clock())}, nil
+		return ctrl.Result{RequeueAfter: max(asked.Sub(a.clock()), time.Millisecond)}, nil
 	}
 
 	next := corev1alpha1.RepoNodeStatus{
