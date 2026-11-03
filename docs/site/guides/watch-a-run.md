@@ -242,23 +242,39 @@ For example, this is the log of a run of the `task` Workflow of
 [An Agent in a Sandbox](../get-started/an-agent-in-a-sandbox.md), with the prompt
 ``In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.``:
 
-<!-- output: not run -->
-
 ```text
 jr2 harness serving on :8080
 [run] [status] running · body: cutting
+[run] [status] running · body: cutting
 [run] [status] running · body: working
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder]
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] Work in /work/target/task, on branch jr2/task-19b49b58-2ea4-4d79-b100-49aad6e12013 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
-…
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [thinking] The user wants me to run `node bin/greet.js` inside `docs/intro/repo` directory. Let me navigate there and run it.
-…
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [bash] cd docs/intro/repo && node bin/greet.js
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [thinking] The script printed "hello, world". I should now finish with this summary.
-…
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [finish] {"summary":"Ran `node bin/greet.js` in docs/intro/repo, which printed: hello, world"}
-[coder] [19b49b58-2ea4-4d79-b100-49aad6e12013/body/coder] [finish answer] Delivered "finish" to the workflow (delivery afe6340b-fe10-4819-b545-8ebd1b9a3964). The workflow consumed it and moved on: your turn is over.
+[run] [status] running · body: working
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Work in /work/target/task, on branch jr2/task-84f810c8-dda7-4577-a57e-4a09a4e7f507 — your tools are rooted there, so a relative path lands inside it. Commit what you do there, then call finish.
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] <jr2-turn>
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Working directory: /work/target/task
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Allowed now: `mcp__jr2__finish`.
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] </jr2-turn>
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [thinking] The user wants me to:
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 1. Run `node bin/greet.js` from the `docs/intro/repo` directory within the worktree
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 2. Report what it printed
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] 3. Commit my work and call finish
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] Let me first run the command.
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [text]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [bash] cd /work/target/task && node docs/intro/repo/bin/greet.js
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [thinking] The command printed "hello, world". Now I need to finish with that information.
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [text]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [finish] {"summary":"Ran `node bin/greet.js` from docs/intro/repo. It printed: hello, world"}
+[coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [finish answer] Delivered "finish" to the workflow (delivery 1b61fa16-50b7-4202-b7ed-b46a6ead5930). The workflow consumed it and moved on: your turn is over.
+[run] [status] running · body: review
 [run] [status] running · body: review
 ```
 

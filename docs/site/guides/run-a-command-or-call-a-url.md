@@ -175,14 +175,13 @@ where. It also shows where each Effect secret goes:
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 effects: workflow "fix-and-report" — what it runs outside itself (ADR-0067)
   cut: worktree — 600s, in the Harness
   test: command ["node","--test","<file>"] — 300s, in the Harness
   report: http POST https://hooks.example.com — 30s, in the Instance Effector, secrets "hook-token"
+…
 failures: workflow "fix-and-report" — the states that fail the run (ADR-0073)
   fix-and-report.notCut: invokes fail
   fix-and-report.notReported: invokes fail

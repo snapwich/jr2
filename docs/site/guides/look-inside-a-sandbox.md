@@ -79,11 +79,9 @@ git -C /work/<Repo Slot>/default worktree list
 
 For the slot `target` of a run of `task`, the output is:
 
-<!-- output: not run -->
-
 ```text
-/work/target/default  1e40403 (detached HEAD)
-/work/target/task     1e40403 [jr2/task-0cbdb607-48dc-4eab-9469-f8e41f2b0025]
+/work/target/default  7f258f6 (detached HEAD)
+/work/target/task     e467788 [jr2/task-1f34eef3-5749-4d7c-a16b-488c56ec88cd]
 ```
 
 The first line is the clone, on the base of the Repo Slot. Here the base is a tag, so the clone is detached. On a

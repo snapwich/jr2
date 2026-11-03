@@ -107,8 +107,6 @@ does these two steps of `jr2 up`, with no cluster, and gives the same refusals. 
 When `fix` is correct, `jr2 up` tells you what the Machine runs outside itself, and who may send each event. Your lines
 can differ when your Assistant used other names. Other Workflows of the Instance add lines too:
 
-<!-- output: not run -->
-
 ```text
 …
 typecheck: tsc --noEmit (the instance's own compiler)
@@ -116,9 +114,11 @@ effects: workflow "fix" — what it runs outside itself (ADR-0067)
   cut: worktree — 600s, in the Harness
   tests: command ["node","--test","docs/site/tutorial/greet/test/*.test.js"] — 300s, in the Harness
   publish: push — 300s, in the Sandbox Effector
+…
 failures: workflow "fix" — the states that fail the run (ADR-0073)
   fix.notCut: invokes fail
   fix.lost: invokes fail
+…
 seats: workflow "fix" — who may send what, per state (ADR-0015)
   fix.working agent:coder: [finish]
   fix.review gate: [approve, request_changes]
@@ -206,7 +206,7 @@ jr2 run fix --input '{"prompt":"In docs/site/tutorial/greet, one test fails. Fix
 ```text
 …
 → context kind-jr2 / namespace my-instance
-run b22cef63-1523-45f3-9c51-36c54b79ce36 (fix) — attached
+run 790ad78a-db4e-4b09-a248-ab62da088cde (fix) — attached
   → active "placing"
   → active "provisioning"
   → active "attaching"
@@ -228,14 +228,14 @@ jr2 status <run id>
 
 [`jr2 status`](../reference/cli.md#status) prints the status of the run as one line of JSON. Its `gates` list holds the
 Gate of `review`. Its `gate` is `body.review`. Give that value to `--gate`. The `meta` of the Gate gives the coder's
-`summary`, the `branch` and the `worktree`:
-
-<!-- output: not run -->
+`summary`, the `branch` and the `worktree`. After the JSON, `jr2 status` prints one line for each Worktree that the run
+cut:
 
 ```text
 …
 → context kind-jr2 / namespace my-instance
-{…,"gates":[{"gate":"body.review",…,"meta":{"summary":"Fixed the \"trims the name\" test failure in docs/site/tutorial/greet/src/greet.js by adding .trim() to the name parsing. The name \" ada \" was not being trimmed, causing the greeting to include extra whitespace. Changed `args.find((a) => !a.startsWith(\"-\")) ?? \"world\"` to `(args.find((a) => !a.startsWith(\"-\")) ?? \"world\").trim()`.","branch":"jr2/fix-336ae477-2a46-49c2-b142-b81e705bb3f8","worktree":"/work/target/fix"}}]}
+{…,"gates":[{"gate":"body.review",…,"meta":{"summary":"Fixed the \"trims the name\" test failure in docs/site/tutorial/greet. The bug was that the `greet` function didn't trim whitespace from the name argument. Added `.trim()` to the name extraction so that `greet([\" ada \"])` correctly returns `\"hello, ada\"` instead of `\"hello,  ada \"`.","branch":"jr2/fix-a78c793e-607a-4b33-9784-ccf2cfb6f395","worktree":"/work/target/fix"}}]}
+worktree: /work/target/fix (target), branch jr2/fix-a78c793e-607a-4b33-9784-ccf2cfb6f395
 ```
 
 The `summary` is in the words of the model, so your summary is different.
@@ -251,7 +251,7 @@ jr2 send <run id> --gate body.review --event approve
 ```text
 …
 → context kind-jr2 / namespace my-instance
-delivered approve to gate "body.review" on b22cef63-1523-45f3-9c51-36c54b79ce36
+delivered approve to gate "body.review" on 790ad78a-db4e-4b09-a248-ab62da088cde
 ```
 
 The run goes to `pushing`, and the push Effect pushes the branch. Then the run ends, and jr2 removes the
@@ -262,7 +262,7 @@ status as one line of JSON:
 …
   → active "teardown"
   → done "done"
-{"runId":"b22cef63-1523-45f3-9c51-36c54b79ce36","workflow":"fix",…,"output":{"outcome":"pushed","branch":"jr2/fix-336ae477-2a46-49c2-b142-b81e705bb3f8","commit":"03f8800ec105c98f612bd2c55687bb92db80357a"}}
+{"runId":"790ad78a-db4e-4b09-a248-ab62da088cde","workflow":"fix",…,"output":{"outcome":"pushed","branch":"jr2/fix-a78c793e-607a-4b33-9784-ccf2cfb6f395","commit":"ee7f5d8084db32c3610efb5c9b889a710ef30f70"},"worktrees":[{"slot":"target","path":"/work/target/fix","branch":"jr2/fix-a78c793e-607a-4b33-9784-ccf2cfb6f395"}]}
 ```
 
 In that JSON, `context.output` and `output` are the output of `fix`. In this result, it is

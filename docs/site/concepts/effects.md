@@ -55,8 +55,6 @@ Effect by its slot key (see [Composition](composition.md)).
 Workflow, it lists each Effect with its kind, its argv or its method and host, its timeout, and where it runs. For the
 example above, `jr2 up` prints these lines:
 
-<!-- output: not run -->
-
 ```text
 effects: workflow "test-and-push" — what it runs outside itself (ADR-0067)
   cut: worktree — 600s, in the Harness
@@ -68,8 +66,6 @@ The first line gives the name of the Workflow. Each next line gives the slot of 
 
 `jr2 up` also lists each state that invokes [`fail`](../reference/authoring-surface/fail.md), because each one ends the
 run `failed`:
-
-<!-- output: not run -->
 
 ```text
 failures: workflow "test-and-push" — the states that fail the run (ADR-0073)

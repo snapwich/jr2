@@ -126,8 +126,6 @@ Run [`jr2 up`](../reference/cli.md#up). It shows the push, and the push Secret o
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 effects: workflow "publish" — what it runs outside itself (ADR-0067)

@@ -68,14 +68,14 @@ Run [`jr2 up`](../reference/cli.md#up) to converge the Instance with the new Wor
 jr2 up
 ```
 
-<!-- output: not run -->
-
 ```text
 …
 jr2 up — instance "my-instance" → context kind-jr2 / namespace my-instance
 typecheck: tsc --noEmit (the instance's own compiler)
+…
 effects: workflow "issues" — what it runs outside itself (ADR-0067)
   cut: worktree — 600s, in the Harness
+…
 failures: workflow "issues" — the states that fail the run (ADR-0073)
   issues.failing: invokes fail
   task.noBranch: invokes fail
@@ -86,7 +86,7 @@ seats: workflow "issues" — who may send what, per state (ADR-0015)
   task.working agent:coder: [finish]
   task.review gate: [approve, request_changes]
 …
-agents: coder, triager (carried by 4 workflow machine(s))
+agents: coder, triager (carried by 5 workflow machine(s))
 …
 sandbox nodes: jr2-control-plane
 …
