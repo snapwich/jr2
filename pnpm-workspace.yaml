@@ -29,5 +29,3 @@ packages:
   # `pnpm -r test`. Its tutorial fixture (`tutorial/greet/`) is NOT a member — its one failing test
   # is the tutorial's task, and the guard test in this package runs it.
   - docs/site
-  # TEMP (chaos tests) — revert
-  - tmp/chaos-instance
