@@ -4409,7 +4409,11 @@ When(
   async function (this: E2EWorld, coders: number, seconds: number): Promise<void> {
     await ensureSeed();
     await ensureLargeSeed();
-    await startWt(this, "wt-load", { seconds: String(seconds), coders: String(coders) });
+    // A CI runner (CI is set) cannot place wt-load's 4 cpu, so it runs the same load at the tier's Size.
+    await startWt(this, process.env.CI ? "wt-load-ci" : "wt-load", {
+      seconds: String(seconds),
+      coders: String(coders),
+    });
     let moves = 0;
     const moving = (async () => {
       for (;;) {
