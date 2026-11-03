@@ -46,6 +46,20 @@ A change is not done until the docs agree with it:
 - **Verify** with `pnpm docs:site` (a CI gate: no dead link, every page compiles) and
   `pnpm --filter @jr2/docs-site test`.
 
+## Releasing (ADR-0055)
+
+When the user asks for a release, do these steps in this order. The releases v0.5.0 and v0.6.0 each failed at step 1.
+
+1. **Walk the output blocks first.** `git grep -l 'output: not run' -- docs/site ':!docs/site/README.md'`. Each hit is a
+   block that no one has run. `just release` refuses while one exists, and the release job refuses it after the tag is
+   pushed. Walk each block on kind with the installed CLI (`just dist-up`), as "The output" in
+   [docs/site/README.md](./docs/site/README.md) tells, and commit the walk as one `docs(site):` commit.
+2. **Make the release** with `just release patch|minor|major` on a clean tree (stash or use a sibling worktree for
+   unrelated edits). It bumps, runs the unit gate, commits `release: <ver>` and tags `v<ver>`.
+3. **Push** `main` and the tag only when the user says so. The tag push is the release.
+4. **Watch the job** (`gh run list --workflow release.yml --limit 1`). After the tiers and the image push, it stages the
+   packages on npm. Only the user can approve them (2FA, dependencies first). Tell the user when the stage is ready.
+
 ## Testing strategy (ADR-0010, ADR-0027)
 
 Three tiers plus one in-package suite. **Unit/integration:** `node --test` per package, in-process + socket-free

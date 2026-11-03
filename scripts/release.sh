@@ -101,6 +101,14 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "the working tree is not clean — commit or stash first; a release commit carries only the bump" >&2
   exit 1
 fi
+# An output block that no one has run (docs/site/README.md, "The output") is refused by publish.sh,
+# but only in the release job, after the tag is pushed: v0.5.0 and v0.6.0 each stopped there and
+# left a tag that never published. The same refusal here, before the bump, puts the walk before the tag.
+if marked="$(git grep -l 'output: not run' -- docs/site ':!docs/site/README.md')"; then
+  echo "docs: these pages have output blocks that no one has run — walk them first (docs/site/README.md, \"The output\"):" >&2
+  echo "$marked" | sed 's/^/  /' >&2
+  exit 1
+fi
 if git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then
   echo "v$next already exists" >&2
   exit 1

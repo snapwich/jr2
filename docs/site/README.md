@@ -751,8 +751,16 @@ The user must decide these items. Until then, obey the rule for each item.
   The manual check confirms it.
 - **The output.** The writers of stage 3 have no cluster, no key and no model endpoint. Write the output from the code,
   and mark each output block with the comment `<!-- output: not run -->` on the line before it. The manual check runs
-  each command, replaces the output, and removes the comment. `scripts/publish.sh` refuses a release while a page of the
-  bundle has this comment.
+  each command, replaces the output, and removes the comment. `scripts/release.sh` refuses to make a release commit, and
+  `scripts/publish.sh` refuses a release, while a page has this comment. Thus do the manual check before `just release`,
+  in these steps:
+  1. Run `just dist-up`. Use the `jr2` that it installs, because the reader uses the installed CLI, not a checkout.
+  2. Make the Instance as the pages tell the reader: `jr2 init my-instance`, with the model of the Local tab. When a
+     page needs a fork, use a public GitHub repo that has the `main` and the release tags of jr2, and show it as
+     `<you>/jr2`.
+  3. Run each command, copy what it prints, and remove the comment. When the run of a block also gives other blocks on
+     the same page, walk them again from that run, so that the page shows one run.
+  4. When the commands cannot give the output that the page needs, stop and ask. Do not write the output.
 
 ### The tools and the cluster
 
