@@ -802,6 +802,10 @@ function echoEventOf(event: RunFeedEvent, target: string): EchoEvent | undefined
  * every one fed after it. A superseded status drops out; nothing else moves. So a Harness that
  * answers slowly holds at most one status plus the markers since its last push.
  *
+ * A status the same as the last one pushed is dropped, with the pending one: the feed sends a
+ * status on each inspection event, and an Agent actor's own transitions move nothing that the echo
+ * shows, so without this each line of the log would print two times or more.
+ *
  * Fire-and-forget: a failed push goes to `report` and the outbox drains on — nothing here can
  * fail a turn, a state, or a run. Exported for its unit test; {@link RunHost} is its one caller.
  */
@@ -811,10 +815,15 @@ export function echoOutbox(
 ): (events: EchoEvent[]) => void {
   let pending: EchoEvent[] = [];
   let flushing = false;
+  // The last status that left in a push, as its JSON: the level the log shows now.
+  let shown: string | undefined;
   const flush = async (): Promise<void> => {
     while (pending.length > 0) {
       const batch = pending;
       pending = [];
+      // A batch holds at most one status (see the enqueue below).
+      const status = batch.find((p) => p.kind === "status");
+      if (status) shown = JSON.stringify(status);
       try {
         await push(batch);
       } catch (err) {
@@ -825,7 +834,10 @@ export function echoOutbox(
   };
   return (events) => {
     for (const event of events) {
-      if (event.kind === "status") pending = pending.filter((p) => p.kind !== "status");
+      if (event.kind === "status") {
+        pending = pending.filter((p) => p.kind !== "status");
+        if (JSON.stringify(event) === shown) continue;
+      }
       pending.push(event);
     }
     if (flushing || pending.length === 0) return;

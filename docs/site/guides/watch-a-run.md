@@ -245,8 +245,6 @@ For example, this is the log of a run of the `task` Workflow of
 ```text
 jr2 harness serving on :8080
 [run] [status] running · body: cutting
-[run] [status] running · body: cutting
-[run] [status] running · body: working
 [run] [status] running · body: working
 [coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [prompt] In docs/intro/repo, run `node bin/greet.js`. Then finish, with what it printed.
 [coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
@@ -274,7 +272,6 @@ jr2 harness serving on :8080
 [coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder]
 [coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [finish] {"summary":"Ran `node bin/greet.js` from docs/intro/repo. It printed: hello, world"}
 [coder] [9501dd2f-95ba-479b-b384-307c736a8aad/body/coder] [finish answer] Delivered "finish" to the workflow (delivery 1b61fa16-50b7-4202-b7ed-b46a6ead5930). The workflow consumed it and moved on: your turn is over.
-[run] [status] running · body: review
 [run] [status] running · body: review
 ```
 

@@ -353,6 +353,23 @@ test("a burst leaves as one push, and a failed push does not stop the next", asy
   assert.equal(failures.length, 1);
 });
 
+test("a status the same as the one the log shows is not pushed again", async () => {
+  const pushes: EchoEvent[][] = [];
+  const enqueue = echoOutbox(
+    async (events) => void pushes.push(events),
+    () => assert.fail("nothing failed"),
+  );
+  enqueue([status("s1")]);
+  await waitFor(() => pushes.length === 1);
+  // An Agent actor's own transition: a new status frame at the same level.
+  enqueue([status("s1")]);
+  // A move away and back before the push leaves: the log still shows s1, so nothing is pushed.
+  enqueue([note("a"), status("s2"), status("s1")]);
+  enqueue([status("s3")]);
+  await waitFor(() => pushes.length === 2);
+  assert.deepEqual(pushes, [[status("s1")], [note("a"), status("s3")]]);
+});
+
 test("the replay is the story so far, then where the run stands now — not the old statuses", async () => {
   const client = new MockFlueClient();
   const { pushes, factory } = fakeEcho();
